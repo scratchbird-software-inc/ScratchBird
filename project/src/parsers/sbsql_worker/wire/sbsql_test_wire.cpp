@@ -430,6 +430,10 @@ BuildEngineProjectedNativeBindingContext(
         ast.relations, [](const auto& relation) {
           return relation.relation_kind == NativeRelationAstKind::kProject;
         });
+    const auto sort_relation = std::ranges::find_if(
+        ast.relations, [](const auto& relation) {
+          return relation.relation_kind == NativeRelationAstKind::kSort;
+        });
     if (source_relation == ast.relations.end()) {
       return fail("catalog_source_projection_cardinality_invalid");
     }
@@ -437,27 +441,43 @@ BuildEngineProjectedNativeBindingContext(
         filter_relation != ast.relations.end() &&
         filter_relation->input_relation_ids ==
             std::vector<std::uint32_t>{source_relation->relation_id};
+    const bool sort_composition =
+        sort_relation != ast.relations.end() &&
+        sort_relation->input_relation_ids ==
+            std::vector<std::uint32_t>{
+                filter_composition ? filter_relation->relation_id
+                                   : source_relation->relation_id};
+    const auto expected_project_predecessor =
+        sort_composition
+            ? sort_relation->relation_id
+            : (filter_composition ? filter_relation->relation_id
+                                  : source_relation->relation_id);
     const bool project_composition =
-        project_relation != ast.relations.end() && filter_composition &&
+        project_relation != ast.relations.end() &&
         project_relation->input_relation_ids ==
-            std::vector<std::uint32_t>{filter_relation->relation_id} &&
+            std::vector<std::uint32_t>{expected_project_predecessor} &&
         !project_relation->output_expression_ids.empty();
     const bool limit_composition = limit_relation != ast.relations.end();
     const auto expected_root =
         limit_composition ? limit_relation->relation_id
                           : (project_composition
                                  ? project_relation->relation_id
-                                 : (filter_composition
-                                        ? filter_relation->relation_id
-                                        : source_relation->relation_id));
+                                 : (sort_composition
+                                        ? sort_relation->relation_id
+                                        : (filter_composition
+                                               ? filter_relation->relation_id
+                                               : source_relation->relation_id)));
     const auto expected_limit_input =
         project_composition
             ? project_relation->relation_id
-            : (filter_composition ? filter_relation->relation_id
-                                  : source_relation->relation_id);
+            : (sort_composition
+                   ? sort_relation->relation_id
+                   : (filter_composition ? filter_relation->relation_id
+                                         : source_relation->relation_id));
     const bool catalog_chain =
         ast.relations.size() ==
             1 + static_cast<std::size_t>(filter_composition) +
+                static_cast<std::size_t>(sort_composition) +
                 static_cast<std::size_t>(project_composition) +
                 static_cast<std::size_t>(limit_composition) &&
         ast.root_relation_id == expected_root &&
@@ -479,7 +499,8 @@ BuildEngineProjectedNativeBindingContext(
         resolved.object_class == "materialized_view" ||
         resolved.object_class == "external_table" ||
         resolved.object_class == "foreign_table";
-    if ((!filter_composition && !project_composition && !limit_composition &&
+    if ((!filter_composition && !sort_composition && !project_composition &&
+         !limit_composition &&
          relation.relation_id != ast.root_relation_id) ||
         relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
         relation.relation_source_ids !=
@@ -1132,8 +1153,24 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
         std::ranges::all_of(operand.name, [](unsigned char ch) {
           return ch >= '0' && ch <= '9';
         });
-    const std::string encoded_name =
-        numeric_name ? "slot_" + operand.name : operand.name;
+    const auto property_uuid =
+        operand.type == "relational_property_v1"
+            ? CanonicalUuidBytes(operand.name)
+            : std::optional<std::array<std::uint8_t, 16>>{};
+    std::string encoded_name;
+    if (numeric_name) {
+      encoded_name = "slot_" + operand.name;
+    } else if (property_uuid.has_value()) {
+      static constexpr char kHex[] = "0123456789abcdef";
+      encoded_name = "property_";
+      encoded_name.reserve(41);
+      for (const auto byte : *property_uuid) {
+        encoded_name.push_back(kHex[byte >> 4]);
+        encoded_name.push_back(kHex[byte & 0x0f]);
+      }
+    } else {
+      encoded_name = operand.name;
+    }
     CanonicalAppendText(&sections[4], encoded_name);
     CanonicalAppendU16(&sections[4], 5);  // literal_typed
     CanonicalAppendU16(&sections[4], 0);

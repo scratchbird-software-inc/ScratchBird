@@ -162,6 +162,12 @@ struct BoundGroupingSetAstRecord {
   std::vector<std::uint32_t> expression_ids;
 };
 
+struct BoundOrderingAstTerm {
+  std::uint32_t expression_id{0};
+  NativeSortDirection direction{NativeSortDirection::kAscending};
+  NativeNullPlacement null_placement{NativeNullPlacement::kNullsLast};
+};
+
 struct BoundRelationAstRecord {
   std::uint32_t relation_id{0};
   NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
@@ -176,6 +182,7 @@ struct BoundRelationAstRecord {
   std::vector<std::uint32_t> aggregate_expression_ids;
   std::vector<std::uint32_t> predicate_expression_ids;
   std::vector<std::uint32_t> limit_expression_ids;
+  std::vector<BoundOrderingAstTerm> ordering_terms;
   std::vector<std::uint32_t> bound_expression_ids;
   std::string semantic_variant_id;
   std::optional<std::string> bound_object_uuid;

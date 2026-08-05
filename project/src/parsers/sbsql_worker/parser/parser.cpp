@@ -469,11 +469,108 @@ class NativeRelationalParser final {
       }
     }
 
+    std::vector<NativeOrderingAstTerm> ordering_terms;
+    std::vector<std::uint32_t> hidden_order_expression_ids;
+    const Token* ordering_end = nullptr;
     std::vector<std::uint32_t> limit_expression_ids;
     const Token* query_end = source_end;
     if (predicate_expression_id.has_value()) {
       query_end = &TokenForRangeEnd(
           document_.expressions[*predicate_expression_id - 1].range);
+    }
+    if (!AtEnd() && IsWord(Current(), "ORDER")) {
+      Consume();
+      if (!RequireWord("BY", "catalog_select_order_by_required",
+                       "bounded catalog SELECT ORDER requires BY")) {
+        return FinishRefusal();
+      }
+      std::unordered_set<std::string> ordered_names;
+      while (true) {
+        if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+          Refuse("catalog_select_order_identifier_required",
+                 "bounded catalog ORDER BY requires a column identifier");
+          return FinishRefusal();
+        }
+        const Token& identifier_token = Consume();
+        if (!ordered_names.insert(identifier_token.text).second) {
+          Refuse("catalog_select_order_identifier_duplicate",
+                 "bounded catalog ORDER BY does not repeat a column identifier");
+          return FinishRefusal();
+        }
+
+        std::optional<std::uint32_t> source_expression_id;
+        for (const auto expression_id : projection_expression_ids) {
+          const auto& expression = document_.expressions[expression_id - 1];
+          if (expression.expression_kind ==
+                  NativeExpressionAstKind::kIdentifier &&
+              expression.spelling == identifier_token.text) {
+            source_expression_id = expression_id;
+            break;
+          }
+        }
+        if (!source_expression_id.has_value() &&
+            hidden_predicate_expression_id.has_value()) {
+          const auto& expression = document_.expressions[
+              *hidden_predicate_expression_id - 1];
+          if (expression.spelling == identifier_token.text) {
+            source_expression_id = *hidden_predicate_expression_id;
+          }
+        }
+        if (!source_expression_id.has_value()) {
+          NativeExpressionAstNode identifier;
+          identifier.expression_id = NextExpressionId();
+          identifier.expression_kind = NativeExpressionAstKind::kIdentifier;
+          identifier.spelling = identifier_token.text;
+          identifier.range = TokenSourceRange(identifier_token);
+          source_expression_id = identifier.expression_id;
+          const bool wildcard_projection =
+              projection_expression_ids.size() == 1 &&
+              document_.expressions[projection_expression_ids.front() - 1]
+                      .expression_kind == NativeExpressionAstKind::kWildcard;
+          if (!wildcard_projection) {
+            hidden_order_expression_ids.push_back(identifier.expression_id);
+          }
+          document_.expressions.push_back(std::move(identifier));
+        }
+
+        NativeOrderingAstTerm term;
+        term.expression_id = *source_expression_id;
+        term.direction = NativeSortDirection::kAscending;
+        term.null_placement = NativeNullPlacement::kNullsLast;
+        const Token* term_end = &identifier_token;
+        if (!AtEnd() &&
+            (IsWord(Current(), "ASC") || IsWord(Current(), "DESC"))) {
+          const Token& direction_token = Consume();
+          term.direction = IsWord(direction_token, "DESC")
+                               ? NativeSortDirection::kDescending
+                               : NativeSortDirection::kAscending;
+          term.null_placement =
+              term.direction == NativeSortDirection::kDescending
+                  ? NativeNullPlacement::kNullsFirst
+                  : NativeNullPlacement::kNullsLast;
+          term_end = &direction_token;
+        }
+        if (!AtEnd() && IsWord(Current(), "NULLS")) {
+          Consume();
+          if (AtEnd() ||
+              (!IsWord(Current(), "FIRST") && !IsWord(Current(), "LAST"))) {
+            Refuse("catalog_select_order_null_placement_required",
+                   "bounded catalog ORDER BY NULLS requires FIRST or LAST");
+            return FinishRefusal();
+          }
+          const Token& placement_token = Consume();
+          term.null_placement = IsWord(placement_token, "FIRST")
+                                    ? NativeNullPlacement::kNullsFirst
+                                    : NativeNullPlacement::kNullsLast;
+          term_end = &placement_token;
+        }
+        term.range = Span(identifier_token, *term_end);
+        query_end = term_end;
+        ordering_end = term_end;
+        ordering_terms.push_back(std::move(term));
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
     }
     if (!AtEnd() && IsWord(Current(), "LIMIT")) {
       Consume();
@@ -536,6 +633,9 @@ class NativeRelationalParser final {
       relation.output_expression_ids.push_back(
           *hidden_predicate_expression_id);
     }
+    relation.output_expression_ids.insert(
+        relation.output_expression_ids.end(), hidden_order_expression_ids.begin(),
+        hidden_order_expression_ids.end());
     relation.range = Span(select_token, *source_end);
     document_.catalog_relation_sources.push_back(std::move(source));
     document_.relations.push_back(std::move(relation));
@@ -555,16 +655,27 @@ class NativeRelationalParser final {
       document_.relations.push_back(std::move(filter));
       document_.root_relation_id = 2;
     }
-    if (hidden_predicate_expression_id.has_value()) {
+    if (!ordering_terms.empty()) {
+      NativeRelationAstNode sort;
+      sort.relation_id = document_.root_relation_id + 1;
+      sort.relation_kind = NativeRelationAstKind::kSort;
+      sort.input_relation_ids = {document_.root_relation_id};
+      sort.output_expression_ids =
+          document_.relations.front().output_expression_ids;
+      sort.ordering_terms = std::move(ordering_terms);
+      sort.range = Span(select_token, *ordering_end);
+      document_.relations.push_back(std::move(sort));
+      document_.root_relation_id = document_.relations.back().relation_id;
+    }
+    if (hidden_predicate_expression_id.has_value() ||
+        !hidden_order_expression_ids.empty()) {
       NativeRelationAstNode project;
       project.relation_id = document_.root_relation_id + 1;
       project.relation_kind = NativeRelationAstKind::kProject;
       project.input_relation_ids = {document_.root_relation_id};
       project.output_expression_ids = projection_expression_ids;
       project.range = Span(
-          select_token,
-          TokenForRangeEnd(
-              document_.expressions[*predicate_expression_id - 1].range));
+          select_token, *query_end);
       document_.relations.push_back(std::move(project));
       document_.root_relation_id = document_.relations.back().relation_id;
     }

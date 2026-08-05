@@ -8311,6 +8311,19 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
                         return ch >= '0' && ch <= '9';
                       })) {
         operand.name.erase(0, 5);
+      } else if (materialize_query_slots &&
+                 operand.type == "relational_property_v1" &&
+                 operand.name.rfind("property_", 0) == 0 &&
+                 operand.name.size() == 41 &&
+                 std::all_of(operand.name.begin() + 9, operand.name.end(),
+                             [](unsigned char ch) {
+                               return (ch >= '0' && ch <= '9') ||
+                                      (ch >= 'a' && ch <= 'f');
+                             })) {
+        const std::string hex = operand.name.substr(9);
+        operand.name = hex.substr(0, 8) + "-" + hex.substr(8, 4) + "-" +
+                       hex.substr(12, 4) + "-" + hex.substr(16, 4) + "-" +
+                       hex.substr(20, 12);
       }
     }
   }

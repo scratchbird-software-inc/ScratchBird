@@ -58,6 +58,17 @@ enum class NativeRelationAstKind {
   kCatalogSource,
   kLimit,
   kProject,
+  kSort,
+};
+
+enum class NativeSortDirection {
+  kAscending,
+  kDescending,
+};
+
+enum class NativeNullPlacement {
+  kNullsFirst,
+  kNullsLast,
 };
 
 enum class NativeRelationSourceAstKind {
@@ -164,6 +175,13 @@ struct NativeGroupingSetAstNode {
   SourceRange range;
 };
 
+struct NativeOrderingAstTerm {
+  std::uint32_t expression_id{0};
+  NativeSortDirection direction{NativeSortDirection::kAscending};
+  NativeNullPlacement null_placement{NativeNullPlacement::kNullsLast};
+  SourceRange range;
+};
+
 struct NativeRelationAstNode {
   std::uint32_t relation_id{0};
   NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
@@ -179,6 +197,7 @@ struct NativeRelationAstNode {
   std::vector<std::uint32_t> aggregate_expression_ids;
   std::vector<std::uint32_t> predicate_expression_ids;
   std::vector<std::uint32_t> limit_expression_ids;
+  std::vector<NativeOrderingAstTerm> ordering_terms;
   SourceRange range;
 };
 

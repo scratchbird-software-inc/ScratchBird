@@ -26,6 +26,7 @@ static_assert(
     static_cast<int>(sbsql::NativeRelationAstKind::kCatalogSource) == 3);
 static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kLimit) == 4);
 static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kProject) == 5);
+static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kSort) == 6);
 static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kLiteral) == 0);
 static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kParameter) == 1);
 static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kIdentifier) == 2);
@@ -489,6 +490,60 @@ bool ValidateCatalogProjectionComposition() {
   return passed;
 }
 
+bool ValidateCatalogOrderingComposition() {
+  constexpr std::string_view sql =
+      "SELECT amount FROM app.orders WHERE order_id >= 10 "
+      "ORDER BY order_id DESC NULLS LAST, amount ASC LIMIT 2;";
+  const auto native =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(sql));
+  bool passed = true;
+  passed &= Require(native.accepted() && native.root_relation_id == 5 &&
+                        native.relations.size() == 5,
+                    "catalog ORDER BY composition shape differs");
+  if (native.relations.size() == 5) {
+    const auto& sort = native.relations[2];
+    passed &= Require(
+        sort.relation_kind == sbsql::NativeRelationAstKind::kSort &&
+            sort.input_relation_ids == std::vector<std::uint32_t>({2}) &&
+            sort.output_expression_ids ==
+                std::vector<std::uint32_t>({1, 2}) &&
+            sort.ordering_terms.size() == 2 &&
+            sort.ordering_terms[0].expression_id == 2 &&
+            sort.ordering_terms[0].direction ==
+                sbsql::NativeSortDirection::kDescending &&
+            sort.ordering_terms[0].null_placement ==
+                sbsql::NativeNullPlacement::kNullsLast &&
+            sort.ordering_terms[1].expression_id == 1 &&
+            sort.ordering_terms[1].direction ==
+                sbsql::NativeSortDirection::kAscending &&
+            sort.ordering_terms[1].null_placement ==
+                sbsql::NativeNullPlacement::kNullsLast &&
+            native.relations[3].relation_kind ==
+                sbsql::NativeRelationAstKind::kProject &&
+            native.relations[3].input_relation_ids ==
+                std::vector<std::uint32_t>({3}) &&
+            native.relations[4].input_relation_ids ==
+                std::vector<std::uint32_t>({4}),
+        "catalog ORDER BY terms or hidden-key placement differ");
+  }
+
+  constexpr std::string_view wildcard_sql =
+      "SELECT * FROM app.orders ORDER BY order_id DESC;";
+  const auto wildcard =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(wildcard_sql));
+  passed &= Require(
+      wildcard.accepted() && wildcard.relations.size() == 2 &&
+          wildcard.relations[0].output_expression_ids ==
+              std::vector<std::uint32_t>({1}) &&
+          wildcard.relations[1].relation_kind ==
+              sbsql::NativeRelationAstKind::kSort &&
+          wildcard.relations[1].ordering_terms.size() == 1 &&
+          wildcard.relations[1].ordering_terms[0].null_placement ==
+              sbsql::NativeNullPlacement::kNullsFirst,
+      "catalog wildcard ORDER BY default null placement differs");
+  return passed;
+}
+
 bool ValidateCatalogRelationRefusal() {
   constexpr std::string_view malformed[] = {
       "SELECT * FROM;",
@@ -511,6 +566,10 @@ bool ValidateCatalogRelationRefusal() {
       "SELECT * FROM app.orders WHERE amount = 'ten';",
       "SELECT * FROM app.orders WHERE 10 < amount;",
       "SELECT * FROM app.orders WHERE amount > 1 AND amount < 3;",
+      "SELECT * FROM app.orders ORDER;",
+      "SELECT * FROM app.orders ORDER amount;",
+      "SELECT * FROM app.orders ORDER BY amount NULLS;",
+      "SELECT * FROM app.orders ORDER BY amount, amount;",
   };
 
   bool passed = true;
@@ -582,6 +641,7 @@ int main() {
   passed &= ValidateCatalogLimitComposition();
   passed &= ValidateCatalogFilterComposition();
   passed &= ValidateCatalogProjectionComposition();
+  passed &= ValidateCatalogOrderingComposition();
   passed &= ValidateCatalogRelationRefusal();
   passed &= ValidateFamilyBoundary();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;

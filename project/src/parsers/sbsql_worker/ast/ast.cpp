@@ -1436,6 +1436,7 @@ std::string NativeRelationAstKindName(NativeRelationAstKind kind) {
     case NativeRelationAstKind::kAggregate: return "aggregate";
     case NativeRelationAstKind::kFilter: return "filter";
     case NativeRelationAstKind::kProject: return "project";
+    case NativeRelationAstKind::kSort: return "sort";
     case NativeRelationAstKind::kLimit: return "limit";
   }
   return "unknown";

@@ -417,6 +417,14 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   auxiliary_column.descriptor.encoded_descriptor = "type=integer";
   auxiliary_column.nullable = true;
   table.table_columns.push_back(std::move(auxiliary_column));
+  api::EngineColumnDefinition nullable_order_column;
+  nullable_order_column.ordinal = 2;
+  nullable_order_column.names.push_back(PrimaryName("nullable_order_value"));
+  nullable_order_column.descriptor.descriptor_kind = "scalar";
+  nullable_order_column.descriptor.canonical_type_name = "integer";
+  nullable_order_column.descriptor.encoded_descriptor = "type=integer";
+  nullable_order_column.nullable = true;
+  table.table_columns.push_back(std::move(nullable_order_column));
   RequireEngineOk(api::EngineCreateTable(table),
                   "object-backed fixture table create failed");
 
@@ -436,9 +444,21 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     auxiliary_typed.descriptor.canonical_type_name = "integer";
     auxiliary_typed.descriptor.encoded_descriptor = "type=integer";
     auxiliary_typed.encoded_value = std::to_string(100 + value);
+    api::EngineTypedValue nullable_order_typed;
+    nullable_order_typed.descriptor.descriptor_kind = "scalar";
+    nullable_order_typed.descriptor.canonical_type_name = "integer";
+    nullable_order_typed.descriptor.encoded_descriptor = "type=integer";
+    if (value == 2) {
+      nullable_order_typed.is_null = true;
+      nullable_order_typed.state = api::EngineValueState::sql_null;
+    } else {
+      nullable_order_typed.encoded_value = value == 1 ? "20" : "10";
+    }
     api::EngineRowValue row;
     row.fields.push_back({"integer_value", std::move(typed)});
     row.fields.push_back({"auxiliary_value", std::move(auxiliary_typed)});
+    row.fields.push_back(
+        {"nullable_order_value", std::move(nullable_order_typed)});
     insert.input_rows.push_back(std::move(row));
   }
   insert.estimated_row_count = insert.input_rows.size();
@@ -673,6 +693,94 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
                     "auxiliary_value") == std::string::npos,
             "object-backed hidden predicate/project/LIMIT chain leaked its "
             "dependency column");
+
+    auto ordered_limit = parser.RunPipeline(
+        "SELECT * FROM qow_packet7.qow_packet7_relation ORDER BY "
+        "integer_value DESC NULLS LAST LIMIT 1;",
+        true);
+    if (!ordered_limit.accepted) PrintMessages(ordered_limit.messages);
+    Require(ordered_limit.accepted &&
+                ordered_limit.server_operation_id == "query.execute" &&
+                ordered_limit.server_cursor_uuid.empty() &&
+                ordered_limit.server_row_count == 1 &&
+                ordered_limit.server_result_payload.find("integer_value=3") !=
+                    std::string::npos,
+            "object-backed ORDER BY/LIMIT did not complete the canonical live "
+            "route");
+
+    auto hidden_order = parser.RunPipeline(
+        "SELECT integer_value FROM qow_packet7.qow_packet7_relation ORDER BY "
+        "auxiliary_value DESC NULLS LAST LIMIT 1;",
+        true);
+    if (!hidden_order.accepted) PrintMessages(hidden_order.messages);
+    Require(hidden_order.accepted &&
+                hidden_order.server_operation_id == "query.execute" &&
+                hidden_order.server_cursor_uuid.empty() &&
+                hidden_order.server_row_count == 1 &&
+                hidden_order.server_result_payload.find("integer_value") !=
+                    std::string::npos &&
+                hidden_order.server_result_payload.find("integer_value=3") !=
+                    std::string::npos &&
+                hidden_order.server_result_payload.find("auxiliary_value") ==
+                    std::string::npos,
+            "object-backed hidden ORDER BY key leaked through its canonical "
+            "projection");
+
+    auto nulls_first = parser.RunPipeline(
+        "SELECT integer_value FROM qow_packet7.qow_packet7_relation ORDER BY "
+        "nullable_order_value ASC NULLS FIRST LIMIT 1;",
+        true);
+    if (!nulls_first.accepted) PrintMessages(nulls_first.messages);
+    Require(nulls_first.accepted && nulls_first.server_row_count == 1 &&
+                nulls_first.server_result_payload.find("integer_value=2") !=
+                    std::string::npos &&
+                nulls_first.server_result_payload.find(
+                    "nullable_order_value") == std::string::npos,
+            "object-backed NULLS FIRST ordering did not select the null-key "
+            "row without leaking the hidden key");
+
+    auto nulls_last = parser.RunPipeline(
+        "SELECT integer_value FROM qow_packet7.qow_packet7_relation ORDER BY "
+        "nullable_order_value ASC NULLS LAST LIMIT 1;",
+        true);
+    if (!nulls_last.accepted) PrintMessages(nulls_last.messages);
+    Require(nulls_last.accepted && nulls_last.server_row_count == 1 &&
+                nulls_last.server_result_payload.find("integer_value=3") !=
+                    std::string::npos &&
+                nulls_last.server_result_payload.find(
+                    "nullable_order_value") == std::string::npos,
+            "object-backed NULLS LAST ordering did not select the lowest "
+            "non-null hidden key");
+
+    auto filtered_order = parser.RunPipeline(
+        "SELECT integer_value FROM qow_packet7.qow_packet7_relation WHERE "
+        "auxiliary_value >= 101 ORDER BY auxiliary_value DESC NULLS LAST, "
+        "integer_value ASC NULLS FIRST LIMIT 2;",
+        true);
+    if (!filtered_order.accepted) PrintMessages(filtered_order.messages);
+    const auto ordered_three =
+        filtered_order.server_result_payload.find("integer_value=3");
+    const auto ordered_two =
+        filtered_order.server_result_payload.find("integer_value=2");
+    Require(filtered_order.accepted &&
+                filtered_order.server_operation_id == "query.execute" &&
+                filtered_order.server_cursor_uuid.empty() &&
+                filtered_order.server_row_count == 2 &&
+                ordered_three != std::string::npos &&
+                ordered_two != std::string::npos && ordered_three < ordered_two &&
+                filtered_order.server_result_payload.find("integer_value") !=
+                    std::string::npos &&
+                filtered_order.server_result_payload.find("auxiliary_value") ==
+                    std::string::npos,
+            "object-backed WHERE/ORDER BY/hidden PROJECT/LIMIT chain did not "
+            "complete the canonical live route");
+
+    auto missing_order = parser.RunPipeline(
+        "SELECT integer_value FROM qow_packet7.qow_packet7_relation ORDER BY "
+        "missing_value;",
+        true);
+    Require(!missing_order.accepted && missing_order.server_operation_id.empty(),
+            "object-backed ORDER BY admitted an unresolved source column");
 
     auto missing_projection = parser.RunPipeline(
         "SELECT missing_value FROM qow_packet7.qow_packet7_relation;", true);

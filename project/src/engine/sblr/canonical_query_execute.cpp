@@ -7169,6 +7169,103 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
   return registration;
 }
 
+exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
+    std::vector<plan::CanonicalLogicalPropertyOrderingTerm> logical_terms,
+    std::vector<std::size_t> source_columns,
+    std::string deterministic_tie_evidence_uuid,
+    std::string capability_uuid,
+    const std::size_t maximum_input_row_count,
+    const std::size_t maximum_pair_comparisons,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kSort;
+  registration.implementation_id = "sort.typed.terms.v1";
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [logical_terms = std::move(logical_terms),
+       source_columns = std::move(source_columns),
+       deterministic_tie_evidence_uuid =
+           std::move(deterministic_tie_evidence_uuid),
+       maximum_input_row_count, maximum_pair_comparisons,
+       mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count ||
+            logical_terms.empty() ||
+            logical_terms.size() != source_columns.size()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-INPUT-V1";
+          step.diagnostic.detail =
+              "object-backed SORT did not receive its bounded typed input batch";
+          return step;
+        }
+        const auto& input_batch = *inputs.front().materialized_output_batch;
+        std::vector<exec::CanonicalDescriptorOrderTerm> order_terms;
+        order_terms.reserve(logical_terms.size());
+        for (std::size_t ordinal = 0; ordinal < logical_terms.size(); ++ordinal) {
+          if (source_columns[ordinal] >= input_batch.columns.size()) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-BINDING-V1";
+            step.diagnostic.detail =
+                "object-backed SORT source column is outside the input width";
+            return step;
+          }
+          exec::CanonicalDescriptorOrderTerm term;
+          std::string detail;
+          if (!PrepareCanonicalSortOrderTerm(
+                  mga_context, logical_terms[ordinal],
+                  input_batch.columns[source_columns[ordinal]],
+                  source_columns[ordinal], &term, &detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-BINDING-V1";
+            step.diagnostic.detail = std::move(detail);
+            return step;
+          }
+          order_terms.push_back(std::move(term));
+        }
+        exec::CanonicalDescriptorSortRequest sort_request;
+        sort_request.physical_dag = dag;
+        sort_request.selected_physical_node_id = node.physical_node_id;
+        sort_request.input_batch = input_batch;
+        sort_request.order_terms = std::move(order_terms);
+        sort_request.deterministic_tie_evidence_uuid =
+            deterministic_tie_evidence_uuid;
+        sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
+        sort_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        const auto sorted = exec::ExecuteCanonicalDescriptorSort(sort_request);
+        if (!sorted.diagnostic.ok) {
+          step.diagnostic = sorted.diagnostic;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = input_batch.rows.size();
+        step.output_row_count = sorted.output_batch.rows.size();
+        step.materialized_output_batch = sorted.output_batch;
+        step.mga_statement_context = sorted.mga_statement_context;
+        return step;
+      };
+  return registration;
+}
+
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveExpressionSortRegistration(
     std::vector<exec::CanonicalDescriptorOrderTerm> order_terms,
@@ -20137,34 +20234,48 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kProject;
       });
+  const auto sort_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.node_kind == api::RelationalDagNodeKind::kSort;
+      });
   const auto limit_node = std::ranges::find_if(
       dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kLimit;
       });
   const bool filter_composition = filter_node != dag.nodes.end();
   const bool project_composition = project_node != dag.nodes.end();
+  const bool sort_composition = sort_node != dag.nodes.end();
   const bool limit_composition = limit_node != dag.nodes.end();
   const auto expected_root =
       limit_composition
           ? limit_node->node_id
           : (project_composition
                  ? project_node->node_id
-                 : (filter_composition
-                        ? filter_node->node_id
-                        : (scan_node == dag.nodes.end() ? 0
-                                                        : scan_node->node_id)));
+                 : (sort_composition
+                        ? sort_node->node_id
+                        : (filter_composition
+                               ? filter_node->node_id
+                               : (scan_node == dag.nodes.end()
+                                      ? 0
+                                      : scan_node->node_id))));
   const auto expected_project_input =
-      filter_composition ? filter_node->node_id : 0;
+      sort_composition
+          ? sort_node->node_id
+          : (filter_composition ? filter_node->node_id : 0);
   const auto expected_limit_input =
       project_composition
           ? project_node->node_id
-          : (filter_composition
-                 ? filter_node->node_id
-                 : (scan_node == dag.nodes.end() ? 0 : scan_node->node_id));
+          : (sort_composition
+                 ? sort_node->node_id
+                 : (filter_composition
+                        ? filter_node->node_id
+                        : (scan_node == dag.nodes.end() ? 0
+                                                       : scan_node->node_id)));
   const bool exact_composition =
       scan_node != dag.nodes.end() &&
       dag.nodes.size() ==
           1 + static_cast<std::size_t>(filter_composition) +
+              static_cast<std::size_t>(sort_composition) +
               static_cast<std::size_t>(project_composition) +
               static_cast<std::size_t>(limit_composition) &&
       dag.root_node_id == expected_root &&
@@ -20172,9 +20283,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
        filter_node->input_node_ids ==
            std::vector<std::uint32_t>{scan_node->node_id}) &&
       (!project_composition ||
-       (filter_composition &&
-        project_node->input_node_ids ==
-            std::vector<std::uint32_t>{expected_project_input})) &&
+       project_node->input_node_ids ==
+           std::vector<std::uint32_t>{expected_project_input}) &&
+      (!sort_composition ||
+       sort_node->input_node_ids ==
+           std::vector<std::uint32_t>{
+               filter_composition ? filter_node->node_id
+                                  : scan_node->node_id}) &&
       (!limit_composition ||
        limit_node->input_node_ids ==
            std::vector<std::uint32_t>{expected_limit_input});
@@ -20279,19 +20394,77 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          "canonical.heap.filter.catalog-column-numeric-comparison.v1",
          1, 1024, 1, 1});
   }
+  std::vector<plan::CanonicalLogicalPropertyOrderingTerm> heap_order_terms;
+  std::vector<std::size_t> heap_order_columns;
+  std::string sort_capability_uuid;
+  std::string ordering_property_uuid;
+  if (sort_composition) {
+    const auto& properties = admission.request.logical_properties.properties;
+    const auto property = std::ranges::find_if(
+        properties, [&](const auto& candidate) {
+          return sort_node->required_property_uuids.size() == 1 &&
+                 candidate.property_uuid ==
+                     sort_node->required_property_uuids.front();
+        });
+    if (sort_node->semantic_variant_id != "sort.required-order.v1" ||
+        sort_node->bound_expression_ids.empty() ||
+        sort_node->output_descriptor_ids != scan_node->output_descriptor_ids ||
+        property == properties.end() ||
+        property->property_kind !=
+            plan::CanonicalLogicalPropertyKind::kOrdering ||
+        property->origin_logical_node_id != sort_node->node_id ||
+        property->ordering_terms.size() !=
+            sort_node->bound_expression_ids.size()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-V1",
+                    "object-backed ORDER BY property is not exact");
+    }
+    for (const auto& term : property->ordering_terms) {
+      const auto expression = std::ranges::find_if(
+          dag.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == term.expression_id;
+          });
+      if (expression == dag.expressions.end() ||
+          std::ranges::find(sort_node->bound_expression_ids,
+                            term.expression_id) ==
+              sort_node->bound_expression_ids.end()) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-V1",
+                      "object-backed ORDER BY expression is unbound");
+      }
+      const auto descriptor = std::ranges::find(
+          scan_node->output_descriptor_ids,
+          expression->result_descriptor_id);
+      if (descriptor == scan_node->output_descriptor_ids.end()) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-V1",
+                      "object-backed ORDER BY descriptor is not in the source width");
+      }
+      heap_order_columns.push_back(static_cast<std::size_t>(std::distance(
+          scan_node->output_descriptor_ids.begin(), descriptor)));
+      heap_order_terms.push_back(term);
+    }
+    ordering_property_uuid = property->property_uuid;
+    sort_capability_uuid =
+        DerivedCanonicalUuid(identity_scope, "heap-sort.capability");
+    profiles.push_back(
+        {sort_node->node_id, "sort.typed.terms.v1", sort_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kSort,
+         exec::PhysicalNodeKind::kSort,
+         "canonical.heap.sort.required-order.v1", 1, 1024, 1, 1, {},
+         {ordering_property_uuid},
+         {plan::CanonicalLogicalPropertyKind::kOrdering}});
+  }
   std::vector<std::size_t> projected_columns;
   std::string project_capability_uuid;
   if (project_composition) {
     std::unordered_set<std::size_t> projected_source_ordinals;
     for (const auto descriptor_id : project_node->output_descriptor_ids) {
       const auto source_descriptor = std::ranges::find(
-          filter_node->output_descriptor_ids, descriptor_id);
-      if (source_descriptor == filter_node->output_descriptor_ids.end()) {
+          scan_node->output_descriptor_ids, descriptor_id);
+      if (source_descriptor == scan_node->output_descriptor_ids.end()) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-V1",
-                      "object-backed PROJECT output is not supplied by FILTER");
+                      "object-backed PROJECT output is not supplied by its source");
       }
       const auto source_ordinal = static_cast<std::size_t>(std::distance(
-          filter_node->output_descriptor_ids.begin(), source_descriptor));
+          scan_node->output_descriptor_ids.begin(), source_descriptor));
       if (!projected_source_ordinals.insert(source_ordinal).second) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-V1",
                       "object-backed PROJECT repeats a source column");
@@ -20304,7 +20477,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             projected_columns.size() ||
         projected_columns.empty() ||
         projected_columns.size() >=
-            filter_node->output_descriptor_ids.size()) {
+            scan_node->output_descriptor_ids.size()) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-V1",
                     "object-backed hidden-column PROJECT binding is not exact");
     }
@@ -20361,15 +20534,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
           ? "heap-limit.selected-plan"
           : (project_composition
                  ? "heap-project.selected-plan"
-                 : (filter_composition ? "heap-filter.selected-plan"
-                                       : "heap-scan.selected-plan")),
+                 : (sort_composition
+                        ? "heap-sort.selected-plan"
+                        : (filter_composition ? "heap-filter.selected-plan"
+                                              : "heap-scan.selected-plan"))),
       limit_composition
           ? "object-backed heap LIMIT composition"
           : (project_composition
                  ? "object-backed heap hidden-column PROJECT composition"
-                 : (filter_composition
-                        ? "object-backed heap WHERE composition"
-                        : "object-backed heap scan")));
+                 : (sort_composition
+                        ? "object-backed heap ORDER BY composition"
+                        : (filter_composition
+                               ? "object-backed heap WHERE composition"
+                               : "object-backed heap scan"))));
   if (!physical.ok) {
     return refuse(
         physical.diagnostic_id.empty()
@@ -20396,15 +20573,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   const std::size_t maximum_output_rows =
       bounded_size(input.context.optimizer_maximum_candidate_count);
   const std::size_t maximum_output_columns = dag.outputs.size();
+  std::uint64_t maximum_pair_comparisons_u64 = 0;
   if (maximum_scanned_row_versions == 0 || maximum_decoded_bytes == 0 ||
       maximum_output_rows == 0 || maximum_output_columns == 0 ||
       maximum_output_rows >
-          std::numeric_limits<std::size_t>::max() / maximum_output_columns) {
+          std::numeric_limits<std::size_t>::max() / maximum_output_columns ||
+      (sort_composition &&
+       !CheckedMultiply(maximum_output_rows, maximum_output_rows,
+                        &maximum_pair_comparisons_u64))) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                   "object-backed heap execution bounds are absent or overflow");
   }
 
-  if (filter_composition || project_composition || limit_composition) {
+  if (filter_composition || sort_composition || project_composition ||
+      limit_composition) {
     exec::CanonicalHeapPhysicalDagDispatchRequest heap_request;
     heap_request.context = &input.context;
     heap_request.relational_dag = &input.relational_dag;
@@ -20439,7 +20621,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             ? &*limit_node
             : (project_composition
                    ? &*project_node
-                   : (filter_composition ? &*filter_node : &*scan_node));
+                   : (sort_composition
+                          ? &*sort_node
+                          : (filter_composition ? &*filter_node : &*scan_node)));
     for (const auto& output : dag.outputs) {
       if (output.relation_node_id == publication_node->node_id) {
         ordered_outputs.push_back(&output);
@@ -20467,6 +20651,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
               input.relational_dag, {}, filter_capability_uuid,
               maximum_output_rows, input.context));
     }
+    if (sort_composition) {
+      selected.available_executors.push_back(
+          MakeLiveHeapSortRegistration(
+              heap_order_terms, heap_order_columns,
+              DerivedCanonicalUuid(identity_scope + ":" + ordering_property_uuid,
+                                   "heap-sort.deterministic-tie"),
+              sort_capability_uuid, maximum_output_rows,
+              std::max<std::size_t>(
+                  1, static_cast<std::size_t>(maximum_pair_comparisons_u64)),
+              input.context));
+    }
     if (project_composition) {
       selected.available_executors.push_back(
           MakeLiveHeapProjectRegistration(
@@ -20487,8 +20682,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             identity_scope + ":" + input.context.current_monotonic_ns,
             limit_composition
                 ? "heap-limit.execution-attempt"
-                : (project_composition ? "heap-project.execution-attempt"
-                                       : "heap-filter.execution-attempt"));
+                : (project_composition
+                       ? "heap-project.execution-attempt"
+                       : (sort_composition ? "heap-sort.execution-attempt"
+                                           : "heap-filter.execution-attempt")));
     selected.result_publication_request.transaction_effect_evidence_uuid =
         DerivedCanonicalUuid(
             identity_scope + ":" +
@@ -20500,7 +20697,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                 ? "heap-limit.transaction-effect-unchanged"
                 : (project_composition
                        ? "heap-project.transaction-effect-unchanged"
-                       : "heap-filter.transaction-effect-unchanged"));
+                       : (sort_composition
+                              ? "heap-sort.transaction-effect-unchanged"
+                              : "heap-filter.transaction-effect-unchanged")));
     selected.result_publication_request.result_kind =
         exec::CanonicalResultKind::kRows;
     selected.result_publication_request.invocation_mode =
@@ -20544,14 +20743,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                      ? "QOW-DIAG-PACKET7-OBJECT-HEAP-LIMIT-EXECUTION-V1"
                      : (project_composition
                             ? "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-EXECUTION-V1"
-                            : "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1"))
+                            : (sort_composition
+                                   ? "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-EXECUTION-V1"
+                                   : "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1")))
               : execution.issues.front().diagnostic_id,
           execution.issues.empty()
               ? (limit_composition
                      ? "object-backed heap LIMIT selected DAG was not completed"
                      : (project_composition
                             ? "object-backed heap PROJECT selected DAG was not completed"
-                            : "object-backed heap WHERE selected DAG was not completed"))
+                            : (sort_composition
+                                   ? "object-backed heap ORDER BY selected DAG was not completed"
+                                   : "object-backed heap WHERE selected DAG was not completed")))
               : execution.issues.front().field_id);
     }
     result.physical_dag_executed = true;

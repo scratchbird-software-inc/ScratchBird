@@ -32924,13 +32924,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     return envelope;
   }
   const bool catalog_source_candidate =
-      native.relations.size() <= 4 &&
+      native.relations.size() <= 5 &&
       std::ranges::any_of(native.relations, [](const auto& relation) {
         return relation.relation_kind ==
                NativeRelationAstKind::kCatalogSource;
       });
   if (native.root_relation_id == 0 || native.relations.empty() ||
-      native.relations.size() > 4 ||
+      native.relations.size() > 5 ||
       native.descriptors.empty() || native.expressions.empty() ||
       native.outputs.empty() ||
       (!catalog_source_candidate && native.values_rows.empty()) ||
@@ -32952,9 +32952,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const BoundRelationAstRecord* catalog_filter_relation = nullptr;
   const BoundRelationAstRecord* catalog_relation = nullptr;
   const BoundRelationAstRecord* catalog_project_relation = nullptr;
+  const BoundRelationAstRecord* catalog_sort_relation = nullptr;
   const BoundRelationAstRecord* limit_relation = nullptr;
   for (const auto& relation : native.relations) {
     if (relation.relation_id == 0 || relation.lateral ||
+        (relation.relation_kind != NativeRelationAstKind::kSort &&
+         !relation.ordering_terms.empty()) ||
         (relation.relation_kind == NativeRelationAstKind::kCatalogSource) !=
             relation.bound_object_uuid.has_value() ||
         relation.semantic_variant_id.empty() ||
@@ -33111,17 +33114,21 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           std::ranges::all_of(
               relation.output_expression_ids, [&](const auto expression_id) {
                 return projected_expression_ids.insert(expression_id).second &&
-                       catalog_filter_relation != nullptr &&
+                       catalog_relation != nullptr &&
                        std::ranges::find(
-                           catalog_filter_relation->output_expression_ids,
+                           catalog_relation->output_expression_ids,
                            expression_id) !=
-                           catalog_filter_relation->output_expression_ids.end();
+                           catalog_relation->output_expression_ids.end();
               });
+      const auto* project_input_relation =
+          catalog_sort_relation != nullptr
+              ? catalog_sort_relation
+              : (catalog_filter_relation != nullptr ? catalog_filter_relation
+                                                    : catalog_relation);
       if (catalog_project_relation != nullptr ||
-          catalog_filter_relation == nullptr ||
+          project_input_relation == nullptr ||
           relation.input_relation_ids !=
-              std::vector<std::uint32_t>{
-                  catalog_filter_relation->relation_id} ||
+              std::vector<std::uint32_t>{project_input_relation->relation_id} ||
           !relation.values_row_ids.empty() ||
           relation.output_expression_ids.empty() || !exact_projection ||
           relation.aggregate_grouping_form !=
@@ -33132,6 +33139,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           !relation.aggregate_expression_ids.empty() ||
           !relation.predicate_expression_ids.empty() ||
           !relation.limit_expression_ids.empty() ||
+          !relation.ordering_terms.empty() ||
           relation.bound_expression_ids != relation.output_expression_ids ||
           relation.semantic_variant_id !=
               "project.catalog-visible-columns.v1") {
@@ -33141,6 +33149,45 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       catalog_project_relation = &relation;
+    } else if (relation.relation_kind == NativeRelationAstKind::kSort) {
+      const auto* sort_input_relation =
+          catalog_filter_relation != nullptr ? catalog_filter_relation
+                                             : catalog_relation;
+      std::unordered_set<std::uint32_t> ordering_expression_ids;
+      const bool exact_ordering = std::ranges::all_of(
+          relation.ordering_terms, [&](const auto& term) {
+            return term.expression_id != 0 &&
+                   ordering_expression_ids.insert(term.expression_id).second &&
+                   std::ranges::find(relation.bound_expression_ids,
+                                     term.expression_id) !=
+                       relation.bound_expression_ids.end();
+          });
+      if (catalog_sort_relation != nullptr || sort_input_relation == nullptr ||
+          relation.input_relation_ids !=
+              std::vector<std::uint32_t>{sort_input_relation->relation_id} ||
+          relation.output_expression_ids !=
+              catalog_relation->output_expression_ids ||
+          relation.output_expression_ids !=
+              sort_input_relation->output_expression_ids ||
+          relation.ordering_terms.empty() || !exact_ordering ||
+          relation.ordering_terms.size() !=
+              relation.bound_expression_ids.size() ||
+          !relation.values_row_ids.empty() ||
+          relation.aggregate_grouping_form !=
+              NativeAggregateGroupingForm::kNone ||
+          relation.aggregate_projection_form !=
+              NativeAggregateProjectionForm::kNone ||
+          !relation.grouping_key_expression_ids.empty() ||
+          !relation.aggregate_expression_ids.empty() ||
+          !relation.predicate_expression_ids.empty() ||
+          !relation.limit_expression_ids.empty() ||
+          relation.semantic_variant_id != "sort.required-order.v1") {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed catalog ORDER BY fields are outside the bounded profile");
+        return envelope;
+      }
+      catalog_sort_relation = &relation;
     } else if (relation.relation_kind ==
                NativeRelationAstKind::kCatalogSource) {
       if (catalog_relation != nullptr || !relation.input_relation_ids.empty() ||
@@ -33153,6 +33200,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           !relation.aggregate_expression_ids.empty() ||
           !relation.predicate_expression_ids.empty() ||
           !relation.limit_expression_ids.empty() ||
+          !relation.ordering_terms.empty() ||
           relation.output_expression_ids.empty() ||
           relation.bound_expression_ids != relation.output_expression_ids ||
           relation.semantic_variant_id != "catalog.relation-source.v1") {
@@ -33172,8 +33220,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const auto limit_input_relation =
           catalog_project_relation != nullptr
               ? catalog_project_relation
-              : (catalog_filter_relation != nullptr ? catalog_filter_relation
-                                                    : catalog_relation);
+              : (catalog_sort_relation != nullptr
+                     ? catalog_sort_relation
+                     : (catalog_filter_relation != nullptr
+                            ? catalog_filter_relation
+                            : catalog_relation));
       if (limit_relation != nullptr ||
           relation.relation_id != native.root_relation_id ||
           relation.input_relation_ids !=
@@ -33188,6 +33239,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           !relation.grouping_key_expression_ids.empty() ||
           !relation.aggregate_expression_ids.empty() ||
           !relation.predicate_expression_ids.empty() ||
+          !relation.ordering_terms.empty() ||
           (relation.limit_expression_ids.size() != 1 &&
            relation.limit_expression_ids.size() != 2) ||
           relation.bound_expression_ids != relation.limit_expression_ids ||
@@ -33208,19 +33260,23 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       catalog_relation != nullptr && values_relation == nullptr &&
       aggregate_relation == nullptr && filter_relation == nullptr &&
       (catalog_project_relation == nullptr ||
-       catalog_filter_relation != nullptr) &&
+       (catalog_sort_relation != nullptr ||
+        catalog_filter_relation != nullptr)) &&
       native.relations.size() ==
           1 + static_cast<std::size_t>(catalog_filter_relation != nullptr) +
               static_cast<std::size_t>(catalog_project_relation != nullptr) +
+              static_cast<std::size_t>(catalog_sort_relation != nullptr) +
               static_cast<std::size_t>(limit_relation != nullptr) &&
       native.root_relation_id ==
           (limit_relation != nullptr
                ? limit_relation->relation_id
                : (catalog_project_relation != nullptr
                       ? catalog_project_relation->relation_id
-                      : (catalog_filter_relation != nullptr
-                             ? catalog_filter_relation->relation_id
-                             : catalog_relation->relation_id))) &&
+                      : (catalog_sort_relation != nullptr
+                             ? catalog_sort_relation->relation_id
+                             : (catalog_filter_relation != nullptr
+                                    ? catalog_filter_relation->relation_id
+                                    : catalog_relation->relation_id)))) &&
       native.values_rows.empty() && native.grouping_sets.empty();
   const bool values_graph_is_exact =
       catalog_relation == nullptr && limit_relation == nullptr &&
@@ -33627,6 +33683,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     } else if (catalog_project_relation != nullptr) {
       visible_outputs =
           &outputs_by_relation.at(catalog_project_relation->relation_id);
+    } else if (catalog_sort_relation != nullptr) {
+      visible_outputs =
+          &outputs_by_relation.at(catalog_sort_relation->relation_id);
     } else if (catalog_filter_relation != nullptr) {
       visible_outputs =
           &outputs_by_relation.at(catalog_filter_relation->relation_id);
@@ -33640,6 +33699,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const auto visible_width = visible_outputs->size();
     const auto expected_output_count =
         width + (catalog_filter_relation != nullptr ? width : 0) +
+        (catalog_sort_relation != nullptr ? width : 0) +
         (catalog_project_relation != nullptr
              ? catalog_project_relation->output_expression_ids.size()
              : 0) +
@@ -33764,6 +33824,23 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
             "typed catalog WHERE boolean descriptor is incomplete");
         return envelope;
+      }
+    }
+    if (catalog_sort_relation != nullptr) {
+      for (const auto& term : catalog_sort_relation->ordering_terms) {
+        const auto expression = expressions_by_id.find(term.expression_id);
+        if (expression == expressions_by_id.end() ||
+            expression->second->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            !expression->second->bound_name_uuid.has_value() ||
+            std::ranges::find(catalog_relation->output_expression_ids,
+                              term.expression_id) ==
+                catalog_relation->output_expression_ids.end()) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+              "typed catalog ORDER BY expression is not a bound source column");
+          return envelope;
+        }
       }
     }
     for (std::size_t relation_ordinal = 1;
@@ -35060,6 +35137,38 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          std::to_string(grouping_set.relation_id) + "|" +
              JoinCanonicalHandleList(grouping_set.expression_ids)});
   }
+  constexpr std::string_view kCatalogOrderingPropertyUuid =
+      "019f0000-0000-7200-8000-00000000c701";
+  std::string encoded_catalog_ordering_terms;
+  if (catalog_sort_relation != nullptr) {
+    for (std::size_t ordinal = 0;
+         ordinal < catalog_sort_relation->ordering_terms.size(); ++ordinal) {
+      const auto& term = catalog_sort_relation->ordering_terms[ordinal];
+      const auto expression = expressions_by_id.at(term.expression_id);
+      const auto descriptor = std::ranges::find_if(
+          native.descriptors, [&](const auto& candidate) {
+            return candidate.descriptor_id ==
+                   expression->result_descriptor_id;
+          });
+      if (ordinal != 0) encoded_catalog_ordering_terms.push_back(',');
+      encoded_catalog_ordering_terms +=
+                       std::to_string(term.expression_id) + ":" +
+                       std::to_string(
+                           term.direction == NativeSortDirection::kAscending
+                               ? 1
+                               : 2) +
+                       ":" +
+                       std::to_string(
+                           term.null_placement ==
+                                   NativeNullPlacement::kNullsFirst
+                               ? 1
+                               : 2) +
+                       ":" +
+                       (descriptor->collation_uuid.has_value()
+                            ? *descriptor->collation_uuid
+                            : "-");
+    }
+  }
   for (const auto& relation : native.relations) {
     std::vector<std::uint32_t> output_descriptor_ids;
     for (const auto* output : outputs_by_relation.at(relation.relation_id)) {
@@ -35079,7 +35188,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                  : (relation.relation_kind ==
                                             NativeRelationAstKind::kProject
                                         ? 3
-                                        : 2))));
+                                        : (relation.relation_kind ==
+                                                   NativeRelationAstKind::kSort
+                                               ? 6
+                                               : 2)))));
     envelope.operands.push_back(
         {"relational_node_v1", std::to_string(relation.relation_id),
          std::to_string(node_kind) + "|0|" +
@@ -35098,7 +35210,20 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              (relation.bound_object_uuid.has_value()
                   ? *relation.bound_object_uuid
                   : "-") +
-             "|-|-"});
+             "|" +
+             (relation.relation_kind == NativeRelationAstKind::kSort
+                  ? std::string(kCatalogOrderingPropertyUuid)
+                  : "-") +
+             "|" +
+             (relation.relation_kind == NativeRelationAstKind::kSort
+                  ? std::string(kCatalogOrderingPropertyUuid)
+                  : "-")});
+  }
+  if (catalog_sort_relation != nullptr) {
+    envelope.operands.push_back(
+        {"relational_property_v1", std::string(kCatalogOrderingPropertyUuid),
+         "1|" + std::to_string(catalog_sort_relation->relation_id) + "|-|" +
+             encoded_catalog_ordering_terms + "|-|-"});
   }
   envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
   return envelope;
