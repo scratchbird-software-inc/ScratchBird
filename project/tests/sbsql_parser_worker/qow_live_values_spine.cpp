@@ -727,6 +727,55 @@ sblr::SblrOperationEnvelope ProjectedExpressionSortValuesEnvelope() {
   return envelope;
 }
 
+// RCP-035-TEST-LIVE-FILTER-PROJECT-COMPOSITION-V1
+sblr::SblrOperationEnvelope FilteredExpressionProjectValuesEnvelope() {
+  auto envelope = RowDependentProjectValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-000000008a00";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "3";
+    } else if (operand.type == "relational_output_v1" &&
+               operand.value.starts_with("2|")) {
+      operand.value[0] = '3';
+      if (operand.name == "3") {
+        operand.value = "3|5|3|1|0|736166655f71756f7469656e74";
+      }
+    } else if (operand.type == "relational_expression_v1" &&
+               operand.name == "5") {
+      operand.value = "6|7,14|3|-|-|-|2f|-";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "2") {
+      operand.name = "3";
+      operand.value = "3|0|2|3,2|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "2") {
+      operand.name = "3";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-000000008a01|"
+       "019f0000-0000-7400-8000-000000008a02|2|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "11", "6|12,13|4|-|-|-|3e|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "12",
+       "3|-|1|-|019f0000-0000-7500-8000-000000008a03|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "13", "1|-|1|-|-|1|-|31"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "14", "6|6,13|1|-|-|-|2d|-"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "2", "2|0|1|1,2|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "2",
+       "66696c7465722e77686572652e7631|11|-|-|-"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope LimitValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.limit");
@@ -4016,7 +4065,7 @@ bool ValidateGeneralSelectExecutionBoundary() {
   };
 
   bool passed = true;
-  const std::array<sblr::SblrOperationEnvelope, 10> live_shapes{
+  const std::array<sblr::SblrOperationEnvelope, 11> live_shapes{
       ValuesEnvelope(),
       FilterValuesEnvelope(),
       ProjectValuesEnvelope(),
@@ -4027,6 +4076,7 @@ bool ValidateGeneralSelectExecutionBoundary() {
       InnerJoinValuesEnvelope(),
       DistinctSortLimitValuesEnvelope(false),
       ProjectedExpressionSortValuesEnvelope(),
+      FilteredExpressionProjectValuesEnvelope(),
   };
   for (std::size_t shape = 0; shape < live_shapes.size(); ++shape) {
     const auto& envelope = live_shapes[shape];
@@ -5114,6 +5164,86 @@ bool ValidateProjectedExpressionSortCompositionSpine() {
               exhausted_result,
               "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
       "source-only or resource-exhausted PROJECT/SORT published evidence");
+  return passed;
+}
+
+// RCP-035-TEST-LIVE-FILTER-PROJECT-COMPOSITION-V1
+bool ValidateFilteredExpressionProjectCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 3 &&
+           result.physical_node_count == 3 &&
+           result.canonical_result_column_count == 2 &&
+           result.canonical_result_row_count == 2 &&
+           result.api_result.result_shape.columns.size() == 2 &&
+           result.api_result.result_shape.rows.size() == 2;
+  };
+
+  const auto projected = dispatch(FilteredExpressionProjectValuesEnvelope());
+  const auto repeated = dispatch(FilteredExpressionProjectValuesEnvelope());
+  bool passed = true;
+  if (!projected.api_result.ok) {
+    for (const auto& diagnostic : projected.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  const auto& rows = projected.api_result.result_shape.rows;
+  passed &= Require(
+      completed(projected) &&
+          rows[0].fields[0].first == "safe_quotient" &&
+          rows[0].fields[0].second.encoded_value == "10" &&
+          rows[0].fields[1].second.state ==
+              api::EngineValueState::sql_null &&
+          rows[1].fields[0].second.encoded_value == "5" &&
+          rows[1].fields[1].second.encoded_value == "beta",
+      "FILTER/PROJECT evaluated a rejected divide-by-zero row or changed "
+      "the surviving projection");
+  passed &= Require(
+      completed(repeated) &&
+          repeated.selected_plan_uuid == projected.selected_plan_uuid &&
+          repeated.canonical_result_bytes == projected.canonical_result_bytes,
+      "FILTER/PROJECT changed deterministic plan/result bytes");
+
+  auto unbound_predicate = FilteredExpressionProjectValuesEnvelope();
+  for (auto& operand : unbound_predicate.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "12") {
+      operand.value =
+          "3|-|3|-|019f0000-0000-7500-8000-000000008a03|-|-|-";
+    }
+  }
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 6;
+  const auto unbound_result = dispatch(std::move(unbound_predicate));
+  const auto exhausted_result = dispatch(
+      FilteredExpressionProjectValuesEnvelope(), std::move(bounded_context));
+  const auto refused_before_publication = [](const auto& result,
+                                             const std::string_view code) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result, code);
+  };
+  passed &= Require(
+      refused_before_publication(
+          unbound_result,
+          "QOW-DIAG-RELATIONAL-LIVE-FILTER-PROJECT-PAYLOAD-V1") &&
+          refused_before_publication(
+              exhausted_result,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "unbound or resource-exhausted FILTER/PROJECT published evidence");
   return passed;
 }
 
@@ -10197,6 +10327,7 @@ int main() {
                       ValidateProjectRefusalIsAtomic() &&
                       ValidateRowDependentProjectExpressionSpine() &&
                       ValidateProjectedExpressionSortCompositionSpine() &&
+                      ValidateFilteredExpressionProjectCompositionSpine() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&
                       ValidateGroupedCountSumValuesSpine() &&
