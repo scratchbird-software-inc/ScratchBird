@@ -1283,6 +1283,44 @@ std::uint64_t MixCanonicalSampleUnit(std::uint64_t value) {
 
 }  // namespace
 
+std::string CanonicalSeededSampleDescriptorUuid(
+    const CanonicalSeededSampleRequest& request) {
+  if ((request.method != CanonicalSeededSampleMethod::kBernoulli &&
+       request.method != CanonicalSeededSampleMethod::kSystem) ||
+      !request.repeatable_seed_is_bound ||
+      request.sample_basis_points > 10000 ||
+      (request.method == CanonicalSeededSampleMethod::kSystem &&
+       request.system_block_row_count == 0) ||
+      (request.method == CanonicalSeededSampleMethod::kBernoulli &&
+       request.system_block_row_count != 0)) {
+    return {};
+  }
+  const auto method = static_cast<std::uint64_t>(request.method);
+  const auto profile =
+      (static_cast<std::uint64_t>(request.sample_basis_points) << 32U) ^
+      method;
+  const auto high = MixCanonicalSampleUnit(
+      request.repeatable_seed ^ profile ^ 0x6f4d5b39a18c27e3ULL);
+  const auto low = MixCanonicalSampleUnit(
+      high ^ static_cast<std::uint64_t>(request.system_block_row_count) ^
+      0x15a4c8e92d73b60fULL);
+  const auto group1 = static_cast<std::uint32_t>(high >> 32U);
+  const auto group2 = static_cast<std::uint16_t>(high >> 16U);
+  const auto group3 = static_cast<std::uint16_t>(
+      (high & 0x0fffU) | 0x5000U);
+  const auto group4 = static_cast<std::uint16_t>(
+      ((low >> 48U) & 0x3fffU) | 0x8000U);
+  const auto group5 = low & 0x0000ffffffffffffULL;
+  std::ostringstream out;
+  out << std::hex << std::nouppercase << std::setfill('0')
+      << std::setw(8) << group1 << '-'
+      << std::setw(4) << group2 << '-'
+      << std::setw(4) << group3 << '-'
+      << std::setw(4) << group4 << '-'
+      << std::setw(12) << group5;
+  return out.str();
+}
+
 // QOW-SOURCE-QRY-015-V1
 // BERNOULLI hashes every physical row independently. SYSTEM hashes a bounded
 // physical block once and admits or rejects the complete block. Both methods
@@ -1311,6 +1349,10 @@ CanonicalSeededSampleResult ExecuteCanonicalSeededSample(
   if (request.method == CanonicalSeededSampleMethod::kSystem &&
       request.system_block_row_count == 0) {
     return refuse("SYSTEM sample block size is not bound");
+  }
+  if (request.method == CanonicalSeededSampleMethod::kBernoulli &&
+      request.system_block_row_count != 0) {
+    return refuse("BERNOULLI sample carries a SYSTEM block size");
   }
 
   const auto selected = [&](const std::size_t unit,

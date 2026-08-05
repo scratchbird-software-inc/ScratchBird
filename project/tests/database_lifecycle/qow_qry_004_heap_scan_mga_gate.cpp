@@ -1296,6 +1296,48 @@ api::CanonicalHeapOptimizerSelectedExecutionRequest SelectedRequestFor(
   return request;
 }
 
+api::CanonicalHeapOptimizerSelectedExecutionRequest TableSampleRequestFor(
+    const exec::CanonicalHeapRelationAcquisitionRequest& acquisition,
+    const platform::u64 salt,
+    const exec::CanonicalHeapTableSampleMethod method,
+    const std::uint32_t basis_points,
+    const std::uint64_t seed,
+    const std::size_t system_block_rows = 0,
+    const exec::CanonicalHeapTableSamplePredicatePlacement placement =
+        exec::CanonicalHeapTableSamplePredicatePlacement::kAbsent) {
+  auto request = SelectedRequestFor(acquisition, salt);
+  exec::CanonicalHeapTableSampleProfile profile;
+  profile.method = method;
+  profile.sample_basis_points = basis_points;
+  profile.repeatable_seed = seed;
+  profile.repeatable_seed_is_bound = true;
+  profile.system_block_row_count = system_block_rows;
+  profile.predicate_placement = placement;
+  api::CanonicalSeededSampleRequest descriptor;
+  descriptor.method =
+      method == exec::CanonicalHeapTableSampleMethod::kBernoulli
+          ? api::CanonicalSeededSampleMethod::kBernoulli
+          : api::CanonicalSeededSampleMethod::kSystem;
+  descriptor.sample_basis_points = basis_points;
+  descriptor.repeatable_seed = seed;
+  descriptor.repeatable_seed_is_bound = true;
+  descriptor.system_block_row_count = system_block_rows;
+  const auto descriptor_uuid =
+      api::CanonicalSeededSampleDescriptorUuid(descriptor);
+  request.relational_dag.nodes.front().semantic_variant_id =
+      method == exec::CanonicalHeapTableSampleMethod::kBernoulli
+          ? "relation.source.tablesample.bernoulli.v1"
+          : "relation.source.tablesample.system.v1";
+  request.selected_physical_dag.nodes.front().implementation_id =
+      method == exec::CanonicalHeapTableSampleMethod::kBernoulli
+          ? "scan.heap.tablesample.bernoulli.v1"
+          : "scan.heap.tablesample.system.v1";
+  request.selected_physical_dag.nodes.front().selected_alternative_uuid =
+      descriptor_uuid;
+  request.table_sample_profile = profile;
+  return request;
+}
+
 void RequireAtomicFailure(
     const exec::CanonicalHeapRelationAcquisitionResult& result,
     std::string_view detail) {
@@ -2438,6 +2480,253 @@ void ValidateOptimizerSelectedHeapResultMatrix(Fixture& fixture) {
           "typed empty heap result did not retain completed zero-read truth");
   ReleaseRequest(&empty_acquisition);
   Rollback(empty_reader);
+}
+
+// QOW-TEST-QRY-015-HEAP-TABLESAMPLE-V1
+void ValidateOptimizerSelectedHeapTableSampleMatrix(Fixture& fixture) {
+  auto reader = QueryContext(Begin(fixture, "qow-heap-table-sample-reader"),
+                             fixture.main_table_uuid,
+                             fixture.salt + 3600);
+  auto acquisition = RequestFor(reader, fixture.main_table_uuid,
+                                fixture.salt + 3610);
+  const auto visible = api::ExecuteCanonicalHeapOptimizerSelectedDag(
+      SelectedRequestFor(acquisition, fixture.salt + 3620));
+  Require(visible.accepted && visible.canonical_result_published &&
+              visible.result_publication.row_stream.rows.size() > 1,
+          "TABLESAMPLE fixture did not expose a visible input population");
+  const auto visible_rows =
+      visible.result_publication.row_stream.rows.size();
+
+  const auto expected_for = [](const std::size_t input_rows,
+                               const exec::CanonicalHeapTableSampleMethod method,
+                               const std::uint32_t basis_points,
+                               const std::uint64_t seed,
+                               const std::size_t block_rows = 0) {
+    api::CanonicalSeededSampleRequest expected;
+    expected.input_row_count = input_rows;
+    expected.method =
+        method == exec::CanonicalHeapTableSampleMethod::kBernoulli
+            ? api::CanonicalSeededSampleMethod::kBernoulli
+            : api::CanonicalSeededSampleMethod::kSystem;
+    expected.sample_basis_points = basis_points;
+    expected.repeatable_seed = seed;
+    expected.repeatable_seed_is_bound = true;
+    expected.system_block_row_count = block_rows;
+    expected.maximum_input_row_count = std::max<std::size_t>(1, input_rows);
+    return api::ExecuteCanonicalSeededSample(expected);
+  };
+  const auto require_sampled_rows = [&](const auto& sampled,
+                                         const auto& expected,
+                                         const auto& source,
+                                         std::string_view detail) {
+    bool matches = sampled.accepted && sampled.canonical_result_published &&
+                   sampled.issues.empty() && expected.accepted &&
+                   sampled.result_publication.row_stream.rows.size() ==
+                       expected.selected_row_indices.size();
+    if (matches) {
+      for (std::size_t ordinal = 0;
+           ordinal < expected.selected_row_indices.size(); ++ordinal) {
+        const auto source_ordinal = expected.selected_row_indices[ordinal];
+        const auto& actual_row =
+            sampled.result_publication.row_stream.rows[ordinal];
+        const auto& source_row =
+            source.result_publication.row_stream.rows[source_ordinal];
+        matches &= actual_row.values.size() == source_row.values.size();
+        for (std::size_t column = 0;
+             matches && column < actual_row.values.size(); ++column) {
+          matches &= actual_row.values[column].state ==
+                         source_row.values[column].state &&
+                     actual_row.values[column].encoded_value ==
+                         source_row.values[column].encoded_value;
+        }
+      }
+    }
+    if (!matches) {
+      std::cerr << "TABLESAMPLE debug accepted=" << sampled.accepted
+                << " expected_accepted=" << expected.accepted
+                << " actual_rows="
+                << sampled.result_publication.row_stream.rows.size()
+                << " expected_rows="
+                << expected.selected_row_indices.size() << '\n';
+      for (const auto& issue : sampled.issues) {
+        std::cerr << issue.diagnostic_id << ": " << issue.field_id << '\n';
+      }
+    }
+    Require(matches, detail);
+  };
+
+  auto bernoulli_request = TableSampleRequestFor(
+      acquisition, fixture.salt + 3630,
+      exec::CanonicalHeapTableSampleMethod::kBernoulli, 5000, 42);
+  const auto bernoulli =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(bernoulli_request);
+  const auto bernoulli_expected = expected_for(
+      visible_rows, exec::CanonicalHeapTableSampleMethod::kBernoulli,
+      5000, 42);
+  require_sampled_rows(bernoulli, bernoulli_expected, visible,
+                       "heap BERNOULLI did not sample the visible row batch");
+  Require(bernoulli.dispatch.executed_steps.size() == 1 &&
+              bernoulli.dispatch.executed_steps.front()
+                  .table_sample_actuals.has_value(),
+          "heap BERNOULLI did not publish sample actuals");
+  const auto& bernoulli_actuals =
+      *bernoulli.dispatch.executed_steps.front().table_sample_actuals;
+  Require(bernoulli_actuals.method_id ==
+              "bernoulli.seeded-row-hash.v1" &&
+              bernoulli_actuals.sample_basis_points == 5000 &&
+              bernoulli_actuals.visible_input_row_count == visible_rows &&
+              bernoulli_actuals.examined_unit_count == visible_rows &&
+              bernoulli_actuals.sampled_output_row_count ==
+                  bernoulli_expected.selected_row_indices.size() &&
+              bernoulli_actuals.repeatable_seed_bound &&
+              bernoulli_actuals.sampling_applied_after_mga_visibility &&
+              bernoulli_actuals.predicate_pushdown_legality_validated &&
+              bernoulli_actuals.sample_descriptor_uuid ==
+                  bernoulli_request.selected_physical_dag.nodes.front()
+                      .selected_alternative_uuid,
+          "heap BERNOULLI actuals lost method, visibility, seed, or legality");
+  const auto bernoulli_repeated =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(bernoulli_request);
+  Require(bernoulli_repeated.accepted &&
+              bernoulli_repeated.result_publication.canonical_envelope_bytes ==
+                  bernoulli.result_publication.canonical_envelope_bytes,
+          "same-snapshot heap BERNOULLI replay was not byte stable");
+
+  auto empty_sample_request = TableSampleRequestFor(
+      acquisition, fixture.salt + 3635,
+      exec::CanonicalHeapTableSampleMethod::kBernoulli, 0, 42);
+  empty_sample_request.maximum_output_rows = 1;
+  empty_sample_request.maximum_output_cells =
+      empty_sample_request.relational_dag.outputs.size();
+  const auto empty_sample =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(empty_sample_request);
+  Require(empty_sample.accepted && empty_sample.canonical_result_published &&
+              empty_sample.result_publication.row_stream.rows.empty() &&
+              empty_sample.dispatch.executed_steps.front()
+                      .table_sample_actuals->visible_input_row_count ==
+                  visible_rows,
+          "zero-percent TABLESAMPLE did not sample the complete visible "
+          "population under a smaller result bound");
+
+  auto result_bound_refusal = TableSampleRequestFor(
+      acquisition, fixture.salt + 3636,
+      exec::CanonicalHeapTableSampleMethod::kBernoulli, 10000, 42);
+  result_bound_refusal.maximum_output_rows = 1;
+  result_bound_refusal.maximum_output_cells =
+      result_bound_refusal.relational_dag.outputs.size();
+  const auto result_bound_refused =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(result_bound_refusal);
+  RequireAtomicSelectedFailure(
+      result_bound_refused,
+      "TABLESAMPLE result-bound refusal published a partial result");
+  Require(result_bound_refused.data_access_observed &&
+              !result_bound_refused.issues.empty() &&
+              result_bound_refused.issues.front().diagnostic_id ==
+                  "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "TABLESAMPLE result-bound refusal used the wrong causal stage");
+
+  auto other_seed = TableSampleRequestFor(
+      acquisition, fixture.salt + 3640,
+      exec::CanonicalHeapTableSampleMethod::kBernoulli, 5000, 43);
+  Require(other_seed.selected_physical_dag.nodes.front()
+              .selected_alternative_uuid !=
+              bernoulli_request.selected_physical_dag.nodes.front()
+                  .selected_alternative_uuid,
+          "TABLESAMPLE seed did not change selected alternative identity");
+  const auto other_seed_result =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(other_seed);
+  Require(other_seed_result.accepted &&
+              other_seed_result.dispatch.executed_steps.front()
+                      .table_sample_actuals->sample_descriptor_uuid ==
+                  other_seed.selected_physical_dag.nodes.front()
+                      .selected_alternative_uuid,
+          "changed TABLESAMPLE seed did not reach engine actuals");
+
+  auto system_request = TableSampleRequestFor(
+      acquisition, fixture.salt + 3650,
+      exec::CanonicalHeapTableSampleMethod::kSystem, 5000, 42, 2,
+      exec::CanonicalHeapTableSamplePredicatePlacement::kAfterSample);
+  const auto system =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(system_request);
+  const auto system_expected = expected_for(
+      visible_rows, exec::CanonicalHeapTableSampleMethod::kSystem,
+      5000, 42, 2);
+  require_sampled_rows(system, system_expected, visible,
+                       "heap SYSTEM did not sample complete visible blocks");
+  Require(system.dispatch.executed_steps.size() == 1 &&
+              system.dispatch.executed_steps.front()
+                  .table_sample_actuals.has_value() &&
+              system.dispatch.executed_steps.front()
+                      .table_sample_actuals->method_id ==
+                  "system.seeded-block-hash.v1" &&
+              system.dispatch.executed_steps.front()
+                      .table_sample_actuals->examined_unit_count ==
+                  (visible_rows / 2 + (visible_rows % 2 != 0)),
+          "heap SYSTEM actuals lost block-method diagnostics");
+
+  auto pushed_below = bernoulli_request;
+  pushed_below.table_sample_profile->predicate_placement =
+      exec::CanonicalHeapTableSamplePredicatePlacement::kBeforeSample;
+  const auto pushdown_refused =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(pushed_below);
+  RequireAtomicSelectedFailure(
+      pushdown_refused,
+      "predicate pushed below TABLESAMPLE published a partial result");
+  Require(!pushdown_refused.data_access_observed &&
+              !pushdown_refused.issues.empty() &&
+              pushdown_refused.issues.front().diagnostic_id ==
+                  "QOW-DIAG-QRY-015-PUSHDOWN-V1",
+          "illegal TABLESAMPLE pushdown used the wrong diagnostic/access path");
+
+  auto identity_drift = bernoulli_request;
+  identity_drift.table_sample_profile->repeatable_seed = 99;
+  const auto identity_refused =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(identity_drift);
+  RequireAtomicSelectedFailure(
+      identity_refused,
+      "stale TABLESAMPLE seed identity published a partial result");
+  Require(!identity_refused.data_access_observed &&
+              !identity_refused.issues.empty() &&
+              identity_refused.issues.front().diagnostic_id ==
+                  "QOW-DIAG-QRY-015-SEED-IDENTITY-V1",
+          "stale TABLESAMPLE seed identity used the wrong refusal path");
+
+  auto writer = Begin(fixture, "qow-heap-table-sample-writer");
+  InsertRows(fixture, writer, fixture.main_table_uuid, {Int64Row(909)});
+  Commit(writer);
+  const auto same_snapshot =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(bernoulli_request);
+  Require(same_snapshot.accepted &&
+              same_snapshot.result_publication.canonical_envelope_bytes ==
+                  bernoulli.result_publication.canonical_envelope_bytes &&
+              same_snapshot.dispatch.executed_steps.front()
+                      .table_sample_actuals->visible_input_row_count ==
+                  visible_rows,
+          "post-snapshot commit changed the sampled repeatable-read population");
+
+  ReleaseRequest(&acquisition);
+  Rollback(reader);
+  auto current_reader = QueryContext(
+      Begin(fixture, "qow-heap-table-sample-current-reader"),
+      fixture.main_table_uuid, fixture.salt + 3660);
+  auto current_acquisition = RequestFor(
+      current_reader, fixture.main_table_uuid, fixture.salt + 3670);
+  const auto current_visible = api::ExecuteCanonicalHeapOptimizerSelectedDag(
+      SelectedRequestFor(current_acquisition, fixture.salt + 3680));
+  auto current_sample_request = TableSampleRequestFor(
+      current_acquisition, fixture.salt + 3690,
+      exec::CanonicalHeapTableSampleMethod::kBernoulli, 5000, 42);
+  const auto current_sample =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(current_sample_request);
+  Require(current_visible.accepted && current_sample.accepted &&
+              current_visible.result_publication.row_stream.rows.size() ==
+                  visible_rows + 1 &&
+              current_sample.dispatch.executed_steps.front()
+                      .table_sample_actuals->visible_input_row_count ==
+                  visible_rows + 1,
+          "new statement snapshot did not sample its newly visible population");
+  ReleaseRequest(&current_acquisition);
+  Rollback(current_reader);
 }
 
 // QOW-TEST-QRY-004-HEAP-FULL-WIDTH-V1
@@ -4080,5 +4369,6 @@ int main() {
   ValidatePhysicalHeapDispatchRefusals(fixture);
   ValidatePositiveAndVisibilityMatrix(fixture);
   ValidateBindingSecurityAndResourceRefusals(fixture);
+  ValidateOptimizerSelectedHeapTableSampleMatrix(fixture);
   return EXIT_SUCCESS;
 }

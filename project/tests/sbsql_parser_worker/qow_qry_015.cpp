@@ -38,6 +38,8 @@ api::CanonicalSeededSampleRequest BernoulliRequest() {
 // QOW-TEST-QRY-015-V1
 bool ValidateSeededSampling() {
   bool passed = true;
+  const auto bernoulli_descriptor =
+      api::CanonicalSeededSampleDescriptorUuid(BernoulliRequest());
   const auto bernoulli = api::ExecuteCanonicalSeededSample(BernoulliRequest());
   const auto repeated = api::ExecuteCanonicalSeededSample(BernoulliRequest());
   passed &= Require(
@@ -48,6 +50,11 @@ bool ValidateSeededSampling() {
           !bernoulli.selected_row_indices.empty() &&
           bernoulli.selected_row_indices.size() < 32,
       "seeded BERNOULLI sample was not stable or bounded");
+  passed &= Require(
+      !bernoulli_descriptor.empty() &&
+          bernoulli_descriptor ==
+              api::CanonicalSeededSampleDescriptorUuid(BernoulliRequest()),
+      "seeded BERNOULLI descriptor identity was absent or unstable");
 
   bool observed_gap_then_row = false;
   for (std::size_t index = 1;
@@ -68,6 +75,10 @@ bool ValidateSeededSampling() {
                         other_seed.selected_row_indices !=
                             bernoulli.selected_row_indices,
                     "sample seed did not influence row admission");
+  passed &= Require(
+      api::CanonicalSeededSampleDescriptorUuid(request) !=
+          bernoulli_descriptor,
+      "sample seed did not participate in descriptor/plan identity");
 
   request = BernoulliRequest();
   request.input_row_count = 1;
@@ -111,12 +122,18 @@ bool ValidateSeededSampling() {
           system.method_id == "system.seeded-block-hash.v1" &&
           system.selected_row_indices != bernoulli.selected_row_indices,
       "SYSTEM sample did not retain complete method-specific blocks");
+  passed &= Require(
+      api::CanonicalSeededSampleDescriptorUuid(request) !=
+          bernoulli_descriptor,
+      "sample method/block size did not participate in descriptor identity");
 
   request = BernoulliRequest();
   request.repeatable_seed_is_bound = false;
   result = api::ExecuteCanonicalSeededSample(request);
   passed &= Require(!result.accepted && result.selected_row_indices.empty(),
                     "unseeded sample was accepted");
+  passed &= Require(api::CanonicalSeededSampleDescriptorUuid(request).empty(),
+                    "unseeded sample received a descriptor identity");
 
   request = BernoulliRequest();
   request.method = api::CanonicalSeededSampleMethod::kSystem;
@@ -124,6 +141,14 @@ bool ValidateSeededSampling() {
   result = api::ExecuteCanonicalSeededSample(request);
   passed &= Require(!result.accepted,
                     "SYSTEM sample accepted an unbound block size");
+
+  request = BernoulliRequest();
+  request.system_block_row_count = 4;
+  result = api::ExecuteCanonicalSeededSample(request);
+  passed &= Require(!result.accepted &&
+                        api::CanonicalSeededSampleDescriptorUuid(request)
+                            .empty(),
+                    "BERNOULLI sample accepted a SYSTEM block descriptor");
 
   request = BernoulliRequest();
   request.sample_basis_points = 10001;

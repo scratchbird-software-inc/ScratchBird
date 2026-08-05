@@ -327,43 +327,6 @@ struct CanonicalOptimizerSelectedExecutionResult {
 CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
     const CanonicalOptimizerSelectedExecutionRequest& request);
 
-// Engine-owned adapter for the one-leaf relation.source.v1/scan.heap.v1
-// profile. The caller supplies only immutable engine context and admitted
-// relational/physical authority; executor registration, result bindings, and
-// publication are derived inside the engine.
-struct CanonicalHeapOptimizerSelectedExecutionRequest {
-  EngineRequestContext context;
-  TypedRelationalDag relational_dag;
-  scratchbird::engine::executor::TypedPhysicalNodeDag selected_physical_dag;
-  std::size_t maximum_scanned_row_versions{0};
-  std::size_t maximum_decoded_bytes{0};
-  std::size_t maximum_output_rows{0};
-  std::size_t maximum_output_columns{0};
-  std::size_t maximum_output_cells{0};
-  std::function<bool()> cancellation_requested;
-  std::string execution_attempt_uuid;
-  std::string transaction_effect_evidence_uuid;
-};
-
-// QOW-SOURCE-QRY-004-HEAP-RESULT-V1
-CanonicalOptimizerSelectedExecutionResult
-ExecuteCanonicalHeapOptimizerSelectedDag(
-    const CanonicalHeapOptimizerSelectedExecutionRequest& request);
-
-// QOW-SOURCE-QRY-002-V1
-RelationalDagValidationResult ValidateTypedRelationalDag(
-    const TypedRelationalDag& dag,
-    const RelationalDagLimits& limits = {});
-
-// SEARCH_KEY: SB_ENGINE_INTERNAL_API_QUERY_PLAN_API
-struct EngineQueryRelation {
-  std::string relation_name;
-  std::string descriptor_digest;
-  EngineObjectReference source_object;
-  std::vector<EngineDescriptor> columns;
-  std::vector<EngineRowValue> rows;
-};
-
 enum class CanonicalSeededSampleMethod : std::uint8_t {
   kBernoulli = 1,
   kSystem,
@@ -389,9 +352,55 @@ struct CanonicalSeededSampleResult {
   std::string method_id;
 };
 
+// The descriptor identity excludes the visible input cardinality and resource
+// ceiling.  It binds exactly the method, percentage, repeatable seed, and
+// SYSTEM block size that must participate in optimizer plan identity.
+std::string CanonicalSeededSampleDescriptorUuid(
+    const CanonicalSeededSampleRequest& request);
+
 // QOW-SOURCE-QRY-015-V1
 CanonicalSeededSampleResult ExecuteCanonicalSeededSample(
     const CanonicalSeededSampleRequest& request);
+
+// Engine-owned adapter for the one-leaf relation.source.v1/scan.heap.v1
+// profile. The caller supplies only immutable engine context and admitted
+// relational/physical authority; executor registration, result bindings, and
+// publication are derived inside the engine.
+struct CanonicalHeapOptimizerSelectedExecutionRequest {
+  EngineRequestContext context;
+  TypedRelationalDag relational_dag;
+  scratchbird::engine::executor::TypedPhysicalNodeDag selected_physical_dag;
+  std::size_t maximum_scanned_row_versions{0};
+  std::size_t maximum_decoded_bytes{0};
+  std::size_t maximum_output_rows{0};
+  std::size_t maximum_output_columns{0};
+  std::size_t maximum_output_cells{0};
+  std::function<bool()> cancellation_requested;
+  std::string execution_attempt_uuid;
+  std::string transaction_effect_evidence_uuid;
+  std::optional<
+      scratchbird::engine::executor::CanonicalHeapTableSampleProfile>
+      table_sample_profile;
+};
+
+// QOW-SOURCE-QRY-004-HEAP-RESULT-V1
+CanonicalOptimizerSelectedExecutionResult
+ExecuteCanonicalHeapOptimizerSelectedDag(
+    const CanonicalHeapOptimizerSelectedExecutionRequest& request);
+
+// QOW-SOURCE-QRY-002-V1
+RelationalDagValidationResult ValidateTypedRelationalDag(
+    const TypedRelationalDag& dag,
+    const RelationalDagLimits& limits = {});
+
+// SEARCH_KEY: SB_ENGINE_INTERNAL_API_QUERY_PLAN_API
+struct EngineQueryRelation {
+  std::string relation_name;
+  std::string descriptor_digest;
+  EngineObjectReference source_object;
+  std::vector<EngineDescriptor> columns;
+  std::vector<EngineRowValue> rows;
+};
 
 struct CanonicalLegacyWindowRouteDisposition {
   bool applies = false;

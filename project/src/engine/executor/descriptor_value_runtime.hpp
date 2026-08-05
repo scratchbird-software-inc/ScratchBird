@@ -1181,6 +1181,44 @@ struct CanonicalHeapRelationAcquisitionResult {
   PhysicalMgaStatementContext mga_statement_context;
 };
 
+enum class CanonicalHeapTableSampleMethod : std::uint8_t {
+  kBernoulli = 1,
+  kSystem,
+};
+
+enum class CanonicalHeapTableSamplePredicatePlacement : std::uint8_t {
+  kAbsent = 1,
+  kAfterSample,
+  kBeforeSample,
+};
+
+// TABLESAMPLE is a bound scan profile, not an independent visibility source.
+// The heap executor applies it only after the engine has produced the
+// statement-MGA-visible row batch.  A predicate that was pushed below the
+// sample is rejected because it changes the sampling population.
+struct CanonicalHeapTableSampleProfile {
+  CanonicalHeapTableSampleMethod method =
+      CanonicalHeapTableSampleMethod::kBernoulli;
+  std::uint32_t sample_basis_points = 0;
+  std::uint64_t repeatable_seed = 0;
+  bool repeatable_seed_is_bound = false;
+  std::size_t system_block_row_count = 0;
+  CanonicalHeapTableSamplePredicatePlacement predicate_placement =
+      CanonicalHeapTableSamplePredicatePlacement::kAbsent;
+};
+
+struct CanonicalHeapTableSampleActuals {
+  std::string sample_descriptor_uuid;
+  std::string method_id;
+  std::uint32_t sample_basis_points = 0;
+  std::size_t visible_input_row_count = 0;
+  std::size_t examined_unit_count = 0;
+  std::size_t sampled_output_row_count = 0;
+  bool repeatable_seed_bound = false;
+  bool sampling_applied_after_mga_visibility = false;
+  bool predicate_pushdown_legality_validated = false;
+};
+
 struct CanonicalHeapPhysicalDagDispatchRequest {
   const scratchbird::engine::internal_api::EngineRequestContext* context =
       nullptr;
@@ -1194,6 +1232,7 @@ struct CanonicalHeapPhysicalDagDispatchRequest {
   std::size_t maximum_output_cells = 0;
   std::function<bool()> cancellation_requested;
   CanonicalExecutionMgaAuthority mga_authority;
+  std::optional<CanonicalHeapTableSampleProfile> table_sample_profile;
 };
 
 struct CanonicalPhysicalDispatchInput {
@@ -1235,6 +1274,7 @@ struct CanonicalPhysicalDispatchStepResult {
   std::optional<CanonicalHeapRelationAcquisitionCounters> heap_read_counters;
   std::optional<CanonicalHeapRelationAcquisitionAuthorityEvidence>
       heap_read_authority;
+  std::optional<CanonicalHeapTableSampleActuals> table_sample_actuals;
   // QOW-SOURCE-QRY-004-DATA-ACCESS-OBSERVATION-V1
   // Executors that can distinguish an empty completed read from a callback
   // that may have touched data publish that truth explicitly. Legacy

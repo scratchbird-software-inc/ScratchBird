@@ -11158,6 +11158,7 @@ struct HeapPhysicalExecutorState {
   std::size_t maximum_output_cells = 0;
   std::function<bool()> cancellation_requested;
   CanonicalExecutionMgaAuthority mga_authority;
+  std::optional<CanonicalHeapTableSampleProfile> table_sample_profile;
 };
 
 struct HeapPhysicalRegistrationBuildResult {
@@ -11231,6 +11232,93 @@ std::uint64_t HeapPhysicalResultHandle(const TypedPhysicalNodeDag& dag,
         node.physical_node_id >> (offset * 8u)));
   }
   return value == 0 ? 1 : value;
+}
+
+std::string_view HeapTableSampleImplementationId(
+    const CanonicalHeapTableSampleProfile& profile) {
+  return profile.method == CanonicalHeapTableSampleMethod::kBernoulli
+             ? "scan.heap.tablesample.bernoulli.v1"
+             : "scan.heap.tablesample.system.v1";
+}
+
+std::string_view HeapTableSampleSemanticId(
+    const CanonicalHeapTableSampleProfile& profile) {
+  return profile.method == CanonicalHeapTableSampleMethod::kBernoulli
+             ? "relation.source.tablesample.bernoulli.v1"
+             : "relation.source.tablesample.system.v1";
+}
+
+scratchbird::engine::internal_api::CanonicalSeededSampleRequest
+HeapSeededSampleRequest(const CanonicalHeapTableSampleProfile& profile,
+                        const std::size_t input_row_count,
+                        const std::size_t maximum_input_row_count) {
+  namespace api = scratchbird::engine::internal_api;
+  api::CanonicalSeededSampleRequest request;
+  request.input_row_count = input_row_count;
+  request.method =
+      profile.method == CanonicalHeapTableSampleMethod::kBernoulli
+          ? api::CanonicalSeededSampleMethod::kBernoulli
+          : api::CanonicalSeededSampleMethod::kSystem;
+  request.sample_basis_points = profile.sample_basis_points;
+  request.repeatable_seed = profile.repeatable_seed;
+  request.repeatable_seed_is_bound = profile.repeatable_seed_is_bound;
+  request.system_block_row_count = profile.system_block_row_count;
+  request.maximum_input_row_count = maximum_input_row_count;
+  return request;
+}
+
+DescriptorRuntimeDiagnostic ValidateHeapTableSampleProfile(
+    const CanonicalHeapPhysicalDagDispatchRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+  if (!request.table_sample_profile.has_value()) return {};
+  const auto& profile = *request.table_sample_profile;
+  if (profile.method != CanonicalHeapTableSampleMethod::kBernoulli &&
+      profile.method != CanonicalHeapTableSampleMethod::kSystem) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-015-HEAP-PROFILE-V1",
+        "TABLESAMPLE method is outside the accepted profile");
+  }
+  if (request.relational_dag == nullptr ||
+      request.relational_dag->nodes.size() != 1 ||
+      request.physical_dag.nodes.size() != 1) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-015-HEAP-PROFILE-V1",
+        "TABLESAMPLE requires one optimizer-selected heap scan");
+  }
+  if (profile.predicate_placement ==
+      CanonicalHeapTableSamplePredicatePlacement::kBeforeSample) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-015-PUSHDOWN-V1",
+        "predicate pushdown below TABLESAMPLE changes the sample population");
+  }
+  if (profile.predicate_placement !=
+          CanonicalHeapTableSamplePredicatePlacement::kAbsent &&
+      profile.predicate_placement !=
+          CanonicalHeapTableSamplePredicatePlacement::kAfterSample) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-015-PUSHDOWN-V1",
+        "TABLESAMPLE predicate placement is outside the accepted profile");
+  }
+  const auto seeded = HeapSeededSampleRequest(profile, 0, 1);
+  const auto descriptor_uuid =
+      api::CanonicalSeededSampleDescriptorUuid(seeded);
+  const auto& relational_node = request.relational_dag->nodes.front();
+  const auto& physical_node = request.physical_dag.nodes.front();
+  if (descriptor_uuid.empty() ||
+      relational_node.semantic_variant_id !=
+          HeapTableSampleSemanticId(profile) ||
+      physical_node.implementation_id !=
+          HeapTableSampleImplementationId(profile)) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-015-HEAP-PROFILE-V1",
+        "TABLESAMPLE method, seed, rate, or scan profile is unresolved");
+  }
+  if (physical_node.selected_alternative_uuid != descriptor_uuid) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-015-SEED-IDENTITY-V1",
+        "TABLESAMPLE seed descriptor is absent from selected-plan identity");
+  }
+  return {};
 }
 
 DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
@@ -11365,12 +11453,18 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
         "QOW-DIAG-QRY-004-HEAP-DISPATCH-SCOPE-V1",
         "prepared or cached descriptor dispatch is outside this profile");
   }
+  const auto sample_validation = ValidateHeapTableSampleProfile(request);
+  if (!sample_validation.ok) return sample_validation;
 
   heap_nodes->clear();
+  const std::string_view expected_implementation =
+      request.table_sample_profile.has_value()
+          ? HeapTableSampleImplementationId(*request.table_sample_profile)
+          : std::string_view{"scan.heap.v1"};
   std::string capability_uuid;
   std::uint32_t capability_abi = 0;
   for (const auto& node : request.physical_dag.nodes) {
-    if (node.implementation_id != "scan.heap.v1") { continue; }
+    if (node.implementation_id != expected_implementation) { continue; }
     if (node.node_kind != PhysicalNodeKind::kScan ||
         !node.input_physical_node_ids.empty() ||
         node.output_descriptor_ids.empty() ||
@@ -11397,7 +11491,8 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
   if (heap_nodes->empty()) {
     return HeapAcquisitionRefusal(
         "QOW-DIAG-QRY-004-PHYSICAL-IMPLEMENTATION-UNAVAILABLE-V1",
-        "scan.heap.v1 is not present in the selected physical DAG");
+        "the bound heap scan implementation is not present in the selected "
+        "physical DAG");
   }
   return {};
 }
@@ -11422,6 +11517,7 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
   state->maximum_output_cells = request.maximum_output_cells;
   state->cancellation_requested = request.cancellation_requested;
   state->mga_authority = request.mga_authority;
+  state->table_sample_profile = request.table_sample_profile;
   result.observation = std::make_shared<HeapPhysicalDispatchObservation>();
 
   CanonicalPhysicalExecutorRegistration registration;
@@ -11462,7 +11558,11 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
             expected_node == state->physical_dag.nodes.end() ||
             !SameHeapPhysicalNodeIdentity(dispatched_node, *expected_node) ||
             dispatched_node.node_kind != PhysicalNodeKind::kScan ||
-            dispatched_node.implementation_id != "scan.heap.v1" ||
+            dispatched_node.implementation_id !=
+                (state->table_sample_profile.has_value()
+                     ? HeapTableSampleImplementationId(
+                           *state->table_sample_profile)
+                     : std::string_view{"scan.heap.v1"}) ||
             !dispatched_node.input_physical_node_ids.empty()) {
           step.diagnostic = HeapAcquisitionRefusal(
               "QOW-DIAG-QRY-004-HEAP-DISPATCH-IDENTITY-V1",
@@ -11476,20 +11576,45 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
           return step;
         }
 
+        auto acquisition_relational_dag = state->relational_dag;
+        auto acquisition_physical_dag = state->physical_dag;
+        if (state->table_sample_profile.has_value()) {
+          // The sample executor owns the selected sample node. Its private
+          // acquisition child is a plain heap scan that returns only the
+          // statement-MGA-visible population; no public sample-shaped direct
+          // acquisition route can return an unsampled rowset.
+          acquisition_relational_dag.nodes.front().semantic_variant_id =
+              "relation.source.v1";
+          acquisition_physical_dag.nodes.front().implementation_id =
+              "scan.heap.v1";
+        }
         CanonicalHeapRelationAcquisitionRequest acquisition_request;
         acquisition_request.context = &state->context;
-        acquisition_request.relational_dag = &state->relational_dag;
-        acquisition_request.physical_dag = state->physical_dag;
+        acquisition_request.relational_dag = &acquisition_relational_dag;
+        acquisition_request.physical_dag = acquisition_physical_dag;
         acquisition_request.selected_physical_node_id =
             dispatched_node.physical_node_id;
         acquisition_request.maximum_scanned_row_versions =
             state->maximum_scanned_row_versions;
         acquisition_request.maximum_decoded_bytes =
             state->maximum_decoded_bytes;
-        acquisition_request.maximum_output_rows = state->maximum_output_rows;
+        acquisition_request.maximum_output_rows =
+            state->table_sample_profile.has_value()
+                ? state->maximum_scanned_row_versions
+                : state->maximum_output_rows;
         acquisition_request.maximum_output_columns =
             state->maximum_output_columns;
         acquisition_request.maximum_output_cells = state->maximum_output_cells;
+        if (state->table_sample_profile.has_value() &&
+            !CheckedHeapCellCount(
+                state->maximum_scanned_row_versions,
+                dispatched_node.output_descriptor_ids.size(),
+                &acquisition_request.maximum_output_cells)) {
+          step.diagnostic = HeapAcquisitionRefusal(
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+              "TABLESAMPLE visible-population cell bound overflows size_t");
+          return step;
+        }
         acquisition_request.cancellation_requested =
             state->cancellation_requested;
         acquisition_request.mga_authority = state->mga_authority;
@@ -11517,6 +11642,84 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
           return step;
         }
 
+        std::optional<CanonicalHeapTableSampleActuals> sample_actuals;
+        if (state->table_sample_profile.has_value()) {
+          namespace api = scratchbird::engine::internal_api;
+          const auto visible_input_row_count =
+              acquisition.output_batch.rows.size();
+          if (acquisition.emitted_record_uuids.size() !=
+                  visible_input_row_count ||
+              acquisition.emitted_row_version_uuids.size() !=
+                  visible_input_row_count) {
+            step.diagnostic = HeapAcquisitionRefusal(
+                "QOW-DIAG-QRY-015-VISIBILITY-CARRIER-V1",
+                "TABLESAMPLE input lost visible record/version identity");
+            return step;
+          }
+          auto sample_request = HeapSeededSampleRequest(
+              *state->table_sample_profile, visible_input_row_count,
+              state->maximum_scanned_row_versions);
+          const auto sampled = api::ExecuteCanonicalSeededSample(
+              sample_request);
+          if (!sampled.accepted) {
+            step.diagnostic = HeapAcquisitionRefusal(
+                sampled.diagnostic_code, sampled.detail);
+            return step;
+          }
+          std::size_t sampled_output_cell_count = 0;
+          if (sampled.selected_row_indices.size() >
+                  state->maximum_output_rows ||
+              !CheckedHeapCellCount(
+                  sampled.selected_row_indices.size(),
+                  acquisition.output_batch.columns.size(),
+                  &sampled_output_cell_count) ||
+              sampled_output_cell_count > state->maximum_output_cells) {
+            step.diagnostic = HeapAcquisitionRefusal(
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                "TABLESAMPLE output exceeds the admitted result bound");
+            return step;
+          }
+          decltype(acquisition.output_batch.rows) rows;
+          std::vector<std::string> record_uuids;
+          std::vector<std::string> version_uuids;
+          rows.reserve(sampled.selected_row_indices.size());
+          record_uuids.reserve(sampled.selected_row_indices.size());
+          version_uuids.reserve(sampled.selected_row_indices.size());
+          for (const auto row : sampled.selected_row_indices) {
+            if (row >= visible_input_row_count) {
+              step.diagnostic = HeapAcquisitionRefusal(
+                  "QOW-DIAG-QRY-015-SAMPLE-INDEX-V1",
+                  "TABLESAMPLE selected an out-of-range visible row");
+              return step;
+            }
+            rows.push_back(acquisition.output_batch.rows[row]);
+            record_uuids.push_back(acquisition.emitted_record_uuids[row]);
+            version_uuids.push_back(
+                acquisition.emitted_row_version_uuids[row]);
+          }
+          acquisition.output_batch.rows = std::move(rows);
+          acquisition.emitted_record_uuids = std::move(record_uuids);
+          acquisition.emitted_row_version_uuids = std::move(version_uuids);
+          acquisition.counters.emitted_row_count =
+              acquisition.output_batch.rows.size();
+          acquisition.counters.materialized_cell_count =
+              sampled_output_cell_count;
+          CanonicalHeapTableSampleActuals actuals;
+          actuals.sample_descriptor_uuid =
+              api::CanonicalSeededSampleDescriptorUuid(sample_request);
+          actuals.method_id = sampled.method_id;
+          actuals.sample_basis_points = sample_request.sample_basis_points;
+          actuals.visible_input_row_count = visible_input_row_count;
+          actuals.examined_unit_count = sampled.examined_unit_count;
+          actuals.sampled_output_row_count =
+              sampled.selected_row_indices.size();
+          actuals.repeatable_seed_bound =
+              sample_request.repeatable_seed_is_bound;
+          actuals.sampling_applied_after_mga_visibility = true;
+          actuals.predicate_pushdown_legality_validated = true;
+          sample_actuals = std::move(actuals);
+        }
+
         step.diagnostic = {};
         step.selected_plan_uuid = acquisition.selected_plan_uuid;
         step.executed_physical_node_id =
@@ -11529,6 +11732,9 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
             acquisition.authority.engine_mga_snapshot_bound;
         step.output_row_count = acquisition.counters.emitted_row_count;
         step.rows_examined = acquisition.counters.scanned_row_version_count;
+        if (sample_actuals.has_value()) {
+          step.table_sample_actuals = std::move(sample_actuals);
+        }
         step.heap_read_counters = acquisition.counters;
         step.heap_read_authority = acquisition.authority;
         step.current_relation_descriptor_uuid =
@@ -11583,15 +11789,19 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalHeapPhysicalDagDispatch(
     return HeapPhysicalDispatchRefusal(std::move(built.diagnostic));
   }
   const auto& physical = request.physical_dag;
+  const std::string_view expected_implementation =
+      request.table_sample_profile.has_value()
+          ? HeapTableSampleImplementationId(*request.table_sample_profile)
+          : std::string_view{"scan.heap.v1"};
   if (physical.nodes.size() != 1 ||
       physical.root_physical_node_id !=
           physical.nodes.front().physical_node_id ||
       physical.nodes.front().node_kind != PhysicalNodeKind::kScan ||
-      physical.nodes.front().implementation_id != "scan.heap.v1" ||
+      physical.nodes.front().implementation_id != expected_implementation ||
       !physical.nodes.front().input_physical_node_ids.empty()) {
     return HeapPhysicalDispatchRefusal(HeapAcquisitionRefusal(
         "QOW-DIAG-QRY-004-HEAP-DISPATCH-ROOT-V1",
-        "exactly one input-free scan.heap.v1 root is required"));
+        "exactly one input-free bound heap scan root is required"));
   }
 
   CanonicalPhysicalDagDispatchRequest dispatch_request;
@@ -11722,10 +11932,20 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
     return refuse(carrier_validation.diagnostic_code, 0,
                   carrier_validation.detail);
   }
+  const std::string_view expected_relational_semantic =
+      request.table_sample_profile.has_value()
+          ? exec::HeapTableSampleSemanticId(*request.table_sample_profile)
+          : std::string_view{"relation.source.v1"};
+  const std::string_view expected_physical_implementation =
+      request.table_sample_profile.has_value()
+          ? exec::HeapTableSampleImplementationId(
+                *request.table_sample_profile)
+          : std::string_view{"scan.heap.v1"};
   if (relational.wire_version != 2 || relational.nodes.size() != 1 ||
       relational.root_node_id != relational.nodes.front().node_id ||
       relational.nodes.front().node_kind != RelationalDagNodeKind::kScan ||
-      relational.nodes.front().semantic_variant_id != "relation.source.v1" ||
+      relational.nodes.front().semantic_variant_id !=
+          expected_relational_semantic ||
       !relational.nodes.front().input_node_ids.empty() ||
       relational.nodes.front().required_object_uuids.size() != 1 ||
       relational.nodes.front().bound_expression_ids.empty() ||
@@ -11738,12 +11958,13 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
       relational.outputs.size() > request.maximum_output_columns ||
       relational.outputs.size() > exec::kMaximumHeapOutputColumns) {
     return refuse("QOW-DIAG-QRY-004-HEAP-RESULT-PROFILE-V1", 0,
-                  "relation.source.v1_one_leaf_complete_width");
+                  "bound_relation_source_one_leaf_complete_width");
   }
   if (physical.abi_version != 2 || physical.nodes.size() != 1 ||
       physical.root_physical_node_id != physical.nodes.front().physical_node_id ||
       physical.nodes.front().node_kind != exec::PhysicalNodeKind::kScan ||
-      physical.nodes.front().implementation_id != "scan.heap.v1" ||
+      physical.nodes.front().implementation_id !=
+          expected_physical_implementation ||
       !physical.nodes.front().input_physical_node_ids.empty() ||
       physical.nodes.front().relational_node_id != relational.root_node_id ||
       physical.nodes.front().output_descriptor_ids !=
@@ -11825,6 +12046,7 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
   registration_request.maximum_output_cells = request.maximum_output_cells;
   registration_request.cancellation_requested = request.cancellation_requested;
   registration_request.mga_authority = mga_authority;
+  registration_request.table_sample_profile = request.table_sample_profile;
   auto built = exec::BuildHeapPhysicalRegistration(registration_request);
   if (!built.diagnostic.ok || !built.registration.has_value() ||
       built.observation == nullptr) {

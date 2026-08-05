@@ -755,7 +755,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND qow_qry_004_heap_scan_mga_gate
   )
   set_tests_properties(qow_qry_004_heap_scan_mga_v1 PROPERTIES
-    LABELS "qow_qry_004_heap_scan_mga_v1;QOW-TEST-QRY-004-HEAP-MGA-V1;QOW-TEST-QRY-004-HEAP-DISPATCH-V1;QOW-TEST-QRY-004-HEAP-RESULT-V1;QOW-GATE-QRY-004-HEAP-FULL-WIDTH-V1;QOW-GATE-QRY-004-HEAP-OPTIMIZER-ADMISSION-V1;QOW-203;QOW-211;QOW-303;QOW-306;database_lifecycle_optimizer;mga_transaction_regression"
+    LABELS "qow_qry_004_heap_scan_mga_v1;QOW-TEST-QRY-004-HEAP-MGA-V1;QOW-TEST-QRY-004-HEAP-DISPATCH-V1;QOW-TEST-QRY-004-HEAP-RESULT-V1;QOW-TEST-QRY-015-HEAP-TABLESAMPLE-V1;QOW-GATE-QRY-004-HEAP-FULL-WIDTH-V1;QOW-GATE-QRY-004-HEAP-OPTIMIZER-ADMISSION-V1;QOW-203;QOW-209;QOW-211;QOW-303;QOW-306;RCP-047-TABLESAMPLE;database_lifecycle_optimizer;mga_transaction_regression"
   )
 
   add_executable(database_lifecycle_sblr_compact_insert_scalar_conformance
