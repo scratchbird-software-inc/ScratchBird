@@ -1699,7 +1699,8 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
           std::uint32_t request_schema_id,
           std::uint32_t response_schema_id,
           std::size_t expected_profile_count,
-          std::uint8_t expected_maximum_kind) {
+          std::uint8_t expected_maximum_kind,
+          std::size_t expected_window_function_count) {
         const auto projected = server::HandleAcquireStatementContext(
             &registry,
             engine_state,
@@ -1713,8 +1714,11 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
             version == 4
                 ? ipc::DecodeAcquireStatementContextResultPayloadV4ForTest(
                       projected.payload, &projected_context)
-                : ipc::DecodeAcquireStatementContextResultPayloadV5ForTest(
-                      projected.payload, &projected_context);
+                : (version == 5
+                       ? ipc::DecodeAcquireStatementContextResultPayloadV5ForTest(
+                             projected.payload, &projected_context)
+                       : ipc::DecodeAcquireStatementContextResultPayloadV6ForTest(
+                             projected.payload, &projected_context));
         std::array<std::uint16_t, 11> profiles_by_kind{};
         for (const auto& profile : projected_context.descriptor_profiles) {
           if (profile.profile_kind < profiles_by_kind.size()) {
@@ -1731,6 +1735,8 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                     decoded &&
                     projected_context.aggregate_function_profiles.size() ==
                         43 &&
+                    projected_context.window_function_profiles.size() ==
+                        expected_window_function_count &&
                     projected_context.descriptor_profiles.size() ==
                         expected_profile_count &&
                     exact_profile_families,
@@ -1752,13 +1758,22 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       sbps::kSchemaAcquireStatementContextRequestV4,
       sbps::kSchemaAcquireStatementContextResultV4,
       192,
-      6);
+      6,
+      0);
   verify_native_projection(
       5,
       sbps::kSchemaAcquireStatementContextRequestV5,
       sbps::kSchemaAcquireStatementContextResultV5,
       320,
-      10);
+      10,
+      0);
+  verify_native_projection(
+      6,
+      sbps::kSchemaAcquireStatementContextRequestV6,
+      sbps::kSchemaAcquireStatementContextResultV6,
+      320,
+      10,
+      11);
   Require(registry.statement_contexts_by_statement_uuid.size() == 1,
           "native projection compatibility receipts escaped test cleanup");
 

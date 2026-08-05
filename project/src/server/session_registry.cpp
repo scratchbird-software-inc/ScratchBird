@@ -2893,11 +2893,16 @@ SessionOperationResult HandleAcquireStatementContext(
   const bool native_projection_v5 =
       request.header.payload_schema_id ==
           sbps::kSchemaAcquireStatementContextRequestV5;
+  const bool native_projection_v6 =
+      request.header.payload_schema_id ==
+          sbps::kSchemaAcquireStatementContextRequestV6;
   const bool native_projection =
       native_projection_v2 || native_projection_v3 || native_projection_v4 ||
-      native_projection_v5;
+      native_projection_v5 || native_projection_v6;
   result.response_schema_id =
-      native_projection_v5
+      native_projection_v6
+          ? sbps::kSchemaAcquireStatementContextResultV6
+          : (native_projection_v5
           ? sbps::kSchemaAcquireStatementContextResultV5
           : (native_projection_v4
           ? sbps::kSchemaAcquireStatementContextResultV4
@@ -2905,7 +2910,7 @@ SessionOperationResult HandleAcquireStatementContext(
                  ? sbps::kSchemaAcquireStatementContextResultV3
                  : (native_projection_v2
                         ? sbps::kSchemaAcquireStatementContextResultV2
-                        : sbps::kSchemaAcquireStatementContextResultV1)));
+                        : sbps::kSchemaAcquireStatementContextResultV1))));
   result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
   result.session_uuid = request.header.session_uuid;
   const auto refuse = [&](std::string code, std::string detail) {
@@ -2926,12 +2931,14 @@ SessionOperationResult HandleAcquireStatementContext(
        !native_projection) ||
       request.payload.size() != kRequestBytes ||
       GetU16(request.payload, 0) !=
-          (native_projection_v5
+          (native_projection_v6
+               ? 6
+               : (native_projection_v5
                ? 5
                : (native_projection_v4
                ? 4
                : (native_projection_v3 ? 3
-                                       : (native_projection_v2 ? 2 : 1))))) {
+                                       : (native_projection_v2 ? 2 : 1)))))) {
     return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_REQUEST_INVALID",
                   "schema_version_or_size_invalid");
   }
@@ -3040,12 +3047,14 @@ SessionOperationResult HandleAcquireStatementContext(
   }
 
   PutU16(&result.payload,
-         native_projection_v5
+         native_projection_v6
+             ? 6
+             : (native_projection_v5
              ? 5
              : (native_projection_v4
              ? 4
              : (native_projection_v3 ? 3
-                                     : (native_projection_v2 ? 2 : 1))));
+                                     : (native_projection_v2 ? 2 : 1)))));
   result.payload.push_back(1);
   PutUuid(&result.payload, TextToUuid(view.statement_uuid));
   PutU64(&result.payload, view.owning_local_transaction_id);
@@ -3061,15 +3070,26 @@ SessionOperationResult HandleAcquireStatementContext(
     PutUuid(&result.payload, TextToUuid(view.count_function_uuid));
     PutUuid(&result.payload, TextToUuid(view.sum_function_uuid));
     if (native_projection_v3 || native_projection_v4 ||
-        native_projection_v5) {
+        native_projection_v5 || native_projection_v6) {
       PutUuid(&result.payload, TextToUuid(view.avg_function_uuid));
       PutUuid(&result.payload, TextToUuid(view.min_function_uuid));
       PutUuid(&result.payload, TextToUuid(view.max_function_uuid));
     }
-    if (native_projection_v4 || native_projection_v5) {
+    if (native_projection_v4 || native_projection_v5 ||
+        native_projection_v6) {
       PutU16(&result.payload, static_cast<std::uint16_t>(
                                   view.aggregate_function_profiles.size()));
       for (const auto& function : view.aggregate_function_profiles) {
+        PutU16(&result.payload, function.abi_version);
+        PutString(&result.payload, function.builtin_id);
+        PutUuid(&result.payload, TextToUuid(function.function_uuid));
+        result.payload.push_back(function.executable ? 1 : 0);
+      }
+    }
+    if (native_projection_v6) {
+      PutU16(&result.payload, static_cast<std::uint16_t>(
+                                  view.window_function_profiles.size()));
+      for (const auto& function : view.window_function_profiles) {
         PutU16(&result.payload, function.abi_version);
         PutString(&result.payload, function.builtin_id);
         PutUuid(&result.payload, TextToUuid(function.function_uuid));
@@ -3080,13 +3100,13 @@ SessionOperationResult HandleAcquireStatementContext(
         std::count_if(view.descriptor_profiles.begin(),
                       view.descriptor_profiles.end(),
                       [&](const auto& profile) {
-                        return native_projection_v5 ||
+                        return native_projection_v5 || native_projection_v6 ||
                                static_cast<std::uint8_t>(profile.profile_kind) <=
                                    6;
                       }));
     PutU16(&result.payload, descriptor_profile_count);
     for (const auto& profile : view.descriptor_profiles) {
-      if (!native_projection_v5 &&
+      if (!native_projection_v5 && !native_projection_v6 &&
           static_cast<std::uint8_t>(profile.profile_kind) > 6) {
         continue;
       }

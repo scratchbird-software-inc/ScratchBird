@@ -9,6 +9,7 @@
 #include "scratchbird/engine/engine.h"
 #include "scratchbird/engine/sblr_envelope.hpp"
 #include "canonical_aggregate_registry.hpp"
+#include "executor_foundation.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "database_format.hpp"
 #include "hash_digest.hpp"
@@ -2393,6 +2394,45 @@ sb_engine_status_t AcquireStatementContextReceipt(
     view.aggregate_function_profiles.push_back(
         {entry.abi_version, entry.builtin_id, entry.function_uuid,
          entry.executable});
+  }
+
+  // QOW-SOURCE-WIN-001-STATEMENT-CONTEXT-REGISTRY-V1: native window
+  // identities remain engine-owned. The parser receives an exact bounded
+  // projection and cannot invent, rename, or substitute a function UUID.
+  const auto window_registry =
+      scratchbird::engine::executor::CanonicalWindowRuntimeRegistryV1();
+  if (window_registry.size() != 11) {
+    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
+        snapshot.snapshot_uuid);
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4044,
+        "ENGINE.STATEMENT_CONTEXT.WINDOW_REGISTRY_UNAVAILABLE",
+        "engine.statement_context.window_registry_unavailable");
+  }
+  view.window_function_profiles.reserve(window_registry.size());
+  std::unordered_set<std::string> window_builtin_ids;
+  std::unordered_set<std::string> window_function_uuids;
+  for (const auto& entry : window_registry) {
+    if (entry.abi_version != 1 ||
+        entry.function == scratchbird::engine::executor::
+                              CanonicalWindowRuntimeFunction::unknown ||
+        !entry.builtin_id.starts_with("sb.window.") ||
+        entry.function_uuid.empty() || entry.aggregate_function.has_value() ||
+        !window_builtin_ids.insert(entry.builtin_id).second ||
+        !window_function_uuids.insert(entry.function_uuid).second) {
+      scratchbird::transaction::mga::RevokePublishedSnapshotVector(
+          snapshot.snapshot_uuid);
+      return fail_result(
+          SB_ENGINE_STATUS_INTERNAL_ERROR,
+          out_result,
+          4044,
+          "ENGINE.STATEMENT_CONTEXT.WINDOW_REGISTRY_UNAVAILABLE",
+          "engine.statement_context.window_registry_unavailable");
+    }
+    view.window_function_profiles.push_back(
+        {entry.abi_version, entry.builtin_id, entry.function_uuid, true});
   }
 
   std::string numeric_type_uuid;
