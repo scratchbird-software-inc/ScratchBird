@@ -4835,9 +4835,25 @@ CanonicalPivotResult ExecuteCanonicalPivot(
 
         TypedPhysicalNodeDag aggregate_dag = request.physical_dag;
         aggregate_dag.nodes.clear();
-        // Preserve the optimizer-published ABI-v2 admission receipt on both
-        // private nodes.  The PIVOT runtime may narrow rows, but it does not
-        // mint a new statement context or execution capability.
+        // QOW-SOURCE-RCP-065-PRIVATE-KERNEL-PUBLICATION-SEPARATION-V1
+        // This is a private aggregate-kernel execution view, not a second
+        // publication of the optimizer-selected PIVOT DAG. Preserve the ABI-v2
+        // statement admission/MGA authority, but do not copy the complete
+        // publication receipt onto nodes whose kind and identity are derived
+        // for the private kernel. The immutable outer DAG remains the sole
+        // complete publication and is revalidated before result publication.
+        aggregate_dag.publication_contract_version = 0;
+        aggregate_dag.selected_plan_signature.clear();
+        aggregate_dag.selected_scalar_score = 0;
+        aggregate_dag.published_node_count = 0;
+        aggregate_dag.first_causal_counter_id = 0;
+        aggregate_dag.complete_cost_vectors_retained = false;
+        aggregate_dag.descriptor_contract_validated = false;
+        aggregate_dag.property_contract_validated = false;
+        aggregate_dag.dependency_contract_validated = false;
+        aggregate_dag.resource_contract_validated = false;
+        aggregate_dag.mga_contract_validated = false;
+        aggregate_dag.causal_identity_validated = false;
         PhysicalNodeRecord input_node = *pivot_input_node;
         input_node.physical_node_id = 1;
         input_node.relational_node_id = pivot_node->relational_node_id;

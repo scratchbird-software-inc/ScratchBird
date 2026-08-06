@@ -200,6 +200,18 @@ struct CanonicalOptimizerSearchIssue {
   std::string field_id;
 };
 
+struct CanonicalOptimizerLogicalDependencyReceipt {
+  std::uint32_t logical_node_id{0};
+  scratchbird::engine::planner::CanonicalLogicalRelationalNodeKind node_kind{
+      scratchbird::engine::planner::CanonicalLogicalRelationalNodeKind::
+          kValues};
+  std::vector<std::uint32_t> input_logical_node_ids;
+  std::vector<std::uint32_t> output_descriptor_ids;
+  std::string semantic_variant_id;
+  std::vector<std::string> required_property_uuids;
+  std::vector<std::string> delivered_property_uuids;
+};
+
 // A statement-bound, finite view of every physical implementation the engine
 // may consider for the admitted logical graph.  Records are bound to exact
 // logical semantics before memo search; they are not parser hints or selected
@@ -351,6 +363,8 @@ struct CanonicalOptimizerSearchResult {
   std::string selected_plan_signature;
   std::string timeout_degradation_reason_id;
   std::vector<CanonicalOptimizerMemoGroup> memo_groups;
+  std::vector<CanonicalOptimizerLogicalDependencyReceipt>
+      logical_dependency_receipts;
   std::vector<CanonicalOptimizerSelectedAlternative> selected_alternatives;
   std::vector<CanonicalOptimizerSearchTraceRecord> trace;
   std::vector<CanonicalOptimizerSearchIssue> issues;
@@ -424,12 +438,21 @@ struct CanonicalOptimizerPhysicalPublicationResult {
   bool published{false};
   bool immutable_node_identity_validated{false};
   bool capability_validated_before_access{false};
+  bool complete_cost_vectors_retained{false};
+  bool descriptor_contract_validated{false};
+  bool property_contract_validated{false};
+  bool dependency_contract_validated{false};
+  bool resource_contract_validated{false};
+  bool mga_contract_validated{false};
+  bool causal_identity_validated{false};
   bool data_access_allowed{false};
+  std::uint64_t published_node_count{0};
   scratchbird::engine::executor::TypedPhysicalNodeDag physical_dag;
   std::vector<CanonicalOptimizerPhysicalPublicationIssue> issues;
 };
 
 // QOW-SOURCE-OPT-016-V1
+// QOW-SOURCE-RCP-065-COMPLETE-PHYSICAL-PUBLICATION-V1
 CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     const CanonicalOptimizerAdmissionRequest& admission_request,
     const CanonicalOptimizerAdmissionResult& admission,

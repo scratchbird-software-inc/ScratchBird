@@ -1276,10 +1276,26 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
   }
   std::ranges::sort(node_ids);
   result.memo_groups.reserve(node_ids.size());
+  result.logical_dependency_receipts.reserve(node_ids.size());
   std::uint64_t total_legal_candidates = 0;
   std::uint64_t plan_space_count = 1;
   bool plan_space_saturated = false;
   for (const auto node_id : node_ids) {
+    const auto logical_node = std::ranges::find_if(
+        admission_request.logical_graph.nodes, [&](const auto& node) {
+          return node.logical_node_id == node_id;
+        });
+    if (logical_node == admission_request.logical_graph.nodes.end()) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-ADMISSION-V1", node_id, {},
+                    "logical_dependency_receipt");
+    }
+    result.logical_dependency_receipts.push_back(
+        {logical_node->logical_node_id, logical_node->node_kind,
+         logical_node->input_logical_node_ids,
+         logical_node->output_descriptor_ids,
+         logical_node->semantic_variant_id,
+         logical_node->required_property_uuids,
+         logical_node->delivered_property_uuids});
     CanonicalOptimizerMemoGroup group;
     group.logical_node_id = node_id;
     for (const auto& legality_record : legality.candidates) {
@@ -1660,6 +1676,7 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
 
 // QOW-SOURCE-OPT-008-V1
 // QOW-SOURCE-OPT-016-V1
+// QOW-SOURCE-RCP-065-COMPLETE-PHYSICAL-PUBLICATION-V1
 CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     const CanonicalOptimizerAdmissionRequest& admission_request,
     const CanonicalOptimizerAdmissionResult& admission,
@@ -1716,6 +1733,25 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     }
     *out = left + right;
     return true;
+  };
+  const auto same_cost_terms = [](const CanonicalOptimizerCostTerms& left,
+                                  const CanonicalOptimizerCostTerms& right) {
+    return left.cost_vector_uuid == right.cost_vector_uuid &&
+           left.calibration_profile_uuid == right.calibration_profile_uuid &&
+           left.cpu_units == right.cpu_units &&
+           left.page_read_sequential_units ==
+               right.page_read_sequential_units &&
+           left.page_read_random_units == right.page_read_random_units &&
+           left.page_write_units == right.page_write_units &&
+           left.memory_bytes_required == right.memory_bytes_required &&
+           left.spill_bytes_expected == right.spill_bytes_expected &&
+           left.network_bytes_expected == right.network_bytes_expected &&
+           left.mga_visibility_checks_expected ==
+               right.mga_visibility_checks_expected &&
+           left.archive_fetches_expected == right.archive_fetches_expected &&
+           left.uncertainty_penalty == right.uncertainty_penalty &&
+           left.risk_penalty == right.risk_penalty &&
+           left.confidence == right.confidence;
   };
   const auto physical_kind = [](const auto logical_kind)
       -> std::optional<executor::PhysicalNodeKind> {
@@ -1791,6 +1827,10 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
   }
   if (!search.accepted || !search.selected || !search.issues.empty() ||
       !search.resource_bounded || !search.deterministic ||
+      !search.transformation_legality_validated ||
+      !search.property_legality_validated ||
+      (search.timeout_degraded &&
+       search.timeout_degradation_reason_id.empty()) ||
       search.physical_dag_published || search.data_access_allowed ||
       search.bound_sblr_tree_uuid != admission.bound_sblr_tree_uuid ||
       search.catalog_epoch_uuid != admission.catalog_epoch_uuid ||
@@ -1804,6 +1844,8 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
       !canonical_uuid(search.calibration_profile_uuid) ||
       search.memo_group_count != admission_request.logical_graph.nodes.size() ||
       search.memo_groups.size() != admission_request.logical_graph.nodes.size() ||
+      search.logical_dependency_receipts.size() !=
+          admission_request.logical_graph.nodes.size() ||
       search.selected_alternatives.size() !=
           admission_request.logical_graph.nodes.size()) {
     return refuse("QOW-DIAG-OPTIMIZER-PHYSICAL-SEARCH-V1", 0, {}, {},
@@ -1920,6 +1962,9 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
   std::unordered_map<std::string,
                      const planner::CanonicalLogicalPropertyRecord*>
       properties_by_uuid;
+  std::unordered_map<
+      std::uint32_t, const CanonicalOptimizerLogicalDependencyReceipt*>
+      dependency_receipts_by_node;
   for (const auto& node : admission_request.logical_graph.nodes) {
     nodes_by_id.emplace(node.logical_node_id, &node);
   }
@@ -1931,6 +1976,15 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
   }
   for (const auto& property : admission_request.logical_properties.properties) {
     properties_by_uuid.emplace(property.property_uuid, &property);
+  }
+  for (const auto& receipt : search.logical_dependency_receipts) {
+    if (!dependency_receipts_by_node
+             .emplace(receipt.logical_node_id, &receipt)
+             .second) {
+      return refuse("QOW-DIAG-OPTIMIZER-PHYSICAL-SEARCH-V1",
+                    receipt.logical_node_id, {}, {},
+                    "logical_dependency_receipts");
+    }
   }
 
   std::vector<const CanonicalOptimizerSelectedAlternative*> selected;
@@ -1949,11 +2003,26 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     const auto alternative_it =
         alternatives_by_uuid.find(selection->alternative_uuid);
     const auto legality_it = legality_by_uuid.find(selection->alternative_uuid);
+    const auto dependency_it =
+        dependency_receipts_by_node.find(selection->logical_node_id);
     if (node_it == nodes_by_id.end() ||
         alternative_it == alternatives_by_uuid.end() ||
-        legality_it == legality_by_uuid.end() || !legality_it->second->legal ||
+        legality_it == legality_by_uuid.end() ||
+        dependency_it == dependency_receipts_by_node.end() ||
+        !legality_it->second->legal ||
         alternative_it->second->logical_node_id !=
             selection->logical_node_id ||
+        dependency_it->second->node_kind != node_it->second->node_kind ||
+        dependency_it->second->input_logical_node_ids !=
+            node_it->second->input_logical_node_ids ||
+        dependency_it->second->output_descriptor_ids !=
+            node_it->second->output_descriptor_ids ||
+        dependency_it->second->semantic_variant_id !=
+            node_it->second->semantic_variant_id ||
+        dependency_it->second->required_property_uuids !=
+            node_it->second->required_property_uuids ||
+        dependency_it->second->delivered_property_uuids !=
+            node_it->second->delivered_property_uuids ||
         !selected_node_ids.insert(selection->logical_node_id).second ||
         !selected_alternative_uuids.insert(selection->alternative_uuid)
              .second ||
@@ -1985,8 +2054,8 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
             selection->transformation_uuid ||
         memo_candidate_it->transformation_rule_id !=
             selection->transformation_rule_id ||
-        memo_candidate_it->cost.terms.cost_vector_uuid !=
-            selection->cost.terms.cost_vector_uuid ||
+        !same_cost_terms(memo_candidate_it->cost.terms,
+                         selection->cost.terms) ||
         memo_candidate_it->cost.scalar_score !=
             selection->cost.scalar_score ||
         !checked_add(selected_score, selection->cost.scalar_score,
@@ -2015,7 +2084,12 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
 
   executor::TypedPhysicalNodeDag dag;
   dag.abi_version = 2;
+  dag.publication_contract_version = 1;
   dag.selected_plan_uuid = identity.selected_plan_uuid;
+  dag.selected_plan_signature = search.selected_plan_signature;
+  dag.selected_scalar_score = search.selected_scalar_score;
+  dag.published_node_count = selected.size();
+  dag.first_causal_counter_id = identity.first_causal_counter_id;
   dag.root_physical_node_id =
       admission_request.logical_graph.root_logical_node_id;
   dag.local_transaction_id = admission.local_transaction_id;
@@ -2070,6 +2144,13 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
   dag.optimizer_published = true;
   dag.immutable_node_identity_validated = true;
   dag.capability_validated_before_access = true;
+  dag.complete_cost_vectors_retained = true;
+  dag.descriptor_contract_validated = true;
+  dag.property_contract_validated = true;
+  dag.dependency_contract_validated = true;
+  dag.resource_contract_validated = true;
+  dag.mga_contract_validated = true;
+  dag.causal_identity_validated = true;
   dag.admission_evidence = {
       {executor::PhysicalAdmissionStage::kBoundRequest,
        admission.bound_sblr_tree_uuid},
@@ -2145,15 +2226,19 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     physical.physical_node_id = node.logical_node_id;
     physical.relational_node_id = node.logical_node_id;
     physical.node_kind = *expected_kind;
+    physical.logical_semantic_variant_id = node.semantic_variant_id;
     physical.implementation_id = alternative.implementation_id;
     physical.input_physical_node_ids.assign(
         node.input_logical_node_ids.begin(),
         node.input_logical_node_ids.end());
     physical.output_descriptor_ids = alternative.output_descriptor_ids;
     physical.shareable = input_reference_count[node.logical_node_id] > 1;
+    physical.publication_ordinal = index;
     physical.causal_counter_id =
         identity.first_causal_counter_id + index;
     physical.selected_alternative_uuid = alternative.alternative_uuid;
+    physical.transformation_uuid = selection.transformation_uuid;
+    physical.transformation_rule_id = selection.transformation_rule_id;
     physical.executor_capability_uuid = capability.capability_uuid;
     physical.executor_capability_abi_version =
         capability.capability_abi_version;
@@ -2162,6 +2247,35 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
         alternative.required_property_uuids;
     physical.delivered_property_uuids =
         alternative.delivered_property_uuids;
+    physical.enforced_property_uuids =
+        legality_by_uuid.at(alternative.alternative_uuid)
+            ->enforced_property_uuids;
+    const auto& terms = selection.cost.terms;
+    physical.retained_cost.cost_vector_uuid = terms.cost_vector_uuid;
+    physical.retained_cost.calibration_profile_uuid =
+        terms.calibration_profile_uuid;
+    physical.retained_cost.scalar_score = selection.cost.scalar_score;
+    physical.retained_cost.cpu_units = terms.cpu_units;
+    physical.retained_cost.page_read_sequential_units =
+        terms.page_read_sequential_units;
+    physical.retained_cost.page_read_random_units =
+        terms.page_read_random_units;
+    physical.retained_cost.page_write_units = terms.page_write_units;
+    physical.retained_cost.memory_bytes_required =
+        terms.memory_bytes_required;
+    physical.retained_cost.spill_bytes_expected =
+        terms.spill_bytes_expected;
+    physical.retained_cost.network_bytes_expected =
+        terms.network_bytes_expected;
+    physical.retained_cost.mga_visibility_checks_expected =
+        terms.mga_visibility_checks_expected;
+    physical.retained_cost.archive_fetches_expected =
+        terms.archive_fetches_expected;
+    physical.retained_cost.uncertainty_penalty =
+        terms.uncertainty_penalty;
+    physical.retained_cost.risk_penalty = terms.risk_penalty;
+    physical.retained_cost.confidence =
+        static_cast<std::uint8_t>(terms.confidence);
     physical.memory_bytes_required =
         selection.cost.terms.memory_bytes_required;
     physical.spill_bytes_expected =
@@ -2183,7 +2297,15 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
   result.published = true;
   result.immutable_node_identity_validated = true;
   result.capability_validated_before_access = true;
+  result.complete_cost_vectors_retained = true;
+  result.descriptor_contract_validated = true;
+  result.property_contract_validated = true;
+  result.dependency_contract_validated = true;
+  result.resource_contract_validated = true;
+  result.mga_contract_validated = true;
+  result.causal_identity_validated = true;
   result.data_access_allowed = false;
+  result.published_node_count = dag.nodes.size();
   result.physical_dag = std::move(dag);
   return result;
 }

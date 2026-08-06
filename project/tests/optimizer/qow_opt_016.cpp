@@ -158,11 +158,33 @@ bool ValidatePublishedDag() {
       result.accepted && result.published && result.issues.empty() &&
           result.immutable_node_identity_validated &&
           result.capability_validated_before_access &&
+          result.complete_cost_vectors_retained &&
+          result.descriptor_contract_validated &&
+          result.property_contract_validated &&
+          result.dependency_contract_validated &&
+          result.resource_contract_validated &&
+          result.mga_contract_validated &&
+          result.causal_identity_validated &&
+          result.published_node_count == 4 &&
           !result.data_access_allowed && validation.accepted &&
           result.physical_dag.abi_version == 2 &&
+          result.physical_dag.publication_contract_version == 1 &&
+          result.physical_dag.selected_plan_signature ==
+              inputs.search.selected_plan_signature &&
+          result.physical_dag.selected_scalar_score ==
+              inputs.search.selected_scalar_score &&
+          result.physical_dag.published_node_count == 4 &&
+          result.physical_dag.first_causal_counter_id == 10'000 &&
           result.physical_dag.optimizer_published &&
           result.physical_dag.immutable_node_identity_validated &&
           result.physical_dag.capability_validated_before_access &&
+          result.physical_dag.complete_cost_vectors_retained &&
+          result.physical_dag.descriptor_contract_validated &&
+          result.physical_dag.property_contract_validated &&
+          result.physical_dag.dependency_contract_validated &&
+          result.physical_dag.resource_contract_validated &&
+          result.physical_dag.mga_contract_validated &&
+          result.physical_dag.causal_identity_validated &&
           !result.physical_dag.data_access_observed &&
           result.physical_dag.nodes.size() == 4 &&
           result.physical_dag.root_physical_node_id == 4 &&
@@ -186,10 +208,18 @@ bool ValidatePublishedDag() {
   const auto* project = PhysicalNode(result.physical_dag, 4);
   passed &= Require016(
       scan && scan->node_kind == exec::PhysicalNodeKind::kScan &&
+          scan->logical_semantic_variant_id == "relation.source.v1" &&
           scan->implementation_id == "scan.heap.v1" &&
           scan->selected_alternative_uuid == Uuid(201) &&
+          scan->transformation_uuid == Uuid(401) &&
+          scan->transformation_rule_id == "canonical.transform.1.v1" &&
           scan->executor_capability_uuid == Uuid(301) &&
           scan->cost_vector_uuid == Uuid(501) &&
+          scan->retained_cost.cost_vector_uuid == Uuid(501) &&
+          scan->retained_cost.calibration_profile_uuid == Uuid(600) &&
+          scan->retained_cost.scalar_score == 104 &&
+          scan->retained_cost.mga_visibility_checks_expected == 1 &&
+          scan->publication_ordinal == 0 &&
           scan->causal_counter_id == 10'000 &&
           scan->engine_capability_validated,
       "published scan identity/capability/cost evidence drifted");
@@ -203,6 +233,9 @@ bool ValidatePublishedDag() {
   passed &= Require016(
       project && project->implementation_id == "project.vector.v1" &&
           project->selected_alternative_uuid == Uuid(207) &&
+          project->enforced_property_uuids ==
+              std::vector<std::string>{Uuid(710)} &&
+          project->publication_ordinal == 3 &&
           project->causal_counter_id == 10'003,
       "published root did not match the selected memo alternative");
   passed &= Require016(
@@ -231,6 +264,31 @@ bool ValidatePublishedDag() {
   passed &= Require016(
       !exec::ValidateTypedPhysicalNodeDag(changed_node_snapshot).accepted,
       "physical ABI accepted a node-level snapshot mismatch");
+  auto changed_cost = result.physical_dag;
+  ++changed_cost.nodes.front().retained_cost.cpu_units;
+  passed &= Require016(
+      !exec::ValidateTypedPhysicalNodeDag(changed_cost).accepted,
+      "physical ABI accepted a changed retained cost vector");
+  auto changed_property = result.physical_dag;
+  changed_property.nodes.back().enforced_property_uuids.push_back(Uuid(999));
+  passed &= Require016(
+      !exec::ValidateTypedPhysicalNodeDag(changed_property).accepted,
+      "physical ABI accepted a changed property-enforcement receipt");
+  auto changed_causal_identity = result.physical_dag;
+  ++changed_causal_identity.nodes.back().causal_counter_id;
+  passed &= Require016(
+      !exec::ValidateTypedPhysicalNodeDag(changed_causal_identity).accepted,
+      "physical ABI accepted a changed publication ordinal/causal identity");
+  auto incomplete_contract = result.physical_dag;
+  incomplete_contract.descriptor_contract_validated = false;
+  passed &= Require016(
+      !exec::ValidateTypedPhysicalNodeDag(incomplete_contract).accepted,
+      "physical ABI accepted an incomplete publication contract");
+  auto changed_plan_identity = result.physical_dag;
+  ++changed_plan_identity.selected_scalar_score;
+  passed &= Require016(
+      !exec::ValidateTypedPhysicalNodeDag(changed_plan_identity).accepted,
+      "physical ABI accepted a changed complete-plan cost identity");
   return passed;
 }
 
@@ -279,6 +337,21 @@ bool ValidateCapabilityRefusals() {
       "QOW-DIAG-OPTIMIZER-EXECUTOR-CAPABILITY-V1",
       "wrong executor node kind published a DAG");
 
+  auto wrong_implementation = Inputs();
+  wrong_implementation.capabilities.capabilities[3].implementation_id =
+      "join.hash.v1";
+  passed &= ExpectRefusal(
+      wrong_implementation, PublicationIdentity(),
+      "QOW-DIAG-OPTIMIZER-EXECUTOR-CAPABILITY-V1",
+      "executor implementation drift published a DAG");
+
+  auto wrong_descriptor = Inputs();
+  wrong_descriptor.alternatives.alternatives[3].output_descriptor_ids = {999};
+  passed &= ExpectRefusal(
+      wrong_descriptor, PublicationIdentity(),
+      "QOW-DIAG-PHYSICAL-ALTERNATIVE-SHAPE-V1",
+      "physical descriptor drift published a DAG");
+
   auto no_visibility = Inputs();
   no_visibility.capabilities.capabilities[0].mga_visibility_capable = false;
   passed &= ExpectRefusal(
@@ -306,6 +379,30 @@ bool ValidateCapabilityRefusals() {
       stale_search, PublicationIdentity(),
       "QOW-DIAG-OPTIMIZER-PHYSICAL-SEARCH-V1",
       "changed search snapshot published a DAG");
+
+  auto unproved_search = Inputs();
+  unproved_search.search.property_legality_validated = false;
+  passed &= ExpectRefusal(
+      unproved_search, PublicationIdentity(),
+      "QOW-DIAG-OPTIMIZER-PHYSICAL-SEARCH-V1",
+      "search without property-legality proof published a DAG");
+
+  auto forged_cost = Inputs();
+  ++forged_cost.search.selected_alternatives[2].cost.terms.cpu_units;
+  passed &= ExpectRefusal(
+      forged_cost, PublicationIdentity(),
+      "QOW-DIAG-OPTIMIZER-PHYSICAL-SELECTION-V1",
+      "selected node with a forged retained cost term published a DAG");
+
+  auto changed_dependency = Inputs();
+  std::reverse(changed_dependency.request.logical_graph.nodes[2]
+                   .input_logical_node_ids.begin(),
+               changed_dependency.request.logical_graph.nodes[2]
+                   .input_logical_node_ids.end());
+  passed &= ExpectRefusal(
+      changed_dependency, PublicationIdentity(),
+      "QOW-DIAG-OPTIMIZER-PHYSICAL-SELECTION-V1",
+      "logical dependency changed after search published a DAG");
 
   auto stale_admission = Inputs();
   stale_admission.admission.mga_statement_context.current = false;

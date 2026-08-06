@@ -181,6 +181,25 @@ struct PhysicalAdmissionEvidence {
   std::string evidence_uuid;
 };
 
+// QOW-SOURCE-RCP-065-COMPLETE-PHYSICAL-PUBLICATION-V1
+struct PhysicalCostVectorReceipt {
+  std::string cost_vector_uuid;
+  std::string calibration_profile_uuid;
+  std::uint64_t scalar_score{0};
+  std::uint64_t cpu_units{0};
+  std::uint64_t page_read_sequential_units{0};
+  std::uint64_t page_read_random_units{0};
+  std::uint64_t page_write_units{0};
+  std::uint64_t memory_bytes_required{0};
+  std::uint64_t spill_bytes_expected{0};
+  std::uint64_t network_bytes_expected{0};
+  std::uint64_t mga_visibility_checks_expected{0};
+  std::uint64_t archive_fetches_expected{0};
+  std::uint64_t uncertainty_penalty{0};
+  std::uint64_t risk_penalty{0};
+  std::uint8_t confidence{0};
+};
+
 struct PhysicalNodeRecord {
   std::uint64_t physical_node_id{0};
   std::uint32_t relational_node_id{0};
@@ -200,6 +219,12 @@ struct PhysicalNodeRecord {
   std::uint64_t spill_bytes_expected{0};
   bool engine_capability_validated{false};
   PhysicalMgaStatementContext mga_statement_context;
+  std::string logical_semantic_variant_id;
+  std::uint64_t publication_ordinal{0};
+  std::string transformation_uuid;
+  std::string transformation_rule_id;
+  std::vector<std::string> enforced_property_uuids;
+  PhysicalCostVectorReceipt retained_cost;
 };
 
 struct TypedPhysicalNodeDag {
@@ -233,6 +258,18 @@ struct TypedPhysicalNodeDag {
   bool data_access_observed{false};
   bool parser_execution_authority_claimed{false};
   bool transaction_finality_authority_claimed{false};
+  std::uint16_t publication_contract_version{0};
+  std::string selected_plan_signature;
+  std::uint64_t selected_scalar_score{0};
+  std::uint64_t published_node_count{0};
+  std::uint64_t first_causal_counter_id{0};
+  bool complete_cost_vectors_retained{false};
+  bool descriptor_contract_validated{false};
+  bool property_contract_validated{false};
+  bool dependency_contract_validated{false};
+  bool resource_contract_validated{false};
+  bool mga_contract_validated{false};
+  bool causal_identity_validated{false};
 };
 
 struct PhysicalNodeAbiLimits {
@@ -290,6 +327,16 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
              ch == '.' || ch == '_' || ch == '-';
     });
   };
+  const auto checked_add = [](const std::uint64_t left,
+                              const std::uint64_t right,
+                              std::uint64_t* out) {
+    if (out == nullptr ||
+        std::numeric_limits<std::uint64_t>::max() - left < right) {
+      return false;
+    }
+    *out = left + right;
+    return true;
+  };
 
   if (dag.abi_version != 1 && dag.abi_version != 2) {
     return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-VERSION", 0,
@@ -304,6 +351,8 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
                   "mga_statement_context");
   }
   const bool optimizer_publication_v2 = dag.abi_version == 2;
+  const bool complete_optimizer_publication =
+      optimizer_publication_v2 && dag.publication_contract_version == 1;
   if (optimizer_publication_v2 &&
       (!PhysicalMgaStatementContextValid(dag.mga_statement_context) ||
        dag.local_transaction_id !=
@@ -330,6 +379,20 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
        dag.transaction_finality_authority_claimed)) {
     return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION", 0,
                   "optimizer_publication_scope");
+  }
+  if (complete_optimizer_publication &&
+      (dag.selected_plan_signature.empty() ||
+       dag.published_node_count == 0 ||
+       dag.first_causal_counter_id == 0 ||
+       !dag.complete_cost_vectors_retained ||
+       !dag.descriptor_contract_validated ||
+       !dag.property_contract_validated ||
+       !dag.dependency_contract_validated ||
+       !dag.resource_contract_validated ||
+       !dag.mga_contract_validated ||
+       !dag.causal_identity_validated)) {
+    return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION", 0,
+                  "complete_publication_contract");
   }
   constexpr std::size_t kAdmissionStageCount = 8;
   if (dag.admission_evidence.size() != kAdmissionStageCount) {
@@ -360,15 +423,24 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
                     "admission_order_or_evidence");
     }
   }
+  if (optimizer_publication_v2 && dag.publication_contract_version > 1) {
+    return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION", 0,
+                  "publication_contract_version");
+  }
   if (limits.maximum_nodes == 0 || limits.maximum_depth == 0 ||
       limits.maximum_fanout == 0 || dag.nodes.empty() ||
-      dag.nodes.size() > limits.maximum_nodes) {
+      dag.nodes.size() > limits.maximum_nodes ||
+      (complete_optimizer_publication &&
+       (dag.published_node_count > limits.maximum_nodes ||
+        dag.nodes.size() > dag.published_node_count))) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0, "node_count");
   }
 
   std::unordered_map<std::uint64_t, const PhysicalNodeRecord*> nodes_by_id;
   std::unordered_map<std::uint64_t, std::size_t> incoming_reference_count;
   std::unordered_set<std::uint64_t> causal_counter_ids;
+  std::unordered_set<std::uint64_t> publication_ordinals;
+  std::uint64_t retained_selected_scalar_score = 0;
   for (const auto& node : dag.nodes) {
     if (node.physical_node_id == 0 || node.relational_node_id == 0 ||
         !known_kind(node.node_kind) ||
@@ -382,6 +454,7 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
     if (optimizer_publication_v2) {
       std::unordered_set<std::string> required_properties;
       std::unordered_set<std::string> delivered_properties;
+      std::unordered_set<std::string> enforced_properties;
       const auto valid_properties = [&](const auto& properties,
                                         auto* unique) {
         return std::ranges::all_of(properties, [&](const auto& property_uuid) {
@@ -405,6 +478,58 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
         return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-CAPABILITY",
                       node.physical_node_id,
                       "selected_node_capability_contract");
+      }
+      if (complete_optimizer_publication) {
+        const auto& cost = node.retained_cost;
+        std::uint64_t retained_scalar_score = 0;
+        const auto add_cost = [&](const std::uint64_t term) {
+          return checked_add(retained_scalar_score, term,
+                             &retained_scalar_score);
+        };
+        std::uint64_t expected_causal_counter = 0;
+        if (node.physical_node_id != node.relational_node_id ||
+            !valid_implementation_id(node.logical_semantic_variant_id) ||
+            node.publication_ordinal >= dag.published_node_count ||
+            !publication_ordinals.insert(node.publication_ordinal).second ||
+            !checked_add(dag.first_causal_counter_id,
+                         node.publication_ordinal,
+                         &expected_causal_counter) ||
+            node.causal_counter_id != expected_causal_counter ||
+            !canonical_uuid(node.transformation_uuid) ||
+            !valid_implementation_id(node.transformation_rule_id) ||
+            !valid_properties(node.enforced_property_uuids,
+                              &enforced_properties) ||
+            !std::ranges::all_of(
+                node.enforced_property_uuids,
+                [&](const auto& property_uuid) {
+                  return delivered_properties.contains(property_uuid);
+                }) ||
+            cost.cost_vector_uuid != node.cost_vector_uuid ||
+            !canonical_uuid(cost.calibration_profile_uuid) ||
+            cost.confidence > 3 ||
+            cost.memory_bytes_required != node.memory_bytes_required ||
+            cost.spill_bytes_expected != node.spill_bytes_expected ||
+            !add_cost(cost.cpu_units) ||
+            !add_cost(cost.page_read_sequential_units) ||
+            !add_cost(cost.page_read_random_units) ||
+            !add_cost(cost.page_write_units) ||
+            !add_cost(cost.memory_bytes_required) ||
+            !add_cost(cost.spill_bytes_expected) ||
+            !add_cost(cost.network_bytes_expected) ||
+            !add_cost(cost.mga_visibility_checks_expected) ||
+            !add_cost(cost.archive_fetches_expected) ||
+            !add_cost(cost.uncertainty_penalty) ||
+            !add_cost(cost.risk_penalty) ||
+            retained_scalar_score != cost.scalar_score ||
+            !checked_add(retained_selected_scalar_score,
+                         cost.scalar_score,
+                         &retained_selected_scalar_score) ||
+            (node.node_kind == PhysicalNodeKind::kScan &&
+             cost.mga_visibility_checks_expected == 0)) {
+          return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+                        node.physical_node_id,
+                        "complete_selected_node_contract");
+        }
       }
     }
     if (node.input_physical_node_ids.size() > limits.maximum_fanout) {
@@ -441,6 +566,34 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
   for (const auto& [node_id, reference_count] : incoming_reference_count) {
     if (reference_count > 1 && !nodes_by_id.at(node_id)->shareable) {
       return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node_id, "shareable");
+    }
+  }
+  if (complete_optimizer_publication &&
+      dag.nodes.size() == dag.published_node_count) {
+    std::vector<const PhysicalNodeRecord*> canonical_nodes;
+    canonical_nodes.reserve(dag.nodes.size());
+    for (const auto& node : dag.nodes) canonical_nodes.push_back(&node);
+    std::ranges::sort(canonical_nodes, {},
+                      &PhysicalNodeRecord::relational_node_id);
+    std::string selected_plan_signature;
+    for (const auto* node : canonical_nodes) {
+      selected_plan_signature +=
+          std::to_string(node->relational_node_id) + "=" +
+          node->selected_alternative_uuid + ";";
+    }
+    if (selected_plan_signature != dag.selected_plan_signature ||
+        retained_selected_scalar_score != dag.selected_scalar_score) {
+      return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION", 0,
+                    "complete_selected_plan_contract");
+    }
+    for (const auto& node : dag.nodes) {
+      const auto reference_count =
+          incoming_reference_count[node.physical_node_id];
+      if (node.shareable != (reference_count > 1)) {
+        return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+                      node.physical_node_id,
+                      "exact_dependency_shareability");
+      }
     }
   }
 

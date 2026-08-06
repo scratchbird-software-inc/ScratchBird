@@ -693,6 +693,7 @@ bool ValidateExhaustiveSearch() {
           result.property_enforcement_candidate_count == 2 &&
           result.fully_explored_memo_group_count == 4 &&
           result.timeout_fallback_memo_group_count == 0 &&
+          result.logical_dependency_receipts.size() == 4 &&
           !result.physical_dag_published &&
           !result.data_access_allowed && result.selected_alternatives.size() == 4 &&
           result.catalog_epoch_uuid == Uuid(2) &&
