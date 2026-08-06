@@ -214,6 +214,8 @@ struct CanonicalWindowAggregateResult {
   bool aggregate_order_independent_of_window_order = false;
   bool effective_frame_recomputed = false;
   bool shared_aggregate_state_authority_used = false;
+  bool canonical_registry_state_frame_executor_used = false;
+  bool split_runtime_bypass_forbidden = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string window_property_uuid;
   std::string selected_plan_uuid;
@@ -253,6 +255,7 @@ struct CanonicalRegistryWindowAggregateResult {
   std::vector<std::uint32_t> value_expression_descriptor_ids;
   std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
   std::vector<std::vector<std::size_t>> frame_row_indices;
+  std::vector<std::vector<std::size_t>> transition_row_indices;
   std::size_t frame_input_row_count = 0;
   std::size_t transition_count = 0;
   std::size_t inverse_transition_count = 0;
@@ -370,12 +373,20 @@ struct CanonicalWindowRuntimeRequest {
 struct CanonicalWindowRuntimeResult {
   DescriptorRuntimeDiagnostic diagnostic;
   CanonicalWindowRuntimeDescriptor descriptor;
+  std::optional<CanonicalWindowRankingResult> ranking_strategy_result;
+  std::optional<CanonicalWindowValueResult> value_strategy_result;
+  std::optional<CanonicalRegistryWindowAggregateResult>
+      aggregate_strategy_result;
+  std::optional<CanonicalRegistryWindowAggregateSpillResult>
+      aggregate_spill_strategy_result;
   CanonicalWindowRuntimeStrategy executed_strategy =
       CanonicalWindowRuntimeStrategy::unknown;
   std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
   bool every_descriptor_field_consumed = false;
   bool exactly_one_strategy_payload_consumed = false;
   bool retained_strategy_reached = false;
+  bool canonical_registry_state_frame_executor_used = false;
+  bool split_runtime_bypass_forbidden = false;
   bool aggregate_registry_bridge_used = false;
   bool moving_inverse_state_used = false;
   bool effective_frame_recomputed = false;

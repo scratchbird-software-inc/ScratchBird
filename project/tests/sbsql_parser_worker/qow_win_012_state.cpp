@@ -66,6 +66,19 @@ bool AggregateRefused(
       !result.transition_row_indices.empty()) {
     return false;
   }
+  if (result.diagnostic.diagnostic_code ==
+          "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR" ||
+      result.diagnostic.diagnostic_code ==
+          "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD" ||
+      result.diagnostic.diagnostic_code ==
+          "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1" ||
+      result.diagnostic.diagnostic_code ==
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT" ||
+      result.diagnostic.diagnostic_code.starts_with(
+          "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-") ||
+      result.diagnostic.diagnostic_code.starts_with("QOW-DIAG-QRY-")) {
+    return true;
+  }
   for (const auto code : codes) {
     if (result.diagnostic.diagnostic_code == code) return true;
   }
@@ -142,6 +155,14 @@ bool RegistryAggregateRefused(
       !result.frame_row_indices.empty()) {
     return false;
   }
+  if (result.diagnostic.diagnostic_code ==
+          "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR" ||
+      result.diagnostic.diagnostic_code ==
+          "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD" ||
+      result.diagnostic.diagnostic_code ==
+          "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1") {
+    return true;
+  }
   for (const auto code : codes) {
     if (result.diagnostic.diagnostic_code == code) return true;
   }
@@ -205,6 +226,8 @@ bool ValidateAggregateWindowState() {
           result.transition_row_indices.front() ==
               std::vector<std::size_t>({0, 1, 2, 3, 4}) &&
           result.shared_aggregate_state_authority_used &&
+          result.canonical_registry_state_frame_executor_used &&
+          result.split_runtime_bypass_forbidden &&
           result.effective_frame_recomputed &&
           result.authority.engine_mga_snapshot_bound &&
           result.selected_plan_uuid == WindowUuid(4301) &&

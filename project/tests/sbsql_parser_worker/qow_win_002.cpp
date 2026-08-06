@@ -110,11 +110,25 @@ bool RuntimeResultAccepted(
     const exec::CanonicalWindowRuntimeResult& result,
     const exec::CanonicalWindowRuntimeStrategy expected_strategy,
     const std::vector<api::EngineTypedValue>& direct_values) {
-  return result.diagnostic.ok &&
+  const bool strategy_receipt =
+      expected_strategy == exec::CanonicalWindowRuntimeStrategy::ranking
+          ? result.ranking_strategy_result.has_value() &&
+                !result.value_strategy_result.has_value() &&
+                !result.aggregate_strategy_result.has_value()
+          : expected_strategy == exec::CanonicalWindowRuntimeStrategy::value
+                ? !result.ranking_strategy_result.has_value() &&
+                      result.value_strategy_result.has_value() &&
+                      !result.aggregate_strategy_result.has_value()
+                : !result.ranking_strategy_result.has_value() &&
+                      !result.value_strategy_result.has_value() &&
+                      result.aggregate_strategy_result.has_value();
+  return result.diagnostic.ok && strategy_receipt &&
          result.executed_strategy == expected_strategy &&
          result.every_descriptor_field_consumed &&
          result.exactly_one_strategy_payload_consumed &&
          result.retained_strategy_reached &&
+         result.canonical_registry_state_frame_executor_used &&
+         result.split_runtime_bypass_forbidden &&
          result.authority.engine_mga_snapshot_bound &&
          result.selected_plan_uuid == WindowUuid(4301) &&
          result.causal_counter_id == 40102 &&

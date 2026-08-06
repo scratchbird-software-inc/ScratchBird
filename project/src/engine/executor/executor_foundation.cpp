@@ -6128,7 +6128,7 @@ RankingRealValue(
 // by QOW-401 after QOW-402 has validated the complete frame and exclusion.
 // These six functions intentionally ignore effective-frame extent only after
 // that validation, as required by WINDOW_CORE.
-CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
+static CanonicalWindowRankingResult ExecuteCanonicalWindowRankingStrategy(
     const CanonicalWindowRankingRequest& request) {
   CanonicalWindowRankingResult result;
   const auto refuse = [&](std::string detail) {
@@ -6499,7 +6499,7 @@ bool CanonicalWindowInt64Operand(
 // partition, peer, frame, exclusion, descriptor, and MGA evidence. LAG/LEAD
 // validate but ignore the effective frame; FIRST/LAST/NTH select only from the
 // effective row-index vector remaining after exclusion.
-CanonicalWindowValueResult ExecuteCanonicalWindowValue(
+static CanonicalWindowValueResult ExecuteCanonicalWindowValueStrategy(
     const CanonicalWindowValueRequest& request) {
   namespace api = scratchbird::engine::internal_api;
   CanonicalWindowValueResult result;
@@ -6748,329 +6748,6 @@ CanonicalWindowValueResult ExecuteCanonicalWindowValue(
   return result;
 }
 
-// QOW-SOURCE-WIN-012-STATE-V1
-// QOW-SOURCE-WIN-012-FILTER-V1
-// QOW-SOURCE-WIN-012-DISTINCT-V1
-// QOW-SOURCE-WIN-012-ORDER-V1
-// QOW-SOURCE-WIN-012-FRAME-V1
-// Aggregate windows consume the exact QOW-402 effective-row vectors and the
-// same int64 SUM transition/finalization helpers as QOW-205.  Each frame is
-// recomputed deliberately: inverse transition remains an optional optimizer
-// improvement and cannot change values or diagnostics.  FILTER, DISTINCT,
-// and aggregate argument ordering are applied before transition in that
-// order, independently of the ordering that constructed the window frame.
-CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
-    const CanonicalWindowAggregateRequest& request) {
-  namespace api = scratchbird::engine::internal_api;
-  const auto* sum_registry_entry = LookupCanonicalAggregateByFunctionV1(
-      CanonicalAggregateFunction::sum);
-
-  CanonicalWindowAggregateResult result;
-  const auto refuse = [&](std::string code, std::string detail) {
-    result = {};
-    result.diagnostic.ok = false;
-    result.diagnostic.diagnostic_code = std::move(code);
-    result.diagnostic.detail = std::move(detail);
-    return result;
-  };
-  const auto authority_validation = RevalidateCanonicalWindowFrameAuthority(
-      request.mga_authority, request.frames);
-  if (!authority_validation.ok) {
-    return refuse(authority_validation.diagnostic_code,
-                  authority_validation.detail);
-  }
-  const auto& execution_authority = CanonicalWindowFrameExecutionAuthority(
-      request.mga_authority, request.frames);
-  if (request.function != CanonicalWindowAggregateFunction::int64_sum ||
-      sum_registry_entry == nullptr || !sum_registry_entry->executable ||
-      !sum_registry_entry->aggregate_as_window ||
-      request.function_uuid != sum_registry_entry->function_uuid ||
-      !IsCanonicalUuid(request.function_uuid)) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
-                  "aggregate-window function kind and registry UUID do not match");
-  }
-  if (!CanonicalWindowFrameEvidenceValid(request.frames)) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE-FRAME",
-                  "aggregate-window input is not canonical QOW-402 frame evidence");
-  }
-  if (request.parser_execution_authority_claimed ||
-      request.transaction_finality_claimed ||
-      request.recovery_authority_claimed) {
-    return refuse("QOW-DIAG-WINDOW-AUTHORITY",
-                  "aggregate window attempted to claim engine MGA authority");
-  }
-
-  const auto row_count = request.frames.ordered_batch.rows.size();
-  if (request.maximum_output_rows == 0 ||
-      row_count > request.maximum_output_rows ||
-      request.maximum_transition_count == 0) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE-FRAME",
-                  "aggregate-window output or transition resource bound was exceeded");
-  }
-  std::optional<std::size_t> value_column_index;
-  for (std::size_t column = 0;
-       column < request.frames.ordered_batch.columns.size(); ++column) {
-    if (request.frames.ordered_batch.columns[column].descriptor_id ==
-        request.value_expression_descriptor_id) {
-      if (value_column_index.has_value()) {
-        return refuse("QOW-DIAG-WINDOW-AGGREGATE",
-                      "aggregate-window value descriptor handle is ambiguous");
-      }
-      value_column_index = column;
-    }
-  }
-  if (!value_column_index.has_value()) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
-                  "aggregate-window value descriptor handle is unresolved");
-  }
-  const auto& value_column =
-      request.frames.ordered_batch.columns[*value_column_index];
-  if (value_column.descriptor.canonical_type_name != "int64" ||
-      request.result_column.descriptor_id == 0 ||
-      request.result_column.stable_name.empty() ||
-      !request.result_column.nullable ||
-      !IsCanonicalUuid(
-          request.result_column.descriptor.descriptor_uuid.canonical) ||
-      request.result_column.descriptor.descriptor_kind != "scalar" ||
-      request.result_column.descriptor.canonical_type_name != "int64" ||
-      request.result_column.descriptor.encoded_descriptor.empty()) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
-                  "SUM window value or result is not a bound nullable int64 descriptor");
-  }
-  DescriptorBatch result_schema;
-  result_schema.columns = {request.result_column};
-  const auto result_schema_validation = ValidateCanonicalDescriptorBatch(
-      result_schema, {request.result_column.descriptor_id});
-  if (!result_schema_validation.ok) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
-                  result_schema_validation.diagnostic_code + ":" +
-                      result_schema_validation.detail);
-  }
-
-  std::vector<std::optional<std::int64_t>> decoded_values;
-  decoded_values.reserve(row_count);
-  for (const auto& row : request.frames.ordered_batch.rows) {
-    const auto& value = row.values[*value_column_index];
-    if (value.state == api::EngineValueState::sql_null) {
-      decoded_values.push_back(std::nullopt);
-      continue;
-    }
-    const auto decoded = DecodeInt64Value(value);
-    if (!decoded.ok()) {
-      return refuse("QOW-DIAG-WINDOW-AGGREGATE",
-                    decoded.diagnostic.diagnostic_code + ":" +
-                        decoded.diagnostic.detail);
-    }
-    decoded_values.push_back(decoded.value);
-  }
-
-  std::vector<std::uint8_t> filter_passes(row_count, 1);
-  if (request.filter_truth_values.has_value()) {
-    if (request.filter_truth_values->size() != row_count) {
-      return refuse("QOW-DIAG-WINDOW-AGGREGATE-FILTER",
-                    "aggregate FILTER cardinality does not match window rows");
-    }
-    for (std::size_t row = 0; row < row_count; ++row) {
-      std::string detail;
-      bool passes = false;
-      if (!api::QowPredicateConsumerPassesV1(
-              (*request.filter_truth_values)[row],
-              api::EnginePredicateConsumer::filter, &passes, &detail)) {
-        return refuse("QOW-DIAG-WINDOW-AGGREGATE-FILTER",
-                      "aggregate FILTER 3VL refusal: " + detail);
-      }
-      filter_passes[row] = passes ? 1 : 0;
-    }
-  }
-
-  if (request.distinct && request.maximum_distinct_value_count == 0) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE-DISTINCT",
-                  "aggregate-window DISTINCT resource bound is zero");
-  }
-  if (request.aggregate_order_terms.empty()) {
-    if (!request.deterministic_tie_evidence_uuid.empty()) {
-      return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
-                    "unordered aggregate window carries ordering evidence");
-    }
-  } else {
-    if (request.aggregate_order_terms.size() > 64 ||
-        !IsCanonicalUuid(request.deterministic_tie_evidence_uuid) ||
-        request.maximum_pair_comparisons == 0) {
-      return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
-                    "aggregate argument order resource or tie evidence is invalid");
-    }
-    std::set<std::pair<std::size_t, std::uint32_t>> seen_terms;
-    for (const auto& term : request.aggregate_order_terms) {
-      if (term.column >= request.frames.ordered_batch.columns.size()) {
-        return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
-                      "aggregate argument order column is outside the schema");
-      }
-      const auto term_validation = ValidateCanonicalDescriptorOrderTerm(
-          term, request.frames.ordered_batch.columns[term.column]);
-      if (!term_validation.ok ||
-          !seen_terms.emplace(term.column, term.expression_descriptor_id)
-               .second) {
-        return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
-                      term_validation.ok
-                          ? "aggregate argument order term is duplicated"
-                          : term_validation.diagnostic_code + ":" +
-                                term_validation.detail);
-      }
-    }
-  }
-
-  result.values.reserve(row_count);
-  result.transition_row_indices.reserve(row_count);
-  for (std::size_t output_row = 0; output_row < row_count; ++output_row) {
-    std::vector<std::size_t> transition_rows;
-    for (const auto member :
-         request.frames.effective_frames[output_row].effective_row_indices) {
-      if (filter_passes[member]) transition_rows.push_back(member);
-    }
-
-    std::set<std::int64_t> distinct_values;
-    if (request.distinct) {
-      std::vector<std::size_t> distinct_rows;
-      distinct_rows.reserve(transition_rows.size());
-      for (const auto member : transition_rows) {
-        if (!decoded_values[member].has_value()) continue;
-        if (distinct_values.contains(*decoded_values[member])) continue;
-        if (distinct_values.size() >=
-            request.maximum_distinct_value_count) {
-          return refuse("QOW-DIAG-WINDOW-AGGREGATE-DISTINCT",
-                        "aggregate-window DISTINCT resource bound was exceeded");
-        }
-        distinct_values.insert(*decoded_values[member]);
-        distinct_rows.push_back(member);
-      }
-      transition_rows = std::move(distinct_rows);
-      if (result.distinct_value_count >
-          std::numeric_limits<std::size_t>::max() - distinct_values.size()) {
-        return refuse("QOW-DIAG-WINDOW-AGGREGATE-DISTINCT",
-                      "aggregate-window DISTINCT evidence count overflowed");
-      }
-      result.distinct_value_count += distinct_values.size();
-    }
-
-    if (!request.aggregate_order_terms.empty()) {
-      const auto candidate_count = transition_rows.size();
-      if (candidate_count != 0 &&
-          candidate_count >
-              std::numeric_limits<std::size_t>::max() / candidate_count) {
-        return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
-                      "aggregate argument order comparison matrix overflowed");
-      }
-      const auto matrix_size = candidate_count * candidate_count;
-      if (matrix_size > request.maximum_pair_comparisons ||
-          result.pair_comparison_count >
-              request.maximum_pair_comparisons - matrix_size) {
-        return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
-                      "aggregate argument order comparison bound was exceeded");
-      }
-      std::vector<std::int8_t> comparisons(matrix_size, 0);
-      for (std::size_t left = 0; left < candidate_count; ++left) {
-        for (std::size_t right = left + 1; right < candidate_count; ++right) {
-          int comparison = 0;
-          for (const auto& term : request.aggregate_order_terms) {
-            const auto compared = CompareCanonicalDescriptorOrderValues(
-                request.frames.ordered_batch.rows[transition_rows[left]]
-                    .values[term.column],
-                request.frames.ordered_batch.rows[transition_rows[right]]
-                    .values[term.column],
-                term);
-            if (!compared.diagnostic.ok) {
-              return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
-                            compared.diagnostic.diagnostic_code + ":" +
-                                compared.diagnostic.detail);
-            }
-            comparison = compared.comparison;
-            if (comparison != 0) break;
-          }
-          comparisons[left * candidate_count + right] =
-              static_cast<std::int8_t>(comparison);
-          comparisons[right * candidate_count + left] =
-              static_cast<std::int8_t>(-comparison);
-        }
-      }
-      std::vector<std::size_t> order(candidate_count);
-      std::iota(order.begin(), order.end(), 0);
-      std::stable_sort(order.begin(), order.end(),
-                       [&](const std::size_t left, const std::size_t right) {
-                         return comparisons[left * candidate_count + right] <
-                                0;
-                       });
-      std::vector<std::size_t> ordered_rows;
-      ordered_rows.reserve(candidate_count);
-      for (const auto position : order) {
-        ordered_rows.push_back(transition_rows[position]);
-      }
-      transition_rows = std::move(ordered_rows);
-      result.pair_comparison_count += matrix_size;
-    }
-
-    if (transition_rows.size() > request.maximum_transition_count ||
-        result.transition_count >
-            request.maximum_transition_count - transition_rows.size()) {
-      return refuse("QOW-DIAG-WINDOW-AGGREGATE-FRAME",
-                    "aggregate-window transition resource bound was exceeded");
-    }
-    CanonicalInt64SumAggregateState state;
-    state.value_expression_descriptor_id =
-        request.value_expression_descriptor_id;
-    state.result_column = request.result_column;
-    for (const auto member : transition_rows) {
-      std::string detail;
-      if (!TransitionCanonicalInt64SumValue(
-              &state,
-              request.frames.ordered_batch.rows[member]
-                  .values[*value_column_index],
-              &detail)) {
-        return refuse("QOW-DIAG-WINDOW-AGGREGATE", std::move(detail));
-      }
-    }
-    result.transition_count += transition_rows.size();
-    result.transition_row_indices.push_back(std::move(transition_rows));
-    result.values.push_back(FinalizeCanonicalInt64SumValue(state));
-  }
-
-  DescriptorBatch output_validation_batch;
-  output_validation_batch.columns = {request.result_column};
-  output_validation_batch.rows.reserve(result.values.size());
-  for (const auto& value : result.values) {
-    output_validation_batch.rows.push_back({{value}});
-  }
-  const auto output_validation = ValidateCanonicalDescriptorBatch(
-      output_validation_batch, {request.result_column.descriptor_id});
-  if (!output_validation.ok) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
-                  output_validation.diagnostic_code + ":" +
-                      output_validation.detail);
-  }
-  const auto result_authority = RevalidateCanonicalWindowFrameAuthority(
-      request.mga_authority, request.frames);
-  if (!result_authority.ok) {
-    return refuse(result_authority.diagnostic_code,
-                  result_authority.detail);
-  }
-  result.diagnostic = {};
-  result.function = request.function;
-  result.filter_applied_before_transition =
-      request.filter_truth_values.has_value();
-  result.distinct_applied_before_transition = request.distinct;
-  result.aggregate_order_independent_of_window_order =
-      !request.aggregate_order_terms.empty();
-  result.effective_frame_recomputed = true;
-  result.shared_aggregate_state_authority_used = true;
-  result.authority = request.frames.authority;
-  result.window_property_uuid = request.frames.window_property_uuid;
-  result.selected_plan_uuid = request.frames.selected_plan_uuid;
-  result.executed_physical_node_id =
-      request.frames.executed_physical_node_id;
-  result.causal_counter_id = request.frames.causal_counter_id;
-  result.mga_statement_context = execution_authority.statement_context;
-  return result;
-}
-
 // QOW-SOURCE-WIN-012-REGISTRY-BRIDGE-V1
 // Execute the exact state strategy named by the optimizer-published aggregate
 // window node. Direct execution admits recomputation or moving inverse state;
@@ -7306,6 +6983,7 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
   };
   result.values.reserve(row_count);
   result.frame_row_indices.reserve(row_count);
+  result.transition_row_indices.reserve(row_count);
   for (const auto& frame : request.frames.effective_frames) {
     if (!within_total(frame.effective_row_indices.size(),
                       result.frame_input_row_count,
@@ -7354,6 +7032,10 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
                     "moving aggregate window evidence is inconsistent");
     }
     result.values = std::move(moving.values);
+    // The inverse strategy is admitted only without FILTER, DISTINCT, or
+    // aggregate ordering, so its transition membership is the effective
+    // frame membership itself.
+    result.transition_row_indices = result.frame_row_indices;
     result.transition_count = moving.addition_transition_count;
     result.inverse_transition_count = moving.inverse_transition_count;
     result.combined_state_bytes = moving.cumulative_state_bytes;
@@ -7410,6 +7092,16 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
       result.distinct_tuple_count += frame_result.distinct_tuple_count;
       result.order_comparison_count += frame_result.order_comparison_count;
       result.combined_state_bytes += frame_result.state_bytes;
+      std::vector<std::size_t> transition_rows;
+      transition_rows.reserve(frame_result.transition_row_indices.size());
+      for (const auto frame_row : frame_result.transition_row_indices) {
+        if (frame_row >= frame.effective_row_indices.size()) {
+          return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-EVIDENCE",
+                        "aggregate transition receipt escaped its effective frame");
+        }
+        transition_rows.push_back(frame.effective_row_indices[frame_row]);
+      }
+      result.transition_row_indices.push_back(std::move(transition_rows));
       result.values.push_back(
           std::move(frame_result.output_batch.rows.front().values.front()));
     }
@@ -7484,8 +7176,8 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
   return result;
 }
 
-CanonicalRegistryWindowAggregateResult
-ExecuteCanonicalRegistryWindowAggregate(
+static CanonicalRegistryWindowAggregateResult
+ExecuteCanonicalRegistryWindowAggregateStrategy(
     const CanonicalRegistryWindowAggregateRequest& request) {
   return ExecuteCanonicalRegistryWindowAggregateSelected(request, false);
 }
@@ -7496,8 +7188,8 @@ ExecuteCanonicalRegistryWindowAggregate(
 // through engine-owned temporary work. The already optimizer-published window
 // implementation owns selection of this route; temporary metadata remains
 // advisory and never owns visibility, finality, or recovery.
-CanonicalRegistryWindowAggregateSpillResult
-ExecuteCanonicalRegistryWindowAggregateSpill(
+static CanonicalRegistryWindowAggregateSpillResult
+ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
     const CanonicalRegistryWindowAggregateSpillRequest& request) {
   CanonicalRegistryWindowAggregateSpillResult result;
   const auto refuse = [&](std::string code, std::string detail) {
@@ -7982,7 +7674,8 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
                     "ranking payload does not match the runtime descriptor");
     }
     const auto ranking_result =
-        ExecuteCanonicalWindowRanking(*request.ranking);
+        ExecuteCanonicalWindowRankingStrategy(*request.ranking);
+    result.ranking_strategy_result = ranking_result;
     std::optional<std::uint64_t> expected_ntile_bucket_count;
     if (request.ranking->ntile_bucket_count.has_value()) {
       std::uint64_t bucket_count = 0;
@@ -8030,7 +7723,8 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
                     "value payload does not match the runtime descriptor");
     }
     const auto value_result =
-        ExecuteCanonicalWindowValue(*request.value);
+        ExecuteCanonicalWindowValueStrategy(*request.value);
+    result.value_strategy_result = value_result;
     const bool navigation =
         request.value->function == CanonicalWindowValueFunction::lag ||
         request.value->function == CanonicalWindowValueFunction::lead;
@@ -8134,8 +7828,9 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
     CanonicalRegistryWindowAggregateResult aggregate_result;
     if (request.registry_aggregate_spill.has_value()) {
       const auto spill_result =
-          ExecuteCanonicalRegistryWindowAggregateSpill(
+          ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
               *request.registry_aggregate_spill);
+      result.aggregate_spill_strategy_result = spill_result;
       if (!spill_result.diagnostic.ok) {
         result.diagnostic = spill_result.diagnostic;
         result.values.clear();
@@ -8158,8 +7853,10 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
       result.aggregate_spilled_state_record_count =
           spill_result.spilled_aggregate_state_record_count;
     } else {
-      aggregate_result = ExecuteCanonicalRegistryWindowAggregate(aggregate);
+      aggregate_result =
+          ExecuteCanonicalRegistryWindowAggregateStrategy(aggregate);
     }
+    result.aggregate_strategy_result = aggregate_result;
     std::vector<std::vector<std::size_t>> expected_frame_rows;
     expected_frame_rows.reserve(aggregate.frames.effective_frames.size());
     std::size_t expected_frame_input_row_count = 0;
@@ -8193,6 +7890,8 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
          aggregate_result.values.size() !=
              aggregate.frames.ordered_batch.rows.size() ||
          aggregate_result.frame_row_indices != expected_frame_rows ||
+         aggregate_result.transition_row_indices.size() !=
+             aggregate.frames.effective_frames.size() ||
          aggregate_result.frame_input_row_count !=
              expected_frame_input_row_count ||
          aggregate_result.direct_argument_count !=
@@ -8252,6 +7951,8 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
   result.every_descriptor_field_consumed = true;
   result.exactly_one_strategy_payload_consumed = true;
   result.retained_strategy_reached = true;
+  result.canonical_registry_state_frame_executor_used = true;
+  result.split_runtime_bypass_forbidden = true;
   const auto result_authority = RevalidateCanonicalWindowFrameAuthority(
       request.mga_authority, *payload_frames);
   if (!result_authority.ok) {
@@ -8259,6 +7960,368 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
   }
   result.mga_statement_context = execution_authority.statement_context;
   return result;
+}
+
+CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
+    const CanonicalWindowRankingRequest& request) {
+  CanonicalWindowRuntimeFunction runtime_function =
+      CanonicalWindowRuntimeFunction::unknown;
+  switch (request.function) {
+    case CanonicalWindowRankingFunction::row_number:
+      runtime_function = CanonicalWindowRuntimeFunction::row_number;
+      break;
+    case CanonicalWindowRankingFunction::rank:
+      runtime_function = CanonicalWindowRuntimeFunction::rank;
+      break;
+    case CanonicalWindowRankingFunction::dense_rank:
+      runtime_function = CanonicalWindowRuntimeFunction::dense_rank;
+      break;
+    case CanonicalWindowRankingFunction::percent_rank:
+      runtime_function = CanonicalWindowRuntimeFunction::percent_rank;
+      break;
+    case CanonicalWindowRankingFunction::cume_dist:
+      runtime_function = CanonicalWindowRuntimeFunction::cume_dist;
+      break;
+    case CanonicalWindowRankingFunction::ntile:
+      runtime_function = CanonicalWindowRuntimeFunction::ntile;
+      break;
+  }
+  const auto registry = CanonicalWindowRuntimeRegistryV1();
+  const auto descriptor = std::ranges::find_if(
+      registry, [&](const auto& row) {
+        return row.function == runtime_function;
+      });
+  if (descriptor == registry.end()) {
+    CanonicalWindowRankingResult refused;
+    refused.diagnostic = WindowRankingRefusal(
+        request.function, "ranking function has no canonical runtime row");
+    return refused;
+  }
+  CanonicalWindowRuntimeRequest runtime_request;
+  runtime_request.descriptor = *descriptor;
+  runtime_request.ranking = request;
+  runtime_request.forced_strategy = CanonicalWindowRuntimeStrategy::ranking;
+  runtime_request.mga_authority = request.mga_authority;
+  auto runtime = ExecuteCanonicalWindowRuntime(runtime_request);
+  if (runtime.ranking_strategy_result.has_value()) {
+    return std::move(*runtime.ranking_strategy_result);
+  }
+  CanonicalWindowRankingResult refused;
+  refused.diagnostic = std::move(runtime.diagnostic);
+  return refused;
+}
+
+CanonicalWindowValueResult ExecuteCanonicalWindowValue(
+    const CanonicalWindowValueRequest& request) {
+  CanonicalWindowRuntimeFunction runtime_function =
+      CanonicalWindowRuntimeFunction::unknown;
+  switch (request.function) {
+    case CanonicalWindowValueFunction::lag:
+      runtime_function = CanonicalWindowRuntimeFunction::lag;
+      break;
+    case CanonicalWindowValueFunction::lead:
+      runtime_function = CanonicalWindowRuntimeFunction::lead;
+      break;
+    case CanonicalWindowValueFunction::first_value:
+      runtime_function = CanonicalWindowRuntimeFunction::first_value;
+      break;
+    case CanonicalWindowValueFunction::last_value:
+      runtime_function = CanonicalWindowRuntimeFunction::last_value;
+      break;
+    case CanonicalWindowValueFunction::nth_value:
+      runtime_function = CanonicalWindowRuntimeFunction::nth_value;
+      break;
+  }
+  const auto registry = CanonicalWindowRuntimeRegistryV1();
+  const auto descriptor = std::ranges::find_if(
+      registry, [&](const auto& row) {
+        return row.function == runtime_function;
+      });
+  if (descriptor == registry.end()) {
+    CanonicalWindowValueResult refused;
+    refused.diagnostic = WindowValueRefusal(
+        "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
+        "window value function has no canonical runtime row");
+    return refused;
+  }
+  CanonicalWindowRuntimeRequest runtime_request;
+  runtime_request.descriptor = *descriptor;
+  runtime_request.value = request;
+  runtime_request.forced_strategy = CanonicalWindowRuntimeStrategy::value;
+  runtime_request.mga_authority = request.mga_authority;
+  auto runtime = ExecuteCanonicalWindowRuntime(runtime_request);
+  if (runtime.value_strategy_result.has_value()) {
+    return std::move(*runtime.value_strategy_result);
+  }
+  CanonicalWindowValueResult refused;
+  refused.diagnostic = std::move(runtime.diagnostic);
+  return refused;
+}
+
+CanonicalRegistryWindowAggregateResult
+ExecuteCanonicalRegistryWindowAggregate(
+    const CanonicalRegistryWindowAggregateRequest& request) {
+  const auto& aggregate = request.aggregate_template.descriptor;
+  CanonicalWindowRuntimeDescriptor descriptor;
+  descriptor.abi_version = aggregate.abi_version;
+  descriptor.builtin_id = aggregate.builtin_id;
+  descriptor.function_uuid = aggregate.function_uuid;
+  descriptor.aggregate_function = aggregate.function;
+  CanonicalWindowRuntimeRequest runtime_request;
+  runtime_request.descriptor = std::move(descriptor);
+  runtime_request.registry_aggregate = request;
+  runtime_request.forced_strategy = CanonicalWindowRuntimeStrategy::aggregate;
+  runtime_request.mga_authority = request.aggregate_template.mga_authority;
+  auto runtime = ExecuteCanonicalWindowRuntime(runtime_request);
+  if (runtime.aggregate_strategy_result.has_value()) {
+    return std::move(*runtime.aggregate_strategy_result);
+  }
+  CanonicalRegistryWindowAggregateResult refused;
+  refused.diagnostic = std::move(runtime.diagnostic);
+  return refused;
+}
+
+// QOW-SOURCE-WIN-012-STATE-V1
+// QOW-SOURCE-WIN-012-FILTER-V1
+// QOW-SOURCE-WIN-012-DISTINCT-V1
+// QOW-SOURCE-WIN-012-ORDER-V1
+// QOW-SOURCE-WIN-012-FRAME-V1
+// Compatibility entry point for the original int64 SUM-window contract.
+// It carries no state implementation: the request is translated onto the
+// canonical aggregate registry and enters the same descriptor/state/frame
+// dispatcher as every other aggregate-as-window function.
+CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
+    const CanonicalWindowAggregateRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+  CanonicalWindowAggregateResult result;
+  const auto refuse = [&](std::string code, std::string detail) {
+    CanonicalWindowAggregateResult refused;
+    refused.diagnostic.ok = false;
+    refused.diagnostic.diagnostic_code = std::move(code);
+    refused.diagnostic.detail = std::move(detail);
+    return refused;
+  };
+  const auto* sum = LookupCanonicalAggregateByFunctionV1(
+      CanonicalAggregateFunction::sum);
+  if (request.function != CanonicalWindowAggregateFunction::int64_sum ||
+      sum == nullptr || !sum->executable || !sum->aggregate_as_window ||
+      request.function_uuid != sum->function_uuid) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
+                  "SUM compatibility descriptor is not the canonical registry row");
+  }
+  if (request.parser_execution_authority_claimed ||
+      request.transaction_finality_claimed ||
+      request.recovery_authority_claimed) {
+    return refuse("QOW-DIAG-WINDOW-AUTHORITY",
+                  "SUM compatibility facade attempted to claim engine MGA authority");
+  }
+  if (request.aggregate_order_terms.empty()) {
+    if (!request.deterministic_tie_evidence_uuid.empty()) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
+                    "unordered SUM compatibility request carries tie evidence");
+    }
+  } else if (!IsCanonicalUuid(request.deterministic_tie_evidence_uuid) ||
+             request.maximum_pair_comparisons == 0) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
+                  "ordered SUM compatibility request lacks bounded tie evidence");
+  }
+
+  std::optional<std::size_t> value_column;
+  for (std::size_t column = 0;
+       column < request.frames.ordered_batch.columns.size(); ++column) {
+    if (request.frames.ordered_batch.columns[column].descriptor_id !=
+        request.value_expression_descriptor_id) {
+      continue;
+    }
+    if (value_column.has_value()) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE",
+                    "SUM compatibility value descriptor is ambiguous");
+    }
+    value_column = column;
+  }
+  if (!value_column.has_value()) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
+                  "SUM compatibility value descriptor is unresolved");
+  }
+
+  CanonicalRegistryWindowAggregateRequest canonical;
+  canonical.frames = request.frames;
+  canonical.maximum_output_rows = request.maximum_output_rows;
+  std::size_t frame_input_row_count = 0;
+  for (const auto& frame : request.frames.effective_frames) {
+    if (frame_input_row_count >
+        std::numeric_limits<std::size_t>::max() -
+            frame.effective_row_indices.size()) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-FRAME",
+                    "SUM compatibility frame-input receipt overflowed");
+    }
+    frame_input_row_count += frame.effective_row_indices.size();
+  }
+  canonical.maximum_frame_input_row_count =
+      std::max<std::size_t>(1, frame_input_row_count);
+  canonical.maximum_transition_count = request.maximum_transition_count;
+  const auto canonical_per_frame_distinct_bound =
+      !request.distinct
+          ? std::size_t{1}
+          : request.maximum_distinct_value_count ==
+                    std::numeric_limits<std::size_t>::max()
+                ? request.maximum_distinct_value_count
+                : request.maximum_distinct_value_count + 1;
+  const auto distinct_frame_count =
+      std::max<std::size_t>(1, request.frames.effective_frames.size());
+  canonical.maximum_distinct_tuple_count =
+      canonical_per_frame_distinct_bound >
+              std::numeric_limits<std::size_t>::max() / distinct_frame_count
+          ? std::numeric_limits<std::size_t>::max()
+          : canonical_per_frame_distinct_bound * distinct_frame_count;
+  canonical.maximum_order_comparison_count =
+      request.aggregate_order_terms.empty()
+          ? std::size_t{1}
+          : request.maximum_pair_comparisons;
+
+  auto& aggregate = canonical.aggregate_template;
+  aggregate.physical_dag = request.frames.physical_dag;
+  aggregate.selected_physical_node_id =
+      request.frames.executed_physical_node_id;
+  bool selected_node_found = false;
+  for (auto& node : aggregate.physical_dag.nodes) {
+    if (node.physical_node_id != aggregate.selected_physical_node_id) continue;
+    node.node_kind = PhysicalNodeKind::kAggregate;
+    node.implementation_id =
+        "window.aggregate-registry-frame-recompute.v1";
+    node.output_descriptor_ids = {request.result_column.descriptor_id};
+    selected_node_found = true;
+  }
+  if (!selected_node_found) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-FRAME",
+                  "SUM compatibility frame has no selected physical node");
+  }
+  aggregate.descriptor = {sum->abi_version, sum->function, sum->builtin_id,
+                          sum->function_uuid, false};
+  aggregate.value_columns = {*value_column};
+  aggregate.value_expression_descriptor_ids = {
+      request.value_expression_descriptor_id};
+  aggregate.result_column = request.result_column;
+  aggregate.filter_truth_values = request.filter_truth_values;
+  aggregate.distinct = request.distinct;
+  aggregate.aggregate_order_terms = request.aggregate_order_terms;
+  aggregate.maximum_transition_count = request.maximum_transition_count;
+  aggregate.maximum_distinct_value_count =
+      canonical_per_frame_distinct_bound;
+  aggregate.maximum_order_comparison_count =
+      canonical.maximum_order_comparison_count;
+  aggregate.mga_authority = request.mga_authority;
+
+  auto registry_result = ExecuteCanonicalRegistryWindowAggregate(canonical);
+  if (!registry_result.diagnostic.ok) {
+    return refuse(std::move(registry_result.diagnostic.diagnostic_code),
+                  std::move(registry_result.diagnostic.detail));
+  }
+
+  // Preserve the original facade's proof vocabulary. SQL NULL participates
+  // in ordinary SUM transitions, but the historical DISTINCT receipt counted
+  // only non-NULL typed values even though the registry correctly owns the
+  // actual state transition and finalization.
+  result.transition_row_indices =
+      std::move(registry_result.transition_row_indices);
+  std::size_t transition_count = 0;
+  std::size_t distinct_value_count = 0;
+  std::size_t pair_comparison_count = 0;
+  for (auto& rows : result.transition_row_indices) {
+    if (request.distinct) {
+      rows.erase(std::remove_if(rows.begin(), rows.end(), [&](const auto row) {
+                   return request.frames.ordered_batch.rows[row]
+                              .values[*value_column]
+                              .state == api::EngineValueState::sql_null;
+                 }),
+                 rows.end());
+      if (rows.size() > request.maximum_distinct_value_count) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-DISTINCT",
+                      "SUM compatibility frame DISTINCT bound was exceeded");
+      }
+      if (distinct_value_count >
+          std::numeric_limits<std::size_t>::max() - rows.size()) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-DISTINCT",
+                      "SUM compatibility DISTINCT receipt overflowed");
+      }
+      distinct_value_count += rows.size();
+    }
+    if (transition_count >
+        std::numeric_limits<std::size_t>::max() - rows.size()) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-FRAME",
+                    "SUM compatibility transition receipt overflowed");
+    }
+    transition_count += rows.size();
+    if (!request.aggregate_order_terms.empty()) {
+      if (rows.size() != 0 &&
+          rows.size() > std::numeric_limits<std::size_t>::max() / rows.size()) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
+                      "SUM compatibility comparison receipt overflowed");
+      }
+      const auto comparisons = rows.size() * rows.size();
+      if (comparisons > request.maximum_pair_comparisons ||
+          pair_comparison_count >
+              request.maximum_pair_comparisons - comparisons) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
+                      "SUM compatibility comparison bound was exceeded");
+      }
+      pair_comparison_count += comparisons;
+    }
+  }
+  if (transition_count > request.maximum_transition_count) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-FRAME",
+                  "SUM compatibility transition bound was exceeded");
+  }
+  result.diagnostic = {};
+  result.function = request.function;
+  result.values = std::move(registry_result.values);
+  result.transition_count = transition_count;
+  result.distinct_value_count = distinct_value_count;
+  result.pair_comparison_count = pair_comparison_count;
+  result.filter_applied_before_transition =
+      request.filter_truth_values.has_value();
+  result.distinct_applied_before_transition = request.distinct;
+  result.aggregate_order_independent_of_window_order =
+      !request.aggregate_order_terms.empty();
+  result.effective_frame_recomputed =
+      registry_result.effective_frame_recomputed;
+  result.shared_aggregate_state_authority_used =
+      registry_result.shared_aggregate_state_authority_used;
+  result.canonical_registry_state_frame_executor_used = true;
+  result.split_runtime_bypass_forbidden = true;
+  result.authority = registry_result.authority;
+  result.window_property_uuid = registry_result.window_property_uuid;
+  result.selected_plan_uuid = registry_result.selected_plan_uuid;
+  result.executed_physical_node_id =
+      registry_result.executed_physical_node_id;
+  result.causal_counter_id = registry_result.causal_counter_id;
+  result.mga_statement_context = registry_result.mga_statement_context;
+  return result;
+}
+
+CanonicalRegistryWindowAggregateSpillResult
+ExecuteCanonicalRegistryWindowAggregateSpill(
+    const CanonicalRegistryWindowAggregateSpillRequest& request) {
+  const auto& aggregate =
+      request.aggregate_request.aggregate_template.descriptor;
+  CanonicalWindowRuntimeDescriptor descriptor;
+  descriptor.abi_version = aggregate.abi_version;
+  descriptor.builtin_id = aggregate.builtin_id;
+  descriptor.function_uuid = aggregate.function_uuid;
+  descriptor.aggregate_function = aggregate.function;
+  CanonicalWindowRuntimeRequest runtime_request;
+  runtime_request.descriptor = std::move(descriptor);
+  runtime_request.registry_aggregate_spill = request;
+  runtime_request.forced_strategy = CanonicalWindowRuntimeStrategy::aggregate;
+  runtime_request.mga_authority =
+      request.aggregate_request.aggregate_template.mga_authority;
+  auto runtime = ExecuteCanonicalWindowRuntime(runtime_request);
+  if (runtime.aggregate_spill_strategy_result.has_value()) {
+    return std::move(*runtime.aggregate_spill_strategy_result);
+  }
+  CanonicalRegistryWindowAggregateSpillResult refused;
+  refused.diagnostic = std::move(runtime.diagnostic);
+  return refused;
 }
 
 // QOW-SOURCE-WIN-015-MULTIPLE-V1

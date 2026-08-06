@@ -2521,6 +2521,10 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
       (request.distinct ? 1U : 0U) +
       (!request.aggregate_order_terms.empty() ? 1U : 0U);
   result.aggregate_order_term_count = request.aggregate_order_terms.size();
+  result.transition_row_indices.reserve(prepared.transitions.size());
+  for (const auto& transition : prepared.transitions) {
+    result.transition_row_indices.push_back(transition.input_row);
+  }
   result.modifier_pipeline_validated = true;
   result.filter_modifier_applied = request.filter_truth_values.has_value();
   result.distinct_modifier_applied = request.distinct;

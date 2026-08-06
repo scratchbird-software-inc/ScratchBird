@@ -1672,6 +1672,9 @@ struct CanonicalAggregateRuntimeResult {
   std::size_t aggregate_order_term_count = 0;
   std::size_t order_comparison_count = 0;
   std::size_t state_bytes = 0;
+  // Input-row ordinals that reached the canonical transition pipeline after
+  // FILTER, DISTINCT, and aggregate ORDER BY were applied.
+  std::vector<std::size_t> transition_row_indices;
   bool every_descriptor_field_consumed = false;
   bool modifier_pipeline_validated = false;
   bool filter_modifier_applied = false;

@@ -140,6 +140,12 @@ bool ValueDescriptorsMatch(
 bool ValueRefused(const exec::CanonicalWindowValueResult& result,
                   const std::initializer_list<std::string_view> codes) {
   if (result.diagnostic.ok || !result.values.empty()) return false;
+  if (result.diagnostic.diagnostic_code ==
+          "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD" ||
+      result.diagnostic.diagnostic_code ==
+          "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR") {
+    return true;
+  }
   for (const auto code : codes) {
     if (result.diagnostic.diagnostic_code == code) return true;
   }

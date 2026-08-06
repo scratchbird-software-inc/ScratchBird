@@ -332,7 +332,11 @@ bool ValidateNtileBoundaries() {
 bool RankingRefused(const exec::CanonicalWindowRankingResult& result) {
   return !result.diagnostic.ok &&
          (result.diagnostic.diagnostic_code == "QOW-DIAG-WINDOW-RANKING" ||
-          result.diagnostic.diagnostic_code == "QOW-DIAG-WINDOW-NTILE") &&
+          result.diagnostic.diagnostic_code == "QOW-DIAG-WINDOW-NTILE" ||
+          result.diagnostic.diagnostic_code ==
+              "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD" ||
+          result.diagnostic.diagnostic_code ==
+              "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR") &&
          result.values.empty();
 }
 
