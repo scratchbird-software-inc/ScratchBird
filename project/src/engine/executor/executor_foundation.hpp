@@ -79,10 +79,20 @@ struct CanonicalWindowRankingResult {
   DescriptorRuntimeDiagnostic diagnostic;
   CanonicalWindowRankingFunction function =
       CanonicalWindowRankingFunction::row_number;
+  std::string function_uuid;
+  scratchbird::engine::internal_api::EngineDescriptor output_descriptor;
   std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
+  std::optional<std::uint64_t> resolved_ntile_bucket_count;
+  bool every_function_operand_consumed = false;
+  bool partition_peer_metadata_consumed = false;
   bool frame_and_exclusion_validated_then_ignored = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string window_property_uuid;
+  std::string partition_property_uuid;
+  std::string ordering_property_uuid;
+  std::string term_binding_evidence_uuid;
+  std::string deterministic_tie_evidence_uuid;
+  std::string frame_property_binding_evidence_uuid;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;

@@ -101,7 +101,7 @@ exec::CanonicalWindowRankingRequest RuntimeRankingRequest(
       "type_uuid=" + WindowUuid(real ? 6603 : 6602) +
           ";nullability=non_null");
   if (function == exec::CanonicalWindowRankingFunction::ntile) {
-    request.ntile_bucket_count = exec::EncodeInt64Value(3);
+    request.ntile_bucket_count = TypedOffset("int64", "3", 6610);
   }
   return request;
 }

@@ -5738,6 +5738,105 @@ bool RankingRealType(const scratchbird::core::datatypes::CanonicalTypeId type) {
          type == dt::CanonicalTypeId::real128;
 }
 
+std::optional<std::string_view> RankingDescriptorField(
+    const scratchbird::engine::internal_api::EngineDescriptor& descriptor,
+    const std::string_view key) {
+  const std::string prefix = std::string(key) + "=";
+  std::optional<std::string_view> value;
+  std::size_t begin = 0;
+  while (begin <= descriptor.encoded_descriptor.size()) {
+    const auto end = descriptor.encoded_descriptor.find(';', begin);
+    const auto field = std::string_view(descriptor.encoded_descriptor).substr(
+        begin, end == std::string::npos
+                   ? std::string_view::npos
+                   : end - begin);
+    if (field.starts_with(prefix)) {
+      if (value.has_value() || field.size() == prefix.size()) {
+        return std::nullopt;
+      }
+      value = field.substr(prefix.size());
+    }
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return value;
+}
+
+bool RankingIdentityIndependent(const std::string_view identity,
+                                const CanonicalWindowFrameResult& frames,
+                                const std::string_view function_uuid) {
+  return identity != function_uuid &&
+         identity != frames.resolved_frame.frame_descriptor_uuid &&
+         identity != frames.window_property_uuid &&
+         identity != frames.partition_property_uuid &&
+         identity != frames.ordering_property_uuid &&
+         identity != frames.term_binding_evidence_uuid &&
+         identity != frames.deterministic_tie_evidence_uuid &&
+         identity != frames.frame_property_binding_evidence_uuid;
+}
+
+bool RankingOutputDescriptorValid(
+    const CanonicalWindowRankingRequest& request) {
+  namespace dt = scratchbird::core::datatypes;
+  const auto& descriptor = request.output_descriptor;
+  const auto type_uuid = RankingDescriptorField(descriptor, "type_uuid");
+  const auto nullability =
+      RankingDescriptorField(descriptor, "nullability");
+  if (!IsCanonicalUuid(descriptor.descriptor_uuid.canonical) ||
+      descriptor.descriptor_kind != "scalar" ||
+      descriptor.encoded_descriptor.empty() || !type_uuid.has_value() ||
+      !IsCanonicalUuid(*type_uuid) || !nullability.has_value() ||
+      *nullability != "non_null" ||
+      descriptor.descriptor_uuid.canonical == *type_uuid ||
+      !RankingIdentityIndependent(descriptor.descriptor_uuid.canonical,
+                                  request.frames,
+                                  request.function_uuid)) {
+    return false;
+  }
+  const auto type =
+      dt::CanonicalTypeIdFromStableName(descriptor.canonical_type_name);
+  return RankingIntegerResult(request.function)
+             ? type == dt::CanonicalTypeId::int64
+             : RankingRealType(type);
+}
+
+bool CanonicalRankingNtileOperand(
+    const scratchbird::engine::internal_api::EngineTypedValue& operand,
+    const CanonicalWindowRankingRequest& request,
+    std::uint64_t* bucket_count) {
+  namespace api = scratchbird::engine::internal_api;
+  namespace dt = scratchbird::core::datatypes;
+  if (bucket_count == nullptr ||
+      !IsCanonicalUuid(operand.descriptor.descriptor_uuid.canonical) ||
+      operand.descriptor.descriptor_kind != "scalar" ||
+      dt::CanonicalTypeIdFromStableName(
+          operand.descriptor.canonical_type_name) !=
+          dt::CanonicalTypeId::int64 ||
+      operand.descriptor.encoded_descriptor.empty() ||
+      !RankingIdentityIndependent(operand.descriptor.descriptor_uuid.canonical,
+                                  request.frames,
+                                  request.function_uuid) ||
+      operand.descriptor.descriptor_uuid.canonical ==
+          request.output_descriptor.descriptor_uuid.canonical ||
+      operand.state != api::EngineValueState::value || operand.is_null ||
+      !operand.binary_value.empty()) {
+    return false;
+  }
+  const auto type_uuid =
+      RankingDescriptorField(operand.descriptor, "type_uuid");
+  const auto nullability =
+      RankingDescriptorField(operand.descriptor, "nullability");
+  if (!type_uuid.has_value() || !IsCanonicalUuid(*type_uuid) ||
+      operand.descriptor.descriptor_uuid.canonical == *type_uuid ||
+      !nullability.has_value() || *nullability != "non_null") {
+    return false;
+  }
+  const auto decoded = DecodeInt64Value(operand);
+  if (!decoded.ok() || decoded.value <= 0) return false;
+  *bucket_count = static_cast<std::uint64_t>(decoded.value);
+  return true;
+}
+
 bool RankingFrameUnitValid(const CanonicalWindowFrameUnit unit) {
   switch (unit) {
     case CanonicalWindowFrameUnit::rows:
@@ -6065,19 +6164,9 @@ CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
                       std::numeric_limits<std::int64_t>::max())) {
     return refuse("window ranking output resource bound was exceeded");
   }
-  if (!IsCanonicalUuid(request.output_descriptor.descriptor_uuid.canonical) ||
-      request.output_descriptor.descriptor_kind != "scalar" ||
-      request.output_descriptor.encoded_descriptor.empty()) {
-    return refuse("ranking output descriptor is missing or malformed");
-  }
-  namespace dt = scratchbird::core::datatypes;
-  const auto output_type = dt::CanonicalTypeIdFromStableName(
-      request.output_descriptor.canonical_type_name);
-  if ((RankingIntegerResult(request.function) &&
-       output_type != dt::CanonicalTypeId::int64) ||
-      (!RankingIntegerResult(request.function) &&
-       !RankingRealType(output_type))) {
-    return refuse("ranking output descriptor has the wrong numeric family");
+  if (!RankingOutputDescriptorValid(request)) {
+    return refuse(
+        "ranking output descriptor is malformed, nullable, or identity-substituted");
   }
 
   std::uint64_t buckets = 0;
@@ -6085,15 +6174,11 @@ CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
     if (!request.ntile_bucket_count.has_value()) {
       return refuse("NTILE requires an explicitly present bucket count");
     }
-    const auto decoded = DecodeInt64Value(*request.ntile_bucket_count);
-    if (!decoded.ok() ||
-        request.ntile_bucket_count->state !=
-            scratchbird::engine::internal_api::EngineValueState::value ||
-        !request.ntile_bucket_count->binary_value.empty() ||
-        decoded.value <= 0) {
-      return refuse("NTILE bucket count must be a positive non-NULL int64");
+    if (!CanonicalRankingNtileOperand(*request.ntile_bucket_count,
+                                     request, &buckets)) {
+      return refuse(
+          "NTILE bucket count must be an independent positive non-NULL canonical int64");
     }
-    buckets = static_cast<std::uint64_t>(decoded.value);
   } else if (request.ntile_bucket_count.has_value()) {
     return refuse("non-NTILE ranking function carries an NTILE operand");
   }
@@ -6166,9 +6251,24 @@ CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
   if (!result_authority.ok) return refuse(result_authority.detail);
   result.diagnostic = {};
   result.function = request.function;
+  result.function_uuid = request.function_uuid;
+  result.output_descriptor = request.output_descriptor;
+  if (request.function == CanonicalWindowRankingFunction::ntile) {
+    result.resolved_ntile_bucket_count = buckets;
+  }
+  result.every_function_operand_consumed = true;
+  result.partition_peer_metadata_consumed = true;
   result.frame_and_exclusion_validated_then_ignored = true;
   result.authority = request.frames.authority;
   result.window_property_uuid = request.frames.window_property_uuid;
+  result.partition_property_uuid = request.frames.partition_property_uuid;
+  result.ordering_property_uuid = request.frames.ordering_property_uuid;
+  result.term_binding_evidence_uuid =
+      request.frames.term_binding_evidence_uuid;
+  result.deterministic_tie_evidence_uuid =
+      request.frames.deterministic_tie_evidence_uuid;
+  result.frame_property_binding_evidence_uuid =
+      request.frames.frame_property_binding_evidence_uuid;
   result.selected_plan_uuid = request.frames.selected_plan_uuid;
   result.executed_physical_node_id =
       request.frames.executed_physical_node_id;
@@ -7729,7 +7829,47 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
       return refuse("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
                     "ranking payload does not match the runtime descriptor");
     }
-    if (!publish(ExecuteCanonicalWindowRanking(*request.ranking))) return result;
+    const auto ranking_result =
+        ExecuteCanonicalWindowRanking(*request.ranking);
+    std::optional<std::uint64_t> expected_ntile_bucket_count;
+    if (request.ranking->ntile_bucket_count.has_value()) {
+      std::uint64_t bucket_count = 0;
+      if (!CanonicalRankingNtileOperand(
+              *request.ranking->ntile_bucket_count,
+              *request.ranking, &bucket_count)) {
+        return refuse(
+            "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+            "ranking payload did not retain a canonical NTILE operand");
+      }
+      expected_ntile_bucket_count = bucket_count;
+    }
+    if (ranking_result.diagnostic.ok &&
+        (ranking_result.function != *expected_ranking ||
+         ranking_result.function_uuid != request.descriptor.function_uuid ||
+         !SameWindowValueDescriptor(ranking_result.output_descriptor,
+                                    request.ranking->output_descriptor) ||
+         !ranking_result.every_function_operand_consumed ||
+         !ranking_result.partition_peer_metadata_consumed ||
+         !ranking_result.frame_and_exclusion_validated_then_ignored ||
+         ranking_result.window_property_uuid !=
+             request.ranking->frames.window_property_uuid ||
+         ranking_result.partition_property_uuid !=
+             request.ranking->frames.partition_property_uuid ||
+         ranking_result.ordering_property_uuid !=
+             request.ranking->frames.ordering_property_uuid ||
+         ranking_result.term_binding_evidence_uuid !=
+             request.ranking->frames.term_binding_evidence_uuid ||
+         ranking_result.deterministic_tie_evidence_uuid !=
+             request.ranking->frames.deterministic_tie_evidence_uuid ||
+         ranking_result.frame_property_binding_evidence_uuid !=
+             request.ranking->frames.frame_property_binding_evidence_uuid ||
+         ranking_result.resolved_ntile_bucket_count !=
+             expected_ntile_bucket_count)) {
+      return refuse(
+          "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+          "ranking strategy did not return its exact descriptor and binding receipts");
+    }
+    if (!publish(ranking_result)) return result;
   } else if (expected_strategy == CanonicalWindowRuntimeStrategy::value) {
     if (!expected_value.has_value() ||
         request.value->function != *expected_value ||
