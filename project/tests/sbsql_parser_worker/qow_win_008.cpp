@@ -22,7 +22,24 @@ bool ValidateLead() {
                                         "<NULL>", "<NULL>", "104", "<NULL>",
                                         "<NULL>"}) &&
           result.frame_and_exclusion_validated &&
-          result.frame_and_exclusion_ignored_for_navigation,
+          result.frame_and_exclusion_ignored_for_navigation &&
+          result.function_uuid == ValueFunctionUuid(
+              exec::CanonicalWindowValueFunction::lead) &&
+          result.resolved_positions ==
+              std::vector<std::uint64_t>(9, 1) &&
+          result.converted_source_value_count == 9 &&
+          result.converted_default_value_count == 0 &&
+          result.used_implicit_navigation_offset &&
+          !result.explicit_navigation_default_present &&
+          result.every_function_operand_consumed &&
+          result.partition_metadata_consumed_for_navigation &&
+          result.partition_property_uuid ==
+              request.frames.partition_property_uuid &&
+          result.ordering_property_uuid ==
+              request.frames.ordering_property_uuid &&
+          result.frame_property_binding_evidence_uuid ==
+              request.frames.frame_property_binding_evidence_uuid &&
+          ValueDescriptorsMatch(result, request.result_column.descriptor),
       "LEAD default offset or partition-boundary behavior drifted");
 
   request = ValueRequest(
@@ -80,8 +97,45 @@ bool ValidateLead() {
       result.diagnostic.ok &&
           ValueTexts(result) ==
               std::vector<std::string>({"<NULL>", "100", "107", "-23", "-24",
-                                        "-25", "-26", "-27", "-28"}),
+                                        "-25", "-26", "-27", "-28"}) &&
+          result.resolved_positions ==
+              std::vector<std::uint64_t>(9, 2) &&
+          result.converted_default_value_count == 9 &&
+          !result.used_implicit_navigation_offset &&
+          result.explicit_navigation_default_present &&
+          ValueDescriptorsMatch(result, request.result_column.descriptor),
       "LEAD did not evaluate typed offset/default operands per current row");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::lead);
+  request.offset_values = RepeatedOperand(
+      rows, "int64", "9223372036854775807", 5125);
+  defaults.clear();
+  for (std::size_t row = 0; row < rows; ++row) {
+    defaults.push_back(
+        ValueOperand("int32",
+                     std::to_string(-30 - static_cast<std::int64_t>(row)),
+                     5140 + row));
+  }
+  request.default_values = defaults;
+  result = exec::ExecuteCanonicalWindowValue(request);
+  passed &= Require401(
+      result.diagnostic.ok &&
+          ValueTexts(result) ==
+              std::vector<std::string>({"-30", "-31", "-32", "-33", "-34",
+                                        "-35", "-36", "-37", "-38"}),
+      "maximum in-range LEAD offset did not select each current-row default");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::lead,
+                         WholePartitionFrame(), true);
+  result = exec::ExecuteCanonicalWindowValue(request);
+  passed &= Require401(
+      result.diagnostic.ok && result.values.empty() &&
+          result.resolved_positions.empty() &&
+          result.converted_source_value_count == 0 &&
+          result.used_implicit_navigation_offset &&
+          !result.explicit_navigation_default_present &&
+          result.every_function_operand_consumed,
+      "empty LEAD input did not preserve omitted navigation operand state");
   return passed;
 }
 
@@ -121,6 +175,15 @@ bool ValidateLeadRefusals() {
       ValueRefused(exec::ExecuteCanonicalWindowValue(request),
                    {"QOW-DIAG-WINDOW-DEFAULT-TYPE"}),
       "incompatible LEAD default entered execution");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::lead);
+  request.offset_values = RepeatedOperand(rows, "int64", "1", 5137);
+  request.default_values =
+      RepeatedOperand(rows - 1, "int32", "7", 5138);
+  passed &= Require401(
+      ValueRefused(exec::ExecuteCanonicalWindowValue(request),
+                   {"QOW-DIAG-WINDOW-DEFAULT-TYPE"}),
+      "short LEAD default vector entered execution");
 
   request = ValueRequest(exec::CanonicalWindowValueFunction::lead);
   request.nth_values = RepeatedOperand(rows, "int64", "1", 5136);

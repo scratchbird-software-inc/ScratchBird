@@ -144,11 +144,26 @@ struct CanonicalWindowValueRequest {
 struct CanonicalWindowValueResult {
   DescriptorRuntimeDiagnostic diagnostic;
   CanonicalWindowValueFunction function = CanonicalWindowValueFunction::lag;
+  std::string function_uuid;
+  std::uint32_t value_expression_descriptor_id = 0;
+  ExecutorColumnDescriptor result_column;
   std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
+  std::vector<std::uint64_t> resolved_positions;
+  std::size_t converted_source_value_count = 0;
+  std::size_t converted_default_value_count = 0;
+  bool used_implicit_navigation_offset = false;
+  bool explicit_navigation_default_present = false;
+  bool every_function_operand_consumed = false;
+  bool partition_metadata_consumed_for_navigation = false;
   bool frame_and_exclusion_validated = false;
   bool frame_and_exclusion_ignored_for_navigation = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string window_property_uuid;
+  std::string partition_property_uuid;
+  std::string ordering_property_uuid;
+  std::string term_binding_evidence_uuid;
+  std::string deterministic_tie_evidence_uuid;
+  std::string frame_property_binding_evidence_uuid;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;

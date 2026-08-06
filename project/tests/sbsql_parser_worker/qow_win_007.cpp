@@ -53,7 +53,8 @@ std::vector<api::EngineTypedValue> RepeatedOperand(
 }
 
 exec::CanonicalWindowFrameResult ValueFrames(
-    exec::CanonicalWindowFrameDescriptor frame) {
+    exec::CanonicalWindowFrameDescriptor frame,
+    const bool empty_input = false) {
   auto partition_request = Window401Request();
   const auto payload_descriptor = WindowDescriptor(
       4105, "int64",
@@ -67,6 +68,7 @@ exec::CanonicalWindowFrameResult ValueFrames(
       row.values[4].descriptor = payload_descriptor;
     }
   }
+  if (empty_input) partition_request.input_batch.rows.clear();
   return ExecuteFrame(partition_request, std::move(frame));
 }
 
@@ -91,9 +93,10 @@ exec::CanonicalWindowFrameDescriptor PrefixFrame(
 
 exec::CanonicalWindowValueRequest ValueRequest(
     const exec::CanonicalWindowValueFunction function,
-    exec::CanonicalWindowFrameDescriptor frame = WholePartitionFrame()) {
+    exec::CanonicalWindowFrameDescriptor frame = WholePartitionFrame(),
+    const bool empty_input = false) {
   exec::CanonicalWindowValueRequest request;
-  request.frames = ValueFrames(std::move(frame));
+  request.frames = ValueFrames(std::move(frame), empty_input);
   request.function = function;
   request.function_uuid = ValueFunctionUuid(function);
   request.value_expression_descriptor_id = 4005;
@@ -118,6 +121,22 @@ std::vector<std::string> ValueTexts(
   return values;
 }
 
+bool ValueDescriptorsMatch(
+    const exec::CanonicalWindowValueResult& result,
+    const api::EngineDescriptor& descriptor) {
+  return std::ranges::all_of(
+      result.values, [&](const auto& value) {
+        return value.descriptor.descriptor_uuid.canonical ==
+                   descriptor.descriptor_uuid.canonical &&
+               value.descriptor.descriptor_kind ==
+                   descriptor.descriptor_kind &&
+               value.descriptor.canonical_type_name ==
+                   descriptor.canonical_type_name &&
+               value.descriptor.encoded_descriptor ==
+                   descriptor.encoded_descriptor;
+      });
+}
+
 bool ValueRefused(const exec::CanonicalWindowValueResult& result,
                   const std::initializer_list<std::string_view> codes) {
   if (result.diagnostic.ok || !result.values.empty()) return false;
@@ -139,6 +158,29 @@ bool ValidateLag() {
                                         "<NULL>"}) &&
           result.frame_and_exclusion_validated &&
           result.frame_and_exclusion_ignored_for_navigation &&
+          result.function_uuid == ValueFunctionUuid(
+              exec::CanonicalWindowValueFunction::lag) &&
+          result.value_expression_descriptor_id == 4005 &&
+          result.result_column.descriptor_id == 4999 &&
+          result.resolved_positions ==
+              std::vector<std::uint64_t>(9, 1) &&
+          result.converted_source_value_count == 9 &&
+          result.converted_default_value_count == 0 &&
+          result.used_implicit_navigation_offset &&
+          !result.explicit_navigation_default_present &&
+          result.every_function_operand_consumed &&
+          result.partition_metadata_consumed_for_navigation &&
+          result.partition_property_uuid ==
+              request.frames.partition_property_uuid &&
+          result.ordering_property_uuid ==
+              request.frames.ordering_property_uuid &&
+          result.term_binding_evidence_uuid ==
+              request.frames.term_binding_evidence_uuid &&
+          result.deterministic_tie_evidence_uuid ==
+              request.frames.deterministic_tie_evidence_uuid &&
+          result.frame_property_binding_evidence_uuid ==
+              request.frames.frame_property_binding_evidence_uuid &&
+          ValueDescriptorsMatch(result, request.result_column.descriptor) &&
           result.selected_plan_uuid == WindowUuid(4301) &&
           result.causal_counter_id == 40102 &&
           result.authority.engine_mga_snapshot_bound,
@@ -192,6 +234,8 @@ bool ValidateLag() {
                      std::to_string(-10 - static_cast<std::int64_t>(row)),
                      5010 + row));
   }
+  defaults[0].descriptor.encoded_descriptor =
+      "type_uuid=" + WindowUuid(5110) + ";nullability=nullable";
   defaults[0].setState(api::EngineValueState::sql_null);
   defaults[0].encoded_value.clear();
   request.default_values = defaults;
@@ -205,8 +249,40 @@ bool ValidateLag() {
       result.diagnostic.ok &&
           ValueTexts(result) ==
               std::vector<std::string>({"<NULL>", "-11", "101", "105", "<NULL>",
-                                        "-15", "-16", "-17", "-18"}),
+                                        "-15", "-16", "-17", "-18"}) &&
+          result.resolved_positions ==
+              std::vector<std::uint64_t>(9, 2) &&
+          result.converted_default_value_count == 9 &&
+          !result.used_implicit_navigation_offset &&
+          result.explicit_navigation_default_present &&
+          ValueDescriptorsMatch(result, request.result_column.descriptor),
       "LAG did not evaluate typed offset/default operands per current row");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::lag);
+  request.offset_values = RepeatedOperand(
+      request.frames.ordered_batch.rows.size(), "int64",
+      "9223372036854775807", 5025);
+  result = exec::ExecuteCanonicalWindowValue(request);
+  passed &= Require401(
+      result.diagnostic.ok &&
+          ValueTexts(result) ==
+              std::vector<std::string>(9, "<NULL>"),
+      "maximum in-range LAG offset did not become a safe partition miss");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::lag,
+                         WholePartitionFrame(), true);
+  request.offset_values = std::vector<api::EngineTypedValue>{};
+  request.default_values = std::vector<api::EngineTypedValue>{};
+  result = exec::ExecuteCanonicalWindowValue(request);
+  passed &= Require401(
+      result.diagnostic.ok && result.values.empty() &&
+          result.resolved_positions.empty() &&
+          result.converted_source_value_count == 0 &&
+          result.converted_default_value_count == 0 &&
+          !result.used_implicit_navigation_offset &&
+          result.explicit_navigation_default_present &&
+          result.every_function_operand_consumed,
+      "empty LAG input did not preserve explicit zero-cardinality operands");
   return passed;
 }
 
@@ -251,11 +327,63 @@ bool ValidateLagRefusals() {
       "lossy LAG default conversion entered execution");
 
   request = ValueRequest(exec::CanonicalWindowValueFunction::lag);
+  request.offset_values =
+      std::vector<api::EngineTypedValue>(rows, exec::EncodeInt64Value(1));
+  passed &= Require401(
+      ValueRefused(exec::ExecuteCanonicalWindowValue(request),
+                   {"QOW-DIAG-WINDOW-OFFSET"}),
+      "legacy unbound LAG offset entered canonical execution");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::lag);
+  request.offset_values = RepeatedOperand(rows, "int64", "1", 5036);
+  request.offset_values->front().descriptor = request.result_column.descriptor;
+  passed &= Require401(
+      ValueRefused(exec::ExecuteCanonicalWindowValue(request),
+                   {"QOW-DIAG-WINDOW-OFFSET"}),
+      "LAG offset substituted the result descriptor identity");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::lag);
+  request.offset_values = RepeatedOperand(rows, "int64", "1", 5037);
+  request.offset_values->front().descriptor.encoded_descriptor +=
+      ";type_uuid=" + WindowUuid(5137);
+  passed &= Require401(
+      ValueRefused(exec::ExecuteCanonicalWindowValue(request),
+                   {"QOW-DIAG-WINDOW-OFFSET"}),
+      "LAG offset accepted duplicate descriptor type identity");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::lag);
+  request.offset_values = RepeatedOperand(rows, "int64", "1", 5038);
+  request.default_values = RepeatedOperand(rows, "int32", "7", 5039);
+  request.default_values->front().setState(
+      api::EngineValueState::sql_null);
+  request.default_values->front().encoded_value.clear();
+  passed &= Require401(
+      ValueRefused(exec::ExecuteCanonicalWindowValue(request),
+                   {"QOW-DIAG-WINDOW-DEFAULT-TYPE"}),
+      "typed NULL LAG default used a non-null descriptor");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::lag);
   request.result_column.nullable = false;
   passed &= Require401(
       ValueRefused(exec::ExecuteCanonicalWindowValue(request),
                    {"QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR"}),
       "non-nullable LAG result descriptor admitted boundary NULL");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::lag);
+  request.result_column.descriptor_id =
+      request.value_expression_descriptor_id;
+  passed &= Require401(
+      ValueRefused(exec::ExecuteCanonicalWindowValue(request),
+                   {"QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR"}),
+      "LAG result reused the source expression descriptor handle");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::lag);
+  request.result_column.descriptor.encoded_descriptor +=
+      ";nullability=nullable";
+  passed &= Require401(
+      ValueRefused(exec::ExecuteCanonicalWindowValue(request),
+                   {"QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR"}),
+      "LAG result accepted duplicate descriptor nullability");
 
   request = ValueRequest(exec::CanonicalWindowValueFunction::lag);
   request.function_uuid =
