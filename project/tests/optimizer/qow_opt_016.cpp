@@ -50,6 +50,17 @@ opt::CanonicalExecutorCapabilityCatalog Capabilities(
     capability.minimum_input_count = node->input_logical_node_ids.size();
     capability.maximum_input_count = node->input_logical_node_ids.size();
     capability.maximum_memory_bytes = request.resource.memory_budget_bytes;
+    for (const auto& property_uuid :
+         alternative.delivered_property_uuids) {
+      const auto property = std::ranges::find_if(
+          request.logical_properties.properties, [&](const auto& record) {
+            return record.property_uuid == property_uuid;
+          });
+      if (property != request.logical_properties.properties.end()) {
+        capability.supported_property_kinds.push_back(
+            property->property_kind);
+      }
+    }
     capability.spill_supported = request.resource.spill_allowed;
     capability.storage_read_capable =
         node->node_kind ==
@@ -349,6 +360,8 @@ bool ValidateCapabilityRefusals() {
 PublicationInputs PropertyInputs() {
   auto request = Request();
   request.logical_graph.nodes.back().bound_expression_ids = {77};
+  request.logical_graph.nodes.back().required_property_uuids.clear();
+  request.logical_graph.nodes.back().delivered_property_uuids.clear();
   plan::CanonicalLogicalPropertyCatalog properties;
   properties.bound_sblr_tree_uuid = Uuid(1);
   properties.catalog_epoch_uuid = Uuid(2);
@@ -372,11 +385,19 @@ PublicationInputs PropertyInputs() {
   request.logical_properties = populated.property_catalog;
 
   auto alternatives = Alternatives();
+  for (auto& alternative : alternatives.alternatives) {
+    if (alternative.logical_node_id == 4) {
+      alternative.delivered_property_uuids.clear();
+    }
+  }
   alternatives.alternatives.back().delivered_property_uuids = {Uuid(10)};
   auto candidates = Candidates();
   std::erase_if(candidates, [](const auto& candidate) {
     return candidate.alternative_uuid == Uuid(206);
   });
+  candidates.back().delivered_property_uuids = {Uuid(10)};
+  candidates.back().enforced_property_uuids.clear();
+  candidates.back().property_enforcement_required = false;
   PublicationInputs inputs;
   inputs.request = std::move(request);
   inputs.admission =
@@ -397,6 +418,11 @@ bool ValidatePropertyCapability() {
       inputs.request, inputs.admission, inputs.alternatives, inputs.search,
       inputs.capabilities, PublicationIdentity());
   bool passed = true;
+  if (!accepted.accepted && !accepted.issues.empty()) {
+    std::cerr << "QOW-TEST-OPT-016-V1: property publication diagnostic="
+              << accepted.issues.front().diagnostic_id << " field="
+              << accepted.issues.front().field_id << '\n';
+  }
   passed &= Require016(accepted.accepted && accepted.published &&
                            PhysicalNode(accepted.physical_dag, 4) &&
                            PhysicalNode(accepted.physical_dag, 4)

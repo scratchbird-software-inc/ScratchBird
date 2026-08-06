@@ -114,6 +114,9 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
            "project.bound-expressions.v1"),
   };
   graph.nodes[0].required_object_uuids = {Uuid(9)};
+  graph.nodes[3].bound_expression_ids = {70};
+  graph.nodes[3].required_property_uuids = {Uuid(710)};
+  graph.nodes[3].delivered_property_uuids = {Uuid(710)};
 
   auto& properties = request.logical_properties;
   properties.bound_sblr_tree_uuid = Uuid(1);
@@ -122,6 +125,15 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
   properties.local_transaction_id = kOwner;
   properties.statement_snapshot_id = 0;
   properties.mga_statement_context = MgaContext();
+  plan::CanonicalLogicalPropertyRecord ordering;
+  ordering.property_uuid = Uuid(710);
+  ordering.property_kind = plan::CanonicalLogicalPropertyKind::kOrdering;
+  ordering.origin_logical_node_id = 4;
+  ordering.ordering_terms = {
+      {70, plan::CanonicalLogicalPropertySortDirection::kAscending,
+       plan::CanonicalLogicalPropertyNullPlacement::kNullsLast, Uuid(711)}};
+  ordering.populated_from_bound_sblr = true;
+  properties.properties = {ordering};
 
   request.catalog.snapshot_uuid = Uuid(4);
   request.catalog.catalog_epoch_uuid = Uuid(2);
@@ -233,6 +245,8 @@ plan::CanonicalPhysicalAlternativeCatalog Alternatives() {
       Alternative(6, 4, "project.direct.v1", 104),
       Alternative(7, 4, "project.vector.v1", 104),
   };
+  catalog.alternatives[5].delivered_property_uuids = {Uuid(710)};
+  catalog.alternatives[6].delivered_property_uuids = {Uuid(710)};
   return catalog;
 }
 
@@ -585,6 +599,22 @@ opt::CanonicalOptimizerSearchCandidateInput Candidate(
     const std::uint64_t ordinal, const std::uint64_t score) {
   opt::CanonicalOptimizerSearchCandidateInput candidate;
   candidate.alternative_uuid = Uuid(200 + ordinal);
+  if (ordinal == 1) {
+    candidate.logical_node_id = 1;
+    candidate.semantic_variant_id = "relation.source.v1";
+  } else if (ordinal == 2) {
+    candidate.logical_node_id = 2;
+    candidate.semantic_variant_id = "values.literal-table.v1";
+  } else if (ordinal <= 5) {
+    candidate.logical_node_id = 3;
+    candidate.semantic_variant_id = "join.inner.v1";
+  } else {
+    candidate.logical_node_id = 4;
+    candidate.semantic_variant_id = "project.bound-expressions.v1";
+    candidate.delivered_property_uuids = {Uuid(710)};
+    candidate.enforced_property_uuids = {Uuid(710)};
+    candidate.property_enforcement_required = true;
+  }
   candidate.transformation_uuid = Uuid(400 + ordinal);
   candidate.transformation_rule_id =
       "canonical.transform." + std::to_string(ordinal) + ".v1";
@@ -600,6 +630,7 @@ opt::CanonicalOptimizerSearchCandidateInput Candidate(
   if (ordinal == 1) candidate.cost_terms.mga_visibility_checks_expected = 1;
   candidate.cost_terms.confidence = opt::CostConfidence::kExact;
   candidate.semantic_preserving = true;
+  candidate.transformation_preconditions_satisfied = true;
   candidate.derived_from_admitted_statistics = true;
   candidate.engine_coster_owned = true;
   return candidate;
@@ -657,7 +688,12 @@ bool ValidateExhaustiveSearch() {
           !result.complete_plan_space_count_saturated &&
           result.exhaustive_oracle_executed &&
           result.exhaustive_oracle_agreed && result.resource_bounded &&
-          result.deterministic && !result.physical_dag_published &&
+          result.deterministic && result.transformation_legality_validated &&
+          result.property_legality_validated && !result.timeout_degraded &&
+          result.property_enforcement_candidate_count == 2 &&
+          result.fully_explored_memo_group_count == 4 &&
+          result.timeout_fallback_memo_group_count == 0 &&
+          !result.physical_dag_published &&
           !result.data_access_allowed && result.selected_alternatives.size() == 4 &&
           result.catalog_epoch_uuid == Uuid(2) &&
           plan::CanonicalMgaStatementContextEqual(
@@ -682,6 +718,54 @@ bool ValidateExhaustiveSearch() {
                         SameTrace(reordered.trace, result.trace),
                     "input order changed deterministic exhaustive search");
   return passed;
+}
+
+bool ValidateDeterministicTieBreaking() {
+  const auto request = Request();
+  const auto admission = opt::AdmitCanonicalOptimizerPlanningRequest(request);
+  auto candidates = Candidates();
+  const auto retained_cost_vector_uuid =
+      candidates[2].cost_terms.cost_vector_uuid;
+  candidates[2].cost_terms = candidates[3].cost_terms;
+  candidates[2].cost_terms.cost_vector_uuid = retained_cost_vector_uuid;
+  const auto first = opt::SearchCanonicalRelationalMemo(
+      request, admission, Alternatives(), candidates, Policy());
+  std::reverse(candidates.begin(), candidates.end());
+  const auto second = opt::SearchCanonicalRelationalMemo(
+      request, admission, Alternatives(), candidates, Policy());
+  return Require(
+      first.accepted && second.accepted &&
+          first.deterministic_tie_break_count != 0 &&
+          first.selected_plan_signature == second.selected_plan_signature &&
+          first.selected_plan_signature.find("3=" + Uuid(203) + ";") !=
+              std::string::npos &&
+          SameTrace(first.trace, second.trace),
+      "equal retained cost vectors did not use the canonical plan-signature tie break");
+}
+
+bool ValidateTimeoutDegradation() {
+  auto request = Request();
+  request.resource.maximum_planning_time_ns = 40;
+  const auto admission = opt::AdmitCanonicalOptimizerPlanningRequest(request);
+  auto policy = Policy();
+  policy.allow_timeout_degradation = true;
+  const auto first = opt::SearchCanonicalRelationalMemo(
+      request, admission, Alternatives(), Candidates(), policy);
+  const auto second = opt::SearchCanonicalRelationalMemo(
+      request, admission, Alternatives(), Candidates(), policy);
+  return Require(
+      admission.admitted && first.accepted && first.selected &&
+          first.mode == opt::CanonicalOptimizerSearchMode::kDeterministicBounded &&
+          first.timeout_degraded && !first.exhaustive_oracle_executed &&
+          first.fully_explored_memo_group_count == 2 &&
+          first.timeout_fallback_memo_group_count == 2 &&
+          first.search_step_count == 2 && first.selected_alternatives.size() == 4 &&
+          first.timeout_degradation_reason_id.find("planning_time_budget") !=
+              std::string::npos &&
+          first.selected_plan_signature == second.selected_plan_signature &&
+          first.selected_scalar_score == second.selected_scalar_score &&
+          SameTrace(first.trace, second.trace),
+      "authorized timeout degradation did not deterministically complete a legal plan");
 }
 
 bool ValidateBoundedSearch() {
@@ -748,6 +832,28 @@ bool ValidateAtomicRefusals() {
       request, admission, alternatives, unsafe, policy,
       "QOW-DIAG-OPTIMIZER-SEARCH-TRANSFORMATION-V1",
       "non-semantic transformation was admitted");
+
+  auto failed_precondition = candidates;
+  failed_precondition[2].transformation_preconditions_satisfied = false;
+  passed &= expect_refusal(
+      request, admission, alternatives, failed_precondition, policy,
+      "QOW-DIAG-OPTIMIZER-SEARCH-TRANSFORMATION-V1",
+      "transformation with an unsatisfied precondition was admitted");
+
+  auto semantic_drift = candidates;
+  semantic_drift[2].semantic_variant_id = "join.left.v1";
+  passed &= expect_refusal(
+      request, admission, alternatives, semantic_drift, policy,
+      "QOW-DIAG-OPTIMIZER-SEARCH-PROPERTY-BINDING-V1",
+      "cost record bound to different logical semantics was admitted");
+
+  auto forged_enforcement = candidates;
+  forged_enforcement.back().enforced_property_uuids.clear();
+  forged_enforcement.back().property_enforcement_required = false;
+  passed &= expect_refusal(
+      request, admission, alternatives, forged_enforcement, policy,
+      "QOW-DIAG-OPTIMIZER-SEARCH-PROPERTY-BINDING-V1",
+      "forged property-enforcement receipt was admitted");
 
   auto nonlocal = candidates;
   nonlocal[2].cost_terms.network_bytes_expected = 1;
@@ -848,6 +954,8 @@ int main() {
   passed &= ValidateAlternativeInventoryRefusals();
   passed &= ValidateExhaustiveSearch();
   passed &= ValidateBoundedSearch();
+  passed &= ValidateDeterministicTieBreaking();
+  passed &= ValidateTimeoutDegradation();
   passed &= ValidateAtomicRefusals();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

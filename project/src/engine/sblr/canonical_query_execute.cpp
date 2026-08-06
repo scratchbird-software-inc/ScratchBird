@@ -5704,9 +5704,14 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
                         profile->implementation_id;
     opt::CanonicalOptimizerSearchCandidateInput candidate;
     candidate.alternative_uuid = receipt.alternative_uuid;
+    candidate.logical_node_id = receipt.logical_node_id;
+    candidate.semantic_variant_id = receipt.semantic_variant_id;
     candidate.transformation_uuid =
         DerivedCanonicalUuid(identity_scope, "transformation." + suffix);
     candidate.transformation_rule_id = profile->transformation_rule_id;
+    candidate.required_property_uuids = receipt.required_property_uuids;
+    candidate.delivered_property_uuids = receipt.delivered_property_uuids;
+    candidate.enforced_property_uuids = receipt.enforced_property_uuids;
     candidate.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
     candidate.statistics_snapshot_uuid =
         request.optimizer_admission.statistics_snapshot_uuid;
@@ -5731,6 +5736,9 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
         profile->mga_visibility_checks_expected;
     candidate.cost_terms.confidence = opt::CostConfidence::kHigh;
     candidate.semantic_preserving = true;
+    candidate.transformation_preconditions_satisfied = true;
+    candidate.property_enforcement_required =
+        receipt.property_enforcement_required;
     candidate.derived_from_admitted_statistics = true;
     candidate.engine_coster_owned = true;
     candidates.push_back(std::move(candidate));
@@ -5741,6 +5749,7 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
   search_policy.bounded_beam_width = 1;
   search_policy.deterministic_step_cost_ns = 1;
   search_policy.engine_owned = true;
+  search_policy.allow_timeout_degradation = true;
   const auto search = opt::SearchCanonicalRelationalMemo(
       request.optimizer_request, request.optimizer_admission, inventory.catalog,
       candidates, search_policy);
@@ -20266,8 +20275,17 @@ ExecuteCanonicalObjectFreeValuesQuery(
 
   opt::CanonicalOptimizerSearchCandidateInput candidate;
   candidate.alternative_uuid = alternative_uuid;
+  candidate.logical_node_id = inventory.receipts.front().logical_node_id;
+  candidate.semantic_variant_id =
+      inventory.receipts.front().semantic_variant_id;
   candidate.transformation_uuid = transformation_uuid;
   candidate.transformation_rule_id = "canonical.values.materialize.v1";
+  candidate.required_property_uuids =
+      inventory.receipts.front().required_property_uuids;
+  candidate.delivered_property_uuids =
+      inventory.receipts.front().delivered_property_uuids;
+  candidate.enforced_property_uuids =
+      inventory.receipts.front().enforced_property_uuids;
   candidate.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
   candidate.statistics_snapshot_uuid =
       request.optimizer_admission.statistics_snapshot_uuid;
@@ -20280,6 +20298,9 @@ ExecuteCanonicalObjectFreeValuesQuery(
   candidate.cost_terms.memory_bytes_required = memory_bytes;
   candidate.cost_terms.confidence = opt::CostConfidence::kExact;
   candidate.semantic_preserving = true;
+  candidate.transformation_preconditions_satisfied = true;
+  candidate.property_enforcement_required =
+      inventory.receipts.front().property_enforcement_required;
   candidate.derived_from_admitted_statistics = true;
   candidate.engine_coster_owned = true;
 
@@ -20288,6 +20309,7 @@ ExecuteCanonicalObjectFreeValuesQuery(
   search_policy.bounded_beam_width = 1;
   search_policy.deterministic_step_cost_ns = 1;
   search_policy.engine_owned = true;
+  search_policy.allow_timeout_degradation = true;
   const auto search = opt::SearchCanonicalRelationalMemo(
       request.optimizer_request, request.optimizer_admission,
       inventory.catalog,

@@ -121,14 +121,21 @@ struct CanonicalOptimizerCostTerms {
 
 struct CanonicalOptimizerSearchCandidateInput {
   std::string alternative_uuid;
+  std::uint32_t logical_node_id{0};
+  std::string semantic_variant_id;
   std::string transformation_uuid;
   std::string transformation_rule_id;
+  std::vector<std::string> required_property_uuids;
+  std::vector<std::string> delivered_property_uuids;
+  std::vector<std::string> enforced_property_uuids;
   std::string bound_sblr_tree_uuid;
   std::string statistics_snapshot_uuid;
   std::uint64_t statistics_generation{0};
   std::string model_family_id;
   CanonicalOptimizerCostTerms cost_terms;
   bool semantic_preserving{false};
+  bool transformation_preconditions_satisfied{false};
+  bool property_enforcement_required{false};
   bool derived_from_admitted_statistics{false};
   bool engine_coster_owned{false};
   bool parser_or_reference_cost_authority_claimed{false};
@@ -141,6 +148,7 @@ struct CanonicalOptimizerSearchPolicy {
   std::uint64_t bounded_beam_width{0};
   std::uint64_t deterministic_step_cost_ns{0};
   bool engine_owned{false};
+  bool allow_timeout_degradation{false};
   bool allow_cross_model_cost_comparison{false};
   bool parser_search_authority_claimed{false};
   bool transaction_finality_claimed{false};
@@ -314,6 +322,9 @@ struct CanonicalOptimizerSearchResult {
   bool exhaustive_oracle_agreed{false};
   bool resource_bounded{false};
   bool deterministic{false};
+  bool transformation_legality_validated{false};
+  bool property_legality_validated{false};
+  bool timeout_degraded{false};
   bool physical_dag_published{false};
   bool data_access_allowed{false};
   CanonicalOptimizerSearchMode mode{
@@ -324,6 +335,10 @@ struct CanonicalOptimizerSearchResult {
   bool complete_plan_space_count_saturated{false};
   std::uint64_t search_step_count{0};
   std::uint64_t pruned_plan_count{0};
+  std::uint64_t property_enforcement_candidate_count{0};
+  std::uint64_t fully_explored_memo_group_count{0};
+  std::uint64_t timeout_fallback_memo_group_count{0};
+  std::uint64_t deterministic_tie_break_count{0};
   std::uint64_t selected_scalar_score{0};
   std::string bound_sblr_tree_uuid;
   std::string catalog_epoch_uuid;
@@ -334,6 +349,7 @@ struct CanonicalOptimizerSearchResult {
   std::string model_family_id;
   std::string calibration_profile_uuid;
   std::string selected_plan_signature;
+  std::string timeout_degradation_reason_id;
   std::vector<CanonicalOptimizerMemoGroup> memo_groups;
   std::vector<CanonicalOptimizerSelectedAlternative> selected_alternatives;
   std::vector<CanonicalOptimizerSearchTraceRecord> trace;
@@ -341,6 +357,7 @@ struct CanonicalOptimizerSearchResult {
 };
 
 // QOW-SOURCE-OPT-014-V1
+// QOW-SOURCE-RCP-064-BOUNDED-MEMO-SEARCH-V1
 CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
     const CanonicalOptimizerAdmissionRequest& admission_request,
     const CanonicalOptimizerAdmissionResult& admission,

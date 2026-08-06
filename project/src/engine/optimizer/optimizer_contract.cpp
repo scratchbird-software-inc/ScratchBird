@@ -1006,6 +1006,7 @@ EnumerateCanonicalOptimizerAlternativeInventory(
 }
 
 // QOW-SOURCE-OPT-014-V1
+// QOW-SOURCE-RCP-064-BOUNDED-MEMO-SEARCH-V1
 CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
     const CanonicalOptimizerAdmissionRequest& admission_request,
     const CanonicalOptimizerAdmissionResult& admission,
@@ -1161,7 +1162,11 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
     alternatives_by_uuid.emplace(alternative.alternative_uuid, &alternative);
   }
   std::unordered_set<std::string> legal_alternative_uuids;
+  std::unordered_map<std::string,
+                     const CanonicalRelationalCandidateLegalityRecord*>
+      legality_by_alternative_uuid;
   for (const auto& record : legality.candidates) {
+    legality_by_alternative_uuid.emplace(record.alternative_uuid, &record);
     if (record.legal) legal_alternative_uuids.insert(record.alternative_uuid);
   }
   std::unordered_map<std::string,
@@ -1181,10 +1186,33 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
                     candidate.alternative_uuid, "alternative_uuid");
     }
     const auto node_id = alternative_it->second->logical_node_id;
+    const auto node_it = std::ranges::find_if(
+        admission_request.logical_graph.nodes, [&](const auto& node) {
+          return node.logical_node_id == node_id;
+        });
+    const auto legality_it =
+        legality_by_alternative_uuid.find(candidate.alternative_uuid);
+    if (node_it == admission_request.logical_graph.nodes.end() ||
+        legality_it == legality_by_alternative_uuid.end() ||
+        candidate.logical_node_id != node_id ||
+        candidate.semantic_variant_id != node_it->semantic_variant_id ||
+        candidate.required_property_uuids !=
+            alternative_it->second->required_property_uuids ||
+        candidate.delivered_property_uuids !=
+            alternative_it->second->delivered_property_uuids ||
+        candidate.enforced_property_uuids !=
+            legality_it->second->enforced_property_uuids ||
+        candidate.property_enforcement_required !=
+            legality_it->second->property_enforcement_required) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-PROPERTY-BINDING-V1", node_id,
+                    candidate.alternative_uuid,
+                    "logical_semantic_property_binding");
+    }
     if (!canonical_uuid(candidate.transformation_uuid) ||
         !transformation_uuids.insert(candidate.transformation_uuid).second ||
         !valid_rule_id(candidate.transformation_rule_id) ||
-        !candidate.semantic_preserving) {
+        !candidate.semantic_preserving ||
+        !candidate.transformation_preconditions_satisfied) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-TRANSFORMATION-V1", node_id,
                     candidate.alternative_uuid,
                     "semantic_transformation_authority");
@@ -1224,19 +1252,22 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
     if (!calibration_profile_uuid.has_value()) {
       calibration_profile_uuid = terms.calibration_profile_uuid;
     }
-    const auto node_it = std::ranges::find_if(
-        admission_request.logical_graph.nodes, [&](const auto& node) {
-          return node.logical_node_id == node_id;
-        });
-    if (node_it == admission_request.logical_graph.nodes.end() ||
-        (node_it->node_kind ==
+    if ((node_it->node_kind ==
              planner::CanonicalLogicalRelationalNodeKind::kRelationSource &&
          terms.mga_visibility_checks_expected == 0)) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1", node_id,
                     candidate.alternative_uuid,
                     "mga_visibility_cost_terms");
     }
+    if (candidate.property_enforcement_required) {
+      ++result.property_enforcement_candidate_count;
+    }
   }
+  result.transformation_legality_validated = true;
+  result.property_legality_validated = true;
+  result.trace.push_back(
+      {0, "memo.transformation-property-legality.v1", 0, candidates.size(),
+       0, "exact_logical_semantics_and_property_enforcement"});
 
   std::vector<std::uint32_t> node_ids;
   node_ids.reserve(admission_request.logical_graph.nodes.size());
@@ -1334,48 +1365,174 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
     return left.signature < right.signature;
   };
 
-  const bool exhaustive = !plan_space_saturated &&
-                          plan_space_count <=
-                              policy.maximum_exhaustive_plan_count;
+  bool exhaustive = !plan_space_saturated &&
+                    plan_space_count <=
+                        policy.maximum_exhaustive_plan_count;
+  std::uint64_t exhaustive_step_requirement = 0;
+  std::uint64_t exhaustive_prefix_count = 1;
+  bool exhaustive_step_requirement_saturated = false;
+  if (exhaustive) {
+    for (const auto& group : result.memo_groups) {
+      if (exhaustive_prefix_count >
+          std::numeric_limits<std::uint64_t>::max() /
+              group.candidates.size()) {
+        exhaustive_step_requirement_saturated = true;
+        break;
+      }
+      exhaustive_prefix_count *= group.candidates.size();
+      if (!checked_add(exhaustive_step_requirement,
+                       exhaustive_prefix_count,
+                       &exhaustive_step_requirement)) {
+        exhaustive_step_requirement_saturated = true;
+        break;
+      }
+    }
+    if (!exhaustive_step_requirement_saturated &&
+        !checked_add(exhaustive_step_requirement, plan_space_count,
+                     &exhaustive_step_requirement)) {
+      exhaustive_step_requirement_saturated = true;
+    }
+    if (exhaustive_step_requirement_saturated ||
+        exhaustive_step_requirement > search_step_budget) {
+      if (!policy.allow_timeout_degradation) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-RESOURCE-V1", 0, {},
+                      "exhaustive_search_and_oracle_step_budget");
+      }
+      exhaustive = false;
+      result.timeout_degraded = true;
+      result.timeout_degradation_reason_id =
+          time_step_budget <= resource.maximum_search_steps
+              ? "planning_time_budget_requires_bounded_search"
+              : "search_step_budget_requires_bounded_search";
+      result.trace.push_back(
+          {0, "memo.timeout.exhaustive-to-bounded.v1", 0, 1, 0,
+           result.timeout_degradation_reason_id});
+    }
+  }
   result.mode = exhaustive
                     ? CanonicalOptimizerSearchMode::kExhaustiveSmall
                     : CanonicalOptimizerSearchMode::kDeterministicBounded;
   std::vector<FrontierPlan> frontier(1);
-  for (const auto& group : result.memo_groups) {
+  const auto candidate_rank_less = [](const auto& left, const auto& right) {
+    if (left.cost.scalar_score != right.cost.scalar_score) {
+      return left.cost.scalar_score < right.cost.scalar_score;
+    }
+    const auto left_io = left.cost.terms.page_read_sequential_units +
+                         left.cost.terms.page_read_random_units +
+                         left.cost.terms.page_write_units;
+    const auto right_io = right.cost.terms.page_read_sequential_units +
+                          right.cost.terms.page_read_random_units +
+                          right.cost.terms.page_write_units;
+    if (left_io != right_io) return left_io < right_io;
+    if (left.cost.terms.memory_bytes_required !=
+        right.cost.terms.memory_bytes_required) {
+      return left.cost.terms.memory_bytes_required <
+             right.cost.terms.memory_bytes_required;
+    }
+    return left.alternative_uuid < right.alternative_uuid;
+  };
+  const auto append_candidate = [&](FrontierPlan* plan,
+                                    const CanonicalOptimizerMemoGroup& group,
+                                    const CanonicalOptimizerMemoCandidate&
+                                        candidate) {
+    if (plan == nullptr) return false;
+    std::uint64_t io_units = 0;
+    const auto& terms = candidate.cost.terms;
+    if (!checked_add(terms.page_read_sequential_units,
+                     terms.page_read_random_units, &io_units) ||
+        !checked_add(io_units, terms.page_write_units, &io_units) ||
+        !checked_add(plan->scalar_score, candidate.cost.scalar_score,
+                     &plan->scalar_score) ||
+        !checked_add(plan->io_units, io_units, &plan->io_units) ||
+        !checked_add(plan->memory_bytes, terms.memory_bytes_required,
+                     &plan->memory_bytes)) {
+      return false;
+    }
+    plan->signature += std::to_string(group.logical_node_id) + "=" +
+                       candidate.alternative_uuid + ";";
+    plan->selected.push_back(&candidate);
+    return true;
+  };
+  for (std::size_t group_index = 0;
+       group_index < result.memo_groups.size(); ++group_index) {
+    const auto& group = result.memo_groups[group_index];
     std::vector<FrontierPlan> expanded;
     const auto maximum_expanded =
         exhaustive ? std::numeric_limits<std::uint64_t>::max()
                    : policy.bounded_beam_width;
+    const auto remaining_step_budget =
+        search_step_budget - result.search_step_count;
+    const bool expansion_count_overflow =
+        !group.candidates.empty() &&
+        frontier.size() > std::numeric_limits<std::uint64_t>::max() /
+                              group.candidates.size();
+    const auto required_expansion_count =
+        expansion_count_overflow
+            ? std::numeric_limits<std::uint64_t>::max()
+            : static_cast<std::uint64_t>(frontier.size()) *
+                  group.candidates.size();
+    if (required_expansion_count > remaining_step_budget) {
+      if (!policy.allow_timeout_degradation) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-RESOURCE-V1",
+                      group.logical_node_id, {}, "search_step_budget");
+      }
+      result.timeout_degraded = true;
+      result.mode = CanonicalOptimizerSearchMode::kDeterministicBounded;
+      result.timeout_degradation_reason_id =
+          time_step_budget <= resource.maximum_search_steps
+              ? "planning_time_budget_greedy_completion"
+              : "search_step_budget_greedy_completion";
+      std::ranges::sort(frontier, plan_less);
+      FrontierPlan fallback = frontier.front();
+      for (std::size_t fallback_index = group_index;
+           fallback_index < result.memo_groups.size(); ++fallback_index) {
+        const auto& fallback_group = result.memo_groups[fallback_index];
+        const auto best = std::ranges::min_element(
+            fallback_group.candidates, candidate_rank_less);
+        if (best == fallback_group.candidates.end() ||
+            !append_candidate(&fallback, fallback_group, *best)) {
+          return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                        fallback_group.logical_node_id,
+                        best == fallback_group.candidates.end()
+                            ? std::string{}
+                            : best->alternative_uuid,
+                        "timeout_fallback_plan_cost_vector");
+        }
+        ++result.timeout_fallback_memo_group_count;
+      }
+      frontier = {std::move(fallback)};
+      result.trace.push_back(
+          {result.search_step_count, "memo.timeout.greedy-complete.v1",
+           group.logical_node_id, frontier.size(), 0,
+           result.timeout_degradation_reason_id});
+      break;
+    }
     for (const auto& prior : frontier) {
       for (const auto& candidate : group.candidates) {
-        if (result.search_step_count == search_step_budget) {
-          return refuse("QOW-DIAG-OPTIMIZER-SEARCH-RESOURCE-V1",
-                        group.logical_node_id, candidate.alternative_uuid,
-                        "search_step_budget");
-        }
         ++result.search_step_count;
         FrontierPlan plan = prior;
-        std::uint64_t io_units = 0;
-        const auto& terms = candidate.cost.terms;
-        if (!checked_add(terms.page_read_sequential_units,
-                         terms.page_read_random_units, &io_units) ||
-            !checked_add(io_units, terms.page_write_units, &io_units) ||
-            !checked_add(plan.scalar_score, candidate.cost.scalar_score,
-                         &plan.scalar_score) ||
-            !checked_add(plan.io_units, io_units, &plan.io_units) ||
-            !checked_add(plan.memory_bytes, terms.memory_bytes_required,
-                         &plan.memory_bytes)) {
+        if (!append_candidate(&plan, group, candidate)) {
           return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                         group.logical_node_id, candidate.alternative_uuid,
                         "plan_cost_vector");
         }
-        plan.signature += std::to_string(group.logical_node_id) + "=" +
-                          candidate.alternative_uuid + ";";
-        plan.selected.push_back(&candidate);
         expanded.push_back(std::move(plan));
       }
     }
     std::ranges::sort(expanded, plan_less);
+    std::uint64_t tied = 0;
+    for (std::size_t index = 1; index < expanded.size(); ++index) {
+      if (expanded[index - 1].scalar_score == expanded[index].scalar_score &&
+          expanded[index - 1].io_units == expanded[index].io_units &&
+          expanded[index - 1].memory_bytes == expanded[index].memory_bytes) {
+        ++tied;
+      }
+    }
+    if (!checked_add(result.deterministic_tie_break_count, tied,
+                     &result.deterministic_tie_break_count)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-RESOURCE-V1",
+                    group.logical_node_id, {}, "deterministic_tie_count");
+    }
     std::uint64_t pruned = 0;
     if (!exhaustive && expanded.size() > maximum_expanded) {
       pruned = expanded.size() - maximum_expanded;
@@ -1387,11 +1544,18 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
       }
     }
     frontier = std::move(expanded);
+    ++result.fully_explored_memo_group_count;
     result.trace.push_back(
         {result.search_step_count,
          exhaustive ? "memo.exhaustive.expand.v1" : "memo.bounded.expand.v1",
          group.logical_node_id, frontier.size(), pruned,
-         "deterministic_candidate_uuid_order"});
+         "scalar_io_memory_then_canonical_plan_signature"});
+    if (tied != 0) {
+      result.trace.push_back(
+          {result.search_step_count, "memo.deterministic-tie-break.v1",
+           group.logical_node_id, frontier.size(), tied,
+           "canonical_plan_signature"});
+    }
   }
   if (frontier.empty()) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-NO-PLAN-V1", 0, {},
