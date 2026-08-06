@@ -109,6 +109,16 @@ bool ValidateMultipleWindowMaterialization() {
                   exec::CanonicalQueryEvaluationStage::projection},
       "multiple independent window states were merged or lost source identity");
 
+  auto receipt_split = request;
+  receipt_split.windows[1].frames.frame_property_binding_evidence_uuid =
+      WindowUuid(5599);
+  const auto receipt_split_result =
+      exec::ExecuteCanonicalWindowComposition(receipt_split);
+  passed &= Require401(
+      receipt_split_result.diagnostic.ok &&
+          receipt_split_result.shared_materialization_pair_count == 0,
+      "distinct frame-property receipts were incorrectly stage-shared");
+
   request.windows[1].function_state_uuid =
       request.windows[0].function_state_uuid;
   passed &= Require401(

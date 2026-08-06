@@ -2182,10 +2182,17 @@ struct CanonicalWindowEffectiveFrame {
   std::optional<std::size_t> partition_id;
   CanonicalWindowFrameState base_state =
       CanonicalWindowFrameState::empty;
+  // The base state records the clamped pre-exclusion range. The effective
+  // state records the post-exclusion frame, including the case where a
+  // nonempty base is emptied by EXCLUDE CURRENT ROW/GROUP/TIES.
+  CanonicalWindowFrameState effective_state =
+      CanonicalWindowFrameState::empty;
   std::optional<std::size_t> base_begin;
   std::optional<std::size_t> base_end_exclusive;
   std::vector<std::size_t> effective_row_indices;
+  std::size_t excluded_row_count = 0;
   bool exclusion_applied = false;
+  bool exclusion_operand_consumed = false;
 };
 
 struct CanonicalWindowFrameRequest {
@@ -2217,6 +2224,8 @@ struct CanonicalWindowFrameResult {
   bool defaulted_without_order = false;
   bool every_frame_operand_consumed = false;
   bool empty_state_uses_optional_bounds = false;
+  bool base_frame_constructed_before_exclusion = false;
+  bool exactly_one_exclusion_consumed = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   CanonicalExecutionMgaAuthority mga_authority;
   PhysicalMgaStatementContext mga_statement_context;

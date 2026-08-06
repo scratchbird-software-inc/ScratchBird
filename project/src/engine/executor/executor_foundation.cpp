@@ -5773,6 +5773,34 @@ bool RankingFrameBoundValid(const CanonicalWindowFrameBound& bound) {
   return false;
 }
 
+bool CanonicalWindowDefaultFrameEvidenceValid(
+    const CanonicalWindowFrameResult& frames) {
+  if (frames.resolved_frame.frame_specified) {
+    return !frames.defaulted_with_order &&
+           !frames.defaulted_without_order;
+  }
+  if (frames.defaulted_with_order == frames.defaulted_without_order ||
+      frames.resolved_frame.exclusion !=
+          CanonicalWindowFrameExclusion::no_others ||
+      frames.resolved_frame.start->kind !=
+          CanonicalWindowFrameBoundKind::unbounded_preceding ||
+      frames.resolved_frame.start->offset.has_value()) {
+    return false;
+  }
+  if (frames.ordering_property_uuid.empty()) {
+    return frames.defaulted_without_order &&
+           frames.resolved_frame.unit == CanonicalWindowFrameUnit::rows &&
+           frames.resolved_frame.end->kind ==
+               CanonicalWindowFrameBoundKind::unbounded_following &&
+           !frames.resolved_frame.end->offset.has_value();
+  }
+  return frames.defaulted_with_order &&
+         frames.resolved_frame.unit == CanonicalWindowFrameUnit::range &&
+         frames.resolved_frame.end->kind ==
+             CanonicalWindowFrameBoundKind::current_row &&
+         !frames.resolved_frame.end->offset.has_value();
+}
+
 bool CanonicalWindowFrameEvidenceValid(
     const CanonicalWindowFrameResult& frames) {
   const auto row_count = frames.ordered_batch.rows.size();
@@ -5785,6 +5813,8 @@ bool CanonicalWindowFrameEvidenceValid(
       frames.ordered_batch, descriptor_ids);
   if (!frames.diagnostic.ok || !frames.every_frame_operand_consumed ||
       !frames.empty_state_uses_optional_bounds ||
+      !frames.base_frame_constructed_before_exclusion ||
+      !frames.exactly_one_exclusion_consumed ||
       !frames.authority.engine_mga_snapshot_bound ||
       !batch_diagnostic.ok ||
       !IsCanonicalUuid(frames.resolved_frame.frame_descriptor_uuid) ||
@@ -5829,6 +5859,7 @@ bool CanonicalWindowFrameEvidenceValid(
       !RankingFrameExclusionValid(frames.resolved_frame.exclusion) ||
       !RankingFrameBoundValid(*frames.resolved_frame.start) ||
       !RankingFrameBoundValid(*frames.resolved_frame.end) ||
+      !CanonicalWindowDefaultFrameEvidenceValid(frames) ||
       frames.executed_physical_node_id == 0 || frames.causal_counter_id == 0 ||
       frames.row_metadata.size() != row_count ||
       frames.effective_frames.size() != row_count) {
@@ -5848,6 +5879,7 @@ bool CanonicalWindowFrameEvidenceValid(
         metadata.peer_end_exclusive > metadata.partition_end_exclusive ||
         frame.ordered_row_index != row ||
         frame.partition_id != metadata.partition_id ||
+        !frame.exclusion_operand_consumed ||
         frame.exclusion_applied !=
             (frames.resolved_frame.exclusion !=
              CanonicalWindowFrameExclusion::no_others)) {
@@ -5891,12 +5923,23 @@ bool CanonicalWindowFrameEvidenceValid(
         }
         if (!excluded) expected.push_back(member);
       }
-      if (frame.effective_row_indices != expected) return false;
+      const auto expected_state =
+          expected.empty() ? CanonicalWindowFrameState::empty
+                           : CanonicalWindowFrameState::nonempty;
+      if (frame.effective_row_indices != expected ||
+          frame.effective_state != expected_state ||
+          frame.excluded_row_count !=
+              (*frame.base_end_exclusive - *frame.base_begin) -
+                  expected.size()) {
+        return false;
+      }
     } else if ((frame.base_state != CanonicalWindowFrameState::empty &&
                 frame.base_state !=
                     CanonicalWindowFrameState::reversed_to_empty) ||
+               frame.effective_state != frame.base_state ||
                frame.base_begin.has_value() ||
                frame.base_end_exclusive.has_value() ||
+               frame.excluded_row_count != 0 ||
                !frame.effective_row_indices.empty()) {
       return false;
     }
@@ -8005,7 +8048,15 @@ CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
       const auto& lhs = request.windows[left].frames;
       const auto& rhs = request.windows[right].frames;
       bool exact = lhs.window_property_uuid == rhs.window_property_uuid &&
+                   lhs.partition_property_uuid ==
+                       rhs.partition_property_uuid &&
                    lhs.ordering_property_uuid == rhs.ordering_property_uuid &&
+                   lhs.term_binding_evidence_uuid ==
+                       rhs.term_binding_evidence_uuid &&
+                   lhs.deterministic_tie_evidence_uuid ==
+                       rhs.deterministic_tie_evidence_uuid &&
+                   lhs.frame_property_binding_evidence_uuid ==
+                       rhs.frame_property_binding_evidence_uuid &&
                    frame_descriptor_equal(lhs.resolved_frame,
                                           rhs.resolved_frame) &&
                    lhs.defaulted_with_order == rhs.defaulted_with_order &&
@@ -8015,6 +8066,10 @@ CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
                        rhs.every_frame_operand_consumed &&
                    lhs.empty_state_uses_optional_bounds ==
                        rhs.empty_state_uses_optional_bounds &&
+                   lhs.base_frame_constructed_before_exclusion ==
+                       rhs.base_frame_constructed_before_exclusion &&
+                   lhs.exactly_one_exclusion_consumed ==
+                       rhs.exactly_one_exclusion_consumed &&
                    lhs.row_metadata.size() == rhs.row_metadata.size() &&
                    lhs.effective_frames.size() == rhs.effective_frames.size();
       for (std::size_t row = 0; exact && row < lhs.row_metadata.size(); ++row) {
@@ -8039,11 +8094,17 @@ CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
                     right_frame.ordered_row_index &&
                 left_frame.partition_id == right_frame.partition_id &&
                 left_frame.base_state == right_frame.base_state &&
+                left_frame.effective_state ==
+                    right_frame.effective_state &&
                 left_frame.base_begin == right_frame.base_begin &&
                 left_frame.base_end_exclusive ==
                     right_frame.base_end_exclusive &&
                 left_frame.exclusion_applied ==
                     right_frame.exclusion_applied &&
+                left_frame.exclusion_operand_consumed ==
+                    right_frame.exclusion_operand_consumed &&
+                left_frame.excluded_row_count ==
+                    right_frame.excluded_row_count &&
                 lhs.effective_frames[row].effective_row_indices ==
                     rhs.effective_frames[row].effective_row_indices;
       }

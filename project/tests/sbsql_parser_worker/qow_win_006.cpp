@@ -284,6 +284,37 @@ bool ValidateRankingRefusals() {
       "forged frame-exclusion evidence entered ranking execution");
 
   request = RankingRequest(exec::CanonicalWindowRankingFunction::rank);
+  request.frames.effective_frames[0].effective_state =
+      exec::CanonicalWindowFrameState::empty;
+  passed &= Require401(
+      RankingRefused(exec::ExecuteCanonicalWindowRanking(request)),
+      "forged post-exclusion empty state entered ranking execution");
+
+  request = RankingRequest(exec::CanonicalWindowRankingFunction::rank);
+  request.frames.effective_frames[0].excluded_row_count = 1;
+  passed &= Require401(
+      RankingRefused(exec::ExecuteCanonicalWindowRanking(request)),
+      "forged exclusion row count entered ranking execution");
+
+  request = RankingRequest(exec::CanonicalWindowRankingFunction::rank);
+  request.frames.effective_frames[0].exclusion_operand_consumed = false;
+  passed &= Require401(
+      RankingRefused(exec::ExecuteCanonicalWindowRanking(request)),
+      "unconsumed exclusion operand entered ranking execution");
+
+  request = RankingRequest(exec::CanonicalWindowRankingFunction::rank);
+  request.frames.base_frame_constructed_before_exclusion = false;
+  passed &= Require401(
+      RankingRefused(exec::ExecuteCanonicalWindowRanking(request)),
+      "missing base-before-exclusion evidence entered ranking execution");
+
+  request = RankingRequest(exec::CanonicalWindowRankingFunction::rank);
+  request.frames.defaulted_with_order = true;
+  passed &= Require401(
+      RankingRefused(exec::ExecuteCanonicalWindowRanking(request)),
+      "forged default-frame classification entered ranking execution");
+
+  request = RankingRequest(exec::CanonicalWindowRankingFunction::rank);
   request.parser_execution_authority_claimed = true;
   passed &= Require401(
       RankingRefused(exec::ExecuteCanonicalWindowRanking(request)),

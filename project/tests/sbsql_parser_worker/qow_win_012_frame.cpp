@@ -28,7 +28,15 @@ bool ValidateAggregateWindowFrame() {
       result.diagnostic.ok &&
           AggregateTexts(result) ==
               std::vector<std::string>(9, "<NULL>") &&
-          result.transition_count == 0,
+          result.transition_count == 0 &&
+          std::ranges::all_of(
+              request.frames.effective_frames, [](const auto& frame) {
+                return frame.base_state ==
+                           exec::CanonicalWindowFrameState::nonempty &&
+                       frame.effective_state ==
+                           exec::CanonicalWindowFrameState::empty &&
+                       frame.excluded_row_count == 1;
+              }),
       "empty effective aggregate frames did not finalize to typed NULL");
   return passed;
 }

@@ -1137,19 +1137,108 @@ bool RangeBoundary(const CanonicalWindowPartitionOrderResult& input,
   return true;
 }
 
+bool RangeSemanticallyReversed(
+    const CanonicalWindowPartitionOrderResult& input,
+    const CanonicalWindowFrameDescriptor& frame,
+    const std::size_t current,
+    bool* reversed,
+    std::string* detail) {
+  if (reversed == nullptr || detail == nullptr) return false;
+  *reversed = false;
+  if (frame.start->kind ==
+          CanonicalWindowFrameBoundKind::unbounded_preceding ||
+      frame.end->kind ==
+          CanonicalWindowFrameBoundKind::unbounded_following) {
+    return true;
+  }
+  // Without ORDER BY every row in the partition is one peer group. Offset
+  // bounds were already refused by ResolveFrame, leaving only CURRENT ROW.
+  if (input.order_terms.empty()) return true;
+
+  const auto& term = input.order_terms.front();
+  const auto& current_value =
+      ComparisonBatch(input).rows[current].values[term.column];
+  // SQL RANGE offset bounds on a NULL current key collapse to the current
+  // typed peer group. They therefore cannot reverse one another.
+  if (current_value.isSqlNull()) return true;
+
+  const auto coordinate = [&](const CanonicalWindowFrameBound& bound,
+                              api::EngineTypedValue* numeric,
+                              __int128* temporal,
+                              bool* is_temporal) {
+    const auto current_type = dt::CanonicalTypeIdFromStableName(
+        current_value.descriptor.canonical_type_name);
+    *is_temporal = IsTemporal(current_type);
+    if (bound.kind == CanonicalWindowFrameBoundKind::current_row) {
+      if (*is_temporal) {
+        TemporalPoint point;
+        if (!ParseTemporalPoint(current_value, &point)) {
+          *detail = "temporal RANGE current value is invalid";
+          return false;
+        }
+        *temporal = TemporalOrdinal(point);
+      } else {
+        *numeric = current_value;
+      }
+      return true;
+    }
+    return RangeThreshold(input, bound, current, numeric, temporal,
+                          is_temporal, detail);
+  };
+
+  api::EngineTypedValue start_numeric;
+  api::EngineTypedValue end_numeric;
+  __int128 start_temporal = 0;
+  __int128 end_temporal = 0;
+  bool start_is_temporal = false;
+  bool end_is_temporal = false;
+  if (!coordinate(*frame.start, &start_numeric, &start_temporal,
+                  &start_is_temporal) ||
+      !coordinate(*frame.end, &end_numeric, &end_temporal,
+                  &end_is_temporal) ||
+      start_is_temporal != end_is_temporal) {
+    return false;
+  }
+
+  int comparison = 0;
+  if (start_is_temporal) {
+    comparison = start_temporal < end_temporal
+                     ? -1
+                     : (start_temporal > end_temporal ? 1 : 0);
+    if (term.direction == CanonicalDescriptorOrderDirection::descending) {
+      comparison = -comparison;
+    }
+  } else {
+    const auto compared = CompareCanonicalDescriptorOrderValues(
+        start_numeric, end_numeric, term);
+    if (!compared.diagnostic.ok) {
+      *detail = compared.diagnostic.detail;
+      return false;
+    }
+    comparison = compared.comparison;
+  }
+  *reversed = comparison > 0;
+  return true;
+}
+
 bool RangeBounds(const CanonicalWindowPartitionOrderResult& input,
                  const CanonicalWindowFrameDescriptor& frame,
                  const std::size_t current,
                  const CanonicalWindowRowPeerMetadata& metadata,
                  BaseBounds* bounds,
                  std::string* detail) {
+  bool semantically_reversed = false;
+  if (!RangeSemanticallyReversed(input, frame, current,
+                                 &semantically_reversed, detail)) {
+    return false;
+  }
   if (!RangeBoundary(input, *frame.start, true, current, metadata,
                      &bounds->begin, detail) ||
       !RangeBoundary(input, *frame.end, false, current, metadata,
                      &bounds->end, detail)) {
     return false;
   }
-  if (bounds->begin > bounds->end) {
+  if (semantically_reversed || bounds->begin > bounds->end) {
     bounds->state = CanonicalWindowFrameState::reversed_to_empty;
   } else if (bounds->begin == bounds->end) {
     bounds->state = CanonicalWindowFrameState::empty;
@@ -1288,9 +1377,11 @@ CanonicalWindowFrameResult ExecuteCanonicalWindowFrames(
     effective.ordered_row_index = current;
     effective.partition_id = metadata.partition_id;
     effective.base_state = bounds.state;
+    effective.effective_state = bounds.state;
     effective.exclusion_applied =
         result.resolved_frame.exclusion !=
         CanonicalWindowFrameExclusion::no_others;
+    effective.exclusion_operand_consumed = true;
     if (bounds.state == CanonicalWindowFrameState::nonempty) {
       effective.base_begin = bounds.begin;
       effective.base_end_exclusive = bounds.end;
@@ -1298,6 +1389,7 @@ CanonicalWindowFrameResult ExecuteCanonicalWindowFrames(
            ++candidate) {
         if (Excluded(result.resolved_frame.exclusion, candidate, current,
                      metadata)) {
+          ++effective.excluded_row_count;
           continue;
         }
         if (effective_row_references ==
@@ -1307,6 +1399,9 @@ CanonicalWindowFrameResult ExecuteCanonicalWindowFrames(
         effective.effective_row_indices.push_back(candidate);
         ++effective_row_references;
       }
+      effective.effective_state = effective.effective_row_indices.empty()
+                                      ? CanonicalWindowFrameState::empty
+                                      : CanonicalWindowFrameState::nonempty;
     }
     result.effective_frames.push_back(std::move(effective));
   }
@@ -1329,6 +1424,8 @@ CanonicalWindowFrameResult ExecuteCanonicalWindowFrames(
       request.frame_property_binding_evidence_uuid;
   result.every_frame_operand_consumed = true;
   result.empty_state_uses_optional_bounds = true;
+  result.base_frame_constructed_before_exclusion = true;
+  result.exactly_one_exclusion_consumed = true;
   result.authority = request.partition_order.authority;
   result.mga_authority = request.mga_authority;
   result.mga_statement_context = request.mga_authority.statement_context;
