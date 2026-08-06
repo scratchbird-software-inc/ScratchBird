@@ -100,7 +100,10 @@ bool ValidateMultipleWindowMaterialization() {
       result.diagnostic.ok && rows_match &&
           result.materialized_window_descriptor_ids ==
               std::vector<std::uint32_t>({5999, 6000}) &&
+          result.window_pair_comparison_count == 1 &&
+          result.compatible_sort_pair_count == 1 &&
           result.shared_materialization_pair_count == 1 &&
+          result.every_window_source_mapping_bijective &&
           result.every_function_state_independent &&
           result.stage_trace ==
               std::vector<exec::CanonicalQueryEvaluationStage>{
@@ -116,8 +119,27 @@ bool ValidateMultipleWindowMaterialization() {
       exec::ExecuteCanonicalWindowComposition(receipt_split);
   passed &= Require401(
       receipt_split_result.diagnostic.ok &&
+          receipt_split_result.compatible_sort_pair_count == 1 &&
           receipt_split_result.shared_materialization_pair_count == 0,
-      "distinct frame-property receipts were incorrectly stage-shared");
+      "distinct frame-property receipts lost sort reuse or shared frame state");
+
+  auto ordering_split = request;
+  ordering_split.windows[1].frames.ordering_property_uuid = WindowUuid(5598);
+  const auto ordering_split_result =
+      exec::ExecuteCanonicalWindowComposition(ordering_split);
+  passed &= Require401(
+      ordering_split_result.diagnostic.ok &&
+          ordering_split_result.window_pair_comparison_count == 1 &&
+          ordering_split_result.compatible_sort_pair_count == 0 &&
+          ordering_split_result.shared_materialization_pair_count == 0,
+      "incompatible ordering-property receipts were sort-shared");
+
+  auto bounded = request;
+  bounded.maximum_pair_comparisons = 0;
+  passed &= Require401(
+      CompositionRefused(exec::ExecuteCanonicalWindowComposition(bounded),
+                         "QOW-DIAG-WINDOW-MULTIPLE"),
+      "window sort-sharing pair comparisons bypassed their resource bound");
 
   request.windows[1].function_state_uuid =
       request.windows[0].function_state_uuid;
@@ -147,9 +169,13 @@ bool ValidateIndependentWindowSpecifications() {
   request.projection_descriptor_ids = {5999, 6001};
   const auto result = exec::ExecuteCanonicalWindowComposition(request);
   return Require401(
-      result.diagnostic.ok && result.shared_materialization_pair_count == 0 &&
+      result.diagnostic.ok && result.window_pair_comparison_count == 1 &&
+          result.compatible_sort_pair_count == 1 &&
+          result.shared_materialization_pair_count == 0 &&
+          result.every_window_source_mapping_bijective &&
+          result.every_function_state_independent &&
           result.output_batch.rows.size() == request.input_batch.rows.size(),
-      "independent window specifications were incorrectly stage-shared");
+      "compatible ordering was not reused independently of frame state");
 }
 
 }  // namespace

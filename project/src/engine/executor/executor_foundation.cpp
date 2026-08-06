@@ -8490,19 +8490,35 @@ CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
             bound_equal(*left.start, *right.start)) &&
            (!left.end.has_value() || bound_equal(*left.end, *right.end));
   };
+  if (request.windows.size() > 1 &&
+      request.windows.size() - 1 >
+          std::numeric_limits<std::size_t>::max() /
+              request.windows.size()) {
+    return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                  "window pair comparison count overflowed");
+  }
+  const auto window_pair_comparison_count =
+      request.windows.size() * (request.windows.size() - 1) / 2;
+  if (request.maximum_pair_comparisons == 0 ||
+      window_pair_comparison_count > request.maximum_pair_comparisons) {
+    return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                  "window sort-sharing comparison bound was exceeded");
+  }
   for (std::size_t left = 0; left < request.windows.size(); ++left) {
     for (std::size_t right = left + 1; right < request.windows.size();
          ++right) {
       const auto& lhs = request.windows[left].frames;
       const auto& rhs = request.windows[right].frames;
-      bool exact = lhs.window_property_uuid == rhs.window_property_uuid &&
-                   lhs.partition_property_uuid ==
-                       rhs.partition_property_uuid &&
-                   lhs.ordering_property_uuid == rhs.ordering_property_uuid &&
-                   lhs.term_binding_evidence_uuid ==
-                       rhs.term_binding_evidence_uuid &&
-                   lhs.deterministic_tie_evidence_uuid ==
-                       rhs.deterministic_tie_evidence_uuid &&
+      bool compatible_sort =
+          lhs.partition_property_uuid == rhs.partition_property_uuid &&
+          lhs.ordering_property_uuid == rhs.ordering_property_uuid &&
+          lhs.term_binding_evidence_uuid ==
+              rhs.term_binding_evidence_uuid &&
+          lhs.deterministic_tie_evidence_uuid ==
+              rhs.deterministic_tie_evidence_uuid &&
+          lhs.row_metadata.size() == rhs.row_metadata.size();
+      bool exact = compatible_sort &&
+                   lhs.window_property_uuid == rhs.window_property_uuid &&
                    lhs.frame_property_binding_evidence_uuid ==
                        rhs.frame_property_binding_evidence_uuid &&
                    frame_descriptor_equal(lhs.resolved_frame,
@@ -8518,47 +8534,54 @@ CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
                        rhs.base_frame_constructed_before_exclusion &&
                    lhs.exactly_one_exclusion_consumed ==
                        rhs.exactly_one_exclusion_consumed &&
-                   lhs.row_metadata.size() == rhs.row_metadata.size() &&
                    lhs.effective_frames.size() == rhs.effective_frames.size();
-      for (std::size_t row = 0; exact && row < lhs.row_metadata.size(); ++row) {
+      for (std::size_t row = 0; row < lhs.row_metadata.size() &&
+                                (compatible_sort || exact);
+           ++row) {
         const auto& left_metadata = lhs.row_metadata[row];
         const auto& right_metadata = rhs.row_metadata[row];
-        const auto& left_frame = lhs.effective_frames[row];
-        const auto& right_frame = rhs.effective_frames[row];
-        exact = left_metadata.source_row_index ==
-                    right_metadata.source_row_index &&
-                left_metadata.ordered_row_index ==
-                    right_metadata.ordered_row_index &&
-                left_metadata.partition_id == right_metadata.partition_id &&
-                left_metadata.peer_group_id == right_metadata.peer_group_id &&
-                left_metadata.partition_begin ==
-                    right_metadata.partition_begin &&
-                left_metadata.partition_end_exclusive ==
-                    right_metadata.partition_end_exclusive &&
-                left_metadata.peer_begin == right_metadata.peer_begin &&
-                left_metadata.peer_end_exclusive ==
-                    right_metadata.peer_end_exclusive &&
-                left_frame.ordered_row_index ==
-                    right_frame.ordered_row_index &&
-                left_frame.partition_id == right_frame.partition_id &&
-                left_frame.base_state == right_frame.base_state &&
-                left_frame.effective_state ==
-                    right_frame.effective_state &&
-                left_frame.base_begin == right_frame.base_begin &&
-                left_frame.base_end_exclusive ==
-                    right_frame.base_end_exclusive &&
-                left_frame.exclusion_applied ==
-                    right_frame.exclusion_applied &&
-                left_frame.exclusion_operand_consumed ==
-                    right_frame.exclusion_operand_consumed &&
-                left_frame.excluded_row_count ==
-                    right_frame.excluded_row_count &&
-                lhs.effective_frames[row].effective_row_indices ==
-                    rhs.effective_frames[row].effective_row_indices;
+        compatible_sort =
+            compatible_sort &&
+            left_metadata.source_row_index ==
+                right_metadata.source_row_index &&
+            left_metadata.ordered_row_index ==
+                right_metadata.ordered_row_index &&
+            left_metadata.partition_id == right_metadata.partition_id &&
+            left_metadata.peer_group_id == right_metadata.peer_group_id &&
+            left_metadata.partition_begin ==
+                right_metadata.partition_begin &&
+            left_metadata.partition_end_exclusive ==
+                right_metadata.partition_end_exclusive &&
+            left_metadata.peer_begin == right_metadata.peer_begin &&
+            left_metadata.peer_end_exclusive ==
+                right_metadata.peer_end_exclusive;
+        if (exact) {
+          const auto& left_frame = lhs.effective_frames[row];
+          const auto& right_frame = rhs.effective_frames[row];
+          exact = compatible_sort &&
+                  left_frame.ordered_row_index ==
+                      right_frame.ordered_row_index &&
+                  left_frame.partition_id == right_frame.partition_id &&
+                  left_frame.base_state == right_frame.base_state &&
+                  left_frame.effective_state == right_frame.effective_state &&
+                  left_frame.base_begin == right_frame.base_begin &&
+                  left_frame.base_end_exclusive ==
+                      right_frame.base_end_exclusive &&
+                  left_frame.exclusion_applied ==
+                      right_frame.exclusion_applied &&
+                  left_frame.exclusion_operand_consumed ==
+                      right_frame.exclusion_operand_consumed &&
+                  left_frame.excluded_row_count ==
+                      right_frame.excluded_row_count &&
+                  left_frame.effective_row_indices ==
+                      right_frame.effective_row_indices;
+        }
       }
+      if (compatible_sort) ++result.compatible_sort_pair_count;
       if (exact) ++result.shared_materialization_pair_count;
     }
   }
+  result.window_pair_comparison_count = window_pair_comparison_count;
 
   std::vector<std::uint32_t> materialized_ids;
   materialized_ids.reserve(materialized.columns.size());
@@ -8838,6 +8861,7 @@ CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
 
   result.diagnostic = {};
   result.output_batch = std::move(materialized);
+  result.every_window_source_mapping_bijective = true;
   result.every_function_state_independent = true;
   result.authority = first_frames.authority;
   result.selected_plan_uuid = first_frames.selected_plan_uuid;

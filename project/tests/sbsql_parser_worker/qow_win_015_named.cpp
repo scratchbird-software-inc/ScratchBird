@@ -37,7 +37,7 @@ bool ValidateNamedWindowInheritance() {
        Definition("ordered", "partitioned", {}, {201, 202}),
        Definition("framed", "ordered", {}, {}, 301)},
       {"framed", "ordered"});
-  return Require(
+  bool passed = Require(
       result.accepted && result.resolved_once_in_scope &&
           result.resolved_definitions.size() == 3 &&
           result.resolved_definitions[1].partition_descriptor_ids ==
@@ -55,15 +55,36 @@ bool ValidateNamedWindowInheritance() {
           result.reference_definition_indices ==
               std::vector<std::size_t>({2, 1}),
       "named-window inheritance did not resolve once in declaration scope");
+  const auto additive = sbsql::ResolveCanonicalNamedWindows(
+      {Definition("empty", std::nullopt, {}, {}),
+       Definition("partitioned", "empty", {101}, {}),
+       Definition("ordered", "partitioned", {}, {201}),
+       Definition("framed", "ordered", {}, {}, 301)},
+      {"empty", "partitioned", "ordered", "framed"});
+  passed &= Require(
+      additive.accepted && additive.resolved_once_in_scope &&
+          additive.resolved_definitions.size() == 4 &&
+          additive.resolved_definitions[3].partition_descriptor_ids ==
+              std::vector<std::uint32_t>({101}) &&
+          additive.resolved_definitions[3].order_descriptor_ids ==
+              std::vector<std::uint32_t>({201}) &&
+          additive.resolved_definitions[3].frame_descriptor_id ==
+              std::optional<std::uint32_t>(301) &&
+          additive.resolved_definitions[3].resolution_depth == 3 &&
+          additive.reference_definition_indices ==
+              std::vector<std::size_t>({0, 1, 2, 3}),
+      "additive named-window inheritance lost declaration-order scope");
+  return passed;
 }
 
 bool ValidateNamedWindowRefusals() {
   bool passed = true;
   const auto refused = [&](const auto& definitions,
                            const auto& references,
-                           const std::string_view detail) {
-    const auto result =
-        sbsql::ResolveCanonicalNamedWindows(definitions, references);
+                           const std::string_view detail,
+                           const std::size_t maximum_definition_count = 1024) {
+    const auto result = sbsql::ResolveCanonicalNamedWindows(
+        definitions, references, maximum_definition_count);
     return Require(!result.accepted &&
                        result.diagnostic_id == "QOW-DIAG-WINDOW-NAMED" &&
                        result.resolved_definitions.empty(),
@@ -103,6 +124,34 @@ bool ValidateNamedWindowRefusals() {
           Definition("base", std::nullopt, {}, {})},
       std::vector<std::string>{"missing"},
       "unknown named-window reference was admitted");
+  passed &= refused(
+      std::vector<sbsql::CanonicalNamedWindowDefinition>{
+          Definition("base", std::nullopt, {}, {}),
+          Definition("base", std::nullopt, {}, {})},
+      std::vector<std::string>{"base"},
+      "duplicate named-window declaration was admitted");
+  passed &= refused(
+      std::vector<sbsql::CanonicalNamedWindowDefinition>{
+          Definition("Base", std::nullopt, {}, {})},
+      std::vector<std::string>{"Base"},
+      "noncanonical named-window identifier was admitted");
+  passed &= refused(
+      std::vector<sbsql::CanonicalNamedWindowDefinition>{
+          Definition("base", std::nullopt, {101, 101}, {})},
+      std::vector<std::string>{"base"},
+      "duplicate PARTITION BY descriptor identity was admitted");
+  auto pre_resolved = Definition("base", std::nullopt, {}, {});
+  pre_resolved.resolution_depth = 1;
+  passed &= refused(
+      std::vector<sbsql::CanonicalNamedWindowDefinition>{pre_resolved},
+      std::vector<std::string>{"base"},
+      "caller-supplied named-window resolution state was admitted");
+  passed &= refused(
+      std::vector<sbsql::CanonicalNamedWindowDefinition>{
+          Definition("base", std::nullopt, {}, {})},
+      std::vector<std::string>{"base"},
+      "named-window definition count bypassed its zero resource bound",
+      0);
   return passed;
 }
 

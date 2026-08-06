@@ -452,7 +452,10 @@ struct CanonicalWindowCompositionResult {
   std::vector<std::size_t> source_row_indices;
   std::vector<CanonicalQueryEvaluationStage> stage_trace;
   std::vector<std::uint32_t> materialized_window_descriptor_ids;
+  std::size_t window_pair_comparison_count = 0;
+  std::size_t compatible_sort_pair_count = 0;
   std::size_t shared_materialization_pair_count = 0;
+  bool every_window_source_mapping_bijective = false;
   bool every_function_state_independent = false;
   bool all_windows_materialized_before_qualify = false;
   bool qualify_uses_true_only_3vl = false;
