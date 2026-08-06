@@ -1754,6 +1754,7 @@ struct CanonicalAggregateMovingRuntimeRequest {
   std::size_t maximum_addition_transition_count = 8388608;
   std::size_t maximum_inverse_transition_count = 8388608;
   std::size_t maximum_cumulative_state_bytes = 268435456;
+  bool cancellation_requested = false;
 };
 
 struct CanonicalAggregateMovingRuntimeResult {
@@ -1766,6 +1767,9 @@ struct CanonicalAggregateMovingRuntimeResult {
   std::size_t maximum_retained_state_bytes = 0;
   bool moving_inverse_state_used = false;
   bool frame_recomputation_used = false;
+  bool cancellation_observed = false;
+  bool transient_state_cleanup_proven = false;
+  bool all_or_nothing_publication = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;

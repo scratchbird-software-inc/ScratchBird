@@ -7088,6 +7088,8 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
     result.diagnostic.ok = false;
     result.diagnostic.diagnostic_code = std::move(code);
     result.diagnostic.detail = std::move(detail);
+    result.transient_state_cleanup_proven = true;
+    result.all_or_nothing_publication = true;
     return result;
   };
   if (!CanonicalWindowFrameEvidenceValid(request.frames)) {
@@ -7150,6 +7152,13 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
       aggregate_template.filter_truth_values->size() != row_count) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-FILTER",
                   "aggregate FILTER cardinality does not match window rows");
+  }
+  if (request.cancellation_requested) {
+    auto cancelled = refuse(
+        "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-CANCELLED",
+        "aggregate window execution was cancelled before publication");
+    cancelled.cancellation_observed = true;
+    return cancelled;
   }
 
   const PhysicalNodeRecord* aggregate_node = nullptr;
@@ -7322,6 +7331,7 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
         request.maximum_inverse_transition_count;
     moving_request.maximum_cumulative_state_bytes =
         request.maximum_combined_state_bytes;
+    moving_request.cancellation_requested = request.cancellation_requested;
     auto moving = ExecuteCanonicalAggregateMovingRuntime(moving_request);
     if (!moving.diagnostic.ok) {
       return refuse(moving.diagnostic.diagnostic_code,
@@ -7329,6 +7339,9 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
     }
     if (!moving.moving_inverse_state_used ||
         moving.frame_recomputation_used ||
+        moving.cancellation_observed ||
+        !moving.transient_state_cleanup_proven ||
+        !moving.all_or_nothing_publication ||
         moving.values.size() != row_count ||
         moving.selected_plan_uuid != request.frames.selected_plan_uuid ||
         moving.executed_physical_node_id !=
@@ -7441,6 +7454,8 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
   result.distinct_applied_before_order = true;
   result.aggregate_order_applied =
       !aggregate_template.aggregate_order_terms.empty();
+  result.transient_state_cleanup_proven = true;
+  result.all_or_nothing_publication = true;
   result.effective_frame_recomputed =
       selected_state_strategy !=
       CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
@@ -8196,6 +8211,9 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
          !aggregate_result.distinct_applied_before_order ||
          aggregate_result.aggregate_order_applied !=
              !aggregate.aggregate_template.aggregate_order_terms.empty() ||
+         aggregate_result.cancellation_observed ||
+         !aggregate_result.transient_state_cleanup_proven ||
+         !aggregate_result.all_or_nothing_publication ||
          aggregate_result.window_property_uuid !=
              aggregate.frames.window_property_uuid ||
          aggregate_result.partition_property_uuid !=

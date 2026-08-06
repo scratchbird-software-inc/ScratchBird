@@ -150,6 +150,9 @@ bool ExactRegistryAggregateReceipts(
          result.distinct_applied_before_order &&
          result.aggregate_order_applied ==
              !aggregate.aggregate_order_terms.empty() &&
+         !result.cancellation_observed &&
+         result.transient_state_cleanup_proven &&
+         result.all_or_nothing_publication &&
          result.partition_property_uuid ==
              request.frames.partition_property_uuid &&
          result.ordering_property_uuid ==
@@ -170,6 +173,10 @@ bool ValidateEveryRegistryAggregateAsWindow() {
   std::size_t executed_modifier_profile_count = 0;
   std::size_t executed_modifier_window_value_count = 0;
   std::size_t executed_distinct_modifier_profile_count = 0;
+  std::size_t inverse_admitted_registry_profile_count = 0;
+  std::size_t moving_inverse_profile_count = 0;
+  std::size_t type_constrained_recompute_profile_count = 0;
+  std::size_t frame_recompute_fallback_profile_count = 0;
   for (const auto& entry : registry) {
     const auto request = RegistryWindowProfile(entry.function);
     const auto direct =
@@ -260,6 +267,55 @@ bool ValidateEveryRegistryAggregateAsWindow() {
       executed_window_value_count += direct.values.size();
     }
 
+    auto strategy_request = request;
+    SelectRegistryWindowStateStrategy(
+        &strategy_request,
+        exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
+    const auto strategy_result =
+        exec::ExecuteCanonicalRegistryWindowAggregate(strategy_request);
+    if (entry.moving_window_inverse) {
+      ++inverse_admitted_registry_profile_count;
+      if (entry.function == exec::CanonicalAggregateFunction::avg) {
+        const bool type_fallback_ok =
+            direct.effective_frame_recomputed &&
+            RegistryAggregateRefused(
+                strategy_result,
+                {"QOW-DIAG-QRY-011-REGISTRY-INVERSE-TYPE-V1"});
+        passed &= Require401(
+            type_fallback_ok,
+            "real64 AVG profile did not retain recomputation when inverse state requires int64: " +
+                entry.builtin_id);
+        if (type_fallback_ok) ++type_constrained_recompute_profile_count;
+      } else {
+        const bool moving_ok =
+            SameRegistryAggregateValues(direct, strategy_result) &&
+            strategy_result.moving_inverse_state_used &&
+            !strategy_result.effective_frame_recomputed &&
+            strategy_result.selected_state_strategy ==
+                exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse &&
+            strategy_result.transient_state_cleanup_proven &&
+            strategy_result.all_or_nothing_publication;
+        passed &= Require401(
+            moving_ok,
+            "aggregate registry inverse-admitted profile did not match frame recomputation: " +
+                entry.builtin_id);
+        if (moving_ok) ++moving_inverse_profile_count;
+      }
+    } else {
+      const bool fallback_ok =
+          direct.effective_frame_recomputed &&
+          direct.selected_state_strategy ==
+              exec::CanonicalRegistryWindowAggregateStateStrategy::frame_recompute &&
+          RegistryAggregateRefused(
+              strategy_result,
+              {"QOW-DIAG-QRY-011-REGISTRY-INVERSE-UNAVAILABLE-V1"});
+      passed &= Require401(
+          fallback_ok,
+          "aggregate registry non-invertible profile did not retain canonical frame recomputation: " +
+              entry.builtin_id);
+      if (fallback_ok) ++frame_recompute_fallback_profile_count;
+    }
+
     auto modified_request = RegistryWindowProfile(entry.function);
     ApplyEveryAuthorizedModifier(&modified_request);
     const auto modified =
@@ -338,6 +394,81 @@ bool ValidateEveryRegistryAggregateAsWindow() {
           executed_modifier_window_value_count == 387 &&
           executed_distinct_modifier_profile_count == 42,
       "aggregate-as-window modifier proof did not cover 43 FILTER/order and 42 DISTINCT profiles by nine rows");
+  passed &= Require401(
+      inverse_admitted_registry_profile_count == 3 &&
+          moving_inverse_profile_count == 2 &&
+          type_constrained_recompute_profile_count == 1 &&
+          frame_recompute_fallback_profile_count == 40,
+      "aggregate-as-window state-strategy proof did not cover three admitted identities, type fallback, and 40 non-invertible profiles");
+  return passed;
+}
+
+bool HasRegistryWindowSpillArtifact(const std::filesystem::path& root) {
+  std::error_code error;
+  if (!std::filesystem::exists(root, error)) return static_cast<bool>(error);
+  for (std::filesystem::recursive_directory_iterator iterator(root, error),
+       end;
+       !error && iterator != end; iterator.increment(error)) {
+    if (iterator->path().extension() == ".sbtmpidx") return true;
+  }
+  return static_cast<bool>(error);
+}
+
+bool ValidateEveryRegistryAggregateWindowSpill(
+    const std::filesystem::path& root) {
+  bool passed = true;
+  std::size_t spilled_profile_count = 0;
+  std::size_t restored_window_value_count = 0;
+  const auto& registry = exec::CanonicalAggregateRuntimeRegistryV1();
+  for (std::size_t ordinal = 0; ordinal < registry.size(); ++ordinal) {
+    const auto& entry = registry[ordinal];
+    const auto baseline_request = RegistryWindowProfile(entry.function);
+    const auto baseline =
+        exec::ExecuteCanonicalRegistryWindowAggregate(baseline_request);
+    exec::CanonicalRegistryWindowAggregateSpillRequest spill;
+    spill.aggregate_request = baseline_request;
+    SelectRegistryWindowStateStrategy(
+        &spill.aggregate_request,
+        exec::CanonicalRegistryWindowAggregateStateStrategy::state_spill);
+    spill.aggregate_request.aggregate_template.physical_dag.spill_allowed =
+        true;
+    spill.spill_root = root;
+    spill.spill_owner_uuid = WindowUuid(7600 + ordinal);
+    spill.runtime_generation = 7700 + ordinal;
+    spill.memory_quota_bytes = 128;
+    std::error_code owner_error;
+    std::filesystem::create_directories(
+        root / spill.spill_owner_uuid, owner_error);
+    const auto result =
+        exec::ExecuteCanonicalRegistryWindowAggregateSpill(spill);
+    const bool profile_ok =
+        !owner_error && baseline.diagnostic.ok && result.diagnostic.ok &&
+        result.spilled &&
+        result.spill_reopened && result.cleanup_proven &&
+        result.spilled_aggregate_state_count == 9 &&
+        result.serialized_aggregate_state_bytes != 0 &&
+        result.spilled_aggregate_state_record_count != 0 &&
+        SameRegistryAggregateValues(baseline, result.aggregate_result) &&
+        ExactRegistryAggregateReceipts(spill.aggregate_request,
+                                       result.aggregate_result) &&
+        result.aggregate_result.selected_state_strategy ==
+            exec::CanonicalRegistryWindowAggregateStateStrategy::state_spill &&
+        result.aggregate_result.transient_state_cleanup_proven &&
+        result.aggregate_result.all_or_nothing_publication &&
+        !HasRegistryWindowSpillArtifact(root);
+    passed &= Require401(
+        profile_ok,
+        "aggregate registry profile did not spill/reopen exact Window state: " +
+            entry.builtin_id + ":" + result.diagnostic.diagnostic_code +
+            ":" + result.diagnostic.detail);
+    if (profile_ok) {
+      ++spilled_profile_count;
+      restored_window_value_count += result.aggregate_result.values.size();
+    }
+  }
+  passed &= Require401(
+      spilled_profile_count == 43 && restored_window_value_count == 387,
+      "aggregate Window spill proof did not cover 43 profiles by nine rows");
   return passed;
 }
 
@@ -368,8 +499,16 @@ bool ValidateRegistryAggregateAsWindowRefusals() {
 }  // namespace
 
 int main() {
-  return ValidateEveryRegistryAggregateAsWindow() &&
-                 ValidateRegistryAggregateAsWindowRefusals()
-             ? EXIT_SUCCESS
-             : EXIT_FAILURE;
+  const auto root = std::filesystem::temp_directory_path() /
+                    ("scratchbird_qow405_registry_window_spill_" +
+                     std::to_string(std::chrono::steady_clock::now()
+                                        .time_since_epoch()
+                                        .count()));
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+  const bool passed = ValidateEveryRegistryAggregateAsWindow() &&
+                      ValidateEveryRegistryAggregateWindowSpill(root) &&
+                      ValidateRegistryAggregateAsWindowRefusals();
+  std::filesystem::remove_all(root, error);
+  return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

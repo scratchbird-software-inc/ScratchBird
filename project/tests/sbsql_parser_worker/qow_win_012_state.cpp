@@ -24,6 +24,15 @@ constexpr std::string_view kCountUuid =
 constexpr std::string_view kMinimumUuid =
     "019de5fc-2400-781c-881b-4af4d55d402b";
 
+exec::CanonicalWindowFrameDescriptor SlidingFrame() {
+  return ExplicitFrame(
+      exec::CanonicalWindowFrameUnit::rows,
+      FrameBound(exec::CanonicalWindowFrameBoundKind::offset_preceding,
+                 exec::EncodeInt64Value(1)),
+      FrameBound(exec::CanonicalWindowFrameBoundKind::offset_following,
+                 exec::EncodeInt64Value(1)));
+}
+
 exec::CanonicalWindowAggregateRequest AggregateWindowRequest(
     exec::CanonicalWindowFrameDescriptor frame = WholePartitionFrame()) {
   exec::CanonicalWindowAggregateRequest request;
@@ -350,6 +359,9 @@ bool ValidateRegistryAggregateMovingInverseState() {
           !recomputed.moving_inverse_state_used &&
           moving.moving_inverse_state_used &&
           !moving.effective_frame_recomputed &&
+          moving.transient_state_cleanup_proven &&
+          moving.all_or_nothing_publication &&
+          !moving.cancellation_observed &&
           moving.state_strategy_selected_from_physical_plan &&
           moving.selected_state_strategy ==
               exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse &&
@@ -366,6 +378,22 @@ bool ValidateRegistryAggregateMovingInverseState() {
               moving_request.frames.executed_physical_node_id &&
           moving.causal_counter_id == moving_request.frames.causal_counter_id,
       "AVG moving state did not match canonical frame recomputation");
+
+  recompute_request = RegistryAverageWindowRequest(SlidingFrame());
+  const auto sliding_recomputed =
+      exec::ExecuteCanonicalRegistryWindowAggregate(recompute_request);
+  moving_request = recompute_request;
+  SelectRegistryWindowStateStrategy(
+      &moving_request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
+  moving = exec::ExecuteCanonicalRegistryWindowAggregate(moving_request);
+  passed &= Require401(
+      SameRegistryAggregateValues(sliding_recomputed, moving) &&
+          moving.moving_inverse_state_used &&
+          moving.transition_count > 0 && moving.inverse_transition_count > 0 &&
+          moving.transition_count < sliding_recomputed.transition_count &&
+          moving.frame_row_indices == EffectiveFrameRows(moving_request.frames),
+      "AVG bounded sliding state did not add/remove exact frame membership");
 
   recompute_request = RegistryAverageWindowRequest(PrefixFrame());
   auto& sum = recompute_request.aggregate_template;
@@ -506,6 +534,68 @@ bool ValidateRegistryAggregateMovingInverseRefusals() {
           exec::ExecuteCanonicalRegistryWindowAggregate(request),
           {"SBLR.PLAN_TREE.RESOURCE_LIMIT"}),
       "moving aggregate state published after inverse resource exhaustion");
+
+  request = RegistryAverageWindowRequest(PrefixFrame());
+  SelectRegistryWindowStateStrategy(
+      &request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
+  request.maximum_transition_count = 8;
+  auto resource_refusal =
+      exec::ExecuteCanonicalRegistryWindowAggregate(request);
+  passed &= Require401(
+      RegistryAggregateRefused(
+          resource_refusal, {"SBLR.PLAN_TREE.RESOURCE_LIMIT"}) &&
+          resource_refusal.transient_state_cleanup_proven &&
+          resource_refusal.all_or_nothing_publication,
+      "moving aggregate state published after addition resource exhaustion");
+
+  request = RegistryAverageWindowRequest(PrefixFrame());
+  SelectRegistryWindowStateStrategy(
+      &request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
+  request.maximum_combined_state_bytes = 1;
+  resource_refusal = exec::ExecuteCanonicalRegistryWindowAggregate(request);
+  passed &= Require401(
+      RegistryAggregateRefused(
+          resource_refusal, {"SBLR.PLAN_TREE.RESOURCE_LIMIT"}) &&
+          resource_refusal.transient_state_cleanup_proven &&
+          resource_refusal.all_or_nothing_publication,
+      "moving aggregate state published after cumulative memory exhaustion");
+
+  request = RegistryAverageWindowRequest(PrefixFrame());
+  SelectRegistryWindowStateStrategy(
+      &request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
+  request.cancellation_requested = true;
+  const auto cancelled =
+      exec::ExecuteCanonicalRegistryWindowAggregate(request);
+  passed &= Require401(
+      RegistryAggregateRefused(
+          cancelled,
+          {"QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-CANCELLED"}) &&
+          cancelled.cancellation_observed &&
+          cancelled.transient_state_cleanup_proven &&
+          cancelled.all_or_nothing_publication,
+      "moving aggregate cancellation published values or lost cleanup evidence");
+
+  exec::CanonicalAggregateMovingRuntimeRequest direct_cancellation;
+  direct_cancellation.aggregate_request = request.aggregate_template;
+  direct_cancellation.aggregate_request.input_batch =
+      request.frames.ordered_batch;
+  direct_cancellation.effective_frame_row_indices =
+      EffectiveFrameRows(request.frames);
+  direct_cancellation.cancellation_requested = true;
+  const auto direct_cancelled =
+      exec::ExecuteCanonicalAggregateMovingRuntime(direct_cancellation);
+  passed &= Require401(
+      !direct_cancelled.diagnostic.ok &&
+          direct_cancelled.diagnostic.diagnostic_code ==
+              "QOW-DIAG-QRY-011-REGISTRY-INVERSE-CANCELLED-V1" &&
+          direct_cancelled.values.empty() &&
+          direct_cancelled.cancellation_observed &&
+          direct_cancelled.transient_state_cleanup_proven &&
+          direct_cancelled.all_or_nothing_publication,
+      "canonical moving runtime cancellation did not fail atomically");
 
   request = RegistryAverageWindowRequest(PrefixFrame());
   SelectRegistryWindowStateStrategy(

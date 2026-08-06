@@ -242,6 +242,7 @@ struct CanonicalRegistryWindowAggregateRequest {
   std::size_t maximum_distinct_tuple_count = 8388608;
   std::size_t maximum_order_comparison_count = 8388608;
   std::size_t maximum_combined_state_bytes = 268435456;
+  bool cancellation_requested = false;
 };
 
 struct CanonicalRegistryWindowAggregateResult {
@@ -269,6 +270,9 @@ struct CanonicalRegistryWindowAggregateResult {
   bool filter_applied_before_distinct = false;
   bool distinct_applied_before_order = false;
   bool aggregate_order_applied = false;
+  bool cancellation_observed = false;
+  bool transient_state_cleanup_proven = false;
+  bool all_or_nothing_publication = false;
   bool effective_frame_recomputed = false;
   bool moving_inverse_state_used = false;
   bool state_strategy_selected_from_physical_plan = false;

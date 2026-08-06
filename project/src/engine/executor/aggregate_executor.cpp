@@ -3121,6 +3121,8 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     result = {};
     result.descriptor = descriptor;
     result.diagnostic = std::move(diagnostic);
+    result.transient_state_cleanup_proven = true;
+    result.all_or_nothing_publication = true;
     return result;
   };
   const auto& aggregate = request.aggregate_request;
@@ -3136,6 +3138,13 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     return refuse(Refusal(
         "QOW-DIAG-QRY-011-REGISTRY-INVERSE-UNAVAILABLE-V1",
         "aggregate registry row is not admitted for moving inverse state"));
+  }
+  if (request.cancellation_requested) {
+    auto cancelled = refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-INVERSE-CANCELLED-V1",
+        "moving aggregate execution was cancelled before publication"));
+    cancelled.cancellation_observed = true;
+    return cancelled;
   }
   if (aggregate.forced_strategy !=
           CanonicalAggregateExecutionStrategy::serial ||
@@ -3311,6 +3320,8 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   result.diagnostic = {};
   result.moving_inverse_state_used = true;
   result.frame_recomputation_used = false;
+  result.transient_state_cleanup_proven = true;
+  result.all_or_nothing_publication = true;
   result.authority = preflight.authority;
   result.selected_plan_uuid = preflight.selected_plan_uuid;
   result.executed_physical_node_id = preflight.executed_physical_node_id;
