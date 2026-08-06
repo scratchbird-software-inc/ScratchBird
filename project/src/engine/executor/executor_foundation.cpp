@@ -6717,6 +6717,8 @@ CanonicalWindowValueResult ExecuteCanonicalWindowValue(
       request.value_expression_descriptor_id;
   result.result_column = request.result_column;
   result.resolved_positions = positions;
+  result.resolved_nth_origin = request.nth_origin;
+  result.resolved_null_treatment = request.null_treatment;
   result.converted_source_value_count = source_values.size();
   result.converted_default_value_count = defaults.size();
   result.used_implicit_navigation_offset =
@@ -6725,6 +6727,7 @@ CanonicalWindowValueResult ExecuteCanonicalWindowValue(
       navigation && request.default_values.has_value();
   result.every_function_operand_consumed = true;
   result.partition_metadata_consumed_for_navigation = navigation;
+  result.effective_frame_membership_consumed = !navigation;
   result.frame_and_exclusion_validated = true;
   result.frame_and_exclusion_ignored_for_navigation = navigation;
   result.authority = request.frames.authority;
@@ -8000,6 +8003,9 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
          !SameWindowResultColumn(value_result.result_column,
                                  request.value->result_column) ||
          value_result.resolved_positions != expected_positions ||
+         value_result.resolved_nth_origin != request.value->nth_origin ||
+         value_result.resolved_null_treatment !=
+             request.value->null_treatment ||
          value_result.converted_source_value_count !=
              request.value->frames.ordered_batch.rows.size() ||
          value_result.converted_default_value_count !=
@@ -8011,6 +8017,7 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
          !value_result.every_function_operand_consumed ||
          value_result.partition_metadata_consumed_for_navigation !=
              navigation ||
+         value_result.effective_frame_membership_consumed != !navigation ||
          !value_result.frame_and_exclusion_validated ||
          value_result.frame_and_exclusion_ignored_for_navigation !=
              navigation ||

@@ -41,7 +41,19 @@ bool ValidateFirstValue() {
               std::vector<std::string>({"101", "101", "101", "101", "101",
                                         "102", "103", "103", "106"}) &&
           result.frame_and_exclusion_validated &&
-          !result.frame_and_exclusion_ignored_for_navigation,
+          !result.frame_and_exclusion_ignored_for_navigation &&
+          result.function_uuid == ValueFunctionUuid(
+              exec::CanonicalWindowValueFunction::first_value) &&
+          result.resolved_positions.empty() &&
+          !result.resolved_nth_origin.has_value() &&
+          !result.resolved_null_treatment.has_value() &&
+          result.converted_source_value_count == 9 &&
+          result.every_function_operand_consumed &&
+          !result.partition_metadata_consumed_for_navigation &&
+          result.effective_frame_membership_consumed &&
+          result.frame_property_binding_evidence_uuid ==
+              request.frames.frame_property_binding_evidence_uuid &&
+          ValueDescriptorsMatch(result, request.result_column.descriptor),
       "FIRST_VALUE did not select the first effective partition row");
 
   request = ValueRequest(exec::CanonicalWindowValueFunction::first_value,
@@ -74,6 +86,28 @@ bool ValidateFirstValue() {
               std::vector<std::string>({"<NULL>", "101", "101", "101", "101",
                                         "<NULL>", "<NULL>", "103", "<NULL>"}),
       "FIRST_VALUE did not apply exclusion or type empty-frame NULL");
+
+  request = ValueRequest(
+      exec::CanonicalWindowValueFunction::first_value,
+      WholePartitionFrame(exec::CanonicalWindowFrameExclusion::group));
+  result = exec::ExecuteCanonicalWindowValue(request);
+  passed &= Require401(
+      result.diagnostic.ok &&
+          ValueTexts(result) ==
+              std::vector<std::string>({"<NULL>", "<NULL>", "101", "101",
+                                        "101", "<NULL>", "<NULL>",
+                                        "<NULL>", "<NULL>"}),
+      "FIRST_VALUE did not select from post-GROUP-exclusion membership");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::first_value,
+                         WholePartitionFrame(), true);
+  result = exec::ExecuteCanonicalWindowValue(request);
+  passed &= Require401(
+      result.diagnostic.ok && result.values.empty() &&
+          result.converted_source_value_count == 0 &&
+          result.effective_frame_membership_consumed &&
+          result.every_function_operand_consumed,
+      "empty FIRST_VALUE input did not complete as a typed zero-row result");
   return passed;
 }
 
@@ -94,6 +128,14 @@ bool ValidateFirstValueRefusals() {
       ValueRefused(exec::ExecuteCanonicalWindowValue(request),
                    {"QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR"}),
       "FIRST_VALUE accepted a descriptor unable to represent empty-frame NULL");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::first_value);
+  request.null_treatment =
+      exec::CanonicalWindowNullTreatment::respect_nulls;
+  passed &= Require401(
+      ValueRefused(exec::ExecuteCanonicalWindowValue(request),
+                   {"QOW-DIAG-WINDOW-FRAME"}),
+      "FIRST_VALUE accepted an unrelated NULL-treatment operand");
 
   request = ValueRequest(exec::CanonicalWindowValueFunction::first_value);
   request.frames.effective_frames[0].effective_row_indices = {1, 0};

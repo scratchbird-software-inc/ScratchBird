@@ -149,12 +149,15 @@ struct CanonicalWindowValueResult {
   ExecutorColumnDescriptor result_column;
   std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
   std::vector<std::uint64_t> resolved_positions;
+  std::optional<CanonicalWindowNthOrigin> resolved_nth_origin;
+  std::optional<CanonicalWindowNullTreatment> resolved_null_treatment;
   std::size_t converted_source_value_count = 0;
   std::size_t converted_default_value_count = 0;
   bool used_implicit_navigation_offset = false;
   bool explicit_navigation_default_present = false;
   bool every_function_operand_consumed = false;
   bool partition_metadata_consumed_for_navigation = false;
+  bool effective_frame_membership_consumed = false;
   bool frame_and_exclusion_validated = false;
   bool frame_and_exclusion_ignored_for_navigation = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;

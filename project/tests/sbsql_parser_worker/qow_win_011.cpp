@@ -13,9 +13,10 @@ namespace {
 
 exec::CanonicalWindowValueRequest NthRequest(
     exec::CanonicalWindowFrameDescriptor frame = WholePartitionFrame(),
-    const std::string& nth = "2") {
+    const std::string& nth = "2",
+    const bool empty_input = false) {
   auto request = ValueRequest(exec::CanonicalWindowValueFunction::nth_value,
-                              std::move(frame));
+                              std::move(frame), empty_input);
   request.nth_values = RepeatedOperand(
       request.frames.ordered_batch.rows.size(), "int64", nth, 5401);
   request.nth_origin = exec::CanonicalWindowNthOrigin::from_first;
@@ -34,7 +35,22 @@ bool ValidateNthValue() {
               std::vector<std::string>({"105", "105", "105", "105", "105",
                                         "<NULL>", "104", "104", "<NULL>"}) &&
           result.frame_and_exclusion_validated &&
-          !result.frame_and_exclusion_ignored_for_navigation,
+          !result.frame_and_exclusion_ignored_for_navigation &&
+          result.function_uuid == ValueFunctionUuid(
+              exec::CanonicalWindowValueFunction::nth_value) &&
+          result.resolved_positions ==
+              std::vector<std::uint64_t>(9, 2) &&
+          result.resolved_nth_origin ==
+              exec::CanonicalWindowNthOrigin::from_first &&
+          result.resolved_null_treatment ==
+              exec::CanonicalWindowNullTreatment::respect_nulls &&
+          result.converted_source_value_count == 9 &&
+          result.every_function_operand_consumed &&
+          !result.partition_metadata_consumed_for_navigation &&
+          result.effective_frame_membership_consumed &&
+          result.frame_property_binding_evidence_uuid ==
+              request.frames.frame_property_binding_evidence_uuid &&
+          ValueDescriptorsMatch(result, request.result_column.descriptor),
       "NTH_VALUE did not select the second whole-partition value");
 
   request = NthRequest(PrefixFrame());
@@ -71,6 +87,27 @@ bool ValidateNthValue() {
               std::vector<std::string>({"105", "101", "101", "101", "101",
                                         "<NULL>", "104", "103", "<NULL>"}),
       "NTH_VALUE did not consume effective exclusion membership");
+
+  request = NthRequest(WholePartitionFrame(), "9223372036854775807");
+  result = exec::ExecuteCanonicalWindowValue(request);
+  passed &= Require401(
+      result.diagnostic.ok &&
+          ValueTexts(result) ==
+              std::vector<std::string>(9, "<NULL>"),
+      "maximum accepted NTH_VALUE n did not become an absent-frame value");
+
+  request = NthRequest(WholePartitionFrame(), "2", true);
+  result = exec::ExecuteCanonicalWindowValue(request);
+  passed &= Require401(
+      result.diagnostic.ok && result.values.empty() &&
+          result.resolved_positions.empty() &&
+          result.resolved_nth_origin ==
+              exec::CanonicalWindowNthOrigin::from_first &&
+          result.resolved_null_treatment ==
+              exec::CanonicalWindowNullTreatment::respect_nulls &&
+          result.effective_frame_membership_consumed &&
+          result.every_function_operand_consumed,
+      "empty NTH_VALUE input lost its explicit origin or NULL treatment");
   return passed;
 }
 
@@ -111,6 +148,29 @@ bool ValidateNthValueRefusals() {
       ValueRefused(exec::ExecuteCanonicalWindowValue(request),
                    {"QOW-DIAG-WINDOW-NTH"}),
       "overflowed NTH_VALUE n entered execution");
+
+  request = NthRequest();
+  request.nth_values =
+      std::vector<api::EngineTypedValue>(rows, exec::EncodeInt64Value(1));
+  passed &= Require401(
+      ValueRefused(exec::ExecuteCanonicalWindowValue(request),
+                   {"QOW-DIAG-WINDOW-NTH"}),
+      "legacy unbound NTH_VALUE n entered canonical execution");
+
+  request = NthRequest();
+  request.nth_values->front().descriptor = request.result_column.descriptor;
+  passed &= Require401(
+      ValueRefused(exec::ExecuteCanonicalWindowValue(request),
+                   {"QOW-DIAG-WINDOW-NTH"}),
+      "NTH_VALUE n substituted the result descriptor identity");
+
+  request = NthRequest();
+  request.nth_values->front().descriptor.encoded_descriptor +=
+      ";nullability=non_null";
+  passed &= Require401(
+      ValueRefused(exec::ExecuteCanonicalWindowValue(request),
+                   {"QOW-DIAG-WINDOW-NTH"}),
+      "NTH_VALUE n accepted duplicate descriptor nullability");
 
   request = NthRequest();
   request.nth_origin.reset();

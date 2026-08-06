@@ -21,7 +21,19 @@ bool ValidateLastValue() {
               std::vector<std::string>({"107", "107", "107", "107", "107",
                                         "102", "104", "104", "106"}) &&
           result.frame_and_exclusion_validated &&
-          !result.frame_and_exclusion_ignored_for_navigation,
+          !result.frame_and_exclusion_ignored_for_navigation &&
+          result.function_uuid == ValueFunctionUuid(
+              exec::CanonicalWindowValueFunction::last_value) &&
+          result.resolved_positions.empty() &&
+          !result.resolved_nth_origin.has_value() &&
+          !result.resolved_null_treatment.has_value() &&
+          result.converted_source_value_count == 9 &&
+          result.every_function_operand_consumed &&
+          !result.partition_metadata_consumed_for_navigation &&
+          result.effective_frame_membership_consumed &&
+          result.frame_property_binding_evidence_uuid ==
+              request.frames.frame_property_binding_evidence_uuid &&
+          ValueDescriptorsMatch(result, request.result_column.descriptor),
       "LAST_VALUE did not select the last effective partition row");
 
   request = ValueRequest(exec::CanonicalWindowValueFunction::last_value,
@@ -45,6 +57,28 @@ bool ValidateLastValue() {
                                         "100", "<NULL>", "<NULL>", "103",
                                         "<NULL>"}),
       "LAST_VALUE did not apply exclusion or type empty-frame NULL");
+
+  request = ValueRequest(
+      exec::CanonicalWindowValueFunction::last_value,
+      WholePartitionFrame(exec::CanonicalWindowFrameExclusion::group));
+  result = exec::ExecuteCanonicalWindowValue(request);
+  passed &= Require401(
+      result.diagnostic.ok &&
+          ValueTexts(result) ==
+              std::vector<std::string>({"107", "107", "107", "107", "100",
+                                        "<NULL>", "<NULL>", "<NULL>",
+                                        "<NULL>"}),
+      "LAST_VALUE did not select from post-GROUP-exclusion membership");
+
+  request = ValueRequest(exec::CanonicalWindowValueFunction::last_value,
+                         WholePartitionFrame(), true);
+  result = exec::ExecuteCanonicalWindowValue(request);
+  passed &= Require401(
+      result.diagnostic.ok && result.values.empty() &&
+          result.converted_source_value_count == 0 &&
+          result.effective_frame_membership_consumed &&
+          result.every_function_operand_consumed,
+      "empty LAST_VALUE input did not complete as a typed zero-row result");
   return passed;
 }
 
