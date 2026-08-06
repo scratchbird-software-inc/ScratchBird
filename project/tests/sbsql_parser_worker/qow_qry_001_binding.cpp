@@ -1121,6 +1121,103 @@ bool ValidateTypedWindowBinding() {
                   .expression_id == 1,
       "reused partition/order expression was not interned exactly once");
 
+  constexpr std::string_view named_sql =
+      "SELECT ROW_NUMBER() OVER framed AS sequence_no FROM app.events AS e "
+      "WINDOW partitioned AS (PARTITION BY account_id), "
+      "ordered AS (partitioned ORDER BY created_at DESC NULLS FIRST), "
+      "framed AS (ordered GROUPS BETWEEN 2 PRECEDING AND CURRENT ROW "
+      "EXCLUDE TIES);";
+  const auto named_cst = sbsql::BuildCst(named_sql);
+  const auto named_ast_document = sbsql::BuildAst(named_cst);
+  auto named_context = WindowBindingContext();
+  const auto named_bound = sbsql::BindNativeRelationalAst(
+      named_ast_document.native_relational, named_context);
+  passed &= Require(
+      named_bound.bound && named_bound.window_definitions.size() == 3 &&
+          named_bound.window_definitions[0].canonical_name_key ==
+              std::optional<std::string>("partitioned") &&
+          !named_bound.window_definitions[0].inherited_window_id.has_value() &&
+          named_bound.window_definitions[0].partition_expression_ids ==
+              std::vector<std::uint32_t>({1}) &&
+          named_bound.window_definitions[1].canonical_name_key ==
+              std::optional<std::string>("ordered") &&
+          named_bound.window_definitions[1].inherited_window_id == 1 &&
+          named_bound.window_definitions[1].ordering_terms.front().expression_id ==
+              2 &&
+          named_bound.window_definitions[2].canonical_name_key ==
+              std::optional<std::string>("framed") &&
+          named_bound.window_definitions[2].inherited_window_id == 2 &&
+          named_bound.window_definitions[2].frame_start->offset_expression_id ==
+              3 &&
+          named_bound.window_invocations.front().window_definition_id == 3 &&
+          named_bound.relations.back().bound_expression_ids ==
+              std::vector<std::uint32_t>({1, 2, 3, 4}),
+      "named-window binding or inherited identities differ");
+
+  const auto named_bound_statement =
+      sbsql::BindAst(named_ast_document, named_cst, ParserConfigForTest(),
+                     session, {}, &named_context);
+  const auto named_lowered =
+      sbsql::LowerToSblr(named_bound_statement, named_cst, session);
+  std::vector<std::string> named_definition_operands;
+  for (const auto& operand : named_lowered.operands) {
+    if (operand.type == "relational_window_definition_v1") {
+      named_definition_operands.push_back(operand.value);
+    }
+  }
+  passed &= Require(
+      !named_lowered.messages.has_errors() &&
+          named_definition_operands ==
+              std::vector<std::string>{
+                  "2|706172746974696f6e6564|-|1|-|-|-|-|1",
+                  "2|6f726465726564|1|-|2:2:1:-|-|-|-|1",
+                  "2|6672616d6564|2|-|-|3|2:3|3:-|4"} &&
+          sbsql::VerifySblrEnvelope(named_lowered).admitted,
+      "named-window canonical SBLR inheritance records differ");
+
+  auto forward_envelope = named_lowered;
+  const auto forward_definition = std::ranges::find_if(
+      forward_envelope.operands, [](const auto& operand) {
+        return operand.type == "relational_window_definition_v1" &&
+               operand.name == "1";
+      });
+  forward_definition->value =
+      "2|706172746974696f6e6564|3|1|-|-|-|-|1";
+  const auto forward_envelope_result =
+      sbsql::VerifySblrEnvelope(forward_envelope);
+  passed &= Require(
+      !forward_envelope_result.admitted &&
+          HasDiagnostic(forward_envelope_result.messages,
+                        "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "forward canonical window inheritance was verifier-admitted");
+
+  auto override_envelope = named_lowered;
+  const auto overriding_definition = std::ranges::find_if(
+      override_envelope.operands, [](const auto& operand) {
+        return operand.type == "relational_window_definition_v1" &&
+               operand.name == "2";
+      });
+  overriding_definition->value =
+      "2|6f726465726564|1|1|2:2:1:-|-|-|-|1";
+  const auto override_envelope_result =
+      sbsql::VerifySblrEnvelope(override_envelope);
+  passed &= Require(
+      !override_envelope_result.admitted &&
+          HasDiagnostic(override_envelope_result.messages,
+                        "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "canonical window inherited-state override was verifier-admitted");
+
+  auto forward_ast = named_ast_document.native_relational;
+  forward_ast.window_definitions[1].base_name =
+      sbsql::NativeIdentifierAstNode{"framed", false, {}};
+  const auto forward_bound =
+      sbsql::BindNativeRelationalAst(forward_ast, named_context);
+  passed &= Require(
+      !forward_bound.bound && forward_bound.window_definitions.empty() &&
+          forward_bound.window_invocations.empty() &&
+          HasScrubbedMgaStatementContext(forward_bound),
+      "forward named-window base did not refuse atomically in binding");
+
   context.expressions.back().function_uuid = std::nullopt;
   bound = sbsql::BindNativeRelationalAst(ast, context);
   passed &= Require(

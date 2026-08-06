@@ -166,6 +166,34 @@ api::TypedRelationalDag WindowDag() {
   return dag;
 }
 
+api::TypedRelationalDag NamedWindowDag() {
+  auto dag = WindowDag();
+  dag.window_definitions.clear();
+  api::RelationalWindowDefinitionRecord partitioned;
+  partitioned.window_id = 1;
+  partitioned.relation_node_id = 2;
+  partitioned.canonical_name_key = "partitioned";
+  partitioned.partition_expression_ids = {1};
+  api::RelationalWindowDefinitionRecord ordered;
+  ordered.window_id = 2;
+  ordered.relation_node_id = 2;
+  ordered.canonical_name_key = "ordered";
+  ordered.inherited_window_id = 1;
+  ordered.ordering_terms = {
+      {1, api::RelationalPropertySortDirection::kAscending,
+       api::RelationalPropertyNullPlacement::kNullsLast, ""},
+  };
+  api::RelationalWindowDefinitionRecord framed;
+  framed.window_id = 3;
+  framed.relation_node_id = 2;
+  framed.canonical_name_key = "framed";
+  framed.inherited_window_id = 2;
+  dag.window_definitions = {std::move(partitioned), std::move(ordered),
+                            std::move(framed)};
+  dag.window_invocations.front().window_definition_id = 3;
+  return dag;
+}
+
 bool ValidateAcceptedSharedDag() {
   const auto result = api::ValidateTypedRelationalDag(SharedDag());
   bool passed = true;
@@ -473,6 +501,8 @@ bool ValidateTypedGroupingSetContract() {
 
 bool ValidateTypedWindowContract() {
   const auto accepted = api::ValidateTypedRelationalDag(WindowDag());
+  const auto named_accepted =
+      api::ValidateTypedRelationalDag(NamedWindowDag());
 
   auto missing_definition = WindowDag();
   missing_definition.window_definitions.clear();
@@ -489,9 +519,26 @@ bool ValidateTypedWindowContract() {
   wrong_abi.window_invocations.front().function_abi_version = 2;
   const auto wrong_abi_result = api::ValidateTypedRelationalDag(wrong_abi);
 
+  auto forward_inheritance = NamedWindowDag();
+  forward_inheritance.window_definitions[0].inherited_window_id = 3;
+  const auto forward_inheritance_result =
+      api::ValidateTypedRelationalDag(forward_inheritance);
+
+  auto inherited_override = NamedWindowDag();
+  inherited_override.window_definitions[1].partition_expression_ids = {1};
+  const auto inherited_override_result =
+      api::ValidateTypedRelationalDag(inherited_override);
+
+  auto duplicate_name = NamedWindowDag();
+  duplicate_name.window_definitions[1].canonical_name_key = "partitioned";
+  const auto duplicate_name_result =
+      api::ValidateTypedRelationalDag(duplicate_name);
+
   bool passed = true;
   passed &= Require(accepted.accepted && accepted.issues.empty(),
                     "canonical typed window records were refused");
+  passed &= Require(named_accepted.accepted && named_accepted.issues.empty(),
+                    "canonical named-window inheritance was refused");
   passed &= Require(
       !missing_definition_result.accepted &&
           HasIssue(missing_definition_result,
@@ -509,6 +556,24 @@ bool ValidateTypedWindowContract() {
           HasIssue(wrong_abi_result, "SBLR.PLAN_TREE.INVALID_HANDLE",
                    "window_invocation_record"),
       "unknown window function ABI was accepted");
+  passed &= Require(
+      !forward_inheritance_result.accepted &&
+          HasIssue(forward_inheritance_result,
+                   "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "inherited_window_id"),
+      "forward named-window inheritance was accepted");
+  passed &= Require(
+      !inherited_override_result.accepted &&
+          HasIssue(inherited_override_result,
+                   "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "inherited_window_id"),
+      "named-window inherited PARTITION override was accepted");
+  passed &= Require(
+      !duplicate_name_result.accepted &&
+          HasIssue(duplicate_name_result,
+                   "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "window_definition_name_scope"),
+      "duplicate canonical named-window key was accepted");
   return passed;
 }
 

@@ -775,6 +775,60 @@ bool ValidateTypedWindowParse() {
           reused.window_definitions.front().ordering_terms.front().expression_id ==
               2,
       "reused partition/order column was not interned to one typed expression");
+
+  constexpr std::string_view named_sql =
+      "SELECT ROW_NUMBER() OVER framed AS sequence_no FROM app.events AS e "
+      "WINDOW partitioned AS (PARTITION BY account_id), "
+      "ordered AS (partitioned ORDER BY created_at DESC NULLS FIRST), "
+      "framed AS (ordered GROUPS BETWEEN 2 PRECEDING AND CURRENT ROW "
+      "EXCLUDE TIES);";
+  const auto named =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(named_sql));
+  passed &= Require(
+      named.accepted() && named.window_definitions.size() == 3 &&
+          named.window_invocations.size() == 1 &&
+          named.window_invocations.front().window_definition_id == 3 &&
+          named.window_definitions[0].name->spelling == "partitioned" &&
+          !named.window_definitions[0].base_name.has_value() &&
+          named.window_definitions[0].partition_expression_ids ==
+              std::vector<std::uint32_t>({2}) &&
+          named.window_definitions[1].name->spelling == "ordered" &&
+          named.window_definitions[1].base_name->spelling == "partitioned" &&
+          named.window_definitions[1].ordering_terms.front().expression_id == 3 &&
+          named.window_definitions[2].name->spelling == "framed" &&
+          named.window_definitions[2].base_name->spelling == "ordered" &&
+          named.window_definitions[2].frame_start->offset_expression_id == 4 &&
+          named.relations.front().output_expression_ids ==
+              std::vector<std::uint32_t>({2, 3}),
+      "named-window declaration/reference/inheritance AST differs");
+
+  const auto named_refused = [&](const std::string_view candidate) {
+    const auto result =
+        sbsql::ParseNativeRelationalAst(sbsql::BuildCst(candidate));
+    return !result.accepted() && result.root_relation_id == 0 &&
+           result.window_definitions.empty() &&
+           result.window_invocations.empty() && result.relations.empty();
+  };
+  passed &= Require(
+      named_refused(
+          "SELECT ROW_NUMBER() OVER derived FROM app.events WINDOW derived AS "
+          "(later ORDER BY created_at), later AS (PARTITION BY account_id);"),
+      "forward named-window inheritance was admitted");
+  passed &= Require(
+      named_refused(
+          "SELECT ROW_NUMBER() OVER base FROM app.events WINDOW base AS "
+          "(PARTITION BY account_id), base AS (ORDER BY created_at);"),
+      "duplicate named-window declaration was admitted");
+  passed &= Require(
+      named_refused(
+          "SELECT ROW_NUMBER() OVER derived FROM app.events WINDOW base AS "
+          "(PARTITION BY account_id), derived AS (base PARTITION BY created_at);"),
+      "named-window PARTITION override was admitted");
+  passed &= Require(
+      named_refused(
+          "SELECT ROW_NUMBER() OVER missing FROM app.events WINDOW base AS "
+          "(PARTITION BY account_id);"),
+      "unknown named-window reference was admitted");
   return passed;
 }
 

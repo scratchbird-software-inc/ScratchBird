@@ -459,6 +459,25 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   std::unordered_map<std::uint32_t, const RelationalWindowDefinitionRecord*>
       window_definitions_by_id;
   std::unordered_map<std::uint32_t, std::size_t> window_definition_count;
+  struct EffectiveWindowShape {
+    bool partition{false};
+    bool ordering{false};
+    bool frame{false};
+  };
+  std::unordered_map<std::uint32_t, EffectiveWindowShape>
+      effective_window_shapes;
+  std::unordered_map<std::uint32_t, bool> named_window_profile_by_node;
+  std::unordered_map<std::uint32_t, std::unordered_set<std::string>>
+      window_names_by_node;
+  const auto canonical_window_name = [](const std::string_view value) {
+    return !value.empty() && value.size() <= 128 &&
+           ((value.front() >= 'a' && value.front() <= 'z') ||
+            value.front() == '_') &&
+           std::ranges::all_of(value, [](const unsigned char ch) {
+             return (ch >= 'a' && ch <= 'z') ||
+                    (ch >= '0' && ch <= '9') || ch == '_';
+           });
+  };
   const auto validate_window_bound = [&](
       const std::optional<RelationalWindowFrameBoundRecord>& bound,
       const RelationalDagNode& node, const bool start) {
@@ -504,7 +523,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         definition.window_id == 0 || node == nodes_by_id.end() ||
         node->second->node_kind != RelationalDagNodeKind::kWindow ||
         (definition.canonical_name_key.has_value() &&
-         definition.canonical_name_key->empty()) ||
+         !canonical_window_name(*definition.canonical_name_key)) ||
         (definition.frame_unit.has_value() &&
          !known_window_frame_unit(*definition.frame_unit)) ||
         definition.frame_unit.has_value() != definition.frame_start.has_value() ||
@@ -552,20 +571,43 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                       definition.relation_node_id, "window_ordering_terms");
       }
     }
-    ++window_definition_count[definition.relation_node_id];
-  }
-  for (const auto& definition : dag.window_definitions) {
+    const bool named = definition.canonical_name_key.has_value();
+    const auto [profile, inserted_profile] =
+        named_window_profile_by_node.emplace(definition.relation_node_id,
+                                             named);
+    if ((!inserted_profile && profile->second != named) ||
+        (named && !window_names_by_node[definition.relation_node_id]
+                       .insert(*definition.canonical_name_key)
+                       .second)) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                    definition.relation_node_id,
+                    "window_definition_name_scope");
+    }
+    EffectiveWindowShape shape{
+        !definition.partition_expression_ids.empty(),
+        !definition.ordering_terms.empty(), definition.frame_unit.has_value()};
     if (definition.inherited_window_id.has_value()) {
       const auto inherited =
           window_definitions_by_id.find(*definition.inherited_window_id);
-      if (inherited == window_definitions_by_id.end() ||
+      const auto inherited_shape =
+          effective_window_shapes.find(*definition.inherited_window_id);
+      if (!named || inherited == window_definitions_by_id.end() ||
+          inherited_shape == effective_window_shapes.end() ||
           inherited->second->relation_node_id != definition.relation_node_id ||
-          inherited->second->window_id == definition.window_id) {
+          inherited->second->window_id == definition.window_id ||
+          (shape.partition && inherited_shape->second.partition) ||
+          (shape.ordering && inherited_shape->second.ordering) ||
+          (shape.frame && inherited_shape->second.frame)) {
         return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
                       definition.relation_node_id,
                       "inherited_window_id");
       }
+      shape.partition = shape.partition || inherited_shape->second.partition;
+      shape.ordering = shape.ordering || inherited_shape->second.ordering;
+      shape.frame = shape.frame || inherited_shape->second.frame;
     }
+    effective_window_shapes.emplace(definition.window_id, shape);
+    ++window_definition_count[definition.relation_node_id];
   }
 
   std::unordered_set<std::uint32_t> window_invocation_ids;
@@ -576,6 +618,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         window_definitions_by_id.find(invocation.window_definition_id);
     const auto expression =
         expressions_by_id.find(invocation.function_expression_id);
+    const auto effective_definition =
+        effective_window_shapes.find(invocation.window_definition_id);
     if (!add_planning_references(invocation.argument_expression_ids.size()) ||
         invocation.invocation_id == 0 ||
         !window_invocation_ids.insert(invocation.invocation_id).second ||
@@ -583,6 +627,9 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         node->second->node_kind != RelationalDagNodeKind::kWindow ||
         definition == window_definitions_by_id.end() ||
         definition->second->relation_node_id != invocation.relation_node_id ||
+        effective_definition == effective_window_shapes.end() ||
+        (!effective_definition->second.partition &&
+         !effective_definition->second.ordering) ||
         expression == expressions_by_id.end() ||
         expression->second->expression_kind !=
             RelationalExpressionKind::kFunctionCall ||

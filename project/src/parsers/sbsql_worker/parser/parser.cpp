@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -32,6 +33,13 @@ std::string CanonicalTokenText(const Token& token) {
     return ToUpperAscii(token.canonical_text);
   }
   return ToUpperAscii(token.text);
+}
+
+std::string ToLowerAscii(std::string value) {
+  for (auto& ch : value) {
+    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+  }
+  return value;
 }
 
 SourceRange Span(const Token& first, const Token& last) {
@@ -380,10 +388,11 @@ class NativeRelationalParser final {
   }
 
   bool LooksLikeBoundedWindowSelect() const {
-    return tokens_.size() >= 10 &&
+    return tokens_.size() >= 9 &&
            IsWord(*tokens_[1], "ROW_NUMBER") && tokens_[2]->text == "(" &&
            tokens_[3]->text == ")" && IsWord(*tokens_[4], "OVER") &&
-           tokens_[5]->text == "(";
+           (tokens_[5]->text == "(" ||
+            tokens_[5]->kind == TokenKind::kIdentifier);
   }
 
   NativeRelationalAstDocument ParseWindowSelect() {
@@ -409,12 +418,21 @@ class NativeRelationalParser final {
         !RequireSymbol(")", "window_function_close_required",
                        "ROW_NUMBER requires a closing parenthesis") ||
         !RequireWord("OVER", "window_over_required",
-                     "ROW_NUMBER requires OVER") ||
-        !RequireSymbol("(", "window_specification_open_required",
-                       "OVER requires an opening parenthesis")) {
+                     "ROW_NUMBER requires OVER")) {
       return FinishRefusal();
     }
-    const Token& specification_open = Previous();
+    const Token* specification_open = nullptr;
+    const Token* named_reference = nullptr;
+    if (AtSymbol("(")) {
+      specification_open = &Consume();
+    } else if (!AtEnd() && Current().kind == TokenKind::kIdentifier &&
+               !Current().quoted) {
+      named_reference = &Consume();
+    } else {
+      Refuse("window_specification_or_name_required",
+             "OVER requires a parenthesized specification or unquoted window name");
+      return FinishRefusal();
+    }
 
     NativeExpressionAstNode function;
     function.expression_id = NextExpressionId();
@@ -504,34 +522,6 @@ class NativeRelationalParser final {
       return true;
     };
 
-    if (!AtEnd() && IsWord(Current(), "PARTITION")) {
-      Consume();
-      if (!RequireWord("BY", "window_partition_by_required",
-                       "window PARTITION requires BY") ||
-          !parse_identifier_list(&definition.partition_expression_ids,
-                                 nullptr)) {
-        return FinishRefusal();
-      }
-    }
-    if (!AtEnd() && IsWord(Current(), "ORDER")) {
-      Consume();
-      if (!RequireWord("BY", "window_order_by_required",
-                       "window ORDER requires BY")) {
-        return FinishRefusal();
-      }
-      std::vector<std::uint32_t> ordered_expression_ids;
-      if (!parse_identifier_list(&ordered_expression_ids,
-                                 &definition.ordering_terms)) {
-        return FinishRefusal();
-      }
-    }
-    if (definition.partition_expression_ids.empty() &&
-        definition.ordering_terms.empty()) {
-      Refuse("window_partition_or_order_required",
-             "typed ROW_NUMBER requires PARTITION BY or ORDER BY");
-      return FinishRefusal();
-    }
-
     const auto parse_frame_bound = [&]()
         -> std::optional<NativeWindowFrameBoundAstNode> {
       NativeWindowFrameBoundAstNode bound;
@@ -591,75 +581,120 @@ class NativeRelationalParser final {
       bound.range = Span(*first, direction);
       return bound;
     };
+    const auto parse_specification = [&](NativeWindowDefinitionAstNode* target,
+                                         const bool allow_base_name) {
+      if (target == nullptr) return false;
+      if (allow_base_name && !AtEnd() &&
+          Current().kind == TokenKind::kIdentifier && !Current().quoted &&
+          !IsWord(Current(), "PARTITION") && !IsWord(Current(), "ORDER") &&
+          !IsWord(Current(), "ROWS") && !IsWord(Current(), "RANGE") &&
+          !IsWord(Current(), "GROUPS") && !IsWord(Current(), "EXCLUDE")) {
+        const Token& base = Consume();
+        target->base_name = NativeIdentifierAstNode{
+            ToLowerAscii(base.text), false, TokenSourceRange(base)};
+      }
+      if (!AtEnd() && IsWord(Current(), "PARTITION")) {
+        Consume();
+        if (!RequireWord("BY", "window_partition_by_required",
+                         "window PARTITION requires BY") ||
+            !parse_identifier_list(&target->partition_expression_ids,
+                                   nullptr)) {
+          return false;
+        }
+      }
+      if (!AtEnd() && IsWord(Current(), "ORDER")) {
+        Consume();
+        if (!RequireWord("BY", "window_order_by_required",
+                         "window ORDER requires BY")) {
+          return false;
+        }
+        std::vector<std::uint32_t> ordered_expression_ids;
+        if (!parse_identifier_list(&ordered_expression_ids,
+                                   &target->ordering_terms)) {
+          return false;
+        }
+      }
+      if (!AtEnd() &&
+          (IsWord(Current(), "ROWS") || IsWord(Current(), "RANGE") ||
+           IsWord(Current(), "GROUPS"))) {
+        const Token& unit = Consume();
+        target->frame_unit =
+            IsWord(unit, "ROWS")
+                ? NativeWindowFrameUnit::kRows
+                : (IsWord(unit, "RANGE") ? NativeWindowFrameUnit::kRange
+                                          : NativeWindowFrameUnit::kGroups);
+        if (!AtEnd() && IsWord(Current(), "BETWEEN")) {
+          Consume();
+          target->frame_start = parse_frame_bound();
+          if (!target->frame_start.has_value() ||
+              !RequireWord("AND", "window_frame_between_and_required",
+                           "window BETWEEN requires AND")) {
+            return false;
+          }
+          target->frame_end = parse_frame_bound();
+          if (!target->frame_end.has_value()) return false;
+        } else {
+          target->frame_start = parse_frame_bound();
+          if (!target->frame_start.has_value()) return false;
+        }
+      }
+      if (!AtEnd() && IsWord(Current(), "EXCLUDE")) {
+        Consume();
+        if (!target->frame_unit.has_value() || AtEnd()) {
+          Refuse("window_exclusion_required",
+                 "EXCLUDE requires a frame and CURRENT ROW, GROUP, TIES, or NO OTHERS");
+          return false;
+        }
+        if (IsWord(Current(), "CURRENT")) {
+          Consume();
+          if (!RequireWord("ROW", "window_exclude_current_row_required",
+                           "EXCLUDE CURRENT requires ROW")) {
+            return false;
+          }
+          target->exclusion = NativeWindowFrameExclusion::kCurrentRow;
+        } else if (IsWord(Current(), "GROUP")) {
+          Consume();
+          target->exclusion = NativeWindowFrameExclusion::kGroup;
+        } else if (IsWord(Current(), "TIES")) {
+          Consume();
+          target->exclusion = NativeWindowFrameExclusion::kTies;
+        } else if (IsWord(Current(), "NO")) {
+          Consume();
+          if (!RequireWord("OTHERS", "window_exclude_no_others_required",
+                           "EXCLUDE NO requires OTHERS")) {
+            return false;
+          }
+        } else {
+          Refuse("window_exclusion_invalid",
+                 "EXCLUDE requires CURRENT ROW, GROUP, TIES, or NO OTHERS");
+          return false;
+        }
+      }
+      return true;
+    };
 
-    if (!AtEnd() &&
-        (IsWord(Current(), "ROWS") || IsWord(Current(), "RANGE") ||
-         IsWord(Current(), "GROUPS"))) {
-      const Token& unit = Consume();
-      definition.frame_unit =
-          IsWord(unit, "ROWS")
-              ? NativeWindowFrameUnit::kRows
-              : (IsWord(unit, "RANGE") ? NativeWindowFrameUnit::kRange
-                                        : NativeWindowFrameUnit::kGroups);
-      if (!AtEnd() && IsWord(Current(), "BETWEEN")) {
-        Consume();
-        definition.frame_start = parse_frame_bound();
-        if (!definition.frame_start.has_value() ||
-            !RequireWord("AND", "window_frame_between_and_required",
-                         "window BETWEEN requires AND")) {
-          return FinishRefusal();
-        }
-        definition.frame_end = parse_frame_bound();
-        if (!definition.frame_end.has_value()) return FinishRefusal();
-      } else {
-        definition.frame_start = parse_frame_bound();
-        if (!definition.frame_start.has_value()) return FinishRefusal();
-      }
-    }
-    if (!AtEnd() && IsWord(Current(), "EXCLUDE")) {
-      Consume();
-      if (AtEnd()) {
-        Refuse("window_exclusion_required",
-               "EXCLUDE requires CURRENT ROW, GROUP, TIES, or NO OTHERS");
+    const Token* invocation_window_end = named_reference;
+    if (specification_open != nullptr) {
+      if (!parse_specification(&definition, false) ||
+          !RequireSymbol(")", "window_specification_close_required",
+                         "OVER specification requires a closing parenthesis")) {
         return FinishRefusal();
       }
-      if (IsWord(Current(), "CURRENT")) {
-        Consume();
-        if (!RequireWord("ROW", "window_exclude_current_row_required",
-                         "EXCLUDE CURRENT requires ROW")) {
-          return FinishRefusal();
-        }
-        definition.exclusion = NativeWindowFrameExclusion::kCurrentRow;
-      } else if (IsWord(Current(), "GROUP")) {
-        Consume();
-        definition.exclusion = NativeWindowFrameExclusion::kGroup;
-      } else if (IsWord(Current(), "TIES")) {
-        Consume();
-        definition.exclusion = NativeWindowFrameExclusion::kTies;
-      } else if (IsWord(Current(), "NO")) {
-        Consume();
-        if (!RequireWord("OTHERS", "window_exclude_no_others_required",
-                         "EXCLUDE NO requires OTHERS")) {
-          return FinishRefusal();
-        }
-      } else {
-        Refuse("window_exclusion_invalid",
-               "EXCLUDE requires CURRENT ROW, GROUP, TIES, or NO OTHERS");
+      invocation_window_end = &Previous();
+      definition.range = Span(*specification_open, *invocation_window_end);
+      if (definition.partition_expression_ids.empty() &&
+          definition.ordering_terms.empty()) {
+        Refuse("window_partition_or_order_required",
+               "typed ROW_NUMBER requires PARTITION BY or ORDER BY");
         return FinishRefusal();
       }
     }
-    if (!RequireSymbol(")", "window_specification_close_required",
-                       "OVER specification requires a closing parenthesis")) {
-      return FinishRefusal();
-    }
-    const Token& specification_close = Previous();
-    definition.range = Span(specification_open, specification_close);
 
     NativeWindowInvocationAstNode invocation;
     invocation.invocation_id = 1;
     invocation.function_expression_id = function_expression_id;
     invocation.window_definition_id = definition.window_id;
-    invocation.range = Span(function_token, specification_close);
+    invocation.range = Span(function_token, *invocation_window_end);
     if (!AtEnd() && IsWord(Current(), "AS")) {
       Consume();
       if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
@@ -711,13 +746,115 @@ class NativeRelationalParser final {
           alias.text, alias.quoted, TokenSourceRange(alias)};
       source.alias_is_explicit = true;
       source_end = &alias;
-    } else if (!AtEnd() && Current().kind == TokenKind::kIdentifier) {
+    } else if (!AtEnd() && Current().kind == TokenKind::kIdentifier &&
+               !IsWord(Current(), "WINDOW")) {
       const Token& alias = Consume();
       source.alias = NativeIdentifierAstNode{
           alias.text, alias.quoted, TokenSourceRange(alias)};
       source_end = &alias;
     }
     source.range = Span(first_name, *source_end);
+    const Token* statement_end = source_end;
+    if (named_reference != nullptr) {
+      if (!RequireWord("WINDOW", "named_window_clause_required",
+                       "named OVER reference requires a WINDOW clause")) {
+        return FinishRefusal();
+      }
+      while (true) {
+        if (document_.window_definitions.size() >= 1024) {
+          Refuse("named_window_definition_limit",
+                 "named WINDOW definition bound was exceeded");
+          return FinishRefusal();
+        }
+        if (AtEnd() || Current().kind != TokenKind::kIdentifier ||
+            Current().quoted) {
+          Refuse("named_window_name_required",
+                 "WINDOW requires an unquoted definition name");
+          return FinishRefusal();
+        }
+        const Token& name = Consume();
+        NativeWindowDefinitionAstNode named_definition;
+        named_definition.window_id = static_cast<std::uint32_t>(
+            document_.window_definitions.size() + 1);
+        named_definition.name = NativeIdentifierAstNode{
+            ToLowerAscii(name.text), false, TokenSourceRange(name)};
+        if (!RequireWord("AS", "named_window_as_required",
+                         "named WINDOW definition requires AS") ||
+            !RequireSymbol("(", "named_window_specification_open_required",
+                           "named WINDOW definition requires an opening parenthesis")) {
+          return FinishRefusal();
+        }
+        if (!parse_specification(&named_definition, true) ||
+            !RequireSymbol(")", "named_window_specification_close_required",
+                           "named WINDOW definition requires a closing parenthesis")) {
+          return FinishRefusal();
+        }
+        const Token& close = Previous();
+        named_definition.range = Span(name, close);
+        statement_end = &close;
+        document_.window_definitions.push_back(std::move(named_definition));
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+
+      struct EffectiveWindowShape {
+        bool partition{false};
+        bool ordering{false};
+        bool frame{false};
+      };
+      std::unordered_map<std::string, std::size_t> definitions_by_name;
+      std::vector<EffectiveWindowShape> effective_shapes;
+      effective_shapes.reserve(document_.window_definitions.size());
+      for (std::size_t index = 0;
+           index < document_.window_definitions.size(); ++index) {
+        const auto& candidate = document_.window_definitions[index];
+        if (!candidate.name.has_value() || candidate.name->spelling.empty() ||
+            !definitions_by_name
+                 .emplace(candidate.name->spelling, index)
+                 .second) {
+          Refuse("named_window_duplicate",
+                 "WINDOW definition names must be unique in declaration scope");
+          return FinishRefusal();
+        }
+        EffectiveWindowShape shape{
+            !candidate.partition_expression_ids.empty(),
+            !candidate.ordering_terms.empty(), candidate.frame_unit.has_value()};
+        if (candidate.base_name.has_value()) {
+          const auto base =
+              definitions_by_name.find(candidate.base_name->spelling);
+          if (base == definitions_by_name.end() || base->second >= index) {
+            Refuse("named_window_base_unknown_or_forward",
+                   "named WINDOW base must be an earlier declaration");
+            return FinishRefusal();
+          }
+          const auto& inherited = effective_shapes[base->second];
+          if ((inherited.partition && shape.partition) ||
+              (inherited.ordering && shape.ordering) ||
+              (inherited.frame && shape.frame)) {
+            Refuse("named_window_override",
+                   "named WINDOW inheritance cannot replace PARTITION, ORDER, or frame state");
+            return FinishRefusal();
+          }
+          shape.partition = shape.partition || inherited.partition;
+          shape.ordering = shape.ordering || inherited.ordering;
+          shape.frame = shape.frame || inherited.frame;
+        }
+        effective_shapes.push_back(shape);
+      }
+      const auto reference_key = ToLowerAscii(named_reference->text);
+      const auto selected = definitions_by_name.find(reference_key);
+      if (selected == definitions_by_name.end() ||
+          (!effective_shapes[selected->second].partition &&
+           !effective_shapes[selected->second].ordering)) {
+        Refuse("named_window_reference_unknown_or_empty",
+               "OVER name must resolve to a keyed WINDOW definition");
+        return FinishRefusal();
+      }
+      invocation.window_definition_id =
+          document_.window_definitions[selected->second].window_id;
+    } else {
+      document_.window_definitions.push_back(std::move(definition));
+    }
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
       Refuse("window_clause_unsupported",
@@ -737,10 +874,9 @@ class NativeRelationalParser final {
     window_relation.input_relation_ids = {source_relation.relation_id};
     window_relation.output_expression_ids = {function_expression_id};
     window_relation.window_invocation_ids = {invocation.invocation_id};
-    window_relation.range = Span(select_token, *source_end);
+    window_relation.range = Span(select_token, *statement_end);
 
     document_.catalog_relation_sources.push_back(std::move(source));
-    document_.window_definitions.push_back(std::move(definition));
     document_.window_invocations.push_back(std::move(invocation));
     document_.relations.push_back(std::move(source_relation));
     document_.relations.push_back(std::move(window_relation));

@@ -33438,7 +33438,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           relation.bound_object_uuid.has_value() ||
           relation.window_invocation_ids.size() != 1 ||
           relation.semantic_variant_id != "window.row-number.v1" ||
-          native.window_definitions.size() != 1 ||
+          native.window_definitions.empty() ||
+          native.window_definitions.size() > 1024 ||
           native.window_invocations.size() != 1 ||
           native.window_invocations.front().invocation_id !=
               relation.window_invocation_ids.front() ||
@@ -33595,7 +33596,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
   }
   if (window_relation != nullptr) {
-    const auto& definition = native.window_definitions.front();
     const auto& invocation = native.window_invocations.front();
     const auto function = expressions_by_id.find(
         invocation.function_expression_id);
@@ -33638,36 +33638,97 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              parsed <= static_cast<std::uint64_t>(
                            std::numeric_limits<std::int64_t>::max());
     };
-    bool references_exact = definition.window_id != 0 &&
-                            !definition.canonical_name_key.has_value() &&
-                            !definition.inherited_window_id.has_value() &&
-                            invocation.invocation_id != 0 &&
-                            invocation.window_definition_id ==
-                                definition.window_id &&
+    const auto canonical_window_name = [](const std::string_view value) {
+      return !value.empty() && value.size() <= 128 &&
+             ((value.front() >= 'a' && value.front() <= 'z') ||
+              value.front() == '_') &&
+             std::ranges::all_of(value, [](const unsigned char ch) {
+               return (ch >= 'a' && ch <= 'z') ||
+                      (ch >= '0' && ch <= '9') || ch == '_';
+             });
+    };
+    struct EffectiveWindowShape {
+      bool partition{false};
+      bool ordering{false};
+      bool frame{false};
+    };
+    std::unordered_map<std::uint32_t, std::size_t> definition_by_id;
+    std::unordered_set<std::string> definition_names;
+    std::vector<EffectiveWindowShape> effective_shapes;
+    effective_shapes.reserve(native.window_definitions.size());
+    const bool named_profile =
+        native.window_definitions.front().canonical_name_key.has_value();
+    bool references_exact = invocation.invocation_id != 0 &&
                             invocation.function_expression_id ==
                                 window_relation->output_expression_ids.front();
-    for (const auto expression_id : definition.partition_expression_ids) {
-      references_exact = references_exact && has_bound_expression(expression_id);
+    for (std::size_t index = 0; index < native.window_definitions.size();
+         ++index) {
+      const auto& definition = native.window_definitions[index];
+      if (definition.window_id == 0 ||
+          !definition_by_id.emplace(definition.window_id, index).second ||
+          definition.canonical_name_key.has_value() != named_profile ||
+          (definition.canonical_name_key.has_value() &&
+           (!canonical_window_name(*definition.canonical_name_key) ||
+            !definition_names.insert(*definition.canonical_name_key).second)) ||
+          definition.frame_unit.has_value() !=
+              definition.frame_start.has_value() ||
+          (definition.frame_end.has_value() &&
+           !definition.frame_start.has_value()) ||
+          (!definition.frame_unit.has_value() &&
+           definition.exclusion != NativeWindowFrameExclusion::kNoOthers) ||
+          !frame_bound_exact(definition.frame_start, true) ||
+          !frame_bound_exact(definition.frame_end, false)) {
+        references_exact = false;
+        break;
+      }
+      std::unordered_set<std::uint32_t> partition_ids;
+      for (const auto expression_id : definition.partition_expression_ids) {
+        references_exact =
+            references_exact && partition_ids.insert(expression_id).second &&
+            has_bound_expression(expression_id);
+      }
+      std::unordered_set<std::uint32_t> ordering_ids;
+      for (const auto& term : definition.ordering_terms) {
+        references_exact =
+            references_exact &&
+            ordering_ids.insert(term.expression_id).second &&
+            has_bound_expression(term.expression_id);
+      }
+      EffectiveWindowShape shape{
+          !definition.partition_expression_ids.empty(),
+          !definition.ordering_terms.empty(), definition.frame_unit.has_value()};
+      if (definition.inherited_window_id.has_value()) {
+        const auto inherited =
+            definition_by_id.find(*definition.inherited_window_id);
+        if (!named_profile || inherited == definition_by_id.end() ||
+            inherited->second >= index) {
+          references_exact = false;
+          break;
+        }
+        const auto& base = effective_shapes[inherited->second];
+        if ((shape.partition && base.partition) ||
+            (shape.ordering && base.ordering) ||
+            (shape.frame && base.frame)) {
+          references_exact = false;
+          break;
+        }
+        shape.partition = shape.partition || base.partition;
+        shape.ordering = shape.ordering || base.ordering;
+        shape.frame = shape.frame || base.frame;
+      }
+      effective_shapes.push_back(shape);
     }
-    for (const auto& term : definition.ordering_terms) {
-      references_exact =
-          references_exact && has_bound_expression(term.expression_id);
-    }
+    const auto selected_definition =
+        definition_by_id.find(invocation.window_definition_id);
+    references_exact =
+        references_exact && selected_definition != definition_by_id.end() &&
+        (effective_shapes[selected_definition->second].partition ||
+         effective_shapes[selected_definition->second].ordering);
     const auto result_descriptor = std::ranges::find_if(
         native.descriptors, [&](const auto& descriptor) {
           return descriptor.descriptor_id == invocation.result_descriptor_id;
         });
     if (!references_exact ||
-        (definition.partition_expression_ids.empty() &&
-         definition.ordering_terms.empty()) ||
-        definition.frame_unit.has_value() !=
-            definition.frame_start.has_value() ||
-        (definition.frame_end.has_value() &&
-         !definition.frame_start.has_value()) ||
-        (!definition.frame_unit.has_value() &&
-         definition.exclusion != NativeWindowFrameExclusion::kNoOthers) ||
-        !frame_bound_exact(definition.frame_start, true) ||
-        !frame_bound_exact(definition.frame_end, false) ||
         function == expressions_by_id.end() ||
         function->second->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
@@ -34308,13 +34369,18 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         catalog_filter_relation != nullptr ? 1 : 0;
     const auto window_offset_count = [&] {
       if (window_relation == nullptr) return std::size_t{0};
-      const auto& definition = native.window_definitions.front();
-      return static_cast<std::size_t>(
-                 definition.frame_start.has_value() &&
-                 definition.frame_start->offset_expression_id.has_value()) +
-             static_cast<std::size_t>(
-                 definition.frame_end.has_value() &&
-                 definition.frame_end->offset_expression_id.has_value());
+      std::unordered_set<std::uint32_t> offsets;
+      for (const auto& definition : native.window_definitions) {
+        if (definition.frame_start.has_value() &&
+            definition.frame_start->offset_expression_id.has_value()) {
+          offsets.insert(*definition.frame_start->offset_expression_id);
+        }
+        if (definition.frame_end.has_value() &&
+            definition.frame_end->offset_expression_id.has_value()) {
+          offsets.insert(*definition.frame_end->offset_expression_id);
+        }
+      }
+      return offsets.size();
     }();
     const auto window_expression_count =
         window_relation == nullptr ? 0 : window_offset_count + 1;
@@ -39247,6 +39313,16 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   std::unordered_map<std::uint32_t, const ParsedRelationalWindowDefinition*>
       window_definitions;
   std::unordered_map<std::uint32_t, std::size_t> window_definition_count;
+  struct EffectiveParsedWindowShape {
+    bool partition{false};
+    bool ordering{false};
+    bool frame{false};
+  };
+  std::unordered_map<std::uint32_t, EffectiveParsedWindowShape>
+      effective_window_shapes;
+  std::unordered_map<std::uint32_t, bool> named_window_profile_by_node;
+  std::unordered_map<std::uint32_t, std::unordered_set<std::string>>
+      window_names_by_node;
   const auto window_bound_exact = [&](const auto& bound,
                                       const ParsedRelationalNode& node,
                                       const bool start) {
@@ -39285,7 +39361,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
         node == nodes.end() || node->second->kind != 8 ||
         !window_definitions.emplace(definition.id, &definition).second ||
         (definition.canonical_name_key.has_value() &&
-         definition.canonical_name_key->empty()) ||
+         !IsCanonicalNamedWindowIdentifier(
+             *definition.canonical_name_key)) ||
         (definition.frame_unit.has_value() &&
          (*definition.frame_unit < 1 || *definition.frame_unit > 3)) ||
         definition.frame_unit.has_value() !=
@@ -39331,21 +39408,44 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
             "window_ordering_terms", definition.node_id);
       }
     }
-    ++window_definition_count[definition.node_id];
-  }
-  for (const auto& definition : graph.window_definitions) {
+    const bool named = definition.canonical_name_key.has_value();
+    const auto [profile, inserted_profile] =
+        named_window_profile_by_node.emplace(definition.node_id, named);
+    if ((!inserted_profile && profile->second != named) ||
+        (named && !window_names_by_node[definition.node_id]
+                       .insert(*definition.canonical_name_key)
+                       .second)) {
+      return RefuseRelationalGraph(
+          "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "relational window name scope is invalid",
+          "window_definition_name_scope", definition.node_id);
+    }
+    EffectiveParsedWindowShape shape{
+        !definition.partition_expression_ids.empty(),
+        !definition.ordering_terms.empty(), definition.frame_unit.has_value()};
     if (definition.inherited_window_id.has_value()) {
       const auto inherited =
           window_definitions.find(*definition.inherited_window_id);
-      if (inherited == window_definitions.end() ||
+      const auto inherited_shape =
+          effective_window_shapes.find(*definition.inherited_window_id);
+      if (!named || inherited == window_definitions.end() ||
+          inherited_shape == effective_window_shapes.end() ||
           inherited->second->node_id != definition.node_id ||
-          inherited->second->id == definition.id) {
+          inherited->second->id == definition.id ||
+          (shape.partition && inherited_shape->second.partition) ||
+          (shape.ordering && inherited_shape->second.ordering) ||
+          (shape.frame && inherited_shape->second.frame)) {
         return RefuseRelationalGraph(
             "SBLR.PLAN_TREE.INVALID_HANDLE",
             "relational inherited window identity is invalid",
             "inherited_window_id", definition.node_id);
       }
+      shape.partition = shape.partition || inherited_shape->second.partition;
+      shape.ordering = shape.ordering || inherited_shape->second.ordering;
+      shape.frame = shape.frame || inherited_shape->second.frame;
     }
+    effective_window_shapes.emplace(definition.id, shape);
+    ++window_definition_count[definition.node_id];
   }
   std::unordered_set<std::uint32_t> invocation_ids;
   std::unordered_map<std::uint32_t, std::size_t> window_invocation_count;
@@ -39354,6 +39454,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
     const auto definition = window_definitions.find(invocation.definition_id);
     const auto expression =
         expressions.find(invocation.function_expression_id);
+    const auto effective_definition =
+        effective_window_shapes.find(invocation.definition_id);
     if (!AddRelationalCount(invocation.argument_expression_ids.size(),
                             kMaximumRelationalReferenceCount,
                             &reference_count) ||
@@ -39361,6 +39463,9 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
         node == nodes.end() || node->second->kind != 8 ||
         definition == window_definitions.end() ||
         definition->second->node_id != invocation.node_id ||
+        effective_definition == effective_window_shapes.end() ||
+        (!effective_definition->second.partition &&
+         !effective_definition->second.ordering) ||
         expression == expressions.end() || expression->second->kind != 4 ||
         expression->second->function_uuid != invocation.function_uuid ||
         expression->second->descriptor_id != invocation.result_descriptor_id ||

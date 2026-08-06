@@ -180,6 +180,35 @@ sblr::SblrOperationEnvelope WindowEnvelope() {
   return envelope;
 }
 
+sblr::SblrOperationEnvelope NamedWindowEnvelope() {
+  auto envelope = WindowEnvelope();
+  envelope.trace_key = "qow.qry.003.named-window";
+  const auto definition = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "relational_window_definition_v1";
+      });
+  const auto definition_index =
+      static_cast<std::size_t>(definition - envelope.operands.begin());
+  envelope.operands.erase(definition);
+  envelope.operands.insert(
+      envelope.operands.begin() + definition_index,
+      {{"relational_window_definition_v1", "1",
+        "2|706172746974696f6e6564|-|1|-|-|-|-|1"},
+       {"relational_window_definition_v1", "2",
+        "2|6f726465726564|1|-|1:1:2:-|-|-|-|1"},
+       {"relational_window_definition_v1", "3",
+        "2|6672616d6564|2|-|-|-|-|-|1"}});
+  const auto invocation = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "relational_window_invocation_v1";
+      });
+  invocation->value =
+      "2|2|3|1|73622e77696e646f772e726f775f6e756d626572|"
+      "019de5fc-2400-7539-bcce-00eef3ae7220|2|"
+      "73657175656e63655f6e6f|-";
+  return envelope;
+}
+
 bool ValidateRegistryClosure() {
   const auto* canonical = sblr::LookupSblrOperation("query.execute");
   const auto* legacy = sblr::LookupSblrOperation("query.plan_operation");
@@ -320,6 +349,33 @@ bool ValidateWindowRecordTransport() {
       sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(), std::move(malformed_definition), {}});
 
+  const auto named_result = sblr::DispatchTextualRelationalQueryForContractTest(
+      {Context(), NamedWindowEnvelope(), {}});
+
+  auto forward_inheritance = NamedWindowEnvelope();
+  const auto first_definition = std::ranges::find_if(
+      forward_inheritance.operands, [](const auto& operand) {
+        return operand.type == "relational_window_definition_v1" &&
+               operand.name == "1";
+      });
+  first_definition->value =
+      "2|706172746974696f6e6564|3|1|-|-|-|-|1";
+  const auto forward_inheritance_result =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), std::move(forward_inheritance), {}});
+
+  auto inherited_override = NamedWindowEnvelope();
+  const auto second_definition = std::ranges::find_if(
+      inherited_override.operands, [](const auto& operand) {
+        return operand.type == "relational_window_definition_v1" &&
+               operand.name == "2";
+      });
+  second_definition->value =
+      "2|6f726465726564|1|1|1:1:2:-|-|-|-|1";
+  const auto inherited_override_result =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), std::move(inherited_override), {}});
+
   bool passed = true;
   passed &= Require(
       result.envelope_validated && result.logical_graph_populated &&
@@ -338,6 +394,24 @@ bool ValidateWindowRecordTransport() {
           HasApiDiagnostic(malformed_definition_result,
                            "SBLR.PLAN_TREE.INVALID_HANDLE"),
       "engine decoder admitted a frame unit without a start bound");
+  passed &= Require(
+      named_result.envelope_validated && named_result.logical_graph_populated &&
+          named_result.logical_node_count == 2 &&
+          !HasApiDiagnostic(named_result,
+                            "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "canonical named-window inheritance did not cross the engine decoder");
+  passed &= Require(
+      !forward_inheritance_result.accepted &&
+          !forward_inheritance_result.logical_graph_populated &&
+          HasApiDiagnostic(forward_inheritance_result,
+                           "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "engine decoder admitted forward named-window inheritance");
+  passed &= Require(
+      !inherited_override_result.accepted &&
+          !inherited_override_result.logical_graph_populated &&
+          HasApiDiagnostic(inherited_override_result,
+                           "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "engine decoder admitted an inherited named-window override");
   return passed;
 }
 

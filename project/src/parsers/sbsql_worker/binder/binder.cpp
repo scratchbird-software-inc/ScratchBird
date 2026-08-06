@@ -480,7 +480,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         window_relation->input_relation_ids !=
             std::vector<std::uint32_t>{source_relation->relation_id} ||
         ast.catalog_relation_sources.size() != 1 ||
-        ast.window_definitions.size() != 1 ||
+        ast.window_definitions.empty() ||
+        ast.window_definitions.size() > 1024 ||
         ast.window_invocations.size() != 1 ||
         ast.values_rows.size() != 0 || ast.grouping_sets.size() != 0 ||
         context.catalog_relations.size() != 1 ||
@@ -503,23 +504,127 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const auto& ast_source = ast.catalog_relation_sources.front();
     const auto& relation_binding = context.catalog_relations.front();
     const auto source_count = source_relation->output_expression_ids.size();
-    const auto& definition = ast.window_definitions.front();
     const auto& invocation = ast.window_invocations.front();
+    const auto frame_bound_exact = [&](const auto& frame_bound,
+                                       const bool start) {
+      if (!frame_bound.has_value()) return true;
+      const bool offset_kind =
+          frame_bound->bound_kind == NativeWindowFrameBoundKind::kPreceding ||
+          frame_bound->bound_kind == NativeWindowFrameBoundKind::kFollowing;
+      if (offset_kind != frame_bound->offset_expression_id.has_value()) {
+        return false;
+      }
+      return start
+                 ? frame_bound->bound_kind !=
+                       NativeWindowFrameBoundKind::kUnboundedFollowing
+                 : frame_bound->bound_kind !=
+                       NativeWindowFrameBoundKind::kUnboundedPreceding;
+    };
+    const auto canonical_window_name = [](const std::string_view value) {
+      return !value.empty() && value.size() <= 128 &&
+             ((value.front() >= 'a' && value.front() <= 'z') ||
+              value.front() == '_') &&
+             std::ranges::all_of(value, [](const unsigned char ch) {
+               return (ch >= 'a' && ch <= 'z') ||
+                      (ch >= '0' && ch <= '9') || ch == '_';
+             });
+    };
+    struct EffectiveWindowShape {
+      bool partition{false};
+      bool ordering{false};
+      bool frame{false};
+    };
+    std::unordered_map<std::uint32_t, std::size_t> definition_by_id;
+    std::unordered_map<std::string, std::size_t> definition_by_name;
+    std::vector<EffectiveWindowShape> effective_window_shapes;
+    std::vector<std::optional<std::uint32_t>> inherited_window_ids;
+    effective_window_shapes.reserve(ast.window_definitions.size());
+    inherited_window_ids.reserve(ast.window_definitions.size());
+    const bool named_profile = ast.window_definitions.front().name.has_value();
+    for (std::size_t index = 0; index < ast.window_definitions.size(); ++index) {
+      const auto& candidate = ast.window_definitions[index];
+      if (candidate.window_id == 0 ||
+          !definition_by_id.emplace(candidate.window_id, index).second ||
+          candidate.name.has_value() != named_profile ||
+          (candidate.name.has_value() &&
+           (!canonical_window_name(candidate.name->spelling) ||
+            candidate.name->quoted ||
+            !definition_by_name
+                 .emplace(candidate.name->spelling, index)
+                 .second)) ||
+          candidate.frame_unit.has_value() !=
+              candidate.frame_start.has_value() ||
+          (candidate.frame_end.has_value() &&
+           !candidate.frame_start.has_value()) ||
+          (!candidate.frame_unit.has_value() &&
+           candidate.exclusion != NativeWindowFrameExclusion::kNoOthers) ||
+          !frame_bound_exact(candidate.frame_start, true) ||
+          !frame_bound_exact(candidate.frame_end, false)) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                              "typed window declaration is not canonical");
+        return RefusedBoundAst(std::move(bound));
+      }
+      EffectiveWindowShape shape{
+          !candidate.partition_expression_ids.empty(),
+          !candidate.ordering_terms.empty(), candidate.frame_unit.has_value()};
+      std::optional<std::uint32_t> inherited_window_id;
+      if (candidate.base_name.has_value()) {
+        if (!named_profile || candidate.base_name->quoted ||
+            !canonical_window_name(candidate.base_name->spelling)) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                                "typed window base name is not canonical");
+          return RefusedBoundAst(std::move(bound));
+        }
+        const auto base =
+            definition_by_name.find(candidate.base_name->spelling);
+        if (base == definition_by_name.end() || base->second >= index) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                                "typed window base is forward or unknown");
+          return RefusedBoundAst(std::move(bound));
+        }
+        const auto& inherited = effective_window_shapes[base->second];
+        if ((shape.partition && inherited.partition) ||
+            (shape.ordering && inherited.ordering) ||
+            (shape.frame && inherited.frame)) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                                "typed window state overrides its base");
+          return RefusedBoundAst(std::move(bound));
+        }
+        shape.partition = shape.partition || inherited.partition;
+        shape.ordering = shape.ordering || inherited.ordering;
+        shape.frame = shape.frame || inherited.frame;
+        inherited_window_id =
+            ast.window_definitions[base->second].window_id;
+      }
+      effective_window_shapes.push_back(shape);
+      inherited_window_ids.push_back(inherited_window_id);
+    }
+    const auto selected_definition =
+        definition_by_id.find(invocation.window_definition_id);
+    if (selected_definition == definition_by_id.end() ||
+        (!effective_window_shapes[selected_definition->second].partition &&
+         !effective_window_shapes[selected_definition->second].ordering)) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "typed ROW_NUMBER requires a resolved window key");
+      return RefusedBoundAst(std::move(bound));
+    }
     std::vector<std::uint32_t> offset_ast_ids;
     const auto collect_offset = [&](const auto& frame_bound) {
       if (frame_bound.has_value() &&
-          frame_bound->offset_expression_id.has_value()) {
+          frame_bound->offset_expression_id.has_value() &&
+          std::ranges::find(offset_ast_ids,
+                            *frame_bound->offset_expression_id) ==
+              offset_ast_ids.end()) {
         offset_ast_ids.push_back(*frame_bound->offset_expression_id);
       }
     };
-    collect_offset(definition.frame_start);
-    collect_offset(definition.frame_end);
+    for (const auto& candidate : ast.window_definitions) {
+      collect_offset(candidate.frame_start);
+      collect_offset(candidate.frame_end);
+    }
     const auto expected_expression_count = source_count +
                                            offset_ast_ids.size() + 1;
-    if (source_count == 0 || definition.window_id == 0 ||
-        definition.name.has_value() || definition.base_name.has_value() ||
-        invocation.invocation_id == 0 ||
-        invocation.window_definition_id != definition.window_id ||
+    if (source_count == 0 || invocation.invocation_id == 0 ||
         context.descriptors.size() != expected_expression_count ||
         context.expressions.size() != expected_expression_count ||
         context.outputs.size() != source_count + 1 ||
@@ -537,43 +642,6 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         relation_binding.columns.size() != source_count) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                             "typed window source authority is incomplete");
-      return RefusedBoundAst(std::move(bound));
-    }
-
-    const auto frame_bound_exact = [&](const auto& frame_bound,
-                                       const bool start) {
-      if (!frame_bound.has_value()) return true;
-      const bool offset_kind =
-          frame_bound->bound_kind == NativeWindowFrameBoundKind::kPreceding ||
-          frame_bound->bound_kind == NativeWindowFrameBoundKind::kFollowing;
-      if (offset_kind != frame_bound->offset_expression_id.has_value()) {
-        return false;
-      }
-      return start
-                 ? frame_bound->bound_kind !=
-                       NativeWindowFrameBoundKind::kUnboundedFollowing
-                 : frame_bound->bound_kind !=
-                       NativeWindowFrameBoundKind::kUnboundedPreceding;
-    };
-    if (definition.partition_expression_ids.empty() &&
-        definition.ordering_terms.empty()) {
-      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
-                            "typed ROW_NUMBER requires a window key");
-      return RefusedBoundAst(std::move(bound));
-    }
-    if (definition.frame_unit.has_value() !=
-            definition.frame_start.has_value() ||
-        (definition.frame_end.has_value() &&
-         !definition.frame_start.has_value()) ||
-        (!definition.frame_unit.has_value() &&
-         definition.exclusion != NativeWindowFrameExclusion::kNoOthers) ||
-        !frame_bound_exact(definition.frame_start, true) ||
-        !frame_bound_exact(definition.frame_end, false) ||
-        offset_ast_ids.size() > 2 ||
-        (offset_ast_ids.size() == 2 &&
-         offset_ast_ids.front() == offset_ast_ids.back())) {
-      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-                            "typed window frame is not canonical");
       return RefusedBoundAst(std::move(bound));
     }
 
@@ -744,25 +812,6 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       }
       return true;
     };
-    BoundWindowDefinitionAstRecord bound_definition;
-    bound_definition.window_id = definition.window_id;
-    if (!map_expression_ids(definition.partition_expression_ids,
-                            &bound_definition.partition_expression_ids)) {
-      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-                            "typed window partition key is unbound");
-      return RefusedBoundAst(std::move(bound));
-    }
-    for (const auto& term : definition.ordering_terms) {
-      const auto mapped = ast_to_bound.find(term.expression_id);
-      if (mapped == ast_to_bound.end()) {
-        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-                              "typed window order key is unbound");
-        return RefusedBoundAst(std::move(bound));
-      }
-      bound_definition.ordering_terms.push_back(
-          {mapped->second, term.direction, term.null_placement});
-    }
-    bound_definition.frame_unit = definition.frame_unit;
     const auto bind_frame_bound = [&](const auto& input, auto* output) {
       if (!input.has_value()) return true;
       BoundWindowFrameBoundAstRecord record;
@@ -775,19 +824,46 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       *output = std::move(record);
       return true;
     };
-    if (!bind_frame_bound(definition.frame_start,
-                          &bound_definition.frame_start) ||
-        !bind_frame_bound(definition.frame_end,
-                          &bound_definition.frame_end)) {
-      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-                            "typed window frame bound is unbound");
-      return RefusedBoundAst(std::move(bound));
+    for (std::size_t index = 0; index < ast.window_definitions.size(); ++index) {
+      const auto& ast_definition = ast.window_definitions[index];
+      BoundWindowDefinitionAstRecord bound_definition;
+      bound_definition.window_id = ast_definition.window_id;
+      if (ast_definition.name.has_value()) {
+        bound_definition.canonical_name_key = ast_definition.name->spelling;
+      }
+      bound_definition.inherited_window_id = inherited_window_ids[index];
+      if (!map_expression_ids(
+              ast_definition.partition_expression_ids,
+              &bound_definition.partition_expression_ids)) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                              "typed window partition key is unbound");
+        return RefusedBoundAst(std::move(bound));
+      }
+      for (const auto& term : ast_definition.ordering_terms) {
+        const auto mapped = ast_to_bound.find(term.expression_id);
+        if (mapped == ast_to_bound.end()) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                                "typed window order key is unbound");
+          return RefusedBoundAst(std::move(bound));
+        }
+        bound_definition.ordering_terms.push_back(
+            {mapped->second, term.direction, term.null_placement});
+      }
+      bound_definition.frame_unit = ast_definition.frame_unit;
+      if (!bind_frame_bound(ast_definition.frame_start,
+                            &bound_definition.frame_start) ||
+          !bind_frame_bound(ast_definition.frame_end,
+                            &bound_definition.frame_end)) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                              "typed window frame bound is unbound");
+        return RefusedBoundAst(std::move(bound));
+      }
+      bound_definition.exclusion = ast_definition.exclusion;
+      bound.window_definitions.push_back(std::move(bound_definition));
     }
-    bound_definition.exclusion = definition.exclusion;
-    bound.window_definitions.push_back(std::move(bound_definition));
     bound.window_invocations.push_back(
         {invocation.invocation_id, function_binding.expression_id,
-         definition.window_id, result_output.output_name_utf8,
+         invocation.window_definition_id, result_output.output_name_utf8,
          window_function_binding.abi_version,
          window_function_binding.builtin_id,
          window_function_binding.function_uuid,
@@ -808,12 +884,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         bound_window.bound_expression_ids.push_back(expression_id);
       }
     };
-    for (const auto expression_id :
-         bound.window_definitions.front().partition_expression_ids) {
-      append_bound_expression(expression_id);
-    }
-    for (const auto& term : bound.window_definitions.front().ordering_terms) {
-      append_bound_expression(term.expression_id);
+    for (const auto& bound_definition : bound.window_definitions) {
+      for (const auto expression_id :
+           bound_definition.partition_expression_ids) {
+        append_bound_expression(expression_id);
+      }
+      for (const auto& term : bound_definition.ordering_terms) {
+        append_bound_expression(term.expression_id);
+      }
     }
     for (const auto expression_id : offset_ast_ids) {
       append_bound_expression(ast_to_bound.at(expression_id));
