@@ -192,6 +192,121 @@ struct CanonicalOptimizerSearchIssue {
   std::string field_id;
 };
 
+// A statement-bound, finite view of every physical implementation the engine
+// may consider for the admitted logical graph.  Records are bound to exact
+// logical semantics before memo search; they are not parser hints or selected
+// plans.
+struct CanonicalOptimizerAlternativeDomainRecord {
+  std::string alternative_uuid;
+  std::string capability_uuid;
+  std::uint32_t logical_node_id{0};
+  scratchbird::engine::planner::CanonicalLogicalRelationalNodeKind
+      logical_node_kind{
+          scratchbird::engine::planner::CanonicalLogicalRelationalNodeKind::
+              kValues};
+  std::string semantic_variant_id;
+  std::string implementation_id;
+  std::size_t minimum_input_count{0};
+  std::size_t maximum_input_count{0};
+  std::vector<scratchbird::engine::planner::CanonicalLogicalPropertyKind>
+      required_property_kinds;
+  std::vector<scratchbird::engine::planner::CanonicalLogicalPropertyKind>
+      delivered_property_kinds;
+  std::uint64_t memory_bytes_required{0};
+  bool spill_supported{false};
+  bool parallel_safe{false};
+  bool parallel_required{false};
+  bool residual_predicate_required{false};
+  bool storage_recheck_required{false};
+  bool storage_read_capable{false};
+  bool mga_visibility_safe{false};
+  std::string compatibility_profile_id;
+  bool exact_semantics{false};
+  bool native_sblr_compatible{false};
+  bool available{false};
+  std::string refusal_diagnostic_id;
+  bool engine_owned{false};
+};
+
+struct CanonicalOptimizerAlternativeDomainSnapshot {
+  std::uint16_t abi_version{1};
+  std::string capability_snapshot_uuid;
+  std::string bound_sblr_tree_uuid;
+  std::string catalog_epoch_uuid;
+  std::string security_context_uuid;
+  std::uint64_t local_transaction_id{0};
+  std::uint64_t statement_snapshot_id{0};
+  scratchbird::engine::planner::CanonicalMgaStatementContext
+      mga_statement_context;
+  std::vector<CanonicalOptimizerAlternativeDomainRecord> records;
+  bool complete_finite_domain{false};
+  bool engine_owned{false};
+  bool data_access_observed{false};
+  bool parser_planning_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+};
+
+struct CanonicalOptimizerAlternativeInventoryReceipt {
+  std::string alternative_uuid;
+  std::string capability_uuid;
+  std::uint32_t logical_node_id{0};
+  std::string semantic_variant_id;
+  std::string implementation_id;
+  std::vector<std::string> required_property_uuids;
+  std::vector<std::string> delivered_property_uuids;
+  std::vector<std::string> enforced_property_uuids;
+  std::vector<std::string> missing_property_uuids;
+  std::uint64_t memory_bytes_required{0};
+  bool spill_supported{false};
+  bool spill_required{false};
+  bool parallel_safe{false};
+  bool parallel_required{false};
+  bool residual_predicate_required{false};
+  bool storage_recheck_required{false};
+  std::string compatibility_profile_id;
+  bool available{false};
+  bool legal{false};
+  bool property_enforcement_required{false};
+  std::string refusal_diagnostic_id;
+};
+
+struct CanonicalOptimizerAlternativeInventoryIssue {
+  std::string diagnostic_id;
+  std::uint32_t logical_node_id{0};
+  std::string alternative_uuid;
+  std::string field_id;
+};
+
+struct CanonicalOptimizerAlternativeInventoryResult {
+  bool accepted{false};
+  bool inventory_complete{false};
+  bool resource_bounded{false};
+  bool deterministic{false};
+  bool data_access_allowed{false};
+  std::size_t candidate_count{0};
+  std::size_t available_candidate_count{0};
+  std::size_t legal_candidate_count{0};
+  std::size_t scan_candidate_count{0};
+  std::size_t index_candidate_count{0};
+  std::size_t join_candidate_count{0};
+  std::size_t aggregate_candidate_count{0};
+  std::size_t window_candidate_count{0};
+  std::size_t subquery_candidate_count{0};
+  std::size_t cte_candidate_count{0};
+  std::size_t set_operation_candidate_count{0};
+  scratchbird::engine::planner::CanonicalPhysicalAlternativeCatalog catalog;
+  std::vector<CanonicalOptimizerAlternativeInventoryReceipt> receipts;
+  std::vector<CanonicalOptimizerAlternativeInventoryIssue> issues;
+};
+
+// QOW-SOURCE-OPT-014-V1
+// QOW-SOURCE-RCP-063-ALTERNATIVE-INVENTORY-V1
+CanonicalOptimizerAlternativeInventoryResult
+EnumerateCanonicalOptimizerAlternativeInventory(
+    const CanonicalOptimizerAdmissionRequest& admission_request,
+    const CanonicalOptimizerAdmissionResult& admission,
+    const CanonicalOptimizerAlternativeDomainSnapshot& domain);
+
 struct CanonicalOptimizerSearchResult {
   bool accepted{false};
   bool selected{false};

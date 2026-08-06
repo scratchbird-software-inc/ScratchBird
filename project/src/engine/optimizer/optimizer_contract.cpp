@@ -657,6 +657,355 @@ CanonicalWindowPropertyScheduleResult PlanCanonicalWindowPropertySchedule(
 }
 
 // QOW-SOURCE-OPT-014-V1
+// QOW-SOURCE-RCP-063-ALTERNATIVE-INVENTORY-V1
+CanonicalOptimizerAlternativeInventoryResult
+EnumerateCanonicalOptimizerAlternativeInventory(
+    const CanonicalOptimizerAdmissionRequest& admission_request,
+    const CanonicalOptimizerAdmissionResult& admission,
+    const CanonicalOptimizerAlternativeDomainSnapshot& domain) {
+  CanonicalOptimizerAlternativeInventoryResult result;
+  const auto refuse = [&](std::string diagnostic_id,
+                          const std::uint32_t logical_node_id,
+                          std::string alternative_uuid,
+                          std::string field_id) {
+    result = {};
+    result.issues.push_back({std::move(diagnostic_id), logical_node_id,
+                             std::move(alternative_uuid),
+                             std::move(field_id)});
+    return result;
+  };
+  const auto canonical_uuid = [](const std::string_view value) {
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-' ||
+        value == "00000000-0000-0000-0000-000000000000") {
+      return false;
+    }
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+      const auto ch = static_cast<unsigned char>(value[index]);
+      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+    }
+    return true;
+  };
+  const auto stable_id = [](const std::string_view value) {
+    return !value.empty() && value.size() <= 128 &&
+           std::ranges::all_of(value, [](const unsigned char ch) {
+             return (ch >= 'a' && ch <= 'z') ||
+                    (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ||
+                    ch == '-';
+           });
+  };
+  const auto diagnostic_id = [](const std::string_view value) {
+    return !value.empty() && value.size() <= 160 &&
+           std::ranges::all_of(value, [](const unsigned char ch) {
+             return std::isalnum(ch) || ch == '.' || ch == '_' || ch == '-';
+           });
+  };
+  const auto valid_property_kind = [](const auto kind) {
+    return kind >= planner::CanonicalLogicalPropertyKind::kOrdering &&
+           kind <=
+               planner::CanonicalLogicalPropertyKind::kExpressionEquivalence;
+  };
+
+  if (!admission.admitted || !admission.planning_allowed ||
+      admission.data_access_allowed || !admission.issues.empty() ||
+      admission.evidence.size() != 8) {
+    return refuse("QOW-DIAG-OPTIMIZER-INVENTORY-ADMISSION-V1", 0, {},
+                  "optimizer_admission");
+  }
+  if (admission.bound_sblr_tree_uuid !=
+          admission_request.logical_graph.bound_sblr_tree_uuid ||
+      admission.catalog_epoch_uuid !=
+          admission_request.logical_graph.catalog_epoch_uuid ||
+      admission.security_context_uuid !=
+          admission_request.logical_graph.security_context_uuid ||
+      admission.capability_snapshot_uuid !=
+          admission_request.policy_capability.capability_snapshot_uuid ||
+      admission.resource_snapshot_uuid !=
+          admission_request.resource.resource_snapshot_uuid ||
+      admission.statistics_snapshot_uuid !=
+          admission_request.statistics.statistics_snapshot_uuid ||
+      admission.route_snapshot_uuid !=
+          admission_request.route.route_snapshot_uuid ||
+      admission.local_transaction_id !=
+          admission_request.logical_graph.local_transaction_id ||
+      admission.statement_snapshot_id !=
+          admission_request.logical_graph.statement_snapshot_id ||
+      !planner::CanonicalMgaStatementContextEqual(
+          admission.mga_statement_context,
+          admission_request.logical_graph.mga_statement_context) ||
+      admission.catalog_generation !=
+          admission_request.catalog.catalog_generation ||
+      admission.security_epoch != admission_request.security.security_epoch ||
+      admission.policy_epoch != admission_request.security.policy_epoch ||
+      admission.resource_epoch != admission_request.resource.resource_epoch ||
+      admission.statistics_generation !=
+          admission_request.statistics.statistics_generation ||
+      admission.route_epoch != admission_request.route.route_epoch ||
+      admission.route_generation != admission_request.route.route_generation) {
+    return refuse("QOW-DIAG-OPTIMIZER-INVENTORY-ADMISSION-V1", 0, {},
+                  "optimizer_admission_scope");
+  }
+  for (std::size_t index = 0; index < admission.evidence.size(); ++index) {
+    if (admission.evidence[index].stage !=
+        static_cast<CanonicalOptimizerAdmissionStage>(index + 1)) {
+      return refuse("QOW-DIAG-OPTIMIZER-INVENTORY-ADMISSION-V1", 0, {},
+                    "optimizer_admission_order");
+    }
+  }
+
+  const auto& graph = admission_request.logical_graph;
+  const auto& resource = admission_request.resource;
+  if (domain.abi_version != 1 || !domain.complete_finite_domain ||
+      !domain.engine_owned || domain.data_access_observed ||
+      domain.parser_planning_authority_claimed ||
+      domain.transaction_finality_authority_claimed ||
+      !canonical_uuid(domain.capability_snapshot_uuid) ||
+      domain.capability_snapshot_uuid != admission.capability_snapshot_uuid ||
+      domain.bound_sblr_tree_uuid != graph.bound_sblr_tree_uuid ||
+      domain.catalog_epoch_uuid != graph.catalog_epoch_uuid ||
+      domain.security_context_uuid != graph.security_context_uuid ||
+      domain.local_transaction_id != graph.local_transaction_id ||
+      domain.statement_snapshot_id != graph.statement_snapshot_id ||
+      !planner::CanonicalMgaStatementContextEqual(
+          domain.mga_statement_context, graph.mga_statement_context)) {
+    return refuse("QOW-DIAG-OPTIMIZER-INVENTORY-DOMAIN-V1", 0, {},
+                  "finite_domain_scope");
+  }
+  if (!resource.engine_owned || resource.memory_budget_bytes == 0 ||
+      resource.maximum_candidate_count == 0 || domain.records.empty() ||
+      domain.records.size() > resource.maximum_candidate_count) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0, {},
+                  "alternative_inventory_bound");
+  }
+
+  std::unordered_map<std::uint32_t,
+                     const planner::CanonicalLogicalRelationalNode*>
+      nodes_by_id;
+  for (const auto& node : graph.nodes) {
+    nodes_by_id.emplace(node.logical_node_id, &node);
+  }
+  std::unordered_map<std::string,
+                     const planner::CanonicalLogicalPropertyRecord*>
+      properties_by_uuid;
+  for (const auto& property : admission_request.logical_properties.properties) {
+    properties_by_uuid.emplace(property.property_uuid, &property);
+  }
+
+  std::vector<const CanonicalOptimizerAlternativeDomainRecord*> records;
+  records.reserve(domain.records.size());
+  for (const auto& record : domain.records) records.push_back(&record);
+  std::ranges::sort(records, [](const auto* left, const auto* right) {
+    if (left->logical_node_id != right->logical_node_id) {
+      return left->logical_node_id < right->logical_node_id;
+    }
+    if (left->implementation_id != right->implementation_id) {
+      return left->implementation_id < right->implementation_id;
+    }
+    return left->alternative_uuid < right->alternative_uuid;
+  });
+
+  result.catalog.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
+  result.catalog.catalog_epoch_uuid = graph.catalog_epoch_uuid;
+  result.catalog.security_context_uuid = graph.security_context_uuid;
+  result.catalog.local_transaction_id = graph.local_transaction_id;
+  result.catalog.statement_snapshot_id = graph.statement_snapshot_id;
+  result.catalog.mga_statement_context = graph.mga_statement_context;
+
+  std::unordered_set<std::string> alternative_uuids;
+  std::unordered_set<std::string> node_implementations;
+  for (const auto* record : records) {
+    const auto node_it = nodes_by_id.find(record->logical_node_id);
+    const auto implementation_key =
+        std::to_string(record->logical_node_id) + ":" +
+        record->implementation_id;
+    if (!canonical_uuid(record->alternative_uuid) ||
+        !alternative_uuids.insert(record->alternative_uuid).second ||
+        !canonical_uuid(record->capability_uuid) ||
+        node_it == nodes_by_id.end() ||
+        !stable_id(record->implementation_id) ||
+        !node_implementations.insert(implementation_key).second ||
+        !stable_id(record->compatibility_profile_id)) {
+      return refuse("QOW-DIAG-OPTIMIZER-INVENTORY-IDENTITY-V1",
+                    record->logical_node_id, record->alternative_uuid,
+                    "domain_record_identity");
+    }
+    const auto& node = *node_it->second;
+    const auto input_count = node.input_logical_node_ids.size();
+    if (record->logical_node_kind != node.node_kind ||
+        record->semantic_variant_id != node.semantic_variant_id ||
+        record->minimum_input_count > record->maximum_input_count ||
+        input_count < record->minimum_input_count ||
+        input_count > record->maximum_input_count) {
+      return refuse("QOW-DIAG-OPTIMIZER-INVENTORY-SEMANTICS-V1",
+                    record->logical_node_id, record->alternative_uuid,
+                    "logical_semantics_or_arity");
+    }
+    if (!record->engine_owned || !record->exact_semantics ||
+        !record->native_sblr_compatible ||
+        (record->storage_read_capable && !record->mga_visibility_safe) ||
+        (record->parallel_required && !record->parallel_safe) ||
+        record->memory_bytes_required == 0 ||
+        (record->available &&
+         !record->refusal_diagnostic_id.empty()) ||
+        (!record->available &&
+         !diagnostic_id(record->refusal_diagnostic_id))) {
+      return refuse("QOW-DIAG-OPTIMIZER-INVENTORY-CAPABILITY-V1",
+                    record->logical_node_id, record->alternative_uuid,
+                    "capability_declaration");
+    }
+    const auto unique_property_kinds = [&](const auto& kinds) {
+      for (std::size_t index = 0; index < kinds.size(); ++index) {
+        if (!valid_property_kind(kinds[index]) ||
+            std::ranges::find(kinds.begin(), kinds.begin() + index,
+                              kinds[index]) != kinds.begin() + index) {
+          return false;
+        }
+      }
+      return true;
+    };
+    if (!unique_property_kinds(record->required_property_kinds) ||
+        !unique_property_kinds(record->delivered_property_kinds)) {
+      return refuse("QOW-DIAG-OPTIMIZER-INVENTORY-PROPERTY-V1",
+                    record->logical_node_id, record->alternative_uuid,
+                    "property_kind_declaration");
+    }
+
+    planner::CanonicalPhysicalAlternativeRecord alternative;
+    alternative.alternative_uuid = record->alternative_uuid;
+    alternative.logical_node_id = record->logical_node_id;
+    alternative.implementation_id = record->implementation_id;
+    alternative.capability_uuid = record->capability_uuid;
+    alternative.output_descriptor_ids = node.output_descriptor_ids;
+    alternative.available = record->available;
+    alternative.refusal_diagnostic_id = record->refusal_diagnostic_id;
+
+    CanonicalOptimizerAlternativeInventoryReceipt receipt;
+    receipt.alternative_uuid = record->alternative_uuid;
+    receipt.capability_uuid = record->capability_uuid;
+    receipt.logical_node_id = record->logical_node_id;
+    receipt.semantic_variant_id = record->semantic_variant_id;
+    receipt.implementation_id = record->implementation_id;
+    receipt.memory_bytes_required = record->memory_bytes_required;
+    receipt.spill_supported = record->spill_supported;
+    receipt.parallel_safe = record->parallel_safe;
+    receipt.parallel_required = record->parallel_required;
+    receipt.residual_predicate_required =
+        record->residual_predicate_required;
+    receipt.storage_recheck_required = record->storage_recheck_required;
+    receipt.compatibility_profile_id = record->compatibility_profile_id;
+
+    const auto bind_property_kinds = [&](const auto& kinds,
+                                         const auto& node_property_uuids,
+                                         auto* output) {
+      for (const auto kind : kinds) {
+        bool matched = false;
+        for (const auto& property_uuid : node_property_uuids) {
+          const auto property = properties_by_uuid.find(property_uuid);
+          if (property != properties_by_uuid.end() &&
+              property->second->property_kind == kind) {
+            output->push_back(property_uuid);
+            matched = true;
+          }
+        }
+        if (!matched) return false;
+      }
+      return true;
+    };
+    const bool required_properties_bound = bind_property_kinds(
+        record->required_property_kinds, node.required_property_uuids,
+        &alternative.required_property_uuids);
+    const bool delivered_properties_bound = bind_property_kinds(
+        record->delivered_property_kinds, node.delivered_property_uuids,
+        &alternative.delivered_property_uuids);
+    if (alternative.available &&
+        (!required_properties_bound || !delivered_properties_bound)) {
+      alternative.available = false;
+      alternative.refusal_diagnostic_id =
+          "QOW-DIAG-OPTIMIZER-INVENTORY-PROPERTY-V1";
+    }
+    if (alternative.available &&
+        record->memory_bytes_required > resource.memory_budget_bytes) {
+      if (record->spill_supported && resource.spill_allowed) {
+        receipt.spill_required = true;
+      } else {
+        alternative.available = false;
+        alternative.refusal_diagnostic_id =
+            "QOW-DIAG-OPTIMIZER-INVENTORY-MEMORY-V1";
+      }
+    }
+    receipt.required_property_uuids =
+        alternative.required_property_uuids;
+    receipt.delivered_property_uuids =
+        alternative.delivered_property_uuids;
+    receipt.available = alternative.available;
+    receipt.refusal_diagnostic_id = alternative.refusal_diagnostic_id;
+    result.catalog.alternatives.push_back(std::move(alternative));
+    result.receipts.push_back(std::move(receipt));
+
+    using Kind = planner::CanonicalLogicalRelationalNodeKind;
+    switch (node.node_kind) {
+      case Kind::kRelationSource:
+        ++result.scan_candidate_count;
+        if (record->implementation_id.starts_with("scan.index.")) {
+          ++result.index_candidate_count;
+        }
+        break;
+      case Kind::kJoin: ++result.join_candidate_count; break;
+      case Kind::kAggregate: ++result.aggregate_candidate_count; break;
+      case Kind::kWindow: ++result.window_candidate_count; break;
+      case Kind::kSubquery: ++result.subquery_candidate_count; break;
+      case Kind::kCte:
+      case Kind::kRecursiveCte: ++result.cte_candidate_count; break;
+      case Kind::kSetOperation: ++result.set_operation_candidate_count; break;
+      default: break;
+    }
+  }
+
+  const auto boundary = planner::ValidateCanonicalLogicalPhysicalBoundary(
+      graph, result.catalog, resource.maximum_candidate_count);
+  if (!boundary.accepted) {
+    const auto& issue = boundary.issues.front();
+    return refuse(issue.diagnostic_id, issue.logical_node_id, {},
+                  issue.field_id);
+  }
+  const auto legality = EvaluateCanonicalRelationalCandidateLegality(
+      graph, admission_request.logical_properties, result.catalog);
+  if (!legality.accepted || !legality.complete_legal_coverage) {
+    if (!legality.issues.empty()) {
+      const auto& issue = legality.issues.front();
+      return refuse(issue.diagnostic_id, issue.logical_node_id,
+                    issue.alternative_uuid, issue.field_id);
+    }
+    return refuse("QOW-DIAG-OPTIMIZER-INVENTORY-COVERAGE-V1", 0, {},
+                  "legal_candidate_coverage");
+  }
+  std::unordered_map<std::string,
+                     const CanonicalRelationalCandidateLegalityRecord*>
+      legality_by_uuid;
+  for (const auto& candidate : legality.candidates) {
+    legality_by_uuid.emplace(candidate.alternative_uuid, &candidate);
+  }
+  for (auto& receipt : result.receipts) {
+    const auto* candidate = legality_by_uuid.at(receipt.alternative_uuid);
+    receipt.legal = candidate->legal;
+    receipt.property_enforcement_required =
+        candidate->property_enforcement_required;
+    receipt.enforced_property_uuids = candidate->enforced_property_uuids;
+    receipt.missing_property_uuids = candidate->missing_property_uuids;
+    if (receipt.available) ++result.available_candidate_count;
+    if (receipt.legal) ++result.legal_candidate_count;
+  }
+  result.accepted = true;
+  result.inventory_complete = true;
+  result.resource_bounded = true;
+  result.deterministic = true;
+  result.data_access_allowed = false;
+  result.candidate_count = result.catalog.alternatives.size();
+  return result;
+}
+
+// QOW-SOURCE-OPT-014-V1
 CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
     const CanonicalOptimizerAdmissionRequest& admission_request,
     const CanonicalOptimizerAdmissionResult& admission,

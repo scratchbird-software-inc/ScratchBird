@@ -5512,6 +5512,12 @@ struct LivePhysicalNodeProfile {
   std::uint64_t mga_visibility_checks_expected{0};
   bool storage_read_capable{false};
   bool mga_visibility_capable{false};
+  bool spill_supported{false};
+  bool parallel_safe{false};
+  bool parallel_required{false};
+  bool residual_predicate_required{false};
+  bool storage_recheck_required{false};
+  std::string compatibility_profile_id{"native.sblr.row.v1"};
 };
 
 struct LivePhysicalPlanningResult {
@@ -5528,10 +5534,12 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
     const std::string_view operation_name) {
   LivePhysicalPlanningResult result;
   const auto& graph = request.optimizer_request.logical_graph;
-  if (profiles.size() != graph.nodes.size()) {
+  if (profiles.empty() ||
+      profiles.size() >
+          request.optimizer_request.resource.maximum_candidate_count) {
     result.diagnostic_id = "QOW-DIAG-OPTIMIZER-SEARCH-NO-PLAN-V1";
     result.detail = std::string(operation_name) +
-                    " live profile does not cover every logical node";
+                    " live profile inventory is empty or unbounded";
     return result;
   }
 
@@ -5539,17 +5547,22 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
       graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
   const auto calibration_uuid =
       DerivedCanonicalUuid(identity_scope, "relational.calibration");
-  plan::CanonicalPhysicalAlternativeCatalog alternatives;
-  alternatives.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
-  alternatives.catalog_epoch_uuid = graph.catalog_epoch_uuid;
-  alternatives.security_context_uuid = graph.security_context_uuid;
-  alternatives.local_transaction_id = graph.local_transaction_id;
-  alternatives.statement_snapshot_id = graph.statement_snapshot_id;
-  alternatives.mga_statement_context = graph.mga_statement_context;
+  opt::CanonicalOptimizerAlternativeDomainSnapshot domain;
+  domain.capability_snapshot_uuid =
+      request.optimizer_admission.capability_snapshot_uuid;
+  domain.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
+  domain.catalog_epoch_uuid = graph.catalog_epoch_uuid;
+  domain.security_context_uuid = graph.security_context_uuid;
+  domain.local_transaction_id = graph.local_transaction_id;
+  domain.statement_snapshot_id = graph.statement_snapshot_id;
+  domain.mga_statement_context = graph.mga_statement_context;
+  domain.complete_finite_domain = true;
+  domain.engine_owned = true;
 
   std::unordered_set<std::uint32_t> covered_nodes;
   std::unordered_set<std::string> published_capabilities;
-  std::vector<opt::CanonicalOptimizerSearchCandidateInput> candidates;
+  std::unordered_map<std::string, const LivePhysicalNodeProfile*>
+      profiles_by_alternative_uuid;
   opt::CanonicalExecutorCapabilityCatalog capabilities;
   capabilities.capability_snapshot_uuid =
       request.optimizer_admission.capability_snapshot_uuid;
@@ -5563,54 +5576,80 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
         node->node_kind != profile.logical_node_kind ||
         profile.implementation_id.empty() || profile.capability_uuid.empty() ||
         profile.transformation_rule_id.empty() ||
-        profile.memory_bytes_required == 0 ||
-        !covered_nodes.insert(profile.logical_node_id).second) {
+        profile.memory_bytes_required == 0) {
       result.diagnostic_id = "QOW-DIAG-OPTIMIZER-SEARCH-NO-PLAN-V1";
       result.detail = std::string(operation_name) +
                       " live node profile is incomplete or inconsistent";
       return result;
     }
-    const auto suffix = std::to_string(profile.logical_node_id);
+    covered_nodes.insert(profile.logical_node_id);
+    const auto suffix = std::to_string(profile.logical_node_id) + "." +
+                        profile.implementation_id;
     const auto alternative_uuid =
         DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
-    alternatives.alternatives.push_back(
-        {alternative_uuid,
-         profile.logical_node_id,
-         profile.implementation_id,
-         profile.capability_uuid,
-         node->output_descriptor_ids,
-         true,
-         {},
-         profile.required_property_uuids,
-         profile.delivered_property_uuids});
-
-    opt::CanonicalOptimizerSearchCandidateInput candidate;
-    candidate.alternative_uuid = alternative_uuid;
-    candidate.transformation_uuid =
-        DerivedCanonicalUuid(identity_scope, "transformation." + suffix);
-    candidate.transformation_rule_id = profile.transformation_rule_id;
-    candidate.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
-    candidate.statistics_snapshot_uuid =
-        request.optimizer_admission.statistics_snapshot_uuid;
-    candidate.statistics_generation =
-        request.optimizer_admission.statistics_generation;
-    candidate.model_family_id = "relational.local.v1";
-    candidate.cost_terms.cost_vector_uuid =
-        DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
-    candidate.cost_terms.calibration_profile_uuid = calibration_uuid;
-    candidate.cost_terms.cpu_units =
-        std::max<std::uint64_t>(1, profile.estimated_rows);
-    candidate.cost_terms.page_read_sequential_units =
-        profile.page_read_sequential_units;
-    candidate.cost_terms.memory_bytes_required =
-        profile.memory_bytes_required;
-    candidate.cost_terms.mga_visibility_checks_expected =
-        profile.mga_visibility_checks_expected;
-    candidate.cost_terms.confidence = opt::CostConfidence::kHigh;
-    candidate.semantic_preserving = true;
-    candidate.derived_from_admitted_statistics = true;
-    candidate.engine_coster_owned = true;
-    candidates.push_back(std::move(candidate));
+    opt::CanonicalOptimizerAlternativeDomainRecord domain_record;
+    domain_record.alternative_uuid = alternative_uuid;
+    domain_record.capability_uuid = profile.capability_uuid;
+    domain_record.logical_node_id = profile.logical_node_id;
+    domain_record.logical_node_kind = profile.logical_node_kind;
+    domain_record.semantic_variant_id = node->semantic_variant_id;
+    domain_record.implementation_id = profile.implementation_id;
+    domain_record.minimum_input_count = profile.minimum_input_count;
+    domain_record.maximum_input_count = profile.maximum_input_count;
+    const auto bind_property_kinds = [&](const auto& property_uuids,
+                                         auto* property_kinds) {
+      for (const auto& property_uuid : property_uuids) {
+        const auto property = std::ranges::find_if(
+            request.optimizer_request.logical_properties.properties,
+            [&](const auto& candidate) {
+              return candidate.property_uuid == property_uuid;
+            });
+        if (property ==
+            request.optimizer_request.logical_properties.properties.end()) {
+          return false;
+        }
+        if (std::ranges::find(*property_kinds, property->property_kind) ==
+            property_kinds->end()) {
+          property_kinds->push_back(property->property_kind);
+        }
+      }
+      return true;
+    };
+    if (!bind_property_kinds(profile.required_property_uuids,
+                             &domain_record.required_property_kinds) ||
+        !bind_property_kinds(profile.delivered_property_uuids,
+                             &domain_record.delivered_property_kinds)) {
+      result.diagnostic_id =
+          "QOW-DIAG-OPTIMIZER-INVENTORY-PROPERTY-V1";
+      result.detail = std::string(operation_name) +
+                      " live profile references an unknown property";
+      return result;
+    }
+    domain_record.memory_bytes_required = profile.memory_bytes_required;
+    domain_record.spill_supported = profile.spill_supported;
+    domain_record.parallel_safe = profile.parallel_safe;
+    domain_record.parallel_required = profile.parallel_required;
+    domain_record.residual_predicate_required =
+        profile.residual_predicate_required;
+    domain_record.storage_recheck_required =
+        profile.storage_recheck_required;
+    domain_record.storage_read_capable = profile.storage_read_capable;
+    domain_record.mga_visibility_safe = profile.mga_visibility_capable;
+    domain_record.compatibility_profile_id =
+        profile.compatibility_profile_id;
+    domain_record.exact_semantics = true;
+    domain_record.native_sblr_compatible = true;
+    domain_record.available = true;
+    domain_record.engine_owned = true;
+    domain.records.push_back(std::move(domain_record));
+    if (!profiles_by_alternative_uuid.emplace(alternative_uuid, &profile)
+             .second) {
+      result.diagnostic_id =
+          "QOW-DIAG-OPTIMIZER-INVENTORY-IDENTITY-V1";
+      result.detail = std::string(operation_name) +
+                      " live profile generated a duplicate alternative";
+      return result;
+    }
 
     if (published_capabilities.insert(profile.capability_uuid).second) {
       opt::CanonicalExecutorCapabilityRecord capability;
@@ -5625,7 +5664,7 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
           request.optimizer_request.resource.memory_budget_bytes;
       capability.supported_property_kinds =
           profile.supported_property_kinds;
-      capability.spill_supported = false;
+      capability.spill_supported = profile.spill_supported;
       capability.storage_read_capable = profile.storage_read_capable;
       capability.mga_visibility_capable = profile.mga_visibility_capable;
       capability.available = true;
@@ -5634,13 +5673,76 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
     }
   }
 
+  if (covered_nodes.size() != graph.nodes.size()) {
+    result.diagnostic_id = "QOW-DIAG-OPTIMIZER-SEARCH-NO-PLAN-V1";
+    result.detail = std::string(operation_name) +
+                    " live profile does not cover every logical node";
+    return result;
+  }
+  const auto inventory = opt::EnumerateCanonicalOptimizerAlternativeInventory(
+      request.optimizer_request, request.optimizer_admission, domain);
+  if (!inventory.accepted || !inventory.inventory_complete ||
+      !inventory.issues.empty()) {
+    result.diagnostic_id =
+        inventory.issues.empty()
+            ? "QOW-DIAG-OPTIMIZER-INVENTORY-COVERAGE-V1"
+            : inventory.issues.front().diagnostic_id;
+    result.detail = inventory.issues.empty()
+                        ? std::string(operation_name) +
+                              " live alternative inventory is incomplete"
+                        : inventory.issues.front().field_id;
+    return result;
+  }
+
+  std::vector<opt::CanonicalOptimizerSearchCandidateInput> candidates;
+  candidates.reserve(inventory.legal_candidate_count);
+  for (const auto& receipt : inventory.receipts) {
+    if (!receipt.legal) continue;
+    const auto* profile = profiles_by_alternative_uuid.at(
+        receipt.alternative_uuid);
+    const auto suffix = std::to_string(profile->logical_node_id) + "." +
+                        profile->implementation_id;
+    opt::CanonicalOptimizerSearchCandidateInput candidate;
+    candidate.alternative_uuid = receipt.alternative_uuid;
+    candidate.transformation_uuid =
+        DerivedCanonicalUuid(identity_scope, "transformation." + suffix);
+    candidate.transformation_rule_id = profile->transformation_rule_id;
+    candidate.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
+    candidate.statistics_snapshot_uuid =
+        request.optimizer_admission.statistics_snapshot_uuid;
+    candidate.statistics_generation =
+        request.optimizer_admission.statistics_generation;
+    candidate.model_family_id = "relational.local.v1";
+    candidate.cost_terms.cost_vector_uuid =
+        DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
+    candidate.cost_terms.calibration_profile_uuid = calibration_uuid;
+    candidate.cost_terms.cpu_units =
+        std::max<std::uint64_t>(1, profile->estimated_rows);
+    candidate.cost_terms.page_read_sequential_units =
+        profile->page_read_sequential_units;
+    candidate.cost_terms.memory_bytes_required =
+        profile->memory_bytes_required;
+    candidate.cost_terms.spill_bytes_expected =
+        receipt.spill_required
+            ? profile->memory_bytes_required -
+                  request.optimizer_request.resource.memory_budget_bytes
+            : 0;
+    candidate.cost_terms.mga_visibility_checks_expected =
+        profile->mga_visibility_checks_expected;
+    candidate.cost_terms.confidence = opt::CostConfidence::kHigh;
+    candidate.semantic_preserving = true;
+    candidate.derived_from_admitted_statistics = true;
+    candidate.engine_coster_owned = true;
+    candidates.push_back(std::move(candidate));
+  }
+
   opt::CanonicalOptimizerSearchPolicy search_policy;
   search_policy.maximum_exhaustive_plan_count = 1;
   search_policy.bounded_beam_width = 1;
   search_policy.deterministic_step_cost_ns = 1;
   search_policy.engine_owned = true;
   const auto search = opt::SearchCanonicalRelationalMemo(
-      request.optimizer_request, request.optimizer_admission, alternatives,
+      request.optimizer_request, request.optimizer_admission, inventory.catalog,
       candidates, search_policy);
   if (!search.accepted || !search.selected || !search.issues.empty()) {
     result.diagnostic_id =
@@ -5659,7 +5761,8 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
   publication_identity.first_causal_counter_id = 1;
   publication_identity.engine_owned = true;
   const auto publication = opt::PublishCanonicalPhysicalDag(
-      request.optimizer_request, request.optimizer_admission, alternatives,
+      request.optimizer_request, request.optimizer_admission,
+      inventory.catalog,
       search, capabilities, publication_identity);
   if (!publication.accepted || !publication.published ||
       !publication.issues.empty()) {
@@ -20104,24 +20207,6 @@ ExecuteCanonicalObjectFreeValuesQuery(
   const auto calibration_uuid =
       DerivedCanonicalUuid(identity_scope, "values.calibration");
 
-  plan::CanonicalPhysicalAlternativeCatalog alternatives;
-  alternatives.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
-  alternatives.catalog_epoch_uuid = graph.catalog_epoch_uuid;
-  alternatives.security_context_uuid = graph.security_context_uuid;
-  alternatives.local_transaction_id = graph.local_transaction_id;
-  alternatives.statement_snapshot_id = graph.statement_snapshot_id;
-  alternatives.mga_statement_context = graph.mga_statement_context;
-  alternatives.alternatives.push_back(
-      {alternative_uuid,
-       graph.nodes.front().logical_node_id,
-       std::string(kValuesImplementationId),
-       capability_uuid,
-       graph.nodes.front().output_descriptor_ids,
-       true,
-       {},
-       {},
-       {}});
-
   std::uint64_t memory_bytes = 1;
   for (const auto& row : materialized.batch.rows) {
     for (const auto& value : row.values) {
@@ -20136,6 +20221,47 @@ ExecuteCanonicalObjectFreeValuesQuery(
   if (memory_bytes > request.optimizer_request.resource.memory_budget_bytes) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                   "live VALUES materialization exceeds the admitted memory budget");
+  }
+
+  opt::CanonicalOptimizerAlternativeDomainSnapshot domain;
+  domain.capability_snapshot_uuid =
+      request.optimizer_admission.capability_snapshot_uuid;
+  domain.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
+  domain.catalog_epoch_uuid = graph.catalog_epoch_uuid;
+  domain.security_context_uuid = graph.security_context_uuid;
+  domain.local_transaction_id = graph.local_transaction_id;
+  domain.statement_snapshot_id = graph.statement_snapshot_id;
+  domain.mga_statement_context = graph.mga_statement_context;
+  domain.complete_finite_domain = true;
+  domain.engine_owned = true;
+  opt::CanonicalOptimizerAlternativeDomainRecord domain_record;
+  domain_record.alternative_uuid = alternative_uuid;
+  domain_record.capability_uuid = capability_uuid;
+  domain_record.logical_node_id = graph.nodes.front().logical_node_id;
+  domain_record.logical_node_kind =
+      plan::CanonicalLogicalRelationalNodeKind::kValues;
+  domain_record.semantic_variant_id =
+      graph.nodes.front().semantic_variant_id;
+  domain_record.implementation_id = std::string(kValuesImplementationId);
+  domain_record.memory_bytes_required = memory_bytes;
+  domain_record.compatibility_profile_id = "native.sblr.row.v1";
+  domain_record.exact_semantics = true;
+  domain_record.native_sblr_compatible = true;
+  domain_record.available = true;
+  domain_record.engine_owned = true;
+  domain.records.push_back(std::move(domain_record));
+  const auto inventory = opt::EnumerateCanonicalOptimizerAlternativeInventory(
+      request.optimizer_request, request.optimizer_admission, domain);
+  if (!inventory.accepted || !inventory.inventory_complete ||
+      inventory.legal_candidate_count != 1 || !inventory.issues.empty()) {
+    const auto diagnostic =
+        inventory.issues.empty()
+            ? "QOW-DIAG-OPTIMIZER-INVENTORY-COVERAGE-V1"
+            : inventory.issues.front().diagnostic_id;
+    const auto detail = inventory.issues.empty()
+                            ? "live VALUES alternative inventory is incomplete"
+                            : inventory.issues.front().field_id;
+    return refuse(diagnostic, detail);
   }
 
   opt::CanonicalOptimizerSearchCandidateInput candidate;
@@ -20163,7 +20289,8 @@ ExecuteCanonicalObjectFreeValuesQuery(
   search_policy.deterministic_step_cost_ns = 1;
   search_policy.engine_owned = true;
   const auto search = opt::SearchCanonicalRelationalMemo(
-      request.optimizer_request, request.optimizer_admission, alternatives,
+      request.optimizer_request, request.optimizer_admission,
+      inventory.catalog,
       {candidate}, search_policy);
   if (!search.accepted || !search.selected || !search.issues.empty()) {
     const auto diagnostic = search.issues.empty()
@@ -20201,7 +20328,8 @@ ExecuteCanonicalObjectFreeValuesQuery(
   publication_identity.first_causal_counter_id = 1;
   publication_identity.engine_owned = true;
   const auto publication = opt::PublishCanonicalPhysicalDag(
-      request.optimizer_request, request.optimizer_admission, alternatives,
+      request.optimizer_request, request.optimizer_admission,
+      inventory.catalog,
       search, capabilities, publication_identity);
   if (!publication.accepted || !publication.published ||
       !publication.issues.empty()) {
