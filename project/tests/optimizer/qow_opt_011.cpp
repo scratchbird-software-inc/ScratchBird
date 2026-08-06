@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -353,6 +354,151 @@ bool ValidateStatementContextLegalityRefusal() {
   return passed;
 }
 
+struct WindowScheduleInputs {
+  plan::CanonicalLogicalRelationalGraph graph;
+  plan::CanonicalLogicalPropertyCatalog properties;
+};
+
+WindowScheduleInputs MultipleWindowScheduleInputs() {
+  using Kind = plan::CanonicalLogicalPropertyKind;
+  auto graph = Graph();
+  graph.root_logical_node_id = 5;
+  graph.result_descriptor_ids = {105};
+  graph.nodes = {
+      Node(1, plan::CanonicalLogicalRelationalNodeKind::kValues, {}, 101,
+           {11, 12}, "values.literal-table.v1"),
+      Node(2, plan::CanonicalLogicalRelationalNodeKind::kWindow, {1}, 102,
+           {11, 12, 21}, "window.over.v1"),
+      Node(3, plan::CanonicalLogicalRelationalNodeKind::kWindow, {2}, 103,
+           {11, 12, 22}, "window.over.v1"),
+      Node(4, plan::CanonicalLogicalRelationalNodeKind::kWindow, {3}, 104,
+           {11, 12, 23}, "window.over.v1"),
+      Node(5, plan::CanonicalLogicalRelationalNodeKind::kWindow, {4}, 105,
+           {11, 12, 24}, "window.over.v1"),
+  };
+
+  auto properties = Properties();
+  properties.properties.clear();
+  const auto expression_property = [&](const std::uint64_t ordinal,
+                                       const Kind kind,
+                                       const std::uint32_t node_id,
+                                       std::vector<std::uint32_t> expressions) {
+    plan::CanonicalLogicalPropertyRecord property;
+    property.property_uuid = Uuid(ordinal);
+    property.property_kind = kind;
+    property.origin_logical_node_id = node_id;
+    property.expression_ids = std::move(expressions);
+    property.populated_from_bound_sblr = true;
+    return property;
+  };
+  const auto ordering_property = [&](const std::uint64_t ordinal,
+                                     const std::uint32_t node_id,
+                                     const std::uint32_t expression_id,
+                                     const auto direction) {
+    plan::CanonicalLogicalPropertyRecord property;
+    property.property_uuid = Uuid(ordinal);
+    property.property_kind = Kind::kOrdering;
+    property.origin_logical_node_id = node_id;
+    property.ordering_terms = {
+        {expression_id, direction,
+         plan::CanonicalLogicalPropertyNullPlacement::kNullsLast,
+         Uuid(901)}};
+    property.populated_from_bound_sblr = true;
+    return property;
+  };
+  const auto window_property = [&](const std::uint64_t ordinal,
+                                   const std::uint32_t node_id,
+                                   std::vector<std::string> dependencies) {
+    plan::CanonicalLogicalPropertyRecord property;
+    property.property_uuid = Uuid(ordinal);
+    property.property_kind = Kind::kWindow;
+    property.origin_logical_node_id = node_id;
+    property.dependency_property_uuids = std::move(dependencies);
+    property.window_frame_descriptor_uuid = Uuid(800 + ordinal);
+    property.populated_from_bound_sblr = true;
+    return property;
+  };
+  using Direction = plan::CanonicalLogicalPropertySortDirection;
+  properties.properties = {
+      expression_property(301, Kind::kPartitioning, 1, {11}),
+      ordering_property(302, 1, 12, Direction::kAscending),
+      expression_property(311, Kind::kPartitioning, 2, {11}),
+      ordering_property(312, 2, 12, Direction::kAscending),
+      window_property(313, 2, {Uuid(311), Uuid(312)}),
+      expression_property(321, Kind::kPartitioning, 3, {11}),
+      ordering_property(322, 3, 12, Direction::kDescending),
+      window_property(323, 3, {Uuid(321), Uuid(322)}),
+      expression_property(331, Kind::kPartitioning, 4, {12}),
+      ordering_property(332, 4, 11, Direction::kAscending),
+      window_property(333, 4, {Uuid(331), Uuid(332)}),
+      expression_property(341, Kind::kPartitioning, 5, {11}),
+      window_property(343, 5, {Uuid(341)}),
+  };
+  const std::vector<plan::CanonicalLogicalNodePropertyBinding> bindings = {
+      {1, {}, {Uuid(301), Uuid(302)}},
+      {2, {Uuid(311), Uuid(312)},
+       {Uuid(311), Uuid(312), Uuid(313)}},
+      {3, {Uuid(321), Uuid(322)},
+       {Uuid(321), Uuid(322), Uuid(323)}},
+      {4, {Uuid(331), Uuid(332)},
+       {Uuid(331), Uuid(332), Uuid(333)}},
+      {5, {Uuid(341)}, {Uuid(341), Uuid(343)}},
+  };
+  const auto populated = plan::PopulateCanonicalLogicalPropertiesFromBoundSblr(
+      graph, properties, bindings);
+  if (!populated.accepted) return {};
+  return {populated.logical_graph, populated.property_catalog};
+}
+
+bool ValidateWindowPropertyScheduleCosting() {
+  const auto inputs = MultipleWindowScheduleInputs();
+  const auto result = opt::PlanCanonicalWindowPropertySchedule(
+      inputs.graph, inputs.properties, 8);
+  using Enforcement = opt::CanonicalWindowPropertyEnforcementKind;
+  bool passed = true;
+  passed &= Require(
+      result.accepted && result.complete_legal_schedule &&
+          !result.data_access_allowed && result.stages.size() == 4 &&
+          result.reused_stage_count == 1 && result.sort_stage_count == 2 &&
+          result.repartition_stage_count == 2 &&
+          result.estimated_cost_units == 112,
+      "multiple-Window property schedule counts or cost differ");
+  passed &= Require(
+      result.stages.size() == 4 &&
+          result.stages[0].enforcement_kind == Enforcement::kReuse &&
+          result.stages[0].reused_property_uuids ==
+              std::vector<std::string>({Uuid(301), Uuid(302)}) &&
+          result.stages[1].enforcement_kind == Enforcement::kSort &&
+          result.stages[1].enforced_property_uuids ==
+              std::vector<std::string>({Uuid(322)}) &&
+          result.stages[2].enforcement_kind ==
+              Enforcement::kRepartitionAndSort &&
+          result.stages[2].enforced_property_uuids ==
+              std::vector<std::string>({Uuid(331), Uuid(332)}) &&
+          result.stages[3].enforcement_kind == Enforcement::kRepartition &&
+          result.stages[3].enforced_property_uuids ==
+              std::vector<std::string>({Uuid(341)}),
+      "Window schedule did not distinguish reuse/sort/repartition barriers");
+
+  const auto zero = opt::PlanCanonicalWindowPropertySchedule(
+      inputs.graph, inputs.properties, 0);
+  passed &= Require(
+      !zero.accepted && zero.stages.empty() && !zero.issues.empty() &&
+          zero.issues.front().diagnostic_id ==
+              "QOW-DIAG-WINDOW-SCHEDULE-COST-V1",
+      "zero-row Window cost input did not refuse atomically");
+  const auto overflow = opt::PlanCanonicalWindowPropertySchedule(
+      inputs.graph, inputs.properties,
+      std::numeric_limits<std::uint64_t>::max());
+  passed &= Require(
+      !overflow.accepted && overflow.stages.empty() &&
+          !overflow.issues.empty() &&
+          overflow.issues.front().diagnostic_id ==
+              "QOW-DIAG-WINDOW-SCHEDULE-COST-V1",
+      "overflowing Window schedule cost did not refuse atomically");
+  return passed;
+}
+
 }  // namespace
 
 // QOW-TEST-OPT-011-V1
@@ -360,7 +506,8 @@ int main() {
   if (!ValidateCanonicalLegalityAndEnforcement() ||
       !ValidateNoMarkersOrDefaults() ||
       !ValidatePerNodeCoverageRefusal() ||
-      !ValidateStatementContextLegalityRefusal()) {
+      !ValidateStatementContextLegalityRefusal() ||
+      !ValidateWindowPropertyScheduleCosting()) {
     return 1;
   }
   std::cout << "QOW-TEST-OPT-011-V1: PASS\n";

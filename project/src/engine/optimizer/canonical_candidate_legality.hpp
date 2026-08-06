@@ -43,6 +43,35 @@ struct CanonicalRelationalCandidateLegalityResult {
   std::vector<CanonicalRelationalCandidateLegalityIssue> issues;
 };
 
+enum class CanonicalWindowPropertyEnforcementKind : std::uint8_t {
+  kReuse = 1,
+  kSort,
+  kRepartition,
+  kRepartitionAndSort,
+};
+
+struct CanonicalWindowPropertyScheduleStage {
+  std::uint32_t logical_node_id{0};
+  std::string window_property_uuid;
+  CanonicalWindowPropertyEnforcementKind enforcement_kind{
+      CanonicalWindowPropertyEnforcementKind::kReuse};
+  std::vector<std::string> reused_property_uuids;
+  std::vector<std::string> enforced_property_uuids;
+  std::uint64_t estimated_cost_units{0};
+};
+
+struct CanonicalWindowPropertyScheduleResult {
+  bool accepted{false};
+  bool complete_legal_schedule{false};
+  bool data_access_allowed{false};
+  std::size_t reused_stage_count{0};
+  std::size_t sort_stage_count{0};
+  std::size_t repartition_stage_count{0};
+  std::uint64_t estimated_cost_units{0};
+  std::vector<CanonicalWindowPropertyScheduleStage> stages;
+  std::vector<CanonicalRelationalCandidateLegalityIssue> issues;
+};
+
 CanonicalRelationalCandidateLegalityResult
 EvaluateCanonicalRelationalCandidateLegality(
     const scratchbird::engine::planner::CanonicalLogicalRelationalGraph& graph,
@@ -50,5 +79,11 @@ EvaluateCanonicalRelationalCandidateLegality(
         properties,
     const scratchbird::engine::planner::CanonicalPhysicalAlternativeCatalog&
         alternatives);
+
+CanonicalWindowPropertyScheduleResult PlanCanonicalWindowPropertySchedule(
+    const scratchbird::engine::planner::CanonicalLogicalRelationalGraph& graph,
+    const scratchbird::engine::planner::CanonicalLogicalPropertyCatalog&
+        properties,
+    std::uint64_t estimated_input_rows);
 
 }  // namespace scratchbird::engine::optimizer

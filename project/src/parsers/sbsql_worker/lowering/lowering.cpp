@@ -17,6 +17,7 @@
 #include <cctype>
 #include <charconv>
 #include <cstdint>
+#include <iomanip>
 #include <initializer_list>
 #include <limits>
 #include <optional>
@@ -32770,6 +32771,36 @@ std::string EncodeOptionalCanonicalU32(
   return value.has_value() ? std::to_string(*value) : "-";
 }
 
+std::string DerivedNativeRelationalUuid(const std::string_view scope,
+                                        const std::string_view purpose) {
+  const auto seeded_fnv1a64 = [](const std::string_view value,
+                                 std::uint64_t hash) {
+    for (const auto byte : value) {
+      hash ^= static_cast<std::uint8_t>(byte);
+      hash *= 1099511628211ull;
+    }
+    return hash;
+  };
+  const auto first = seeded_fnv1a64(purpose, Fnv1a64(scope));
+  const auto second = seeded_fnv1a64(scope, Fnv1a64(purpose));
+  std::array<std::uint8_t, 16> bytes{};
+  for (std::size_t index = 0; index < 8; ++index) {
+    bytes[index] =
+        static_cast<std::uint8_t>(first >> ((7 - index) * 8));
+    bytes[8 + index] =
+        static_cast<std::uint8_t>(second >> ((7 - index) * 8));
+  }
+  bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0f) | 0x50);
+  bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3f) | 0x80);
+  std::ostringstream out;
+  out << std::hex << std::setfill('0');
+  for (std::size_t index = 0; index < bytes.size(); ++index) {
+    if (index == 4 || index == 6 || index == 8 || index == 10) out << '-';
+    out << std::setw(2) << static_cast<unsigned>(bytes[index]);
+  }
+  return out.str();
+}
+
 std::string_view ExpectedNativeAggregateSemanticVariant(
     const NativeAggregateGroupingForm grouping_form,
     const NativeAggregateProjectionForm projection_form) {
@@ -36421,6 +36452,100 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              "|" +
              JoinCanonicalHandleList(invocation.argument_expression_ids)});
   }
+  // QOW-SOURCE-RCP-051-WINDOW-PROPERTY-PUBLICATION-V1
+  // Publish the effective inherited PARTITION/ORDER state as canonical
+  // required properties and the completed Window state as a delivered
+  // property.  The frame identity remains opaque here: frame semantics stay
+  // in the typed definition records and are not executed by the parser.
+  std::vector<std::uint32_t> effective_window_partition_expression_ids;
+  std::vector<BoundOrderingAstTerm> effective_window_ordering_terms;
+  std::string window_partition_property_uuid;
+  std::string window_ordering_property_uuid;
+  std::string window_property_uuid;
+  std::string window_frame_descriptor_uuid;
+  std::vector<std::string> window_dependency_property_uuids;
+  std::vector<std::string> window_delivered_property_uuids;
+  std::string encoded_window_ordering_terms;
+  if (window_relation != nullptr) {
+    std::unordered_map<std::uint32_t,
+                       const BoundWindowDefinitionAstRecord*>
+        definitions_by_id;
+    for (const auto& definition : native.window_definitions) {
+      definitions_by_id.emplace(definition.window_id, &definition);
+    }
+    const auto selected_definition_id =
+        native.window_invocations.front().window_definition_id;
+    auto definition = definitions_by_id.at(selected_definition_id);
+    while (definition != nullptr) {
+      if (effective_window_partition_expression_ids.empty() &&
+          !definition->partition_expression_ids.empty()) {
+        effective_window_partition_expression_ids =
+            definition->partition_expression_ids;
+      }
+      if (effective_window_ordering_terms.empty() &&
+          !definition->ordering_terms.empty()) {
+        effective_window_ordering_terms = definition->ordering_terms;
+      }
+      definition = definition->inherited_window_id.has_value()
+                       ? definitions_by_id.at(*definition->inherited_window_id)
+                       : nullptr;
+    }
+
+    const auto property_scope =
+        std::to_string(window_relation->relation_id) + "." +
+        std::to_string(selected_definition_id);
+    if (!effective_window_partition_expression_ids.empty()) {
+      window_partition_property_uuid = DerivedNativeRelationalUuid(
+          native.bound_ast_uuid, "window.partition." + property_scope);
+      window_dependency_property_uuids.push_back(
+          window_partition_property_uuid);
+    }
+    if (!effective_window_ordering_terms.empty()) {
+      window_ordering_property_uuid = DerivedNativeRelationalUuid(
+          native.bound_ast_uuid, "window.ordering." + property_scope);
+      window_dependency_property_uuids.push_back(
+          window_ordering_property_uuid);
+      for (std::size_t ordinal = 0;
+           ordinal < effective_window_ordering_terms.size(); ++ordinal) {
+        const auto& term = effective_window_ordering_terms[ordinal];
+        const auto expression = expressions_by_id.at(term.expression_id);
+        const auto descriptor = std::ranges::find_if(
+            native.descriptors, [&](const auto& candidate) {
+              return candidate.descriptor_id ==
+                     expression->result_descriptor_id;
+            });
+        if (ordinal != 0) encoded_window_ordering_terms.push_back(',');
+        encoded_window_ordering_terms +=
+            std::to_string(term.expression_id) + ":" +
+            std::to_string(term.direction == NativeSortDirection::kAscending
+                               ? 1
+                               : 2) +
+            ":" +
+            std::to_string(
+                term.null_placement == NativeNullPlacement::kNullsFirst ? 1
+                                                                        : 2) +
+            ":" +
+            (descriptor->collation_uuid.has_value()
+                 ? *descriptor->collation_uuid
+                 : "-");
+      }
+    }
+    window_property_uuid = DerivedNativeRelationalUuid(
+        native.bound_ast_uuid, "window.result." + property_scope);
+    window_frame_descriptor_uuid = DerivedNativeRelationalUuid(
+        native.bound_ast_uuid, "window.frame." + property_scope);
+    window_delivered_property_uuids = window_dependency_property_uuids;
+    window_delivered_property_uuids.push_back(window_property_uuid);
+  }
+  const auto join_property_uuids = [](const std::vector<std::string>& uuids) {
+    if (uuids.empty()) return std::string("-");
+    std::string joined;
+    for (std::size_t index = 0; index < uuids.size(); ++index) {
+      if (index != 0) joined.push_back(',');
+      joined += uuids[index];
+    }
+    return joined;
+  };
   constexpr std::string_view kCatalogOrderingPropertyUuid =
       "019f0000-0000-7200-8000-00000000c701";
   std::string encoded_catalog_ordering_terms;
@@ -36503,17 +36628,47 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              "|" +
              (relation.relation_kind == NativeRelationAstKind::kSort
                   ? std::string(kCatalogOrderingPropertyUuid)
-                  : "-") +
+                  : (relation.relation_kind == NativeRelationAstKind::kWindow
+                         ? join_property_uuids(
+                               window_dependency_property_uuids)
+                         : "-")) +
              "|" +
              (relation.relation_kind == NativeRelationAstKind::kSort
                   ? std::string(kCatalogOrderingPropertyUuid)
-                  : "-")});
+                  : ((relation.relation_kind ==
+                              NativeRelationAstKind::kWindow ||
+                      relation.relation_kind ==
+                          NativeRelationAstKind::kQualify)
+                         ? join_property_uuids(
+                               window_delivered_property_uuids)
+                         : "-"))});
   }
   if (catalog_sort_relation != nullptr) {
     envelope.operands.push_back(
         {"relational_property_v1", std::string(kCatalogOrderingPropertyUuid),
          "1|" + std::to_string(catalog_sort_relation->relation_id) + "|-|" +
              encoded_catalog_ordering_terms + "|-|-"});
+  }
+  if (!window_partition_property_uuid.empty()) {
+    envelope.operands.push_back(
+        {"relational_property_v1", window_partition_property_uuid,
+         "3|" + std::to_string(window_relation->relation_id) + "|" +
+             JoinCanonicalHandleList(
+                 effective_window_partition_expression_ids) +
+             "|-|-|-"});
+  }
+  if (!window_ordering_property_uuid.empty()) {
+    envelope.operands.push_back(
+        {"relational_property_v1", window_ordering_property_uuid,
+         "1|" + std::to_string(window_relation->relation_id) + "|-|" +
+             encoded_window_ordering_terms + "|-|-"});
+  }
+  if (!window_property_uuid.empty()) {
+    envelope.operands.push_back(
+        {"relational_property_v1", window_property_uuid,
+         "4|" + std::to_string(window_relation->relation_id) + "|-|-|" +
+             join_property_uuids(window_dependency_property_uuids) + "|" +
+             window_frame_descriptor_uuid});
   }
   envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
   return envelope;

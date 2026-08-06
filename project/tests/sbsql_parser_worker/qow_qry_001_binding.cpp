@@ -1076,6 +1076,26 @@ bool ValidateTypedWindowBinding() {
       lowered.operands, [](const auto& operand) {
         return operand.type == "relational_window_invocation_v1";
       });
+  const auto partition_property = std::ranges::find_if(
+      lowered.operands, [](const auto& operand) {
+        return operand.type == "relational_property_v1" &&
+               operand.value == "3|2|1|-|-|-";
+      });
+  const auto ordering_property = std::ranges::find_if(
+      lowered.operands, [](const auto& operand) {
+        return operand.type == "relational_property_v1" &&
+               operand.value == "1|2|-|2:2:1:-|-|-";
+      });
+  const auto window_property = std::ranges::find_if(
+      lowered.operands, [](const auto& operand) {
+        return operand.type == "relational_property_v1" &&
+               operand.value.starts_with("4|2|-|-|");
+      });
+  const auto window_binding = std::ranges::find_if(
+      lowered.operands, [](const auto& operand) {
+        return operand.type == "relational_node_binding_v1" &&
+               operand.name == "2";
+      });
   passed &= Require(
       !lowered.messages.has_errors() && !lowered.payload.empty() &&
           definition_operand != lowered.operands.end() &&
@@ -1088,6 +1108,20 @@ bool ValidateTypedWindowBinding() {
               "019de5fc-2400-7539-bcce-00eef3ae7220|4|"
               "73657175656e63655f6e6f|-") == 0,
       "canonical typed window definition or invocation operand differs");
+  passed &= Require(
+      partition_property != lowered.operands.end() &&
+          ordering_property != lowered.operands.end() &&
+          window_property != lowered.operands.end() &&
+          window_property->value.starts_with(
+              "4|2|-|-|" + partition_property->name + "," +
+              ordering_property->name + "|") &&
+          window_binding != lowered.operands.end() &&
+          window_binding->value.ends_with(
+              "|" + partition_property->name + "," +
+              ordering_property->name + "|" + partition_property->name +
+              "," + ordering_property->name + "," +
+              window_property->name),
+      "effective Window required/delivered properties were not published");
   const auto verified = sbsql::VerifySblrEnvelope(lowered);
   if (!verified.admitted) {
     for (const auto& diagnostic : verified.messages.diagnostics) {
@@ -1341,7 +1375,8 @@ bool ValidateTypedQualifyBinding() {
           !lowered.payload.empty() && qualify_node != lowered.operands.end() &&
           qualify_node->value == "2|0|2|4|-" &&
           qualify_binding != lowered.operands.end() &&
-          qualify_binding->value.find("|6|-|-|-") != std::string::npos &&
+          qualify_binding->value.find("|6|-|-|") != std::string::npos &&
+          !qualify_binding->value.ends_with("|-") &&
           verified.admitted && !verified.messages.has_errors() &&
           verified.validated_relational_node_count == 3 &&
           verified.validated_relational_expression_count == 6,

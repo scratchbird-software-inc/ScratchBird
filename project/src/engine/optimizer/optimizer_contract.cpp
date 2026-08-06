@@ -414,6 +414,248 @@ EvaluateCanonicalRelationalCandidateLegality(
   return result;
 }
 
+// QOW-SOURCE-RCP-051-WINDOW-PROPERTY-SCHEDULE-V1
+// Cost only canonical Window property enforcement.  This planner consumes the
+// admitted logical property catalog; it neither interprets SQL nor executes a
+// partition/frame.  A repartition invalidates any pre-existing ordering, so a
+// Window that also requires ordering receives one combined enforcement stage.
+CanonicalWindowPropertyScheduleResult PlanCanonicalWindowPropertySchedule(
+    const planner::CanonicalLogicalRelationalGraph& graph,
+    const planner::CanonicalLogicalPropertyCatalog& properties,
+    const std::uint64_t estimated_input_rows) {
+  CanonicalWindowPropertyScheduleResult result;
+  const auto refuse = [&](std::string diagnostic_id,
+                          const std::uint32_t logical_node_id,
+                          std::string field_id) {
+    result = {};
+    result.issues.push_back({std::move(diagnostic_id), logical_node_id, {},
+                             std::move(field_id)});
+    return result;
+  };
+  const auto validation =
+      planner::ValidateCanonicalLogicalPropertyCatalog(graph, properties);
+  if (!validation.accepted) {
+    const auto& issue = validation.issues.front();
+    return refuse(issue.diagnostic_id, issue.logical_node_id, issue.field_id);
+  }
+  if (estimated_input_rows == 0) {
+    return refuse("QOW-DIAG-WINDOW-SCHEDULE-COST-V1", 0,
+                  "estimated_input_rows");
+  }
+
+  std::unordered_map<std::string,
+                     const planner::CanonicalLogicalPropertyRecord*>
+      properties_by_uuid;
+  for (const auto& property : properties.properties) {
+    properties_by_uuid.emplace(property.property_uuid, &property);
+  }
+  std::unordered_map<std::uint32_t,
+                     const planner::CanonicalLogicalRelationalNode*>
+      nodes_by_id;
+  for (const auto& node : graph.nodes) {
+    nodes_by_id.emplace(node.logical_node_id, &node);
+  }
+
+  const auto same_expression_set = [](const auto& left, const auto& right) {
+    auto canonical_left = left;
+    auto canonical_right = right;
+    std::ranges::sort(canonical_left);
+    std::ranges::sort(canonical_right);
+    return canonical_left == canonical_right;
+  };
+  const auto same_ordering = [](const auto& left, const auto& right) {
+    if (left.size() != right.size()) return false;
+    for (std::size_t index = 0; index < left.size(); ++index) {
+      if (left[index].expression_id != right[index].expression_id ||
+          left[index].direction != right[index].direction ||
+          left[index].null_placement != right[index].null_placement ||
+          left[index].collation_uuid != right[index].collation_uuid) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const auto same_requirement = [&](const auto& required,
+                                    const auto& available) {
+    if (required.property_kind != available.property_kind) return false;
+    if (required.property_kind ==
+        planner::CanonicalLogicalPropertyKind::kPartitioning) {
+      return same_expression_set(required.expression_ids,
+                                 available.expression_ids);
+    }
+    if (required.property_kind ==
+        planner::CanonicalLogicalPropertyKind::kOrdering) {
+      return same_ordering(required.ordering_terms,
+                           available.ordering_terms);
+    }
+    return required.property_uuid == available.property_uuid;
+  };
+  const auto checked_add = [](const std::uint64_t left,
+                              const std::uint64_t right,
+                              std::uint64_t* output) {
+    if (output == nullptr ||
+        right > std::numeric_limits<std::uint64_t>::max() - left) {
+      return false;
+    }
+    *output = left + right;
+    return true;
+  };
+  const auto checked_multiply = [](const std::uint64_t left,
+                                   const std::uint64_t right,
+                                   std::uint64_t* output) {
+    if (output == nullptr ||
+        (left != 0 &&
+         right > std::numeric_limits<std::uint64_t>::max() / left)) {
+      return false;
+    }
+    *output = left * right;
+    return true;
+  };
+  std::uint64_t sort_levels = 0;
+  for (auto remaining = estimated_input_rows - 1; remaining != 0;
+       remaining >>= 1) {
+    ++sort_levels;
+  }
+  sort_levels = std::max<std::uint64_t>(sort_levels, 1);
+
+  for (const auto& node : graph.nodes) {
+    if (node.node_kind !=
+        planner::CanonicalLogicalRelationalNodeKind::kWindow) {
+      continue;
+    }
+    std::vector<std::string> available_property_uuids;
+    for (const auto input_id : node.input_logical_node_ids) {
+      const auto input = nodes_by_id.find(input_id);
+      if (input == nodes_by_id.end()) {
+        return refuse("QOW-DIAG-WINDOW-SCHEDULE-PROPERTY-V1",
+                      node.logical_node_id, "input_logical_node_id");
+      }
+      available_property_uuids.insert(
+          available_property_uuids.end(),
+          input->second->delivered_property_uuids.begin(),
+          input->second->delivered_property_uuids.end());
+    }
+
+    for (const auto& delivered_uuid : node.delivered_property_uuids) {
+      const auto delivered = properties_by_uuid.find(delivered_uuid);
+      if (delivered == properties_by_uuid.end() ||
+          delivered->second->property_kind !=
+              planner::CanonicalLogicalPropertyKind::kWindow) {
+        continue;
+      }
+      CanonicalWindowPropertyScheduleStage stage;
+      stage.logical_node_id = node.logical_node_id;
+      stage.window_property_uuid = delivered_uuid;
+      const planner::CanonicalLogicalPropertyRecord* partition = nullptr;
+      const planner::CanonicalLogicalPropertyRecord* ordering = nullptr;
+      for (const auto& dependency_uuid :
+           delivered->second->dependency_property_uuids) {
+        const auto dependency = properties_by_uuid.at(dependency_uuid);
+        if (dependency->property_kind ==
+            planner::CanonicalLogicalPropertyKind::kPartitioning) {
+          partition = dependency;
+        } else if (dependency->property_kind ==
+                   planner::CanonicalLogicalPropertyKind::kOrdering) {
+          ordering = dependency;
+        }
+      }
+      const auto find_compatible = [&](const auto* required) {
+        if (required == nullptr) return std::string{};
+        for (const auto& available_uuid : available_property_uuids) {
+          const auto available = properties_by_uuid.find(available_uuid);
+          if (available != properties_by_uuid.end() &&
+              same_requirement(*required, *available->second)) {
+            return available_uuid;
+          }
+        }
+        return std::string{};
+      };
+      const auto reused_partition = find_compatible(partition);
+      const auto reused_ordering = find_compatible(ordering);
+      const bool repartition = partition != nullptr &&
+                               reused_partition.empty();
+      const bool sort = ordering != nullptr &&
+                        (reused_ordering.empty() || repartition);
+      if (!reused_partition.empty()) {
+        stage.reused_property_uuids.push_back(reused_partition);
+      }
+      if (!reused_ordering.empty() && !repartition) {
+        stage.reused_property_uuids.push_back(reused_ordering);
+      }
+      if (repartition) {
+        stage.enforced_property_uuids.push_back(partition->property_uuid);
+      }
+      if (sort) {
+        stage.enforced_property_uuids.push_back(ordering->property_uuid);
+      }
+
+      if (repartition && sort) {
+        stage.enforcement_kind =
+            CanonicalWindowPropertyEnforcementKind::kRepartitionAndSort;
+        ++result.repartition_stage_count;
+        ++result.sort_stage_count;
+      } else if (repartition) {
+        stage.enforcement_kind =
+            CanonicalWindowPropertyEnforcementKind::kRepartition;
+        ++result.repartition_stage_count;
+      } else if (sort) {
+        stage.enforcement_kind = CanonicalWindowPropertyEnforcementKind::kSort;
+        ++result.sort_stage_count;
+      } else {
+        stage.enforcement_kind =
+            CanonicalWindowPropertyEnforcementKind::kReuse;
+        ++result.reused_stage_count;
+      }
+
+      std::uint64_t stage_cost = estimated_input_rows;
+      std::uint64_t enforcement_cost = 0;
+      if (repartition &&
+          !checked_multiply(estimated_input_rows, 2, &enforcement_cost)) {
+        return refuse("QOW-DIAG-WINDOW-SCHEDULE-COST-V1",
+                      node.logical_node_id, "repartition_cost");
+      }
+      if (repartition &&
+          !checked_add(stage_cost, enforcement_cost, &stage_cost)) {
+        return refuse("QOW-DIAG-WINDOW-SCHEDULE-COST-V1",
+                      node.logical_node_id, "repartition_cost");
+      }
+      if (sort &&
+          (!checked_multiply(estimated_input_rows, sort_levels,
+                             &enforcement_cost) ||
+           !checked_add(stage_cost, enforcement_cost, &stage_cost))) {
+        return refuse("QOW-DIAG-WINDOW-SCHEDULE-COST-V1",
+                      node.logical_node_id, "sort_cost");
+      }
+      if (!checked_add(result.estimated_cost_units, stage_cost,
+                       &result.estimated_cost_units)) {
+        return refuse("QOW-DIAG-WINDOW-SCHEDULE-COST-V1",
+                      node.logical_node_id, "schedule_cost");
+      }
+      stage.estimated_cost_units = stage_cost;
+      result.stages.push_back(std::move(stage));
+
+      std::erase_if(available_property_uuids, [&](const auto& uuid) {
+        const auto kind = properties_by_uuid.at(uuid)->property_kind;
+        return kind == planner::CanonicalLogicalPropertyKind::kPartitioning ||
+               kind == planner::CanonicalLogicalPropertyKind::kOrdering;
+      });
+      available_property_uuids.insert(
+          available_property_uuids.end(),
+          delivered->second->dependency_property_uuids.begin(),
+          delivered->second->dependency_property_uuids.end());
+      available_property_uuids.push_back(delivered_uuid);
+    }
+  }
+  if (result.stages.empty()) {
+    return refuse("QOW-DIAG-WINDOW-SCHEDULE-PROPERTY-V1", 0,
+                  "window_property_coverage");
+  }
+  result.accepted = true;
+  result.complete_legal_schedule = true;
+  result.data_access_allowed = false;
+  return result;
+}
+
 // QOW-SOURCE-OPT-014-V1
 CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
     const CanonicalOptimizerAdmissionRequest& admission_request,

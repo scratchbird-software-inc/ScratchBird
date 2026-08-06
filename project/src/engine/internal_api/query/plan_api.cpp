@@ -460,8 +460,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       window_definitions_by_id;
   std::unordered_map<std::uint32_t, std::size_t> window_definition_count;
   struct EffectiveWindowShape {
-    bool partition{false};
-    bool ordering{false};
+    std::vector<std::uint32_t> partition_expression_ids;
+    std::vector<RelationalPropertyOrderingTerm> ordering_terms;
     bool frame{false};
   };
   std::unordered_map<std::uint32_t, EffectiveWindowShape>
@@ -583,9 +583,9 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                     definition.relation_node_id,
                     "window_definition_name_scope");
     }
-    EffectiveWindowShape shape{
-        !definition.partition_expression_ids.empty(),
-        !definition.ordering_terms.empty(), definition.frame_unit.has_value()};
+    EffectiveWindowShape shape{definition.partition_expression_ids,
+                               definition.ordering_terms,
+                               definition.frame_unit.has_value()};
     if (definition.inherited_window_id.has_value()) {
       const auto inherited =
           window_definitions_by_id.find(*definition.inherited_window_id);
@@ -595,15 +595,22 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
           inherited_shape == effective_window_shapes.end() ||
           inherited->second->relation_node_id != definition.relation_node_id ||
           inherited->second->window_id == definition.window_id ||
-          (shape.partition && inherited_shape->second.partition) ||
-          (shape.ordering && inherited_shape->second.ordering) ||
+          (!shape.partition_expression_ids.empty() &&
+           !inherited_shape->second.partition_expression_ids.empty()) ||
+          (!shape.ordering_terms.empty() &&
+           !inherited_shape->second.ordering_terms.empty()) ||
           (shape.frame && inherited_shape->second.frame)) {
         return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
                       definition.relation_node_id,
                       "inherited_window_id");
       }
-      shape.partition = shape.partition || inherited_shape->second.partition;
-      shape.ordering = shape.ordering || inherited_shape->second.ordering;
+      if (shape.partition_expression_ids.empty()) {
+        shape.partition_expression_ids =
+            inherited_shape->second.partition_expression_ids;
+      }
+      if (shape.ordering_terms.empty()) {
+        shape.ordering_terms = inherited_shape->second.ordering_terms;
+      }
       shape.frame = shape.frame || inherited_shape->second.frame;
     }
     effective_window_shapes.emplace(definition.window_id, shape);
@@ -628,8 +635,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         definition == window_definitions_by_id.end() ||
         definition->second->relation_node_id != invocation.relation_node_id ||
         effective_definition == effective_window_shapes.end() ||
-        (!effective_definition->second.partition &&
-         !effective_definition->second.ordering) ||
+        (effective_definition->second.partition_expression_ids.empty() &&
+         effective_definition->second.ordering_terms.empty()) ||
         expression == expressions_by_id.end() ||
         expression->second->expression_kind !=
             RelationalExpressionKind::kFunctionCall ||
@@ -805,6 +812,136 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         return refuse("QOW-DIAG-LOGICAL-PROPERTY-DEPENDENCY-V1",
                       property.origin_node_id, "unknown_property_dependency");
       }
+    }
+  }
+
+  // QOW-SOURCE-RCP-051-WINDOW-PROPERTY-CARRIAGE-V1
+  // Window property identities are optimizer authority only after their
+  // dependency records reproduce the effective typed definition selected by
+  // each invocation.  Refuse property spoofing before logical population.
+  const auto same_partition = [](const auto& left, const auto& right) {
+    auto canonical_left = left;
+    auto canonical_right = right;
+    std::ranges::sort(canonical_left);
+    std::ranges::sort(canonical_right);
+    return canonical_left == canonical_right;
+  };
+  const auto same_ordering = [](const auto& left, const auto& right) {
+    if (left.size() != right.size()) return false;
+    for (std::size_t index = 0; index < left.size(); ++index) {
+      if (left[index].expression_id != right[index].expression_id ||
+          left[index].direction != right[index].direction ||
+          left[index].null_placement != right[index].null_placement ||
+          left[index].collation_uuid != right[index].collation_uuid) {
+        return false;
+      }
+    }
+    return true;
+  };
+  std::unordered_set<std::string> matched_window_property_uuids;
+  for (const auto& node : dag.nodes) {
+    if (node.node_kind != RelationalDagNodeKind::kWindow) continue;
+    std::vector<const RelationalWindowInvocationRecord*> invocations;
+    for (const auto& invocation : dag.window_invocations) {
+      if (invocation.relation_node_id == node.node_id) {
+        invocations.push_back(&invocation);
+      }
+    }
+    std::vector<const RelationalPropertyRecord*> window_properties;
+    for (const auto& delivered_uuid : node.delivered_property_uuids) {
+      const auto property = properties_by_uuid.find(delivered_uuid);
+      if (property == properties_by_uuid.end()) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1",
+                      node.node_id, "delivered_property_uuids");
+      }
+      if (property->second->property_kind ==
+          RelationalPropertyKind::kWindow) {
+        window_properties.push_back(property->second);
+      }
+    }
+    if (window_properties.size() != invocations.size()) {
+      return refuse("QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1", node.node_id,
+                    "window_property_count");
+    }
+
+    std::unordered_set<std::string> expected_required_property_uuids;
+    for (const auto* invocation : invocations) {
+      const auto& effective =
+          effective_window_shapes.at(invocation->window_definition_id);
+      const RelationalPropertyRecord* matched = nullptr;
+      for (const auto* property : window_properties) {
+        if (matched_window_property_uuids.contains(property->property_uuid) ||
+            property->origin_node_id != node.node_id ||
+            property->window_frame_descriptor_uuid.empty()) {
+          continue;
+        }
+        const RelationalPropertyRecord* partition = nullptr;
+        const RelationalPropertyRecord* ordering = nullptr;
+        bool dependency_shape_valid = true;
+        for (const auto& dependency_uuid :
+             property->dependency_property_uuids) {
+          const auto* dependency = properties_by_uuid.at(dependency_uuid);
+          if (dependency->property_kind ==
+              RelationalPropertyKind::kPartitioning) {
+            if (partition != nullptr) dependency_shape_valid = false;
+            partition = dependency;
+          } else if (dependency->property_kind ==
+                     RelationalPropertyKind::kOrdering) {
+            if (ordering != nullptr) dependency_shape_valid = false;
+            ordering = dependency;
+          } else {
+            dependency_shape_valid = false;
+          }
+        }
+        const bool partition_matches =
+            effective.partition_expression_ids.empty()
+                ? partition == nullptr
+                : partition != nullptr &&
+                      same_partition(effective.partition_expression_ids,
+                                     partition->expression_ids);
+        const bool ordering_matches =
+            effective.ordering_terms.empty()
+                ? ordering == nullptr
+                : ordering != nullptr &&
+                      same_ordering(effective.ordering_terms,
+                                    ordering->ordering_terms);
+        if (dependency_shape_valid && partition_matches && ordering_matches) {
+          matched = property;
+          break;
+        }
+      }
+      if (matched == nullptr) {
+        return refuse("QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1", node.node_id,
+                      "effective_window_dependencies");
+      }
+      matched_window_property_uuids.insert(matched->property_uuid);
+      for (const auto& dependency_uuid :
+           matched->dependency_property_uuids) {
+        expected_required_property_uuids.insert(dependency_uuid);
+        if (std::ranges::find(node.delivered_property_uuids,
+                              dependency_uuid) ==
+            node.delivered_property_uuids.end()) {
+          return refuse("QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1", node.node_id,
+                        "delivered_window_dependencies");
+        }
+      }
+    }
+    const std::unordered_set<std::string> actual_required_property_uuids(
+        node.required_property_uuids.begin(),
+        node.required_property_uuids.end());
+    if (actual_required_property_uuids.size() !=
+            node.required_property_uuids.size() ||
+        actual_required_property_uuids !=
+            expected_required_property_uuids) {
+      return refuse("QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1", node.node_id,
+                    "required_window_dependencies");
+    }
+  }
+  for (const auto& property : dag.properties) {
+    if (property.property_kind == RelationalPropertyKind::kWindow &&
+        !matched_window_property_uuids.contains(property.property_uuid)) {
+      return refuse("QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1",
+                    property.origin_node_id, "orphan_window_property");
     }
   }
   for (const auto& node : dag.nodes) {

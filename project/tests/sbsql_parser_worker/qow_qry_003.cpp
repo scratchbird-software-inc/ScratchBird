@@ -27,6 +27,15 @@ namespace api = scratchbird::engine::internal_api;
 
 namespace {
 
+constexpr std::string_view kWindowPartitionPropertyUuid =
+    "019f0000-0000-7200-8000-00000000c751";
+constexpr std::string_view kWindowOrderingPropertyUuid =
+    "019f0000-0000-7200-8000-00000000c752";
+constexpr std::string_view kWindowPropertyUuid =
+    "019f0000-0000-7200-8000-00000000c753";
+constexpr std::string_view kWindowFrameDescriptorUuid =
+    "019f0000-0000-7200-8000-00000000c754";
+
 bool Require(const bool condition, const std::string_view message) {
   if (!condition) std::cerr << message << '\n';
   return condition;
@@ -170,12 +179,25 @@ sblr::SblrOperationEnvelope WindowEnvelope() {
        "2|2|1|1|73622e77696e646f772e726f775f6e756d626572|"
        "019de5fc-2400-7539-bcce-00eef3ae7220|2|"
        "73657175656e63655f6e6f|-"},
+      {"relational_property_v1", std::string(kWindowPartitionPropertyUuid),
+       "3|2|1|-|-|-"},
+      {"relational_property_v1", std::string(kWindowOrderingPropertyUuid),
+       "1|2|-|1:1:2:-|-|-"},
+      {"relational_property_v1", std::string(kWindowPropertyUuid),
+       "4|2|-|-|" + std::string(kWindowPartitionPropertyUuid) + "," +
+           std::string(kWindowOrderingPropertyUuid) + "|" +
+           std::string(kWindowFrameDescriptorUuid)},
       {"relational_node_v1", "1", "13|0|-|1|1"},
       {"relational_node_binding_v1", "1",
        "76616c7565732e6c69746572616c2d7461626c652e7631|1|-|-|-"},
       {"relational_node_v1", "2", "8|0|1|2|-"},
       {"relational_node_binding_v1", "2",
-       "77696e646f772e726f772d6e756d6265722e7631|1,2|-|-|-"},
+       "77696e646f772e726f772d6e756d6265722e7631|1,2|-|" +
+           std::string(kWindowPartitionPropertyUuid) + "," +
+           std::string(kWindowOrderingPropertyUuid) + "|" +
+           std::string(kWindowPartitionPropertyUuid) + "," +
+           std::string(kWindowOrderingPropertyUuid) + "," +
+           std::string(kWindowPropertyUuid)},
   };
   return envelope;
 }
@@ -256,7 +278,10 @@ sblr::SblrOperationEnvelope QualifyWindowEnvelope() {
       {"relational_node_v1", "3", "2|0|2|2|-"});
   envelope.operands.push_back(
       {"relational_node_binding_v1", "3",
-       "7175616c6966792e77696e646f772d726573756c742d6e756d657269632d636f6d70617269736f6e2e7631|4|-|-|-"});
+       "7175616c6966792e77696e646f772d726573756c742d6e756d657269632d636f6d70617269736f6e2e7631|4|-|-|" +
+           std::string(kWindowPartitionPropertyUuid) + "," +
+           std::string(kWindowOrderingPropertyUuid) + "," +
+           std::string(kWindowPropertyUuid)});
   return envelope;
 }
 
@@ -400,6 +425,30 @@ bool ValidateWindowRecordTransport() {
       sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(), std::move(malformed_definition), {}});
 
+  auto dangling_window_property = WindowEnvelope();
+  const auto window_property = std::ranges::find_if(
+      dangling_window_property.operands, [](const auto& operand) {
+        return operand.type == "relational_property_v1" &&
+               operand.name == kWindowPropertyUuid;
+      });
+  window_property->value =
+      "4|2|-|-|019f0000-0000-7200-8000-00000000c799|" +
+      std::string(kWindowFrameDescriptorUuid);
+  const auto dangling_window_property_result =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), std::move(dangling_window_property), {}});
+
+  auto spoofed_partition_property = WindowEnvelope();
+  const auto partition_property = std::ranges::find_if(
+      spoofed_partition_property.operands, [](const auto& operand) {
+        return operand.type == "relational_property_v1" &&
+               operand.name == kWindowPartitionPropertyUuid;
+      });
+  partition_property->value = "3|2|2|-|-|-";
+  const auto spoofed_partition_property_result =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), std::move(spoofed_partition_property), {}});
+
   const auto named_result = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), NamedWindowEnvelope(), {}});
 
@@ -444,9 +493,11 @@ bool ValidateWindowRecordTransport() {
   bool passed = true;
   passed &= Require(
       result.envelope_validated && result.logical_graph_populated &&
+          result.logical_properties_populated && result.optimizer_admitted &&
           result.logical_node_count == 2 &&
+          result.logical_property_count == 3 &&
           !HasApiDiagnostic(result, "SBLR.PLAN_TREE.INVALID_HANDLE"),
-      "canonical window records did not cross the engine decoder boundary");
+      "canonical Window records/properties did not cross optimizer admission");
   passed &= Require(
       !missing_definition_result.accepted &&
           !missing_definition_result.logical_graph_populated &&
@@ -459,6 +510,20 @@ bool ValidateWindowRecordTransport() {
           HasApiDiagnostic(malformed_definition_result,
                            "SBLR.PLAN_TREE.INVALID_HANDLE"),
       "engine decoder admitted a frame unit without a start bound");
+  passed &= Require(
+      !dangling_window_property_result.accepted &&
+          !dangling_window_property_result.logical_graph_populated &&
+          HasApiDiagnostic(
+              dangling_window_property_result,
+              "QOW-DIAG-LOGICAL-PROPERTY-DEPENDENCY-V1"),
+      "engine decoder admitted a dangling Window property dependency");
+  passed &= Require(
+      !spoofed_partition_property_result.accepted &&
+          !spoofed_partition_property_result.logical_graph_populated &&
+          HasApiDiagnostic(
+              spoofed_partition_property_result,
+              "QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1"),
+      "engine decoder admitted a forged Window partition property");
   passed &= Require(
       named_result.envelope_validated && named_result.logical_graph_populated &&
           named_result.logical_node_count == 2 &&
