@@ -421,13 +421,22 @@ struct CanonicalWindowMaterialization {
   std::string function_state_uuid;
 };
 
+struct CanonicalWindowQualifyAliasBinding {
+  std::string alias;
+  std::uint32_t source_descriptor_id = 0;
+};
+
+struct CanonicalWindowQualifyPredicate {
+  ExecutorColumnDescriptor result_column;
+  std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
+  std::vector<std::uint32_t> referenced_descriptor_ids;
+  std::vector<CanonicalWindowQualifyAliasBinding> alias_bindings;
+};
+
 struct CanonicalWindowCompositionRequest {
   DescriptorBatch input_batch;
   std::vector<CanonicalWindowMaterialization> windows;
-  std::optional<
-      std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>>
-      qualify_truth_values;
-  std::vector<std::uint32_t> qualify_referenced_window_descriptor_ids;
+  std::optional<CanonicalWindowQualifyPredicate> qualify_predicate;
   std::vector<std::uint32_t> projection_descriptor_ids;
   std::vector<CanonicalDescriptorOrderTerm> query_order_terms;
   std::string query_order_tie_evidence_uuid;
@@ -458,6 +467,10 @@ struct CanonicalWindowCompositionResult {
   bool every_window_source_mapping_bijective = false;
   bool every_function_state_independent = false;
   bool all_windows_materialized_before_qualify = false;
+  bool qualify_typed_predicate_consumed = false;
+  bool qualify_descriptor_references_resolved = false;
+  bool qualify_alias_bindings_resolved = false;
+  std::size_t qualify_alias_binding_count = 0;
   bool qualify_uses_true_only_3vl = false;
   bool projection_precedes_query_order = false;
   bool query_order_precedes_row_limit = false;

@@ -8649,21 +8649,64 @@ CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
   result.source_row_indices.resize(row_count);
   std::iota(result.source_row_indices.begin(), result.source_row_indices.end(),
             0);
-  if (request.qualify_truth_values.has_value()) {
-    if (request.qualify_referenced_window_descriptor_ids.empty() ||
-        request.qualify_truth_values->size() != row_count) {
+  if (request.qualify_predicate.has_value()) {
+    const auto& predicate = *request.qualify_predicate;
+    if (predicate.referenced_descriptor_ids.empty() ||
+        predicate.values.size() != row_count ||
+        predicate.result_column.descriptor_id == 0 ||
+        predicate.result_column.stable_name.empty()) {
       return refuse("QOW-DIAG-WINDOW-QUALIFY",
-                    "QUALIFY references or truth cardinality are incomplete");
+                    "QUALIFY predicate descriptor, references, or cardinality are incomplete");
+    }
+    DescriptorBatch predicate_batch;
+    predicate_batch.columns = {predicate.result_column};
+    predicate_batch.rows.reserve(row_count);
+    for (const auto& value : predicate.values) {
+      predicate_batch.rows.push_back({{value}});
+    }
+    const auto predicate_validation = ValidateCanonicalDescriptorBatch(
+        predicate_batch, {predicate.result_column.descriptor_id});
+    if (!predicate_validation.ok) {
+      return refuse("QOW-DIAG-WINDOW-QUALIFY",
+                    "typed QUALIFY predicate refusal: " +
+                        predicate_validation.detail);
     }
     std::set<std::uint32_t> qualify_references;
-    for (const auto descriptor_id :
-         request.qualify_referenced_window_descriptor_ids) {
+    bool references_window_result = false;
+    for (const auto descriptor_id : predicate.referenced_descriptor_ids) {
       if (!qualify_references.insert(descriptor_id).second ||
-          std::ranges::find(result.materialized_window_descriptor_ids,
-                            descriptor_id) ==
-              result.materialized_window_descriptor_ids.end()) {
+          std::ranges::find(materialized_ids, descriptor_id) ==
+              materialized_ids.end()) {
         return refuse("QOW-DIAG-WINDOW-QUALIFY",
-                      "QUALIFY references a missing or duplicate window result");
+                      "QUALIFY references a missing or duplicate descriptor");
+      }
+      references_window_result |=
+          std::ranges::find(result.materialized_window_descriptor_ids,
+                            descriptor_id) !=
+          result.materialized_window_descriptor_ids.end();
+    }
+    if (!references_window_result) {
+      return refuse("QOW-DIAG-WINDOW-QUALIFY",
+                    "QUALIFY is not bound to a materialized window result");
+    }
+    std::set<std::string> bound_aliases;
+    std::set<std::uint32_t> alias_descriptor_ids;
+    for (const auto& alias : predicate.alias_bindings) {
+      if (alias.alias.empty() || alias.alias.size() > 128 ||
+          !bound_aliases.insert(alias.alias).second ||
+          !alias_descriptor_ids.insert(alias.source_descriptor_id).second ||
+          !qualify_references.contains(alias.source_descriptor_id)) {
+        return refuse("QOW-DIAG-WINDOW-QUALIFY",
+                      "QUALIFY alias binding is missing, duplicated, or unreferenced");
+      }
+      const auto column = std::ranges::find_if(
+          materialized.columns, [&](const auto& candidate) {
+            return candidate.descriptor_id == alias.source_descriptor_id;
+          });
+      if (column == materialized.columns.end() ||
+          column->stable_name != alias.alias) {
+        return refuse("QOW-DIAG-WINDOW-QUALIFY",
+                      "QUALIFY alias does not resolve to its bound descriptor");
       }
     }
     DescriptorBatch qualified;
@@ -8672,11 +8715,15 @@ CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
     for (std::size_t source_row = 0; source_row < row_count; ++source_row) {
       bool passes = false;
       std::string detail;
-      if (!api::QowPredicateConsumerPassesV1(
-              (*request.qualify_truth_values)[source_row],
-              api::EnginePredicateConsumer::qualify, &passes, &detail)) {
+      api::EngineSqlTruthValue truth =
+          api::EngineSqlTruthValue::unspecified;
+      if (!api::QowCanonicalTruthFromTypedValueV1(
+              predicate.values[source_row], &truth, &detail) ||
+          !api::QowPredicateConsumerPassesV1(
+              truth, api::EnginePredicateConsumer::qualify, &passes,
+              &detail)) {
         return refuse("QOW-DIAG-WINDOW-QUALIFY",
-                      "QUALIFY 3VL refusal: " + detail);
+                      "typed QUALIFY 3VL refusal: " + detail);
       }
       if (passes) {
         qualified.rows.push_back(materialized.rows[source_row]);
@@ -8686,10 +8733,11 @@ CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
     materialized = std::move(qualified);
     result.source_row_indices = std::move(qualified_sources);
     result.stage_trace.push_back(CanonicalQueryEvaluationStage::qualify);
+    result.qualify_typed_predicate_consumed = true;
+    result.qualify_descriptor_references_resolved = true;
+    result.qualify_alias_bindings_resolved = true;
+    result.qualify_alias_binding_count = predicate.alias_bindings.size();
     result.qualify_uses_true_only_3vl = true;
-  } else if (!request.qualify_referenced_window_descriptor_ids.empty()) {
-    return refuse("QOW-DIAG-WINDOW-QUALIFY",
-                  "QUALIFY references exist without a bound predicate");
   }
   result.all_windows_materialized_before_qualify = true;
 
