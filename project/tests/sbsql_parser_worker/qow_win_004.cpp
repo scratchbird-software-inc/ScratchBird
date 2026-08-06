@@ -291,6 +291,8 @@ exec::CanonicalWindowPartitionOrderRequest Window401Request() {
   request.window_property_uuid = window_property_uuid;
   request.partition_property_uuid = partition_property_uuid;
   request.ordering_property_uuid = ordering_property_uuid;
+  request.term_binding_evidence_uuid = WindowUuid(4504);
+  request.deterministic_tie_evidence_uuid = WindowUuid(4505);
   request.mga_authority = WindowClosureAuthority(dag);
   return request;
 }
@@ -315,6 +317,7 @@ bool ValidateTypedCompositePartitions() {
   passed &= Require401(
       result.diagnostic.ok && result.partition_count == 4 &&
           result.peer_group_count == 7 && result.explicit_peer_metadata &&
+          result.stable_ties_preserved &&
           result.weaker_peer_recomputation_forbidden &&
           !result.final_query_order_guaranteed &&
           result.authority.engine_mga_snapshot_bound &&
@@ -340,8 +343,33 @@ bool ValidateTypedCompositePartitions() {
       "composite partition ranges lost explicit identity");
 
   auto request = Window401Request();
-  request.partition_terms.pop_back();
+  request.partition_terms.clear();
+  request.partition_property_uuid.clear();
+  request.physical_dag.nodes[1].required_property_uuids.erase(
+      request.physical_dag.nodes[1].required_property_uuids.begin());
   auto mutated = exec::ExecuteCanonicalWindowPartitionOrder(request);
+  passed &= Require401(
+      mutated.diagnostic.ok && mutated.partition_count == 1,
+      "empty PARTITION BY did not form one global partition");
+
+  request = Window401Request();
+  request.partition_terms.erase(request.partition_terms.begin());
+  mutated = exec::ExecuteCanonicalWindowPartitionOrder(request);
+  passed &= Require401(
+      mutated.diagnostic.ok && mutated.partition_count == 2,
+      "singleton PARTITION BY key did not form typed partitions");
+
+  request = Window401Request();
+  request.input_batch.rows.clear();
+  mutated = exec::ExecuteCanonicalWindowPartitionOrder(request);
+  passed &= Require401(
+      mutated.diagnostic.ok && mutated.partition_count == 0 &&
+          mutated.peer_group_count == 0 && mutated.row_metadata.empty(),
+      "empty input invented a partition or peer sentinel");
+
+  request = Window401Request();
+  request.partition_terms.pop_back();
+  mutated = exec::ExecuteCanonicalWindowPartitionOrder(request);
   passed &= Require401(
       mutated.diagnostic.ok && mutated.partition_count == 3,
       "second partition term was ignored instead of changing partitioning");

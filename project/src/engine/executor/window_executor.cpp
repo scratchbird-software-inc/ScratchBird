@@ -39,9 +39,9 @@ bool IsCanonicalUuid(const std::string_view value) {
   return true;
 }
 
-bool HasProperty(const std::vector<std::string>& properties,
-                 const std::string_view property_uuid) {
-  return std::ranges::find(properties, property_uuid) != properties.end();
+std::size_t PropertyCount(const std::vector<std::string>& properties,
+                          const std::string_view property_uuid) {
+  return static_cast<std::size_t>(std::ranges::count(properties, property_uuid));
 }
 
 CanonicalDescriptorOrderTerm PartitionOrderTerm(
@@ -68,7 +68,9 @@ CanonicalDescriptorOrderTerm PartitionOrderTerm(
 // carried by the optimizer-published physical window node. Partition and peer
 // equality use the same descriptor-aware comparator as canonical ORDER BY;
 // downstream window functions consume the explicit ranges and must not
-// reconstruct peer identity under a weaker rule.
+// reconstruct peer identity under a weaker rule. Engine-materialized hidden
+// expression keys remain separate from the payload, and stable input order is
+// used only as a deterministic final tie break without changing peer equality.
 CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
     const CanonicalWindowPartitionOrderRequest& request) {
   CanonicalWindowPartitionOrderResult result;
@@ -133,10 +135,29 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
   if (!input_validation.ok) {
     return refuse(input_validation.diagnostic_code, input_validation.detail);
   }
+  const DescriptorBatch* key_batch = &request.input_batch;
+  if (request.key_batch.has_value()) {
+    if (request.key_batch->rows.size() != request.input_batch.rows.size()) {
+      return refuse("QOW-DIAG-WINDOW-PROPERTY-BINDING",
+                    "materialized window-key cardinality differs from the input");
+    }
+    std::vector<std::uint32_t> key_descriptor_ids;
+    key_descriptor_ids.reserve(request.key_batch->columns.size());
+    for (const auto& column : request.key_batch->columns) {
+      key_descriptor_ids.push_back(column.descriptor_id);
+    }
+    const auto key_validation = ValidateCanonicalDescriptorBatch(
+        *request.key_batch, key_descriptor_ids);
+    if (!key_validation.ok) {
+      return refuse("QOW-DIAG-WINDOW-PROPERTY-BINDING",
+                    key_validation.detail);
+    }
+    key_batch = &*request.key_batch;
+  }
 
   if (!IsCanonicalUuid(request.window_property_uuid) ||
-      !HasProperty(selected_node->delivered_property_uuids,
-                   request.window_property_uuid)) {
+      PropertyCount(selected_node->delivered_property_uuids,
+                    request.window_property_uuid) != 1) {
     return refuse("QOW-DIAG-WINDOW-PEER",
                   "window peer property identity was not preserved");
   }
@@ -144,18 +165,62 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
        request.partition_property_uuid.empty()) ||
       (!request.partition_terms.empty() &&
        (!IsCanonicalUuid(request.partition_property_uuid) ||
-        !HasProperty(selected_node->required_property_uuids,
-                     request.partition_property_uuid)))) {
+        PropertyCount(selected_node->required_property_uuids,
+                      request.partition_property_uuid) != 1))) {
     return refuse("QOW-DIAG-WINDOW-PARTITION",
                   "window partition property identity was not preserved");
   }
   if ((request.order_terms.empty() != request.ordering_property_uuid.empty()) ||
       (!request.order_terms.empty() &&
        (!IsCanonicalUuid(request.ordering_property_uuid) ||
-        !HasProperty(selected_node->required_property_uuids,
-                     request.ordering_property_uuid)))) {
+        PropertyCount(selected_node->required_property_uuids,
+                      request.ordering_property_uuid) != 1))) {
     return refuse("QOW-DIAG-WINDOW-ORDER",
                   "window ordering property identity was not preserved");
+  }
+  const auto expected_required_property_count =
+      static_cast<std::size_t>(!request.partition_terms.empty()) +
+      static_cast<std::size_t>(!request.order_terms.empty());
+  if (selected_node->required_property_uuids.size() !=
+          expected_required_property_count ||
+      request.window_property_uuid == request.partition_property_uuid ||
+      request.window_property_uuid == request.ordering_property_uuid ||
+      (!request.partition_property_uuid.empty() &&
+       request.partition_property_uuid == request.ordering_property_uuid) ||
+      !std::ranges::all_of(
+          selected_node->delivered_property_uuids,
+          [&](const auto& property_uuid) {
+            return property_uuid == request.window_property_uuid ||
+                   (!request.partition_property_uuid.empty() &&
+                    property_uuid == request.partition_property_uuid) ||
+                   (!request.ordering_property_uuid.empty() &&
+                    property_uuid == request.ordering_property_uuid);
+          })) {
+    return refuse("QOW-DIAG-WINDOW-PROPERTY-BINDING",
+                  "physical Window properties do not exactly bind runtime terms");
+  }
+  const bool has_bound_terms =
+      !request.partition_terms.empty() || !request.order_terms.empty();
+  if ((has_bound_terms != !request.term_binding_evidence_uuid.empty()) ||
+      (has_bound_terms &&
+       (!IsCanonicalUuid(request.term_binding_evidence_uuid) ||
+        request.term_binding_evidence_uuid == request.window_property_uuid ||
+        request.term_binding_evidence_uuid ==
+            request.partition_property_uuid ||
+        request.term_binding_evidence_uuid == request.ordering_property_uuid))) {
+    return refuse("QOW-DIAG-WINDOW-PROPERTY-BINDING",
+                  "window terms lack an exact engine binding receipt");
+  }
+  if (!IsCanonicalUuid(request.deterministic_tie_evidence_uuid) ||
+      request.deterministic_tie_evidence_uuid ==
+          request.term_binding_evidence_uuid ||
+      request.deterministic_tie_evidence_uuid == request.window_property_uuid ||
+      request.deterministic_tie_evidence_uuid ==
+          request.partition_property_uuid ||
+      request.deterministic_tie_evidence_uuid ==
+          request.ordering_property_uuid) {
+    return refuse("QOW-DIAG-WINDOW-TIE",
+                  "stable deterministic tie evidence is required");
   }
   if (request.maximum_term_count == 0 ||
       request.partition_terms.size() > request.maximum_term_count ||
@@ -165,29 +230,47 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
     return refuse("QOW-DIAG-WINDOW-PEER",
                   "window term resource bound was exceeded");
   }
+  if (request.key_batch.has_value()) {
+    if (!has_bound_terms || request.key_batch->columns.empty()) {
+      return refuse("QOW-DIAG-WINDOW-PROPERTY-BINDING",
+                    "materialized window keys are present without bound terms");
+    }
+    std::vector<bool> consumed(request.key_batch->columns.size(), false);
+    for (const auto& term : request.partition_terms) {
+      if (term.column < consumed.size()) consumed[term.column] = true;
+    }
+    for (const auto& term : request.order_terms) {
+      if (term.column < consumed.size()) consumed[term.column] = true;
+    }
+    if (!std::ranges::all_of(consumed,
+                             [](const bool value) { return value; })) {
+      return refuse("QOW-DIAG-WINDOW-PROPERTY-BINDING",
+                    "materialized window-key column was not consumed");
+    }
+  }
 
   std::vector<CanonicalDescriptorOrderTerm> partition_terms;
   partition_terms.reserve(request.partition_terms.size());
   for (const auto& term : request.partition_terms) {
-    if (term.column >= request.input_batch.columns.size()) {
+    if (term.column >= key_batch->columns.size()) {
       return refuse("QOW-DIAG-WINDOW-PARTITION",
                     "partition term is outside the input schema");
     }
     auto comparable = PartitionOrderTerm(term);
     const auto validation = ValidateCanonicalDescriptorOrderTerm(
-        comparable, request.input_batch.columns[term.column]);
+        comparable, key_batch->columns[term.column]);
     if (!validation.ok) {
       return refuse("QOW-DIAG-WINDOW-PARTITION", validation.detail);
     }
     partition_terms.push_back(std::move(comparable));
   }
   for (const auto& term : request.order_terms) {
-    if (term.column >= request.input_batch.columns.size()) {
+    if (term.column >= key_batch->columns.size()) {
       return refuse("QOW-DIAG-WINDOW-ORDER",
                     "order term is outside the input schema");
     }
     const auto validation = ValidateCanonicalDescriptorOrderTerm(
-        term, request.input_batch.columns[term.column]);
+        term, key_batch->columns[term.column]);
     if (!validation.ok) {
       return refuse("QOW-DIAG-WINDOW-ORDER", validation.detail);
     }
@@ -216,8 +299,8 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
       bool equal = true;
       for (const auto& term : partition_terms) {
         const auto compared = CompareCanonicalDescriptorOrderValues(
-            request.input_batch.rows[left].values[term.column],
-            request.input_batch.rows[right].values[term.column], term);
+            key_batch->rows[left].values[term.column],
+            key_batch->rows[right].values[term.column], term);
         if (!compared.diagnostic.ok) {
           return refuse("QOW-DIAG-WINDOW-PARTITION",
                         compared.diagnostic.detail);
@@ -232,8 +315,8 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
       int comparison = 0;
       for (const auto& term : request.order_terms) {
         const auto compared = CompareCanonicalDescriptorOrderValues(
-            request.input_batch.rows[left].values[term.column],
-            request.input_batch.rows[right].values[term.column], term);
+            key_batch->rows[left].values[term.column],
+            key_batch->rows[right].values[term.column], term);
         if (!compared.diagnostic.ok) {
           return refuse("QOW-DIAG-WINDOW-ORDER", compared.diagnostic.detail);
         }
@@ -317,11 +400,16 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
   }
   result.diagnostic = {};
   result.partition_count = partitions.size();
+  result.partition_terms = request.partition_terms;
   result.order_terms = request.order_terms;
   result.window_property_uuid = request.window_property_uuid;
   result.partition_property_uuid = request.partition_property_uuid;
   result.ordering_property_uuid = request.ordering_property_uuid;
+  result.term_binding_evidence_uuid = request.term_binding_evidence_uuid;
+  result.deterministic_tie_evidence_uuid =
+      request.deterministic_tie_evidence_uuid;
   result.explicit_peer_metadata = true;
+  result.stable_ties_preserved = true;
   result.weaker_peer_recomputation_forbidden = true;
   result.final_query_order_guaranteed = false;
   result.authority.engine_mga_snapshot_bound = true;

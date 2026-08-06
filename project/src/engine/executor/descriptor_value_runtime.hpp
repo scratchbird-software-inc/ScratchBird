@@ -2081,11 +2081,22 @@ struct CanonicalWindowPartitionOrderRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch input_batch;
+  // Optional engine-materialized PARTITION BY / ORDER BY expression values.
+  // This batch supplies comparisons while input_batch remains the exact
+  // physical payload and output schema. Its row cardinality must match the
+  // payload batch exactly.
+  std::optional<DescriptorBatch> key_batch;
   std::vector<CanonicalWindowPartitionTerm> partition_terms;
   std::vector<CanonicalDescriptorOrderTerm> order_terms;
   std::string window_property_uuid;
   std::string partition_property_uuid;
   std::string ordering_property_uuid;
+  // Engine-owned receipts. term_binding_evidence_uuid binds the effective
+  // optimizer properties to the descriptor handles above. Stable input order
+  // is the deterministic final comparator only after every semantic ORDER BY
+  // term compares equal; it is never part of peer equality.
+  std::string term_binding_evidence_uuid;
+  std::string deterministic_tie_evidence_uuid;
   CanonicalExecutionMgaAuthority mga_authority;
   std::size_t maximum_term_count = 64;
   std::size_t maximum_pair_comparisons = 1048576;
@@ -2098,13 +2109,17 @@ struct CanonicalWindowPartitionOrderResult {
   DescriptorRuntimeDiagnostic diagnostic;
   DescriptorBatch ordered_batch;
   std::vector<CanonicalWindowRowPeerMetadata> row_metadata;
+  std::vector<CanonicalWindowPartitionTerm> partition_terms;
   std::vector<CanonicalDescriptorOrderTerm> order_terms;
   std::size_t partition_count = 0;
   std::size_t peer_group_count = 0;
   std::string window_property_uuid;
   std::string partition_property_uuid;
   std::string ordering_property_uuid;
+  std::string term_binding_evidence_uuid;
+  std::string deterministic_tie_evidence_uuid;
   bool explicit_peer_metadata = false;
+  bool stable_ties_preserved = false;
   bool weaker_peer_recomputation_forbidden = false;
   bool final_query_order_guaranteed = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;

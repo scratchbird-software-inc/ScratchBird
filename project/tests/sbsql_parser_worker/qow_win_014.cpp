@@ -20,6 +20,10 @@ bool ValidateOptimizerPeerIdentityCarryThrough() {
           result.window_property_uuid == request.window_property_uuid &&
           result.partition_property_uuid == request.partition_property_uuid &&
           result.ordering_property_uuid == request.ordering_property_uuid &&
+          result.term_binding_evidence_uuid ==
+              request.term_binding_evidence_uuid &&
+          result.deterministic_tie_evidence_uuid ==
+              request.deterministic_tie_evidence_uuid &&
           result.selected_plan_uuid == request.physical_dag.selected_plan_uuid &&
           result.executed_physical_node_id == 2 &&
           result.causal_counter_id == 40102 &&
@@ -51,6 +55,26 @@ bool ValidateOptimizerPeerIdentityCarryThrough() {
           refused.diagnostic.diagnostic_code == "QOW-DIAG-WINDOW-PEER" &&
           refused.row_metadata.empty(),
       "drifted optimizer window property was accepted as peer identity");
+
+  mutated = Window401Request();
+  mutated.physical_dag.nodes[1].required_property_uuids.push_back(
+      WindowUuid(4997));
+  refused = exec::ExecuteCanonicalWindowPartitionOrder(mutated);
+  passed &= Require401(
+      !refused.diagnostic.ok && refused.diagnostic.diagnostic_code ==
+                                    "QOW-DIAG-WINDOW-PROPERTY-BINDING" &&
+          refused.row_metadata.empty(),
+      "unbound optimizer property entered Window term execution");
+
+  mutated = Window401Request();
+  mutated.deterministic_tie_evidence_uuid =
+      mutated.ordering_property_uuid;
+  refused = exec::ExecuteCanonicalWindowPartitionOrder(mutated);
+  passed &= Require401(
+      !refused.diagnostic.ok &&
+          refused.diagnostic.diagnostic_code == "QOW-DIAG-WINDOW-TIE" &&
+          refused.row_metadata.empty(),
+      "ordering property identity was substituted for stable tie evidence");
 
   mutated = Window401Request();
   mutated.physical_dag.abi_version = 1;

@@ -572,14 +572,23 @@ bool TemporalThreshold(const api::EngineTypedValue& current,
 bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
   const auto row_count = input.ordered_batch.rows.size();
   if (!input.diagnostic.ok || !input.explicit_peer_metadata ||
+      !input.stable_ties_preserved ||
       !input.weaker_peer_recomputation_forbidden ||
       input.final_query_order_guaranteed ||
       !input.authority.engine_mga_snapshot_bound ||
       !PhysicalMgaStatementContextValid(input.mga_statement_context) ||
       !IsCanonicalUuid(input.window_property_uuid) ||
+      (input.partition_terms.empty() != input.partition_property_uuid.empty()) ||
+      (!input.partition_terms.empty() &&
+       !IsCanonicalUuid(input.partition_property_uuid)) ||
       (input.order_terms.empty() != input.ordering_property_uuid.empty()) ||
       (!input.order_terms.empty() &&
        !IsCanonicalUuid(input.ordering_property_uuid)) ||
+      ((!input.partition_terms.empty() || !input.order_terms.empty()) !=
+       !input.term_binding_evidence_uuid.empty()) ||
+      ((!input.partition_terms.empty() || !input.order_terms.empty()) &&
+       !IsCanonicalUuid(input.term_binding_evidence_uuid)) ||
+      !IsCanonicalUuid(input.deterministic_tie_evidence_uuid) ||
       !IsCanonicalUuid(input.selected_plan_uuid) ||
       input.executed_physical_node_id == 0 || input.causal_counter_id == 0 ||
       input.row_metadata.size() != row_count) {
