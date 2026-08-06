@@ -747,7 +747,8 @@ class NativeRelationalParser final {
       source.alias_is_explicit = true;
       source_end = &alias;
     } else if (!AtEnd() && Current().kind == TokenKind::kIdentifier &&
-               !IsWord(Current(), "WINDOW")) {
+               !IsWord(Current(), "WINDOW") &&
+               !IsWord(Current(), "QUALIFY")) {
       const Token& alias = Consume();
       source.alias = NativeIdentifierAstNode{
           alias.text, alias.quoted, TokenSourceRange(alias)};
@@ -855,6 +856,73 @@ class NativeRelationalParser final {
     } else {
       document_.window_definitions.push_back(std::move(definition));
     }
+    std::optional<std::uint32_t> qualify_predicate_expression_id;
+    const Token* qualify_end = nullptr;
+    if (!AtEnd() && IsWord(Current(), "QUALIFY")) {
+      Consume();
+      if (AtEnd() ||
+          (Current().kind != TokenKind::kIdentifier &&
+           Current().kind != TokenKind::kKeyword) ||
+          Current().quoted ||
+          (invocation.output_alias.has_value() &&
+           invocation.output_alias->quoted)) {
+        Refuse("qualify_window_output_required",
+               "QUALIFY requires an unquoted window-result name");
+        return FinishRefusal();
+      }
+      const Token& output_reference = Consume();
+      const auto expected_output_name = ToLowerAscii(
+          invocation.output_alias.has_value()
+              ? invocation.output_alias->spelling
+              : std::string("row_number"));
+      if (ToLowerAscii(output_reference.text) != expected_output_name) {
+        Refuse("qualify_window_output_unresolved",
+               "QUALIFY may reference only the selected window result in this bounded profile");
+        return FinishRefusal();
+      }
+      if (AtEnd()) {
+        Refuse("qualify_comparison_required",
+               "QUALIFY window result requires a comparison operator");
+        return FinishRefusal();
+      }
+      const Token& comparison = Consume();
+      const auto canonical_comparison = CanonicalTokenText(comparison);
+      if (canonical_comparison != "=" && canonical_comparison != "<>" &&
+          canonical_comparison != "!=" && canonical_comparison != "<" &&
+          canonical_comparison != "<=" && canonical_comparison != ">" &&
+          canonical_comparison != ">=") {
+        Refuse("qualify_comparison_unsupported",
+               "QUALIFY requires a canonical numeric comparison operator");
+        return FinishRefusal();
+      }
+      if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
+        Refuse("qualify_numeric_literal_required",
+               "QUALIFY comparison requires an unsigned numeric literal");
+        return FinishRefusal();
+      }
+      const Token& literal_token = Consume();
+      NativeExpressionAstNode literal;
+      literal.expression_id = NextExpressionId();
+      literal.expression_kind = NativeExpressionAstKind::kLiteral;
+      literal.literal_kind = NativeLiteralAstKind::kNumeric;
+      literal.spelling = literal_token.text;
+      literal.range = TokenSourceRange(literal_token);
+      const auto literal_id = literal.expression_id;
+      document_.expressions.push_back(std::move(literal));
+
+      NativeExpressionAstNode predicate;
+      predicate.expression_id = NextExpressionId();
+      predicate.expression_kind = NativeExpressionAstKind::kBinary;
+      predicate.child_expression_ids = {function_expression_id, literal_id};
+      predicate.operator_name = canonical_comparison;
+      predicate.spelling =
+          SourceSpelling(output_reference, literal_token);
+      predicate.range = Span(output_reference, literal_token);
+      qualify_predicate_expression_id = predicate.expression_id;
+      document_.expressions.push_back(std::move(predicate));
+      qualify_end = &literal_token;
+      statement_end = qualify_end;
+    }
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
       Refuse("window_clause_unsupported",
@@ -881,6 +949,18 @@ class NativeRelationalParser final {
     document_.relations.push_back(std::move(source_relation));
     document_.relations.push_back(std::move(window_relation));
     document_.root_relation_id = 2;
+    if (qualify_predicate_expression_id.has_value()) {
+      NativeRelationAstNode qualify_relation;
+      qualify_relation.relation_id = 3;
+      qualify_relation.relation_kind = NativeRelationAstKind::kQualify;
+      qualify_relation.input_relation_ids = {2};
+      qualify_relation.output_expression_ids = {function_expression_id};
+      qualify_relation.predicate_expression_ids = {
+          *qualify_predicate_expression_id};
+      qualify_relation.range = Span(select_token, *qualify_end);
+      document_.relations.push_back(std::move(qualify_relation));
+      document_.root_relation_id = 3;
+    }
     document_.status = NativeRelationalParseStatus::kAccepted;
     return std::move(document_);
   }

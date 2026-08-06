@@ -209,6 +209,57 @@ sblr::SblrOperationEnvelope NamedWindowEnvelope() {
   return envelope;
 }
 
+sblr::SblrOperationEnvelope QualifyWindowEnvelope() {
+  auto envelope = WindowEnvelope();
+  envelope.trace_key = "qow.qry.003.qualify-window";
+  const auto root = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "uint32" &&
+               operand.name == "relational_root_node_id";
+      });
+  root->value = "3";
+  const auto window_output = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "relational_output_v1" && operand.name == "2";
+      });
+  window_output->value = "2|2|2|0|0|73657175656e63655f6e6f";
+
+  const auto descriptor_end = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "relational_expression_v1";
+      });
+  envelope.operands.insert(
+      descriptor_end,
+      {{"relational_descriptor_v1", "3",
+        "019f0000-0000-7200-8000-000000000305|"
+        "019f0000-0000-7300-8000-000000000304|1|-|-|-|-|-"},
+       {"relational_descriptor_v1", "4",
+        "019f0000-0000-7200-8000-000000000306|"
+        "019f0000-0000-7300-8000-000000000307|2|-|-|-|-|-"}});
+  const auto output_begin = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "relational_output_v1";
+      });
+  envelope.operands.insert(
+      output_begin,
+      {{"relational_expression_v1", "3", "1|-|3|-|-|1|-|32"},
+       {"relational_expression_v1", "4", "6|2,3|4|-|-|-|3c3d|-"}});
+  const auto values_row = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "relational_values_row_v1";
+      });
+  envelope.operands.insert(
+      values_row,
+      {"relational_output_v1", "3",
+       "3|2|2|1|0|73657175656e63655f6e6f"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "3", "2|0|2|2|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "3",
+       "7175616c6966792e77696e646f772d726573756c742d6e756d657269632d636f6d70617269736f6e2e7631|4|-|-|-"});
+  return envelope;
+}
+
 bool ValidateRegistryClosure() {
   const auto* canonical = sblr::LookupSblrOperation("query.execute");
   const auto* legacy = sblr::LookupSblrOperation("query.plan_operation");
@@ -376,6 +427,20 @@ bool ValidateWindowRecordTransport() {
       sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(), std::move(inherited_override), {}});
 
+  const auto qualify_result =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), QualifyWindowEnvelope(), {}});
+  auto malformed_qualify = QualifyWindowEnvelope();
+  const auto qualify_predicate = std::ranges::find_if(
+      malformed_qualify.operands, [](const auto& operand) {
+        return operand.type == "relational_expression_v1" &&
+               operand.name == "4";
+      });
+  qualify_predicate->value = "6|2,99|4|-|-|-|3c3d|-";
+  const auto malformed_qualify_result =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), std::move(malformed_qualify), {}});
+
   bool passed = true;
   passed &= Require(
       result.envelope_validated && result.logical_graph_populated &&
@@ -412,6 +477,19 @@ bool ValidateWindowRecordTransport() {
           HasApiDiagnostic(inherited_override_result,
                            "SBLR.PLAN_TREE.INVALID_HANDLE"),
       "engine decoder admitted an inherited named-window override");
+  passed &= Require(
+      qualify_result.envelope_validated &&
+          qualify_result.logical_graph_populated &&
+          qualify_result.logical_node_count == 3 &&
+          !HasApiDiagnostic(qualify_result,
+                            "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "canonical typed QUALIFY did not cross the engine decoder boundary");
+  passed &= Require(
+      !malformed_qualify_result.accepted &&
+          !malformed_qualify_result.logical_graph_populated &&
+          HasApiDiagnostic(malformed_qualify_result,
+                           "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "engine decoder admitted a dangling QUALIFY predicate child");
   return passed;
 }
 

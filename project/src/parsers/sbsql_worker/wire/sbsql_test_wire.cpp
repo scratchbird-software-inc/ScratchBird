@@ -538,13 +538,21 @@ BuildEngineProjectedNativeBindingContext(
       });
   if (window_relation != ast.relations.end()) {
     // QOW-SOURCE-RCP-050-ENGINE-WINDOW-BINDING-CONTEXT-V1
+    const auto qualify_relation = std::ranges::find_if(
+        ast.relations, [](const auto& relation) {
+          return relation.relation_kind == NativeRelationAstKind::kQualify;
+        });
+    const bool has_qualify = qualify_relation != ast.relations.end();
     const auto source_relation = std::ranges::find_if(
         ast.relations, [](const auto& relation) {
           return relation.relation_kind ==
                  NativeRelationAstKind::kCatalogSource;
         });
-    if (source_relation == ast.relations.end() || ast.relations.size() != 2 ||
-        ast.root_relation_id != window_relation->relation_id ||
+    if (source_relation == ast.relations.end() ||
+        ast.relations.size() != 2 + static_cast<std::size_t>(has_qualify) ||
+        ast.root_relation_id !=
+            (has_qualify ? qualify_relation->relation_id
+                         : window_relation->relation_id) ||
         window_relation->input_relation_ids !=
             std::vector<std::uint32_t>{source_relation->relation_id} ||
         ast.catalog_relation_sources.size() != 1 ||
@@ -562,6 +570,12 @@ BuildEngineProjectedNativeBindingContext(
         window_relation->output_expression_ids !=
             std::vector<std::uint32_t>{
                 ast.window_invocations.front().function_expression_id} ||
+        (has_qualify &&
+         (qualify_relation->input_relation_ids !=
+              std::vector<std::uint32_t>{window_relation->relation_id} ||
+          qualify_relation->output_expression_ids !=
+              window_relation->output_expression_ids ||
+          qualify_relation->predicate_expression_ids.size() != 1)) ||
         resolved_object_reference_seeds.size() != 1 ||
         statement_context.window_function_profiles.size() != 11) {
       return fail("catalog_window_shape_invalid");
@@ -740,16 +754,93 @@ BuildEngineProjectedNativeBindingContext(
          function_profile->abi_version, function_profile->builtin_id,
          function_profile->function_uuid, function_profile->executable,
          function_binding_id});
+    const auto window_output_name =
+        invocation.output_alias.has_value()
+            ? invocation.output_alias->spelling
+            : std::string("row_number");
     context.outputs.push_back(
         {static_cast<std::uint32_t>(context.outputs.size() + 1),
          function_binding_id,
-         invocation.output_alias.has_value()
-             ? invocation.output_alias->spelling
-             : std::string("row_number"),
-         function_binding_id, true, 0, window_relation->relation_id});
+         window_output_name, function_binding_id, !has_qualify, 0,
+         window_relation->relation_id});
+    if (has_qualify) {
+      const auto predicate = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id ==
+                   qualify_relation->predicate_expression_ids.front();
+          });
+      const NativeExpressionAstNode* literal = nullptr;
+      if (predicate != ast.expressions.end() &&
+          predicate->expression_kind == NativeExpressionAstKind::kBinary &&
+          predicate->child_expression_ids.size() == 2 &&
+          predicate->child_expression_ids.front() ==
+              invocation.function_expression_id &&
+          (predicate->operator_name == "=" || predicate->operator_name == "<>" ||
+           predicate->operator_name == "!=" || predicate->operator_name == "<" ||
+           predicate->operator_name == "<=" || predicate->operator_name == ">" ||
+           predicate->operator_name == ">=")) {
+        const auto found_literal = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id ==
+                     predicate->child_expression_ids.back();
+            });
+        if (found_literal != ast.expressions.end()) literal = &*found_literal;
+      }
+      const auto numeric_profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [&](const auto& candidate) {
+            return candidate.profile_kind == 1 &&
+                   candidate.slot == offset_expression_ids.size() + 1;
+          });
+      const auto boolean_profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [](const auto& candidate) {
+            return candidate.profile_kind == 6 && candidate.slot == 0;
+          });
+      if (literal == nullptr ||
+          literal->expression_kind != NativeExpressionAstKind::kLiteral ||
+          literal->literal_kind != NativeLiteralAstKind::kNumeric ||
+          literal->spelling.empty() ||
+          numeric_profile == statement_context.descriptor_profiles.end() ||
+          numeric_profile->nullable ||
+          !CanonicalUuidBytes(numeric_profile->descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(numeric_profile->type_uuid).has_value() ||
+          numeric_profile->type_uuid != result_profile->type_uuid ||
+          boolean_profile == statement_context.descriptor_profiles.end() ||
+          !boolean_profile->nullable ||
+          !CanonicalUuidBytes(boolean_profile->descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(boolean_profile->type_uuid).has_value()) {
+        return fail("catalog_window_qualify_profile_unavailable");
+      }
+      const auto literal_binding_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      context.descriptors.push_back(
+          {literal_binding_id, numeric_profile->descriptor_uuid,
+           numeric_profile->type_uuid, BoundNullability::kNonNull,
+           std::nullopt, std::nullopt, {}});
+      context.expressions.push_back(
+          {literal_binding_id, literal_binding_id, std::nullopt,
+           std::nullopt});
+      const auto predicate_binding_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      context.descriptors.push_back(
+          {predicate_binding_id, boolean_profile->descriptor_uuid,
+           boolean_profile->type_uuid, BoundNullability::kNullable,
+           std::nullopt, std::nullopt, {}});
+      context.expressions.push_back(
+          {predicate_binding_id, predicate_binding_id, std::nullopt,
+           std::nullopt});
+      context.outputs.push_back(
+          {static_cast<std::uint32_t>(context.outputs.size() + 1),
+           function_binding_id, window_output_name, function_binding_id, true,
+           0, qualify_relation->relation_id});
+    }
     context.catalog_relations.push_back(std::move(catalog_relation));
     context.relations.push_back(
         {window_relation->relation_id, "window.row-number.v1"});
+    if (has_qualify) {
+      context.relations.push_back(
+          {qualify_relation->relation_id,
+           "qualify.window-result-numeric-comparison.v1"});
+    }
     return context;
   }
 

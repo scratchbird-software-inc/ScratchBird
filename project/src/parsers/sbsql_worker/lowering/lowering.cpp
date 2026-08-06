@@ -32957,6 +32957,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const BoundRelationAstRecord* catalog_sort_relation = nullptr;
   const BoundRelationAstRecord* limit_relation = nullptr;
   const BoundRelationAstRecord* window_relation = nullptr;
+  const BoundRelationAstRecord* qualify_relation = nullptr;
   for (const auto& relation : native.relations) {
     if (relation.relation_id == 0 || relation.lateral ||
         (relation.relation_kind != NativeRelationAstKind::kSort &&
@@ -33421,7 +33422,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       limit_relation = &relation;
     } else if (relation.relation_kind == NativeRelationAstKind::kWindow) {
       if (window_relation != nullptr || catalog_relation == nullptr ||
-          relation.relation_id != native.root_relation_id ||
           relation.input_relation_ids !=
               std::vector<std::uint32_t>{catalog_relation->relation_id} ||
           !relation.values_row_ids.empty() ||
@@ -33451,6 +33451,35 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       window_relation = &relation;
+    } else if (relation.relation_kind == NativeRelationAstKind::kQualify) {
+      if (qualify_relation != nullptr || window_relation == nullptr ||
+          relation.relation_id != native.root_relation_id ||
+          relation.input_relation_ids !=
+              std::vector<std::uint32_t>{window_relation->relation_id} ||
+          !relation.values_row_ids.empty() ||
+          relation.output_expression_ids !=
+              window_relation->output_expression_ids ||
+          relation.aggregate_grouping_form !=
+              NativeAggregateGroupingForm::kNone ||
+          relation.aggregate_projection_form !=
+              NativeAggregateProjectionForm::kNone ||
+          !relation.grouping_key_expression_ids.empty() ||
+          !relation.aggregate_expression_ids.empty() ||
+          relation.predicate_expression_ids.size() != 1 ||
+          !relation.limit_expression_ids.empty() ||
+          !relation.ordering_terms.empty() ||
+          relation.bound_object_uuid.has_value() ||
+          !relation.window_invocation_ids.empty() ||
+          relation.bound_expression_ids !=
+              relation.predicate_expression_ids ||
+          relation.semantic_variant_id !=
+              "qualify.window-result-numeric-comparison.v1") {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed QUALIFY fields do not form the accepted canonical node");
+        return envelope;
+      }
+      qualify_relation = &relation;
     }
   }
   const bool single_catalog_graph_is_exact =
@@ -33501,8 +33530,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       values_relation == nullptr && aggregate_relation == nullptr &&
       filter_relation == nullptr && catalog_filter_relation == nullptr &&
       catalog_project_relation == nullptr && catalog_sort_relation == nullptr &&
-      limit_relation == nullptr && native.relations.size() == 2 &&
-      native.root_relation_id == window_relation->relation_id &&
+      limit_relation == nullptr &&
+      native.relations.size() ==
+          2 + static_cast<std::size_t>(qualify_relation != nullptr) &&
+      native.root_relation_id ==
+          (qualify_relation != nullptr ? qualify_relation->relation_id
+                                       : window_relation->relation_id) &&
       native.values_rows.empty() && native.grouping_sets.empty();
   const bool catalog_graph_is_exact =
       single_catalog_graph_is_exact || catalog_cross_join_graph_is_exact ||
@@ -33749,6 +33782,87 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed window definition and registry receipt are not exact");
+      return envelope;
+    }
+  }
+  if (qualify_relation != nullptr) {
+    const auto predicate = expressions_by_id.find(
+        qualify_relation->predicate_expression_ids.front());
+    const BoundExpressionAstRecord* function = nullptr;
+    const BoundExpressionAstRecord* literal = nullptr;
+    if (predicate != expressions_by_id.end() &&
+        predicate->second->expression_kind ==
+            NativeExpressionAstKind::kBinary &&
+        predicate->second->canonical_operator_name.has_value() &&
+        predicate->second->child_expression_ids.size() == 2) {
+      function = expressions_by_id.at(
+          predicate->second->child_expression_ids.front());
+      literal = expressions_by_id.at(
+          predicate->second->child_expression_ids.back());
+    }
+    const bool accepted_operator =
+        predicate != expressions_by_id.end() &&
+        (*predicate->second->canonical_operator_name == "=" ||
+         *predicate->second->canonical_operator_name == "<>" ||
+         *predicate->second->canonical_operator_name == "!=" ||
+         *predicate->second->canonical_operator_name == "<" ||
+         *predicate->second->canonical_operator_name == "<=" ||
+         *predicate->second->canonical_operator_name == ">" ||
+         *predicate->second->canonical_operator_name == ">=");
+    const auto descriptor_for = [&](const BoundExpressionAstRecord* item) {
+      return item == nullptr
+                 ? native.descriptors.end()
+                 : std::ranges::find_if(
+                       native.descriptors, [&](const auto& descriptor) {
+                         return descriptor.descriptor_id ==
+                                item->result_descriptor_id;
+                       });
+    };
+    const auto function_descriptor = descriptor_for(function);
+    const auto literal_descriptor = descriptor_for(literal);
+    const auto predicate_descriptor =
+        predicate == expressions_by_id.end()
+            ? native.descriptors.end()
+            : descriptor_for(predicate->second);
+    const std::string_view encoded =
+        literal != nullptr && literal->literal_or_parameter_ref.has_value()
+            ? *literal->literal_or_parameter_ref
+            : std::string_view{};
+    std::uint64_t parsed = 0;
+    const char* parsed_end = encoded.data();
+    std::errc parse_error = std::errc::invalid_argument;
+    if (!encoded.empty()) {
+      const auto result = std::from_chars(
+          encoded.data(), encoded.data() + encoded.size(), parsed);
+      parsed_end = result.ptr;
+      parse_error = result.ec;
+    }
+    if (!accepted_operator || function == nullptr || literal == nullptr ||
+        function->expression_id !=
+            window_relation->output_expression_ids.front() ||
+        function->expression_kind !=
+            NativeExpressionAstKind::kFunctionCall ||
+        literal->expression_kind != NativeExpressionAstKind::kLiteral ||
+        literal->literal_kind != NativeLiteralAstKind::kNumeric ||
+        !literal->child_expression_ids.empty() || encoded.empty() ||
+        (encoded.size() > 1 && encoded.front() == '0') ||
+        parse_error != std::errc{} ||
+        parsed_end != encoded.data() + encoded.size() ||
+        function_descriptor == native.descriptors.end() ||
+        literal_descriptor == native.descriptors.end() ||
+        predicate_descriptor == native.descriptors.end() ||
+        function_descriptor->type_uuid != literal_descriptor->type_uuid ||
+        literal_descriptor->nullability != BoundNullability::kNonNull ||
+        predicate_descriptor->nullability != BoundNullability::kNullable ||
+        function_descriptor->collation_uuid.has_value() ||
+        literal_descriptor->collation_uuid.has_value() ||
+        predicate_descriptor->collation_uuid.has_value() ||
+        function_descriptor->timezone_profile_id.has_value() ||
+        literal_descriptor->timezone_profile_id.has_value() ||
+        predicate_descriptor->timezone_profile_id.has_value()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed QUALIFY comparison binding is not descriptor exact");
       return envelope;
     }
   }
@@ -34330,6 +34444,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     } else if (catalog_filter_relation != nullptr) {
       visible_outputs =
           &outputs_by_relation.at(catalog_filter_relation->relation_id);
+    } else if (qualify_relation != nullptr) {
+      visible_outputs = &outputs_by_relation.at(qualify_relation->relation_id);
     } else if (window_relation != nullptr) {
       visible_outputs = &outputs_by_relation.at(window_relation->relation_id);
     }
@@ -34384,6 +34500,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }();
     const auto window_expression_count =
         window_relation == nullptr ? 0 : window_offset_count + 1;
+    const auto qualify_expression_count =
+        qualify_relation == nullptr ? 0 : std::size_t{2};
     const auto visible_width = visible_outputs->size();
     const auto expected_output_count =
         width + (catalog_filter_relation != nullptr ? width : 0) +
@@ -34397,18 +34515,22 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         (window_relation != nullptr
              ? window_relation->output_expression_ids.size()
              : 0) +
+        (qualify_relation != nullptr
+             ? qualify_relation->output_expression_ids.size()
+             : 0) +
         (limit_relation != nullptr
              ? limit_relation->output_expression_ids.size()
              : 0);
     if (native.descriptors.size() !=
         width + aggregate_descriptor_count + numeric_descriptor_count +
                 filter_descriptor_count + aggregate_direct_descriptor_count +
-                window_expression_count ||
+                window_expression_count + qualify_expression_count ||
         native.expressions.size() !=
             width + aggregate_descriptor_count +
                 aggregate_direct_descriptor_count +
                 (catalog_filter_relation != nullptr ? 2 : 0) +
-                limit_expression_count + window_expression_count ||
+                limit_expression_count + window_expression_count +
+                qualify_expression_count ||
         native.outputs.size() != expected_output_count ||
         catalog_relation->output_expression_ids.size() != width ||
         catalog_relation->bound_expression_ids.size() != width ||
@@ -34484,19 +34606,41 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const auto& invocation = native.window_invocations.front();
       const auto& window_outputs =
           outputs_by_relation.at(window_relation->relation_id);
-      if (window_outputs.size() != 1 || !window_outputs.front()->visible ||
+      if (window_outputs.size() != 1 ||
+          window_outputs.front()->visible == (qualify_relation != nullptr) ||
           window_outputs.front()->expression_id !=
               invocation.function_expression_id ||
           window_outputs.front()->descriptor_id !=
               invocation.result_descriptor_id ||
           window_outputs.front()->output_name_utf8 !=
               invocation.output_name_utf8.value_or("") ||
-          native.scopes.front().visible_projection_ids !=
-              std::vector<std::uint32_t>{window_outputs.front()->output_id}) {
+          (qualify_relation == nullptr &&
+           native.scopes.front().visible_projection_ids !=
+               std::vector<std::uint32_t>{window_outputs.front()->output_id})) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
             "typed window result projection does not cover its exact lineage");
         return envelope;
+      }
+      if (qualify_relation != nullptr) {
+        const auto& qualify_outputs =
+            outputs_by_relation.at(qualify_relation->relation_id);
+        if (qualify_outputs.size() != 1 ||
+            !qualify_outputs.front()->visible ||
+            qualify_outputs.front()->expression_id !=
+                invocation.function_expression_id ||
+            qualify_outputs.front()->descriptor_id !=
+                invocation.result_descriptor_id ||
+            qualify_outputs.front()->output_name_utf8 !=
+                invocation.output_name_utf8.value_or("") ||
+            native.scopes.front().visible_projection_ids !=
+                std::vector<std::uint32_t>{
+                    qualify_outputs.front()->output_id}) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+              "typed QUALIFY result projection does not cover its exact lineage");
+          return envelope;
+        }
       }
     }
     if (aggregate_relation != nullptr) {
@@ -34872,6 +35016,26 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         const auto& downstream_output = *downstream_outputs[ordinal];
         if (window_relation != nullptr &&
             downstream.relation_id == window_relation->relation_id) {
+          continue;
+        }
+        if (qualify_relation != nullptr &&
+            downstream.relation_id == qualify_relation->relation_id) {
+          const auto& window_output = *outputs_by_relation
+                                           .at(window_relation->relation_id)
+                                           .front();
+          if (downstream_output.expression_id !=
+                  window_output.expression_id ||
+              downstream_output.descriptor_id !=
+                  window_output.descriptor_id ||
+              downstream_output.output_name_utf8 !=
+                  window_output.output_name_utf8 ||
+              downstream_output.ordinal != ordinal ||
+              !downstream_output.visible) {
+            AddNativeRelationalLoweringError(
+                &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+                "typed QUALIFY lineage is not preserved from its window input");
+            return envelope;
+          }
           continue;
         }
         if (aggregate_relation != nullptr &&

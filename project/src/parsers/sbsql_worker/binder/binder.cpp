@@ -470,13 +470,30 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       });
   if (window_relation != ast.relations.end()) {
     // QOW-SOURCE-RCP-050-TYPED-WINDOW-BOUND-AST-V1
+    const auto qualify_relation = std::ranges::find_if(
+        ast.relations, [](const auto& relation) {
+          return relation.relation_kind == NativeRelationAstKind::kQualify;
+        });
+    const bool has_qualify = qualify_relation != ast.relations.end();
     const auto source_relation = std::ranges::find_if(
         ast.relations, [](const auto& relation) {
           return relation.relation_kind ==
                  NativeRelationAstKind::kCatalogSource;
         });
-    if (source_relation == ast.relations.end() || ast.relations.size() != 2 ||
-        ast.root_relation_id != window_relation->relation_id ||
+    const auto window_binding = std::ranges::find_if(
+        context.relations, [&](const auto& relation) {
+          return relation.relation_id == window_relation->relation_id;
+        });
+    const auto qualify_binding = std::ranges::find_if(
+        context.relations, [&](const auto& relation) {
+          return has_qualify &&
+                 relation.relation_id == qualify_relation->relation_id;
+        });
+    if (source_relation == ast.relations.end() ||
+        ast.relations.size() != 2 + static_cast<std::size_t>(has_qualify) ||
+        ast.root_relation_id !=
+            (has_qualify ? qualify_relation->relation_id
+                         : window_relation->relation_id) ||
         window_relation->input_relation_ids !=
             std::vector<std::uint32_t>{source_relation->relation_id} ||
         ast.catalog_relation_sources.size() != 1 ||
@@ -485,11 +502,21 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         ast.window_invocations.size() != 1 ||
         ast.values_rows.size() != 0 || ast.grouping_sets.size() != 0 ||
         context.catalog_relations.size() != 1 ||
-        context.relations.size() != 1 ||
+        context.relations.size() !=
+            1 + static_cast<std::size_t>(has_qualify) ||
         context.window_functions.size() != 1 ||
-        context.relations.front().relation_id != window_relation->relation_id ||
-        context.relations.front().semantic_variant_id !=
+        window_binding == context.relations.end() ||
+        window_binding->semantic_variant_id !=
             "window.row-number.v1" ||
+        (has_qualify &&
+         (qualify_binding == context.relations.end() ||
+          qualify_binding->semantic_variant_id !=
+              "qualify.window-result-numeric-comparison.v1" ||
+          qualify_relation->input_relation_ids !=
+              std::vector<std::uint32_t>{window_relation->relation_id} ||
+          qualify_relation->output_expression_ids !=
+              window_relation->output_expression_ids ||
+          qualify_relation->predicate_expression_ids.size() != 1)) ||
         window_relation->window_invocation_ids !=
             std::vector<std::uint32_t>{
                 ast.window_invocations.front().invocation_id} ||
@@ -622,12 +649,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       collect_offset(candidate.frame_start);
       collect_offset(candidate.frame_end);
     }
-    const auto expected_expression_count = source_count +
-                                           offset_ast_ids.size() + 1;
+    const auto expected_expression_count =
+        source_count + offset_ast_ids.size() + 1 +
+        (has_qualify ? 2 : 0);
     if (source_count == 0 || invocation.invocation_id == 0 ||
         context.descriptors.size() != expected_expression_count ||
         context.expressions.size() != expected_expression_count ||
-        context.outputs.size() != source_count + 1 ||
+        context.outputs.size() !=
+            source_count + 1 + static_cast<std::size_t>(has_qualify) ||
         ast_source.source_id != relation_binding.source_id ||
         source_relation->relation_source_ids !=
             std::vector<std::uint32_t>{ast_source.source_id} ||
@@ -757,16 +786,17 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         ast.expressions, [&](const auto& candidate) {
           return candidate.expression_id == invocation.function_expression_id;
         });
-    const auto& function_binding = context.expressions.back();
+    const auto function_binding_index = source_count + offset_ast_ids.size();
+    const auto& function_binding = context.expressions[function_binding_index];
     const auto& window_function_binding = context.window_functions.front();
-    const auto& result_output = context.outputs.back();
+    const auto& result_output = context.outputs[source_count];
     if (function_ast == ast.expressions.end() ||
         function_ast->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
         function_ast->operator_name != "ROW_NUMBER" ||
         !function_ast->child_expression_ids.empty() ||
-        function_binding.expression_id != expected_expression_count ||
-        function_binding.descriptor_id != expected_expression_count ||
+        function_binding.expression_id != function_binding_index + 1 ||
+        function_binding.descriptor_id != function_binding_index + 1 ||
         !function_binding.function_uuid.has_value() ||
         !IsNonNullCanonicalUuid(*function_binding.function_uuid) ||
         function_binding.bound_name_uuid.has_value() ||
@@ -783,7 +813,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         result_output.output_id != source_count + 1 ||
         result_output.expression_id != function_binding.expression_id ||
         result_output.descriptor_id != function_binding.descriptor_id ||
-        !result_output.visible || result_output.ordinal != 0 ||
+        result_output.visible == has_qualify || result_output.ordinal != 0 ||
         result_output.relation_id != window_relation->relation_id) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
                             "typed ROW_NUMBER binding is not exact");
@@ -802,6 +832,104 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
          result_output.expression_id, result_output.output_name_utf8,
          result_output.descriptor_id, result_output.visible,
          result_output.ordinal});
+
+    std::optional<std::uint32_t> bound_qualify_predicate_id;
+    std::optional<std::uint32_t> qualify_output_id;
+    if (has_qualify) {
+      const auto predicate_ast = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id ==
+                   qualify_relation->predicate_expression_ids.front();
+          });
+      const auto accepted_comparison = [&](const std::string_view name) {
+        return name == "=" || name == "<>" || name == "!=" || name == "<" ||
+               name == "<=" || name == ">" || name == ">=";
+      };
+      const NativeExpressionAstNode* literal_ast = nullptr;
+      if (predicate_ast != ast.expressions.end() &&
+          predicate_ast->expression_kind == NativeExpressionAstKind::kBinary &&
+          predicate_ast->child_expression_ids.size() == 2 &&
+          predicate_ast->child_expression_ids.front() ==
+              invocation.function_expression_id &&
+          accepted_comparison(predicate_ast->operator_name)) {
+        const auto literal = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id ==
+                     predicate_ast->child_expression_ids.back();
+            });
+        if (literal != ast.expressions.end()) literal_ast = &*literal;
+      }
+      const auto literal_binding_index = function_binding_index + 1;
+      const auto predicate_binding_index = function_binding_index + 2;
+      const auto& literal_binding =
+          context.expressions[literal_binding_index];
+      const auto& predicate_binding =
+          context.expressions[predicate_binding_index];
+      const auto& qualify_output = context.outputs[source_count + 1];
+      const auto function_descriptor =
+          descriptor_by_id.find(function_binding.descriptor_id);
+      const auto literal_descriptor =
+          descriptor_by_id.find(literal_binding.descriptor_id);
+      const auto predicate_descriptor =
+          descriptor_by_id.find(predicate_binding.descriptor_id);
+      if (literal_ast == nullptr ||
+          literal_ast->expression_kind != NativeExpressionAstKind::kLiteral ||
+          literal_ast->literal_kind != NativeLiteralAstKind::kNumeric ||
+          literal_ast->spelling.empty() ||
+          literal_binding.expression_id != literal_binding_index + 1 ||
+          literal_binding.descriptor_id != literal_binding_index + 1 ||
+          literal_binding.function_uuid.has_value() ||
+          literal_binding.bound_name_uuid.has_value() ||
+          predicate_binding.expression_id != predicate_binding_index + 1 ||
+          predicate_binding.descriptor_id != predicate_binding_index + 1 ||
+          predicate_binding.function_uuid.has_value() ||
+          predicate_binding.bound_name_uuid.has_value() ||
+          function_descriptor == descriptor_by_id.end() ||
+          literal_descriptor == descriptor_by_id.end() ||
+          predicate_descriptor == descriptor_by_id.end() ||
+          function_descriptor->second->type_uuid !=
+              literal_descriptor->second->type_uuid ||
+          literal_descriptor->second->nullability !=
+              BoundNullability::kNonNull ||
+          predicate_descriptor->second->nullability !=
+              BoundNullability::kNullable ||
+          qualify_output.output_id != source_count + 2 ||
+          qualify_output.expression_id != function_binding.expression_id ||
+          qualify_output.descriptor_id != function_binding.descriptor_id ||
+          !qualify_output.visible || qualify_output.ordinal != 0 ||
+          qualify_output.relation_id != qualify_relation->relation_id ||
+          qualify_output.output_name_utf8 != result_output.output_name_utf8) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                              "typed QUALIFY binding is not exact");
+        return RefusedBoundAst(std::move(bound));
+      }
+      ast_to_bound.emplace(literal_ast->expression_id,
+                           literal_binding.expression_id);
+      ast_to_bound.emplace(predicate_ast->expression_id,
+                           predicate_binding.expression_id);
+      BoundExpressionAstRecord bound_literal;
+      bound_literal.expression_id = literal_binding.expression_id;
+      bound_literal.expression_kind = NativeExpressionAstKind::kLiteral;
+      bound_literal.literal_kind = NativeLiteralAstKind::kNumeric;
+      bound_literal.result_descriptor_id = literal_binding.descriptor_id;
+      bound_literal.literal_or_parameter_ref = literal_ast->spelling;
+      bound.expressions.push_back(std::move(bound_literal));
+      BoundExpressionAstRecord bound_predicate;
+      bound_predicate.expression_id = predicate_binding.expression_id;
+      bound_predicate.expression_kind = NativeExpressionAstKind::kBinary;
+      bound_predicate.child_expression_ids = {
+          function_binding.expression_id, literal_binding.expression_id};
+      bound_predicate.result_descriptor_id = predicate_binding.descriptor_id;
+      bound_predicate.canonical_operator_name = predicate_ast->operator_name;
+      bound_qualify_predicate_id = bound_predicate.expression_id;
+      bound.expressions.push_back(std::move(bound_predicate));
+      bound.outputs.push_back(
+          {qualify_output.output_id, qualify_output.relation_id,
+           qualify_output.expression_id, qualify_output.output_name_utf8,
+           qualify_output.descriptor_id, qualify_output.visible,
+           qualify_output.ordinal});
+      qualify_output_id = qualify_output.output_id;
+    }
 
     const auto map_expression_ids = [&](const auto& ast_ids,
                                         std::vector<std::uint32_t>* result) {
@@ -875,8 +1003,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     bound_window.input_relation_ids = window_relation->input_relation_ids;
     bound_window.output_expression_ids = {function_binding.expression_id};
     bound_window.window_invocation_ids = {invocation.invocation_id};
-    bound_window.semantic_variant_id =
-        context.relations.front().semantic_variant_id;
+    bound_window.semantic_variant_id = window_binding->semantic_variant_id;
     const auto append_bound_expression = [&](const std::uint32_t expression_id) {
       if (std::ranges::find(bound_window.bound_expression_ids,
                             expression_id) ==
@@ -898,6 +1025,21 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     append_bound_expression(function_binding.expression_id);
     bound.relations.push_back(std::move(bound_window));
+    if (has_qualify) {
+      BoundRelationAstRecord bound_qualify;
+      bound_qualify.relation_id = qualify_relation->relation_id;
+      bound_qualify.relation_kind = NativeRelationAstKind::kQualify;
+      bound_qualify.input_relation_ids = {window_relation->relation_id};
+      bound_qualify.output_expression_ids = {
+          function_binding.expression_id};
+      bound_qualify.predicate_expression_ids = {
+          *bound_qualify_predicate_id};
+      bound_qualify.bound_expression_ids = {
+          *bound_qualify_predicate_id};
+      bound_qualify.semantic_variant_id =
+          qualify_binding->semantic_variant_id;
+      bound.relations.push_back(std::move(bound_qualify));
+    }
 
     bound.descriptors.reserve(context.descriptors.size());
     for (const auto& descriptor : context.descriptors) {
@@ -912,7 +1054,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     BoundScopeAstRecord scope;
     scope.scope_id = 1;
     scope.visible_relation_ids = {ast.root_relation_id};
-    scope.visible_projection_ids = {result_output.output_id};
+    scope.visible_projection_ids = {
+        has_qualify ? *qualify_output_id : result_output.output_id};
     scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
     bound.scopes.push_back(std::move(scope));
     bound.bound_ast_uuid = context.bound_ast_uuid;

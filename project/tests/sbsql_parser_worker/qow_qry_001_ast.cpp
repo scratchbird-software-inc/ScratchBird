@@ -829,6 +829,63 @@ bool ValidateTypedWindowParse() {
           "SELECT ROW_NUMBER() OVER missing FROM app.events WINDOW base AS "
           "(PARTITION BY account_id);"),
       "unknown named-window reference was admitted");
+
+  const auto qualified = sbsql::ParseNativeRelationalAst(sbsql::BuildCst(
+      "SELECT ROW_NUMBER() OVER framed AS sequence_no FROM app.events AS e "
+      "WINDOW partitioned AS (PARTITION BY account_id), "
+      "ordered AS (partitioned ORDER BY created_at), "
+      "framed AS (ordered GROUPS BETWEEN 2 PRECEDING AND CURRENT ROW) "
+      "QUALIFY sequence_no <= 2;"));
+  passed &= Require(
+      qualified.accepted() && qualified.root_relation_id == 3 &&
+          qualified.relations.size() == 3 &&
+          qualified.relations.back().relation_kind ==
+              sbsql::NativeRelationAstKind::kQualify &&
+          qualified.relations.back().input_relation_ids ==
+              std::vector<std::uint32_t>({2}) &&
+          qualified.relations.back().output_expression_ids ==
+              std::vector<std::uint32_t>({1}) &&
+          qualified.relations.back().predicate_expression_ids ==
+              std::vector<std::uint32_t>({6}) &&
+          qualified.expressions[4].literal_kind ==
+              sbsql::NativeLiteralAstKind::kNumeric &&
+          qualified.expressions[5].expression_kind ==
+              sbsql::NativeExpressionAstKind::kBinary &&
+          qualified.expressions[5].operator_name == "<=" &&
+          qualified.expressions[5].child_expression_ids ==
+              std::vector<std::uint32_t>({1, 5}),
+      "typed QUALIFY relation or window-result predicate AST differs");
+  for (const std::string_view comparison : {"=", "<>", "!=", "<", "<=",
+                                             ">", ">="}) {
+    const auto comparison_sql =
+        "SELECT ROW_NUMBER() OVER (ORDER BY created_at) FROM app.events "
+        "QUALIFY row_number " +
+        std::string(comparison) + " 1;";
+    const auto comparison_ast =
+        sbsql::ParseNativeRelationalAst(sbsql::BuildCst(comparison_sql));
+    if (!comparison_ast.accepted()) {
+      for (const auto& diagnostic : comparison_ast.messages.diagnostics) {
+        std::cerr << "QUALIFY comparison diagnostic: " << diagnostic.code
+                  << " " << diagnostic.message << '\n';
+      }
+    }
+    passed &= Require(
+        comparison_ast.accepted() &&
+            comparison_ast.relations.back().relation_kind ==
+                sbsql::NativeRelationAstKind::kQualify &&
+            comparison_ast.expressions.back().operator_name == comparison,
+        "QUALIFY canonical comparison operator matrix differs");
+  }
+  passed &= Require(
+      named_refused(
+          "SELECT ROW_NUMBER() OVER (ORDER BY created_at) AS sequence_no "
+          "FROM app.events QUALIFY missing <= 2;"),
+      "QUALIFY unknown window-result name was admitted");
+  passed &= Require(
+      named_refused(
+          "SELECT ROW_NUMBER() OVER (ORDER BY created_at) AS sequence_no "
+          "FROM app.events QUALIFY sequence_no <= account_id;"),
+      "QUALIFY nonnumeric bound was admitted");
   return passed;
 }
 

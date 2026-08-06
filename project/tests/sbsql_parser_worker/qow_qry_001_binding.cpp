@@ -205,6 +205,33 @@ sbsql::NativeRelationalBindingContext WindowBindingContext() {
   return context;
 }
 
+sbsql::NativeRelationalBindingContext QualifyWindowBindingContext() {
+  auto context = WindowBindingContext();
+  context.outputs.back().visible = false;
+
+  sbsql::NativeDescriptorBindingInput literal;
+  literal.descriptor_id = 5;
+  literal.descriptor_uuid = "019f0000-0000-7200-8000-000000000212";
+  literal.type_uuid = context.descriptors[3].type_uuid;
+  literal.nullability = sbsql::BoundNullability::kNonNull;
+  context.descriptors.push_back(literal);
+
+  sbsql::NativeDescriptorBindingInput predicate;
+  predicate.descriptor_id = 6;
+  predicate.descriptor_uuid = "019f0000-0000-7200-8000-000000000213";
+  predicate.type_uuid = "019f0000-0000-7300-8000-000000000214";
+  predicate.nullability = sbsql::BoundNullability::kNullable;
+  context.descriptors.push_back(predicate);
+
+  context.expressions.push_back({5, 5, std::nullopt, std::nullopt});
+  context.expressions.push_back({6, 6, std::nullopt, std::nullopt});
+  context.outputs.push_back(
+      {4, 4, "sequence_no", 4, true, 0, 3});
+  context.relations.push_back(
+      {3, "qualify.window-result-numeric-comparison.v1"});
+  return context;
+}
+
 bool HasExactMgaStatementContext(
     const sbsql::BoundNativeRelationalDocument& bound,
     const sbsql::NativeRelationalBindingContext& context) {
@@ -1228,6 +1255,112 @@ bool ValidateTypedWindowBinding() {
   return passed;
 }
 
+bool ValidateTypedQualifyBinding() {
+  constexpr std::string_view sql =
+      "SELECT ROW_NUMBER() OVER framed AS sequence_no FROM app.events AS e "
+      "WINDOW partitioned AS (PARTITION BY account_id), "
+      "ordered AS (partitioned ORDER BY created_at), "
+      "framed AS (ordered GROUPS BETWEEN 2 PRECEDING AND CURRENT ROW) "
+      "QUALIFY sequence_no <= 2;";
+  const auto cst = sbsql::BuildCst(sql);
+  const auto ast_document = sbsql::BuildAst(cst);
+  auto context = QualifyWindowBindingContext();
+  const auto bound = sbsql::BindNativeRelationalAst(
+      ast_document.native_relational, context);
+
+  bool passed = true;
+  passed &= Require(bound.bound && !bound.messages.has_errors(),
+                    "typed QUALIFY binding was refused");
+  passed &= Require(
+      bound.root_relation_id == 3 && bound.relations.size() == 3 &&
+          bound.relations[2].relation_kind ==
+              sbsql::NativeRelationAstKind::kQualify &&
+          bound.relations[2].input_relation_ids ==
+              std::vector<std::uint32_t>({2}) &&
+          bound.relations[2].output_expression_ids ==
+              std::vector<std::uint32_t>({4}) &&
+          bound.relations[2].predicate_expression_ids ==
+              std::vector<std::uint32_t>({6}) &&
+          bound.relations[2].bound_expression_ids ==
+              std::vector<std::uint32_t>({6}) &&
+          bound.relations[2].semantic_variant_id ==
+              "qualify.window-result-numeric-comparison.v1",
+      "typed QUALIFY relation binding differs");
+  passed &= Require(
+      bound.expressions.size() == 6 &&
+          bound.expressions[4].expression_kind ==
+              sbsql::NativeExpressionAstKind::kLiteral &&
+          bound.expressions[4].literal_kind ==
+              sbsql::NativeLiteralAstKind::kNumeric &&
+          bound.expressions[4].literal_or_parameter_ref == "2" &&
+          bound.expressions[5].expression_kind ==
+              sbsql::NativeExpressionAstKind::kBinary &&
+          bound.expressions[5].canonical_operator_name == "<=" &&
+          bound.expressions[5].child_expression_ids ==
+              std::vector<std::uint32_t>({4, 5}) &&
+          bound.expressions[5].result_descriptor_id == 6,
+      "typed QUALIFY literal or predicate binding differs");
+  passed &= Require(
+      bound.outputs.size() == 4 && !bound.outputs[2].visible &&
+          bound.outputs[3].visible && bound.outputs[3].relation_id == 3 &&
+          bound.outputs[3].expression_id == 4 &&
+          bound.outputs[3].output_name_utf8 == "sequence_no" &&
+          bound.scopes.front().visible_relation_ids ==
+              std::vector<std::uint32_t>({3}) &&
+          bound.scopes.front().visible_projection_ids ==
+              std::vector<std::uint32_t>({4}),
+      "typed QUALIFY visibility or scope binding differs");
+
+  const auto session = SessionForTest();
+  const auto bound_statement = sbsql::BindAst(
+      ast_document, cst, ParserConfigForTest(), session, {}, &context);
+  const auto lowered =
+      sbsql::LowerToSblr(bound_statement, cst, session);
+  const auto qualify_node = std::ranges::find_if(
+      lowered.operands, [](const auto& operand) {
+        return operand.type == "relational_node_v1" && operand.name == "3";
+      });
+  const auto qualify_binding = std::ranges::find_if(
+      lowered.operands, [](const auto& operand) {
+        return operand.type == "relational_node_binding_v1" &&
+               operand.name == "3";
+      });
+  const auto verified = sbsql::VerifySblrEnvelope(lowered);
+  if (lowered.messages.has_errors() || !verified.admitted) {
+    for (const auto& diagnostic : lowered.messages.diagnostics) {
+      std::cerr << "QUALIFY lowering diagnostic: " << diagnostic.code << " "
+                << diagnostic.message << '\n';
+    }
+    for (const auto& diagnostic : verified.messages.diagnostics) {
+      std::cerr << "QUALIFY verifier diagnostic: " << diagnostic.code << " "
+                << diagnostic.message << '\n';
+    }
+  }
+  passed &= Require(
+      bound_statement.bound && !lowered.messages.has_errors() &&
+          !lowered.payload.empty() && qualify_node != lowered.operands.end() &&
+          qualify_node->value == "2|0|2|4|-" &&
+          qualify_binding != lowered.operands.end() &&
+          qualify_binding->value.find("|6|-|-|-") != std::string::npos &&
+          verified.admitted && !verified.messages.has_errors() &&
+          verified.validated_relational_node_count == 3 &&
+          verified.validated_relational_expression_count == 6,
+      "typed QUALIFY canonical filter node was not verifier-admitted");
+
+  auto malformed_context = QualifyWindowBindingContext();
+  malformed_context.descriptors.back().nullability =
+      sbsql::BoundNullability::kNonNull;
+  const auto refused = sbsql::BindNativeRelationalAst(
+      ast_document.native_relational, malformed_context);
+  passed &= Require(
+      !refused.bound && refused.relations.empty() &&
+          refused.expressions.empty() && refused.outputs.empty() &&
+          HasScrubbedMgaStatementContext(refused) &&
+          HasDiagnostic(refused.messages, "QOW-DIAG-BOUNDAST-EXPRESSION"),
+      "non-null QUALIFY Boolean descriptor did not refuse atomically");
+  return passed;
+}
+
 } // namespace
 
 // QOW-TEST-QRY-001-BINDING-V1
@@ -1248,5 +1381,6 @@ int main() {
   passed &= ValidateScopeRefusal();
   passed &= ValidateMgaStatementContext();
   passed &= ValidateTypedWindowBinding();
+  passed &= ValidateTypedQualifyBinding();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
