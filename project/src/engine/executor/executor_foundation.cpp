@@ -7254,6 +7254,41 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
                   "aggregate window preflight returned a different MGA statement context");
   }
+  const auto expected_modifier_count =
+      (aggregate_template.filter_truth_values.has_value() ? 1U : 0U) +
+      (aggregate_template.distinct ? 1U : 0U) +
+      (!aggregate_template.aggregate_order_terms.empty() ? 1U : 0U);
+  const auto aggregate_receipts_match = [&](const auto& aggregate_result) {
+    return aggregate_result.descriptor.abi_version ==
+               aggregate_template.descriptor.abi_version &&
+           aggregate_result.descriptor.function ==
+               aggregate_template.descriptor.function &&
+           aggregate_result.descriptor.builtin_id ==
+               aggregate_template.descriptor.builtin_id &&
+           aggregate_result.descriptor.function_uuid ==
+               aggregate_template.descriptor.function_uuid &&
+           aggregate_result.descriptor.count_star ==
+               aggregate_template.descriptor.count_star &&
+           aggregate_result.direct_argument_count ==
+               aggregate_template.direct_arguments.size() &&
+           aggregate_result.modifier_count == expected_modifier_count &&
+           aggregate_result.aggregate_order_term_count ==
+               aggregate_template.aggregate_order_terms.size() &&
+           aggregate_result.every_descriptor_field_consumed &&
+           aggregate_result.modifier_pipeline_validated &&
+           aggregate_result.filter_modifier_applied ==
+               aggregate_template.filter_truth_values.has_value() &&
+           aggregate_result.distinct_modifier_applied ==
+               aggregate_template.distinct &&
+           aggregate_result.filter_applied_before_distinct &&
+           aggregate_result.distinct_applied_before_order &&
+           aggregate_result.aggregate_order_applied ==
+               !aggregate_template.aggregate_order_terms.empty();
+  };
+  if (!aggregate_receipts_match(preflight)) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-EVIDENCE",
+                  "aggregate window preflight lost descriptor or modifier receipts");
+  }
 
   const auto within_total = [](const std::size_t next,
                                const std::size_t current,
@@ -7332,6 +7367,7 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
                       frame_result.diagnostic.detail);
       }
       if (!frame_result.shared_state_authority_used ||
+          !aggregate_receipts_match(frame_result) ||
           frame_result.output_batch.rows.size() != 1 ||
           frame_result.output_batch.rows.front().values.size() != 1 ||
           frame_result.selected_plan_uuid != request.frames.selected_plan_uuid ||
@@ -7386,6 +7422,25 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
 
   result.diagnostic = {};
   result.descriptor = aggregate_template.descriptor;
+  result.result_column = aggregate_template.result_column;
+  result.value_columns = aggregate_template.value_columns;
+  result.value_expression_descriptor_ids =
+      aggregate_template.value_expression_descriptor_ids;
+  result.direct_argument_count = aggregate_template.direct_arguments.size();
+  result.modifier_count = expected_modifier_count;
+  result.aggregate_order_term_count =
+      aggregate_template.aggregate_order_terms.size();
+  result.every_aggregate_descriptor_field_consumed = true;
+  result.every_effective_frame_consumed =
+      result.frame_row_indices.size() == request.frames.effective_frames.size();
+  result.modifier_pipeline_validated = true;
+  result.filter_modifier_applied =
+      aggregate_template.filter_truth_values.has_value();
+  result.distinct_modifier_applied = aggregate_template.distinct;
+  result.filter_applied_before_distinct = true;
+  result.distinct_applied_before_order = true;
+  result.aggregate_order_applied =
+      !aggregate_template.aggregate_order_terms.empty();
   result.effective_frame_recomputed =
       selected_state_strategy !=
       CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
@@ -7397,6 +7452,14 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
   result.shared_aggregate_state_authority_used = true;
   result.authority = request.frames.authority;
   result.window_property_uuid = request.frames.window_property_uuid;
+  result.partition_property_uuid = request.frames.partition_property_uuid;
+  result.ordering_property_uuid = request.frames.ordering_property_uuid;
+  result.term_binding_evidence_uuid =
+      request.frames.term_binding_evidence_uuid;
+  result.deterministic_tie_evidence_uuid =
+      request.frames.deterministic_tie_evidence_uuid;
+  result.frame_property_binding_evidence_uuid =
+      request.frames.frame_property_binding_evidence_uuid;
   result.selected_plan_uuid = request.frames.selected_plan_uuid;
   result.executed_physical_node_id =
       request.frames.executed_physical_node_id;
@@ -8081,6 +8144,73 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
           spill_result.spilled_aggregate_state_record_count;
     } else {
       aggregate_result = ExecuteCanonicalRegistryWindowAggregate(aggregate);
+    }
+    std::vector<std::vector<std::size_t>> expected_frame_rows;
+    expected_frame_rows.reserve(aggregate.frames.effective_frames.size());
+    std::size_t expected_frame_input_row_count = 0;
+    for (const auto& frame : aggregate.frames.effective_frames) {
+      expected_frame_rows.push_back(frame.effective_row_indices);
+      expected_frame_input_row_count += frame.effective_row_indices.size();
+    }
+    const auto expected_modifier_count =
+        (aggregate.aggregate_template.filter_truth_values.has_value() ? 1U
+                                                                      : 0U) +
+        (aggregate.aggregate_template.distinct ? 1U : 0U) +
+        (!aggregate.aggregate_template.aggregate_order_terms.empty() ? 1U
+                                                                      : 0U);
+    if (aggregate_result.diagnostic.ok &&
+        (aggregate_result.descriptor.abi_version !=
+             aggregate.aggregate_template.descriptor.abi_version ||
+         aggregate_result.descriptor.function !=
+             aggregate.aggregate_template.descriptor.function ||
+         aggregate_result.descriptor.builtin_id !=
+             aggregate.aggregate_template.descriptor.builtin_id ||
+         aggregate_result.descriptor.function_uuid !=
+             aggregate.aggregate_template.descriptor.function_uuid ||
+         aggregate_result.descriptor.count_star !=
+             aggregate.aggregate_template.descriptor.count_star ||
+         !SameWindowResultColumn(aggregate_result.result_column,
+                                 aggregate.aggregate_template.result_column) ||
+         aggregate_result.value_columns !=
+             aggregate.aggregate_template.value_columns ||
+         aggregate_result.value_expression_descriptor_ids !=
+             aggregate.aggregate_template.value_expression_descriptor_ids ||
+         aggregate_result.values.size() !=
+             aggregate.frames.ordered_batch.rows.size() ||
+         aggregate_result.frame_row_indices != expected_frame_rows ||
+         aggregate_result.frame_input_row_count !=
+             expected_frame_input_row_count ||
+         aggregate_result.direct_argument_count !=
+             aggregate.aggregate_template.direct_arguments.size() ||
+         aggregate_result.modifier_count != expected_modifier_count ||
+         aggregate_result.aggregate_order_term_count !=
+             aggregate.aggregate_template.aggregate_order_terms.size() ||
+         !aggregate_result.every_aggregate_descriptor_field_consumed ||
+         !aggregate_result.every_effective_frame_consumed ||
+         !aggregate_result.modifier_pipeline_validated ||
+         aggregate_result.filter_modifier_applied !=
+             aggregate.aggregate_template.filter_truth_values.has_value() ||
+         aggregate_result.distinct_modifier_applied !=
+             aggregate.aggregate_template.distinct ||
+         !aggregate_result.filter_applied_before_distinct ||
+         !aggregate_result.distinct_applied_before_order ||
+         aggregate_result.aggregate_order_applied !=
+             !aggregate.aggregate_template.aggregate_order_terms.empty() ||
+         aggregate_result.window_property_uuid !=
+             aggregate.frames.window_property_uuid ||
+         aggregate_result.partition_property_uuid !=
+             aggregate.frames.partition_property_uuid ||
+         aggregate_result.ordering_property_uuid !=
+             aggregate.frames.ordering_property_uuid ||
+         aggregate_result.term_binding_evidence_uuid !=
+             aggregate.frames.term_binding_evidence_uuid ||
+         aggregate_result.deterministic_tie_evidence_uuid !=
+             aggregate.frames.deterministic_tie_evidence_uuid ||
+         aggregate_result.frame_property_binding_evidence_uuid !=
+             aggregate.frames.frame_property_binding_evidence_uuid)) {
+      return refuse(
+          "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+          "aggregate strategy did not return its exact descriptor, modifier, frame, and binding receipts");
     }
     if (!publish(aggregate_result)) return result;
     result.aggregate_registry_bridge_used = true;

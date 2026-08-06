@@ -65,7 +65,101 @@ exec::CanonicalAggregateRuntimeResult FrameBaseline(
        window.frames.effective_frames[frame_ordinal].effective_row_indices) {
     aggregate.input_batch.rows.push_back(window.frames.ordered_batch.rows[row]);
   }
+  aggregate.distinct = window.aggregate_template.distinct;
+  aggregate.aggregate_order_terms =
+      window.aggregate_template.aggregate_order_terms;
+  if (window.aggregate_template.filter_truth_values.has_value()) {
+    std::vector<api::EngineSqlTruthValue> filter;
+    filter.reserve(aggregate.input_batch.rows.size());
+    for (const auto row :
+         window.frames.effective_frames[frame_ordinal].effective_row_indices) {
+      filter.push_back(
+          (*window.aggregate_template.filter_truth_values)[row]);
+    }
+    aggregate.filter_truth_values = std::move(filter);
+  }
   return exec::ExecuteCanonicalAggregateRuntime(aggregate);
+}
+
+void ApplyEveryAuthorizedModifier(
+    exec::CanonicalRegistryWindowAggregateRequest* request) {
+  if (request == nullptr) return;
+  auto& aggregate = request->aggregate_template;
+  aggregate.filter_truth_values =
+      std::vector<api::EngineSqlTruthValue>{
+          api::EngineSqlTruthValue::true_value,
+          api::EngineSqlTruthValue::false_value,
+          api::EngineSqlTruthValue::unknown,
+          api::EngineSqlTruthValue::true_value,
+          api::EngineSqlTruthValue::true_value,
+          api::EngineSqlTruthValue::false_value,
+          api::EngineSqlTruthValue::true_value,
+          api::EngineSqlTruthValue::unknown,
+          api::EngineSqlTruthValue::true_value};
+  aggregate.distinct = !aggregate.descriptor.count_star;
+  if (aggregate.aggregate_order_terms.empty()) {
+    aggregate.aggregate_order_terms = {
+        {.column = 3,
+         .expression_descriptor_id =
+             request->frames.ordered_batch.columns[3].descriptor_id,
+         .direction =
+             exec::CanonicalDescriptorOrderDirection::descending,
+         .null_placement = exec::CanonicalDescriptorNullPlacement::first}};
+  } else {
+    aggregate.aggregate_order_terms.front().direction =
+        exec::CanonicalDescriptorOrderDirection::descending;
+    aggregate.aggregate_order_terms.front().null_placement =
+        exec::CanonicalDescriptorNullPlacement::first;
+  }
+}
+
+bool ExactRegistryAggregateReceipts(
+    const exec::CanonicalRegistryWindowAggregateRequest& request,
+    const exec::CanonicalRegistryWindowAggregateResult& result) {
+  const auto& aggregate = request.aggregate_template;
+  const auto expected_modifier_count =
+      (aggregate.filter_truth_values.has_value() ? 1U : 0U) +
+      (aggregate.distinct ? 1U : 0U) +
+      (!aggregate.aggregate_order_terms.empty() ? 1U : 0U);
+  return result.result_column.stable_name == aggregate.result_column.stable_name &&
+         result.result_column.nullable == aggregate.result_column.nullable &&
+         result.result_column.descriptor_id ==
+             aggregate.result_column.descriptor_id &&
+         result.result_column.descriptor.descriptor_uuid.canonical ==
+             aggregate.result_column.descriptor.descriptor_uuid.canonical &&
+         result.result_column.descriptor.descriptor_kind ==
+             aggregate.result_column.descriptor.descriptor_kind &&
+         result.result_column.descriptor.canonical_type_name ==
+             aggregate.result_column.descriptor.canonical_type_name &&
+         result.result_column.descriptor.encoded_descriptor ==
+             aggregate.result_column.descriptor.encoded_descriptor &&
+         result.value_columns == aggregate.value_columns &&
+         result.value_expression_descriptor_ids ==
+             aggregate.value_expression_descriptor_ids &&
+         result.direct_argument_count == aggregate.direct_arguments.size() &&
+         result.modifier_count == expected_modifier_count &&
+         result.aggregate_order_term_count ==
+             aggregate.aggregate_order_terms.size() &&
+         result.every_aggregate_descriptor_field_consumed &&
+         result.every_effective_frame_consumed &&
+         result.modifier_pipeline_validated &&
+         result.filter_modifier_applied ==
+             aggregate.filter_truth_values.has_value() &&
+         result.distinct_modifier_applied == aggregate.distinct &&
+         result.filter_applied_before_distinct &&
+         result.distinct_applied_before_order &&
+         result.aggregate_order_applied ==
+             !aggregate.aggregate_order_terms.empty() &&
+         result.partition_property_uuid ==
+             request.frames.partition_property_uuid &&
+         result.ordering_property_uuid ==
+             request.frames.ordering_property_uuid &&
+         result.term_binding_evidence_uuid ==
+             request.frames.term_binding_evidence_uuid &&
+         result.deterministic_tie_evidence_uuid ==
+             request.frames.deterministic_tie_evidence_uuid &&
+         result.frame_property_binding_evidence_uuid ==
+             request.frames.frame_property_binding_evidence_uuid;
 }
 
 bool ValidateEveryRegistryAggregateAsWindow() {
@@ -73,6 +167,9 @@ bool ValidateEveryRegistryAggregateAsWindow() {
   const auto registry = exec::CanonicalAggregateRuntimeRegistryV1();
   std::size_t executed_profile_count = 0;
   std::size_t executed_window_value_count = 0;
+  std::size_t executed_modifier_profile_count = 0;
+  std::size_t executed_modifier_window_value_count = 0;
+  std::size_t executed_distinct_modifier_profile_count = 0;
   for (const auto& entry : registry) {
     const auto request = RegistryWindowProfile(entry.function);
     const auto direct =
@@ -82,6 +179,7 @@ bool ValidateEveryRegistryAggregateAsWindow() {
         direct.descriptor.function == entry.function &&
         direct.values.size() == request.frames.ordered_batch.rows.size() &&
         direct.frame_row_indices == EffectiveFrameRows(request.frames) &&
+        ExactRegistryAggregateReceipts(request, direct) &&
         direct.effective_frame_recomputed &&
         !direct.moving_inverse_state_used &&
         direct.state_strategy_selected_from_physical_plan &&
@@ -102,6 +200,8 @@ bool ValidateEveryRegistryAggregateAsWindow() {
         direct.causal_counter_id == request.frames.causal_counter_id;
 
     std::size_t expected_transition_count = 0;
+    std::size_t expected_distinct_tuple_count = 0;
+    std::size_t expected_order_comparison_count = 0;
     for (std::size_t frame = 0; profile_ok && frame < direct.values.size();
          ++frame) {
       const auto baseline = FrameBaseline(request, frame);
@@ -111,9 +211,15 @@ bool ValidateEveryRegistryAggregateAsWindow() {
                    SameValue(direct.values[frame],
                              baseline.output_batch.rows[0].values[0]);
       expected_transition_count += baseline.transition_count;
+      expected_distinct_tuple_count += baseline.distinct_tuple_count;
+      expected_order_comparison_count += baseline.order_comparison_count;
     }
     profile_ok = profile_ok &&
                  direct.transition_count == expected_transition_count &&
+                 direct.distinct_tuple_count ==
+                     expected_distinct_tuple_count &&
+                 direct.order_comparison_count ==
+                     expected_order_comparison_count &&
                  direct.combined_state_bytes != 0;
 
     exec::CanonicalWindowRuntimeRequest unified_request;
@@ -153,10 +259,85 @@ bool ValidateEveryRegistryAggregateAsWindow() {
       ++executed_profile_count;
       executed_window_value_count += direct.values.size();
     }
+
+    auto modified_request = RegistryWindowProfile(entry.function);
+    ApplyEveryAuthorizedModifier(&modified_request);
+    const auto modified =
+        exec::ExecuteCanonicalRegistryWindowAggregate(modified_request);
+    bool modifiers_ok =
+        modified.diagnostic.ok &&
+        ExactRegistryAggregateReceipts(modified_request, modified) &&
+        modified.values.size() ==
+            modified_request.frames.ordered_batch.rows.size() &&
+        modified.frame_row_indices ==
+            EffectiveFrameRows(modified_request.frames) &&
+        modified.filter_modifier_applied &&
+        modified.aggregate_order_applied &&
+        modified.distinct_modifier_applied ==
+            !modified_request.aggregate_template.descriptor.count_star;
+    std::size_t modified_transition_count = 0;
+    std::size_t modified_distinct_tuple_count = 0;
+    std::size_t modified_order_comparison_count = 0;
+    for (std::size_t frame = 0;
+         modifiers_ok && frame < modified.values.size(); ++frame) {
+      const auto baseline = FrameBaseline(modified_request, frame);
+      modifiers_ok =
+          baseline.diagnostic.ok &&
+          baseline.output_batch.rows.size() == 1 &&
+          baseline.output_batch.rows[0].values.size() == 1 &&
+          SameValue(modified.values[frame],
+                    baseline.output_batch.rows[0].values[0]);
+      modified_transition_count += baseline.transition_count;
+      modified_distinct_tuple_count += baseline.distinct_tuple_count;
+      modified_order_comparison_count += baseline.order_comparison_count;
+    }
+    modifiers_ok =
+        modifiers_ok &&
+        modified.transition_count == modified_transition_count &&
+        modified.distinct_tuple_count == modified_distinct_tuple_count &&
+        modified.order_comparison_count == modified_order_comparison_count;
+
+    exec::CanonicalWindowRuntimeRequest modified_unified_request;
+    modified_unified_request.descriptor =
+        RuntimeAggregateDescriptor(entry.function);
+    modified_unified_request.registry_aggregate = modified_request;
+    modified_unified_request.forced_strategy =
+        exec::CanonicalWindowRuntimeStrategy::aggregate;
+    const auto modified_unified =
+        exec::ExecuteCanonicalWindowRuntime(modified_unified_request);
+    modifiers_ok =
+        modifiers_ok &&
+        RuntimeResultAccepted(
+            modified_unified,
+            exec::CanonicalWindowRuntimeStrategy::aggregate,
+            modified.values) &&
+        modified_unified.aggregate_registry_bridge_used &&
+        modified_unified.aggregate_transition_count ==
+            modified.transition_count;
+    passed &= Require401(
+        modifiers_ok,
+        "aggregate registry profile did not execute its authorized FILTER/DISTINCT/order pipeline as a window: " +
+            entry.builtin_id + ":direct=" +
+            modified.diagnostic.diagnostic_code + ":" +
+            modified.diagnostic.detail + ":unified=" +
+            modified_unified.diagnostic.diagnostic_code + ":" +
+            modified_unified.diagnostic.detail);
+    if (modifiers_ok) {
+      ++executed_modifier_profile_count;
+      executed_modifier_window_value_count += modified.values.size();
+      if (modified.distinct_modifier_applied) {
+        ++executed_distinct_modifier_profile_count;
+      }
+    }
   }
   passed &= Require401(
       executed_profile_count == 43 && executed_window_value_count == 387,
       "aggregate-as-window proof did not cover 43 profiles by nine rows");
+  passed &= Require401(
+      executed_modifier_profile_count == 43 &&
+          executed_modifier_window_value_count == 387 &&
+          executed_distinct_modifier_profile_count == 42,
+      "aggregate-as-window modifier proof did not cover 43 FILTER/order and 42 DISTINCT profiles by nine rows");
   return passed;
 }
 
