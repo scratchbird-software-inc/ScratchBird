@@ -5789,6 +5789,39 @@ bool CanonicalWindowFrameEvidenceValid(
       !batch_diagnostic.ok ||
       !IsCanonicalUuid(frames.resolved_frame.frame_descriptor_uuid) ||
       !IsCanonicalUuid(frames.window_property_uuid) ||
+      (!frames.partition_property_uuid.empty() &&
+       !IsCanonicalUuid(frames.partition_property_uuid)) ||
+      (!frames.ordering_property_uuid.empty() &&
+       !IsCanonicalUuid(frames.ordering_property_uuid)) ||
+      ((!frames.partition_property_uuid.empty() ||
+        !frames.ordering_property_uuid.empty()) !=
+       !frames.term_binding_evidence_uuid.empty()) ||
+      (!frames.term_binding_evidence_uuid.empty() &&
+       !IsCanonicalUuid(frames.term_binding_evidence_uuid)) ||
+      !IsCanonicalUuid(frames.deterministic_tie_evidence_uuid) ||
+      !IsCanonicalUuid(frames.frame_property_binding_evidence_uuid) ||
+      frames.frame_property_binding_evidence_uuid ==
+          frames.resolved_frame.frame_descriptor_uuid ||
+      frames.frame_property_binding_evidence_uuid ==
+          frames.window_property_uuid ||
+      frames.frame_property_binding_evidence_uuid ==
+          frames.partition_property_uuid ||
+      frames.frame_property_binding_evidence_uuid ==
+          frames.ordering_property_uuid ||
+      frames.frame_property_binding_evidence_uuid ==
+          frames.term_binding_evidence_uuid ||
+      frames.frame_property_binding_evidence_uuid ==
+          frames.deterministic_tie_evidence_uuid ||
+      frames.resolved_frame.frame_descriptor_uuid ==
+          frames.window_property_uuid ||
+      frames.resolved_frame.frame_descriptor_uuid ==
+          frames.partition_property_uuid ||
+      frames.resolved_frame.frame_descriptor_uuid ==
+          frames.ordering_property_uuid ||
+      frames.resolved_frame.frame_descriptor_uuid ==
+          frames.term_binding_evidence_uuid ||
+      frames.resolved_frame.frame_descriptor_uuid ==
+          frames.deterministic_tie_evidence_uuid ||
       !IsCanonicalUuid(frames.selected_plan_uuid) ||
       !frames.resolved_frame.start.has_value() ||
       !frames.resolved_frame.end.has_value() ||

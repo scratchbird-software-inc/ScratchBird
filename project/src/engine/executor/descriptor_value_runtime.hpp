@@ -2108,6 +2108,10 @@ struct CanonicalWindowPartitionOrderRequest {
 struct CanonicalWindowPartitionOrderResult {
   DescriptorRuntimeDiagnostic diagnostic;
   DescriptorBatch ordered_batch;
+  // Present only when the partition/order stage consumed a separately
+  // materialized comparison batch. Rows are permuted identically to the
+  // payload while the payload schema remains unchanged.
+  std::optional<DescriptorBatch> ordered_key_batch;
   std::vector<CanonicalWindowRowPeerMetadata> row_metadata;
   std::vector<CanonicalWindowPartitionTerm> partition_terms;
   std::vector<CanonicalDescriptorOrderTerm> order_terms;
@@ -2187,6 +2191,9 @@ struct CanonicalWindowEffectiveFrame {
 struct CanonicalWindowFrameRequest {
   CanonicalWindowPartitionOrderResult partition_order;
   CanonicalWindowFrameDescriptor frame;
+  // Engine-owned receipt binding frame_descriptor_uuid to the effective
+  // typed Window property selected for this physical stage.
+  std::string frame_property_binding_evidence_uuid;
   std::size_t maximum_effective_row_references = 1048576;
   bool parser_execution_authority_claimed = false;
   bool transaction_finality_claimed = false;
@@ -2201,7 +2208,11 @@ struct CanonicalWindowFrameResult {
   std::vector<CanonicalWindowEffectiveFrame> effective_frames;
   CanonicalWindowFrameDescriptor resolved_frame;
   std::string window_property_uuid;
+  std::string partition_property_uuid;
   std::string ordering_property_uuid;
+  std::string term_binding_evidence_uuid;
+  std::string deterministic_tie_evidence_uuid;
+  std::string frame_property_binding_evidence_uuid;
   bool defaulted_with_order = false;
   bool defaulted_without_order = false;
   bool every_frame_operand_consumed = false;

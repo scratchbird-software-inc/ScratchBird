@@ -343,6 +343,11 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
 
   result.ordered_batch.columns = request.input_batch.columns;
   result.ordered_batch.rows.reserve(row_count);
+  if (request.key_batch.has_value()) {
+    result.ordered_key_batch.emplace();
+    result.ordered_key_batch->columns = request.key_batch->columns;
+    result.ordered_key_batch->rows.reserve(row_count);
+  }
   result.row_metadata.reserve(row_count);
   std::size_t ordered_index = 0;
   for (std::size_t partition_id = 0; partition_id < partitions.size();
@@ -369,6 +374,10 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
            ++offset) {
         const auto source_row = partition[offset];
         result.ordered_batch.rows.push_back(request.input_batch.rows[source_row]);
+        if (result.ordered_key_batch.has_value()) {
+          result.ordered_key_batch->rows.push_back(
+              request.key_batch->rows[source_row]);
+        }
         CanonicalWindowRowPeerMetadata metadata;
         metadata.source_row_index = source_row;
         metadata.ordered_row_index = ordered_index++;
@@ -391,6 +400,19 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
   if (!output_validation.ok) {
     return refuse(output_validation.diagnostic_code,
                   output_validation.detail);
+  }
+  if (result.ordered_key_batch.has_value()) {
+    std::vector<std::uint32_t> key_descriptor_ids;
+    key_descriptor_ids.reserve(result.ordered_key_batch->columns.size());
+    for (const auto& column : result.ordered_key_batch->columns) {
+      key_descriptor_ids.push_back(column.descriptor_id);
+    }
+    const auto key_output_validation = ValidateCanonicalDescriptorBatch(
+        *result.ordered_key_batch, key_descriptor_ids);
+    if (!key_output_validation.ok) {
+      return refuse("QOW-DIAG-WINDOW-PROPERTY-BINDING",
+                    key_output_validation.detail);
+    }
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.mga_authority, request.physical_dag);

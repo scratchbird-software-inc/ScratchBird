@@ -52,6 +52,12 @@ bool IsCanonicalUuid(const std::string_view value) {
   return true;
 }
 
+const DescriptorBatch& ComparisonBatch(
+    const CanonicalWindowPartitionOrderResult& input) {
+  return input.ordered_key_batch.has_value() ? *input.ordered_key_batch
+                                             : input.ordered_batch;
+}
+
 bool IsNumeric(const dt::CanonicalTypeId type) {
   switch (type) {
     case dt::CanonicalTypeId::int8:
@@ -563,14 +569,50 @@ bool TemporalThreshold(const api::EngineTypedValue& current,
   }
   *threshold = add ? base + offset.picoseconds
                    : base - offset.picoseconds;
-  if (point.is_time_only && (*threshold < 0 || *threshold >= kPicosecondsPerDay)) {
-    return false;
+  if (point.is_time_only) {
+    if (*threshold < 0 || *threshold >= kPicosecondsPerDay) return false;
+  } else {
+    const auto timezone_adjustment =
+        static_cast<__int128>(point.timezone_offset_seconds) *
+        kPicosecondsPerSecond;
+    const auto minimum =
+        static_cast<__int128>(DaysFromCivil(1, 1, 1)) *
+            kPicosecondsPerDay -
+        timezone_adjustment;
+    const auto maximum_exclusive =
+        static_cast<__int128>(DaysFromCivil(10000, 1, 1)) *
+            kPicosecondsPerDay -
+        timezone_adjustment;
+    if (*threshold < minimum || *threshold >= maximum_exclusive) return false;
   }
   return true;
 }
 
 bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
   const auto row_count = input.ordered_batch.rows.size();
+  const PhysicalNodeRecord* selected_node = nullptr;
+  for (const auto& node : input.physical_dag.nodes) {
+    if (node.physical_node_id == input.executed_physical_node_id) {
+      selected_node = &node;
+      break;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kWindow ||
+      selected_node->physical_node_id !=
+          input.physical_dag.root_physical_node_id) {
+    return false;
+  }
+  const auto payload_validation = ValidateCanonicalDescriptorBatch(
+      input.ordered_batch, selected_node->output_descriptor_ids);
+  const auto& comparison_batch = ComparisonBatch(input);
+  std::vector<std::uint32_t> comparison_descriptor_ids;
+  comparison_descriptor_ids.reserve(comparison_batch.columns.size());
+  for (const auto& column : comparison_batch.columns) {
+    comparison_descriptor_ids.push_back(column.descriptor_id);
+  }
+  const auto comparison_validation = ValidateCanonicalDescriptorBatch(
+      comparison_batch, comparison_descriptor_ids);
   if (!input.diagnostic.ok || !input.explicit_peer_metadata ||
       !input.stable_ties_preserved ||
       !input.weaker_peer_recomputation_forbidden ||
@@ -589,14 +631,65 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
       ((!input.partition_terms.empty() || !input.order_terms.empty()) &&
        !IsCanonicalUuid(input.term_binding_evidence_uuid)) ||
       !IsCanonicalUuid(input.deterministic_tie_evidence_uuid) ||
+      input.deterministic_tie_evidence_uuid ==
+          input.term_binding_evidence_uuid ||
+      input.deterministic_tie_evidence_uuid == input.window_property_uuid ||
+      input.deterministic_tie_evidence_uuid ==
+          input.partition_property_uuid ||
+      input.deterministic_tie_evidence_uuid ==
+          input.ordering_property_uuid ||
+      (!input.term_binding_evidence_uuid.empty() &&
+       (input.term_binding_evidence_uuid == input.window_property_uuid ||
+        input.term_binding_evidence_uuid == input.partition_property_uuid ||
+        input.term_binding_evidence_uuid == input.ordering_property_uuid)) ||
       !IsCanonicalUuid(input.selected_plan_uuid) ||
       input.executed_physical_node_id == 0 || input.causal_counter_id == 0 ||
-      input.row_metadata.size() != row_count) {
+      input.row_metadata.size() != row_count || !payload_validation.ok ||
+      !comparison_validation.ok ||
+      comparison_batch.rows.size() != row_count ||
+      (input.ordered_key_batch.has_value() &&
+       input.partition_terms.empty() && input.order_terms.empty())) {
     return false;
   }
+  std::vector<bool> comparison_columns_consumed(
+      comparison_batch.columns.size(), !input.ordered_key_batch.has_value());
+  for (const auto& term : input.partition_terms) {
+    if (term.column >= comparison_batch.columns.size()) return false;
+    CanonicalDescriptorOrderTerm comparable;
+    comparable.column = term.column;
+    comparable.expression_descriptor_id = term.expression_descriptor_id;
+    comparable.direction = CanonicalDescriptorOrderDirection::ascending;
+    comparable.null_placement = CanonicalDescriptorNullPlacement::first;
+    comparable.collation_uuid = term.collation_uuid;
+    comparable.resource_epoch = term.resource_epoch;
+    comparable.collation_epoch = term.collation_epoch;
+    comparable.text_seed = term.text_seed;
+    if (!ValidateCanonicalDescriptorOrderTerm(
+             comparable, comparison_batch.columns[term.column])
+             .ok) {
+      return false;
+    }
+    comparison_columns_consumed[term.column] = true;
+  }
+  for (const auto& term : input.order_terms) {
+    if (term.column >= comparison_batch.columns.size() ||
+        !ValidateCanonicalDescriptorOrderTerm(
+             term, comparison_batch.columns[term.column])
+             .ok) {
+      return false;
+    }
+    comparison_columns_consumed[term.column] = true;
+  }
+  if (!std::ranges::all_of(comparison_columns_consumed,
+                           [](const bool consumed) { return consumed; })) {
+    return false;
+  }
+  std::vector<bool> source_rows_seen(row_count, false);
   for (std::size_t row = 0; row < row_count; ++row) {
     const auto& metadata = input.row_metadata[row];
-    if (metadata.ordered_row_index != row ||
+    if (metadata.source_row_index >= row_count ||
+        source_rows_seen[metadata.source_row_index] ||
+        metadata.ordered_row_index != row ||
         !metadata.partition_id.has_value() ||
         !metadata.peer_group_id.has_value() ||
         metadata.partition_begin > row ||
@@ -607,6 +700,7 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
         metadata.peer_end_exclusive > metadata.partition_end_exclusive) {
       return false;
     }
+    source_rows_seen[metadata.source_row_index] = true;
     for (std::size_t peer = metadata.peer_begin;
          peer < metadata.peer_end_exclusive; ++peer) {
       const auto& candidate = input.row_metadata[peer];
@@ -632,9 +726,16 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
   std::size_t observed_peers = 0;
   std::size_t row = 0;
   while (row < row_count) {
+    if (input.row_metadata[row].partition_id != observed_partitions) {
+      return false;
+    }
     const auto partition_end = input.row_metadata[row].partition_end_exclusive;
     ++observed_partitions;
+    std::size_t expected_peer_id = 0;
     while (row < partition_end) {
+      if (input.row_metadata[row].peer_group_id != expected_peer_id++) {
+        return false;
+      }
       row = input.row_metadata[row].peer_end_exclusive;
       ++observed_peers;
     }
@@ -748,8 +849,7 @@ bool ResolveFrame(const CanonicalWindowFrameRequest& request,
         return false;
       }
       const auto order_type = dt::CanonicalTypeIdFromStableName(
-          request.partition_order
-              .ordered_batch
+          ComparisonBatch(request.partition_order)
               .columns[request.partition_order.order_terms.front().column]
               .descriptor.canonical_type_name);
       if (IsNumeric(order_type)) {
@@ -824,7 +924,7 @@ BaseBounds RowsBounds(const CanonicalWindowFrameDescriptor& frame,
                                metadata.partition_end_exclusive);
   bounds.end = ClampBoundary(raw_end, metadata.partition_begin,
                              metadata.partition_end_exclusive);
-  if (raw_begin > raw_end) {
+  if (raw_begin >= raw_end) {
     bounds.state = CanonicalWindowFrameState::reversed_to_empty;
   } else if (bounds.begin >= bounds.end) {
     bounds.state = CanonicalWindowFrameState::empty;
@@ -892,7 +992,7 @@ BaseBounds GroupsBounds(const CanonicalWindowPartitionOrderResult& input,
   bounds.end = end_group == groups.size()
                    ? metadata.partition_end_exclusive
                    : groups[end_group].first;
-  if (raw_begin > raw_end) {
+  if (raw_begin >= raw_end) {
     bounds.state = CanonicalWindowFrameState::reversed_to_empty;
   } else if (bounds.begin >= bounds.end) {
     bounds.state = CanonicalWindowFrameState::empty;
@@ -911,7 +1011,7 @@ bool RangeThreshold(const CanonicalWindowPartitionOrderResult& input,
                     std::string* detail) {
   const auto& term = input.order_terms.front();
   const auto& current_value =
-      input.ordered_batch.rows[current].values[term.column];
+      ComparisonBatch(input).rows[current].values[term.column];
   const auto type = dt::CanonicalTypeIdFromStableName(
       current_value.descriptor.canonical_type_name);
   const bool preceding =
@@ -947,7 +1047,7 @@ bool CompareRangeRowToThreshold(
     int* comparison,
     std::string* detail) {
   const auto& term = input.order_terms.front();
-  const auto& value = input.ordered_batch.rows[row].values[term.column];
+  const auto& value = ComparisonBatch(input).rows[row].values[term.column];
   if (temporal) {
     TemporalPoint point;
     if (!ParseTemporalPoint(value, &point)) {
@@ -996,7 +1096,7 @@ bool RangeBoundary(const CanonicalWindowPartitionOrderResult& input,
   }
   const auto& term = input.order_terms.front();
   const auto& current_value =
-      input.ordered_batch.rows[current].values[term.column];
+      ComparisonBatch(input).rows[current].values[term.column];
   if (current_value.isSqlNull()) {
     *boundary = start ? metadata.peer_begin : metadata.peer_end_exclusive;
     return true;
@@ -1010,7 +1110,8 @@ bool RangeBoundary(const CanonicalWindowPartitionOrderResult& input,
   }
   std::size_t candidate = metadata.partition_begin;
   for (; candidate < metadata.partition_end_exclusive; ++candidate) {
-    const auto& value = input.ordered_batch.rows[candidate].values[term.column];
+    const auto& value =
+        ComparisonBatch(input).rows[candidate].values[term.column];
     if (value.isSqlNull()) {
       const auto compared = CompareCanonicalDescriptorOrderValues(
           value, current_value, term);
@@ -1114,12 +1215,13 @@ CanonicalWindowFrameResult ExecuteCanonicalWindowFrames(
   if (request.maximum_effective_row_references == 0) {
     return refuse("window frame effective-row resource bound is zero");
   }
+  const auto& comparison_batch = ComparisonBatch(request.partition_order);
   for (const auto& term : request.partition_order.order_terms) {
-    if (term.column >= request.partition_order.ordered_batch.columns.size()) {
+    if (term.column >= comparison_batch.columns.size()) {
       return refuse("retained window order term is outside the schema");
     }
     const auto validation = ValidateCanonicalDescriptorOrderTerm(
-        term, request.partition_order.ordered_batch.columns[term.column]);
+        term, comparison_batch.columns[term.column]);
     if (!validation.ok) {
       return refuse("retained window order term is no longer valid");
     }
@@ -1130,6 +1232,32 @@ CanonicalWindowFrameResult ExecuteCanonicalWindowFrames(
                     &result.defaulted_with_order,
                     &result.defaulted_without_order, &detail)) {
     return refuse(std::move(detail));
+  }
+  if (!IsCanonicalUuid(request.frame_property_binding_evidence_uuid) ||
+      request.frame_property_binding_evidence_uuid ==
+          result.resolved_frame.frame_descriptor_uuid ||
+      request.frame_property_binding_evidence_uuid ==
+          request.partition_order.window_property_uuid ||
+      request.frame_property_binding_evidence_uuid ==
+          request.partition_order.partition_property_uuid ||
+      request.frame_property_binding_evidence_uuid ==
+          request.partition_order.ordering_property_uuid ||
+      request.frame_property_binding_evidence_uuid ==
+          request.partition_order.term_binding_evidence_uuid ||
+      request.frame_property_binding_evidence_uuid ==
+          request.partition_order.deterministic_tie_evidence_uuid ||
+      result.resolved_frame.frame_descriptor_uuid ==
+          request.partition_order.window_property_uuid ||
+      result.resolved_frame.frame_descriptor_uuid ==
+          request.partition_order.partition_property_uuid ||
+      result.resolved_frame.frame_descriptor_uuid ==
+          request.partition_order.ordering_property_uuid ||
+      result.resolved_frame.frame_descriptor_uuid ==
+          request.partition_order.term_binding_evidence_uuid ||
+      result.resolved_frame.frame_descriptor_uuid ==
+          request.partition_order.deterministic_tie_evidence_uuid) {
+    return refuse(
+        "frame descriptor lacks an independent Window-property binding receipt");
   }
 
   result.ordered_batch = request.partition_order.ordered_batch;
@@ -1190,7 +1318,15 @@ CanonicalWindowFrameResult ExecuteCanonicalWindowFrames(
 
   result.diagnostic = {};
   result.window_property_uuid = request.partition_order.window_property_uuid;
+  result.partition_property_uuid =
+      request.partition_order.partition_property_uuid;
   result.ordering_property_uuid = request.partition_order.ordering_property_uuid;
+  result.term_binding_evidence_uuid =
+      request.partition_order.term_binding_evidence_uuid;
+  result.deterministic_tie_evidence_uuid =
+      request.partition_order.deterministic_tie_evidence_uuid;
+  result.frame_property_binding_evidence_uuid =
+      request.frame_property_binding_evidence_uuid;
   result.every_frame_operand_consumed = true;
   result.empty_state_uses_optional_bounds = true;
   result.authority = request.partition_order.authority;
