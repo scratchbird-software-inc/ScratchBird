@@ -548,13 +548,17 @@ BuildEngineProjectedNativeBindingContext(
         window_relation->input_relation_ids !=
             std::vector<std::uint32_t>{source_relation->relation_id} ||
         ast.catalog_relation_sources.size() != 1 ||
-        ast.window_definitions.size() != 1 ||
+        ast.window_definitions.empty() ||
+        ast.window_definitions.size() > 1024 ||
         ast.window_invocations.size() != 1 ||
         window_relation->window_invocation_ids !=
             std::vector<std::uint32_t>{
                 ast.window_invocations.front().invocation_id} ||
-        ast.window_invocations.front().window_definition_id !=
-            ast.window_definitions.front().window_id ||
+        std::ranges::none_of(
+            ast.window_definitions, [&](const auto& definition) {
+              return definition.window_id ==
+                     ast.window_invocations.front().window_definition_id;
+            }) ||
         window_relation->output_expression_ids !=
             std::vector<std::uint32_t>{
                 ast.window_invocations.front().function_expression_id} ||
@@ -650,19 +654,18 @@ BuildEngineProjectedNativeBindingContext(
            column->column_uuid, binding_id, column->canonical_name_key});
     }
 
-    const auto& definition = ast.window_definitions.front();
     std::vector<std::uint32_t> offset_expression_ids;
     const auto collect_offset = [&](const auto& bound) {
-      if (bound.has_value() && bound->offset_expression_id.has_value()) {
+      if (bound.has_value() && bound->offset_expression_id.has_value() &&
+          std::ranges::find(offset_expression_ids,
+                            *bound->offset_expression_id) ==
+              offset_expression_ids.end()) {
         offset_expression_ids.push_back(*bound->offset_expression_id);
       }
     };
-    collect_offset(definition.frame_start);
-    collect_offset(definition.frame_end);
-    if (offset_expression_ids.size() > 2 ||
-        (offset_expression_ids.size() == 2 &&
-         offset_expression_ids[0] == offset_expression_ids[1])) {
-      return fail("catalog_window_frame_offset_invalid");
+    for (const auto& definition : ast.window_definitions) {
+      collect_offset(definition.frame_start);
+      collect_offset(definition.frame_end);
     }
     for (std::size_t ordinal = 0; ordinal < offset_expression_ids.size();
          ++ordinal) {
