@@ -9,6 +9,7 @@
 #include "descriptor_value_runtime.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <functional>
 #include <limits>
@@ -36,6 +37,116 @@ bool HasForbiddenAuthority(
          authority.owns_parser_execution ||
          authority.owns_visibility_outside_engine_mga ||
          authority.wal_is_transaction_or_recovery_authority;
+}
+
+bool HasForbiddenObservationAuthority(
+    const CanonicalRuntimeObservationAuthorityEvidence& authority) {
+  return authority.owns_execution || authority.owns_visibility ||
+         authority.owns_transaction_finality || authority.owns_recovery ||
+         authority.owns_feedback || authority.owns_benchmark ||
+         authority.owns_parser_execution ||
+         authority.wal_is_transaction_or_recovery_authority;
+}
+
+bool MetricStateValid(const CanonicalObservedUint64& metric) {
+  return metric.state == CanonicalRuntimeMetricState::kObserved ||
+         (metric.state == CanonicalRuntimeMetricState::kNotApplicable &&
+          metric.value == 0);
+}
+
+DescriptorRuntimeDiagnostic ValidateRuntimeObservation(
+    const CanonicalPhysicalNodeRuntimeObservation& observation,
+    const std::uint64_t memory_budget_bytes,
+    const std::uint64_t legacy_pages_read,
+    const std::uint64_t legacy_spill_bytes,
+    const bool data_access_observation_known,
+    const bool data_access_observed) {
+  const auto invalid = [](std::string detail) {
+    return Refusal("QOW-DIAG-OPT-017-REFUSAL-V1", std::move(detail));
+  };
+  if (observation.abi_version != 1 ||
+      !observation.producer_receipt_complete ||
+      !observation.dispatcher_elapsed_frozen ||
+      !observation.counters_frozen_after_finish ||
+      !observation.authority.engine_execution_observation ||
+      HasForbiddenObservationAuthority(observation.authority)) {
+    return invalid("runtime_observation_authority");
+  }
+  if (observation.elapsed_ns.state !=
+          CanonicalRuntimeMetricState::kObserved ||
+      observation.operator_wait_ns.state !=
+          CanonicalRuntimeMetricState::kObserved ||
+      observation.current_memory_bytes.state !=
+          CanonicalRuntimeMetricState::kObserved ||
+      observation.peak_memory_bytes.state !=
+          CanonicalRuntimeMetricState::kObserved) {
+    return invalid("runtime_observation_required_metric");
+  }
+  const CanonicalObservedUint64* remaining[] = {
+      &observation.decoded_bytes,
+      &observation.bytes_read,
+      &observation.bytes_written,
+      &observation.pages_read,
+      &observation.pages_written,
+      &observation.spill_bytes_read,
+      &observation.spill_bytes_written,
+      &observation.visibility_recheck_count,
+      &observation.security_recheck_count,
+      &observation.storage_recheck_count,
+      &observation.index_recheck_count,
+      &observation.residual_recheck_count,
+      &observation.compatibility_recheck_count,
+      &observation.archive_bytes_read,
+      &observation.cluster_bytes_sent,
+      &observation.cluster_bytes_received,
+  };
+  if (!std::ranges::all_of(remaining, [](const auto* metric) {
+        return MetricStateValid(*metric);
+      })) {
+    return invalid("runtime_observation_metric_state");
+  }
+  if (observation.operator_wait_ns.value > observation.elapsed_ns.value ||
+      observation.current_memory_bytes.value >
+          observation.peak_memory_bytes.value ||
+      memory_budget_bytes == 0 ||
+      observation.peak_memory_bytes.value > memory_budget_bytes) {
+    return invalid("runtime_observation_resource_bounds");
+  }
+  const CanonicalObservedUint64* access_metrics[] = {
+      &observation.decoded_bytes,
+      &observation.bytes_read,
+      &observation.bytes_written,
+      &observation.pages_read,
+      &observation.pages_written,
+      &observation.archive_bytes_read,
+      &observation.cluster_bytes_sent,
+      &observation.cluster_bytes_received,
+  };
+  if (data_access_observation_known && !data_access_observed &&
+      std::ranges::any_of(access_metrics, [](const auto* metric) {
+        return metric->state == CanonicalRuntimeMetricState::kObserved &&
+               metric->value != 0;
+      })) {
+    return invalid("runtime_observation_zero_access_contradiction");
+  }
+  std::uint64_t spill_total = 0;
+  if (observation.spill_bytes_read.value >
+      std::numeric_limits<std::uint64_t>::max() -
+          observation.spill_bytes_written.value) {
+    return invalid("runtime_observation_spill_overflow");
+  }
+  spill_total = observation.spill_bytes_read.value +
+                observation.spill_bytes_written.value;
+  if (((observation.pages_read.state ==
+            CanonicalRuntimeMetricState::kObserved &&
+        observation.pages_read.value != legacy_pages_read) ||
+       (observation.pages_read.state ==
+            CanonicalRuntimeMetricState::kNotApplicable &&
+        legacy_pages_read != 0)) ||
+      spill_total != legacy_spill_bytes) {
+    return invalid("runtime_observation_legacy_counter_mismatch");
+  }
+  return {};
 }
 
 bool CheckedAdd(const std::size_t left,
@@ -331,6 +442,7 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
       return refuse(pre_callback_authority);
     }
     execution_started = true;
+    const auto callback_started = std::chrono::steady_clock::now();
     try {
       step = executors_by_implementation.at(node.implementation_id)
                  ->execute(request.physical_dag, node, inputs);
@@ -345,6 +457,30 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
           "QOW-DIAG-QRY-004-PHYSICAL-EXECUTOR-FAILURE-V1",
           "physical executor threw a non-standard exception"));
     }
+    const auto callback_finished = std::chrono::steady_clock::now();
+    if (step.runtime_observation.elapsed_ns.state !=
+            CanonicalRuntimeMetricState::kUnavailable ||
+        step.runtime_observation.elapsed_ns.value != 0 ||
+        step.runtime_observation.dispatcher_elapsed_frozen ||
+        step.runtime_observation.counters_frozen_after_finish ||
+        step.execution_started || step.execution_finished ||
+        step.counters_captured_after_finish || step.execution_ordinal != 0) {
+      return refuse(Refusal(
+          "QOW-DIAG-OPT-017-REFUSAL-V1",
+          "runtime_observation_forged_dispatcher_or_lifecycle_evidence"));
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        callback_finished - callback_started).count();
+    if (elapsed < 0 ||
+        static_cast<std::uintmax_t>(elapsed) >
+            std::numeric_limits<std::uint64_t>::max()) {
+      return refuse(Refusal("QOW-DIAG-OPT-017-REFUSAL-V1",
+                            "runtime_observation_elapsed_overflow"));
+    }
+    step.runtime_observation.elapsed_ns = {
+        CanonicalRuntimeMetricState::kObserved,
+        static_cast<std::uint64_t>(elapsed)};
+    step.runtime_observation.dispatcher_elapsed_frozen = true;
 
     // QOW-SOURCE-QRY-004-DATA-ACCESS-OBSERVATION-V1
     // Preserve an executor's explicit observation even when its diagnostic
@@ -369,9 +505,13 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
         cancellation_diagnostic("after a selected node");
     if (!post_step_cancellation.ok) return refuse(post_step_cancellation);
     step.execution_ordinal = result.executed_steps.size() + 1;
+    step.executed_relational_node_id = node.relational_node_id;
+    step.executed_implementation_id = node.implementation_id;
+    step.executed_input_physical_node_ids = node.input_physical_node_ids;
     step.execution_started = true;
     step.execution_finished = true;
     step.counters_captured_after_finish = true;
+    step.runtime_observation.counters_frozen_after_finish = true;
     if (step.selected_plan_uuid != request.physical_dag.selected_plan_uuid ||
         step.executed_physical_node_id != node.physical_node_id ||
         step.causal_counter_id != node.causal_counter_id ||
@@ -386,6 +526,16 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
       return refuse(Refusal(
           "QOW-DIAG-QRY-004-PHYSICAL-EXECUTION-EVIDENCE-V1",
           "physical executor result does not match admitted node evidence"));
+    }
+    if (executors_by_implementation.at(node.implementation_id)
+            ->publishes_runtime_observation_v1) {
+      const auto observation_validation = ValidateRuntimeObservation(
+          step.runtime_observation, request.physical_dag.memory_budget_bytes,
+          step.pages_read, step.spill_bytes,
+          step.data_access_observation_known, step.data_access_observed);
+      if (!observation_validation.ok) {
+        return refuse(observation_validation);
+      }
     }
     if (!step.materialized_output_batch.has_value()) {
       return refuse(Refusal(

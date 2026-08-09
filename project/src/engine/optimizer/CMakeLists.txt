@@ -18,6 +18,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   # QOW-CMAKE-OPT-010-REPREPARE-V1
   # QOW-CMAKE-OPT-010-CONCURRENCY-V1
   # QOW-CMAKE-OPT-009-V1
+  # QOW-CMAKE-OPT-017-V1
   if(NOT TARGET sb_qow_canonical_candidate_legality)
     add_library(sb_qow_canonical_candidate_legality STATIC
       optimizer_contract.cpp

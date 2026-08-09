@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -1101,6 +1102,13 @@ bool AppendScopedRowIdentityNativePacketBatch(
   return true;
 }
 
+struct HeapReadRuntimeObservation {
+  std::uint64_t operator_wait_ns = 0;
+  std::uint64_t storage_bytes_read = 0;
+  std::uint64_t decoded_bytes = 0;
+  bool complete = true;
+};
+
 struct BoundedScopedRowReadControl {
   std::uint64_t maximum_row_versions = 0;
   std::uint64_t maximum_bytes = 0;
@@ -1109,7 +1117,46 @@ struct BoundedScopedRowReadControl {
   std::uint64_t decoded_bytes = 0;
   bool cancellation_observed = false;
   std::string refusal_detail;
+  HeapReadRuntimeObservation* runtime_observation = nullptr;
 };
+
+bool AccountHeapReadWait(
+    BoundedScopedRowReadControl* control,
+    const std::chrono::steady_clock::time_point started) {
+  if (control == nullptr || control->runtime_observation == nullptr) {
+    return true;
+  }
+  const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now() - started)
+                           .count();
+  if (elapsed < 0 || static_cast<std::uintmax_t>(elapsed) >
+                         std::numeric_limits<std::uint64_t>::max() ||
+      static_cast<std::uint64_t>(elapsed) >
+          std::numeric_limits<std::uint64_t>::max() -
+              control->runtime_observation->operator_wait_ns) {
+    control->runtime_observation->complete = false;
+    control->refusal_detail = "heap_read_wait_observation_overflow";
+    return false;
+  }
+  control->runtime_observation->operator_wait_ns +=
+      static_cast<std::uint64_t>(elapsed);
+  return true;
+}
+
+bool AccountHeapStorageBytes(BoundedScopedRowReadControl* control,
+                             const std::uint64_t bytes) {
+  if (control == nullptr || control->runtime_observation == nullptr) {
+    return true;
+  }
+  if (bytes > std::numeric_limits<std::uint64_t>::max() -
+                  control->runtime_observation->storage_bytes_read) {
+    control->runtime_observation->complete = false;
+    control->refusal_detail = "heap_read_storage_byte_observation_overflow";
+    return false;
+  }
+  control->runtime_observation->storage_bytes_read += bytes;
+  return true;
+}
 
 bool BoundedScopedReadCancelled(BoundedScopedRowReadControl* control) {
   if (control == nullptr || !control->cancellation_requested) { return false; }
@@ -1144,7 +1191,10 @@ bool ReadBinaryFileBounded(const std::string& path,
     }
     return false;
   }
-  std::ifstream input(path, std::ios::binary);
+  std::ifstream input;
+  const auto open_started = std::chrono::steady_clock::now();
+  input.open(path, std::ios::binary);
+  if (!AccountHeapReadWait(control, open_started)) return false;
   if (!input) {
     control->refusal_detail = "heap_read_scoped_binary_open_failed";
     return false;
@@ -1163,7 +1213,9 @@ bool ReadBinaryFileBounded(const std::string& path,
                                       : static_cast<std::size_t>(std::min<
                                             std::uint64_t>(remaining,
                                                            kReadChunkBytes));
+    const auto read_started = std::chrono::steady_clock::now();
     input.read(chunk, static_cast<std::streamsize>(requested));
+    if (!AccountHeapReadWait(control, read_started)) return false;
     const std::streamsize read_count = input.gcount();
     if (read_count < 0 ||
         static_cast<std::uint64_t>(read_count) > remaining) {
@@ -1180,6 +1232,10 @@ bool ReadBinaryFileBounded(const std::string& path,
       bytes->resize(old_size + appended);
       std::memcpy(bytes->data() + old_size, chunk, appended);
       actual_file_bytes += static_cast<std::uint64_t>(read_count);
+      if (!AccountHeapStorageBytes(
+              control, static_cast<std::uint64_t>(read_count))) {
+        return false;
+      }
     }
     if (input.bad()) {
       control->refusal_detail = "heap_read_scoped_binary_read_failed";
@@ -1230,6 +1286,15 @@ bool AdmitBoundedScopedRow(BoundedScopedRowReadControl* control,
     }
   }
   if (!AccountBoundedScopedBytes(control, decoded_bytes)) { return false; }
+  if (control->runtime_observation != nullptr) {
+    if (decoded_bytes > std::numeric_limits<std::uint64_t>::max() -
+                            control->runtime_observation->decoded_bytes) {
+      control->runtime_observation->complete = false;
+      control->refusal_detail = "heap_read_decode_observation_overflow";
+      return false;
+    }
+    control->runtime_observation->decoded_bytes += decoded_bytes;
+  }
   ++control->decoded_row_versions;
   return true;
 }
@@ -1242,7 +1307,10 @@ bool DecodeScopedRowBinaryStore(
     const std::uint64_t authorized_file_bytes = 0) {
   if (rows == nullptr || summary == nullptr) { return false; }
   if (BoundedScopedReadCancelled(control)) { return false; }
-  if (!FileExistsAndNotEmpty(path)) {
+  const auto existence_started = std::chrono::steady_clock::now();
+  const bool file_exists = FileExistsAndNotEmpty(path);
+  if (!AccountHeapReadWait(control, existence_started)) return false;
+  if (!file_exists) {
     if (control != nullptr && authorized_file_bytes != 0) {
       control->refusal_detail =
           "heap_read_scoped_binary_changed_during_read";
@@ -3962,8 +4030,12 @@ bool LoadDecodedScopedRowsForTableBounded(
   const std::string text_path = ScopedRowStorePath(context, table_uuid);
   const std::string binary_path =
       ScopedRowBinaryStorePath(context, table_uuid);
+  const auto text_existence_started = std::chrono::steady_clock::now();
   const bool text_exists = FileExistsAndNotEmpty(text_path);
+  if (!AccountHeapReadWait(control, text_existence_started)) return false;
+  const auto binary_existence_started = std::chrono::steady_clock::now();
   const bool binary_exists = FileExistsAndNotEmpty(binary_path);
+  if (!AccountHeapReadWait(control, binary_existence_started)) return false;
   if (!text_exists && !binary_exists) { return true; }
   if (used_segment != nullptr) { *used_segment = true; }
 
@@ -3971,7 +4043,9 @@ bool LoadDecodedScopedRowsForTableBounded(
                                   std::uint64_t* authorized_file_bytes) {
     if (authorized_file_bytes == nullptr) { return false; }
     std::error_code ignored;
+    const auto size_started = std::chrono::steady_clock::now();
     const auto size = std::filesystem::file_size(path, ignored);
+    if (!AccountHeapReadWait(control, size_started)) return false;
     if (ignored || size == static_cast<std::uintmax_t>(-1) ||
         size > std::numeric_limits<std::uint64_t>::max()) {
       control->refusal_detail = "heap_read_scoped_segment_size_unavailable";
@@ -3993,7 +4067,10 @@ bool LoadDecodedScopedRowsForTableBounded(
   std::unordered_map<std::string, std::string> row_value_key_cache;
   row_value_key_cache.reserve(64);
   if (text_exists) {
-    std::ifstream input(text_path, std::ios::binary);
+    std::ifstream input;
+    const auto open_started = std::chrono::steady_clock::now();
+    input.open(text_path, std::ios::binary);
+    if (!AccountHeapReadWait(control, open_started)) return false;
     if (!input) {
       control->refusal_detail = "heap_read_scoped_text_open_failed";
       return false;
@@ -4035,7 +4112,9 @@ bool LoadDecodedScopedRowsForTableBounded(
                                         : static_cast<std::size_t>(std::min<
                                               std::uint64_t>(remaining,
                                                              kReadChunkBytes));
+      const auto read_started = std::chrono::steady_clock::now();
       input.read(chunk, static_cast<std::streamsize>(requested));
+      if (!AccountHeapReadWait(control, read_started)) return false;
       const std::streamsize read_count = input.gcount();
       if (read_count < 0 ||
           static_cast<std::uint64_t>(read_count) > remaining) {
@@ -4043,6 +4122,10 @@ bool LoadDecodedScopedRowsForTableBounded(
         return false;
       }
       actual_text_bytes += static_cast<std::uint64_t>(read_count);
+      if (!AccountHeapStorageBytes(
+              control, static_cast<std::uint64_t>(read_count))) {
+        return false;
+      }
       std::size_t begin = 0;
       const std::size_t count = static_cast<std::size_t>(read_count);
       for (std::size_t index = 0; index < count; ++index) {
@@ -6422,10 +6505,10 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
   return result;
 }
 
-// QOW-SOURCE-QRY-004-HEAP-MGA-V1
-MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelation(
+static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
     const EngineRequestContext& context,
-    const MgaVisibleHeapRelationReadRequest& request) {
+    const MgaVisibleHeapRelationReadRequest& request,
+    HeapReadRuntimeObservation* runtime_observation) {
   MgaVisibleHeapRelationReadResult result;
   const auto refuse = [&](EngineApiDiagnostic diagnostic,
                           const BoundedScopedRowReadControl* control = nullptr) {
@@ -6534,6 +6617,7 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelation(
   control.maximum_row_versions = request.maximum_scanned_row_versions;
   control.maximum_bytes = request.maximum_decoded_bytes;
   control.cancellation_requested = request.cancellation_requested;
+  control.runtime_observation = runtime_observation;
   std::vector<CrudRowVersionRecord> row_versions;
   bool used_segment = false;
   if (!LoadDecodedScopedRowsForTableBounded(context,
@@ -6642,6 +6726,13 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelation(
   result.evidence.push_back(
       {"mga_heap_read_parser_or_candidate_authority", "false"});
   return result;
+}
+
+// QOW-SOURCE-QRY-004-HEAP-MGA-V1
+MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelation(
+    const EngineRequestContext& context,
+    const MgaVisibleHeapRelationReadRequest& request) {
+  return ReadVisibleMgaHeapRelationObserved(context, request, nullptr);
 }
 
 EngineApiDiagnostic AppendMgaRowVersion(const EngineRequestContext& context,
@@ -10952,7 +11043,9 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   read_request.maximum_decoded_bytes = maximum_bytes;
   read_request.maximum_output_rows = maximum_output;
   read_request.cancellation_requested = request.cancellation_requested;
-  const auto read = api::ReadVisibleMgaHeapRelation(context, read_request);
+  api::HeapReadRuntimeObservation runtime_observation;
+  const auto read = api::ReadVisibleMgaHeapRelationObserved(
+      context, read_request, &runtime_observation);
   if (!read.ok) {
     return invalid(read.diagnostic.code.empty()
                        ? "QOW-DIAG-QRY-004-HEAP-READ-V1"
@@ -11165,6 +11258,11 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   result.counters.scanned_row_version_count =
       read.scanned_row_version_count;
   result.counters.decoded_byte_count = read.decoded_byte_count;
+  result.runtime_operator_wait_ns = runtime_observation.operator_wait_ns;
+  result.runtime_storage_bytes_read =
+      runtime_observation.storage_bytes_read;
+  result.runtime_decoded_bytes = runtime_observation.decoded_bytes;
+  result.runtime_observation_complete = runtime_observation.complete;
   result.counters.visibility_recheck_count = read.visibility_recheck_count;
   result.counters.invisible_row_version_count =
       read.invisible_row_version_count;
@@ -11211,6 +11309,33 @@ struct HeapPhysicalExecutorState {
   CanonicalExecutionMgaAuthority mga_authority;
   std::optional<CanonicalHeapTableSampleProfile> table_sample_profile;
 };
+
+bool HeapRuntimeBatchPayloadBytes(const DescriptorBatch& batch,
+                                  std::uint64_t* bytes) {
+  if (bytes == nullptr) return false;
+  for (const auto& row : batch.rows) {
+    for (const auto& value : row.values) {
+      if (value.encoded_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.encoded_value.size();
+    }
+  }
+  return true;
+}
+
+bool HeapRuntimeStringPayloadBytes(const std::vector<std::string>& values,
+                                   std::uint64_t* bytes) {
+  if (bytes == nullptr) return false;
+  for (const auto& value : values) {
+    if (value.size() > std::numeric_limits<std::uint64_t>::max() - *bytes) {
+      return false;
+    }
+    *bytes += value.size();
+  }
+  return true;
+}
 
 struct HeapPhysicalRegistrationBuildResult {
   DescriptorRuntimeDiagnostic diagnostic;
@@ -11580,6 +11705,7 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
       heap_nodes.front()->executor_capability_abi_version;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 = true;
   registration.execute =
       [state, observation = result.observation](
           const TypedPhysicalNodeDag& dispatched_dag,
@@ -11724,6 +11850,12 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
           step.diagnostic = std::move(acquisition.diagnostic);
           return step;
         }
+        if (!acquisition.runtime_observation_complete) {
+          step.diagnostic = HeapAcquisitionRefusal(
+              "QOW-DIAG-OPT-017-REFUSAL-V1",
+              "heap_runtime_observation_incomplete");
+          return step;
+        }
         if (!PhysicalMgaStatementContextEqual(
                 acquisition.mga_statement_context,
                 state->mga_authority.statement_context)) {
@@ -11738,6 +11870,22 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
           step.diagnostic = callback_result;
           return step;
         }
+
+        std::uint64_t pre_sample_resident_bytes = 1;
+        if (!HeapRuntimeBatchPayloadBytes(acquisition.output_batch,
+                                          &pre_sample_resident_bytes) ||
+            !HeapRuntimeStringPayloadBytes(
+                acquisition.emitted_record_uuids,
+                &pre_sample_resident_bytes) ||
+            !HeapRuntimeStringPayloadBytes(
+                acquisition.emitted_row_version_uuids,
+                &pre_sample_resident_bytes)) {
+          step.diagnostic = HeapAcquisitionRefusal(
+              "QOW-DIAG-OPT-017-REFUSAL-V1",
+              "heap_runtime_observation_resident_overflow");
+          return step;
+        }
+        std::uint64_t sample_auxiliary_bytes = 0;
 
         std::optional<CanonicalHeapTableSampleActuals> sample_actuals;
         if (state->table_sample_profile.has_value()) {
@@ -11763,6 +11911,16 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
                 sampled.diagnostic_code, sampled.detail);
             return step;
           }
+          if (sampled.selected_row_indices.size() >
+              std::numeric_limits<std::uint64_t>::max() /
+                  sizeof(std::size_t)) {
+            step.diagnostic = HeapAcquisitionRefusal(
+                "QOW-DIAG-OPT-017-REFUSAL-V1",
+                "heap_runtime_observation_sample_memory_overflow");
+            return step;
+          }
+          sample_auxiliary_bytes =
+              sampled.selected_row_indices.size() * sizeof(std::size_t);
           std::size_t sampled_output_cell_count = 0;
           if (sampled.selected_row_indices.size() >
                   state->maximum_output_rows ||
@@ -11838,6 +11996,94 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
             acquisition.current_relation_descriptor_uuid;
         step.current_relation_descriptor_generation =
             acquisition.current_relation_descriptor_generation;
+        const auto observed = [](const std::uint64_t value) {
+          return CanonicalObservedUint64{
+              CanonicalRuntimeMetricState::kObserved, value};
+        };
+        const auto not_applicable = [] {
+          return CanonicalObservedUint64{
+              CanonicalRuntimeMetricState::kNotApplicable, 0};
+        };
+        std::uint64_t current_memory_bytes = 1;
+        std::uint64_t peak_memory_bytes = pre_sample_resident_bytes;
+        std::uint64_t sampled_transient_bytes = 1;
+        if (!HeapRuntimeBatchPayloadBytes(acquisition.output_batch,
+                                          &current_memory_bytes) ||
+            (state->table_sample_profile.has_value() &&
+             (!HeapRuntimeBatchPayloadBytes(acquisition.output_batch,
+                                            &sampled_transient_bytes) ||
+              !HeapRuntimeStringPayloadBytes(
+                  acquisition.emitted_record_uuids,
+                  &sampled_transient_bytes) ||
+              !HeapRuntimeStringPayloadBytes(
+                  acquisition.emitted_row_version_uuids,
+                  &sampled_transient_bytes))) ||
+            acquisition.runtime_decoded_bytes >
+                std::numeric_limits<std::uint64_t>::max() -
+                    peak_memory_bytes ||
+            (state->table_sample_profile.has_value() &&
+             sampled_transient_bytes >
+                std::numeric_limits<std::uint64_t>::max() -
+                    peak_memory_bytes -
+                    acquisition.runtime_decoded_bytes) ||
+            sample_auxiliary_bytes >
+                std::numeric_limits<std::uint64_t>::max() -
+                    peak_memory_bytes -
+                    acquisition.runtime_decoded_bytes -
+                    (state->table_sample_profile.has_value()
+                         ? sampled_transient_bytes
+                         : 0)) {
+          step.diagnostic = HeapAcquisitionRefusal(
+              "QOW-DIAG-OPT-017-REFUSAL-V1",
+              "heap_runtime_observation_memory_overflow");
+          return step;
+        }
+        // Decoded payload is a separately allocated acquisition buffer that
+        // remains resident while the returned typed batch and identity
+        // carriers are assembled; it is therefore peak-only, not a second
+        // accounting of the batch's encoded values.
+        peak_memory_bytes += acquisition.runtime_decoded_bytes;
+        if (state->table_sample_profile.has_value()) {
+          // The source visible batch, the growing sampled batch, and the
+          // sampled identity/index vectors coexist until source replacement.
+          peak_memory_bytes += sampled_transient_bytes;
+        }
+        peak_memory_bytes += sample_auxiliary_bytes;
+        peak_memory_bytes =
+            std::max(peak_memory_bytes, current_memory_bytes);
+        auto& runtime = step.runtime_observation;
+        runtime.abi_version = 1;
+        runtime.operator_wait_ns =
+            observed(acquisition.runtime_operator_wait_ns);
+        runtime.current_memory_bytes = observed(current_memory_bytes);
+        runtime.peak_memory_bytes = observed(peak_memory_bytes);
+        runtime.decoded_bytes =
+            observed(acquisition.runtime_decoded_bytes);
+        runtime.bytes_read =
+            observed(acquisition.runtime_storage_bytes_read);
+        runtime.bytes_written = not_applicable();
+        runtime.pages_read = not_applicable();
+        runtime.pages_written = not_applicable();
+        runtime.spill_bytes_read = observed(0);
+        runtime.spill_bytes_written = observed(0);
+        runtime.visibility_recheck_count =
+            observed(acquisition.counters.visibility_recheck_count);
+        runtime.security_recheck_count =
+            acquisition.authority.engine_authorization_rechecked
+                ? observed(1)
+                : CanonicalObservedUint64{};
+        runtime.storage_recheck_count =
+            acquisition.authority.engine_catalog_descriptor_loaded
+                ? observed(1)
+                : CanonicalObservedUint64{};
+        runtime.index_recheck_count = not_applicable();
+        runtime.residual_recheck_count = not_applicable();
+        runtime.compatibility_recheck_count = not_applicable();
+        runtime.archive_bytes_read = not_applicable();
+        runtime.cluster_bytes_sent = not_applicable();
+        runtime.cluster_bytes_received = not_applicable();
+        runtime.authority.engine_execution_observation = true;
+        runtime.producer_receipt_complete = true;
         step.materialized_output_batch = std::move(acquisition.output_batch);
         step.mga_statement_context = state->mga_authority.statement_context;
         return step;

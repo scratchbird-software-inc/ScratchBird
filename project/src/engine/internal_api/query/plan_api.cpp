@@ -2424,6 +2424,1086 @@ ExecuteCanonicalExecutablePlanAfterSingleReprepare(
 }
 // QOW-ROUTE-STAGE-OPT-010-REPREPARE-V1-END
 
+// QOW-SOURCE-QRY-022-V1
+// Immutable stored-plan rendering. Plain EXPLAIN reads only retained planning
+// evidence. ANALYZE consumes a completed engine dispatch receipt and never
+// invokes an executor, optimizer, planner, parser, clock, storage reader, or
+// transaction-finality route.
+scratchbird::engine::optimizer::CanonicalExplainResult
+RenderCanonicalStoredPlanExplain(
+    const scratchbird::engine::optimizer::CanonicalExplainRequest& request) {
+  namespace cache = scratchbird::engine::optimizer;
+  namespace metric = scratchbird::engine::executor;
+  cache::CanonicalExplainResult result;
+  const auto refuse = [&](std::string field_id) {
+    result = {};
+    auto issue = cache::CanonicalExecutablePlanIssue(
+        "QOW-DIAG-OPT-017-REFUSAL-V1", std::move(field_id), "error",
+        request.mode == cache::CanonicalExplainMode::kAnalyze ? "execute"
+                                                              : "plan");
+    issue.record_path = "explain";
+    result.issues.push_back(std::move(issue));
+    return result;
+  };
+  const auto warning = [&](const std::string& diagnostic_id) {
+    if (std::ranges::any_of(result.issues, [&](const auto& issue) {
+          return issue.diagnostic_id == diagnostic_id;
+        })) {
+      return;
+    }
+    auto issue = cache::CanonicalExecutablePlanIssue(
+        diagnostic_id, "protected_detail", "warning", "plan");
+    issue.record_path = "explain";
+    issue.transaction_effect = "unchanged";
+    result.issues.push_back(std::move(issue));
+  };
+  const auto refuse_engine_diagnostic = [&](const std::string& diagnostic_id,
+                                             const std::string& detail) {
+    result = {};
+    auto issue = cache::CanonicalExecutablePlanIssue(
+        diagnostic_id.empty() ? "QOW-DIAG-OPT-017-REFUSAL-V1"
+                              : diagnostic_id,
+        (request.disclosure.security_detail_authorized &&
+         request.disclosure.route_detail_authorized &&
+         request.disclosure.object_existence_authorized &&
+         request.disclosure.object_names_authorized && !detail.empty())
+            ? detail
+            : "completed_engine_execution_refused",
+        "error", "execute");
+    issue.record_path = "explain";
+    result.issues.push_back(std::move(issue));
+    return result;
+  };
+  const auto forbidden_authority =
+      request.renderer_execution_authority_claimed ||
+      request.parser_execution_authority_claimed ||
+      request.transaction_visibility_authority_claimed ||
+      request.transaction_finality_authority_claimed ||
+      request.recovery_authority_claimed ||
+      request.feedback_authority_claimed ||
+      request.benchmark_authority_claimed;
+  const auto mode_known =
+      request.mode == cache::CanonicalExplainMode::kPlain ||
+      request.mode == cache::CanonicalExplainMode::kAnalyze;
+  if (request.abi_version != 1 || !mode_known || !request.prepared_plan ||
+      forbidden_authority) {
+    return refuse("renderer_authority_or_request");
+  }
+  const auto& disclosure = request.disclosure;
+  if (disclosure.abi_version != 1 ||
+      !cache::CanonicalExecutablePlanUuid(disclosure.request_uuid) ||
+      !cache::CanonicalExecutablePlanUuid(disclosure.subject_uuid) ||
+      !cache::CanonicalExecutablePlanUuid(disclosure.redaction_policy_uuid) ||
+      !disclosure.engine_plan_read_authorized ||
+      (disclosure.object_names_authorized &&
+       !disclosure.object_existence_authorized) ||
+      ((disclosure.cardinality_cost_authorized ||
+        disclosure.actual_profile_authorized ||
+        disclosure.security_detail_authorized ||
+        disclosure.route_detail_authorized ||
+        disclosure.cluster_detail_authorized ||
+        disclosure.archive_detail_authorized ||
+        disclosure.donor_detail_authorized ||
+        disclosure.invalidation_detail_authorized) &&
+       !disclosure.plan_shape_authorized) ||
+      (disclosure.bucket_hidden_cardinality &&
+       disclosure.cardinality_cost_authorized) ||
+      (disclosure.actual_profile_authorized &&
+       !disclosure.cardinality_cost_authorized) ||
+      disclosure.parser_policy_authority_claimed ||
+      disclosure.transaction_visibility_authority_claimed ||
+      disclosure.transaction_finality_authority_claimed ||
+      disclosure.recovery_authority_claimed) {
+    return refuse("disclosure_authority");
+  }
+  const auto canonical_uuid = [](const std::string& value) {
+    return cache::CanonicalExecutablePlanUuid(value);
+  };
+  const auto known_lifecycle = [](const auto status) {
+    return status >= cache::CanonicalExecutablePlanStatus::kValid &&
+           status <= cache::CanonicalExecutablePlanStatus::kBlocked;
+  };
+  const auto optional_uuid = [&](const std::string& value) {
+    return value.empty() || canonical_uuid(value);
+  };
+  const auto valid_implementation_id = [](const std::string_view value) {
+    return !value.empty() && value.size() <= 128 &&
+           std::ranges::all_of(value, [](const unsigned char ch) {
+             return (ch >= 'a' && ch <= 'z') ||
+                    (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ||
+                    ch == '-';
+           });
+  };
+  const auto& plan = *request.prepared_plan;
+  if (plan.abi_version != 1 ||
+      !plan.immutable_physical_identity_retained ||
+      !plan.complete_cost_vectors_retained || plan.parameter_values_retained ||
+      plan.prepare_statement_authority_retained ||
+      plan.execution_authority_granted || !plan.explain_evidence.has_value() ||
+      !canonical_uuid(plan.prepared_plan_uuid) ||
+      plan.prepare_generation == 0 ||
+      !canonical_uuid(plan.parameter_shape_uuid) ||
+      !canonical_uuid(plan.result_schema_uuid) ||
+      !canonical_uuid(plan.selected_plan_uuid) ||
+      plan.selected_plan_signature.empty() || plan.selected_scalar_score == 0 ||
+      plan.root_physical_node_id == 0 || plan.published_node_count == 0 ||
+      plan.first_causal_counter_id == 0 ||
+      !canonical_uuid(plan.bound_sblr_tree_uuid) ||
+      !canonical_uuid(plan.catalog_epoch_uuid) ||
+      !canonical_uuid(plan.security_context_uuid) ||
+      !canonical_uuid(plan.capability_snapshot_uuid) ||
+      !canonical_uuid(plan.resource_snapshot_uuid) ||
+      !canonical_uuid(plan.statistics_snapshot_uuid) ||
+      !canonical_uuid(plan.route_snapshot_uuid) ||
+      plan.catalog_generation == 0 || plan.security_epoch == 0 ||
+      plan.policy_epoch == 0 || plan.resource_epoch == 0 ||
+      plan.statistics_generation == 0 || plan.route_epoch == 0 ||
+      plan.route_generation == 0 || plan.memory_budget_bytes == 0 ||
+      !known_lifecycle(request.lifecycle_status) ||
+      disclosure.security_epoch != plan.security_epoch ||
+      disclosure.policy_epoch != plan.policy_epoch) {
+    return refuse("stored_plan_or_policy_identity");
+  }
+  const bool cache_state_valid =
+      (!request.cache_hit || request.cache_entry_present) &&
+      (!request.reprepare_succeeded || request.reprepare_attempted) &&
+      (request.reprepare_succeeded ||
+       request.replacement_prepared_plan_uuid.empty()) &&
+      (request.reprepare_attempted
+           ? request.reprepare_attempt_count == 1
+           : (request.reprepare_attempt_count == 0 &&
+              request.replacement_prepared_plan_uuid.empty())) &&
+      (!request.reprepare_succeeded ||
+       cache::CanonicalExecutablePlanUuid(
+           request.replacement_prepared_plan_uuid));
+  const bool invalidation_valid =
+      !request.invalidation.has_value() ||
+      (request.invalidation->invalidated &&
+       request.invalidation->invalidation_generation != 0 &&
+       request.invalidation->prepared_plan_uuid == plan.prepared_plan_uuid &&
+       request.lifecycle_status ==
+           cache::CanonicalExecutablePlanStatus::kInvalid);
+  const bool lifecycle_invalidation_coherent =
+      (request.lifecycle_status !=
+           cache::CanonicalExecutablePlanStatus::kValid ||
+       !request.invalidation.has_value()) &&
+      (request.lifecycle_status !=
+           cache::CanonicalExecutablePlanStatus::kInvalid ||
+       request.invalidation.has_value());
+  if (!cache_state_valid || !invalidation_valid ||
+      !lifecycle_invalidation_coherent) {
+    return refuse("cache_lifecycle_evidence");
+  }
+  if (request.mode == cache::CanonicalExplainMode::kAnalyze &&
+      (request.lifecycle_status !=
+           cache::CanonicalExecutablePlanStatus::kValid ||
+       request.invalidation.has_value())) {
+    return refuse("non_executable_plan_lifecycle");
+  }
+  const auto& evidence = *plan.explain_evidence;
+  if (evidence.abi_version != 1 || !evidence.complete ||
+      !evidence.engine_planning_evidence ||
+      evidence.parser_execution_authority_claimed ||
+      evidence.transaction_visibility_authority_claimed ||
+      evidence.transaction_finality_authority_claimed ||
+      evidence.recovery_authority_claimed ||
+      evidence.feedback_authority_claimed ||
+      evidence.benchmark_authority_claimed ||
+      evidence.selected_plan_uuid != plan.selected_plan_uuid ||
+      evidence.selected_plan_signature != plan.selected_plan_signature ||
+      evidence.bound_sblr_tree_uuid != plan.bound_sblr_tree_uuid ||
+      evidence.statistics_snapshot_uuid != plan.statistics_snapshot_uuid ||
+      evidence.statistics_generation != plan.statistics_generation ||
+      evidence.node_estimates.size() != plan.nodes.size() ||
+      evidence.stages.empty() || evidence.candidates.empty()) {
+    return refuse("stored_planning_evidence_identity");
+  }
+  const auto same_cost = [](const metric::PhysicalCostVectorReceipt& left,
+                            const metric::PhysicalCostVectorReceipt& right) {
+    return left.cost_vector_uuid == right.cost_vector_uuid &&
+           left.calibration_profile_uuid == right.calibration_profile_uuid &&
+           left.scalar_score == right.scalar_score &&
+           left.cpu_units == right.cpu_units &&
+           left.page_read_sequential_units ==
+               right.page_read_sequential_units &&
+           left.page_read_random_units == right.page_read_random_units &&
+           left.page_write_units == right.page_write_units &&
+           left.memory_bytes_required == right.memory_bytes_required &&
+           left.spill_bytes_expected == right.spill_bytes_expected &&
+           left.network_bytes_expected == right.network_bytes_expected &&
+           left.mga_visibility_checks_expected ==
+               right.mga_visibility_checks_expected &&
+           left.archive_fetches_expected == right.archive_fetches_expected &&
+           left.uncertainty_penalty == right.uncertainty_penalty &&
+           left.risk_penalty == right.risk_penalty &&
+           left.confidence == right.confidence;
+  };
+  std::unordered_set<std::uint64_t> physical_ids;
+  std::unordered_set<std::uint32_t> logical_ids;
+  std::unordered_set<std::uint32_t> descriptor_ids;
+  std::unordered_set<std::size_t> publication_ordinals;
+  std::unordered_set<std::uint64_t> causal_counter_ids;
+  std::uint64_t retained_selected_scalar_score = 0;
+  for (const auto& node : plan.nodes) {
+    std::unordered_set<std::uint32_t> node_output_descriptors;
+    std::unordered_set<std::string> required_properties;
+    std::unordered_set<std::string> delivered_properties;
+    std::unordered_set<std::string> enforced_properties;
+    const auto valid_properties = [&](const auto& properties, auto* unique) {
+      return std::ranges::all_of(properties, [&](const auto& property_uuid) {
+        return canonical_uuid(property_uuid) &&
+               unique->insert(property_uuid).second;
+      });
+    };
+    std::uint64_t retained_scalar_score = 0;
+    const auto add_cost = [&](const std::uint64_t term) {
+      if (term > std::numeric_limits<std::uint64_t>::max() -
+                     retained_scalar_score) {
+        return false;
+      }
+      retained_scalar_score += term;
+      return true;
+    };
+    const auto& cost = node.retained_cost;
+    const bool causal_counter_overflow =
+        node.publication_ordinal >
+        std::numeric_limits<std::uint64_t>::max() -
+            plan.first_causal_counter_id;
+    const auto expected_causal_counter =
+        causal_counter_overflow
+            ? 0
+            : plan.first_causal_counter_id + node.publication_ordinal;
+    if (node.physical_node_id == 0 || node.relational_node_id == 0 ||
+        node.physical_node_id != node.relational_node_id ||
+        node.node_kind < metric::PhysicalNodeKind::kScan ||
+        node.node_kind > metric::PhysicalNodeKind::kTableFunctionInvoke ||
+        node.causal_counter_id == 0 ||
+        !causal_counter_ids.insert(node.causal_counter_id).second ||
+        causal_counter_overflow ||
+        node.causal_counter_id != expected_causal_counter ||
+        !valid_implementation_id(node.implementation_id) ||
+        !valid_implementation_id(node.logical_semantic_variant_id) ||
+        !canonical_uuid(node.selected_alternative_uuid) ||
+        !canonical_uuid(node.transformation_uuid) ||
+        !valid_implementation_id(node.transformation_rule_id) ||
+        !canonical_uuid(node.executor_capability_uuid) ||
+        node.executor_capability_abi_version != 1 ||
+        !canonical_uuid(node.cost_vector_uuid) ||
+        cost.cost_vector_uuid != node.cost_vector_uuid ||
+        !canonical_uuid(cost.calibration_profile_uuid) ||
+        cost.confidence > 3 ||
+        cost.memory_bytes_required != node.memory_bytes_required ||
+        cost.spill_bytes_expected != node.spill_bytes_expected ||
+        !add_cost(cost.cpu_units) ||
+        !add_cost(cost.page_read_sequential_units) ||
+        !add_cost(cost.page_read_random_units) ||
+        !add_cost(cost.page_write_units) ||
+        !add_cost(cost.memory_bytes_required) ||
+        !add_cost(cost.spill_bytes_expected) ||
+        !add_cost(cost.network_bytes_expected) ||
+        !add_cost(cost.mga_visibility_checks_expected) ||
+        !add_cost(cost.archive_fetches_expected) ||
+        !add_cost(cost.uncertainty_penalty) ||
+        !add_cost(cost.risk_penalty) ||
+        retained_scalar_score != cost.scalar_score ||
+        (node.node_kind == metric::PhysicalNodeKind::kScan &&
+         cost.mga_visibility_checks_expected == 0) ||
+        node.memory_bytes_required == 0 || node.output_descriptor_ids.empty() ||
+        node.memory_bytes_required > plan.memory_budget_bytes ||
+        (!plan.spill_allowed && node.spill_bytes_expected != 0) ||
+        !valid_properties(node.required_property_uuids,
+                          &required_properties) ||
+        !valid_properties(node.delivered_property_uuids,
+                          &delivered_properties) ||
+        !valid_properties(node.enforced_property_uuids,
+                          &enforced_properties) ||
+        !std::ranges::all_of(
+            node.enforced_property_uuids,
+            [&](const auto& property_uuid) {
+              return delivered_properties.contains(property_uuid);
+            }) ||
+        !std::ranges::all_of(node.output_descriptor_ids,
+                            [&](const auto descriptor_id) {
+                              return descriptor_id != 0 &&
+                                     node_output_descriptors
+                                         .insert(descriptor_id)
+                                         .second;
+                            }) ||
+        node.publication_ordinal >= plan.nodes.size() ||
+        !publication_ordinals.insert(node.publication_ordinal).second ||
+        node.retained_cost.scalar_score >
+            std::numeric_limits<std::uint64_t>::max() -
+                retained_selected_scalar_score ||
+        !physical_ids.insert(node.physical_node_id).second ||
+        !logical_ids.insert(node.relational_node_id).second) {
+      return refuse("stored_node_structural_evidence");
+    }
+    retained_selected_scalar_score += node.retained_cost.scalar_score;
+    descriptor_ids.insert(node.output_descriptor_ids.begin(),
+                          node.output_descriptor_ids.end());
+  }
+  std::vector<const cache::CanonicalPreparedPhysicalNode*> canonical_nodes;
+  canonical_nodes.reserve(plan.nodes.size());
+  for (const auto& node : plan.nodes) canonical_nodes.push_back(&node);
+  std::ranges::sort(canonical_nodes, {},
+                    &cache::CanonicalPreparedPhysicalNode::relational_node_id);
+  std::string retained_selected_plan_signature;
+  for (const auto* node : canonical_nodes) {
+    retained_selected_plan_signature +=
+        std::to_string(node->relational_node_id) + "=" +
+        node->selected_alternative_uuid + ";";
+  }
+  if (retained_selected_plan_signature != plan.selected_plan_signature ||
+      retained_selected_scalar_score != plan.selected_scalar_score) {
+    return refuse("stored_selected_plan_identity");
+  }
+  for (const auto& node : plan.nodes) {
+    if (std::ranges::any_of(node.input_physical_node_ids,
+                            [&](const auto input_id) {
+                              const auto input = std::ranges::find_if(
+                                  plan.nodes, [&](const auto& candidate) {
+                                    return candidate.physical_node_id ==
+                                           input_id;
+                                  });
+                              return input_id == node.physical_node_id ||
+                                     input == plan.nodes.end() ||
+                                     input->publication_ordinal >=
+                                         node.publication_ordinal;
+                            })) {
+      return refuse("stored_node_input_evidence");
+    }
+  }
+  const auto root_node = std::ranges::find_if(
+      plan.nodes, [&](const auto& node) {
+        return node.physical_node_id == plan.root_physical_node_id;
+      });
+  if (plan.nodes.size() != plan.published_node_count ||
+      root_node == plan.nodes.end() ||
+      plan.result_descriptors.size() != root_node->output_descriptor_ids.size()) {
+    return refuse("stored_plan_structural_coverage");
+  }
+  std::unordered_set<std::uint64_t> reachable_nodes;
+  std::vector<std::uint64_t> reachability_work = {
+      plan.root_physical_node_id};
+  while (!reachability_work.empty()) {
+    const auto physical_node_id = reachability_work.back();
+    reachability_work.pop_back();
+    if (!reachable_nodes.insert(physical_node_id).second) continue;
+    const auto node = std::ranges::find_if(
+        plan.nodes, [&](const auto& candidate) {
+          return candidate.physical_node_id == physical_node_id;
+        });
+    if (node == plan.nodes.end()) {
+      return refuse("stored_plan_structural_coverage");
+    }
+    reachability_work.insert(reachability_work.end(),
+                             node->input_physical_node_ids.begin(),
+                             node->input_physical_node_ids.end());
+  }
+  if (reachable_nodes.size() != plan.nodes.size()) {
+    return refuse("stored_plan_structural_coverage");
+  }
+  std::unordered_set<std::uint32_t> result_descriptor_ids;
+  std::unordered_set<std::string> result_descriptor_uuids;
+  for (std::size_t index = 0; index < plan.result_descriptors.size(); ++index) {
+    const auto& descriptor = plan.result_descriptors[index];
+    if (descriptor.ordinal != index + 1 || descriptor.descriptor_id == 0 ||
+        descriptor.descriptor_id != root_node->output_descriptor_ids[index] ||
+        !result_descriptor_ids.insert(descriptor.descriptor_id).second ||
+        !canonical_uuid(descriptor.descriptor_uuid) ||
+        !result_descriptor_uuids.insert(descriptor.descriptor_uuid).second ||
+        !canonical_uuid(descriptor.type_uuid) ||
+        !optional_uuid(descriptor.domain_uuid) ||
+        !optional_uuid(descriptor.collation_uuid) ||
+        !optional_uuid(descriptor.timezone_uuid) ||
+        !cache::CanonicalExecutablePlanDigest(
+            descriptor.type_modifier_digest)) {
+      return refuse("stored_result_descriptor_evidence");
+    }
+  }
+  if (plan.dependencies.empty()) {
+    return refuse("stored_dependency_evidence");
+  }
+  std::string previous_dependency;
+  for (const auto& dependency : plan.dependencies) {
+    const auto key =
+        std::to_string(static_cast<std::uint8_t>(
+            dependency.dependency_kind)) +
+        ":" + dependency.dependency_uuid;
+    if (dependency.dependency_kind <
+            cache::CanonicalPreparedPlanDependencyKind::kObject ||
+        dependency.dependency_kind >
+            cache::CanonicalPreparedPlanDependencyKind::kCollation ||
+        !canonical_uuid(dependency.dependency_uuid) ||
+        dependency.generation == 0 ||
+        !cache::CanonicalExecutablePlanDigest(
+            dependency.definition_digest) ||
+        (!previous_dependency.empty() && key <= previous_dependency)) {
+      return refuse("stored_dependency_evidence");
+    }
+    previous_dependency = key;
+  }
+  for (std::size_t index = 0; index < evidence.stages.size(); ++index) {
+    const auto& stage = evidence.stages[index];
+    if (stage.ordinal != index + 1 || stage.stage_id.empty() ||
+        stage.outcome_id.empty()) {
+      return refuse("stored_explain_stage_evidence");
+    }
+  }
+  std::uint64_t previous_estimate_node = 0;
+  std::unordered_set<std::uint32_t> estimated_logical_ids;
+  for (const auto& estimate : evidence.node_estimates) {
+    const auto node = std::ranges::find_if(
+        plan.nodes, [&](const auto& item) {
+          return item.physical_node_id == estimate.physical_node_id;
+        });
+    if (estimate.physical_node_id <= previous_estimate_node ||
+        node == plan.nodes.end() ||
+        node->relational_node_id != estimate.logical_node_id ||
+        estimate.confidence_id.empty() ||
+        !estimated_logical_ids.insert(estimate.logical_node_id).second) {
+      return refuse("stored_explain_node_estimate_evidence");
+    }
+    previous_estimate_node = estimate.physical_node_id;
+  }
+  std::unordered_set<std::uint32_t> selected_logical_ids;
+  std::string previous_candidate;
+  for (const auto& candidate : evidence.candidates) {
+    const auto known_disposition =
+        candidate.disposition ==
+            cache::CanonicalPreparedExplainCandidateDisposition::kSelected ||
+        candidate.disposition ==
+            cache::CanonicalPreparedExplainCandidateDisposition::kRejected ||
+        candidate.disposition ==
+            cache::CanonicalPreparedExplainCandidateDisposition::kPruned;
+    const auto key = std::to_string(candidate.logical_node_id) + ":" +
+                     candidate.candidate_family_id + ":" +
+                     candidate.alternative_uuid + ":" +
+                     std::to_string(static_cast<std::uint8_t>(
+                         candidate.disposition));
+    if (!known_disposition ||
+        !logical_ids.contains(candidate.logical_node_id) ||
+        candidate.candidate_family_id.empty() ||
+        !canonical_uuid(candidate.alternative_uuid) ||
+        candidate.confidence_id.empty() ||
+        (!previous_candidate.empty() && key <= previous_candidate) ||
+        (candidate.disposition !=
+             cache::CanonicalPreparedExplainCandidateDisposition::kSelected &&
+         candidate.reason_id.empty())) {
+      return refuse("stored_explain_candidate_evidence");
+    }
+    previous_candidate = key;
+    if (candidate.disposition ==
+        cache::CanonicalPreparedExplainCandidateDisposition::kSelected) {
+      const auto node = std::ranges::find_if(
+          plan.nodes, [&](const auto& item) {
+            return item.relational_node_id == candidate.logical_node_id &&
+                   item.selected_alternative_uuid ==
+                       candidate.alternative_uuid;
+          });
+      const auto estimate = std::ranges::find_if(
+          evidence.node_estimates, [&](const auto& item) {
+            return node != plan.nodes.end() &&
+                   item.physical_node_id == node->physical_node_id;
+          });
+      if (node == plan.nodes.end() ||
+          estimate == evidence.node_estimates.end() ||
+          candidate.estimated_rows != estimate->estimated_output_rows ||
+          candidate.confidence_id != estimate->confidence_id ||
+          !same_cost(candidate.retained_cost, node->retained_cost) ||
+          !selected_logical_ids.insert(candidate.logical_node_id).second) {
+        return refuse("stored_explain_selected_candidate_evidence");
+      }
+    }
+  }
+  if (selected_logical_ids.size() != plan.nodes.size()) {
+    return refuse("stored_explain_selected_candidate_evidence");
+  }
+  std::string previous_barrier;
+  for (const auto& barrier : evidence.barriers) {
+    const auto key = std::to_string(barrier.logical_node_id) + ":" +
+                     barrier.barrier_kind_id + ":" + barrier.reason_id;
+    if (!logical_ids.contains(barrier.logical_node_id) ||
+        barrier.barrier_kind_id.empty() || barrier.reason_id.empty() ||
+        (!previous_barrier.empty() && key <= previous_barrier)) {
+      return refuse("stored_explain_barrier_evidence");
+    }
+    previous_barrier = key;
+  }
+  std::string previous_statistic;
+  for (const auto& statistic : evidence.statistics) {
+    const auto known_state =
+        statistic.state == cache::CanonicalPreparedExplainStatisticState::kUsed ||
+        statistic.state ==
+            cache::CanonicalPreparedExplainStatisticState::kMissing ||
+        statistic.state ==
+            cache::CanonicalPreparedExplainStatisticState::kNotApplicable;
+    if (!canonical_uuid(statistic.statistic_uuid) || !known_state ||
+        statistic.confidence_id.empty() ||
+        (!previous_statistic.empty() &&
+         statistic.statistic_uuid <= previous_statistic)) {
+      return refuse("stored_explain_statistic_evidence");
+    }
+    previous_statistic = statistic.statistic_uuid;
+  }
+  std::string previous_assumption;
+  for (const auto& assumption : evidence.assumptions) {
+    const auto key = assumption.category_id + ":" + assumption.assumption_id;
+    if (assumption.category_id.empty() || assumption.assumption_id.empty() ||
+        (!previous_assumption.empty() && key <= previous_assumption)) {
+      return refuse("stored_explain_assumption_evidence");
+    }
+    previous_assumption = key;
+  }
+
+  auto& document = result.document;
+  document.mode = request.mode;
+  if (!disclosure.plan_shape_authorized) {
+    document = {};
+    document.mode = request.mode;
+    document.redacted = true;
+    document.immutable_stored_plan_rendered = true;
+    result.accepted = true;
+    warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+    return result;
+  }
+
+  document.lifecycle_status = request.lifecycle_status;
+  document.cache_entry_present = request.cache_entry_present;
+  document.cache_hit = request.cache_hit;
+  document.reprepare_attempted = request.reprepare_attempted;
+  document.reprepare_succeeded = request.reprepare_succeeded;
+  document.reprepare_attempt_count = request.reprepare_attempt_count;
+  document.replacement_prepared_plan_uuid =
+      request.replacement_prepared_plan_uuid;
+  document.invalidation = request.invalidation;
+  document.prepared_plan_uuid = plan.prepared_plan_uuid;
+  document.prepare_generation = plan.prepare_generation;
+  document.selected_plan_uuid = plan.selected_plan_uuid;
+  document.selected_plan_signature = plan.selected_plan_signature;
+  document.bound_sblr_tree_uuid = plan.bound_sblr_tree_uuid;
+  document.result_schema_uuid = plan.result_schema_uuid;
+  document.root_physical_node_id = plan.root_physical_node_id;
+  document.published_node_count = plan.published_node_count;
+  document.search_strategy_id = disclosure.route_detail_authorized
+                                    ? evidence.search_strategy_id
+                                    : "redacted.route";
+  if (!disclosure.route_detail_authorized) {
+    document.selected_plan_signature.clear();
+    document.bound_sblr_tree_uuid.clear();
+    document.redacted = true;
+    warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+  }
+  for (const auto& stage : evidence.stages) {
+    if (stage.protected_detail &&
+        !disclosure.security_detail_authorized) {
+      document.redacted = true;
+      warning("diag.mga.optimizer.explain_redaction_required");
+      continue;
+    }
+    document.stages.push_back(stage);
+  }
+  document.result_descriptors = plan.result_descriptors;
+  document.dependencies = plan.dependencies;
+
+  const auto bucket = [](const std::uint64_t value) {
+    if (value <= 1) return value;
+    std::uint64_t result = 1;
+    while (result <= value / 2) result *= 2;
+    return result;
+  };
+  const auto redact_estimate = [&](std::uint64_t* value) {
+    if (disclosure.cardinality_cost_authorized) return;
+    *value = disclosure.bucket_hidden_cardinality ? bucket(*value) : 0;
+  };
+  for (const auto& candidate : evidence.candidates) {
+    if (candidate.protected_detail &&
+        !disclosure.object_existence_authorized) {
+      document.redacted = true;
+      warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+      continue;
+    }
+    cache::CanonicalExplainCandidateRecord rendered;
+    rendered.logical_node_id = candidate.logical_node_id;
+    rendered.disposition = candidate.disposition;
+    rendered.candidate_family_id = candidate.candidate_family_id;
+    rendered.alternative_uuid = candidate.alternative_uuid;
+    rendered.reason_id = candidate.reason_id;
+    rendered.estimated_rows = candidate.estimated_rows;
+    rendered.retained_cost = candidate.retained_cost;
+    if (!disclosure.object_names_authorized ||
+        !disclosure.route_detail_authorized ||
+        (candidate.protected_detail &&
+         !disclosure.security_detail_authorized)) {
+      rendered.candidate_family_id = "redacted.candidate";
+      rendered.alternative_uuid.clear();
+      rendered.reason_id.clear();
+      rendered.retained_cost.cost_vector_uuid.clear();
+      rendered.retained_cost.calibration_profile_uuid.clear();
+      rendered.identity_state = cache::CanonicalExplainFieldState::kRedacted;
+      document.redacted = true;
+      warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+    }
+    if (!disclosure.cardinality_cost_authorized) {
+      redact_estimate(&rendered.estimated_rows);
+      rendered.retained_cost = {};
+      rendered.estimate_state =
+          disclosure.bucket_hidden_cardinality
+              ? cache::CanonicalExplainFieldState::kBucketed
+              : cache::CanonicalExplainFieldState::kRedacted;
+      document.redacted = true;
+      warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+    }
+    document.candidates.push_back(std::move(rendered));
+  }
+  for (const auto& barrier : evidence.barriers) {
+    if (barrier.protected_detail &&
+        !disclosure.security_detail_authorized) {
+      document.redacted = true;
+      warning("diag.mga.optimizer.explain_redaction_required");
+      continue;
+    }
+    document.barriers.push_back(barrier);
+  }
+  for (const auto& statistic : evidence.statistics) {
+    if (statistic.protected_detail &&
+        (!disclosure.object_existence_authorized ||
+         !disclosure.security_detail_authorized)) {
+      document.redacted = true;
+      warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+      continue;
+    }
+    auto rendered = statistic;
+    if (!disclosure.object_names_authorized) {
+      rendered.statistic_uuid.clear();
+      document.redacted = true;
+      warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+    }
+    document.statistics.push_back(std::move(rendered));
+  }
+  const auto assumption_authorized = [&](const std::string& category) {
+    if (category == "security") return disclosure.security_detail_authorized;
+    if (category == "route") return disclosure.route_detail_authorized;
+    if (category == "cluster") return disclosure.cluster_detail_authorized;
+    if (category == "archive") return disclosure.archive_detail_authorized;
+    if (category == "donor") return disclosure.donor_detail_authorized;
+    if (category == "object" || category == "function" ||
+        category == "index" || category == "filespace") {
+      return disclosure.object_existence_authorized;
+    }
+    return true;
+  };
+  for (const auto& assumption : evidence.assumptions) {
+    if ((assumption.protected_detail &&
+         !disclosure.security_detail_authorized) ||
+        !assumption_authorized(assumption.category_id)) {
+      document.redacted = true;
+      warning(assumption.category_id == "security"
+                  ? "diag.mga.optimizer.explain_redaction_required"
+                  : "SB_DIAG_OPT_EXPLAIN_REDACTED");
+      continue;
+    }
+    document.assumptions.push_back(assumption);
+  }
+  if (!disclosure.object_existence_authorized) {
+    document.dependencies.clear();
+    document.redacted = true;
+    warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+  } else if (!disclosure.object_names_authorized) {
+    for (auto& dependency : document.dependencies) {
+      dependency.dependency_uuid = "redacted.dependency";
+      dependency.definition_digest.clear();
+    }
+  }
+  if (!disclosure.object_names_authorized) {
+    document.result_schema_uuid.clear();
+    for (auto& descriptor : document.result_descriptors) {
+      descriptor.name_utf8 = "redacted.column";
+      descriptor.descriptor_uuid.clear();
+      descriptor.type_uuid.clear();
+      descriptor.domain_uuid.clear();
+      descriptor.collation_uuid.clear();
+      descriptor.timezone_uuid.clear();
+      descriptor.type_modifier_digest.clear();
+      descriptor.encoded_descriptor.clear();
+    }
+    document.redacted = true;
+    warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+  }
+  if (document.invalidation.has_value() &&
+      !disclosure.invalidation_detail_authorized) {
+    document.invalidation->field_id = "protected_generation";
+    document.invalidation->prepared_plan_uuid.clear();
+    document.redacted = true;
+    warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+  }
+  if (!disclosure.invalidation_detail_authorized) {
+    if (!document.replacement_prepared_plan_uuid.empty()) {
+      document.redacted = true;
+      warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+    }
+    document.replacement_prepared_plan_uuid.clear();
+  }
+
+  std::unordered_map<std::uint64_t, const metric::CanonicalPhysicalDispatchStepResult*>
+      steps;
+  if (request.mode == cache::CanonicalExplainMode::kAnalyze) {
+    const auto* dispatch = request.completed_dispatch;
+    if (dispatch == nullptr) return refuse("completed_execution_identity");
+    if (!dispatch->diagnostic.ok) {
+      return refuse_engine_diagnostic(dispatch->diagnostic.diagnostic_code,
+                                      dispatch->diagnostic.detail);
+    }
+    if (dispatch->cancellation_observed) {
+      return refuse_engine_diagnostic(
+          "QOW-DIAG-QRY-004-PHYSICAL-CANCELLED-V1",
+          "completed_engine_execution_cancelled");
+    }
+    if (!dispatch->execution_started ||
+        dispatch->replan_required || dispatch->selected_plan_uuid !=
+                                         plan.selected_plan_uuid ||
+        dispatch->executed_root_physical_node_id !=
+            plan.root_physical_node_id ||
+        dispatch->executed_steps.size() != plan.nodes.size() ||
+        !request.engine_result_schema_evidence ||
+        request.completed_result_schema_uuid != plan.result_schema_uuid) {
+      return refuse("completed_execution_identity");
+    }
+    if (request.mga_authority.origin ==
+            metric::CanonicalMgaAuthorityOrigin::kMissing ||
+        !metric::PhysicalMgaStatementContextValid(
+            request.mga_authority.statement_context) ||
+        !metric::PhysicalMgaStatementContextEqual(
+            dispatch->mga_statement_context,
+            request.mga_authority.statement_context) ||
+        !dispatch->authority.engine_mga_snapshot_bound ||
+        dispatch->authority.owns_transaction_finality ||
+        dispatch->authority.owns_recovery ||
+        dispatch->authority.owns_parser_execution ||
+        dispatch->authority.owns_visibility_outside_engine_mga ||
+        dispatch->authority.wal_is_transaction_or_recovery_authority ||
+        dispatch->root_causal_counter_id == 0) {
+      return refuse("completed_execution_mga_identity");
+    }
+    bool observed_access = false;
+    for (const auto& step : dispatch->executed_steps) {
+      if (step.execution_ordinal == 0 ||
+          step.execution_ordinal > dispatch->executed_steps.size() ||
+          !step.execution_started || !step.execution_finished ||
+          !step.counters_captured_after_finish ||
+          !step.data_access_observation_known ||
+          !steps.emplace(step.executed_physical_node_id, &step).second) {
+        return refuse("completed_node_lifecycle_or_order");
+      }
+      observed_access = observed_access || step.data_access_observed;
+    }
+    if (steps.size() != plan.nodes.size() ||
+        observed_access != dispatch->data_access_observed) {
+      return refuse("completed_data_access_observation");
+    }
+  }
+
+  const auto valid_metric = [](const metric::CanonicalObservedUint64& value) {
+    return value.state == metric::CanonicalRuntimeMetricState::kObserved ||
+           (value.state ==
+                metric::CanonicalRuntimeMetricState::kNotApplicable &&
+            value.value == 0);
+  };
+  std::vector<const cache::CanonicalPreparedPhysicalNode*> ordered_nodes;
+  ordered_nodes.reserve(plan.nodes.size());
+  for (const auto& node : plan.nodes) ordered_nodes.push_back(&node);
+  std::ranges::sort(ordered_nodes, {},
+                    &cache::CanonicalPreparedPhysicalNode::publication_ordinal);
+  for (std::size_t index = 0; index < ordered_nodes.size(); ++index) {
+    const auto& node = *ordered_nodes[index];
+    const auto estimate = std::ranges::find_if(
+        evidence.node_estimates, [&](const auto& item) {
+          return item.physical_node_id == node.physical_node_id &&
+                 item.logical_node_id == node.relational_node_id;
+        });
+    if (node.publication_ordinal != index ||
+        estimate == evidence.node_estimates.end()) {
+      return refuse("stored_node_order_or_estimate");
+    }
+    cache::CanonicalExplainNodeRecord rendered;
+    rendered.physical_node_id = node.physical_node_id;
+    rendered.logical_node_id = node.relational_node_id;
+    rendered.causal_counter_id = node.causal_counter_id;
+    rendered.implementation_id = node.implementation_id;
+    rendered.logical_semantic_variant_id = node.logical_semantic_variant_id;
+    rendered.selected_alternative_uuid = node.selected_alternative_uuid;
+    rendered.transformation_uuid = node.transformation_uuid;
+    rendered.transformation_rule_id = node.transformation_rule_id;
+    rendered.executor_capability_uuid = node.executor_capability_uuid;
+    rendered.executor_capability_abi_version =
+        node.executor_capability_abi_version;
+    rendered.input_physical_node_ids = node.input_physical_node_ids;
+    rendered.output_descriptor_ids = node.output_descriptor_ids;
+    rendered.required_property_uuids = node.required_property_uuids;
+    rendered.delivered_property_uuids = node.delivered_property_uuids;
+    rendered.enforced_property_uuids = node.enforced_property_uuids;
+    rendered.estimated_cost = node.retained_cost;
+    rendered.memory_bytes_required = node.memory_bytes_required;
+    rendered.spill_bytes_expected = node.spill_bytes_expected;
+    rendered.estimated_input_rows = estimate->estimated_input_rows;
+    rendered.estimated_output_rows = estimate->estimated_output_rows;
+    if (!disclosure.object_names_authorized ||
+        !disclosure.route_detail_authorized) {
+      rendered.implementation_id = "redacted.implementation";
+      rendered.logical_semantic_variant_id = "redacted.semantic";
+      rendered.selected_alternative_uuid.clear();
+      rendered.transformation_uuid.clear();
+      rendered.transformation_rule_id.clear();
+      rendered.executor_capability_uuid.clear();
+      rendered.required_property_uuids.clear();
+      rendered.delivered_property_uuids.clear();
+      rendered.enforced_property_uuids.clear();
+      rendered.estimated_cost.cost_vector_uuid.clear();
+      rendered.estimated_cost.calibration_profile_uuid.clear();
+      rendered.identity_state = cache::CanonicalExplainFieldState::kRedacted;
+      document.redacted = true;
+      warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+    }
+    if (!disclosure.cardinality_cost_authorized) {
+      redact_estimate(&rendered.estimated_input_rows);
+      redact_estimate(&rendered.estimated_output_rows);
+      rendered.estimated_cost = {};
+      rendered.memory_bytes_required = 0;
+      rendered.spill_bytes_expected = 0;
+      rendered.estimate_state =
+          disclosure.bucket_hidden_cardinality
+              ? cache::CanonicalExplainFieldState::kBucketed
+              : cache::CanonicalExplainFieldState::kRedacted;
+      document.redacted = true;
+      warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+    }
+    if (request.mode == cache::CanonicalExplainMode::kAnalyze) {
+      const auto found = steps.find(node.physical_node_id);
+      if (found == steps.end()) return refuse("completed_node_coverage");
+      const auto& step = *found->second;
+      const auto& runtime = step.runtime_observation;
+      if (step.execution_ordinal != node.publication_ordinal + 1 ||
+          step.selected_plan_uuid != plan.selected_plan_uuid ||
+          step.executed_relational_node_id != node.relational_node_id ||
+          step.executed_implementation_id != node.implementation_id ||
+          step.executed_input_physical_node_ids !=
+              node.input_physical_node_ids ||
+          step.causal_counter_id != node.causal_counter_id ||
+          step.result_handle_id == 0 ||
+          step.output_descriptor_ids != node.output_descriptor_ids ||
+          !step.authority.engine_mga_snapshot_bound ||
+          step.authority.owns_transaction_finality ||
+          step.authority.owns_recovery ||
+          step.authority.owns_parser_execution ||
+          step.authority.owns_visibility_outside_engine_mga ||
+          step.authority.wal_is_transaction_or_recovery_authority ||
+          !metric::PhysicalMgaStatementContextEqual(
+              step.mga_statement_context,
+              request.mga_authority.statement_context) ||
+          runtime.abi_version != 1 || !runtime.producer_receipt_complete ||
+          !runtime.dispatcher_elapsed_frozen ||
+          !runtime.counters_frozen_after_finish ||
+          !runtime.authority.engine_execution_observation ||
+          runtime.authority.owns_execution ||
+          runtime.authority.owns_visibility ||
+          runtime.authority.owns_transaction_finality ||
+          runtime.authority.owns_recovery || runtime.authority.owns_feedback ||
+          runtime.authority.owns_benchmark ||
+          runtime.authority.owns_parser_execution ||
+          runtime.authority.wal_is_transaction_or_recovery_authority ||
+          runtime.elapsed_ns.state !=
+              metric::CanonicalRuntimeMetricState::kObserved ||
+          runtime.operator_wait_ns.state !=
+              metric::CanonicalRuntimeMetricState::kObserved ||
+          runtime.current_memory_bytes.state !=
+              metric::CanonicalRuntimeMetricState::kObserved ||
+          runtime.peak_memory_bytes.state !=
+              metric::CanonicalRuntimeMetricState::kObserved) {
+        return refuse("runtime_observation_authority_or_required_metric");
+      }
+      const metric::CanonicalObservedUint64* metrics[] = {
+          &runtime.decoded_bytes, &runtime.bytes_read, &runtime.bytes_written,
+          &runtime.pages_read, &runtime.pages_written,
+          &runtime.spill_bytes_read, &runtime.spill_bytes_written,
+          &runtime.visibility_recheck_count, &runtime.security_recheck_count,
+          &runtime.storage_recheck_count, &runtime.index_recheck_count,
+          &runtime.residual_recheck_count,
+          &runtime.compatibility_recheck_count, &runtime.archive_bytes_read,
+          &runtime.cluster_bytes_sent, &runtime.cluster_bytes_received};
+      if (!std::ranges::all_of(metrics,
+                               [&](const auto* value) {
+                                 return valid_metric(*value);
+                               }) ||
+          runtime.operator_wait_ns.value > runtime.elapsed_ns.value ||
+          runtime.current_memory_bytes.value > runtime.peak_memory_bytes.value ||
+          runtime.peak_memory_bytes.value > plan.memory_budget_bytes ||
+          (runtime.pages_read.state ==
+               metric::CanonicalRuntimeMetricState::kObserved &&
+           runtime.pages_read.value != step.pages_read) ||
+          (runtime.pages_read.state ==
+               metric::CanonicalRuntimeMetricState::kNotApplicable &&
+           step.pages_read != 0) ||
+          runtime.spill_bytes_read.value >
+              std::numeric_limits<std::uint64_t>::max() -
+                  runtime.spill_bytes_written.value ||
+          runtime.spill_bytes_read.value +
+                  runtime.spill_bytes_written.value !=
+              step.spill_bytes ||
+          (step.data_access_observation_known &&
+           !step.data_access_observed && [&] {
+             const metric::CanonicalObservedUint64* access_metrics[] = {
+                 &runtime.decoded_bytes, &runtime.bytes_read,
+                 &runtime.bytes_written, &runtime.pages_read,
+                 &runtime.pages_written,
+                 &runtime.archive_bytes_read,
+                 &runtime.cluster_bytes_sent,
+                 &runtime.cluster_bytes_received};
+             return std::ranges::any_of(access_metrics, [](const auto* value) {
+             return value->state ==
+                        metric::CanonicalRuntimeMetricState::kObserved &&
+                    value->value != 0;
+             });
+           }())) {
+        return refuse("runtime_observation_metric_consistency");
+      }
+      if (disclosure.actual_profile_authorized) {
+        rendered.execution_ordinal = step.execution_ordinal;
+        rendered.actual_input_rows = step.input_row_count;
+        rendered.actual_output_rows = step.output_row_count;
+        rendered.actual_rows_examined = step.rows_examined;
+        if (disclosure.route_detail_authorized &&
+            disclosure.object_existence_authorized) {
+          rendered.data_access_observation_known =
+              step.data_access_observation_known;
+          rendered.data_access_observed = step.data_access_observed;
+          rendered.data_access_state =
+              cache::CanonicalExplainFieldState::kVisible;
+        } else {
+          rendered.data_access_state =
+              cache::CanonicalExplainFieldState::kRedacted;
+        }
+        rendered.runtime_observation = runtime;
+        rendered.runtime_route_state =
+            cache::CanonicalExplainFieldState::kVisible;
+        rendered.runtime_security_state =
+            cache::CanonicalExplainFieldState::kVisible;
+        rendered.runtime_archive_state =
+            cache::CanonicalExplainFieldState::kVisible;
+        rendered.runtime_cluster_state =
+            cache::CanonicalExplainFieldState::kVisible;
+        rendered.runtime_donor_state =
+            cache::CanonicalExplainFieldState::kVisible;
+        auto& published_runtime = rendered.runtime_observation;
+        if (!disclosure.route_detail_authorized ||
+            !disclosure.object_existence_authorized) {
+          published_runtime.decoded_bytes = {};
+          published_runtime.bytes_read = {};
+          published_runtime.bytes_written = {};
+          published_runtime.pages_read = {};
+          published_runtime.pages_written = {};
+          published_runtime.spill_bytes_read = {};
+          published_runtime.spill_bytes_written = {};
+          published_runtime.residual_recheck_count = {};
+          rendered.runtime_route_state =
+              cache::CanonicalExplainFieldState::kRedacted;
+          document.redacted = true;
+          warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+        }
+        if (!disclosure.security_detail_authorized) {
+          published_runtime.visibility_recheck_count = {};
+          published_runtime.security_recheck_count = {};
+          published_runtime.storage_recheck_count = {};
+          published_runtime.index_recheck_count = {};
+          rendered.runtime_security_state =
+              cache::CanonicalExplainFieldState::kRedacted;
+          document.redacted = true;
+          warning("diag.mga.optimizer.explain_redaction_required");
+        }
+        if (!disclosure.archive_detail_authorized) {
+          published_runtime.archive_bytes_read = {};
+          rendered.runtime_archive_state =
+              cache::CanonicalExplainFieldState::kRedacted;
+          document.redacted = true;
+          warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+        }
+        if (!disclosure.cluster_detail_authorized) {
+          published_runtime.cluster_bytes_sent = {};
+          published_runtime.cluster_bytes_received = {};
+          rendered.runtime_cluster_state =
+              cache::CanonicalExplainFieldState::kRedacted;
+          document.redacted = true;
+          warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+        }
+        if (!disclosure.donor_detail_authorized) {
+          published_runtime.compatibility_recheck_count = {};
+          rendered.runtime_donor_state =
+              cache::CanonicalExplainFieldState::kRedacted;
+          document.redacted = true;
+          warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+        }
+        rendered.actual_state = cache::CanonicalExplainFieldState::kVisible;
+      } else {
+        rendered.actual_state = cache::CanonicalExplainFieldState::kRedacted;
+        document.redacted = true;
+        warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+      }
+    }
+    document.nodes.push_back(std::move(rendered));
+  }
+  if (request.mode == cache::CanonicalExplainMode::kAnalyze) {
+    const auto& dispatch = *request.completed_dispatch;
+    const auto root = std::ranges::find_if(plan.nodes, [&](const auto& node) {
+      return node.physical_node_id == plan.root_physical_node_id;
+    });
+    const auto root_step = std::ranges::find_if(
+        dispatch.executed_steps, [&](const auto& step) {
+          return step.executed_physical_node_id ==
+                 plan.root_physical_node_id;
+        });
+    if (root == plan.nodes.end() ||
+        root_step == dispatch.executed_steps.end() ||
+        dispatch.root_output_descriptor_ids != root->output_descriptor_ids ||
+        dispatch.root_causal_counter_id != root->causal_counter_id ||
+        dispatch.root_result_handle_id == 0 ||
+        dispatch.root_result_handle_id != root_step->result_handle_id) {
+      return refuse("completed_root_identity");
+    }
+    document.analyzed = true;
+    document.completed_engine_execution_consumed = true;
+    if (disclosure.actual_profile_authorized &&
+        disclosure.route_detail_authorized &&
+        disclosure.object_existence_authorized) {
+      document.data_access_observation_known = true;
+      document.data_access_observed = dispatch.data_access_observed;
+      document.data_access_state =
+          cache::CanonicalExplainFieldState::kVisible;
+    } else {
+      document.data_access_state =
+          cache::CanonicalExplainFieldState::kRedacted;
+      document.redacted = true;
+      warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
+    }
+    if (disclosure.actual_profile_authorized &&
+        disclosure.security_detail_authorized) {
+      document.analyzed_mga_statement_context_present = true;
+      document.analyzed_mga_statement_context =
+          dispatch.mga_statement_context;
+      document.analyzed_mga_statement_context_state =
+          cache::CanonicalExplainFieldState::kVisible;
+    } else {
+      document.analyzed_mga_statement_context = {};
+      document.analyzed_mga_statement_context_state =
+          cache::CanonicalExplainFieldState::kRedacted;
+      document.redacted = true;
+      warning("diag.mga.optimizer.explain_redaction_required");
+    }
+    result.analyzed = true;
+  }
+  document.immutable_stored_plan_rendered = true;
+  result.accepted = true;
+  return result;
+}
+
 // QOW-SOURCE-IAS-005-V1
 // The former typed-prefix and materialized-window assertion branches are not a
 // product window ABI.  They are refused before relation materialization so

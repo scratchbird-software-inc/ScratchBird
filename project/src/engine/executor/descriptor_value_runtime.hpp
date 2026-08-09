@@ -1168,6 +1168,10 @@ struct CanonicalHeapRelationAcquisitionResult {
   std::vector<std::string> emitted_record_uuids;
   std::vector<std::string> emitted_row_version_uuids;
   CanonicalHeapRelationAcquisitionCounters counters;
+  std::uint64_t runtime_operator_wait_ns = 0;
+  std::uint64_t runtime_storage_bytes_read = 0;
+  std::uint64_t runtime_decoded_bytes = 0;
+  bool runtime_observation_complete = false;
   CanonicalHeapRelationAcquisitionAuthorityEvidence authority;
   bool data_access_observed = false;
   bool cancellation_observed = false;
@@ -1257,10 +1261,68 @@ struct CanonicalPhysicalDispatchAuthorityEvidence {
   bool wal_is_transaction_or_recovery_authority = false;
 };
 
+// QOW-SOURCE-OPT-017-RUNTIME-OBSERVATION-ABI-V1
+// A zero value is evidence only when its state is kObserved.  kUnavailable is
+// the fail-closed default and must never be serialized as an actual zero.
+enum class CanonicalRuntimeMetricState : std::uint8_t {
+  kUnavailable = 0,
+  kNotApplicable = 1,
+  kObserved = 2,
+};
+
+struct CanonicalObservedUint64 {
+  CanonicalRuntimeMetricState state{
+      CanonicalRuntimeMetricState::kUnavailable};
+  std::uint64_t value = 0;
+};
+
+struct CanonicalRuntimeObservationAuthorityEvidence {
+  bool engine_execution_observation = false;
+  bool owns_execution = false;
+  bool owns_visibility = false;
+  bool owns_transaction_finality = false;
+  bool owns_recovery = false;
+  bool owns_feedback = false;
+  bool owns_benchmark = false;
+  bool owns_parser_execution = false;
+  bool wal_is_transaction_or_recovery_authority = false;
+};
+
+struct CanonicalPhysicalNodeRuntimeObservation {
+  std::uint16_t abi_version = 1;
+  CanonicalObservedUint64 elapsed_ns;
+  CanonicalObservedUint64 operator_wait_ns;
+  CanonicalObservedUint64 current_memory_bytes;
+  CanonicalObservedUint64 peak_memory_bytes;
+  CanonicalObservedUint64 decoded_bytes;
+  CanonicalObservedUint64 bytes_read;
+  CanonicalObservedUint64 bytes_written;
+  CanonicalObservedUint64 pages_read;
+  CanonicalObservedUint64 pages_written;
+  CanonicalObservedUint64 spill_bytes_read;
+  CanonicalObservedUint64 spill_bytes_written;
+  CanonicalObservedUint64 visibility_recheck_count;
+  CanonicalObservedUint64 security_recheck_count;
+  CanonicalObservedUint64 storage_recheck_count;
+  CanonicalObservedUint64 index_recheck_count;
+  CanonicalObservedUint64 residual_recheck_count;
+  CanonicalObservedUint64 compatibility_recheck_count;
+  CanonicalObservedUint64 archive_bytes_read;
+  CanonicalObservedUint64 cluster_bytes_sent;
+  CanonicalObservedUint64 cluster_bytes_received;
+  CanonicalRuntimeObservationAuthorityEvidence authority;
+  bool producer_receipt_complete = false;
+  bool dispatcher_elapsed_frozen = false;
+  bool counters_frozen_after_finish = false;
+};
+
 struct CanonicalPhysicalDispatchStepResult {
   DescriptorRuntimeDiagnostic diagnostic;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
+  std::uint32_t executed_relational_node_id = 0;
+  std::string executed_implementation_id;
+  std::vector<std::uint64_t> executed_input_physical_node_ids;
   std::uint64_t causal_counter_id = 0;
   std::uint64_t result_handle_id = 0;
   std::vector<std::uint32_t> output_descriptor_ids;
@@ -1291,6 +1353,7 @@ struct CanonicalPhysicalDispatchStepResult {
   bool execution_started = false;
   bool execution_finished = false;
   bool counters_captured_after_finish = false;
+  CanonicalPhysicalNodeRuntimeObservation runtime_observation;
   PhysicalMgaStatementContext mga_statement_context;
 };
 
@@ -1308,6 +1371,7 @@ struct CanonicalPhysicalExecutorRegistration {
   std::uint32_t executor_capability_abi_version = 0;
   bool engine_owned = false;
   bool accepts_optimizer_publication_v2 = false;
+  bool publishes_runtime_observation_v1 = false;
 };
 
 struct CanonicalHeapPhysicalRegistrationResult {

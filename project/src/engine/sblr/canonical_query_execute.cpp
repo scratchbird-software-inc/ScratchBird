@@ -140,9 +140,237 @@ exec::CanonicalExecutionMgaAuthority BuildCanonicalExecutionMgaAuthority(
   return authority;
 }
 
+// QOW-SOURCE-OPT-017-ORDINARY-OBSERVATION-V1
+// This is an execution-producer receipt, not a copy read back from the
+// optimizer's estimated grant in the published DAG.  The live route computes
+// the complete operator occupancy (input, output, and auxiliary state) before
+// publication and carries that same producer fact beside the plan estimate.
+// Heap registrations publish their own storage/MGA receipt and are not wrapped
+// here.
+struct OrdinaryRuntimeMemoryReceipt {
+  std::uint64_t physical_node_id = 0;
+  std::string implementation_id;
+  std::uint64_t producer_peak_memory_bytes = 0;
+  bool producer_peak_memory_exact = false;
+  bool producer_peak_from_runtime_batches = false;
+  std::uint64_t accounted_auxiliary_memory_bytes = 0;
+  bool residual_recheck_applicable = false;
+  bool non_accessing_proven = false;
+};
+
+using OrdinaryRuntimeMemoryReceipts =
+    std::unordered_map<std::uint64_t, OrdinaryRuntimeMemoryReceipt>;
+
+bool CheckedAdd(std::uint64_t left, std::uint64_t right,
+                std::uint64_t* result);
+bool CheckedMultiply(std::uint64_t left, std::uint64_t right,
+                     std::uint64_t* result);
+
+bool RuntimeMaterializedBatchMemoryBytes(const exec::DescriptorBatch& batch,
+                                         std::uint64_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = 1;
+  for (const auto& row : batch.rows) {
+    for (const auto& value : row.values) {
+      if (value.encoded_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.encoded_value.size();
+    }
+  }
+  return true;
+}
+
+void PublishOrdinaryRuntimeObservations(
+    std::vector<exec::CanonicalPhysicalExecutorRegistration>* registrations,
+    const OrdinaryRuntimeMemoryReceipts& memory_receipts) {
+  if (registrations == nullptr) return;
+  namespace metric = scratchbird::engine::executor;
+  const auto observed = [](const std::uint64_t value) {
+    return metric::CanonicalObservedUint64{
+        metric::CanonicalRuntimeMetricState::kObserved, value};
+  };
+  const auto not_applicable = [] {
+    return metric::CanonicalObservedUint64{
+        metric::CanonicalRuntimeMetricState::kNotApplicable, 0};
+  };
+  for (auto& registration : *registrations) {
+    if (!registration.engine_owned || !registration.execute ||
+        registration.implementation_id.starts_with("scan.heap")) {
+      continue;
+    }
+    const bool has_producer_receipt = std::ranges::any_of(
+        memory_receipts, [&](const auto& item) {
+          return item.second.implementation_id ==
+                     registration.implementation_id &&
+                 item.second.producer_peak_memory_exact;
+        });
+    if (!has_producer_receipt) continue;
+    auto execute = std::move(registration.execute);
+    registration.execute =
+        [execute = std::move(execute), observed, not_applicable,
+         memory_receipts](
+            const exec::TypedPhysicalNodeDag& dag,
+            const exec::PhysicalNodeRecord& node,
+            const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+          auto step = execute(dag, node, inputs);
+          if (!step.diagnostic.ok) return step;
+          const auto memory = memory_receipts.find(node.physical_node_id);
+          if (memory == memory_receipts.end() ||
+              memory->second.implementation_id != node.implementation_id ||
+              memory->second.physical_node_id != node.physical_node_id ||
+              !memory->second.producer_peak_memory_exact ||
+              !step.materialized_output_batch.has_value()) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-OPT-017-REFUSAL-V1";
+            step.diagnostic.detail =
+                "runtime_observation_producer_memory_receipt";
+            return step;
+          }
+          std::uint64_t current_memory_bytes = 0;
+          if (!RuntimeMaterializedBatchMemoryBytes(
+                  *step.materialized_output_batch,
+                  &current_memory_bytes)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-OPT-017-REFUSAL-V1";
+            step.diagnostic.detail =
+                "runtime_observation_current_memory_receipt";
+            return step;
+          }
+          // The exact callback peak is calculated before publication and
+          // carried independently beside the optimizer grant. Never
+          // reconstruct it from the DAG grant or blanket-charge immutable
+          // shared dispatch inputs.
+          std::uint64_t peak_memory_bytes =
+              memory->second.producer_peak_memory_bytes;
+          if (memory->second.producer_peak_from_runtime_batches) {
+            peak_memory_bytes = current_memory_bytes;
+            for (const auto& input : inputs) {
+              std::uint64_t input_bytes = 0;
+              if (!input.materialized_output_batch.has_value() ||
+                  !RuntimeMaterializedBatchMemoryBytes(
+                      *input.materialized_output_batch, &input_bytes) ||
+                  input_bytes > std::numeric_limits<std::uint64_t>::max() -
+                                    peak_memory_bytes) {
+                step.diagnostic.ok = false;
+                step.diagnostic.diagnostic_code =
+                    "QOW-DIAG-OPT-017-REFUSAL-V1";
+                step.diagnostic.detail =
+                    "runtime_observation_dynamic_input_peak";
+                return step;
+              }
+              peak_memory_bytes += input_bytes;
+            }
+            std::uint64_t runtime_work_bytes = 0;
+            if (node.node_kind == exec::PhysicalNodeKind::kFilter &&
+                !inputs.empty()) {
+              if (!CheckedMultiply(
+                      inputs.front().materialized_output_batch->rows.size(),
+                      sizeof(api::EngineSqlTruthValue),
+                      &runtime_work_bytes)) {
+                step.diagnostic.ok = false;
+              }
+            } else if (node.node_kind == exec::PhysicalNodeKind::kSort &&
+                       !inputs.empty()) {
+              const auto rows =
+                  inputs.front().materialized_output_batch->rows.size();
+              std::uint64_t comparisons = 0;
+              std::uint64_t order = 0;
+              if (!CheckedMultiply(rows, rows, &comparisons) ||
+                  !CheckedMultiply(rows, sizeof(std::size_t), &order) ||
+                  !CheckedAdd(comparisons, order, &runtime_work_bytes)) {
+                step.diagnostic.ok = false;
+              }
+            } else if (node.node_kind == exec::PhysicalNodeKind::kJoin &&
+                       inputs.size() == 2) {
+              std::uint64_t pairs = 0;
+              if (!CheckedMultiply(
+                      inputs[0].materialized_output_batch->rows.size(),
+                      inputs[1].materialized_output_batch->rows.size(),
+                      &pairs) ||
+                  !CheckedMultiply(pairs,
+                                   sizeof(api::EngineSqlTruthValue),
+                                   &runtime_work_bytes)) {
+                step.diagnostic.ok = false;
+              }
+            } else if (node.node_kind ==
+                       exec::PhysicalNodeKind::kAggregate) {
+              // Heap aggregate profiles carry one scalar integer accumulator.
+              // Non-exact composed aggregates additionally carry their exact
+              // admitted auxiliary work receipt beside the runtime batches.
+              runtime_work_bytes = std::max<std::uint64_t>(
+                  sizeof(std::int64_t),
+                  memory->second.accounted_auxiliary_memory_bytes);
+            }
+            if (!step.diagnostic.ok ||
+                runtime_work_bytes >
+                    std::numeric_limits<std::uint64_t>::max() -
+                        peak_memory_bytes) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-OPT-017-REFUSAL-V1";
+              step.diagnostic.detail =
+                  "runtime_observation_dynamic_work_peak";
+              return step;
+            }
+            peak_memory_bytes += runtime_work_bytes;
+          }
+          if (current_memory_bytes > peak_memory_bytes ||
+              memory->second.accounted_auxiliary_memory_bytes >
+                  peak_memory_bytes - current_memory_bytes) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-OPT-017-REFUSAL-V1";
+            step.diagnostic.detail =
+                "runtime_observation_current_exceeds_producer_peak";
+            return step;
+          }
+          auto& receipt = step.runtime_observation;
+          receipt.abi_version = 1;
+          receipt.operator_wait_ns = observed(0);
+          receipt.current_memory_bytes = observed(current_memory_bytes);
+          receipt.peak_memory_bytes = observed(peak_memory_bytes);
+          receipt.decoded_bytes = not_applicable();
+          receipt.bytes_read = not_applicable();
+          receipt.bytes_written = not_applicable();
+          receipt.pages_read = step.pages_read == 0
+                                   ? not_applicable()
+                                   : observed(step.pages_read);
+          receipt.pages_written = not_applicable();
+          receipt.spill_bytes_read = observed(0);
+          receipt.spill_bytes_written = observed(step.spill_bytes);
+          receipt.visibility_recheck_count = not_applicable();
+          receipt.security_recheck_count = not_applicable();
+          receipt.storage_recheck_count = not_applicable();
+          receipt.index_recheck_count = not_applicable();
+          receipt.residual_recheck_count =
+              memory->second.residual_recheck_applicable
+                  ? observed(step.rows_examined)
+                  : not_applicable();
+          receipt.compatibility_recheck_count = not_applicable();
+          receipt.archive_bytes_read = not_applicable();
+          receipt.cluster_bytes_sent = not_applicable();
+          receipt.cluster_bytes_received = not_applicable();
+          receipt.authority.engine_execution_observation = true;
+          receipt.producer_receipt_complete = true;
+          if (!step.data_access_observation_known &&
+              memory->second.non_accessing_proven) {
+            step.data_access_observation_known = true;
+            step.data_access_observed = false;
+          }
+          return step;
+        };
+    registration.publishes_runtime_observation_v1 = true;
+  }
+}
+
 api::CanonicalOptimizerSelectedExecutionResult ExecuteSelectedWithMgaGuard(
     const api::EngineRequestContext& context,
-    const api::CanonicalOptimizerSelectedExecutionRequest& request) {
+    const api::CanonicalOptimizerSelectedExecutionRequest& request,
+    const OrdinaryRuntimeMemoryReceipts& memory_receipts = {}) {
   auto bounded_request = request;
 #if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
   // Deterministic closure seams model a selected plan becoming stale between
@@ -225,6 +453,8 @@ api::CanonicalOptimizerSelectedExecutionResult ExecuteSelectedWithMgaGuard(
       context.query_cancellation_requested
           ? context.query_cancellation_requested
           : std::function<bool()>([] { return false; });
+  PublishOrdinaryRuntimeObservations(&bounded_request.available_executors,
+                                     memory_receipts);
 #if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
   return api::ExecuteCanonicalOptimizerSelectedDag(bounded_request);
 #else
@@ -5518,14 +5748,50 @@ struct LivePhysicalNodeProfile {
   bool residual_predicate_required{false};
   bool storage_recheck_required{false};
   std::string compatibility_profile_id{"native.sblr.row.v1"};
+  std::uint64_t runtime_accounted_auxiliary_memory_bytes{0};
+  std::uint64_t runtime_producer_peak_memory_bytes{0};
+  bool runtime_producer_peak_memory_exact{false};
+  bool runtime_peak_from_callback_batches{false};
 };
 
 struct LivePhysicalPlanningResult {
   bool ok{false};
   exec::TypedPhysicalNodeDag physical_dag;
+  OrdinaryRuntimeMemoryReceipts ordinary_runtime_memory_receipts;
   std::string diagnostic_id;
   std::string detail;
 };
+
+bool CompleteLiveRuntimeMemoryReceipts(
+    std::vector<LivePhysicalNodeProfile>* profiles,
+    const std::vector<std::pair<std::uint32_t, std::uint64_t>>&
+        auxiliary_terms = {}) {
+  if (profiles == nullptr || profiles->empty()) return false;
+  for (auto& profile : *profiles) {
+    profile.runtime_producer_peak_memory_bytes =
+        profile.runtime_peak_from_callback_batches
+            ? 1
+            : profile.memory_bytes_required;
+    profile.runtime_producer_peak_memory_exact = true;
+  }
+  for (const auto& [logical_node_id, bytes] : auxiliary_terms) {
+    const auto profile = std::ranges::find_if(
+        *profiles, [&](const auto& candidate) {
+          return candidate.logical_node_id == logical_node_id;
+        });
+    if (profile == profiles->end() ||
+        bytes > std::numeric_limits<std::uint64_t>::max() -
+                    profile->runtime_accounted_auxiliary_memory_bytes) {
+      return false;
+    }
+    profile->runtime_accounted_auxiliary_memory_bytes += bytes;
+    if (profile->runtime_accounted_auxiliary_memory_bytes >
+        profile->runtime_producer_peak_memory_bytes) {
+      return false;
+    }
+  }
+  return true;
+}
 
 LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
     const CanonicalObjectFreeValuesExecutionRequest& request,
@@ -5787,6 +6053,60 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
   }
   result.ok = true;
   result.physical_dag = publication.physical_dag;
+  for (const auto& physical_node : result.physical_dag.nodes) {
+    const auto profile = std::ranges::find_if(
+        profiles, [&](const LivePhysicalNodeProfile& candidate) {
+          return candidate.logical_node_id ==
+                     physical_node.relational_node_id &&
+                 candidate.implementation_id ==
+                     physical_node.implementation_id;
+        });
+    if (profile == profiles.end() || profile->memory_bytes_required == 0 ||
+        !profile->runtime_producer_peak_memory_exact ||
+        profile->runtime_producer_peak_memory_bytes == 0) {
+      result.ok = false;
+      result.physical_dag = {};
+      result.ordinary_runtime_memory_receipts.clear();
+      result.diagnostic_id = "QOW-DIAG-OPT-017-REFUSAL-V1";
+      result.detail =
+          "selected node lacks its separately carried producer memory receipt";
+      return result;
+    }
+    OrdinaryRuntimeMemoryReceipt receipt;
+    receipt.physical_node_id = physical_node.physical_node_id;
+    receipt.implementation_id = physical_node.implementation_id;
+    // The optimizer grant remains in the DAG. The callback's independently
+    // calculated exact peak is carried beside it; retained output is measured
+    // after callback completion and must not exceed that producer peak.
+    receipt.producer_peak_memory_bytes =
+        profile->runtime_producer_peak_memory_bytes;
+    receipt.producer_peak_memory_exact =
+        profile->runtime_producer_peak_memory_exact;
+    receipt.producer_peak_from_runtime_batches =
+        profile->runtime_peak_from_callback_batches;
+    receipt.accounted_auxiliary_memory_bytes =
+        profile->runtime_accounted_auxiliary_memory_bytes;
+    const auto logical_node = std::ranges::find_if(
+        graph.nodes, [&](const auto& candidate) {
+          return candidate.logical_node_id == profile->logical_node_id;
+        });
+    receipt.residual_recheck_applicable =
+        profile->physical_node_kind == exec::PhysicalNodeKind::kFilter ||
+        (profile->physical_node_kind == exec::PhysicalNodeKind::kJoin &&
+         logical_node != graph.nodes.end() &&
+         logical_node->semantic_variant_id != "join.cross.v1");
+    receipt.non_accessing_proven = !profile->storage_read_capable;
+    if (!result.ordinary_runtime_memory_receipts
+             .emplace(receipt.physical_node_id, std::move(receipt))
+             .second) {
+      result.ok = false;
+      result.physical_dag = {};
+      result.ordinary_runtime_memory_receipts.clear();
+      result.diagnostic_id = "QOW-DIAG-OPT-017-REFUSAL-V1";
+      result.detail = "producer memory receipt identity is not unique";
+      return result;
+    }
+  }
   return result;
 }
 
@@ -9872,6 +10192,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          exec::PhysicalNodeKind::kJoin,
          "canonical." + join_implementation_id, join_output_row_bound,
          join_memory, 2, 2});
+    profiles.back().runtime_accounted_auxiliary_memory_bytes = truth_memory;
     if (!CheckedAdd(left_count, right_count, &total_work) ||
         !CheckedAdd(total_work, join_pair_count, &total_work) ||
         total_work >
@@ -9980,6 +10301,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
              profile.physical_semantic_id,
              static_cast<std::size_t>(materialized.output_bound), set_memory,
              2, 2});
+        profiles.back().runtime_accounted_auxiliary_memory_bytes =
+            materialized.work_bound;
         prepared_set_nodes.emplace(
             node_id,
             PreparedLiveSetNode{
@@ -12286,8 +12609,18 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          state.batch.rows.size(), operator_memory, 1, 1,
          std::move(required_property_uuids),
          std::move(delivered_property_uuids), std::move(property_kinds)});
+    profiles.back().runtime_accounted_auxiliary_memory_bytes =
+        auxiliary_memory;
+    profiles.back().runtime_peak_from_callback_batches =
+        !planning_values_exact &&
+        (physical_kind == exec::PhysicalNodeKind::kAggregate ||
+         physical_kind == exec::PhysicalNodeKind::kLimit);
   }
 
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "composition runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "node-composition.selected-plan",
       "node-driven composition");
@@ -12512,7 +12845,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       std::max<std::size_t>(1, state.batch.rows.size());
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -12709,6 +13044,12 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
          values ? 0U : 2U,
          values ? 0U : 2U});
   }
+  if (!CompleteLiveRuntimeMemoryReceipts(
+          &profiles,
+          {{root->logical_node_id, set_work}})) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "set runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles,
       "set." + set_profile.identity_component + ".selected-plan",
@@ -12834,7 +13175,9 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
       std::max<std::size_t>(1, set_output_row_bound);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -13103,6 +13446,17 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
          node.node_kind, exec::PhysicalNodeKind::kSetOperation,
          prepared.profile.physical_semantic_id,
          prepared.maximum_output_row_count, memory_bytes, 2, 2});
+    profiles.back().runtime_accounted_auxiliary_memory_bytes =
+        prepared.profile.operation ==
+                    exec::CanonicalSetOperationKind::kUnion &&
+                prepared.profile.quantifier ==
+                    exec::CanonicalSetOperationQuantifier::kAll
+            ? prepared.maximum_output_row_count
+            : prepared.maximum_equality_comparison_count;
+  }
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "nested set runtime memory receipts are incomplete");
   }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, graph_identity + ".selected-plan",
@@ -13278,7 +13632,9 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
       std::max<std::size_t>(1, root_output_bound);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -13680,6 +14036,12 @@ ExecuteCanonicalObjectFreeJoinQuery(
          values ? 0U : 2U,
          values ? 0U : 2U});
   }
+  if (!CompleteLiveRuntimeMemoryReceipts(
+          &profiles,
+          {{root->logical_node_id, predicate_memory}})) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "join runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "join." + join_component + ".selected-plan",
       operation_name);
@@ -13737,7 +14099,9 @@ ExecuteCanonicalObjectFreeJoinQuery(
       std::max<std::size_t>(1, output_row_bound);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -14309,6 +14673,26 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
            output_row_bound, limit_memory, 1, 1});
     }
   }
+  std::vector<std::pair<std::uint32_t, std::uint64_t>> runtime_auxiliary;
+  runtime_auxiliary.emplace_back(join_node->logical_node_id,
+                                 join_state_memory);
+  runtime_auxiliary.emplace_back(filter_node->logical_node_id,
+                                 filter_state_memory);
+  if (has_distinct) {
+    runtime_auxiliary.emplace_back(sort_input_node->logical_node_id,
+                                   distinct_comparison_count);
+  }
+  if (has_sort) {
+    runtime_auxiliary.emplace_back(sort_node->logical_node_id,
+                                   comparison_count);
+    runtime_auxiliary.emplace_back(sort_node->logical_node_id,
+                                   row_order_memory);
+  }
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles,
+                                         runtime_auxiliary)) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "JOIN SQL-tail runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles,
       fetch_first_rows_only
@@ -14457,7 +14841,9 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
       std::max<std::size_t>(1, output_row_bound);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -14627,7 +15013,7 @@ ExecuteCanonicalObjectFreeFilterQuery(
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto filter_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "filter.capability");
-  const std::vector<LivePhysicalNodeProfile> profiles = {
+  std::vector<LivePhysicalNodeProfile> profiles = {
       {input_node->logical_node_id,
        std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -14648,6 +15034,11 @@ ExecuteCanonicalObjectFreeFilterQuery(
        total_memory,
        1,
        1}};
+  if (!CompleteLiveRuntimeMemoryReceipts(
+          &profiles, {{root->logical_node_id, predicate_memory}})) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "FILTER runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "filter.selected-plan", "FILTER");
   if (!planning.ok) {
@@ -14703,7 +15094,9 @@ ExecuteCanonicalObjectFreeFilterQuery(
       std::max<std::size_t>(1, output_row_bound);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -14837,7 +15230,7 @@ ExecuteCanonicalObjectFreeProjectQuery(
       prepared_root.expression_projection
           ? "project.typed.expression-row.v1"
           : "project.typed.row.v1";
-  const std::vector<LivePhysicalNodeProfile> profiles = {
+  std::vector<LivePhysicalNodeProfile> profiles = {
       {input_node->logical_node_id,
        std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -14860,6 +15253,10 @@ ExecuteCanonicalObjectFreeProjectQuery(
        total_memory,
        1,
        1}};
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "PROJECT runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "project.selected-plan", "PROJECT");
   if (!planning.ok) {
@@ -14916,7 +15313,9 @@ ExecuteCanonicalObjectFreeProjectQuery(
       std::max<std::size_t>(1, input_row_count);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -15117,7 +15516,7 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
   const auto project_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "project.capability");
   const auto filtered_row_count = filtered_input.batch.rows.size();
-  const std::vector<LivePhysicalNodeProfile> profiles = {
+  std::vector<LivePhysicalNodeProfile> profiles = {
       {values_node->logical_node_id,
        std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -15148,6 +15547,12 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
        total_memory,
        1,
        1}};
+  if (!CompleteLiveRuntimeMemoryReceipts(
+          &profiles,
+          {{filter_node->logical_node_id, predicate_memory}})) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "FILTER/PROJECT runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "filter-project.selected-plan", "FILTER/PROJECT");
   if (!planning.ok) {
@@ -15209,7 +15614,9 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
       std::max<std::size_t>(1, filtered_row_count);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -15382,7 +15789,7 @@ ExecuteCanonicalObjectFreeProjectSortQuery(
   const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
       identity_scope + ":" + prepared_sort.ordering_property_uuid,
       "project-sort.deterministic-tie");
-  const std::vector<LivePhysicalNodeProfile> profiles = {
+  std::vector<LivePhysicalNodeProfile> profiles = {
       {values_node->logical_node_id,
        std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -15416,6 +15823,13 @@ ExecuteCanonicalObjectFreeProjectSortQuery(
        {},
        {prepared_sort.ordering_property_uuid},
        {plan::CanonicalLogicalPropertyKind::kOrdering}}};
+  if (!CompleteLiveRuntimeMemoryReceipts(
+          &profiles,
+          {{root->logical_node_id, comparison_count},
+           {root->logical_node_id, row_order_memory}})) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "PROJECT/SORT runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "project-sort.selected-plan", "PROJECT/SORT");
   if (!planning.ok) {
@@ -15479,7 +15893,9 @@ ExecuteCanonicalObjectFreeProjectSortQuery(
       std::max<std::size_t>(1, row_count);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -15727,7 +16143,7 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
   const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
       identity_scope + ":" + prepared_sort.ordering_property_uuid,
       "filter-project-sort.deterministic-tie");
-  const std::vector<LivePhysicalNodeProfile> profiles = {
+  std::vector<LivePhysicalNodeProfile> profiles = {
       {values_node->logical_node_id,
        std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -15771,6 +16187,14 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
        {},
        {prepared_sort.ordering_property_uuid},
        {plan::CanonicalLogicalPropertyKind::kOrdering}}};
+  if (!CompleteLiveRuntimeMemoryReceipts(
+          &profiles,
+          {{filter_node->logical_node_id, predicate_memory},
+           {root->logical_node_id, comparison_count},
+           {root->logical_node_id, row_order_memory}})) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "FILTER/PROJECT/SORT runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "filter-project-sort.selected-plan",
       "FILTER/PROJECT/SORT");
@@ -15842,7 +16266,9 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
       std::max<std::size_t>(1, filtered_row_count);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -16130,7 +16556,7 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
   const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
       identity_scope + ":" + prepared_sort.ordering_property_uuid,
       "filter-project-sort-limit.deterministic-tie");
-  const std::vector<LivePhysicalNodeProfile> profiles = {
+  std::vector<LivePhysicalNodeProfile> profiles = {
       {values_node->logical_node_id,
        std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -16184,6 +16610,14 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
        limit_memory,
        1,
        1}};
+  if (!CompleteLiveRuntimeMemoryReceipts(
+          &profiles,
+          {{filter_node->logical_node_id, predicate_memory},
+           {sort_node->logical_node_id, comparison_count},
+           {sort_node->logical_node_id, row_order_memory}})) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "FILTER/PROJECT/SORT/LIMIT runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "filter-project-sort-limit.selected-plan",
       "FILTER/PROJECT/SORT/LIMIT");
@@ -16260,7 +16694,9 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
       std::max<std::size_t>(1, output_row_bound);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -16613,7 +17049,7 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
                  ? "canonical.limit.bound-count-offset.filtered-projected-"
                    "distinct-order.v1"
                  : "canonical.limit.filtered-projected-distinct-order.v1");
-  const std::vector<LivePhysicalNodeProfile> profiles = {
+  std::vector<LivePhysicalNodeProfile> profiles = {
       {values_node->logical_node_id, std::string(kValuesImplementationId),
        values_capability_uuid,
        plan::CanonicalLogicalRelationalNodeKind::kValues,
@@ -16647,6 +17083,15 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
        plan::CanonicalLogicalRelationalNodeKind::kLimit,
        exec::PhysicalNodeKind::kLimit,
        limit_semantic_id, output_row_bound, limit_memory, 1, 1}};
+  if (!CompleteLiveRuntimeMemoryReceipts(
+          &profiles,
+          {{filter_node->logical_node_id, predicate_memory},
+           {distinct_node->logical_node_id, distinct_comparison_count},
+           {sort_node->logical_node_id, sort_comparison_count},
+           {sort_node->logical_node_id, row_order_memory}})) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "full SQL-tail runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles,
       fetch_first_rows_only
@@ -16733,7 +17178,9 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
       std::max<std::size_t>(1, output_row_bound);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -16984,6 +17431,20 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
                            ? "canonical.filter.having-not-sum-gt-int64-literal.v1"
                            : "canonical.filter.having-sum-gt-int64-literal.v1")),
          output_row_bound, filter_memory, 1, 1});
+  }
+  std::vector<std::pair<std::uint32_t, std::uint64_t>> runtime_auxiliary;
+  runtime_auxiliary.emplace_back(aggregate_root->logical_node_id,
+                                 per_group_memory);
+  runtime_auxiliary.emplace_back(aggregate_root->logical_node_id,
+                                 projection_memory);
+  if (has_having) {
+    runtime_auxiliary.emplace_back(root->logical_node_id,
+                                   filter_truth_memory);
+  }
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles,
+                                         runtime_auxiliary)) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "grouped aggregate runtime memory receipts are incomplete");
   }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles,
@@ -17403,7 +17864,9 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
       maximum_output_rows;
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -17816,7 +18279,7 @@ ExecuteCanonicalObjectFreePivotQuery(
   const std::string pivot_implementation_id =
       include_nulls ? "pivot.canonical.include-nulls.typed.v1"
                     : "pivot.canonical.exclude-nulls.typed.v1";
-  const std::vector<LivePhysicalNodeProfile> profiles = {
+  std::vector<LivePhysicalNodeProfile> profiles = {
       {input_node->logical_node_id,
        std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -17837,6 +18300,10 @@ ExecuteCanonicalObjectFreePivotQuery(
        std::max<std::uint64_t>(1, total_memory),
        1,
        1}};
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "PIVOT runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "pivot.selected-plan", "PIVOT");
   if (!planning.ok) return refuse(planning.diagnostic_id, planning.detail);
@@ -17967,7 +18434,9 @@ ExecuteCanonicalObjectFreePivotQuery(
   execution_request.result_publication_request.maximum_row_count =
       std::max<std::size_t>(1, input_row_count);
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -18324,7 +18793,7 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
   const std::string unpivot_implementation_id =
       include_nulls ? "unpivot.canonical.include-nulls.typed.v1"
                     : "unpivot.canonical.exclude-nulls.typed.v1";
-  const std::vector<LivePhysicalNodeProfile> profiles = {
+  std::vector<LivePhysicalNodeProfile> profiles = {
       {input_node->logical_node_id,
        std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -18345,6 +18814,10 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
        std::max<std::uint64_t>(1, total_memory),
        1,
        1}};
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "UNPIVOT runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "unpivot.selected-plan", "UNPIVOT");
   if (!planning.ok) return refuse(planning.diagnostic_id, planning.detail);
@@ -18458,7 +18931,9 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
       std::max<std::size_t>(1,
                             static_cast<std::size_t>(maximum_output_rows));
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -18688,10 +19163,12 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   const auto input_row_count = input.batch.rows.size();
   std::uint64_t input_memory = 1;
   std::uint64_t total_memory = 0;
+  // Signed text width plus the mandatory runtime batch base byte.
   constexpr std::uint64_t kIntegerAggregateResultMemory =
-      std::numeric_limits<std::int64_t>::digits10 + 2;
+      std::numeric_limits<std::int64_t>::digits10 + 3;
   constexpr std::uint64_t kRealAggregateResultMemory = 64;
-  constexpr std::uint64_t kBooleanAggregateResultMemory = 5;
+  // "false" plus the mandatory runtime batch base byte.
+  constexpr std::uint64_t kBooleanAggregateResultMemory = 6;
   const bool pair_real_result =
       pair_statistical_expression &&
       aggregate_function != exec::CanonicalAggregateFunction::regr_count;
@@ -18865,7 +19342,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto aggregate_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "aggregate.capability");
-  const std::vector<LivePhysicalNodeProfile> profiles = {
+  std::vector<LivePhysicalNodeProfile> profiles = {
       {input_node->logical_node_id,
        std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -18886,6 +19363,12 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
        total_memory,
        1,
        1}};
+  if (!CompleteLiveRuntimeMemoryReceipts(
+          &profiles,
+          {{root->logical_node_id, input_memory}})) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "AGGREGATE runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "aggregate.selected-plan", "AGGREGATE");
   if (!planning.ok) {
@@ -19066,7 +19549,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   execution_request.result_publication_request.maximum_row_count = 1;
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -19198,7 +19683,7 @@ ExecuteCanonicalObjectFreeLimitQuery(
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto limit_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "limit.capability");
-  const std::vector<LivePhysicalNodeProfile> profiles = {
+  std::vector<LivePhysicalNodeProfile> profiles = {
       {input_node->logical_node_id,
        std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -19219,6 +19704,10 @@ ExecuteCanonicalObjectFreeLimitQuery(
        total_memory,
        1,
        1}};
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "LIMIT runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "limit.selected-plan", "LIMIT");
   if (!planning.ok) {
@@ -19330,7 +19819,9 @@ ExecuteCanonicalObjectFreeLimitQuery(
       std::max<std::size_t>(1, output_row_bound);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -19490,7 +19981,7 @@ ExecuteCanonicalObjectFreeSortQuery(
       prepared_root.expression_ordering
           ? "sort.typed.expression-row.v1"
           : "sort.typed.terms.v1";
-  const std::vector<LivePhysicalNodeProfile> profiles = {
+  std::vector<LivePhysicalNodeProfile> profiles = {
       {input_node->logical_node_id,
        std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -19516,6 +20007,13 @@ ExecuteCanonicalObjectFreeSortQuery(
        {},
        {prepared_root.ordering_property_uuid},
        {plan::CanonicalLogicalPropertyKind::kOrdering}}};
+  if (!CompleteLiveRuntimeMemoryReceipts(
+          &profiles,
+          {{root->logical_node_id, comparison_count},
+           {root->logical_node_id, row_order_memory}})) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "SORT runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "sort.selected-plan", "SORT");
   if (!planning.ok) {
@@ -19686,7 +20184,9 @@ ExecuteCanonicalObjectFreeSortQuery(
       std::max<std::size_t>(1, input_row_count);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -19871,6 +20371,8 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
       !CheckedAdd(distinct_comparison_count,
                   distinct_self_comparison_count,
                   &distinct_comparison_count) ||
+      !CheckedAdd(distinct_memory, distinct_comparison_count,
+                  &distinct_memory) ||
       !CheckedMultiply(input_row_count, input_row_count,
                        &sort_comparison_count) ||
       !CheckedMultiply(input_row_count, sizeof(std::size_t),
@@ -19908,7 +20410,7 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
   const std::string limit_implementation_id =
       fetch_first_rows_only ? "fetch.native.rows-only.v1"
                             : "limit.typed.v1";
-  const std::vector<LivePhysicalNodeProfile> profiles = {
+  std::vector<LivePhysicalNodeProfile> profiles = {
       {values_node->logical_node_id,
        std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -19954,6 +20456,14 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
        limit_memory,
        1,
        1}};
+  if (!CompleteLiveRuntimeMemoryReceipts(
+          &profiles,
+          {{distinct_node->logical_node_id, distinct_comparison_count},
+           {sort_node->logical_node_id, sort_comparison_count},
+           {sort_node->logical_node_id, row_order_memory}})) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "DISTINCT/SORT/LIMIT runtime memory receipts are incomplete");
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles,
       fetch_first_rows_only ? "fetch-distinct-sort.selected-plan"
@@ -20029,7 +20539,9 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
       std::max<std::size_t>(1, output_row_bound);
 
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(
+          request.context, execution_request,
+          planning.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -20432,8 +20944,23 @@ ExecuteCanonicalObjectFreeValuesQuery(
   execution_request.result_publication_request.maximum_row_count =
       std::max<std::size_t>(1, materialized.batch.rows.size());
 
+  OrdinaryRuntimeMemoryReceipts producer_memory_receipts;
+  if (publication.physical_dag.nodes.size() != 1) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "VALUES producer memory receipt lacks one selected node");
+  }
+  OrdinaryRuntimeMemoryReceipt producer_memory;
+  producer_memory.physical_node_id =
+      publication.physical_dag.nodes.front().physical_node_id;
+  producer_memory.implementation_id = std::string(kValuesImplementationId);
+  producer_memory.producer_peak_memory_bytes = memory_bytes;
+  producer_memory.producer_peak_memory_exact = true;
+  producer_memory.non_accessing_proven = true;
+  producer_memory_receipts.emplace(producer_memory.physical_node_id,
+                                   std::move(producer_memory));
   const auto execution =
-      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+      ExecuteSelectedWithMgaGuard(request.context, execution_request,
+                                  producer_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -20617,6 +21144,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
        exec::PhysicalNodeKind::kJoin,
        "canonical.heap.join." + join_component + ".v1",
        1, 2048, 2, 2});
+  profiles.back().runtime_peak_from_callback_batches = true;
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "heap JOIN runtime memory receipts are incomplete");
+  }
   const auto physical = PlanAndPublishLivePhysicalDag(
       planning_request, profiles, "heap-cross-join.selected-plan",
       "object-backed heap CROSS JOIN");
@@ -20762,7 +21294,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         {ordinal, true, std::move(published)});
   }
   selected.result_publication_request.maximum_row_count = maximum_output_rows;
-  const auto execution = ExecuteSelectedWithMgaGuard(input.context, selected);
+  const auto execution = ExecuteSelectedWithMgaGuard(
+      input.context, selected, physical.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -21220,6 +21753,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
              : "canonical.heap.limit.bound-count-offset.v1",
          1, 1024, 1, 1});
   }
+  for (auto& profile : profiles) {
+    if (!profile.implementation_id.starts_with("scan.heap")) {
+      profile.runtime_peak_from_callback_batches = true;
+    }
+  }
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
+    return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
+                  "heap composition runtime memory receipts are incomplete");
+  }
   const auto physical = PlanAndPublishLivePhysicalDag(
       planning_request, profiles,
       limit_composition
@@ -21451,8 +21993,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     selected.result_publication_request.maximum_row_count =
         maximum_output_rows;
 
-    const auto execution =
-        ExecuteSelectedWithMgaGuard(input.context, selected);
+    const auto execution = ExecuteSelectedWithMgaGuard(
+        input.context, selected, physical.ordinary_runtime_memory_receipts);
     if (!execution.accepted || !execution.exact_selected_nodes_executed ||
         !execution.causal_counters_attached ||
         !execution.canonical_result_published || !execution.issues.empty()) {

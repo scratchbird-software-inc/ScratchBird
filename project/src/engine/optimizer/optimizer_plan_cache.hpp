@@ -118,6 +118,108 @@ struct CanonicalPreparedPhysicalNode {
   std::uint64_t spill_bytes_expected{0};
 };
 
+// QOW-SOURCE-OPT-017-V1
+// EXPLAIN consumes this immutable planning receipt. It records what the
+// optimizer actually considered and selected; rendering is never allowed to
+// rerun search, costing, planning, execution, or MGA visibility work.
+enum class CanonicalPreparedExplainCandidateDisposition : std::uint8_t {
+  kSelected = 1,
+  kRejected,
+  kPruned,
+};
+
+enum class CanonicalPreparedExplainStatisticState : std::uint8_t {
+  kUsed = 1,
+  kMissing,
+  kNotApplicable,
+};
+
+struct CanonicalPreparedExplainStageRecord {
+  std::uint64_t ordinal{0};
+  std::string stage_id;
+  std::string outcome_id;
+  std::string detail_id;
+  bool protected_detail{false};
+
+  bool operator==(const CanonicalPreparedExplainStageRecord&) const = default;
+};
+
+struct CanonicalPreparedExplainNodeEstimate {
+  std::uint64_t physical_node_id{0};
+  std::uint32_t logical_node_id{0};
+  std::uint64_t estimated_input_rows{0};
+  std::uint64_t estimated_output_rows{0};
+  std::string confidence_id;
+
+  bool operator==(const CanonicalPreparedExplainNodeEstimate&) const = default;
+};
+
+struct CanonicalPreparedExplainCandidateRecord {
+  std::string candidate_family_id;
+  std::string alternative_uuid;
+  std::uint32_t logical_node_id{0};
+  CanonicalPreparedExplainCandidateDisposition disposition{
+      CanonicalPreparedExplainCandidateDisposition::kRejected};
+  std::string reason_id;
+  executor::PhysicalCostVectorReceipt retained_cost;
+  std::uint64_t estimated_rows{0};
+  std::string confidence_id;
+  bool protected_detail{false};
+};
+
+struct CanonicalPreparedExplainBarrierRecord {
+  std::uint32_t logical_node_id{0};
+  std::string barrier_kind_id;
+  std::string reason_id;
+  bool protected_detail{false};
+
+  bool operator==(const CanonicalPreparedExplainBarrierRecord&) const = default;
+};
+
+struct CanonicalPreparedExplainStatisticRecord {
+  std::string statistic_uuid;
+  CanonicalPreparedExplainStatisticState state{
+      CanonicalPreparedExplainStatisticState::kMissing};
+  std::string confidence_id;
+  bool protected_detail{false};
+
+  bool operator==(const CanonicalPreparedExplainStatisticRecord&) const =
+      default;
+};
+
+struct CanonicalPreparedExplainAssumptionRecord {
+  std::string category_id;
+  std::string assumption_id;
+  bool protected_detail{false};
+
+  bool operator==(const CanonicalPreparedExplainAssumptionRecord&) const =
+      default;
+};
+
+struct CanonicalPreparedExplainEvidence {
+  std::uint16_t abi_version{1};
+  std::string selected_plan_uuid;
+  std::string selected_plan_signature;
+  std::string bound_sblr_tree_uuid;
+  std::string statistics_snapshot_uuid;
+  std::uint64_t statistics_generation{0};
+  std::string search_strategy_id;
+  std::vector<CanonicalPreparedExplainStageRecord> stages;
+  std::vector<CanonicalPreparedExplainNodeEstimate> node_estimates;
+  std::vector<CanonicalPreparedExplainCandidateRecord> candidates;
+  std::vector<CanonicalPreparedExplainBarrierRecord> barriers;
+  std::vector<CanonicalPreparedExplainStatisticRecord> statistics;
+  std::vector<CanonicalPreparedExplainAssumptionRecord> assumptions;
+  bool complete{false};
+  bool engine_planning_evidence{false};
+  bool parser_execution_authority_claimed{false};
+  bool transaction_visibility_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+  bool recovery_authority_claimed{false};
+  bool feedback_authority_claimed{false};
+  bool benchmark_authority_claimed{false};
+};
+
 struct CanonicalPreparedPhysicalPlan {
   std::uint16_t abi_version{1};
   std::string prepared_plan_uuid;
@@ -150,6 +252,7 @@ struct CanonicalPreparedPhysicalPlan {
   std::vector<CanonicalPreparedPlanResultDescriptor> result_descriptors;
   std::vector<CanonicalPreparedPlanDependency> dependencies;
   std::vector<CanonicalPreparedPhysicalNode> nodes;
+  std::optional<CanonicalPreparedExplainEvidence> explain_evidence;
   bool immutable_physical_identity_retained{false};
   bool complete_cost_vectors_retained{false};
   bool parameter_values_retained{false};
@@ -166,6 +269,7 @@ struct CanonicalPreparePhysicalPlanRequest {
   std::vector<CanonicalPreparedPlanParameterDescriptor> parameters;
   std::vector<CanonicalPreparedPlanResultDescriptor> result_descriptors;
   std::vector<CanonicalPreparedPlanDependency> dependencies;
+  std::optional<CanonicalPreparedExplainEvidence> explain_evidence;
   bool engine_prepare_authorized{false};
   bool parameter_values_supplied{false};
   bool parser_execution_authority_claimed{false};
@@ -295,6 +399,168 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
                       : dag_validation.issues.front().field_id);
   }
 
+  if (request.explain_evidence.has_value()) {
+    const auto& explain = *request.explain_evidence;
+    if (explain.abi_version != 1 || !explain.complete ||
+        !explain.engine_planning_evidence ||
+        explain.parser_execution_authority_claimed ||
+        explain.transaction_visibility_authority_claimed ||
+        explain.transaction_finality_authority_claimed ||
+        explain.recovery_authority_claimed ||
+        explain.feedback_authority_claimed ||
+        explain.benchmark_authority_claimed ||
+        explain.selected_plan_uuid != dag.selected_plan_uuid ||
+        explain.selected_plan_signature != dag.selected_plan_signature ||
+        explain.bound_sblr_tree_uuid != dag.bound_sblr_tree_uuid ||
+        explain.statistics_snapshot_uuid != dag.statistics_snapshot_uuid ||
+        explain.statistics_generation != dag.statistics_generation ||
+        explain.search_strategy_id.empty() || explain.stages.empty() ||
+        explain.node_estimates.size() != dag.nodes.size() ||
+        explain.candidates.empty()) {
+      return refuse("explain_planning_evidence");
+    }
+    for (std::size_t index = 0; index < explain.stages.size(); ++index) {
+      const auto& stage = explain.stages[index];
+      if (stage.ordinal != index + 1 || stage.stage_id.empty() ||
+          stage.outcome_id.empty()) {
+        return refuse("explain_stage_order");
+      }
+    }
+    std::uint64_t previous_physical_node_id = 0;
+    std::unordered_set<std::uint32_t> estimated_logical_nodes;
+    for (const auto& estimate : explain.node_estimates) {
+      const auto physical = std::ranges::find_if(
+          dag.nodes, [&](const auto& node) {
+            return node.physical_node_id == estimate.physical_node_id;
+          });
+      if (estimate.physical_node_id <= previous_physical_node_id ||
+          physical == dag.nodes.end() ||
+          physical->relational_node_id != estimate.logical_node_id ||
+          estimate.confidence_id.empty() ||
+          !estimated_logical_nodes.insert(estimate.logical_node_id).second) {
+        return refuse("explain_node_estimate_coverage");
+      }
+      previous_physical_node_id = estimate.physical_node_id;
+    }
+    std::unordered_set<std::uint32_t> selected_logical_nodes;
+    const auto same_cost = [](const executor::PhysicalCostVectorReceipt& left,
+                              const executor::PhysicalCostVectorReceipt& right) {
+      return left.cost_vector_uuid == right.cost_vector_uuid &&
+             left.calibration_profile_uuid == right.calibration_profile_uuid &&
+             left.scalar_score == right.scalar_score &&
+             left.cpu_units == right.cpu_units &&
+             left.page_read_sequential_units ==
+                 right.page_read_sequential_units &&
+             left.page_read_random_units == right.page_read_random_units &&
+             left.page_write_units == right.page_write_units &&
+             left.memory_bytes_required == right.memory_bytes_required &&
+             left.spill_bytes_expected == right.spill_bytes_expected &&
+             left.network_bytes_expected == right.network_bytes_expected &&
+             left.mga_visibility_checks_expected ==
+                 right.mga_visibility_checks_expected &&
+             left.archive_fetches_expected == right.archive_fetches_expected &&
+             left.uncertainty_penalty == right.uncertainty_penalty &&
+             left.risk_penalty == right.risk_penalty &&
+             left.confidence == right.confidence;
+    };
+    std::string previous_candidate_key;
+    for (const auto& candidate : explain.candidates) {
+      const auto disposition = candidate.disposition;
+      const auto known_disposition =
+          disposition == CanonicalPreparedExplainCandidateDisposition::kSelected ||
+          disposition == CanonicalPreparedExplainCandidateDisposition::kRejected ||
+          disposition == CanonicalPreparedExplainCandidateDisposition::kPruned;
+      const auto key = std::to_string(candidate.logical_node_id) + ":" +
+                       candidate.candidate_family_id + ":" +
+                       candidate.alternative_uuid + ":" +
+                       std::to_string(static_cast<std::uint8_t>(disposition));
+      const auto candidate_node = std::ranges::find_if(
+          dag.nodes, [&](const auto& node) {
+            return node.relational_node_id == candidate.logical_node_id;
+          });
+      if (!known_disposition || candidate.logical_node_id == 0 ||
+          candidate_node == dag.nodes.end() ||
+          candidate.candidate_family_id.empty() ||
+          !canonical_uuid(candidate.alternative_uuid) ||
+          candidate.confidence_id.empty() ||
+          (!previous_candidate_key.empty() && key <= previous_candidate_key) ||
+          (disposition !=
+               CanonicalPreparedExplainCandidateDisposition::kSelected &&
+           candidate.reason_id.empty())) {
+        return refuse("explain_candidate_evidence");
+      }
+      previous_candidate_key = key;
+      if (disposition ==
+          CanonicalPreparedExplainCandidateDisposition::kSelected) {
+        const auto physical = std::ranges::find_if(
+            dag.nodes, [&](const auto& node) {
+              return node.relational_node_id == candidate.logical_node_id &&
+                     node.selected_alternative_uuid ==
+                         candidate.alternative_uuid;
+            });
+        const auto estimate = std::ranges::find_if(
+            explain.node_estimates, [&](const auto& item) {
+              return physical != dag.nodes.end() &&
+                     item.physical_node_id == physical->physical_node_id &&
+                     item.logical_node_id == candidate.logical_node_id;
+            });
+        if (physical == dag.nodes.end() ||
+            estimate == explain.node_estimates.end() ||
+            candidate.estimated_rows != estimate->estimated_output_rows ||
+            candidate.confidence_id != estimate->confidence_id ||
+            candidate.retained_cost.cost_vector_uuid !=
+                physical->cost_vector_uuid ||
+            !same_cost(candidate.retained_cost, physical->retained_cost) ||
+            !selected_logical_nodes.insert(candidate.logical_node_id).second) {
+          return refuse("explain_selected_candidate_coverage");
+        }
+      }
+    }
+    if (selected_logical_nodes.size() != dag.nodes.size()) {
+      return refuse("explain_selected_candidate_coverage");
+    }
+    std::string previous_barrier_key;
+    for (const auto& barrier : explain.barriers) {
+      const auto key = std::to_string(barrier.logical_node_id) + ":" +
+                       barrier.barrier_kind_id + ":" + barrier.reason_id;
+      const auto barrier_node = std::ranges::find_if(
+          dag.nodes, [&](const auto& node) {
+            return node.relational_node_id == barrier.logical_node_id;
+          });
+      if (barrier.logical_node_id == 0 || barrier.barrier_kind_id.empty() ||
+          barrier_node == dag.nodes.end() ||
+          barrier.reason_id.empty() ||
+          (!previous_barrier_key.empty() && key <= previous_barrier_key)) {
+        return refuse("explain_barrier_evidence");
+      }
+      previous_barrier_key = key;
+    }
+    std::string previous_statistic_uuid;
+    for (const auto& statistic : explain.statistics) {
+      const auto known_state =
+          statistic.state == CanonicalPreparedExplainStatisticState::kUsed ||
+          statistic.state == CanonicalPreparedExplainStatisticState::kMissing ||
+          statistic.state ==
+              CanonicalPreparedExplainStatisticState::kNotApplicable;
+      if (!canonical_uuid(statistic.statistic_uuid) || !known_state ||
+          statistic.confidence_id.empty() ||
+          (!previous_statistic_uuid.empty() &&
+           statistic.statistic_uuid <= previous_statistic_uuid)) {
+        return refuse("explain_statistic_evidence");
+      }
+      previous_statistic_uuid = statistic.statistic_uuid;
+    }
+    std::string previous_assumption_key;
+    for (const auto& assumption : explain.assumptions) {
+      const auto key = assumption.category_id + ":" + assumption.assumption_id;
+      if (assumption.category_id.empty() || assumption.assumption_id.empty() ||
+          (!previous_assumption_key.empty() && key <= previous_assumption_key)) {
+        return refuse("explain_assumption_evidence");
+      }
+      previous_assumption_key = key;
+    }
+  }
+
   std::unordered_set<std::uint32_t> parameter_descriptor_ids;
   std::unordered_set<std::string> parameter_descriptor_uuids;
   for (std::size_t index = 0; index < request.parameters.size(); ++index) {
@@ -386,6 +652,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   prepared->parameters = request.parameters;
   prepared->result_descriptors = request.result_descriptors;
   prepared->dependencies = request.dependencies;
+  prepared->explain_evidence = request.explain_evidence;
   prepared->nodes.reserve(dag.nodes.size());
   for (const auto& node : dag.nodes) {
     prepared->nodes.push_back(
@@ -1789,6 +2056,185 @@ struct CanonicalExecutablePlanGovernedExecutionResult {
   std::vector<CanonicalExecutablePlanCacheIssue> issues;
 };
 
+enum class CanonicalExplainMode : std::uint8_t {
+  kPlain = 1,
+  kAnalyze,
+};
+
+enum class CanonicalExplainFieldState : std::uint8_t {
+  kVisible = 1,
+  kRedacted,
+  kBucketed,
+  kAbsent,
+};
+
+struct CanonicalExplainDisclosurePolicy {
+  std::uint16_t abi_version{1};
+  std::string request_uuid;
+  std::string subject_uuid;
+  std::string redaction_policy_uuid;
+  std::uint64_t security_epoch{0};
+  std::uint64_t policy_epoch{0};
+  bool engine_plan_read_authorized{false};
+  bool plan_shape_authorized{false};
+  bool object_existence_authorized{false};
+  bool object_names_authorized{false};
+  bool cardinality_cost_authorized{false};
+  bool actual_profile_authorized{false};
+  bool security_detail_authorized{false};
+  bool route_detail_authorized{false};
+  bool cluster_detail_authorized{false};
+  bool archive_detail_authorized{false};
+  bool donor_detail_authorized{false};
+  bool invalidation_detail_authorized{false};
+  bool bucket_hidden_cardinality{false};
+  bool parser_policy_authority_claimed{false};
+  bool transaction_visibility_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+  bool recovery_authority_claimed{false};
+};
+
+struct CanonicalExplainCandidateRecord {
+  std::uint32_t logical_node_id{0};
+  CanonicalPreparedExplainCandidateDisposition disposition{
+      CanonicalPreparedExplainCandidateDisposition::kRejected};
+  std::string candidate_family_id;
+  std::string alternative_uuid;
+  std::string reason_id;
+  std::uint64_t estimated_rows{0};
+  executor::PhysicalCostVectorReceipt retained_cost;
+  CanonicalExplainFieldState identity_state{
+      CanonicalExplainFieldState::kVisible};
+  CanonicalExplainFieldState estimate_state{
+      CanonicalExplainFieldState::kVisible};
+};
+
+struct CanonicalExplainNodeRecord {
+  std::uint64_t physical_node_id{0};
+  std::uint32_t logical_node_id{0};
+  std::uint64_t causal_counter_id{0};
+  std::size_t execution_ordinal{0};
+  std::string implementation_id;
+  std::string logical_semantic_variant_id;
+  std::string selected_alternative_uuid;
+  std::string transformation_uuid;
+  std::string transformation_rule_id;
+  std::string executor_capability_uuid;
+  std::uint32_t executor_capability_abi_version{0};
+  std::vector<std::uint64_t> input_physical_node_ids;
+  std::vector<std::uint32_t> output_descriptor_ids;
+  std::vector<std::string> required_property_uuids;
+  std::vector<std::string> delivered_property_uuids;
+  std::vector<std::string> enforced_property_uuids;
+  executor::PhysicalCostVectorReceipt estimated_cost;
+  std::uint64_t memory_bytes_required{0};
+  std::uint64_t spill_bytes_expected{0};
+  std::uint64_t estimated_input_rows{0};
+  std::uint64_t estimated_output_rows{0};
+  std::uint64_t actual_input_rows{0};
+  std::uint64_t actual_output_rows{0};
+  std::uint64_t actual_rows_examined{0};
+  bool data_access_observation_known{false};
+  bool data_access_observed{false};
+  CanonicalExplainFieldState data_access_state{
+      CanonicalExplainFieldState::kAbsent};
+  executor::CanonicalPhysicalNodeRuntimeObservation runtime_observation;
+  CanonicalExplainFieldState runtime_route_state{
+      CanonicalExplainFieldState::kAbsent};
+  CanonicalExplainFieldState runtime_security_state{
+      CanonicalExplainFieldState::kAbsent};
+  CanonicalExplainFieldState runtime_archive_state{
+      CanonicalExplainFieldState::kAbsent};
+  CanonicalExplainFieldState runtime_cluster_state{
+      CanonicalExplainFieldState::kAbsent};
+  CanonicalExplainFieldState runtime_donor_state{
+      CanonicalExplainFieldState::kAbsent};
+  CanonicalExplainFieldState identity_state{
+      CanonicalExplainFieldState::kVisible};
+  CanonicalExplainFieldState estimate_state{
+      CanonicalExplainFieldState::kVisible};
+  CanonicalExplainFieldState actual_state{
+      CanonicalExplainFieldState::kAbsent};
+};
+
+struct CanonicalExplainDocument {
+  std::uint16_t abi_version{1};
+  CanonicalExplainMode mode{CanonicalExplainMode::kPlain};
+  std::string prepared_plan_uuid;
+  std::uint64_t prepare_generation{0};
+  std::string selected_plan_uuid;
+  std::string selected_plan_signature;
+  std::string bound_sblr_tree_uuid;
+  std::string result_schema_uuid;
+  std::uint64_t root_physical_node_id{0};
+  std::uint64_t published_node_count{0};
+  std::string search_strategy_id;
+  std::vector<CanonicalPreparedExplainStageRecord> stages;
+  std::vector<CanonicalExplainCandidateRecord> candidates;
+  std::vector<CanonicalPreparedExplainBarrierRecord> barriers;
+  std::vector<CanonicalPreparedExplainStatisticRecord> statistics;
+  std::vector<CanonicalPreparedExplainAssumptionRecord> assumptions;
+  std::vector<CanonicalPreparedPlanResultDescriptor> result_descriptors;
+  std::vector<CanonicalPreparedPlanDependency> dependencies;
+  std::vector<CanonicalExplainNodeRecord> nodes;
+  CanonicalExecutablePlanStatus lifecycle_status{
+      CanonicalExecutablePlanStatus::kValid};
+  std::optional<CanonicalExecutablePlanInvalidationReceipt> invalidation;
+  bool cache_entry_present{false};
+  bool cache_hit{false};
+  bool reprepare_attempted{false};
+  bool reprepare_succeeded{false};
+  std::uint64_t reprepare_attempt_count{0};
+  std::string replacement_prepared_plan_uuid;
+  bool data_access_observation_known{false};
+  bool data_access_observed{false};
+  CanonicalExplainFieldState data_access_state{
+      CanonicalExplainFieldState::kAbsent};
+  bool analyzed_mga_statement_context_present{false};
+  executor::PhysicalMgaStatementContext analyzed_mga_statement_context;
+  CanonicalExplainFieldState analyzed_mga_statement_context_state{
+      CanonicalExplainFieldState::kAbsent};
+  bool analyzed{false};
+  bool redacted{false};
+  bool immutable_stored_plan_rendered{false};
+  bool completed_engine_execution_consumed{false};
+};
+
+struct CanonicalExplainRequest {
+  std::uint16_t abi_version{1};
+  CanonicalExplainMode mode{CanonicalExplainMode::kPlain};
+  std::shared_ptr<const CanonicalPreparedPhysicalPlan> prepared_plan;
+  CanonicalExecutablePlanStatus lifecycle_status{
+      CanonicalExecutablePlanStatus::kValid};
+  std::optional<CanonicalExecutablePlanInvalidationReceipt> invalidation;
+  bool cache_entry_present{false};
+  bool cache_hit{false};
+  bool reprepare_attempted{false};
+  bool reprepare_succeeded{false};
+  std::uint64_t reprepare_attempt_count{0};
+  std::string replacement_prepared_plan_uuid;
+  const executor::CanonicalPhysicalDagDispatchResult* completed_dispatch{
+      nullptr};
+  std::string completed_result_schema_uuid;
+  bool engine_result_schema_evidence{false};
+  executor::CanonicalExecutionMgaAuthority mga_authority;
+  CanonicalExplainDisclosurePolicy disclosure;
+  bool renderer_execution_authority_claimed{false};
+  bool parser_execution_authority_claimed{false};
+  bool transaction_visibility_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+  bool recovery_authority_claimed{false};
+  bool feedback_authority_claimed{false};
+  bool benchmark_authority_claimed{false};
+};
+
+struct CanonicalExplainResult {
+  bool accepted{false};
+  bool analyzed{false};
+  CanonicalExplainDocument document;
+  std::vector<CanonicalExecutablePlanCacheIssue> issues;
+};
+
 // SEARCH_KEY: SB_OPTIMIZER_PLAN_CACHE_KEY
 struct OptimizerPlanCacheKeyInput {
   std::string operation_id;
@@ -2028,5 +2474,9 @@ scratchbird::engine::optimizer::
 ExecuteCanonicalExecutablePlanAfterSingleReprepare(
     const scratchbird::engine::optimizer::
         CanonicalExecutablePlanGovernedExecutionRequest& request);
+
+scratchbird::engine::optimizer::CanonicalExplainResult
+RenderCanonicalStoredPlanExplain(
+    const scratchbird::engine::optimizer::CanonicalExplainRequest& request);
 
 }  // namespace scratchbird::engine::internal_api
