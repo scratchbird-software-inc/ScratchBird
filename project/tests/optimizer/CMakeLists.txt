@@ -221,6 +221,18 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   set_tests_properties(qow_opt_015_v1 PROPERTIES
     LABELS "qow_closure;QOW-303;QOW-LEAF-OPT-015;development_candidate"
   )
+  # QOW-CMAKE-OPT-013-V1
+  find_package(Threads REQUIRED)
+  add_executable(qow_opt_013_test_v1 qow_opt_013.cpp)
+  target_compile_features(qow_opt_013_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_opt_013_test_v1 PRIVATE
+    sb_qow_optimizer_feedback
+    Threads::Threads
+  )
+  add_test(NAME qow_opt_013_v1 COMMAND qow_opt_013_test_v1)
+  set_tests_properties(qow_opt_013_v1 PROPERTIES
+    LABELS "qow_closure;QOW-310;QOW-LEAF-OPT-013;development_candidate"
+  )
   # QOW-CMAKE-OPT-014-V1
   add_executable(qow_opt_014_test_v1 qow_opt_014.cpp)
   target_compile_features(qow_opt_014_test_v1 PRIVATE cxx_std_20)

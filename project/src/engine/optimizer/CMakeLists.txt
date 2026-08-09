@@ -68,6 +68,18 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
       sb_qow_canonical_candidate_legality
     )
   endif()
+  # QOW-CMAKE-OPT-013-V1
+  # The closure target compiles the same governed feedback source used by the
+  # production optimizer library without enabling any execution-side wiring.
+  if(NOT TARGET sb_qow_optimizer_feedback)
+    add_library(sb_qow_optimizer_feedback STATIC
+      optimizer_feedback.cpp
+    )
+    target_compile_features(sb_qow_optimizer_feedback PUBLIC cxx_std_20)
+    target_include_directories(sb_qow_optimizer_feedback PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+  endif()
   return()
 endif()
 
