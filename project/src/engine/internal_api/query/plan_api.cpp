@@ -8,6 +8,7 @@
 
 #include "query/plan_api.hpp"
 #include "query/canonical_relational_bridge.hpp"
+#include "optimizer_plan_cache.hpp"
 
 #ifndef SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY
 #include "api_diagnostics.hpp"
@@ -24,7 +25,6 @@
 #include "executor_foundation.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "optimizer_contract.hpp"
-#include "optimizer_plan_cache.hpp"
 #include "physical_plan.hpp"
 #include "security/security_principal_lifecycle.hpp"
 #include "transaction_snapshot.hpp"
@@ -2113,6 +2113,227 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
   result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
+
+// QOW-ROUTE-STAGE-OPT-009-V1-BEGIN
+// A valid executable cache hit enters the already-canonical selected-DAG
+// executor directly. This route has no optimizer, search, planner, ordinary
+// query-entry, SBLR decode, uncached fallback, or automatic replan call.
+scratchbird::engine::optimizer::CanonicalExecutablePlanHitExecutionResult
+ExecuteCanonicalExecutablePlanCacheHit(
+    const scratchbird::engine::optimizer::
+        CanonicalExecutablePlanHitExecutionRequest& request) {
+  namespace cache = scratchbird::engine::optimizer;
+  cache::CanonicalExecutablePlanHitExecutionResult result;
+  const auto refuse = [&](std::string field_id,
+                          const bool reprepare_required = false,
+                          const bool data_access_observed = false) {
+    result.accepted = false;
+    result.cache_hit = result.checkout.hit;
+    result.exact_selected_nodes_executed = false;
+    result.canonical_result_published = false;
+    result.data_access_observed = data_access_observed;
+    result.reprepare_required = reprepare_required;
+    result.automatic_replan_attempted = false;
+    result.parameter_values_retained = false;
+    result.structural_no_optimizer_search_planner_or_fallback_route = true;
+    result.optimizer_invocation_count = 0;
+    result.search_invocation_count = 0;
+    result.planner_invocation_count = 0;
+    result.uncached_fallback_invocation_count = 0;
+    result.issues.push_back(
+        {"QOW-DIAG-OPT-009-REFUSAL-V1", std::move(field_id)});
+    return result;
+  };
+
+  if (request.executable_plan_cache == nullptr ||
+      !request.engine_execution_authorized ||
+      request.parser_execution_authority_claimed ||
+      request.transaction_finality_authority_claimed ||
+      request.recovery_authority_claimed) {
+    return refuse("cache_hit_execution_authority");
+  }
+  result.checkout =
+      request.executable_plan_cache->LookupAndBind(request.lookup);
+  if (!result.checkout.accepted || !result.checkout.hit ||
+      !result.checkout.entry || !result.checkout.entry->prepared_plan) {
+    const std::string field =
+        result.checkout.issues.empty()
+            ? "executable_cache_checkout"
+            : result.checkout.issues.front().field_id;
+    return refuse(field, result.checkout.reprepare_required);
+  }
+
+  const auto& stored_plan = *result.checkout.entry->prepared_plan;
+  const auto& publication = request.result_publication_request;
+  if (publication.invocation_mode !=
+          executor::CanonicalResultInvocationMode::kPrepared ||
+      publication.statement_uuid !=
+          request.lookup.mga_authority.statement_context.statement_uuid ||
+      publication.selected_catalog_epoch_uuid !=
+          stored_plan.catalog_epoch_uuid ||
+      !publication.physical_output_batch.columns.empty() ||
+      !publication.physical_output_batch.rows.empty() ||
+      publication.column_bindings.size() !=
+          stored_plan.result_descriptors.size()) {
+    return refuse("pre_access_result_publication_schema");
+  }
+  for (std::size_t index = 0; index < publication.column_bindings.size();
+       ++index) {
+    const auto& binding = publication.column_bindings[index];
+    const auto& stored = stored_plan.result_descriptors[index];
+    const auto expected_nullability =
+        stored.nullable ? executor::CanonicalResultNullability::kNullable
+                        : executor::CanonicalResultNullability::kNonNull;
+    if (!binding.visible || !binding.published_descriptor.has_value() ||
+        binding.physical_column_ordinal != index ||
+        binding.published_descriptor->ordinal != stored.ordinal - 1 ||
+        binding.published_descriptor->name_utf8 != stored.name_utf8 ||
+        binding.published_descriptor->descriptor_uuid !=
+            stored.descriptor_uuid ||
+        binding.published_descriptor->type_uuid != stored.type_uuid ||
+        binding.published_descriptor->nullability != expected_nullability ||
+        binding.published_descriptor->collation_uuid.value_or("") !=
+            stored.collation_uuid ||
+        binding.published_descriptor->timezone_profile_id.value_or("") !=
+            stored.timezone_uuid) {
+      return refuse("pre_access_result_publication_schema");
+    }
+  }
+
+  CanonicalOptimizerSelectedExecutionRequest selected;
+  selected.selected_physical_dag = result.checkout.execution_physical_dag;
+  selected.pre_access_statistics_snapshot_uuid =
+      result.checkout.entry->key.statistics_snapshot_uuid;
+  selected.mga_authority = request.lookup.mga_authority;
+  selected.limits = request.limits;
+  selected.runtime_limits = request.runtime_limits;
+  selected.cancellation_requested = request.cancellation_requested;
+  selected.available_executors = request.available_executors;
+  selected.result_publication_request = request.result_publication_request;
+  selected.engine_execution_authorized = true;
+  selected.parser_execution_authority_claimed = false;
+  selected.transaction_finality_claimed = false;
+  selected.recovery_authority_claimed = false;
+
+  auto execution = ExecuteCanonicalOptimizerSelectedDag(selected);
+  if (!execution.accepted) {
+    const std::string upstream_diagnostic =
+        execution.issues.empty() ? std::string{} :
+                                   execution.issues.front().diagnostic_id;
+    const std::string upstream_field =
+        execution.issues.empty() ? std::string{} :
+                                   execution.issues.front().field_id;
+    result.dispatch = std::move(execution.dispatch);
+    result.result_publication = std::move(execution.result_publication);
+    auto refused = refuse("canonical_selected_dag_execution",
+                          execution.replan_required,
+                          execution.data_access_observed);
+    refused.issues.back().upstream_diagnostic_id = upstream_diagnostic;
+    refused.issues.back().upstream_field_id = upstream_field;
+    return refused;
+  }
+
+  const auto& entry = *result.checkout.entry;
+  const auto& plan = *entry.prepared_plan;
+  const auto& dispatch = execution.dispatch;
+  if (!execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published || execution.replan_required ||
+      dispatch.selected_plan_uuid != plan.selected_plan_uuid ||
+      dispatch.executed_root_physical_node_id !=
+          plan.root_physical_node_id ||
+      dispatch.executed_steps.size() != plan.nodes.size() ||
+      !executor::PhysicalMgaStatementContextEqual(
+          execution.mga_statement_context,
+          request.lookup.mga_authority.statement_context) ||
+      !executor::PhysicalMgaStatementContextEqual(
+          dispatch.mga_statement_context,
+          request.lookup.mga_authority.statement_context) ||
+      !execution.result_publication.published ||
+      !executor::PhysicalMgaStatementContextEqual(
+          execution.result_publication.envelope.mga_statement_context,
+          request.lookup.mga_authority.statement_context) ||
+      execution.result_publication.envelope.statement_uuid !=
+          request.lookup.mga_authority.statement_context.statement_uuid ||
+      execution.result_publication.envelope.catalog_epoch_uuid !=
+          plan.catalog_epoch_uuid) {
+    result.dispatch = std::move(execution.dispatch);
+    result.result_publication = std::move(execution.result_publication);
+    return refuse("exact_cache_hit_execution_identity", false,
+                  execution.data_access_observed);
+  }
+
+  result.executed_nodes.reserve(dispatch.executed_steps.size());
+  for (const auto& step : dispatch.executed_steps) {
+    const auto stored = std::ranges::find_if(
+        plan.nodes, [&](const auto& node) {
+          return node.physical_node_id == step.executed_physical_node_id;
+        });
+    if (stored == plan.nodes.end() ||
+        stored->causal_counter_id != step.causal_counter_id ||
+        !step.execution_started || !step.execution_finished ||
+        !step.counters_captured_after_finish) {
+      result.dispatch = std::move(execution.dispatch);
+      result.result_publication = std::move(execution.result_publication);
+      return refuse("exact_cache_hit_node_causal_identity", false,
+                    execution.data_access_observed);
+    }
+    result.executed_nodes.push_back(
+        {step.executed_physical_node_id, step.causal_counter_id,
+         step.execution_ordinal});
+  }
+
+  const auto& published_descriptors =
+      execution.result_publication.envelope.column_descriptors;
+  if (published_descriptors.size() != plan.result_descriptors.size()) {
+    result.dispatch = std::move(execution.dispatch);
+    result.result_publication = std::move(execution.result_publication);
+    return refuse("exact_cache_hit_result_schema", false,
+                  execution.data_access_observed);
+  }
+  for (std::size_t index = 0; index < published_descriptors.size(); ++index) {
+    const auto& published = published_descriptors[index];
+    const auto& stored = plan.result_descriptors[index];
+    const auto expected_nullability =
+        stored.nullable ? executor::CanonicalResultNullability::kNullable
+                        : executor::CanonicalResultNullability::kNonNull;
+    if (published.ordinal != stored.ordinal - 1 ||
+        published.name_utf8 != stored.name_utf8 ||
+        published.descriptor_uuid != stored.descriptor_uuid ||
+        published.type_uuid != stored.type_uuid ||
+        published.nullability != expected_nullability ||
+        published.collation_uuid.value_or("") != stored.collation_uuid ||
+        published.timezone_profile_id.value_or("") !=
+            stored.timezone_uuid) {
+      result.dispatch = std::move(execution.dispatch);
+      result.result_publication = std::move(execution.result_publication);
+      return refuse("exact_cache_hit_result_schema", false,
+                    execution.data_access_observed);
+    }
+  }
+
+  result.accepted = true;
+  result.cache_hit = true;
+  result.exact_selected_nodes_executed = true;
+  result.canonical_result_published = true;
+  result.data_access_observed = execution.data_access_observed;
+  result.reprepare_required = false;
+  result.automatic_replan_attempted = false;
+  result.parameter_values_retained = false;
+  result.structural_no_optimizer_search_planner_or_fallback_route = true;
+  result.optimizer_invocation_count = 0;
+  result.search_invocation_count = 0;
+  result.planner_invocation_count = 0;
+  result.uncached_fallback_invocation_count = 0;
+  result.selected_plan_uuid = plan.selected_plan_uuid;
+  result.executed_root_physical_node_id = plan.root_physical_node_id;
+  result.result_schema_uuid = plan.result_schema_uuid;
+  result.dispatch = std::move(execution.dispatch);
+  result.result_publication = std::move(execution.result_publication);
+  result.mga_statement_context = request.lookup.mga_authority.statement_context;
+  return result;
+}
+// QOW-ROUTE-STAGE-OPT-009-V1-END
 
 // QOW-SOURCE-IAS-005-V1
 // The former typed-prefix and materialized-window assertion branches are not a

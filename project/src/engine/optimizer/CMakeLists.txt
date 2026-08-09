@@ -13,6 +13,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   # QOW-CMAKE-OPT-008-V1
   # QOW-CMAKE-OPT-016-V1
   # QOW-CMAKE-OPT-010-PREPARE-V1
+  # QOW-CMAKE-OPT-009-V1
   if(NOT TARGET sb_qow_canonical_candidate_legality)
     add_library(sb_qow_canonical_candidate_legality STATIC
       optimizer_contract.cpp
@@ -40,6 +41,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   # QOW-CMAKE-OPT-006-STATISTICS-V1
   # QOW-CMAKE-OPT-015-V1
   # QOW-CMAKE-OPT-010-PREPARE-V1
+  # QOW-CMAKE-OPT-009-V1
   if(NOT TARGET sb_qow_optimizer_admission)
     add_library(sb_qow_optimizer_admission STATIC
       optimizer_admission.cpp
@@ -51,6 +53,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
     target_include_directories(sb_qow_optimizer_admission PUBLIC
       ${CMAKE_CURRENT_SOURCE_DIR}
       ${CMAKE_CURRENT_SOURCE_DIR}/../planner
+      ${CMAKE_CURRENT_SOURCE_DIR}/../internal_api
     )
     target_link_libraries(sb_qow_optimizer_admission PUBLIC
       sb_qow_canonical_candidate_legality

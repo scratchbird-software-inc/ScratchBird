@@ -241,6 +241,23 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   set_tests_properties(qow_opt_016_v1 PROPERTIES
     LABELS "qow_closure;QOW-305;QOW-LEAF-OPT-016;development_candidate"
   )
+  # QOW-CMAKE-OPT-009-V1
+  add_executable(qow_opt_009_test_v1 qow_opt_009.cpp)
+  target_compile_features(qow_opt_009_test_v1 PRIVATE cxx_std_20)
+  target_compile_definitions(qow_opt_009_test_v1 PRIVATE
+    SB_QOW_PLAN_API_SOURCE_FILE="${PROJECT_SOURCE_DIR}/src/engine/internal_api/query/plan_api.cpp"
+  )
+  target_link_libraries(qow_opt_009_test_v1 PRIVATE
+    sb_qow_relational_dag_contract
+    sb_qow_optimizer_admission
+    sb_engine_executor
+    sb_core_index
+    sb_storage_page
+  )
+  add_test(NAME qow_opt_009_v1 COMMAND qow_opt_009_test_v1)
+  set_tests_properties(qow_opt_009_v1 PROPERTIES
+    LABELS "qow_closure;QOW-308;QOW-LEAF-OPT-009;development_candidate"
+  )
   # QOW-CMAKE-OPT-010-PREPARE-V1
   add_executable(qow_opt_010_prepare_test_v1 qow_opt_010_prepare.cpp)
   target_compile_features(qow_opt_010_prepare_test_v1 PRIVATE cxx_std_20)
