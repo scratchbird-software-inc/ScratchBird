@@ -2335,6 +2335,95 @@ ExecuteCanonicalExecutablePlanCacheHit(
 }
 // QOW-ROUTE-STAGE-OPT-009-V1-END
 
+// QOW-ROUTE-STAGE-OPT-010-REPREPARE-V1-BEGIN
+// Exactly one engine-governed callback may produce a replacement PREPARE
+// candidate. The candidate is validated by the canonical PREPARE/cache APIs,
+// and only the replacement entry may enter the selected-DAG execution route.
+// No parser, ordinary query entry, uncached fallback, or transaction-finality
+// route is reachable from this function.
+scratchbird::engine::optimizer::
+    CanonicalExecutablePlanGovernedExecutionResult
+ExecuteCanonicalExecutablePlanAfterSingleReprepare(
+    const scratchbird::engine::optimizer::
+        CanonicalExecutablePlanGovernedExecutionRequest& request) {
+  namespace cache = scratchbird::engine::optimizer;
+  cache::CanonicalExecutablePlanGovernedExecutionResult result;
+  const auto refuse = [&](std::string diagnostic_id, std::string field_id) {
+    result.accepted = false;
+    result.replacement_executed = false;
+    result.stale_plan_executed = false;
+    result.issues.push_back(cache::CanonicalExecutablePlanIssue(
+        std::move(diagnostic_id), std::move(field_id)));
+    return result;
+  };
+  if (request.executable_plan_cache == nullptr ||
+      !request.engine_execution_authorized ||
+      request.parser_execution_authority_claimed ||
+      request.transaction_finality_authority_claimed ||
+      request.recovery_authority_claimed ||
+      !request.build_replacement_execution) {
+    return refuse("QOW-DIAG-OPT-010-CONCURRENCY-REFUSAL-V1",
+                  "engine_owned_statement_boundary");
+  }
+
+  result.reprepare = request.executable_plan_cache->InvalidateAndReprepareOnce(
+      request.reprepare);
+  result.governed_reprepare_attempt_count =
+      result.reprepare.total_attempt_count;
+  if (!result.reprepare.accepted || !result.reprepare.reprepared ||
+      !result.reprepare.replacement_admitted ||
+      !result.reprepare.replacement_entry) {
+    if (!result.reprepare.issues.empty()) {
+      result.issues = result.reprepare.issues;
+      return result;
+    }
+    return refuse("QOW-DIAG-OPT-010-REPREPARE-REFUSAL-V1",
+                  "replacement_not_admitted");
+  }
+
+  auto execution_request =
+      request.build_replacement_execution(result.reprepare.replacement_entry);
+  if (execution_request.executable_plan_cache !=
+          request.executable_plan_cache ||
+      !(execution_request.lookup.current_key ==
+        result.reprepare.replacement_entry->key) ||
+      !execution_request.engine_execution_authorized ||
+      execution_request.parser_execution_authority_claimed ||
+      execution_request.transaction_finality_authority_claimed ||
+      execution_request.recovery_authority_claimed) {
+    return refuse("QOW-DIAG-OPT-010-CONCURRENCY-REFUSAL-V1",
+                  "replacement_execution_identity_or_authority");
+  }
+
+  result.execution = ExecuteCanonicalExecutablePlanCacheHit(execution_request);
+  if (!result.execution.accepted || !result.execution.cache_hit ||
+      !result.execution.exact_selected_nodes_executed ||
+      result.execution.reprepare_required ||
+      result.execution.selected_plan_uuid !=
+          result.reprepare.replacement_entry->key.selected_plan_uuid) {
+    if (!result.execution.checkout.issues.empty() &&
+        result.execution.checkout.issues.front().diagnostic_id ==
+            "QOW-DIAG-OPT-010-PARAMETER-REFUSAL-V1") {
+      result.issues = result.execution.checkout.issues;
+      return result;
+    }
+    auto refused = refuse("QOW-DIAG-OPT-010-CONCURRENCY-REFUSAL-V1",
+                          "replacement_execution_boundary");
+    if (!result.execution.issues.empty()) {
+      refused.issues.back().upstream_diagnostic_id =
+          result.execution.issues.front().diagnostic_id;
+      refused.issues.back().upstream_field_id =
+          result.execution.issues.front().field_id;
+    }
+    return refused;
+  }
+  result.accepted = true;
+  result.replacement_executed = true;
+  result.stale_plan_executed = false;
+  return result;
+}
+// QOW-ROUTE-STAGE-OPT-010-REPREPARE-V1-END
+
 // QOW-SOURCE-IAS-005-V1
 // The former typed-prefix and materialized-window assertion branches are not a
 // product window ABI.  They are refused before relation materialization so

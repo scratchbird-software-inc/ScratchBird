@@ -15,7 +15,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -561,7 +563,34 @@ struct CanonicalExecutablePlanCacheIssue {
   std::string field_id;
   std::string upstream_diagnostic_id;
   std::string upstream_field_id;
+  std::string stable_code;
+  std::string severity;
+  std::string sqlstate;
+  std::string message_key;
+  std::vector<std::string> argument_values;
+  std::string phase;
+  std::string record_path;
+  std::optional<std::uint64_t> physical_node_id;
+  std::string transaction_effect;
+  std::string retryability;
 };
+
+inline CanonicalExecutablePlanCacheIssue CanonicalExecutablePlanIssue(
+    std::string diagnostic_id, std::string field_id,
+    std::string severity = "error", std::string phase = "execute",
+    std::string retryability = "not_retryable") {
+  CanonicalExecutablePlanCacheIssue issue;
+  issue.diagnostic_id = std::move(diagnostic_id);
+  issue.field_id = std::move(field_id);
+  issue.stable_code = issue.diagnostic_id;
+  issue.severity = std::move(severity);
+  issue.message_key = issue.diagnostic_id;
+  issue.phase = std::move(phase);
+  issue.record_path = "prepared_plan_cache";
+  issue.transaction_effect = "statement_failed_transaction_usable";
+  issue.retryability = std::move(retryability);
+  return issue;
+}
 
 struct CanonicalExecutablePlanCacheEntry {
   CanonicalExecutablePlanCacheKey key;
@@ -883,35 +912,96 @@ inline bool CanonicalExecutablePlanKeyMatchesPreparedPlan(
          key.route_generations.front().generation == plan.route_generation;
 }
 
-inline bool CanonicalExecutablePlanParameterBindingsValid(
+// QOW-SOURCE-OPT-010-PARAMETER-V1
+struct CanonicalExecutablePlanParameterBindResult {
+  bool accepted{false};
+  std::size_t transient_value_count{0};
+  bool parameter_values_retained{false};
+  std::vector<CanonicalExecutablePlanCacheIssue> issues;
+};
+
+inline CanonicalExecutablePlanParameterBindResult
+ValidateCanonicalExecutablePlanParameterBindings(
     const std::vector<CanonicalExecutablePlanParameterBinding>& bindings,
     const CanonicalPreparedPhysicalPlan& plan) {
-  if (bindings.size() != plan.parameters.size()) return false;
-  for (std::size_t index = 0; index < bindings.size(); ++index) {
-    const auto& declared = plan.parameters[index];
-    const auto* value = bindings[index].typed_value;
-    if (bindings[index].descriptor != declared || value == nullptr ||
-        declared.encoded_descriptor.empty() ||
+  CanonicalExecutablePlanParameterBindResult result;
+  const auto refuse = [&](std::string field_id) {
+    result = {};
+    result.issues.push_back(CanonicalExecutablePlanIssue(
+        "QOW-DIAG-OPT-010-PARAMETER-REFUSAL-V1", std::move(field_id)));
+    return result;
+  };
+
+  // Decision precedence is intentionally independent of caller order:
+  // missing > extra > conflicting repeated > non-nullable null > wrong type.
+  for (const auto& declared : plan.parameters) {
+    if (std::ranges::none_of(bindings, [&](const auto& binding) {
+          return binding.descriptor.ordinal == declared.ordinal;
+        })) {
+      return refuse("missing");
+    }
+  }
+  if (std::ranges::any_of(bindings, [&](const auto& binding) {
+        return std::ranges::none_of(plan.parameters, [&](const auto& declared) {
+          return binding.descriptor.ordinal == declared.ordinal;
+        });
+      })) {
+    return refuse("extra");
+  }
+  for (const auto& declared : plan.parameters) {
+    if (std::ranges::count_if(bindings, [&](const auto& binding) {
+          return binding.descriptor.ordinal == declared.ordinal;
+        }) != 1) {
+      return refuse("conflicting_repeated");
+    }
+  }
+  for (const auto& binding : bindings) {
+    const auto declared = std::ranges::find_if(
+        plan.parameters, [&](const auto& parameter) {
+          return parameter.ordinal == binding.descriptor.ordinal;
+        });
+    if (declared != plan.parameters.end() && binding.typed_value != nullptr &&
+        binding.typed_value->isSqlNull() && !declared->nullable) {
+      return refuse("non_nullable_null");
+    }
+  }
+  for (const auto& binding : bindings) {
+    const auto declared = std::ranges::find_if(
+        plan.parameters, [&](const auto& parameter) {
+          return parameter.ordinal == binding.descriptor.ordinal;
+        });
+    const auto* value = binding.typed_value;
+    if (declared == plan.parameters.end() || binding.descriptor != *declared ||
+        value == nullptr || declared->encoded_descriptor.empty() ||
         value->descriptor.descriptor_uuid.canonical !=
-            declared.descriptor_uuid ||
-        value->descriptor.encoded_descriptor != declared.encoded_descriptor ||
+            declared->descriptor_uuid ||
+        value->descriptor.encoded_descriptor != declared->encoded_descriptor ||
         value->descriptor.encoded_descriptor.find("type_uuid=" +
-                                                  declared.type_uuid) ==
+                                                  declared->type_uuid) ==
             std::string::npos ||
         (value->state !=
              scratchbird::engine::internal_api::EngineValueState::value &&
          value->state != scratchbird::engine::internal_api::
                              EngineValueState::sql_null) ||
-        (value->isSqlNull() && !declared.nullable) ||
         (value->isSqlNull() &&
          (!value->encoded_value.empty() || !value->binary_value.empty())) ||
         (!value->isSqlNull() && !value->hasPayload()) ||
         (!value->isSqlNull() &&
          (value->encoded_value.empty() == value->binary_value.empty()))) {
-      return false;
+      return refuse("wrong_type");
     }
   }
-  return true;
+  result.accepted = true;
+  result.transient_value_count = bindings.size();
+  result.parameter_values_retained = false;
+  return result;
+}
+
+inline bool CanonicalExecutablePlanParameterBindingsValid(
+    const std::vector<CanonicalExecutablePlanParameterBinding>& bindings,
+    const CanonicalPreparedPhysicalPlan& plan) {
+  return ValidateCanonicalExecutablePlanParameterBindings(bindings, plan)
+      .accepted;
 }
 
 inline executor::TypedPhysicalNodeDag
@@ -1011,6 +1101,200 @@ BindCanonicalExecutablePlanToCurrentStatement(
   return dag;
 }
 
+// QOW-SOURCE-OPT-010-DEPENDENCY-V1
+struct CanonicalExecutablePlanDependencyMismatch {
+  std::string field_id;
+  bool protected_detail{false};
+};
+
+inline std::optional<CanonicalExecutablePlanDependencyMismatch>
+CanonicalExecutablePlanFirstDependencyMismatch(
+    const CanonicalExecutablePlanCacheKey& stored,
+    const CanonicalExecutablePlanCacheKey& current) {
+  const auto mismatch = [](std::string field_id,
+                           const bool protected_detail = false) {
+    return std::optional<CanonicalExecutablePlanDependencyMismatch>(
+        CanonicalExecutablePlanDependencyMismatch{std::move(field_id),
+                                                   protected_detail});
+  };
+  // Security-safe external precedence: protected security/redaction/policy
+  // changes dominate object or route details that could disclose identity.
+  if (stored.security_context_uuid != current.security_context_uuid ||
+      stored.security_epoch != current.security_epoch ||
+      stored.security_policy_digest != current.security_policy_digest) {
+    return mismatch("security_generation", true);
+  }
+  if (stored.redaction_policy_digest != current.redaction_policy_digest) {
+    return mismatch("redaction_generation", true);
+  }
+  if (stored.policy_epoch != current.policy_epoch ||
+      stored.plan_policy_profile_uuid != current.plan_policy_profile_uuid) {
+    return mismatch("policy_generation", true);
+  }
+  if (stored.database_uuid != current.database_uuid)
+    return mismatch("database_uuid");
+  if (stored.engine_format_generation != current.engine_format_generation)
+    return mismatch("engine_format_generation");
+  if (stored.catalog_epoch_uuid != current.catalog_epoch_uuid ||
+      stored.catalog_generation != current.catalog_generation)
+    return mismatch("catalog_generation");
+  if (stored.bound_object_set_digest != current.bound_object_set_digest ||
+      stored.object_generations != current.object_generations)
+    return mismatch("object_generations", true);
+  if (stored.metadata_generations != current.metadata_generations)
+    return mismatch("metadata_generations", true);
+  if (stored.datatype_generations != current.datatype_generations)
+    return mismatch("datatype_generations");
+  if (stored.collation_generations != current.collation_generations)
+    return mismatch("collation_generations");
+  if (stored.function_generations != current.function_generations)
+    return mismatch("function_generations", true);
+  if (stored.index_generations != current.index_generations)
+    return mismatch("index_generations", true);
+  if (stored.statistics_snapshot_uuid != current.statistics_snapshot_uuid ||
+      stored.statistics_generation != current.statistics_generation ||
+      stored.statistics_generations != current.statistics_generations)
+    return mismatch("statistics_generations");
+  if (stored.capability_snapshot_uuid != current.capability_snapshot_uuid ||
+      stored.capability_generations != current.capability_generations)
+    return mismatch("capability_generations");
+  if (stored.optimizer_configuration_generation !=
+      current.optimizer_configuration_generation)
+    return mismatch("optimizer_configuration_generation");
+  if (stored.resource_snapshot_uuid != current.resource_snapshot_uuid ||
+      stored.resource_epoch != current.resource_epoch ||
+      stored.resource_policy_digest != current.resource_policy_digest ||
+      stored.memory_budget_bytes != current.memory_budget_bytes ||
+      stored.spill_allowed != current.spill_allowed)
+    return mismatch("resource_generation");
+  if (stored.filespace_placement_generation !=
+          current.filespace_placement_generation ||
+      stored.filespace_generations != current.filespace_generations)
+    return mismatch("filespace_generations", true);
+  if (stored.standalone_database != current.standalone_database ||
+      stored.cluster_uuid != current.cluster_uuid ||
+      stored.cluster_epoch != current.cluster_epoch)
+    return mismatch("cluster_generation", true);
+  if (stored.route_snapshot_uuid != current.route_snapshot_uuid ||
+      stored.route_epoch != current.route_epoch ||
+      stored.route_generation != current.route_generation ||
+      stored.route_generations != current.route_generations)
+    return mismatch("route_generations", true);
+  if (stored.parser_compatibility_profile_uuid !=
+          current.parser_compatibility_profile_uuid ||
+      stored.parser_compatibility_generation !=
+          current.parser_compatibility_generation)
+    return mismatch("parser_compatibility_generation");
+  if (stored.donor_compatibility_profile_uuid !=
+          current.donor_compatibility_profile_uuid ||
+      stored.donor_compatibility_generation !=
+          current.donor_compatibility_generation)
+    return mismatch("donor_compatibility_generation", true);
+  if (stored.physical_dependencies != current.physical_dependencies)
+    return mismatch("physical_dependencies", true);
+  if (stored.result_schema_uuid != current.result_schema_uuid ||
+      stored.result_descriptors != current.result_descriptors)
+    return mismatch("result_schema");
+  if (stored.parameter_shape_uuid != current.parameter_shape_uuid ||
+      stored.parameters != current.parameters)
+    return mismatch("parameter_shape");
+  if (stored.sblr_unit_uuid != current.sblr_unit_uuid ||
+      stored.internal_procedure_uuid != current.internal_procedure_uuid ||
+      stored.bound_sblr_tree_uuid != current.bound_sblr_tree_uuid)
+    return mismatch("bound_request_identity");
+  if (stored.prepared_plan_uuid != current.prepared_plan_uuid ||
+      stored.prepare_generation != current.prepare_generation ||
+      stored.cache_plan_uuid != current.cache_plan_uuid ||
+      stored.compiled_at_uuidv7 != current.compiled_at_uuidv7 ||
+      stored.plan_key_digest != current.plan_key_digest ||
+      stored.plan_status != current.plan_status ||
+      stored.selected_plan_uuid != current.selected_plan_uuid ||
+      stored.selected_plan_signature != current.selected_plan_signature ||
+      stored.selected_scalar_score != current.selected_scalar_score ||
+      stored.root_physical_node_id != current.root_physical_node_id ||
+      stored.published_node_count != current.published_node_count ||
+      stored.first_causal_counter_id != current.first_causal_counter_id ||
+      stored.snapshot_class != current.snapshot_class) {
+    return mismatch("physical_plan_identity");
+  }
+  return std::nullopt;
+}
+
+inline bool CanonicalExecutablePlanReplacementMatchesCurrentDependencies(
+    const CanonicalExecutablePlanCacheKey& current,
+    const CanonicalExecutablePlanCacheKey& replacement) {
+  auto normalized = replacement;
+  normalized.cache_plan_uuid = current.cache_plan_uuid;
+  normalized.compiled_at_uuidv7 = current.compiled_at_uuidv7;
+  normalized.plan_status = current.plan_status;
+  normalized.plan_key_digest = current.plan_key_digest;
+  normalized.prepared_plan_uuid = current.prepared_plan_uuid;
+  normalized.prepare_generation = current.prepare_generation;
+  normalized.selected_plan_uuid = current.selected_plan_uuid;
+  normalized.selected_plan_signature = current.selected_plan_signature;
+  normalized.selected_scalar_score = current.selected_scalar_score;
+  normalized.root_physical_node_id = current.root_physical_node_id;
+  normalized.published_node_count = current.published_node_count;
+  normalized.first_causal_counter_id = current.first_causal_counter_id;
+  return !CanonicalExecutablePlanFirstDependencyMismatch(current, normalized)
+              .has_value();
+}
+
+struct CanonicalExecutablePlanInvalidationReceipt {
+  bool invalidated{false};
+  bool duplicate_invalidation{false};
+  std::uint64_t invalidation_generation{0};
+  std::string prepared_plan_uuid;
+  std::string field_id;
+  bool protected_detail{false};
+  bool stale_execution_observed{false};
+};
+
+struct CanonicalExecutablePlanReprepareCandidate {
+  CanonicalPreparePhysicalPlanRequest prepare_request;
+  CanonicalExecutablePlanCacheAdmissionRequest admission_request;
+  bool engine_candidate_authorized{false};
+  bool parser_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+  bool recovery_authority_claimed{false};
+  std::uint64_t optimizer_invocation_count{0};
+  std::uint64_t search_invocation_count{0};
+  std::uint64_t planner_invocation_count{0};
+  std::uint64_t uncached_fallback_invocation_count{0};
+};
+
+struct CanonicalExecutablePlanReprepareRequest {
+  std::string invalidated_prepared_plan_uuid;
+  CanonicalExecutablePlanCacheKey current_key;
+  CanonicalPreparedPlanStore* prepared_plan_store{nullptr};
+  bool engine_invalidation_authorized{false};
+  bool engine_reprepare_authorized{false};
+  bool engine_security_revalidated{false};
+  bool engine_policy_revalidated{false};
+  bool parser_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+  bool recovery_authority_claimed{false};
+  std::function<CanonicalExecutablePlanReprepareCandidate(
+      const CanonicalExecutablePlanInvalidationReceipt&)>
+      reprepare_once;
+};
+
+struct CanonicalExecutablePlanReprepareResult {
+  bool accepted{false};
+  bool invalidated{false};
+  bool reprepared{false};
+  bool replacement_admitted{false};
+  bool caller_was_single_flight_leader{false};
+  std::uint64_t governed_attempt_count{0};
+  std::uint64_t total_attempt_count{0};
+  std::uint64_t stale_execution_count{0};
+  std::string old_prepared_plan_uuid;
+  std::string replacement_prepared_plan_uuid;
+  CanonicalExecutablePlanInvalidationReceipt invalidation;
+  std::shared_ptr<const CanonicalExecutablePlanCacheEntry> replacement_entry;
+  std::vector<CanonicalExecutablePlanCacheIssue> issues;
+};
+
 class CanonicalExecutablePlanCache {
  public:
   CanonicalExecutablePlanCacheAdmissionResult Admit(
@@ -1049,11 +1333,14 @@ class CanonicalExecutablePlanCache {
     entry->transaction_finality_authority_granted = false;
     {
       std::lock_guard lock(mutex_);
-      if (entries_.contains(entry->key.prepared_plan_uuid) ||
+      if (states_.contains(entry->key.prepared_plan_uuid) ||
           cache_plan_uuids_.contains(entry->key.cache_plan_uuid)) {
         return refuse("duplicate_executable_cache_entry");
       }
-      entries_.emplace(entry->key.prepared_plan_uuid, entry);
+      auto state = std::make_shared<LifecycleState>();
+      state->entry = entry;
+      state->status = CanonicalExecutablePlanStatus::kValid;
+      states_.emplace(entry->key.prepared_plan_uuid, std::move(state));
       cache_plan_uuids_.insert(entry->key.cache_plan_uuid);
     }
     result.accepted = true;
@@ -1063,14 +1350,16 @@ class CanonicalExecutablePlanCache {
   }
 
   CanonicalExecutablePlanCacheLookupResult LookupAndBind(
-      const CanonicalExecutablePlanCacheLookupRequest& request) const {
+      const CanonicalExecutablePlanCacheLookupRequest& request) {
     CanonicalExecutablePlanCacheLookupResult result;
     const auto refuse = [&](std::string field_id,
-                            const bool reprepare_required = true) {
+                            const bool reprepare_required = true,
+                            std::string diagnostic_id =
+                                "QOW-DIAG-OPT-009-REFUSAL-V1") {
       result = {};
       result.reprepare_required = reprepare_required;
-      result.issues.push_back(
-          {"QOW-DIAG-OPT-009-REFUSAL-V1", std::move(field_id)});
+      result.issues.push_back(CanonicalExecutablePlanIssue(
+          std::move(diagnostic_id), std::move(field_id)));
       return result;
     };
     if (!request.engine_lookup_authorized ||
@@ -1092,9 +1381,27 @@ class CanonicalExecutablePlanCache {
     std::shared_ptr<const CanonicalExecutablePlanCacheEntry> entry;
     {
       std::lock_guard lock(mutex_);
-      const auto found = entries_.find(request.current_key.prepared_plan_uuid);
-      if (found == entries_.end()) return refuse("executable_cache_miss");
-      entry = found->second;
+      const auto found = states_.find(request.current_key.prepared_plan_uuid);
+      if (found == states_.end()) return refuse("executable_cache_miss");
+      const auto& state = found->second;
+      if (!state || !state->entry ||
+          state->status != CanonicalExecutablePlanStatus::kValid) {
+        return refuse("invalidated_dependency", true,
+                      "QOW-DIAG-OPT-010-DEPENDENCY-REFUSAL-V1");
+      }
+      const auto mismatch = CanonicalExecutablePlanFirstDependencyMismatch(
+          state->entry->key, request.current_key);
+      if (mismatch.has_value()) {
+        state->status = CanonicalExecutablePlanStatus::kInvalid;
+        state->invalidation_generation = ++invalidation_generation_;
+        state->invalidation_field_id = mismatch->field_id;
+        state->protected_detail = mismatch->protected_detail;
+        return refuse(mismatch->protected_detail ? "protected_generation"
+                                                 : mismatch->field_id,
+                      true,
+                      "QOW-DIAG-OPT-010-DEPENDENCY-REFUSAL-V1");
+      }
+      entry = state->entry;
     }
     if (!entry || !entry->executable || entry->metadata_only ||
         !entry->prepared_plan || entry->parameter_values_retained ||
@@ -1103,14 +1410,12 @@ class CanonicalExecutablePlanCache {
         entry->transaction_finality_authority_granted) {
       return refuse("metadata_or_authority_bearing_entry");
     }
-    if (!(request.current_key == entry->key) ||
-        !CanonicalExecutablePlanKeyMatchesPreparedPlan(
-            request.current_key, *entry->prepared_plan)) {
-      return refuse("executable_cache_key_mismatch");
-    }
-    if (!CanonicalExecutablePlanParameterBindingsValid(
-            request.parameter_bindings, *entry->prepared_plan)) {
-      return refuse("typed_parameter_binding_mismatch", false);
+    const auto parameter_validation =
+        ValidateCanonicalExecutablePlanParameterBindings(
+            request.parameter_bindings, *entry->prepared_plan);
+    if (!parameter_validation.accepted) {
+      return refuse(parameter_validation.issues.front().field_id, false,
+                    "QOW-DIAG-OPT-010-PARAMETER-REFUSAL-V1");
     }
     auto current = request.mga_authority.resolve_current();
     if (!current.diagnostic.ok ||
@@ -1165,14 +1470,254 @@ class CanonicalExecutablePlanCache {
 
   std::size_t Size() const {
     std::lock_guard lock(mutex_);
-    return entries_.size();
+    return std::ranges::count_if(states_, [](const auto& item) {
+      return item.second &&
+             item.second->status == CanonicalExecutablePlanStatus::kValid;
+    });
+  }
+
+  CanonicalExecutablePlanInvalidationReceipt InvalidateIfStale(
+      const std::string& prepared_plan_uuid,
+      const CanonicalExecutablePlanCacheKey& current_key,
+      const bool engine_invalidation_authorized) {
+    CanonicalExecutablePlanInvalidationReceipt receipt;
+    receipt.prepared_plan_uuid = prepared_plan_uuid;
+    if (!engine_invalidation_authorized) return receipt;
+    std::lock_guard lock(mutex_);
+    const auto found = states_.find(prepared_plan_uuid);
+    if (found == states_.end() || !found->second || !found->second->entry) {
+      return receipt;
+    }
+    const auto& state = found->second;
+    if (state->status != CanonicalExecutablePlanStatus::kValid) {
+      receipt.invalidated = true;
+      receipt.duplicate_invalidation = true;
+      receipt.invalidation_generation = state->invalidation_generation;
+      receipt.field_id = state->protected_detail
+                             ? "protected_generation"
+                             : state->invalidation_field_id;
+      receipt.protected_detail = state->protected_detail;
+      return receipt;
+    }
+    const auto mismatch = CanonicalExecutablePlanFirstDependencyMismatch(
+        state->entry->key, current_key);
+    if (!mismatch.has_value()) return receipt;
+    state->status = CanonicalExecutablePlanStatus::kInvalid;
+    state->invalidation_generation = ++invalidation_generation_;
+    state->invalidation_field_id = mismatch->field_id;
+    state->protected_detail = mismatch->protected_detail;
+    receipt.invalidated = true;
+    receipt.invalidation_generation = state->invalidation_generation;
+    receipt.field_id = mismatch->protected_detail ? "protected_generation"
+                                                  : mismatch->field_id;
+    receipt.protected_detail = mismatch->protected_detail;
+    return receipt;
+  }
+
+  // QOW-SOURCE-OPT-010-REPREPARE-V1
+  // QOW-SOURCE-OPT-010-CONCURRENCY-V1
+  CanonicalExecutablePlanReprepareResult InvalidateAndReprepareOnce(
+      const CanonicalExecutablePlanReprepareRequest& request) {
+    CanonicalExecutablePlanReprepareResult result;
+    result.old_prepared_plan_uuid = request.invalidated_prepared_plan_uuid;
+    const auto refuse = [&](std::string field_id) {
+      result.accepted = false;
+      result.issues.clear();
+      result.issues.push_back(CanonicalExecutablePlanIssue(
+          "QOW-DIAG-OPT-010-REPREPARE-REFUSAL-V1", std::move(field_id),
+          "error", "plan", "not_retryable"));
+      return result;
+    };
+    if (!request.engine_invalidation_authorized ||
+        !request.engine_reprepare_authorized ||
+        !request.engine_security_revalidated ||
+        !request.engine_policy_revalidated ||
+        request.parser_authority_claimed ||
+        request.transaction_finality_authority_claimed ||
+        request.recovery_authority_claimed ||
+        request.prepared_plan_store == nullptr || !request.reprepare_once) {
+      return refuse("engine_governed_reprepare_authority");
+    }
+
+    std::shared_ptr<LifecycleState> old_state;
+    {
+      std::unique_lock lock(mutex_);
+      const auto found = states_.find(request.invalidated_prepared_plan_uuid);
+      if (found == states_.end() || !found->second || !found->second->entry) {
+        return refuse("invalidated_plan_not_found");
+      }
+      old_state = found->second;
+      if (old_state->status == CanonicalExecutablePlanStatus::kValid) {
+        const auto mismatch = CanonicalExecutablePlanFirstDependencyMismatch(
+            old_state->entry->key, request.current_key);
+        if (!mismatch.has_value()) return refuse("invalidation_required");
+        old_state->status = CanonicalExecutablePlanStatus::kInvalid;
+        old_state->invalidation_generation = ++invalidation_generation_;
+        old_state->invalidation_field_id = mismatch->field_id;
+        old_state->protected_detail = mismatch->protected_detail;
+      }
+      result.invalidation.invalidated = true;
+      result.invalidation.invalidation_generation =
+          old_state->invalidation_generation;
+      result.invalidation.prepared_plan_uuid =
+          request.invalidated_prepared_plan_uuid;
+      result.invalidation.field_id = old_state->protected_detail
+                                         ? "protected_generation"
+                                         : old_state->invalidation_field_id;
+      result.invalidation.protected_detail = old_state->protected_detail;
+      result.invalidated = true;
+
+      while (old_state->reprepare_in_progress) {
+        old_state->condition.wait(lock);
+      }
+      if (old_state->reprepare_attempted) {
+        result.total_attempt_count = 1;
+        result.reprepared = old_state->replacement_admitted;
+        result.replacement_admitted = old_state->replacement_admitted;
+        result.replacement_prepared_plan_uuid =
+            old_state->replacement_prepared_plan_uuid;
+        result.replacement_entry = old_state->replacement_entry;
+        if (!old_state->replacement_admitted) {
+          return refuse(old_state->reprepare_failure_field.empty()
+                            ? "governed_reprepare_failed"
+                            : old_state->reprepare_failure_field);
+        }
+        if (!old_state->replacement_entry ||
+            !CanonicalExecutablePlanReplacementMatchesCurrentDependencies(
+                request.current_key, old_state->replacement_entry->key)) {
+          return refuse("divergent_current_dependency_state");
+        }
+        result.accepted = true;
+        return result;
+      }
+      old_state->reprepare_attempted = true;
+      old_state->reprepare_in_progress = true;
+      result.caller_was_single_flight_leader = true;
+      result.governed_attempt_count = 1;
+      result.total_attempt_count = 1;
+    }
+
+    std::string failure_field;
+    CanonicalExecutablePlanReprepareCandidate candidate;
+    try {
+      candidate = request.reprepare_once(result.invalidation);
+    } catch (...) {
+      failure_field = "governed_reprepare_callback_exception";
+    }
+    std::shared_ptr<const CanonicalExecutablePlanCacheEntry> replacement;
+    if (failure_field.empty() &&
+        (!candidate.engine_candidate_authorized ||
+        candidate.parser_authority_claimed ||
+        candidate.transaction_finality_authority_claimed ||
+        candidate.recovery_authority_claimed ||
+        candidate.optimizer_invocation_count > 1 ||
+        candidate.search_invocation_count > 1 ||
+        candidate.planner_invocation_count != 1 ||
+        candidate.uncached_fallback_invocation_count != 0 ||
+        candidate.prepare_request.prepared_plan_uuid ==
+            request.invalidated_prepared_plan_uuid ||
+        candidate.prepare_request.prepare_generation !=
+            old_state->entry->key.prepare_generation + 1 ||
+        candidate.admission_request.key.cache_plan_uuid ==
+            old_state->entry->key.cache_plan_uuid ||
+        candidate.admission_request.key.compiled_at_uuidv7 ==
+            old_state->entry->key.compiled_at_uuidv7 ||
+        candidate.admission_request.key.selected_plan_uuid ==
+            old_state->entry->key.selected_plan_uuid)) {
+      failure_field = "governed_reprepare_candidate";
+    }
+
+    if (failure_field.empty()) {
+      auto normalized = candidate.admission_request.key;
+      normalized.cache_plan_uuid = request.current_key.cache_plan_uuid;
+      normalized.compiled_at_uuidv7 = request.current_key.compiled_at_uuidv7;
+      normalized.plan_status = request.current_key.plan_status;
+      normalized.plan_key_digest = request.current_key.plan_key_digest;
+      normalized.prepared_plan_uuid = request.current_key.prepared_plan_uuid;
+      normalized.prepare_generation = request.current_key.prepare_generation;
+      normalized.selected_plan_uuid = request.current_key.selected_plan_uuid;
+      normalized.selected_plan_signature =
+          request.current_key.selected_plan_signature;
+      normalized.selected_scalar_score = request.current_key.selected_scalar_score;
+      normalized.root_physical_node_id =
+          request.current_key.root_physical_node_id;
+      normalized.published_node_count = request.current_key.published_node_count;
+      normalized.first_causal_counter_id =
+          request.current_key.first_causal_counter_id;
+      const auto replacement_mismatch =
+          CanonicalExecutablePlanFirstDependencyMismatch(request.current_key,
+                                                         normalized);
+      if (replacement_mismatch.has_value()) {
+        failure_field = "replacement_current_dependency_state:" +
+                        replacement_mismatch->field_id;
+      }
+    }
+
+    if (failure_field.empty()) {
+      const auto prepared = PrepareCanonicalPhysicalPlan(
+          candidate.prepare_request, request.prepared_plan_store);
+      if (!prepared.accepted || !prepared.prepared || !prepared.persisted) {
+        failure_field = prepared.issues.empty()
+                            ? "replacement_prepare"
+                            : "replacement_prepare:" +
+                                  prepared.issues.front().field_id;
+      }
+    }
+    if (failure_field.empty()) {
+      const auto admitted =
+          Admit(*request.prepared_plan_store, candidate.admission_request);
+      if (!admitted.accepted || !admitted.cached || !admitted.entry) {
+        failure_field = admitted.issues.empty()
+                            ? "replacement_cache_admission"
+                            : "replacement_cache_admission:" +
+                                  admitted.issues.front().field_id;
+      } else {
+        replacement = admitted.entry;
+      }
+    }
+
+    {
+      std::lock_guard lock(mutex_);
+      old_state->reprepare_in_progress = false;
+      old_state->replacement_admitted = replacement != nullptr;
+      old_state->replacement_entry = replacement;
+      old_state->replacement_prepared_plan_uuid =
+          replacement ? replacement->key.prepared_plan_uuid : std::string{};
+      old_state->reprepare_failure_field = failure_field;
+      old_state->status = replacement ? CanonicalExecutablePlanStatus::kRetired
+                                      : CanonicalExecutablePlanStatus::kInvalid;
+      old_state->condition.notify_all();
+    }
+    if (!replacement) return refuse(failure_field);
+    result.accepted = true;
+    result.reprepared = true;
+    result.replacement_admitted = true;
+    result.replacement_prepared_plan_uuid = replacement->key.prepared_plan_uuid;
+    result.replacement_entry = std::move(replacement);
+    return result;
   }
 
  private:
+  struct LifecycleState {
+    std::shared_ptr<const CanonicalExecutablePlanCacheEntry> entry;
+    CanonicalExecutablePlanStatus status{CanonicalExecutablePlanStatus::kValid};
+    std::uint64_t invalidation_generation{0};
+    std::string invalidation_field_id;
+    bool protected_detail{false};
+    bool reprepare_attempted{false};
+    bool reprepare_in_progress{false};
+    bool replacement_admitted{false};
+    std::string replacement_prepared_plan_uuid;
+    std::shared_ptr<const CanonicalExecutablePlanCacheEntry> replacement_entry;
+    std::string reprepare_failure_field;
+    std::condition_variable condition;
+  };
+
   mutable std::mutex mutex_;
+  std::uint64_t invalidation_generation_{0};
   std::map<std::string,
-           std::shared_ptr<const CanonicalExecutablePlanCacheEntry>>
-      entries_;
+           std::shared_ptr<LifecycleState>>
+      states_;
   std::unordered_set<std::string> cache_plan_uuids_;
 };
 
@@ -1219,6 +1764,28 @@ struct CanonicalExecutablePlanHitExecutionResult {
   executor::CanonicalPhysicalDagDispatchResult dispatch;
   executor::CanonicalResultPublicationResult result_publication;
   executor::PhysicalMgaStatementContext mga_statement_context;
+  std::vector<CanonicalExecutablePlanCacheIssue> issues;
+};
+
+struct CanonicalExecutablePlanGovernedExecutionRequest {
+  CanonicalExecutablePlanCache* executable_plan_cache{nullptr};
+  CanonicalExecutablePlanReprepareRequest reprepare;
+  std::function<CanonicalExecutablePlanHitExecutionRequest(
+      const std::shared_ptr<const CanonicalExecutablePlanCacheEntry>&)>
+      build_replacement_execution;
+  bool engine_execution_authorized{false};
+  bool parser_execution_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+  bool recovery_authority_claimed{false};
+};
+
+struct CanonicalExecutablePlanGovernedExecutionResult {
+  bool accepted{false};
+  bool replacement_executed{false};
+  bool stale_plan_executed{false};
+  std::uint64_t governed_reprepare_attempt_count{0};
+  CanonicalExecutablePlanReprepareResult reprepare;
+  CanonicalExecutablePlanHitExecutionResult execution;
   std::vector<CanonicalExecutablePlanCacheIssue> issues;
 };
 
@@ -1455,5 +2022,11 @@ scratchbird::engine::optimizer::CanonicalExecutablePlanHitExecutionResult
 ExecuteCanonicalExecutablePlanCacheHit(
     const scratchbird::engine::optimizer::
         CanonicalExecutablePlanHitExecutionRequest& request);
+
+scratchbird::engine::optimizer::
+    CanonicalExecutablePlanGovernedExecutionResult
+ExecuteCanonicalExecutablePlanAfterSingleReprepare(
+    const scratchbird::engine::optimizer::
+        CanonicalExecutablePlanGovernedExecutionRequest& request);
 
 }  // namespace scratchbird::engine::internal_api
