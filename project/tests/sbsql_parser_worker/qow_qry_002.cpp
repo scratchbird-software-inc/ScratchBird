@@ -142,7 +142,43 @@ api::TypedRelationalDag WindowDag() {
   window.output_descriptor_ids = {2};
   window.bound_expression_ids = {1, 2};
   window.semantic_variant_id = "window.row-number.v1";
+  window.required_property_uuids = {
+      "019f0000-0000-7200-8000-000000000298",
+      "019f0000-0000-7200-8000-000000000299",
+  };
+  window.delivered_property_uuids = {
+      "019f0000-0000-7200-8000-000000000298",
+      "019f0000-0000-7200-8000-000000000299",
+      "019f0000-0000-7200-8000-00000000029a",
+  };
   dag.nodes = {std::move(scan), std::move(window)};
+  api::RelationalPropertyRecord partitioning;
+  partitioning.property_uuid =
+      "019f0000-0000-7200-8000-000000000298";
+  partitioning.property_kind = api::RelationalPropertyKind::kPartitioning;
+  partitioning.origin_node_id = 2;
+  partitioning.expression_ids = {1};
+  api::RelationalPropertyRecord ordering;
+  ordering.property_uuid = "019f0000-0000-7200-8000-000000000299";
+  ordering.property_kind = api::RelationalPropertyKind::kOrdering;
+  ordering.origin_node_id = 2;
+  ordering.ordering_terms = {
+      {1, api::RelationalPropertySortDirection::kAscending,
+       api::RelationalPropertyNullPlacement::kNullsLast, ""},
+  };
+  api::RelationalPropertyRecord window_property;
+  window_property.property_uuid =
+      "019f0000-0000-7200-8000-00000000029a";
+  window_property.property_kind = api::RelationalPropertyKind::kWindow;
+  window_property.origin_node_id = 2;
+  window_property.dependency_property_uuids = {
+      "019f0000-0000-7200-8000-000000000298",
+      "019f0000-0000-7200-8000-000000000299",
+  };
+  window_property.window_frame_descriptor_uuid =
+      "019f0000-0000-7200-8000-00000000029b";
+  dag.properties = {std::move(partitioning), std::move(ordering),
+                    std::move(window_property)};
   api::RelationalWindowDefinitionRecord definition;
   definition.window_id = 1;
   definition.relation_node_id = 2;

@@ -12,6 +12,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   # QOW-CMAKE-OPT-014-V1
   # QOW-CMAKE-OPT-008-V1
   # QOW-CMAKE-OPT-016-V1
+  # QOW-CMAKE-OPT-010-PREPARE-V1
   if(NOT TARGET sb_qow_canonical_candidate_legality)
     add_library(sb_qow_canonical_candidate_legality STATIC
       optimizer_contract.cpp
@@ -38,6 +39,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   # QOW-CMAKE-OPT-006-ROUTE-V1
   # QOW-CMAKE-OPT-006-STATISTICS-V1
   # QOW-CMAKE-OPT-015-V1
+  # QOW-CMAKE-OPT-010-PREPARE-V1
   if(NOT TARGET sb_qow_optimizer_admission)
     add_library(sb_qow_optimizer_admission STATIC
       optimizer_admission.cpp

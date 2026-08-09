@@ -173,7 +173,7 @@ sblr::SblrOperationEnvelope PropertyEnvelope() {
       {"relational_property_v1", std::string(kGroupingUuid),
        "2|2|1|-|-|-"},
       {"relational_property_v1", std::string(kOrderingTwoUuid),
-       "1|3|-|2:2:1:-|-|-"},
+       "1|3|-|2:1:2:-|-|-"},
       {"relational_property_v1", std::string(kPartitioningUuid),
        "3|4|1|-|-|-"},
       {"relational_property_v1", std::string(kWindowUuid),
