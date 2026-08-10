@@ -42,6 +42,14 @@ std::string ToLowerAscii(std::string value) {
   return value;
 }
 
+bool SameIdentifier(const NativeIdentifierAstNode& expected,
+                    const Token& presented) {
+  if (expected.quoted != presented.quoted) return false;
+  return expected.quoted
+             ? expected.spelling == presented.text
+             : ToLowerAscii(expected.spelling) == ToLowerAscii(presented.text);
+}
+
 SourceRange Span(const Token& first, const Token& last) {
   SourceRange range = TokenSourceRange(first);
   range.length = last.offset + last.length - first.offset;
@@ -121,6 +129,26 @@ class NativeRelationalParser final {
              {"authority", "QOW-AUTH-QRY-006-TEMPORAL-REFUSAL-V1"}}));
         return FinishRefusal();
       }
+    }
+    const auto contains_word = [&](const std::string_view wanted) {
+      return std::ranges::any_of(tokens_, [&](const auto* token) {
+        return !token->quoted && IsWord(*token, wanted);
+      });
+    };
+    if (contains_word("MONGO_PIPELINE")) {
+      RefuseExact("SB_MODEL_GRAMMAR_DONOR_TEXT_REFUSED_V1",
+                  "opaque donor pipeline text is not an executable SBSQL model source");
+      return FinishRefusal();
+    }
+    if (contains_word("DOCUMENT_SOURCE") ||
+        contains_word("DOCUMENT_UNNEST") ||
+        contains_word("DOCUMENT_PATH")) {
+      if (tokens_.empty() || !IsWord(*tokens_.front(), "SELECT")) {
+        RefuseExact("SB_MODEL_QUERY_WRITE_REFUSED_V1",
+                    "document model sources are read-only query inputs");
+        return FinishRefusal();
+      }
+      return ParseDocumentModelSelect();
     }
     if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
         LooksLikeSupportedGroupingQuery()) {
@@ -203,6 +231,256 @@ class NativeRelationalParser final {
   }
 
  private:
+  void RefuseExact(const std::string_view diagnostic_id,
+                   const std::string_view message) {
+    if (document_.messages.has_errors()) return;
+    document_.messages.diagnostics.push_back(MakeDiagnostic(
+        std::string(diagnostic_id), "ERROR", std::string(message),
+        "sbp_sbsql.document_model_parser"));
+  }
+
+  NativeRelationalAstDocument ParseDocumentModelSelect() {
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded", "document model query token limit exceeded");
+      return FinishRefusal();
+    }
+
+    const Token& select = Consume();
+    std::vector<std::uint32_t> projection_expression_ids;
+    if (AtSymbol("*")) {
+      const Token& wildcard_token = Consume();
+      NativeExpressionAstNode wildcard;
+      wildcard.expression_id = NextExpressionId();
+      wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+      wildcard.spelling = wildcard_token.text;
+      wildcard.range = TokenSourceRange(wildcard_token);
+      projection_expression_ids.push_back(wildcard.expression_id);
+      document_.expressions.push_back(std::move(wildcard));
+    } else {
+      while (!AtEnd()) {
+        const auto expression_id = ParseExpression(0, 0);
+        if (!expression_id.has_value()) return FinishRefusal();
+        projection_expression_ids.push_back(*expression_id);
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+    }
+    if (!RequireWord("FROM", "document_from_required",
+                     "document model source requires FROM")) {
+      return FinishRefusal();
+    }
+    if (AtEnd() || (!IsWord(Current(), "DOCUMENT_SOURCE") &&
+                    !IsWord(Current(), "DOCUMENT_UNNEST"))) {
+      Refuse("document_source_required",
+             "FROM requires DOCUMENT_SOURCE or DOCUMENT_UNNEST");
+      return FinishRefusal();
+    }
+
+    const Token& source_operator = Consume();
+    const bool unnest = IsWord(source_operator, "DOCUMENT_UNNEST");
+    if (!RequireSymbol("(", "document_source_open_required",
+                       "document model source requires an opening parenthesis")) {
+      return FinishRefusal();
+    }
+    NativeCatalogRelationSourceAstNode source;
+    source.source_id = 1;
+    source.source_kind = NativeRelationSourceAstKind::kDocument;
+    source.model_family_id = "document";
+    source.model_operation_id = unnest ? "DOCUMENT_UNNEST" : "DOCUMENT_FIND";
+    if (unnest) {
+      const auto document_expression_id = ParseExpression(0, 0);
+      if (!document_expression_id.has_value()) return FinishRefusal();
+      source.model_document_expression_id = *document_expression_id;
+      const auto& document_expression =
+          document_.expressions[*document_expression_id - 1];
+      source.qualified_name_range = document_expression.range;
+      if (!RequireSymbol(",", "document_unnest_path_required",
+                         "DOCUMENT_UNNEST requires a typed path literal")) {
+        return FinishRefusal();
+      }
+      if (AtEnd() || Current().kind != TokenKind::kStringLiteral) {
+        Refuse("document_typed_path_required",
+               "DOCUMENT_UNNEST path must be a typed string literal");
+        return FinishRefusal();
+      }
+      const Token& path = Consume();
+      NativeExpressionAstNode path_expression;
+      path_expression.expression_id = NextExpressionId();
+      path_expression.expression_kind = NativeExpressionAstKind::kLiteral;
+      path_expression.literal_kind = NativeLiteralAstKind::kString;
+      path_expression.spelling = path.text;
+      path_expression.range = TokenSourceRange(path);
+      source.model_path_expression_id = path_expression.expression_id;
+      source.model_wildcard_path = path.text.find('*') != std::string::npos;
+      document_.expressions.push_back(std::move(path_expression));
+    } else {
+      if (AtEnd() || !IsNameToken(Current())) {
+        Refuse("document_qualified_name_required",
+               "DOCUMENT_SOURCE requires a qualified collection name");
+        return FinishRefusal();
+      }
+      const Token& first_name = Consume();
+      const Token* last_name = &first_name;
+      source.qualified_name.push_back(
+          {first_name.text, first_name.quoted, TokenSourceRange(first_name)});
+      while (AtSymbol(".")) {
+        Consume();
+        if (AtEnd() || !IsNameToken(Current())) {
+          Refuse("document_qualified_name_incomplete",
+                 "qualified document collection name is incomplete");
+          return FinishRefusal();
+        }
+        last_name = &Consume();
+        source.qualified_name.push_back(
+            {last_name->text, last_name->quoted, TokenSourceRange(*last_name)});
+      }
+      source.qualified_name_range = Span(first_name, *last_name);
+    }
+    if (!RequireSymbol(")", "document_source_close_required",
+                       "document model source requires a closing parenthesis")) {
+      return FinishRefusal();
+    }
+
+    const Token* source_end = &Previous();
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        Refuse("document_alias_required", "AS requires a document source alias");
+        return FinishRefusal();
+      }
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source.alias_is_explicit = true;
+      source_end = &alias;
+    } else if (!AtEnd() && Current().kind == TokenKind::kIdentifier) {
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source_end = &alias;
+    }
+
+    NativeRelationAstNode relation;
+    relation.relation_id = 1;
+    relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+    relation.relation_source_ids = {source.source_id};
+    relation.output_expression_ids = projection_expression_ids;
+    relation.range = Span(source_operator, *source_end);
+
+    if (!unnest && !AtEnd() && IsWord(Current(), "WHERE")) {
+      Consume();
+      if (AtEnd() || !IsWord(Current(), "DOCUMENT_PATH")) {
+        Refuse("document_path_predicate_required",
+               "bounded document WHERE requires DOCUMENT_PATH");
+        return FinishRefusal();
+      }
+      const Token& function = Consume();
+      if (!RequireSymbol("(", "document_path_open_required",
+                         "DOCUMENT_PATH requires an opening parenthesis") ||
+          AtEnd() || !IsNameToken(Current())) {
+        return FinishRefusal();
+      }
+      const Token& alias = Consume();
+      if (!source.alias.has_value() ||
+          !SameIdentifier(*source.alias, alias)) {
+        Refuse("document_alias_mismatch",
+               "DOCUMENT_PATH alias does not name the bound document source");
+        return FinishRefusal();
+      }
+      NativeExpressionAstNode alias_expression;
+      alias_expression.expression_id = NextExpressionId();
+      alias_expression.expression_kind = NativeExpressionAstKind::kIdentifier;
+      alias_expression.qualified_identifier.push_back(
+          {alias.text, alias.quoted, TokenSourceRange(alias)});
+      alias_expression.spelling = alias.text;
+      alias_expression.range = TokenSourceRange(alias);
+      document_.expressions.push_back(std::move(alias_expression));
+      const auto alias_expression_id = document_.expressions.back().expression_id;
+      if (!RequireSymbol(",", "document_path_literal_required",
+                         "DOCUMENT_PATH requires a typed path literal") ||
+          AtEnd() || Current().kind != TokenKind::kStringLiteral) {
+        return FinishRefusal();
+      }
+      const Token& path = Consume();
+      NativeExpressionAstNode path_expression;
+      path_expression.expression_id = NextExpressionId();
+      path_expression.expression_kind = NativeExpressionAstKind::kLiteral;
+      path_expression.literal_kind = NativeLiteralAstKind::kString;
+      path_expression.spelling = path.text;
+      path_expression.range = TokenSourceRange(path);
+      document_.expressions.push_back(std::move(path_expression));
+      const auto path_expression_id = document_.expressions.back().expression_id;
+      source.model_path_expression_id = path_expression_id;
+      source.model_wildcard_path = path.text.find('*') != std::string::npos;
+      if (!RequireSymbol(")", "document_path_close_required",
+                         "DOCUMENT_PATH requires a closing parenthesis")) {
+        return FinishRefusal();
+      }
+      NativeExpressionAstNode path_call;
+      path_call.expression_id = NextExpressionId();
+      path_call.expression_kind = NativeExpressionAstKind::kFunctionCall;
+      path_call.child_expression_ids = {alias_expression_id, path_expression_id};
+      path_call.operator_name = "DOCUMENT_PATH";
+      path_call.spelling = SourceSpelling(function, Previous());
+      path_call.range = Span(function, Previous());
+      document_.expressions.push_back(std::move(path_call));
+      const auto path_call_id = document_.expressions.back().expression_id;
+
+      if (AtEnd()) {
+        Refuse("document_comparison_required",
+               "DOCUMENT_PATH requires a comparison operator and typed expression");
+        return FinishRefusal();
+      }
+      const auto comparison = BinaryOperatorFor(Current());
+      if (!comparison.has_value() || comparison->precedence != 3 ||
+          comparison->canonical_name == "LIKE" ||
+          comparison->canonical_name == "ILIKE" ||
+          comparison->canonical_name == "IS") {
+        Refuse("document_comparison_unsupported",
+               "DOCUMENT_PATH comparison operator is not in the signed profile");
+        return FinishRefusal();
+      }
+      Consume();
+      const auto value_expression = ParseExpression(0, 0);
+      if (!value_expression.has_value()) return FinishRefusal();
+      const auto value_expression_id = *value_expression;
+      source.model_value_expression_id = value_expression_id;
+      source.model_comparison_operator = comparison->canonical_name;
+      source.model_operation_id = "DOCUMENT_PATH";
+
+      NativeExpressionAstNode predicate;
+      predicate.expression_id = NextExpressionId();
+      predicate.expression_kind = NativeExpressionAstKind::kBinary;
+      predicate.child_expression_ids = {path_call_id, value_expression_id};
+      predicate.operator_name = comparison->canonical_name;
+      const Token& value_end = TokenForRangeEnd(
+          document_.expressions[value_expression_id - 1].range);
+      predicate.spelling = SourceSpelling(function, value_end);
+      predicate.range = Span(function, value_end);
+      document_.expressions.push_back(std::move(predicate));
+      relation.predicate_expression_ids = {document_.expressions.back().expression_id};
+    }
+
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      Refuse("document_trailing_input",
+             "unexpected input follows the bounded document model query");
+      return FinishRefusal();
+    }
+    source.range = Span(source_operator, *source_end);
+    document_.catalog_relation_sources.push_back(std::move(source));
+    document_.relations.push_back(std::move(relation));
+    document_.root_relation_id = 1;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    (void)select;
+    return std::move(document_);
+  }
+
   static std::string TemporalAxisName(const NativeTemporalTableAxis axis) {
     switch (axis) {
       case NativeTemporalTableAxis::kSystemTime: return "system_time";
@@ -3580,6 +3858,8 @@ class NativeRelationalParser final {
 
     Consume();
     const Token* last_name_token = &first;
+    std::vector<NativeIdentifierAstNode> qualified_identifier{
+        {first.text, first.quoted, TokenSourceRange(first)}};
     while (AtSymbol(".")) {
       Consume();
       if (AtEnd() || (Current().kind != TokenKind::kIdentifier &&
@@ -3588,6 +3868,9 @@ class NativeRelationalParser final {
         return std::nullopt;
       }
       last_name_token = &Consume();
+      qualified_identifier.push_back(
+          {last_name_token->text, last_name_token->quoted,
+           TokenSourceRange(*last_name_token)});
     }
 
     if (!AtSymbol("(")) {
@@ -3595,6 +3878,7 @@ class NativeRelationalParser final {
       identifier.expression_id = NextExpressionId();
       identifier.expression_kind = NativeExpressionAstKind::kIdentifier;
       identifier.range = Span(first, *last_name_token);
+      identifier.qualified_identifier = std::move(qualified_identifier);
       identifier.spelling = SourceSpelling(first, *last_name_token);
       document_.expressions.push_back(std::move(identifier));
       return document_.expressions.back().expression_id;

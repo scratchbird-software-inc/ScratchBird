@@ -310,7 +310,20 @@ ValidateCanonicalLogicalRelationalGraph(
            kind <=
                CanonicalLogicalRelationalNodeKind::kTableFunctionInvoke;
   };
+  constexpr std::string_view kModelSourceSemantic =
+      "SBLR_MODEL_SOURCE_V1";
+  constexpr std::string_view kModelExpandSemantic =
+      "SBLR_MODEL_EXPAND_V1";
   const auto valid_semantic_variant = [](const std::string_view value) {
+    if (value == kModelSourceSemantic || value == kModelExpandSemantic) {
+      return true;
+    }
+    // The model identities above are bound SBLR identities, not a general
+    // relaxation of the canonical lowercase semantic-variant grammar.
+    if (value == "sblr_model_source_v1" ||
+        value == "sblr_model_expand_v1") {
+      return false;
+    }
     if (value.empty() || value.size() > 128) return false;
     if (!std::ranges::all_of(value, [](const unsigned char ch) {
           return (ch >= 'a' && ch <= 'z') ||
@@ -384,6 +397,25 @@ ValidateCanonicalLogicalRelationalGraph(
         !nodes_by_id.emplace(node.logical_node_id, &node).second) {
       return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.logical_node_id,
                     "logical_node_record");
+    }
+    const bool model_source =
+        node.semantic_variant_id == kModelSourceSemantic;
+    const bool model_expand =
+        node.semantic_variant_id == kModelExpandSemantic;
+    if ((model_source || model_expand) &&
+        (node.node_kind !=
+             CanonicalLogicalRelationalNodeKind::kRelationSource ||
+         !node.input_logical_node_ids.empty() ||
+         node.bound_expression_ids.empty() ||
+         node.output_descriptor_ids.empty() ||
+         node.bound_expression_ids.size() !=
+             node.output_descriptor_ids.size() ||
+         (model_source &&
+          (node.required_object_uuids.size() != 1 ||
+           !canonical_uuid(node.required_object_uuids.front()))) ||
+         (model_expand && !node.required_object_uuids.empty()))) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.logical_node_id,
+                    "model_semantic_node_shape");
     }
     if (node.input_logical_node_ids.size() > limits.maximum_fanout ||
         node.origin_relational_node_ids.empty() ||

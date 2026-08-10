@@ -371,6 +371,32 @@ void ProviderRuntimeScenario(const std::filesystem::path& db_path) {
 
   auto reader = writer;
   reader.local_transaction_id = 150;
+  const auto inventory =
+      db::LoadLocalTransactionInventoryFromDatabase(db_path.string());
+  Require(inventory.ok(),
+          "could not reload document provider gate transaction inventory");
+  const mga::TransactionInventoryEntry* reader_entry = nullptr;
+  for (const auto& entry : inventory.inventory.entries) {
+    if (!entry.identity.local_id.valid() ||
+        entry.identity.local_id.value != reader.local_transaction_id) {
+      continue;
+    }
+    Require(reader_entry == nullptr,
+            "duplicate reader transaction inventory entry");
+    reader_entry = &entry;
+  }
+  Require(reader_entry != nullptr,
+          "reader transaction inventory entry missing");
+  Require(reader_entry->state == mga::TransactionState::active,
+          "reader transaction inventory entry is not active");
+  Require(reader_entry->identity.transaction_uuid.valid() &&
+              reader_entry->identity.transaction_uuid.kind ==
+                  platform::UuidKind::transaction &&
+              uuid::IsEngineIdentityUuid(
+                  reader_entry->identity.transaction_uuid.value),
+          "reader transaction inventory UUID is invalid");
+  reader.transaction_uuid.canonical = uuid::UuidToString(
+      reader_entry->identity.transaction_uuid.value);
   api::EngineDocumentProviderCleanup(reader, false);
 
   api::EngineDocumentFindRequest exact;

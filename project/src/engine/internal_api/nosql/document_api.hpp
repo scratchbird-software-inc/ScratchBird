@@ -32,6 +32,10 @@ inline constexpr const char* kDocumentPathIndexUnavailable =
     "SB_NOSQL_DOCUMENT_PATH_INDEX.UNAVAILABLE";
 inline constexpr const char* kDocumentProviderLifecycleUnsafe =
     "SB_NOSQL_PROVIDER_LIFECYCLE.UNSAFE";
+inline constexpr const char* kModelDocumentExactFallbackUnavailable =
+    "SB_MODEL_DOCUMENT_EXACT_FALLBACK_UNAVAILABLE_V1";
+inline constexpr const char* kModelDocumentMissingBindingRefusedApi =
+    "SB_MODEL_DOCUMENT_MISSING_BINDING_REFUSED_V1";
 
 struct EngineDocumentPhysicalProof {
   EngineNoSqlPhysicalProviderContract provider_contract;
@@ -45,19 +49,50 @@ struct EngineDocumentPhysicalProof {
 };
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_NOSQL_DOCUMENT_API
-struct EngineDocumentInsertRequest : EngineApiRequest {};
+struct EngineDocumentInsertRequest : EngineApiRequest {
+  // An engine-bound collection identity. Empty retains the legacy session
+  // collection mapping for callers that have not entered the canonical model
+  // source route.
+  std::string collection_uuid;
+  std::string document_uuid;
+  std::string row_uuid;
+};
 struct EngineDocumentInsertResult : EngineApiResult {};
 EngineDocumentInsertResult EngineDocumentInsert(const EngineDocumentInsertRequest& request);
 
 struct EngineDocumentFindRequest : EngineApiRequest {
   std::string path;
   std::string equals_value;
+  std::string comparison_operator{"="};
+  EngineTypedValue comparison_value;
+  bool comparison_value_present = false;
   bool wildcard_path = false;
   bool require_benchmark_clean_index_runtime = false;
+  bool exact_collection_fallback = false;
+  bool explicit_nullable_missing_projection = false;
+  std::size_t maximum_rows = 65536;
+  std::size_t maximum_cells = 16777216;
+  std::uint64_t maximum_memory_bytes = 67108864;
   std::vector<std::string> projected_paths;
+  std::vector<bool> projected_path_nullable;
   EngineDocumentPhysicalProof physical_proof;
 };
-struct EngineDocumentFindResult : EngineApiResult {};
+struct EngineDocumentTypedPathValue {
+  std::string path;
+  EngineTypedValue value;
+};
+struct EngineDocumentTypedRow {
+  std::string document_uuid;
+  std::string row_uuid;
+  std::vector<EngineDocumentTypedPathValue> values;
+};
+struct EngineDocumentFindResult : EngineApiResult {
+  std::vector<EngineDocumentTypedRow> typed_rows;
+  bool exact_collection_fallback_used = false;
+  bool residual_recheck_complete = false;
+  bool base_row_mga_recheck_complete = false;
+  bool security_recheck_complete = false;
+};
 EngineDocumentFindResult EngineDocumentFind(const EngineDocumentFindRequest& request);
 
 void EngineDocumentProviderCleanup(const EngineRequestContext& context,

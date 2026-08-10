@@ -464,6 +464,428 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kCatalogSource;
       });
+  const auto document_source_ast = std::ranges::find_if(
+      ast.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kDocument;
+      });
+  if (document_source_ast != ast.catalog_relation_sources.end()) {
+    // QOW-SOURCE-CES05-DOCUMENT-BINDING-V1
+    const auto refuse_document = [&](const char* diagnostic,
+                                     const char* detail) {
+      AddBoundAstDiagnostic(&bound, diagnostic, detail);
+      return RefusedBoundAst(std::move(bound));
+    };
+    const bool expression_backed_unnest =
+        document_source_ast->model_operation_id == "DOCUMENT_UNNEST";
+    const std::string_view expected_semantic =
+        expression_backed_unnest
+            ? "sblr.model-expand.document-unnest.v1"
+            : (document_source_ast->model_operation_id == "DOCUMENT_PATH"
+                   ? "sblr.model-source.document-path.v1"
+                   : "sblr.model-source.document-find.v1");
+    if (ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
+        ast.root_relation_id != ast.relations.front().relation_id ||
+        ast.relations.front().relation_kind !=
+            NativeRelationAstKind::kCatalogSource ||
+        ast.relations.front().relation_source_ids !=
+            std::vector<std::uint32_t>{document_source_ast->source_id} ||
+        document_source_ast->model_family_id != "document" ||
+        (document_source_ast->model_operation_id != "DOCUMENT_FIND" &&
+         document_source_ast->model_operation_id != "DOCUMENT_PATH" &&
+         document_source_ast->model_operation_id != "DOCUMENT_UNNEST") ||
+        (expression_backed_unnest && !context.catalog_relations.empty()) ||
+        (!expression_backed_unnest && context.catalog_relations.size() != 1) ||
+        context.relations.size() != 1 ||
+        context.relations.front().relation_id !=
+            ast.relations.front().relation_id ||
+        context.relations.front().semantic_variant_id != expected_semantic) {
+      return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
+                              "document source AST or binding authority is incomplete");
+    }
+    if (expression_backed_unnest) {
+      if (!ast.model_object_resolution_requests.empty()) {
+        return refuse_document(
+            "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "expression-backed document expansion carried catalog resolution");
+      }
+    } else {
+      if (ast.model_object_resolution_requests.size() != 1) {
+        return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
+                               "document collection resolution request is missing");
+      }
+      const auto& request = ast.model_object_resolution_requests.front();
+      if (request.source_id != document_source_ast->source_id ||
+          request.model_family_id != "document" ||
+          request.object_class != "document_collection" ||
+          request.qualified_name.size() !=
+              document_source_ast->qualified_name.size() ||
+          !std::ranges::equal(
+              request.qualified_name, document_source_ast->qualified_name,
+              [](const auto& left, const auto& right) {
+                return left.spelling == right.spelling &&
+                       left.quoted == right.quoted;
+              })) {
+        return refuse_document(
+            "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "document collection resolution request does not match the source AST");
+      }
+    }
+    const NativeCatalogRelationBindingInput* resolution =
+        expression_backed_unnest ? nullptr : &context.catalog_relations.front();
+    if (resolution != nullptr &&
+        (resolution->source_id != document_source_ast->source_id ||
+         resolution->resolution_state !=
+             NativeCatalogRelationResolutionState::kBound ||
+         !IsNonNullCanonicalUuid(resolution->object_uuid) ||
+         !IsNonNullCanonicalUuid(resolution->resolved_schema_uuid) ||
+         (resolution->resolved_object_type != "document" &&
+          resolution->resolved_object_type != "document_collection") ||
+         resolution->catalog_generation_id == 0 ||
+         resolution->security_epoch == 0 || resolution->resource_epoch == 0 ||
+         resolution->columns.empty())) {
+      return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
+                              "document collection did not resolve to current UUID descriptors");
+    }
+    if ((!expression_backed_unnest &&
+         document_source_ast->qualified_name.empty()) ||
+        (expression_backed_unnest &&
+         !document_source_ast->model_document_expression_id.has_value()) ||
+        ((document_source_ast->model_operation_id == "DOCUMENT_PATH" ||
+          document_source_ast->model_operation_id == "DOCUMENT_UNNEST") &&
+         !document_source_ast->model_path_expression_id.has_value())) {
+      return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
+                              "document operation operands are unresolved");
+    }
+    const auto ast_expression_by_id = [&](const std::uint32_t expression_id)
+        -> const NativeExpressionAstNode* {
+      const auto found = std::ranges::find_if(
+          ast.expressions, [&](const auto& expression) {
+            return expression.expression_id == expression_id;
+          });
+      return found == ast.expressions.end() ? nullptr : &*found;
+    };
+    if (expression_backed_unnest) {
+      const auto* document_expression = ast_expression_by_id(
+          *document_source_ast->model_document_expression_id);
+      const auto* path_expression = ast_expression_by_id(
+          *document_source_ast->model_path_expression_id);
+      if (document_expression == nullptr || path_expression == nullptr ||
+          document_expression->expression_id == path_expression->expression_id ||
+          path_expression->expression_kind !=
+              NativeExpressionAstKind::kLiteral ||
+          path_expression->literal_kind != NativeLiteralAstKind::kString ||
+          path_expression->spelling.empty() ||
+          !ast.relations.front().predicate_expression_ids.empty()) {
+        return refuse_document(
+            "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "DOCUMENT_UNNEST requires one document root and one typed path literal");
+      }
+    }
+
+    for (const auto& descriptor : context.descriptors) {
+      bound.descriptors.push_back(
+          {descriptor.descriptor_id, descriptor.descriptor_uuid,
+           descriptor.type_uuid, descriptor.nullability,
+           descriptor.collation_uuid, descriptor.timezone_profile_id,
+           descriptor.width_precision_scale});
+    }
+    std::ranges::sort(bound.descriptors, {},
+                      &BoundDescriptorAstRecord::descriptor_id);
+
+    const bool wildcard_projection = std::ranges::any_of(
+        ast.relations.front().output_expression_ids,
+        [&](const auto expression_id) {
+          const auto expression = std::ranges::find_if(
+              ast.expressions, [&](const auto& candidate) {
+                return candidate.expression_id == expression_id;
+              });
+          return expression != ast.expressions.end() &&
+                 expression->expression_kind ==
+                     NativeExpressionAstKind::kWildcard;
+        });
+    const auto wildcard_count =
+        wildcard_projection
+            ? (resolution != nullptr ? resolution->columns.size()
+                                     : context.outputs.size())
+            : std::size_t{0};
+    const auto non_wildcard_ast_count =
+        ast.expressions.size() - static_cast<std::size_t>(wildcard_projection);
+    if (context.expressions.size() != wildcard_count + non_wildcard_ast_count ||
+        context.outputs.empty() ||
+        context.outputs.size() !=
+            (wildcard_projection ? wildcard_count
+                                 : ast.relations.front().output_expression_ids.size())) {
+      return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
+                              "document expression or projection descriptors are incomplete");
+    }
+
+    BoundCatalogRelationSourceAstRecord bound_source;
+    bound_source.source_id = document_source_ast->source_id;
+    bound_source.source_kind = document_source_ast->source_kind;
+    bound_source.resolution_state = NativeCatalogRelationResolutionState::kBound;
+    bound_source.qualified_name = document_source_ast->qualified_name;
+    bound_source.alias = document_source_ast->alias;
+    bound_source.alias_is_explicit = document_source_ast->alias_is_explicit;
+    bound_source.model_family_id = document_source_ast->model_family_id;
+    bound_source.model_operation_id = document_source_ast->model_operation_id;
+    bound_source.model_comparison_operator =
+        document_source_ast->model_comparison_operator;
+    bound_source.model_wildcard_path = document_source_ast->model_wildcard_path;
+    bound_source.qualified_name_range = document_source_ast->qualified_name_range;
+    bound_source.range = document_source_ast->range;
+    if (resolution != nullptr) {
+      bound_source.object_uuid = resolution->object_uuid;
+      bound_source.resolved_object_type = resolution->resolved_object_type;
+      bound_source.resolved_schema_uuid = resolution->resolved_schema_uuid;
+      bound_source.parent_object_uuid = resolution->parent_object_uuid;
+      bound_source.catalog_generation_id = resolution->catalog_generation_id;
+      bound_source.security_epoch = resolution->security_epoch;
+      bound_source.resource_epoch = resolution->resource_epoch;
+      for (const auto& column : resolution->columns) {
+        if (column.ordinal >= resolution->columns.size() ||
+            !IsNonNullCanonicalUuid(column.column_uuid) ||
+            !descriptor_by_id.contains(column.descriptor_id)) {
+          return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                  "document collection column binding is incomplete");
+        }
+        bound_source.columns.push_back(
+            {column.ordinal, column.column_uuid, column.descriptor_id,
+             column.canonical_name_key});
+      }
+    } else {
+      bound_source.resolved_object_type = "document_expression";
+    }
+
+    BoundRelationAstRecord bound_relation;
+    bound_relation.relation_id = ast.relations.front().relation_id;
+    bound_relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+    bound_relation.semantic_variant_id = std::string(expected_semantic);
+    if (resolution != nullptr) {
+      bound_relation.bound_object_uuid = resolution->object_uuid;
+    }
+
+    std::unordered_map<std::uint32_t, std::uint32_t> ast_to_bound;
+    std::size_t binding_index = 0;
+    const NativeExpressionBindingInput* unnest_output_binding = nullptr;
+    if (wildcard_projection) {
+      for (std::size_t ordinal = 0; ordinal < wildcard_count; ++ordinal) {
+        const auto& expression = context.expressions[binding_index++];
+        const auto* column =
+            resolution != nullptr ? &resolution->columns[ordinal] : nullptr;
+        if (expression.descriptor_id == 0 ||
+            !descriptor_by_id.contains(expression.descriptor_id) ||
+            (column != nullptr &&
+             (column->ordinal != ordinal ||
+              !IsNonNullCanonicalUuid(column->column_uuid) ||
+              expression.descriptor_id != column->descriptor_id ||
+              expression.bound_name_uuid != column->column_uuid))) {
+          return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                  "document wildcard column binding is not exact");
+        }
+        if (expression_backed_unnest) {
+          if (ordinal != 0 || unnest_output_binding != nullptr ||
+              expression.function_uuid.has_value() ||
+              expression.bound_name_uuid.has_value()) {
+            return refuse_document(
+                "SB_MODEL_BINDING_INCOMPLETE_V1",
+                "DOCUMENT_UNNEST output root binding is not exact");
+          }
+          unnest_output_binding = &expression;
+          continue;
+        }
+        BoundExpressionAstRecord record;
+        record.expression_id = expression.expression_id;
+        record.expression_kind = NativeExpressionAstKind::kIdentifier;
+        record.result_descriptor_id = expression.descriptor_id;
+        record.bound_name_uuid = expression.bound_name_uuid;
+        bound.expressions.push_back(std::move(record));
+        bound_relation.output_expression_ids.push_back(expression.expression_id);
+        bound_relation.bound_expression_ids.push_back(expression.expression_id);
+      }
+    }
+
+    for (const auto& ast_expression : ast.expressions) {
+      if (ast_expression.expression_kind == NativeExpressionAstKind::kWildcard) {
+        continue;
+      }
+      const auto& expression = context.expressions[binding_index++];
+      if (expression.descriptor_id == 0 ||
+          !descriptor_by_id.contains(expression.descriptor_id) ||
+          (expression.function_uuid.has_value() &&
+           !IsNonNullCanonicalUuid(*expression.function_uuid)) ||
+          (expression.bound_name_uuid.has_value() &&
+           !IsNonNullCanonicalUuid(*expression.bound_name_uuid))) {
+        return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                "document typed expression binding is invalid");
+      }
+      ast_to_bound.emplace(ast_expression.expression_id,
+                           expression.expression_id);
+      BoundExpressionAstRecord record;
+      record.expression_id = expression.expression_id;
+      record.expression_kind = ast_expression.expression_kind;
+      record.literal_kind = ast_expression.literal_kind;
+      record.result_descriptor_id = expression.descriptor_id;
+      record.bound_function_uuid = expression.function_uuid;
+      record.bound_name_uuid = expression.bound_name_uuid;
+      if ((ast_expression.expression_kind ==
+               NativeExpressionAstKind::kUnary ||
+           ast_expression.expression_kind ==
+               NativeExpressionAstKind::kBinary) &&
+          !ast_expression.operator_name.empty()) {
+        record.canonical_operator_name = ast_expression.operator_name;
+      } else if (ast_expression.expression_kind ==
+                     NativeExpressionAstKind::kFunctionCall &&
+                 ast_expression.operator_name == "DOCUMENT_PATH" &&
+                 !expression.function_uuid.has_value()) {
+        // The acquired statement context has aggregate/window callable
+        // profiles, but no scalar document-function registry. DOCUMENT_PATH
+        // is therefore authenticated by the exact document model operation
+        // and SBLR node binding, never by substituting an aggregate UUID.
+        record.canonical_operator_name = ast_expression.operator_name;
+      }
+      if (ast_expression.expression_kind == NativeExpressionAstKind::kLiteral ||
+          ast_expression.expression_kind == NativeExpressionAstKind::kParameter) {
+        record.literal_or_parameter_ref = ast_expression.spelling;
+      }
+      for (const auto child : ast_expression.child_expression_ids) {
+        const auto mapped = ast_to_bound.find(child);
+        if (mapped == ast_to_bound.end()) {
+          return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                  "document expression dependency is unresolved");
+        }
+        record.child_expression_ids.push_back(mapped->second);
+      }
+      bound.expressions.push_back(std::move(record));
+      bound_relation.bound_expression_ids.push_back(expression.expression_id);
+    }
+    const auto map_optional = [&](const std::optional<std::uint32_t> value)
+        -> std::optional<std::uint32_t> {
+      if (!value.has_value()) return std::nullopt;
+      const auto mapped = ast_to_bound.find(*value);
+      return mapped == ast_to_bound.end() ? std::nullopt
+                                          : std::optional(mapped->second);
+    };
+    bound_source.model_document_expression_id =
+        map_optional(document_source_ast->model_document_expression_id);
+    bound_source.model_path_expression_id =
+        map_optional(document_source_ast->model_path_expression_id);
+    bound_source.model_value_expression_id =
+        map_optional(document_source_ast->model_value_expression_id);
+    if ((document_source_ast->model_document_expression_id.has_value() &&
+         !bound_source.model_document_expression_id.has_value()) ||
+        (document_source_ast->model_path_expression_id.has_value() &&
+         !bound_source.model_path_expression_id.has_value()) ||
+        (document_source_ast->model_value_expression_id.has_value() &&
+         !bound_source.model_value_expression_id.has_value())) {
+      return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
+                              "document operation expression mapping is incomplete");
+    }
+    if (expression_backed_unnest) {
+      const auto document_bound = std::ranges::find_if(
+          bound.expressions, [&](const auto& expression) {
+            return expression.expression_id ==
+                   *bound_source.model_document_expression_id;
+          });
+      const auto path_bound = std::ranges::find_if(
+          bound.expressions, [&](const auto& expression) {
+            return expression.expression_id ==
+                   *bound_source.model_path_expression_id;
+          });
+      if (unnest_output_binding == nullptr ||
+          document_bound == bound.expressions.end() ||
+          path_bound == bound.expressions.end() ||
+          path_bound->expression_kind != NativeExpressionAstKind::kLiteral ||
+          path_bound->literal_kind != NativeLiteralAstKind::kString ||
+          !path_bound->literal_or_parameter_ref.has_value() ||
+          !descriptor_by_id.contains(unnest_output_binding->descriptor_id) ||
+          !descriptor_by_id.contains(document_bound->result_descriptor_id) ||
+          descriptor_by_id.at(unnest_output_binding->descriptor_id)->type_uuid !=
+              descriptor_by_id.at(document_bound->result_descriptor_id)
+                  ->type_uuid) {
+        return refuse_document(
+            "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "DOCUMENT_UNNEST document root descriptor kind was substituted");
+      }
+      BoundExpressionAstRecord root;
+      root.expression_id = unnest_output_binding->expression_id;
+      root.expression_kind = NativeExpressionAstKind::kFunctionCall;
+      root.result_descriptor_id = unnest_output_binding->descriptor_id;
+      root.canonical_operator_name = "DOCUMENT_UNNEST";
+      root.child_expression_ids = {
+          *bound_source.model_document_expression_id,
+          *bound_source.model_path_expression_id};
+      if (std::ranges::any_of(bound.expressions, [&](const auto& expression) {
+            return expression.expression_id == root.expression_id;
+          })) {
+        return refuse_document(
+            "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "DOCUMENT_UNNEST output root identity is duplicated");
+      }
+      bound.expressions.push_back(std::move(root));
+      bound_relation.output_expression_ids = {
+          unnest_output_binding->expression_id};
+    }
+
+    for (const auto expression_id : ast.relations.front().predicate_expression_ids) {
+      const auto mapped = ast_to_bound.find(expression_id);
+      if (mapped == ast_to_bound.end()) {
+        return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                "document predicate binding is incomplete");
+      }
+      bound_relation.predicate_expression_ids.push_back(mapped->second);
+    }
+
+    if (!wildcard_projection) {
+      for (const auto expression_id :
+           ast.relations.front().output_expression_ids) {
+        const auto mapped = ast_to_bound.find(expression_id);
+        if (mapped == ast_to_bound.end()) {
+          return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                  "document projection binding is incomplete");
+        }
+        bound_relation.output_expression_ids.push_back(mapped->second);
+      }
+    }
+    // The model source node binds exactly its projected roots. Predicate and
+    // model-operation operand graphs remain reachable typed expressions, but
+    // they are not additional source outputs and therefore cannot inflate the
+    // canonical node's bound-expression width.
+    bound_relation.bound_expression_ids =
+        bound_relation.output_expression_ids;
+
+    for (std::size_t ordinal = 0; ordinal < context.outputs.size(); ++ordinal) {
+      const auto& output = context.outputs[ordinal];
+      if (output.output_id == 0 || output.expression_id == 0 ||
+          !descriptor_by_id.contains(output.descriptor_id) ||
+          output.relation_id != bound_relation.relation_id ||
+          output.ordinal != ordinal ||
+          output.expression_id != bound_relation.output_expression_ids[ordinal]) {
+        return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                "document projection output binding is invalid");
+      }
+      bound.outputs.push_back(
+          {output.output_id, output.relation_id, output.expression_id,
+           output.output_name_utf8, output.descriptor_id, output.visible,
+           output.ordinal});
+    }
+    bound.catalog_relation_sources.push_back(std::move(bound_source));
+    bound.relations.push_back(std::move(bound_relation));
+
+    BoundScopeAstRecord scope;
+    scope.scope_id = 1;
+    scope.visible_relation_ids = {ast.root_relation_id};
+    for (const auto& output : bound.outputs) {
+      if (output.visible) scope.visible_projection_ids.push_back(output.output_id);
+    }
+    scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
+    bound.scopes.push_back(std::move(scope));
+    bound.bound_ast_uuid = context.bound_ast_uuid;
+    bound.security_context_uuid = context.security_context_uuid;
+    bound.root_relation_id = ast.root_relation_id;
+    bound.root_scope_id = 1;
+    bound.bound = true;
+    return bound;
+  }
   const auto window_relation = std::ranges::find_if(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kWindow;
@@ -4881,7 +5303,9 @@ BoundStatement BindAst(const AstDocument& ast,
     bound.resolved_object_uuids.clear();
     for (const auto& source :
          bound.native_relational.catalog_relation_sources) {
-      bound.resolved_object_uuids.push_back(source.object_uuid);
+      if (!source.object_uuid.empty()) {
+        bound.resolved_object_uuids.push_back(source.object_uuid);
+      }
     }
     bound.bound = bound.native_relational.bound;
     return bound;

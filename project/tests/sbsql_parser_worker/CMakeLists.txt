@@ -1024,6 +1024,19 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-406;QOW-LEAF-WIN-001;development_candidate"
   )
 
+  # QOW-CMAKE-CES05-MODEL-FAMILY-BINDING-LOWERING-V1
+  add_executable(qow_ces05_model_family_binding_lowering_test_v1
+    qow_ces05_model_family_binding_lowering.cpp)
+  target_compile_features(qow_ces05_model_family_binding_lowering_test_v1 PRIVATE
+    cxx_std_23)
+  target_link_libraries(qow_ces05_model_family_binding_lowering_test_v1 PRIVATE
+    sbl_sbsql_parser_worker_core)
+  add_test(NAME qow_ces05_model_family_binding_lowering_v1
+    COMMAND qow_ces05_model_family_binding_lowering_test_v1)
+  set_tests_properties(qow_ces05_model_family_binding_lowering_v1 PROPERTIES
+    LABELS "qow_closure;RCP-073;CES05;document;grammar;binding;lowering;mga_transaction_regression;development_candidate"
+  )
+
   # QOW-CMAKE-WIN-002-V1
   add_executable(qow_win_002_test_v1 qow_win_002.cpp)
   target_compile_features(qow_win_002_test_v1 PRIVATE cxx_std_20)

@@ -108,6 +108,7 @@ enum class NativeWindowFrameExclusion {
 
 enum class NativeRelationSourceAstKind {
   kCatalogRelation,
+  kDocument,
 };
 
 enum class NativeAggregateGroupingForm {
@@ -184,7 +185,25 @@ struct NativeCatalogRelationSourceAstNode {
   std::vector<NativeIdentifierAstNode> qualified_name;
   std::optional<NativeIdentifierAstNode> alias;
   bool alias_is_explicit{false};
+  std::string model_family_id;
+  std::string model_operation_id;
+  std::optional<std::uint32_t> model_document_expression_id;
+  std::optional<std::uint32_t> model_path_expression_id;
+  std::optional<std::uint32_t> model_value_expression_id;
+  std::string model_comparison_operator;
+  bool model_wildcard_path{false};
   SourceRange qualified_name_range;
+  SourceRange range;
+};
+
+// Exact parser-owned description of one public object-resolution request.
+// It retains the accepted identifier components and quoting but carries no
+// resolved identity; only the authenticated engine registry may supply one.
+struct NativeModelObjectResolutionAstRequest {
+  std::uint32_t source_id{0};
+  std::string model_family_id;
+  std::string object_class;
+  std::vector<NativeIdentifierAstNode> qualified_name;
   SourceRange range;
 };
 
@@ -193,6 +212,10 @@ struct NativeExpressionAstNode {
   NativeExpressionAstKind expression_kind{NativeExpressionAstKind::kLiteral};
   std::optional<NativeLiteralAstKind> literal_kind;
   std::vector<std::uint32_t> child_expression_ids;
+  // Present only for identifier expressions. This prevents raw source
+  // rendering (including whitespace around dots) from becoming name-binding
+  // authority and preserves quoted-component semantics exactly.
+  std::vector<NativeIdentifierAstNode> qualified_identifier;
   std::string spelling;
   std::string operator_name;
   SourceRange range;
@@ -273,6 +296,8 @@ struct NativeRelationalAstDocument {
   std::uint32_t root_relation_id{0};
   std::vector<NativeRelationAstNode> relations;
   std::vector<NativeCatalogRelationSourceAstNode> catalog_relation_sources;
+  std::vector<NativeModelObjectResolutionAstRequest>
+      model_object_resolution_requests;
   std::vector<NativeValuesRowAstNode> values_rows;
   std::vector<NativeGroupingSetAstNode> grouping_sets;
   std::vector<NativeWindowDefinitionAstNode> window_definitions;

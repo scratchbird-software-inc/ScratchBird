@@ -1450,6 +1450,8 @@ std::string NativeRelationSourceAstKindName(
   switch (kind) {
     case NativeRelationSourceAstKind::kCatalogRelation:
       return "catalog_relation";
+    case NativeRelationSourceAstKind::kDocument:
+      return "document";
   }
   return "unknown";
 }
@@ -1605,13 +1607,57 @@ AstDocument BuildAst(const CstDocument& cst) {
                                           : "sbsql.query.values.v3";
     ast.operation_family = "sblr.query.relational.v3";
     const bool catalog_source_query = std::ranges::any_of(
-        ast.native_relational.relations, [](const auto& relation) {
-          return relation.relation_kind ==
-                 NativeRelationAstKind::kCatalogSource;
+        ast.native_relational.catalog_relation_sources, [](const auto& source) {
+          return source.source_kind ==
+                 NativeRelationSourceAstKind::kCatalogRelation;
         });
-    ast.requires_name_resolution = catalog_source_query;
+    bool document_resolution_description_valid = true;
+    std::size_t document_source_count = 0;
+    for (const auto& source :
+         ast.native_relational.catalog_relation_sources) {
+      if (source.source_kind != NativeRelationSourceAstKind::kDocument) {
+        continue;
+      }
+      ++document_source_count;
+      const bool expression_backed_unnest =
+          source.model_operation_id == "DOCUMENT_UNNEST";
+      const bool collection_backed =
+          source.model_operation_id == "DOCUMENT_FIND" ||
+          source.model_operation_id == "DOCUMENT_PATH";
+      if (expression_backed_unnest) {
+        document_resolution_description_valid =
+            document_resolution_description_valid &&
+            source.qualified_name.empty() &&
+            source.model_document_expression_id.has_value();
+        continue;
+      }
+      if (!collection_backed || source.qualified_name.empty() ||
+          source.model_document_expression_id.has_value()) {
+        document_resolution_description_valid = false;
+        continue;
+      }
+      ast.native_relational.model_object_resolution_requests.push_back(
+          {source.source_id, "document", "document_collection",
+           source.qualified_name, source.qualified_name_range});
+    }
+    if (document_source_count > 1 ||
+        ast.native_relational.model_object_resolution_requests.size() > 1 ||
+        !document_resolution_description_valid) {
+      ast.native_relational.status =
+          NativeRelationalParseStatus::kRefused;
+      ast.native_relational.messages.diagnostics.push_back(MakeDiagnostic(
+          "SB_MODEL_BINDING_INCOMPLETE_V1", "ERROR",
+          "document model object-resolution description is ambiguous or incomplete",
+          "sbp_sbsql.ast"));
+      ast.messages.diagnostics.push_back(
+          ast.native_relational.messages.diagnostics.back());
+    }
+    const bool document_collection_source_query =
+        ast.native_relational.model_object_resolution_requests.size() == 1;
+    ast.requires_name_resolution =
+        catalog_source_query || document_collection_source_query;
     ast.produces_sblr =
-        ast.native_relational.accepted() && !catalog_source_query;
+        ast.native_relational.accepted() && !ast.requires_name_resolution;
     ApplyStatementDescriptorMetadata(
         &ast, DescriptorForStatementTokens(cst,
                                             aggregate_query ? "SELECT"

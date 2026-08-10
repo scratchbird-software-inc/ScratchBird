@@ -17,6 +17,7 @@
 #include <cctype>
 #include <charconv>
 #include <cstdint>
+#include <functional>
 #include <iomanip>
 #include <initializer_list>
 #include <limits>
@@ -32954,6 +32955,314 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         "canonical relational lowering requires parser identity and exact engine epochs");
     return envelope;
   }
+
+  const auto document_source = std::ranges::find_if(
+      native.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kDocument;
+      });
+  if (document_source != native.catalog_relation_sources.end()) {
+    // QOW-SOURCE-CES05-DOCUMENT-SBLR-V1
+    const bool unnest =
+        document_source->model_operation_id == "DOCUMENT_UNNEST";
+    const bool source_operation =
+        document_source->model_operation_id == "DOCUMENT_FIND" ||
+        document_source->model_operation_id == "DOCUMENT_PATH";
+    const auto expected_semantic =
+        unnest ? std::string_view("sblr.model-expand.document-unnest.v1")
+               : (document_source->model_operation_id == "DOCUMENT_PATH"
+                      ? std::string_view("sblr.model-source.document-path.v1")
+                      : std::string_view("sblr.model-source.document-find.v1"));
+    if (native.catalog_relation_sources.size() != 1 ||
+        native.relations.size() != 1 || native.scopes.size() != 1 ||
+        native.descriptors.empty() || native.expressions.empty() ||
+        native.outputs.empty() || document_source->source_id == 0 ||
+        document_source->model_family_id != "document" ||
+        (!unnest && !source_operation) ||
+        native.root_relation_id != native.relations.front().relation_id ||
+        native.scopes.front().scope_id != native.root_scope_id ||
+        native.scopes.front().visible_relation_ids !=
+            std::vector<std::uint32_t>{native.root_relation_id} ||
+        native.scopes.front().parent_scope_id.has_value() ||
+        !IsCanonicalBoundSourceUuid(native.bound_ast_uuid) ||
+        !IsCanonicalBoundSourceUuid(native.security_context_uuid) ||
+        !IsCanonicalBoundSourceUuid(native.scopes.front().catalog_epoch_uuid)) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+          "document model source is missing its exact bound SBLR authority");
+      return envelope;
+    }
+
+    const auto& relation = native.relations.front();
+    if (relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
+        relation.semantic_variant_id != expected_semantic ||
+        !relation.input_relation_ids.empty() || !relation.values_row_ids.empty() ||
+        relation.output_expression_ids.empty() ||
+        relation.aggregate_grouping_form != NativeAggregateGroupingForm::kNone ||
+        relation.aggregate_projection_form !=
+            NativeAggregateProjectionForm::kNone ||
+        !relation.grouping_key_expression_ids.empty() ||
+        !relation.aggregate_expression_ids.empty() ||
+        !relation.limit_expression_ids.empty() || !relation.ordering_terms.empty() ||
+        (unnest && relation.bound_object_uuid.has_value()) ||
+        (source_operation &&
+         (!relation.bound_object_uuid.has_value() ||
+          !IsCanonicalBoundSourceUuid(*relation.bound_object_uuid) ||
+          document_source->object_uuid != *relation.bound_object_uuid)) ||
+        (unnest &&
+         (!document_source->model_document_expression_id.has_value() ||
+          !document_source->model_path_expression_id.has_value())) ||
+        (document_source->model_operation_id == "DOCUMENT_PATH" &&
+         (!document_source->model_path_expression_id.has_value() ||
+          !document_source->model_value_expression_id.has_value() ||
+          relation.predicate_expression_ids.size() != 1)) ||
+        (document_source->model_operation_id == "DOCUMENT_FIND" &&
+         (!relation.predicate_expression_ids.empty() ||
+          document_source->model_path_expression_id.has_value() ||
+          document_source->model_value_expression_id.has_value()))) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+          "document model relation operands are incomplete or ambiguous");
+      return envelope;
+    }
+
+    std::unordered_set<std::uint32_t> descriptor_ids;
+    for (const auto& descriptor : native.descriptors) {
+      if (descriptor.descriptor_id == 0 ||
+          !descriptor_ids.insert(descriptor.descriptor_id).second ||
+          !IsCanonicalBoundSourceUuid(descriptor.descriptor_uuid) ||
+          !IsCanonicalBoundSourceUuid(descriptor.type_uuid) ||
+          descriptor.nullability == BoundNullability::kUnknown) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "document descriptor identity is incomplete");
+        return envelope;
+      }
+    }
+    std::unordered_set<std::uint32_t> expression_ids;
+    for (const auto& expression : native.expressions) {
+      if (expression.expression_id == 0 ||
+          !expression_ids.insert(expression.expression_id).second ||
+          !descriptor_ids.contains(expression.result_descriptor_id) ||
+          std::ranges::any_of(expression.child_expression_ids,
+                              [&](const auto child) {
+                                return !expression_ids.contains(child);
+                              })) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "document expression descriptor or dependency is incomplete");
+        return envelope;
+      }
+    }
+    if (unnest) {
+      const auto expression_by_id = [&](const std::uint32_t expression_id)
+          -> const BoundExpressionAstRecord* {
+        const auto found = std::ranges::find_if(
+            native.expressions, [&](const auto& expression) {
+              return expression.expression_id == expression_id;
+            });
+        return found == native.expressions.end() ? nullptr : &*found;
+      };
+      const auto descriptor_by_id = [&](const std::uint32_t descriptor_id)
+          -> const BoundDescriptorAstRecord* {
+        const auto found = std::ranges::find_if(
+            native.descriptors, [&](const auto& descriptor) {
+              return descriptor.descriptor_id == descriptor_id;
+            });
+        return found == native.descriptors.end() ? nullptr : &*found;
+      };
+      const auto root_expression_id =
+          relation.output_expression_ids.size() == 1
+              ? relation.output_expression_ids.front()
+              : 0;
+      const auto* root_expression = expression_by_id(root_expression_id);
+      const auto* document_expression = expression_by_id(
+          *document_source->model_document_expression_id);
+      const auto* path_expression = expression_by_id(
+          *document_source->model_path_expression_id);
+      const auto* root_descriptor =
+          root_expression == nullptr
+              ? nullptr
+              : descriptor_by_id(root_expression->result_descriptor_id);
+      const auto* document_descriptor =
+          document_expression == nullptr
+              ? nullptr
+              : descriptor_by_id(document_expression->result_descriptor_id);
+      std::unordered_set<std::uint32_t> reachable_expression_ids;
+      std::function<bool(std::uint32_t)> visit_expression =
+          [&](const std::uint32_t expression_id) {
+            if (!reachable_expression_ids.insert(expression_id).second) {
+              return true;
+            }
+            const auto* expression = expression_by_id(expression_id);
+            if (expression == nullptr) return false;
+            return std::ranges::all_of(expression->child_expression_ids,
+                                       visit_expression);
+          };
+      const bool complete_reachability =
+          root_expression != nullptr && visit_expression(root_expression_id) &&
+          reachable_expression_ids.size() == native.expressions.size();
+      if (relation.output_expression_ids.size() != 1 ||
+          relation.bound_expression_ids !=
+              std::vector<std::uint32_t>{root_expression_id} ||
+          native.outputs.size() != 1 || root_expression == nullptr ||
+          root_expression->expression_kind !=
+              NativeExpressionAstKind::kFunctionCall ||
+          root_expression->bound_function_uuid.has_value() ||
+          root_expression->canonical_operator_name != "DOCUMENT_UNNEST" ||
+          root_expression->child_expression_ids !=
+              std::vector<std::uint32_t>{
+                  *document_source->model_document_expression_id,
+                  *document_source->model_path_expression_id} ||
+          document_expression == nullptr || path_expression == nullptr ||
+          document_expression->expression_id == path_expression->expression_id ||
+          path_expression->expression_kind !=
+              NativeExpressionAstKind::kLiteral ||
+          path_expression->literal_kind != NativeLiteralAstKind::kString ||
+          !path_expression->literal_or_parameter_ref.has_value() ||
+          path_expression->literal_or_parameter_ref->empty() ||
+          root_descriptor == nullptr || document_descriptor == nullptr ||
+          root_descriptor->type_uuid != document_descriptor->type_uuid ||
+          native.outputs.front().expression_id != root_expression_id ||
+          native.outputs.front().descriptor_id !=
+              root_expression->result_descriptor_id ||
+          !complete_reachability) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "DOCUMENT_UNNEST root, ordered operands, descriptor, or reachability is incomplete");
+        return envelope;
+      }
+    }
+    if (std::ranges::any_of(relation.bound_expression_ids,
+                            [&](const auto expression_id) {
+                              return !expression_ids.contains(expression_id);
+                            }) ||
+        std::ranges::any_of(relation.output_expression_ids,
+                            [&](const auto expression_id) {
+                              return !expression_ids.contains(expression_id);
+                            }) ||
+        native.outputs.size() != relation.output_expression_ids.size() ||
+        native.scopes.front().visible_projection_ids.size() !=
+            native.outputs.size()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+          "document output expression lineage is incomplete");
+      return envelope;
+    }
+
+    envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
+    envelope.operands.push_back(
+        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_catalog_epoch_uuid",
+         native.scopes.front().catalog_epoch_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_security_context_uuid",
+         native.security_context_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_uuid", native.statement_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_owning_transaction_uuid",
+         native.owning_transaction_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_snapshot_uuid",
+         native.statement_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_metadata_snapshot_uuid",
+         native.statement_metadata_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uint64", "relational_local_transaction_id",
+         std::to_string(native.local_transaction_id)});
+    envelope.operands.push_back(
+        {"uint64",
+         "relational_snapshot_visible_through_local_transaction_id",
+         std::to_string(native.snapshot_visible_through_local_transaction_id)});
+    envelope.operands.push_back(
+        {"uint32", "relational_root_node_id",
+         std::to_string(native.root_relation_id)});
+    for (const auto& descriptor : native.descriptors) {
+      envelope.operands.push_back(
+          {"relational_descriptor_v1",
+           std::to_string(descriptor.descriptor_id),
+           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
+               std::to_string(static_cast<std::uint8_t>(
+                                  descriptor.nullability) +
+                              1) +
+               "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
+               "|" +
+               EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.width) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.precision) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.scale)});
+    }
+    for (const auto& expression : native.expressions) {
+      const auto literal_kind =
+          expression.literal_kind.has_value()
+              ? std::to_string(static_cast<std::uint8_t>(
+                                   *expression.literal_kind) +
+                               1)
+              : "-";
+      envelope.operands.push_back(
+          {"relational_expression_v1",
+           std::to_string(expression.expression_id),
+           std::to_string(static_cast<std::uint8_t>(
+                              expression.expression_kind) +
+                          1) +
+               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
+               "|" + std::to_string(expression.result_descriptor_id) + "|" +
+               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
+               "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
+               "|" + literal_kind + "|" +
+               EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
+               "|" + EncodeOptionalCanonicalHex(
+                           expression.literal_or_parameter_ref)});
+    }
+    for (std::size_t ordinal = 0; ordinal < native.outputs.size(); ++ordinal) {
+      const auto& output = native.outputs[ordinal];
+      if (output.output_id == 0 || output.relation_id != relation.relation_id ||
+          output.expression_id != relation.output_expression_ids[ordinal] ||
+          !expression_ids.contains(output.expression_id) ||
+          !descriptor_ids.contains(output.descriptor_id) ||
+          output.ordinal != ordinal || !output.visible ||
+          native.scopes.front().visible_projection_ids[ordinal] !=
+              output.output_id) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "document output descriptor identity is incomplete");
+        envelope.operands.clear();
+        return envelope;
+      }
+      envelope.operands.push_back(
+          {"relational_output_v1", std::to_string(output.output_id),
+           std::to_string(output.relation_id) + "|" +
+               std::to_string(output.expression_id) + "|" +
+               std::to_string(output.descriptor_id) + "|1|" +
+               std::to_string(output.ordinal) + "|" +
+               EncodeCanonicalHex(output.output_name_utf8)});
+    }
+    std::vector<std::uint32_t> output_descriptor_ids;
+    for (const auto& output : native.outputs) {
+      output_descriptor_ids.push_back(output.descriptor_id);
+    }
+    envelope.operands.push_back(
+        {"relational_node_v1", std::to_string(relation.relation_id),
+         "1|0|-|" + JoinCanonicalHandleList(output_descriptor_ids) + "|-"});
+    envelope.operands.push_back(
+        {"relational_node_binding_v1", std::to_string(relation.relation_id),
+         EncodeCanonicalHex(unnest ? "SBLR_MODEL_EXPAND_V1"
+                                   : "SBLR_MODEL_SOURCE_V1") +
+             "|" + JoinCanonicalHandleList(relation.bound_expression_ids) +
+             "|" +
+             (relation.bound_object_uuid.has_value()
+                  ? *relation.bound_object_uuid
+                  : "-") +
+             "|-|-"});
+    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
+    return envelope;
+  }
+
   const bool catalog_source_candidate =
       native.relations.size() <= 5 &&
       std::ranges::any_of(native.relations, [](const auto& relation) {
@@ -39378,6 +39687,70 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
 RelationalGraphVerification ValidateCanonicalRelationalGraph(
     const ParsedRelationalGraph& graph,
     RelationalGraphVerification result) {
+  const ParsedRelationalNode* document_source_node = nullptr;
+  const ParsedRelationalNode* document_expand_node = nullptr;
+  bool duplicate_document_producer = false;
+  for (const auto& node : graph.nodes) {
+    if (node.kind != 1 || !node.binding_present) continue;
+    if (node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1") {
+      duplicate_document_producer =
+          duplicate_document_producer || document_source_node != nullptr;
+      document_source_node = &node;
+    } else if (node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1") {
+      duplicate_document_producer =
+          duplicate_document_producer || document_expand_node != nullptr;
+      document_expand_node = &node;
+    }
+  }
+  if (duplicate_document_producer ||
+      (document_source_node != nullptr && document_expand_node != nullptr)) {
+    return RefuseRelationalGraph(
+        "SBLR.PLAN_TREE.INVALID_HANDLE",
+        "query.execute requires exactly one canonical document producer",
+        "document_producer_node");
+  }
+  const bool document_source_graph = document_source_node != nullptr;
+  const bool document_expand_graph = document_expand_node != nullptr;
+  const auto document_expand_root_id =
+      document_expand_graph && document_expand_node->bound_expression_ids.size() == 1
+          ? std::optional<std::uint32_t>(
+                document_expand_node->bound_expression_ids.front())
+          : std::nullopt;
+  std::unordered_set<std::uint32_t> allowed_document_path_expression_ids;
+  if (document_source_graph) {
+    allowed_document_path_expression_ids.insert(
+        document_source_node->bound_expression_ids.begin(),
+        document_source_node->bound_expression_ids.end());
+    std::unordered_set<std::uint32_t> ordinary_bound_expression_ids;
+    std::unordered_set<std::uint32_t> output_expression_ids;
+    for (const auto& node : graph.nodes) {
+      if (node.id == document_source_node->id) continue;
+      ordinary_bound_expression_ids.insert(node.bound_expression_ids.begin(),
+                                           node.bound_expression_ids.end());
+    }
+    for (const auto& output : graph.outputs) {
+      output_expression_ids.insert(output.expression_id);
+    }
+    for (const auto& candidate : graph.expressions) {
+      if (candidate.kind != 4 || candidate.function_uuid.has_value() ||
+          candidate.operator_name != "DOCUMENT_PATH") {
+        continue;
+      }
+      std::vector<const ParsedRelationalExpression*> parents;
+      for (const auto& possible_parent : graph.expressions) {
+        if (std::ranges::find(possible_parent.child_ids, candidate.id) !=
+            possible_parent.child_ids.end()) {
+          parents.push_back(&possible_parent);
+        }
+      }
+      if (parents.size() == 1 && parents.front()->kind == 6 &&
+          !ordinary_bound_expression_ids.contains(parents.front()->id) &&
+          !output_expression_ids.contains(parents.front()->id)) {
+        allowed_document_path_expression_ids.insert(candidate.id);
+      }
+    }
+  }
+  std::optional<std::uint32_t> document_source_predicate_root;
   std::unordered_map<std::uint32_t, const ParsedRelationalDescriptor*>
       descriptors;
   std::unordered_set<std::string> descriptor_uuids;
@@ -39417,16 +39790,30 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
     const bool unary = expression.kind == 5;
     const bool binary = expression.kind == 6;
     const bool parenthesized = expression.kind == 7;
+    const bool document_path_operation =
+        document_source_graph && function_call &&
+        allowed_document_path_expression_ids.contains(expression.id) &&
+        !expression.function_uuid.has_value() &&
+        expression.operator_name == "DOCUMENT_PATH";
+    const bool document_unnest_operation =
+        document_expand_graph && function_call &&
+        document_expand_root_id == expression.id &&
+        !expression.function_uuid.has_value() &&
+        expression.operator_name == "DOCUMENT_UNNEST";
     if (literal != expression.literal_kind.has_value() ||
         (expression.literal_kind.has_value() &&
-         (*expression.literal_kind < 1 || *expression.literal_kind > 12)) ||
-        function_call != expression.function_uuid.has_value() ||
+        (*expression.literal_kind < 1 || *expression.literal_kind > 12)) ||
+        function_call !=
+            (expression.function_uuid.has_value() || document_path_operation ||
+             document_unnest_operation) ||
         (expression.function_uuid.has_value() &&
          !IsCanonicalRelationalUuid(*expression.function_uuid)) ||
         identifier != expression.bound_name_uuid.has_value() ||
         (expression.bound_name_uuid.has_value() &&
          !IsCanonicalRelationalUuid(*expression.bound_name_uuid)) ||
-        (unary || binary) != expression.operator_name.has_value() ||
+        (unary || binary || document_path_operation ||
+         document_unnest_operation) !=
+            expression.operator_name.has_value() ||
         (expression.operator_name.has_value() &&
          expression.operator_name->empty()) ||
         (literal || parameter) !=
@@ -39551,6 +39938,150 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
       return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
                                    "relational output owner is dangling",
                                    "output_record", output.node_id);
+    }
+  }
+  if (document_expand_graph) {
+    const auto& node = *document_expand_node;
+    const auto root_expression_id =
+        node.bound_expression_ids.size() == 1
+            ? node.bound_expression_ids.front()
+            : 0;
+    const auto root = expressions.find(root_expression_id);
+    const ParsedRelationalExpression* document_expression = nullptr;
+    const ParsedRelationalExpression* path_expression = nullptr;
+    if (root != expressions.end() && root->second->child_ids.size() == 2) {
+      const auto document = expressions.find(root->second->child_ids[0]);
+      const auto path = expressions.find(root->second->child_ids[1]);
+      if (document != expressions.end()) document_expression = document->second;
+      if (path != expressions.end()) path_expression = path->second;
+    }
+    const auto root_descriptor =
+        root == expressions.end()
+            ? descriptors.end()
+            : descriptors.find(root->second->descriptor_id);
+    const auto document_descriptor =
+        document_expression == nullptr
+            ? descriptors.end()
+            : descriptors.find(document_expression->descriptor_id);
+    std::unordered_set<std::uint32_t> reachable_expression_ids;
+    std::function<bool(std::uint32_t)> visit_expression =
+        [&](const std::uint32_t expression_id) {
+          if (!reachable_expression_ids.insert(expression_id).second) {
+            return true;
+          }
+          const auto expression = expressions.find(expression_id);
+          if (expression == expressions.end()) return false;
+          return std::ranges::all_of(expression->second->child_ids,
+                                     visit_expression);
+        };
+    const bool complete_producer_reachability =
+        root != expressions.end() && visit_expression(root_expression_id) &&
+        reachable_expression_ids.size() == 3;
+    std::vector<const ParsedRelationalOutput*> producer_outputs;
+    for (const auto& output : graph.outputs) {
+      if (output.node_id == node.id) producer_outputs.push_back(&output);
+    }
+    if (node.bound_expression_ids.size() != 1 ||
+        node.output_descriptor_ids.size() != 1 ||
+        !node.input_ids.empty() || !node.required_object_uuids.empty() ||
+        producer_outputs.size() != 1 ||
+        root == expressions.end() || root->second->kind != 4 ||
+        root->second->function_uuid.has_value() ||
+        root->second->operator_name != "DOCUMENT_UNNEST" ||
+        root->second->child_ids.size() != 2 ||
+        root->second->child_ids[0] == root->second->child_ids[1] ||
+        document_expression == nullptr || path_expression == nullptr ||
+        document_expression->kind != 1 ||
+        document_expression->literal_kind != 9 ||
+        !document_expression->literal_or_parameter_ref.has_value() ||
+        path_expression->kind != 1 || path_expression->literal_kind != 2 ||
+        !path_expression->literal_or_parameter_ref.has_value() ||
+        path_expression->literal_or_parameter_ref->empty() ||
+        root_descriptor == descriptors.end() ||
+        document_descriptor == descriptors.end() ||
+        root_descriptor->second->type_uuid !=
+            document_descriptor->second->type_uuid ||
+        producer_outputs.front()->expression_id != root_expression_id ||
+        producer_outputs.front()->descriptor_id != root->second->descriptor_id ||
+        node.output_descriptor_ids.front() != root->second->descriptor_id ||
+        !complete_producer_reachability) {
+      return RefuseRelationalGraph(
+          "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "DOCUMENT_UNNEST root, ordered operands, descriptor, or reachability is invalid",
+          "document_unnest_expression_root", node.id);
+    }
+  }
+  if (document_source_graph) {
+    const auto& node = *document_source_node;
+    std::unordered_set<std::uint32_t> child_expression_ids;
+    std::vector<const ParsedRelationalExpression*> document_path_calls;
+    for (const auto& expression : graph.expressions) {
+      child_expression_ids.insert(expression.child_ids.begin(),
+                                  expression.child_ids.end());
+      if (expression.kind == 4 && !expression.function_uuid.has_value() &&
+          expression.operator_name == "DOCUMENT_PATH" &&
+          allowed_document_path_expression_ids.contains(expression.id)) {
+        document_path_calls.push_back(&expression);
+      }
+    }
+    std::unordered_set<std::uint32_t> projected_expression_ids(
+        node.bound_expression_ids.begin(), node.bound_expression_ids.end());
+    for (const auto& ordinary_node : graph.nodes) {
+      if (ordinary_node.id == node.id) continue;
+      projected_expression_ids.insert(ordinary_node.bound_expression_ids.begin(),
+                                      ordinary_node.bound_expression_ids.end());
+    }
+    for (const auto& output : graph.outputs) {
+      projected_expression_ids.insert(output.expression_id);
+    }
+    std::vector<const ParsedRelationalExpression*> implicit_roots;
+    for (const auto& expression : graph.expressions) {
+      if (!child_expression_ids.contains(expression.id) &&
+          !projected_expression_ids.contains(expression.id)) {
+        implicit_roots.push_back(&expression);
+      }
+    }
+    const auto comparison_operator = [](const std::string_view operation) {
+      return operation == "=" || operation == "<>" || operation == "!=" ||
+             operation == "<" || operation == "<=" || operation == ">" ||
+             operation == ">=";
+    };
+    bool exact_path_predicate = document_path_calls.empty() &&
+                                implicit_roots.empty();
+    if (document_path_calls.size() == 1 && implicit_roots.size() == 1 &&
+        node.required_object_uuids.size() == 1) {
+      const auto* call = document_path_calls.front();
+      const auto* predicate = implicit_roots.front();
+      const auto source = call->child_ids.size() == 2
+                              ? expressions.find(call->child_ids[0])
+                              : expressions.end();
+      const auto path = call->child_ids.size() == 2
+                            ? expressions.find(call->child_ids[1])
+                            : expressions.end();
+      exact_path_predicate =
+          predicate->kind == 6 && predicate->operator_name.has_value() &&
+          comparison_operator(*predicate->operator_name) &&
+          predicate->child_ids.size() == 2 &&
+          predicate->child_ids.front() == call->id &&
+          predicate->child_ids.back() != call->id &&
+          predicate->child_ids.back() != call->child_ids[0] &&
+          predicate->child_ids.back() != call->child_ids[1] &&
+          source != expressions.end() && source->second->kind == 3 &&
+          source->second->bound_name_uuid ==
+              node.required_object_uuids.front() &&
+          path != expressions.end() && path->second->kind == 1 &&
+          path->second->literal_kind == 2 &&
+          path->second->literal_or_parameter_ref.has_value() &&
+          !path->second->literal_or_parameter_ref->empty();
+      if (exact_path_predicate) {
+        document_source_predicate_root = predicate->id;
+      }
+    }
+    if (!exact_path_predicate) {
+      return RefuseRelationalGraph(
+          "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "document source path predicate root is incomplete or ambiguous",
+          "document_path_predicate_root", node.id);
     }
   }
   if (!nodes.contains(graph.root_node_id)) {
@@ -40081,6 +40612,9 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   for (const auto& node : graph.nodes) {
     expression_roots.insert(node.bound_expression_ids.begin(),
                             node.bound_expression_ids.end());
+  }
+  if (document_source_predicate_root.has_value()) {
+    expression_roots.insert(*document_source_predicate_root);
   }
   for (const auto& output : graph.outputs) {
     expression_roots.insert(output.expression_id);

@@ -1175,6 +1175,7 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
   std::unordered_set<std::string> transformation_uuids;
   std::unordered_set<std::string> cost_vector_uuids;
   std::optional<std::string> calibration_profile_uuid;
+  std::optional<std::string> model_family_id;
   for (const auto& candidate : candidates) {
     const auto alternative_it =
         alternatives_by_uuid.find(candidate.alternative_uuid);
@@ -1222,7 +1223,10 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
         candidate.statistics_snapshot_uuid !=
             admission.statistics_snapshot_uuid ||
         candidate.statistics_generation != admission.statistics_generation ||
-        candidate.model_family_id != "relational.local.v1" ||
+        (candidate.model_family_id != "relational.local.v1" &&
+         candidate.model_family_id != "document.local.v1") ||
+        (model_family_id.has_value() &&
+         candidate.model_family_id != *model_family_id) ||
         !candidate.derived_from_admitted_statistics ||
         !candidate.engine_coster_owned ||
         candidate.parser_or_reference_cost_authority_claimed ||
@@ -1251,6 +1255,9 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
     }
     if (!calibration_profile_uuid.has_value()) {
       calibration_profile_uuid = terms.calibration_profile_uuid;
+    }
+    if (!model_family_id.has_value()) {
+      model_family_id = candidate.model_family_id;
     }
     if ((node_it->node_kind ==
              planner::CanonicalLogicalRelationalNodeKind::kRelationSource &&
@@ -1664,7 +1671,7 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
   result.mga_statement_context = admission.mga_statement_context;
   result.statistics_snapshot_uuid = admission.statistics_snapshot_uuid;
   result.statistics_generation = admission.statistics_generation;
-  result.model_family_id = "relational.local.v1";
+  result.model_family_id = *model_family_id;
   result.calibration_profile_uuid = *calibration_profile_uuid;
   result.selected_plan_signature = selected.signature;
   result.trace.push_back(
@@ -1840,7 +1847,8 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
       search.statistics_snapshot_uuid !=
           admission.statistics_snapshot_uuid ||
       search.statistics_generation != admission.statistics_generation ||
-      search.model_family_id != "relational.local.v1" ||
+      (search.model_family_id != "relational.local.v1" &&
+       search.model_family_id != "document.local.v1") ||
       !canonical_uuid(search.calibration_profile_uuid) ||
       search.memo_group_count != admission_request.logical_graph.nodes.size() ||
       search.memo_groups.size() != admission_request.logical_graph.nodes.size() ||
@@ -2226,7 +2234,16 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     physical.physical_node_id = node.logical_node_id;
     physical.relational_node_id = node.logical_node_id;
     physical.node_kind = *expected_kind;
-    physical.logical_semantic_variant_id = node.semantic_variant_id;
+    // Model-source logical identities are frozen uppercase SBLR semantic IDs.
+    // The physical ABI's implementation-style carrier is deliberately a
+    // lowercase stable ID, so publish the explicit canonical boundary mapping
+    // without weakening logical admission.
+    physical.logical_semantic_variant_id =
+        node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1"
+            ? "sblr.model_source.v1"
+            : (node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1"
+                   ? "sblr.model_expand.v1"
+                   : node.semantic_variant_id);
     physical.implementation_id = alternative.implementation_id;
     physical.input_physical_node_ids.assign(
         node.input_logical_node_ids.begin(),
@@ -2283,6 +2300,46 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     physical.engine_capability_validated = true;
     physical.mga_statement_context = dag.mga_statement_context;
     dag.nodes.push_back(std::move(physical));
+  }
+
+  // Preserve a field-exact refusal before the shared ABI collapses retained
+  // cost inconsistencies into its generic complete-node diagnostic.
+  for (const auto& node : dag.nodes) {
+    std::uint64_t retained_score = 0;
+    const auto add_retained = [&](const std::uint64_t term) {
+      return checked_add(retained_score, term, &retained_score);
+    };
+    const auto& cost = node.retained_cost;
+    if (!add_retained(cost.cpu_units) ||
+        !add_retained(cost.page_read_sequential_units) ||
+        !add_retained(cost.page_read_random_units) ||
+        !add_retained(cost.page_write_units) ||
+        !add_retained(cost.memory_bytes_required) ||
+        !add_retained(cost.spill_bytes_expected) ||
+        !add_retained(cost.network_bytes_expected) ||
+        !add_retained(cost.mga_visibility_checks_expected) ||
+        !add_retained(cost.archive_fetches_expected) ||
+        !add_retained(cost.uncertainty_penalty) ||
+        !add_retained(cost.risk_penalty) ||
+        retained_score != cost.scalar_score) {
+      return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+                    node.relational_node_id,
+                    node.selected_alternative_uuid,
+                    node.executor_capability_uuid,
+                    "retained_cost_scalar_score");
+    }
+    if (cost.cost_vector_uuid != node.cost_vector_uuid ||
+        cost.memory_bytes_required != node.memory_bytes_required ||
+        cost.spill_bytes_expected != node.spill_bytes_expected ||
+        static_cast<std::uint8_t>(cost.confidence) > 3 ||
+        (node.node_kind == executor::PhysicalNodeKind::kScan &&
+         cost.mga_visibility_checks_expected == 0)) {
+      return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+                    node.relational_node_id,
+                    node.selected_alternative_uuid,
+                    node.executor_capability_uuid,
+                    "retained_cost_node_binding");
+    }
   }
 
   const auto dag_validation = executor::ValidateTypedPhysicalNodeDag(dag);

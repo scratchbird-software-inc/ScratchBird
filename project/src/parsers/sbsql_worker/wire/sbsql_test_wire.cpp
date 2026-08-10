@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cstdlib>
 #include <cstdint>
@@ -259,6 +260,51 @@ struct ResolvedObjectReferenceSeed {
   PublicNameResolutionResult resolved;
 };
 
+std::optional<std::string> EncodeQualifiedPresentedName(
+    const std::vector<NativeIdentifierAstNode>& qualified_name) {
+  if (qualified_name.empty()) return std::nullopt;
+  std::string presented_name;
+  for (const auto& component : qualified_name) {
+    if (component.spelling.empty()) return std::nullopt;
+    if (!presented_name.empty()) presented_name.push_back('.');
+    if (!component.quoted) {
+      presented_name.append(component.spelling);
+      continue;
+    }
+    presented_name.push_back('"');
+    for (const char ch : component.spelling) {
+      if (ch == '"') presented_name.push_back('"');
+      presented_name.push_back(ch);
+    }
+    presented_name.push_back('"');
+  }
+  return presented_name;
+}
+
+std::string CanonicalUnquotedIdentifier(std::string value) {
+  for (auto& ch : value) {
+    if (ch >= 'A' && ch <= 'Z') {
+      ch = static_cast<char>(ch - 'A' + 'a');
+    }
+  }
+  return value;
+}
+
+bool SameIdentifierComponent(const NativeIdentifierAstNode& left,
+                             const NativeIdentifierAstNode& right) {
+  if (left.quoted != right.quoted) return false;
+  return left.quoted
+             ? left.spelling == right.spelling
+             : CanonicalUnquotedIdentifier(left.spelling) ==
+                   CanonicalUnquotedIdentifier(right.spelling);
+}
+
+std::string CanonicalColumnLookupKey(
+    const NativeIdentifierAstNode& component) {
+  return component.quoted ? component.spelling
+                          : CanonicalUnquotedIdentifier(component.spelling);
+}
+
 std::string_view NativeAggregateSemantic(
     NativeAggregateGroupingForm grouping,
     NativeAggregateProjectionForm projection) {
@@ -394,6 +440,9 @@ struct ExactProjectedDescriptorFields {
   std::string type_uuid;
   std::optional<std::string> collation_uuid;
   std::optional<std::string> timezone_profile_id;
+  std::optional<std::uint32_t> width;
+  std::optional<std::uint32_t> precision;
+  std::optional<std::uint32_t> scale;
   bool nullable{false};
 };
 
@@ -407,6 +456,9 @@ std::optional<ExactProjectedDescriptorFields> ParseExactProjectedDescriptor(
   bool type_seen = false;
   bool collation_seen = false;
   bool timezone_seen = false;
+  bool width_seen = false;
+  bool precision_seen = false;
+  bool scale_seen = false;
   std::size_t offset = 0;
   while (offset <= encoded.size()) {
     const auto delimiter = encoded.find(';', offset);
@@ -440,6 +492,26 @@ std::optional<ExactProjectedDescriptorFields> ParseExactProjectedDescriptor(
       }
       fields.timezone_profile_id = std::move(timezone_profile_id);
     }
+    const auto assign_u32 = [&](const std::string_view prefix, bool* seen,
+                                std::optional<std::uint32_t>* value) {
+      if (!field.starts_with(prefix)) return true;
+      if (*seen || field.size() == prefix.size()) return false;
+      std::uint32_t parsed = 0;
+      const auto text = field.substr(prefix.size());
+      const auto [end, error] =
+          std::from_chars(text.data(), text.data() + text.size(), parsed);
+      if (error != std::errc{} || end != text.data() + text.size()) {
+        return false;
+      }
+      *seen = true;
+      *value = parsed;
+      return true;
+    };
+    if (!assign_u32("width=", &width_seen, &fields.width) ||
+        !assign_u32("precision=", &precision_seen, &fields.precision) ||
+        !assign_u32("scale=", &scale_seen, &fields.scale)) {
+      return std::nullopt;
+    }
     if (field.starts_with("nullability=")) {
       if (canonical_nullable.has_value()) return std::nullopt;
       const auto value = field.substr(std::string_view("nullability=").size());
@@ -467,7 +539,10 @@ std::optional<ExactProjectedDescriptorFields> ParseExactProjectedDescriptor(
   if (!type_seen || !CanonicalUuidBytes(fields.type_uuid).has_value() ||
       (!canonical_nullable.has_value() && !storage_nullable.has_value()) ||
       (canonical_nullable.has_value() && storage_nullable.has_value() &&
-       *canonical_nullable != *storage_nullable)) {
+       *canonical_nullable != *storage_nullable) ||
+      (fields.scale.has_value() &&
+       (!fields.precision.has_value() ||
+        *fields.scale > *fields.precision))) {
     return std::nullopt;
   }
   fields.nullable = canonical_nullable.has_value() ? *canonical_nullable
@@ -531,6 +606,545 @@ BuildEngineProjectedNativeBindingContext(
       context.catalog_epoch_uuid,
       context.local_transaction_id,
       context.snapshot_visible_through_local_transaction_id};
+
+  const auto document_source = std::ranges::find_if(
+      ast.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kDocument;
+      });
+  if (document_source != ast.catalog_relation_sources.end()) {
+    // QOW-SOURCE-RCP-073-ENGINE-DOCUMENT-BINDING-COHORT-V1
+    const bool expression_backed_unnest =
+        document_source->model_operation_id == "DOCUMENT_UNNEST";
+    const bool collection_backed =
+        document_source->model_operation_id == "DOCUMENT_FIND" ||
+        document_source->model_operation_id == "DOCUMENT_PATH";
+    if ((!expression_backed_unnest && !collection_backed) ||
+        ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
+        ast.root_relation_id != ast.relations.front().relation_id ||
+        ast.relations.front().relation_kind !=
+            NativeRelationAstKind::kCatalogSource ||
+        ast.relations.front().relation_source_ids !=
+            std::vector<std::uint32_t>{document_source->source_id} ||
+        document_source->source_id == 0 ||
+        document_source->model_family_id != "document" ||
+        ast.relations.front().output_expression_ids.empty()) {
+      return fail("document_ast_shape_invalid");
+    }
+
+    const auto same_qualified_name = [](const auto& left, const auto& right) {
+      return left.size() == right.size() &&
+             std::ranges::equal(left, right, [](const auto& a, const auto& b) {
+               return a.spelling == b.spelling && a.quoted == b.quoted;
+             });
+    };
+    const auto encoded_source_name =
+        EncodeQualifiedPresentedName(document_source->qualified_name);
+    if (expression_backed_unnest) {
+      if (!document_source->qualified_name.empty() ||
+          !document_source->model_document_expression_id.has_value() ||
+          !document_source->model_path_expression_id.has_value() ||
+          document_source->model_value_expression_id.has_value() ||
+          !document_source->model_comparison_operator.empty() ||
+          !ast.model_object_resolution_requests.empty() ||
+          !resolved_object_reference_seeds.empty()) {
+        return fail("document_unnest_resolution_shape_invalid");
+      }
+    } else {
+      if (!encoded_source_name.has_value() ||
+          document_source->model_document_expression_id.has_value() ||
+          ast.model_object_resolution_requests.size() != 1 ||
+          resolved_object_reference_seeds.size() != 1) {
+        return fail("document_collection_resolution_shape_invalid");
+      }
+      const auto& request = ast.model_object_resolution_requests.front();
+      const auto& seed = resolved_object_reference_seeds.front();
+      if (request.source_id != document_source->source_id ||
+          request.model_family_id != "document" ||
+          request.object_class != "document_collection" ||
+          !same_qualified_name(request.qualified_name,
+                               document_source->qualified_name) ||
+          seed.ref.object_class != "document_collection" || seed.ref.quoted ||
+          seed.ref.create_reservation ||
+          seed.ref.presented_name != *encoded_source_name) {
+        return fail("document_collection_request_correspondence_invalid");
+      }
+    }
+
+    const auto find_expression = [&](const std::uint32_t expression_id)
+        -> const NativeExpressionAstNode* {
+      const auto found = std::ranges::find_if(
+          ast.expressions, [&](const auto& expression) {
+            return expression.expression_id == expression_id;
+          });
+      return found == ast.expressions.end() ? nullptr : &*found;
+    };
+    std::unordered_set<std::uint32_t> ast_expression_ids;
+    for (const auto& expression : ast.expressions) {
+      if (expression.expression_id == 0 ||
+          !ast_expression_ids.insert(expression.expression_id).second ||
+          ((expression.expression_kind ==
+                NativeExpressionAstKind::kIdentifier) !=
+           !expression.qualified_identifier.empty())) {
+        return fail("document_expression_identity_invalid");
+      }
+      for (const auto child : expression.child_expression_ids) {
+        if (!ast_expression_ids.contains(child)) {
+          return fail("document_expression_dependency_invalid");
+        }
+      }
+    }
+
+    std::optional<std::uint32_t> document_path_source_expression_id;
+    if (document_source->model_operation_id == "DOCUMENT_FIND") {
+      if (document_source->model_path_expression_id.has_value() ||
+          document_source->model_value_expression_id.has_value() ||
+          !document_source->model_comparison_operator.empty() ||
+          !ast.relations.front().predicate_expression_ids.empty()) {
+        return fail("document_find_operand_shape_invalid");
+      }
+    } else if (document_source->model_operation_id == "DOCUMENT_PATH") {
+      if (!document_source->model_path_expression_id.has_value() ||
+          !document_source->model_value_expression_id.has_value() ||
+          document_source->model_comparison_operator.empty() ||
+          ast.relations.front().predicate_expression_ids.size() != 1) {
+        return fail("document_path_operand_shape_invalid");
+      }
+      const auto* path_literal =
+          find_expression(*document_source->model_path_expression_id);
+      const auto* value_expression =
+          find_expression(*document_source->model_value_expression_id);
+      const auto* predicate =
+          find_expression(ast.relations.front().predicate_expression_ids.front());
+      if (path_literal == nullptr || value_expression == nullptr ||
+          predicate == nullptr ||
+          path_literal->expression_kind != NativeExpressionAstKind::kLiteral ||
+          path_literal->literal_kind != NativeLiteralAstKind::kString ||
+          predicate->expression_kind != NativeExpressionAstKind::kBinary ||
+          predicate->operator_name !=
+              document_source->model_comparison_operator ||
+          predicate->child_expression_ids.size() != 2 ||
+          predicate->child_expression_ids.back() !=
+              value_expression->expression_id) {
+        return fail("document_path_expression_correspondence_invalid");
+      }
+      const auto* path_call = find_expression(predicate->child_expression_ids[0]);
+      if (path_call == nullptr ||
+          path_call->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+          path_call->operator_name != "DOCUMENT_PATH" ||
+          path_call->child_expression_ids.size() != 2 ||
+          path_call->child_expression_ids.back() != path_literal->expression_id) {
+        return fail("document_path_call_correspondence_invalid");
+      }
+      const auto* path_source = find_expression(path_call->child_expression_ids[0]);
+      if (path_source == nullptr ||
+          path_source->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          path_source->qualified_identifier.size() != 1 ||
+          !document_source->alias.has_value() ||
+          !SameIdentifierComponent(path_source->qualified_identifier.front(),
+                                   *document_source->alias)) {
+        return fail("document_path_source_correspondence_invalid");
+      }
+      document_path_source_expression_id = path_source->expression_id;
+    } else {
+      const auto* document_expression =
+          find_expression(*document_source->model_document_expression_id);
+      const auto* path_literal =
+          find_expression(*document_source->model_path_expression_id);
+      if (document_expression == nullptr || path_literal == nullptr ||
+          path_literal->expression_kind != NativeExpressionAstKind::kLiteral ||
+          path_literal->literal_kind != NativeLiteralAstKind::kString ||
+          !ast.relations.front().predicate_expression_ids.empty()) {
+        return fail("document_unnest_operand_correspondence_invalid");
+      }
+    }
+
+    std::unordered_map<std::string, std::uint32_t> column_descriptor_by_name;
+    std::unordered_map<std::string, std::string> column_uuid_by_name;
+    std::unordered_set<std::string> descriptor_uuids;
+    NativeCatalogRelationBindingInput catalog_relation;
+    if (!expression_backed_unnest) {
+      const auto& resolved = resolved_object_reference_seeds.front().resolved;
+      const auto& projection = resolved.relation_descriptor;
+      const bool relation_transport_class =
+          resolved.object_class == "relation" || resolved.object_class == "table";
+      if (!resolved.resolved || !relation_transport_class ||
+          !CanonicalUuidBytes(resolved.object_uuid).has_value() ||
+          resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
+          !projection.present ||
+          !CanonicalUuidBytes(projection.descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(projection.relation_uuid).has_value() ||
+          projection.relation_uuid != resolved.object_uuid ||
+          !CanonicalUuidBytes(projection.schema_uuid).has_value() ||
+          projection.descriptor_generation == 0 ||
+          projection.validated_resource_epoch == 0 || projection.columns.empty()) {
+        // In particular, V1 name resolution and a generic result without the
+        // V3 persisted projection can never substitute for document binding.
+        return fail("document_collection_projection_authority_incomplete");
+      }
+      catalog_relation.source_id = document_source->source_id;
+      catalog_relation.resolution_state =
+          NativeCatalogRelationResolutionState::kBound;
+      catalog_relation.object_uuid = resolved.object_uuid;
+      catalog_relation.resolved_object_type = "document_collection";
+      catalog_relation.resolved_schema_uuid = projection.schema_uuid;
+      catalog_relation.catalog_generation_id = resolved.catalog_epoch;
+      catalog_relation.security_epoch = resolved.security_epoch;
+      catalog_relation.resource_epoch = projection.validated_resource_epoch;
+
+      std::unordered_set<std::string> column_uuids;
+      for (std::size_t ordinal = 0; ordinal < projection.columns.size();
+           ++ordinal) {
+        const auto& column = projection.columns[ordinal];
+        const auto descriptor_fields = ParseExactProjectedDescriptor(
+            column.encoded_type_descriptor, column.collation_uuid,
+            column.nullable);
+        if (column.ordinal != ordinal || column.canonical_name_key.empty() ||
+            !CanonicalUuidBytes(column.column_uuid).has_value() ||
+            !column_uuids.insert(column.column_uuid).second ||
+            !CanonicalUuidBytes(column.type_descriptor_uuid).has_value() ||
+            !descriptor_uuids.insert(column.type_descriptor_uuid).second ||
+            !descriptor_fields.has_value() ||
+            (descriptor_fields->width.has_value() &&
+             column.character_length != 0 &&
+             *descriptor_fields->width != column.character_length) ||
+            column_descriptor_by_name.contains(column.canonical_name_key)) {
+          return fail("document_collection_column_descriptor_invalid");
+        }
+        NativeDescriptorBindingInput descriptor;
+        descriptor.descriptor_id =
+            static_cast<std::uint32_t>(context.descriptors.size() + 1);
+        descriptor.descriptor_uuid = column.type_descriptor_uuid;
+        descriptor.type_uuid = descriptor_fields->type_uuid;
+        descriptor.nullability = descriptor_fields->nullable
+                                     ? BoundNullability::kNullable
+                                     : BoundNullability::kNonNull;
+        descriptor.collation_uuid = descriptor_fields->collation_uuid;
+        descriptor.timezone_profile_id =
+            descriptor_fields->timezone_profile_id;
+        descriptor.width_precision_scale.width =
+            descriptor_fields->width.has_value()
+                ? descriptor_fields->width
+                : (column.character_length == 0
+                       ? std::optional<std::uint32_t>{}
+                       : std::optional(column.character_length));
+        descriptor.width_precision_scale.precision =
+            descriptor_fields->precision;
+        descriptor.width_precision_scale.scale = descriptor_fields->scale;
+        context.descriptors.push_back(std::move(descriptor));
+        const auto descriptor_id = context.descriptors.back().descriptor_id;
+        column_descriptor_by_name.emplace(column.canonical_name_key,
+                                          descriptor_id);
+        column_uuid_by_name.emplace(column.canonical_name_key,
+                                    column.column_uuid);
+        catalog_relation.columns.push_back(
+            {static_cast<std::uint32_t>(ordinal), column.column_uuid,
+             descriptor_id, column.canonical_name_key});
+      }
+      context.catalog_relations.push_back(std::move(catalog_relation));
+    }
+
+    std::array<std::uint16_t, 11> next_profile_slot{};
+    const auto allocate_profile_descriptor =
+        [&](const std::uint8_t kind) -> std::optional<std::uint32_t> {
+      if (kind == 0 || kind >= next_profile_slot.size()) return std::nullopt;
+      const auto slot = next_profile_slot[kind]++;
+      const auto profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [&](const auto& candidate) {
+            return candidate.profile_kind == kind && candidate.slot == slot;
+          });
+      const bool expected_nullable = (kind % 2) == 0;
+      if (profile == statement_context.descriptor_profiles.end() ||
+          profile->nullable != expected_nullable ||
+          !CanonicalUuidBytes(profile->descriptor_uuid).has_value() ||
+          !descriptor_uuids.insert(profile->descriptor_uuid).second ||
+          !CanonicalUuidBytes(profile->type_uuid).has_value() ||
+          (!profile->collation_uuid.empty() &&
+           !CanonicalUuidBytes(profile->collation_uuid).has_value()) ||
+          profile->scale > profile->precision) {
+        return std::nullopt;
+      }
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      descriptor.descriptor_uuid = profile->descriptor_uuid;
+      descriptor.type_uuid = profile->type_uuid;
+      descriptor.nullability = profile->nullable
+                                   ? BoundNullability::kNullable
+                                   : BoundNullability::kNonNull;
+      if (!profile->collation_uuid.empty()) {
+        descriptor.collation_uuid = profile->collation_uuid;
+      }
+      if (profile->width != 0) {
+        descriptor.width_precision_scale.width = profile->width;
+      }
+      if (profile->precision != 0) {
+        descriptor.width_precision_scale.precision = profile->precision;
+        descriptor.width_precision_scale.scale = profile->scale;
+      }
+      context.descriptors.push_back(std::move(descriptor));
+      return context.descriptors.back().descriptor_id;
+    };
+
+    const bool wildcard_projection = std::ranges::any_of(
+        ast.relations.front().output_expression_ids,
+        [&](const auto expression_id) {
+          const auto* expression = find_expression(expression_id);
+          return expression != nullptr &&
+                 expression->expression_kind ==
+                     NativeExpressionAstKind::kWildcard;
+        });
+    if (wildcard_projection &&
+        ast.relations.front().output_expression_ids.size() != 1) {
+      return fail("document_wildcard_projection_shape_invalid");
+    }
+    std::uint32_t next_synthetic_expression_id = 1;
+    if (!ast_expression_ids.empty()) {
+      next_synthetic_expression_id =
+          *std::ranges::max_element(ast_expression_ids) + 1;
+    }
+    if (wildcard_projection) {
+      if (expression_backed_unnest) {
+        const auto descriptor_id = allocate_profile_descriptor(8);
+        if (!descriptor_id.has_value()) {
+          return fail("document_unnest_result_profile_unavailable");
+        }
+        context.expressions.push_back(
+            {next_synthetic_expression_id++, *descriptor_id, std::nullopt,
+             std::nullopt});
+        context.outputs.push_back(
+            {1, context.expressions.back().expression_id, "element",
+             *descriptor_id, true, 0, ast.relations.front().relation_id});
+      } else {
+        const auto& resolution = context.catalog_relations.front();
+        for (std::size_t ordinal = 0; ordinal < resolution.columns.size();
+             ++ordinal) {
+          const auto& column = resolution.columns[ordinal];
+          context.expressions.push_back(
+              {next_synthetic_expression_id++, column.descriptor_id,
+               std::nullopt, column.column_uuid});
+          context.outputs.push_back(
+              {static_cast<std::uint32_t>(ordinal + 1),
+               context.expressions.back().expression_id,
+               column.canonical_name_key, column.descriptor_id, true,
+               static_cast<std::uint32_t>(ordinal),
+               ast.relations.front().relation_id});
+        }
+      }
+    }
+
+    std::unordered_map<std::uint32_t, NativeExpressionBindingInput>
+        expression_binding_by_ast;
+    for (const auto& expression : ast.expressions) {
+      if (expression.expression_kind == NativeExpressionAstKind::kWildcard) {
+        continue;
+      }
+      std::optional<std::uint32_t> descriptor_id;
+      std::optional<std::string> bound_name_uuid;
+      const bool exact_document_unnest_root =
+          expression_backed_unnest &&
+          document_source->model_document_expression_id ==
+              expression.expression_id;
+      if (exact_document_unnest_root) {
+        // The engine statement profile, not an identifier spelling, types the
+        // complete DOCUMENT_UNNEST operand as JSON. A DOCUMENT literal is
+        // exactly non-null (kind 7); nullable/composed inputs use kind 8.
+        const bool non_null_document_literal =
+            expression.expression_kind ==
+                NativeExpressionAstKind::kLiteral &&
+            expression.literal_kind == NativeLiteralAstKind::kDocument;
+        descriptor_id =
+            allocate_profile_descriptor(non_null_document_literal ? 7 : 8);
+      } else switch (expression.expression_kind) {
+        case NativeExpressionAstKind::kIdentifier: {
+          if (expression.qualified_identifier.empty() ||
+              expression.qualified_identifier.size() > 2) {
+            break;
+          }
+          const NativeIdentifierAstNode* column_component =
+              &expression.qualified_identifier.back();
+          if (!expression_backed_unnest &&
+              document_path_source_expression_id == expression.expression_id) {
+            descriptor_id = allocate_profile_descriptor(8);
+            bound_name_uuid = context.catalog_relations.front().object_uuid;
+            break;
+          }
+          if (expression.qualified_identifier.size() == 2 &&
+              (!document_source->alias.has_value() ||
+               !SameIdentifierComponent(
+                   expression.qualified_identifier.front(),
+                   *document_source->alias))) {
+            break;
+          }
+          const auto column_name =
+              CanonicalColumnLookupKey(*column_component);
+          const auto column = column_descriptor_by_name.find(column_name);
+          if (column != column_descriptor_by_name.end()) {
+            descriptor_id = column->second;
+            bound_name_uuid = column_uuid_by_name.at(column_name);
+          } else if (!expression_backed_unnest &&
+                     expression.qualified_identifier.size() == 1 &&
+                     document_source->alias.has_value() &&
+                     SameIdentifierComponent(
+                         expression.qualified_identifier.front(),
+                         *document_source->alias)) {
+            descriptor_id = allocate_profile_descriptor(8);
+            bound_name_uuid =
+                context.catalog_relations.front().object_uuid;
+          } else if (expression_backed_unnest) {
+            const bool direct_document_expression =
+                document_source->model_document_expression_id ==
+                expression.expression_id;
+            descriptor_id =
+                allocate_profile_descriptor(direct_document_expression ? 8 : 2);
+          }
+          break;
+        }
+        case NativeExpressionAstKind::kParameter: {
+          const bool direct_document_expression =
+              document_source->model_document_expression_id ==
+              expression.expression_id;
+          descriptor_id =
+              allocate_profile_descriptor(direct_document_expression ? 8 : 2);
+          break;
+        }
+        case NativeExpressionAstKind::kLiteral:
+          if (!expression.literal_kind.has_value()) break;
+          switch (*expression.literal_kind) {
+            case NativeLiteralAstKind::kNumeric:
+              descriptor_id = allocate_profile_descriptor(1);
+              break;
+            case NativeLiteralAstKind::kString:
+            case NativeLiteralAstKind::kBinary:
+            case NativeLiteralAstKind::kTemporal:
+            case NativeLiteralAstKind::kUuid:
+            case NativeLiteralAstKind::kRegex:
+            case NativeLiteralAstKind::kRange:
+              descriptor_id = allocate_profile_descriptor(3);
+              break;
+            case NativeLiteralAstKind::kBoolean:
+              descriptor_id = allocate_profile_descriptor(5);
+              break;
+            case NativeLiteralAstKind::kDocument:
+              descriptor_id = allocate_profile_descriptor(7);
+              break;
+            case NativeLiteralAstKind::kNull:
+              descriptor_id = allocate_profile_descriptor(8);
+              break;
+            case NativeLiteralAstKind::kDefault:
+            case NativeLiteralAstKind::kVector:
+              break;
+          }
+          break;
+        case NativeExpressionAstKind::kFunctionCall:
+          if (expression.operator_name == "DOCUMENT_PATH") {
+            descriptor_id = allocate_profile_descriptor(8);
+          }
+          break;
+        case NativeExpressionAstKind::kUnary:
+          descriptor_id = expression.operator_name == "NOT"
+                              ? allocate_profile_descriptor(6)
+                              : allocate_profile_descriptor(2);
+          break;
+        case NativeExpressionAstKind::kBinary:
+          if (expression.operator_name == "=" ||
+              expression.operator_name == "<>" ||
+              expression.operator_name == "!=" ||
+              expression.operator_name == "<" ||
+              expression.operator_name == "<=" ||
+              expression.operator_name == ">" ||
+              expression.operator_name == ">=" ||
+              expression.operator_name == "AND" ||
+              expression.operator_name == "OR") {
+            descriptor_id = allocate_profile_descriptor(6);
+          } else if (expression.operator_name == "||") {
+            descriptor_id = allocate_profile_descriptor(4);
+          } else if (expression.operator_name == "+" ||
+                     expression.operator_name == "-" ||
+                     expression.operator_name == "*" ||
+                     expression.operator_name == "/" ||
+                     expression.operator_name == "%") {
+            descriptor_id = allocate_profile_descriptor(2);
+          }
+          break;
+        case NativeExpressionAstKind::kParenthesized:
+          if (expression.child_expression_ids.size() == 1) {
+            const auto child = expression_binding_by_ast.find(
+                expression.child_expression_ids.front());
+            if (child != expression_binding_by_ast.end()) {
+              descriptor_id = child->second.descriptor_id;
+            }
+          }
+          break;
+        case NativeExpressionAstKind::kWildcard:
+          break;
+      }
+      if (!descriptor_id.has_value()) {
+        return fail("document_expression_profile_unsupported");
+      }
+      NativeExpressionBindingInput expression_binding{
+          expression.expression_id, *descriptor_id, std::nullopt,
+          std::move(bound_name_uuid)};
+      context.expressions.push_back(expression_binding);
+      expression_binding_by_ast.emplace(expression.expression_id,
+                                        std::move(expression_binding));
+    }
+
+    if (!wildcard_projection) {
+      for (std::size_t ordinal = 0;
+           ordinal < ast.relations.front().output_expression_ids.size();
+           ++ordinal) {
+        const auto expression_id =
+            ast.relations.front().output_expression_ids[ordinal];
+        const auto binding = expression_binding_by_ast.find(expression_id);
+        const auto* ast_expression = find_expression(expression_id);
+        if (binding == expression_binding_by_ast.end() ||
+            ast_expression == nullptr) {
+          return fail("document_projection_binding_missing");
+        }
+        std::string output_name =
+            "document_value_" + std::to_string(ordinal + 1);
+        if (ast_expression->expression_kind ==
+                NativeExpressionAstKind::kIdentifier) {
+          // The SQL spelling can be qualified (for example d.payload), but a
+          // persisted document column is fetched only by its canonical MGA
+          // relation-descriptor key.  Keep the SQL-facing label aligned with
+          // that persisted key so no downstream consumer can reinterpret the
+          // qualified presentation as a document path.
+          output_name = ast_expression->spelling;
+          if (!context.catalog_relations.empty() &&
+              binding->second.bound_name_uuid.has_value()) {
+            const auto& persisted_columns =
+                context.catalog_relations.front().columns;
+            const auto persisted_column = std::ranges::find_if(
+                persisted_columns, [&](const auto& column) {
+                  return column.column_uuid ==
+                         *binding->second.bound_name_uuid;
+                });
+            if (persisted_column != persisted_columns.end()) {
+              output_name = persisted_column->canonical_name_key;
+            }
+          }
+        }
+        context.outputs.push_back(
+            {static_cast<std::uint32_t>(ordinal + 1),
+             binding->second.expression_id, output_name,
+             binding->second.descriptor_id, true,
+             static_cast<std::uint32_t>(ordinal),
+             ast.relations.front().relation_id});
+      }
+    }
+    if (context.outputs.empty()) {
+      return fail("document_projection_empty");
+    }
+    context.relations.push_back(
+        {ast.relations.front().relation_id,
+         expression_backed_unnest
+             ? "sblr.model-expand.document-unnest.v1"
+             : (document_source->model_operation_id == "DOCUMENT_PATH"
+                    ? "sblr.model-source.document-path.v1"
+                    : "sblr.model-source.document-find.v1")});
+    return context;
+  }
 
   const auto window_relation = std::ranges::find_if(
       ast.relations, [](const auto& relation) {
@@ -3847,8 +4461,44 @@ std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocu
   return refs;
 }
 
-std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst) {
+std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst,
+                                                     const AstDocument& ast) {
   std::vector<ObjectReference> refs;
+  const bool document_model_ast = std::ranges::any_of(
+      ast.native_relational.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kDocument;
+      });
+  if (document_model_ast) {
+    if (!ast.native_relational.accepted() ||
+        ast.native_relational.model_object_resolution_requests.size() > 1) {
+      return refs;
+    }
+    if (ast.native_relational.model_object_resolution_requests.empty()) {
+      // Expression-backed DOCUMENT_UNNEST has no catalog object.  Returning
+      // here also prevents the generic FROM-function scanner from treating
+      // the wrapper as a procedure.
+      return refs;
+    }
+    const auto& request =
+        ast.native_relational.model_object_resolution_requests.front();
+    if (request.source_id == 0 || request.model_family_id != "document" ||
+        request.object_class != "document_collection" ||
+        request.qualified_name.empty()) {
+      return refs;
+    }
+    const auto presented_name =
+        EncodeQualifiedPresentedName(request.qualified_name);
+    if (!presented_name.has_value()) return refs;
+    ObjectReference ref;
+    ref.object_class = request.object_class;
+    ref.presented_name = *presented_name;
+    // Component quotes are retained in presented_name for the server-side
+    // qualified-name splitter.  A request-level quote bit would incorrectly
+    // quote every component of a mixed qualified name.
+    ref.quoted = false;
+    refs.push_back(std::move(ref));
+    return refs;
+  }
   auto local_cte_names = ExtractLeadingCteNames(cst);
   for (const auto& name : ExtractDerivedCteNames(cst)) {
     if (std::find(local_cte_names.begin(), local_cte_names.end(), name) ==
@@ -6220,7 +6870,358 @@ std::string EngineBackedCopyStreamImportEnvelope(std::string_view target_object_
   return out;
 }
 
+std::string Rcp073ProofUuid(const std::uint32_t value) {
+  std::string uuid_text = "00000000-0000-7000-8000-000000000000";
+  const auto suffix = std::to_string(value);
+  uuid_text.replace(uuid_text.size() - suffix.size(), suffix.size(), suffix);
+  return uuid_text;
+}
+
+ParserStatementContext Rcp073ProofStatementContext() {
+  ParserStatementContext statement;
+  statement.acquired = true;
+  statement.statement_uuid = Rcp073ProofUuid(1);
+  statement.transaction = {17, Rcp073ProofUuid(2)};
+  statement.statement_snapshot_uuid = Rcp073ProofUuid(3);
+  statement.statement_metadata_snapshot_uuid = Rcp073ProofUuid(4);
+  statement.catalog_epoch_uuid = Rcp073ProofUuid(5);
+  statement.security_context_uuid = Rcp073ProofUuid(6);
+  statement.snapshot_visible_through_local_transaction_id = 16;
+  statement.bound_ast_uuid = Rcp073ProofUuid(7);
+  statement.count_function_uuid = Rcp073ProofUuid(8);
+  statement.sum_function_uuid = Rcp073ProofUuid(9);
+  statement.avg_function_uuid = Rcp073ProofUuid(10);
+  statement.min_function_uuid = Rcp073ProofUuid(11);
+  statement.max_function_uuid = Rcp073ProofUuid(12);
+  for (std::uint32_t ordinal = 0; ordinal < 43; ++ordinal) {
+    statement.aggregate_function_profiles.push_back(
+        {1, "sb.aggregate.rcp073." + std::to_string(ordinal),
+         Rcp073ProofUuid(100 + ordinal), true});
+  }
+  for (std::uint8_t kind = 1; kind <= 10; ++kind) {
+    for (std::uint16_t slot = 0; slot < 32; ++slot) {
+      ParserStatementContext::DescriptorProfile profile;
+      profile.profile_kind = kind;
+      profile.slot = slot;
+      profile.descriptor_uuid =
+          Rcp073ProofUuid(1000 + static_cast<std::uint32_t>(kind) * 100 + slot);
+      // Public statement profiles pair non-null/nullable kinds over one
+      // canonical type UUID: 1/2 numeric, 3/4 text, 5/6 boolean, 7/8 JSON,
+      // and 9/10 text-list.
+      profile.type_uuid = Rcp073ProofUuid(3000 + (kind + 1) / 2);
+      profile.nullable = (kind % 2) == 0;
+      if (kind == 3 || kind == 4 || kind == 9 || kind == 10) {
+        profile.collation_uuid = Rcp073ProofUuid(3200 + kind);
+        profile.width = 512;
+      }
+      statement.descriptor_profiles.push_back(std::move(profile));
+    }
+  }
+  return statement;
+}
+
+ResolvedObjectReferenceSeed Rcp073ProofSeed(const ObjectReference& ref) {
+  ResolvedObjectReferenceSeed seed;
+  seed.ref = ref;
+  seed.resolved.resolved = true;
+  seed.resolved.object_uuid = Rcp073ProofUuid(4001);
+  seed.resolved.canonical_name = "app.Collection";
+  seed.resolved.object_class = "relation";
+  seed.resolved.catalog_epoch = 41;
+  seed.resolved.security_epoch = 42;
+  auto& projection = seed.resolved.relation_descriptor;
+  projection.present = true;
+  projection.descriptor_uuid = Rcp073ProofUuid(4002);
+  projection.relation_uuid = seed.resolved.object_uuid;
+  projection.schema_uuid = Rcp073ProofUuid(4003);
+  projection.descriptor_generation = 43;
+  projection.validated_resource_epoch = 44;
+  const auto add_column = [&](const std::uint32_t ordinal,
+                              const std::string& name,
+                              const bool nullable,
+                              const std::uint32_t character_length) {
+    ipc::PublicRelationColumnDescriptor column;
+    column.column_uuid = Rcp073ProofUuid(4100 + ordinal);
+    column.ordinal = ordinal;
+    column.canonical_name_key = name;
+    column.type_descriptor_uuid = Rcp073ProofUuid(4200 + ordinal);
+    const auto type_uuid = Rcp073ProofUuid(4300 + ordinal);
+    column.nullable = nullable;
+    column.character_length = character_length;
+    column.encoded_type_descriptor =
+        "type_uuid=" + type_uuid + ";nullability=" +
+        (nullable ? "nullable" : "non_null");
+    if (character_length != 0) {
+      column.collation_uuid = Rcp073ProofUuid(4400 + ordinal);
+      column.encoded_type_descriptor +=
+          ";collation_uuid=" + column.collation_uuid +
+          ";width=" + std::to_string(character_length);
+    }
+    projection.columns.push_back(std::move(column));
+  };
+  add_column(0, "row_uuid", false, 0);
+  add_column(1, "join_key", true, 0);
+  add_column(2, "payload", true, 512);
+  return seed;
+}
+
+bool Rcp073BuildAndBind(const AstDocument& ast,
+                       const std::vector<ResolvedObjectReferenceSeed>& seeds) {
+  MessageVectorSet messages;
+  const auto context = BuildEngineProjectedNativeBindingContext(
+      ast.native_relational, Rcp073ProofStatementContext(), seeds, &messages);
+  if (!context.has_value() || messages.has_errors()) return false;
+  const auto bound = BindNativeRelationalAst(ast.native_relational, *context);
+  return bound.bound && !bound.messages.has_errors();
+}
+
+std::uint64_t Rcp073DocumentFrontdoorProofMaskImpl() {
+  std::uint64_t mask = 0;
+  const auto mixed_ast = BuildAst(BuildCst(
+      "SELECT * FROM DOCUMENT_SOURCE(app.\"Collection\") AS d;"));
+  const auto mixed_refs = ExtractObjectReferences(
+      BuildCst("SELECT * FROM DOCUMENT_SOURCE(app.\"Collection\") AS d;"),
+      mixed_ast);
+  const auto escaped_cst = BuildCst(
+      "SELECT * FROM DOCUMENT_SOURCE(app.\"Col\"\"lection\") AS d;");
+  const auto escaped_ast = BuildAst(escaped_cst);
+  const auto escaped_refs = ExtractObjectReferences(escaped_cst, escaped_ast);
+  if (mixed_ast.requires_name_resolution && !mixed_ast.produces_sblr &&
+      mixed_refs.size() == 1 &&
+      mixed_refs.front().presented_name == "app.\"Collection\"" &&
+      mixed_refs.front().object_class == "document_collection" &&
+      !mixed_refs.front().quoted && !mixed_refs.front().create_reservation &&
+      escaped_refs.size() == 1 &&
+      escaped_refs.front().presented_name == "app.\"Col\"\"lection\"" &&
+      !escaped_refs.front().quoted) {
+    mask |= 1ull << 0;
+  }
+  if (mixed_refs.size() == 1 &&
+      Rcp073BuildAndBind(mixed_ast, {Rcp073ProofSeed(mixed_refs.front())})) {
+    mask |= 1ull << 1;
+  }
+
+  const auto ordinary_cst = BuildCst(
+      "SELECT d.payload, d.join_key + 1 "
+      "FROM DOCUMENT_SOURCE(app.document_fixture) AS d "
+      "WHERE DOCUMENT_PATH(d, '$.join_key') >= 1 + 0;");
+  const auto ordinary_ast = BuildAst(ordinary_cst);
+  const auto ordinary_refs = ExtractObjectReferences(ordinary_cst, ordinary_ast);
+  if (ordinary_refs.size() == 1 &&
+      Rcp073BuildAndBind(ordinary_ast,
+                        {Rcp073ProofSeed(ordinary_refs.front())})) {
+    mask |= 1ull << 2;
+  }
+
+  const auto unnest_cst = BuildCst(
+      "SELECT * FROM DOCUMENT_UNNEST(DOCUMENT '{\"items\":[3,1,2]}', '$.items[*]') "
+      "AS item;");
+  const auto unnest_ast = BuildAst(unnest_cst);
+  const auto unnest_refs = ExtractObjectReferences(unnest_cst, unnest_ast);
+  if (!unnest_ast.requires_name_resolution && unnest_ast.produces_sblr &&
+      unnest_refs.empty() && Rcp073BuildAndBind(unnest_ast, {})) {
+    mask |= 1ull << 3;
+  }
+
+  if (ordinary_refs.size() != 1) return mask;
+  const auto good_seed = Rcp073ProofSeed(ordinary_refs.front());
+  MessageVectorSet messages;
+  if (!BuildEngineProjectedNativeBindingContext(
+           ordinary_ast.native_relational, Rcp073ProofStatementContext(), {},
+           &messages)
+           .has_value()) {
+    mask |= 1ull << 4;
+  }
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           ordinary_ast.native_relational, Rcp073ProofStatementContext(),
+           {good_seed, good_seed}, &messages)
+           .has_value()) {
+    mask |= 1ull << 5;
+  }
+  auto mutation = good_seed;
+  mutation.resolved.resolved = false;
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           ordinary_ast.native_relational, Rcp073ProofStatementContext(),
+           {mutation}, &messages)
+           .has_value()) {
+    mask |= 1ull << 6;
+  }
+  mutation = good_seed;
+  mutation.resolved.catalog_epoch = 0;
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           ordinary_ast.native_relational, Rcp073ProofStatementContext(),
+           {mutation}, &messages)
+           .has_value()) {
+    mask |= 1ull << 7;
+  }
+  mutation = good_seed;
+  mutation.resolved.relation_descriptor.present = false;
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           ordinary_ast.native_relational, Rcp073ProofStatementContext(),
+           {mutation}, &messages)
+           .has_value()) {
+    mask |= 1ull << 8;
+  }
+  mutation = good_seed;
+  mutation.resolved.relation_descriptor.relation_uuid = Rcp073ProofUuid(4999);
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           ordinary_ast.native_relational, Rcp073ProofStatementContext(),
+           {mutation}, &messages)
+           .has_value()) {
+    mask |= 1ull << 9;
+  }
+  mutation = good_seed;
+  mutation.resolved.relation_descriptor.columns.front().type_descriptor_uuid =
+      "not-a-uuid";
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           ordinary_ast.native_relational, Rcp073ProofStatementContext(),
+           {mutation}, &messages)
+           .has_value()) {
+    mask |= 1ull << 10;
+  }
+  mutation = good_seed;
+  mutation.resolved.relation_descriptor.columns.front().encoded_type_descriptor =
+      "type_uuid=not-a-uuid;nullability=non_null";
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           ordinary_ast.native_relational, Rcp073ProofStatementContext(),
+           {mutation}, &messages)
+           .has_value()) {
+    mask |= 1ull << 11;
+  }
+  mutation = good_seed;
+  mutation.resolved.object_class = "document_collection";
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           ordinary_ast.native_relational, Rcp073ProofStatementContext(),
+           {mutation}, &messages)
+           .has_value()) {
+    mask |= 1ull << 12;
+  }
+  auto mismatched_ast = ordinary_ast;
+  mismatched_ast.native_relational.model_object_resolution_requests.front()
+      .object_class = "relation";
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           mismatched_ast.native_relational, Rcp073ProofStatementContext(),
+           {good_seed}, &messages)
+           .has_value()) {
+    mask |= 1ull << 13;
+  }
+  const auto wrong_alias_cst = BuildCst(
+      "SELECT other.payload FROM DOCUMENT_SOURCE(app.document_fixture) AS d;");
+  const auto wrong_alias_ast = BuildAst(wrong_alias_cst);
+  const auto wrong_alias_refs =
+      ExtractObjectReferences(wrong_alias_cst, wrong_alias_ast);
+  if (wrong_alias_refs.size() == 1) {
+    messages = {};
+    if (!BuildEngineProjectedNativeBindingContext(
+             wrong_alias_ast.native_relational, Rcp073ProofStatementContext(),
+             {Rcp073ProofSeed(wrong_alias_refs.front())}, &messages)
+             .has_value()) {
+      mask |= 1ull << 14;
+    }
+  }
+  auto incomplete_statement = Rcp073ProofStatementContext();
+  incomplete_statement.statement_metadata_snapshot_uuid.clear();
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           ordinary_ast.native_relational, incomplete_statement, {good_seed},
+           &messages)
+           .has_value()) {
+    mask |= 1ull << 15;
+  }
+  const auto uppercase_cst = BuildCst(
+      "SELECT D . PAYLOAD, D . JOIN_KEY + 1 "
+      "FROM DOCUMENT_SOURCE(app.document_fixture) AS d "
+      "WHERE DOCUMENT_PATH(D, '$.join_key') >= 1;");
+  const auto uppercase_ast = BuildAst(uppercase_cst);
+  const auto uppercase_refs = ExtractObjectReferences(uppercase_cst,
+                                                       uppercase_ast);
+  if (uppercase_refs.size() == 1 &&
+      Rcp073BuildAndBind(uppercase_ast,
+                        {Rcp073ProofSeed(uppercase_refs.front())})) {
+    mask |= 1ull << 16;
+  }
+  const auto quoted_cst = BuildCst(
+      "SELECT \"D\".\"payload\" "
+      "FROM DOCUMENT_SOURCE(app.document_fixture) AS \"D\" "
+      "WHERE DOCUMENT_PATH(\"D\", '$.join_key') >= 1;");
+  const auto quoted_ast = BuildAst(quoted_cst);
+  const auto quoted_refs = ExtractObjectReferences(quoted_cst, quoted_ast);
+  if (quoted_refs.size() == 1 &&
+      Rcp073BuildAndBind(quoted_ast,
+                        {Rcp073ProofSeed(quoted_refs.front())})) {
+    mask |= 1ull << 17;
+  }
+  const auto wrong_quoted_alias_cst = BuildCst(
+      "SELECT \"d\".\"payload\" "
+      "FROM DOCUMENT_SOURCE(app.document_fixture) AS \"D\" "
+      "WHERE DOCUMENT_PATH(\"D\", '$.join_key') >= 1;");
+  const auto wrong_quoted_alias_ast = BuildAst(wrong_quoted_alias_cst);
+  const auto wrong_quoted_alias_refs = ExtractObjectReferences(
+      wrong_quoted_alias_cst, wrong_quoted_alias_ast);
+  messages = {};
+  if (wrong_quoted_alias_refs.size() == 1 &&
+      !BuildEngineProjectedNativeBindingContext(
+           wrong_quoted_alias_ast.native_relational,
+           Rcp073ProofStatementContext(),
+           {Rcp073ProofSeed(wrong_quoted_alias_refs.front())}, &messages)
+           .has_value()) {
+    mask |= 1ull << 18;
+  }
+  const auto wrong_quoted_column_cst = BuildCst(
+      "SELECT \"D\".\"Payload\" "
+      "FROM DOCUMENT_SOURCE(app.document_fixture) AS \"D\" "
+      "WHERE DOCUMENT_PATH(\"D\", '$.join_key') >= 1;");
+  const auto wrong_quoted_column_ast = BuildAst(wrong_quoted_column_cst);
+  const auto wrong_quoted_column_refs = ExtractObjectReferences(
+      wrong_quoted_column_cst, wrong_quoted_column_ast);
+  messages = {};
+  if (wrong_quoted_column_refs.size() == 1 &&
+      !BuildEngineProjectedNativeBindingContext(
+           wrong_quoted_column_ast.native_relational,
+           Rcp073ProofStatementContext(),
+           {Rcp073ProofSeed(wrong_quoted_column_refs.front())}, &messages)
+           .has_value()) {
+    mask |= 1ull << 19;
+  }
+  const auto missing_alias_ast = BuildAst(BuildCst(
+      "SELECT payload FROM DOCUMENT_SOURCE(app.document_fixture) "
+      "WHERE DOCUMENT_PATH(d, '$.join_key') >= 1;"));
+  if (missing_alias_ast.native_relational.status ==
+      NativeRelationalParseStatus::kRefused) {
+    mask |= 1ull << 20;
+  }
+  const auto quoted_trigger_ast = BuildAst(BuildCst(
+      "SELECT \"DOCUMENT_PATH\", \"MONGO_PIPELINE\" FROM app.fixture;"));
+  const bool model_diagnostic = std::ranges::any_of(
+      quoted_trigger_ast.native_relational.messages.diagnostics,
+      [](const auto& diagnostic) {
+        return diagnostic.code.starts_with("SB_MODEL_");
+      });
+  const bool document_source_present = std::ranges::any_of(
+      quoted_trigger_ast.native_relational.catalog_relation_sources,
+      [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kDocument;
+      });
+  if (!document_source_present && !model_diagnostic) {
+    mask |= 1ull << 21;
+  }
+  return mask;
+}
+
 } // namespace
+
+std::uint64_t Rcp073DocumentFrontdoorProofMaskForTest() {
+  return Rcp073DocumentFrontdoorProofMaskImpl();
+}
 
 SbsqlTestWireSession::SbsqlTestWireSession(ParserConfig config, ParserMetrics* metrics, SblrTemplateCache* cache)
     : config_(std::move(config)), metrics_(metrics), cache_(cache) {
@@ -6891,7 +7892,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   result.messages = ast.messages;
   if (!result.messages.has_errors() && ast.requires_name_resolution &&
       HasExecutionRoute() && session_.authenticated) {
-    const auto refs = ExtractObjectReferences(cst);
+    const auto refs = ExtractObjectReferences(cst, ast);
     const bool native_catalog_projection_required =
         !ast.native_relational.catalog_relation_sources.empty();
     mark_phase("extract_object_references");
@@ -6935,11 +7936,22 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           break;
         }
       } else {
+        // DOCUMENT_SOURCE/PATH is semantically a document_collection in the
+        // typed AST, but persisted projection transport is intentionally the
+        // engine's relation V3 route.  The document binding branch below
+        // reclassifies only after the returned relation UUID and descriptor
+        // projection agree exactly.
+        const auto transport_object_class =
+            ref.object_class == "document_collection"
+                ? std::string_view("relation")
+                : std::string_view(ref.object_class);
         resolved = native_catalog_projection_required
                        ? ResolveNameOnRouteUncached(
-                             ref.presented_name, ref.quoted, ref.object_class)
+                             ref.presented_name, ref.quoted,
+                             transport_object_class)
                        : ResolveNameOnRoute(
-                             ref.presented_name, ref.quoted, ref.object_class);
+                             ref.presented_name, ref.quoted,
+                             transport_object_class);
       }
       if (!resolved.resolved) {
         if (ref.object_class == "procedure") {

@@ -85,6 +85,9 @@ add_library(sb_engine_executor STATIC
   # QOW-CMAKE-IAS-014-V1
   # QOW-CMAKE-QRY-029-V1
   descriptor_value_runtime.cpp
+  # QOW-CMAKE-CES05-MODEL-FAMILY-EXCHANGE-EXECUTOR-V1
+  model_family_exchange.cpp
+  model_family_executor.cpp
   dml_executor.cpp
   explain_executor.cpp
   executor_batching.cpp

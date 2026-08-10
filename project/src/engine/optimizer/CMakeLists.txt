@@ -22,6 +22,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   if(NOT TARGET sb_qow_canonical_candidate_legality)
     add_library(sb_qow_canonical_candidate_legality STATIC
       optimizer_contract.cpp
+      model_family_coordinator.cpp
     )
     target_compile_features(sb_qow_canonical_candidate_legality PUBLIC
       cxx_std_20
@@ -32,9 +33,13 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
     target_include_directories(sb_qow_canonical_candidate_legality PUBLIC
       ${CMAKE_CURRENT_SOURCE_DIR}
       ${CMAKE_CURRENT_SOURCE_DIR}/../planner
+      ${CMAKE_CURRENT_SOURCE_DIR}/../internal_api
+      ${CMAKE_CURRENT_SOURCE_DIR}/../../core/datatypes
+      ${PROJECT_SOURCE_DIR}/include
     )
     target_link_libraries(sb_qow_canonical_candidate_legality PUBLIC
       sb_qow_canonical_logical_graph
+      sb_engine_executor
     )
   endif()
   # QOW-CMAKE-OPT-006-CATALOG-V1
@@ -132,6 +137,8 @@ if(NOT TARGET sb_engine_optimizer_contract_only)
     optimizer_catalog_backed_planning.cpp
     optimizer_admission.cpp
     optimizer_contract.cpp
+    # QOW-CMAKE-CES05-MODEL-FAMILY-COORDINATOR-V1
+    model_family_coordinator.cpp
     optimizer_cost_full.cpp
     optimizer_differential_fuzz.cpp
     optimizer_driver_explain_compatibility.cpp

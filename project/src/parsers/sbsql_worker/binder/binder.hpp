@@ -256,6 +256,13 @@ struct BoundCatalogRelationSourceAstRecord {
   std::vector<NativeIdentifierAstNode> qualified_name;
   std::optional<NativeIdentifierAstNode> alias;
   bool alias_is_explicit{false};
+  std::string model_family_id;
+  std::string model_operation_id;
+  std::optional<std::uint32_t> model_document_expression_id;
+  std::optional<std::uint32_t> model_path_expression_id;
+  std::optional<std::uint32_t> model_value_expression_id;
+  std::string model_comparison_operator;
+  bool model_wildcard_path{false};
   SourceRange qualified_name_range;
   SourceRange range;
   std::string object_uuid;

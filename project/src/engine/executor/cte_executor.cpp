@@ -106,8 +106,31 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
       request.physical_dag, selected_node->input_physical_node_ids[0]);
   const auto* recursive_node = FindPhysicalNode(
       request.physical_dag, selected_node->input_physical_node_ids[1]);
+  const bool literal_values_anchor =
+      anchor_node != nullptr &&
+      anchor_node->node_kind == PhysicalNodeKind::kValues;
+  const bool materialized_count_anchor =
+      anchor_node != nullptr &&
+      anchor_node->node_kind == PhysicalNodeKind::kAggregate &&
+      anchor_node->engine_capability_validated &&
+      anchor_node->input_physical_node_ids.size() == 1 &&
+      anchor_node->output_descriptor_ids.size() == 1 &&
+      anchor_node->logical_semantic_variant_id ==
+          "aggregate.global-count-star.v1" &&
+      anchor_node->implementation_id == "aggregate.count-star.v1";
+  const bool exact_count_recursive_term =
+      !materialized_count_anchor ||
+      (recursive_node != nullptr &&
+       recursive_node->engine_capability_validated &&
+       recursive_node->input_physical_node_ids.empty() &&
+       recursive_node->output_descriptor_ids.size() == 1 &&
+       recursive_node->logical_semantic_variant_id ==
+           "cte.recursive-term-int64-increment.v1" &&
+       recursive_node->implementation_id ==
+           "cte.recursive-term.int64-increment.typed.v1");
   if (anchor_node == nullptr || recursive_node == nullptr ||
-      anchor_node->node_kind != PhysicalNodeKind::kValues ||
+      (!literal_values_anchor && !materialized_count_anchor) ||
+      !exact_count_recursive_term ||
       recursive_node->node_kind != PhysicalNodeKind::kCte ||
       anchor_node->output_descriptor_ids !=
           recursive_node->output_descriptor_ids ||
@@ -121,6 +144,20 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
   if (!anchor_validation.ok) {
     return refuse(anchor_validation.diagnostic_code + ":" +
                   anchor_validation.detail);
+  }
+  if (materialized_count_anchor &&
+      (request.anchor_batch.columns.size() != 1 ||
+       request.anchor_batch.columns.front().descriptor.canonical_type_name !=
+           "int64" ||
+       request.anchor_batch.rows.size() != 1 ||
+       request.anchor_batch.rows.front().values.size() != 1 ||
+       request.anchor_batch.rows.front().values.front().is_null ||
+       request.anchor_batch.rows.front().values.front().state !=
+           scratchbird::engine::internal_api::EngineValueState::value ||
+       !DecodeInt64Value(request.anchor_batch.rows.front().values.front())
+            .ok())) {
+    return refuse(
+        "recursive CTE COUNT(*) anchor is not one materialized non-null int64 value");
   }
   if (!request.recursive_step || request.maximum_iteration_count == 0 ||
       request.maximum_working_row_count == 0 ||

@@ -12,15 +12,19 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "crud_support/crud_store.hpp"
 #include "index_route_capability.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
 #include "nosql/document_path_physical_provider.hpp"
 #include "nosql/nosql_batch_point_lookup_support.hpp"
 #include "nosql/nosql_provider_generation_store.hpp"
 #include "nosql/nosql_surface_support.hpp"
+#include "query/expression_api.hpp"
+#include "security/security_model.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -36,11 +40,13 @@ namespace {
 namespace idx = scratchbird::core::index;
 
 struct PhysicalDocumentRecord {
+  std::string collection_uuid;
   std::string document_uuid;
   std::string row_uuid;
   std::string name;
   std::string payload;
   std::map<std::string, std::string> fragments;
+  std::set<std::string> null_paths;
   std::string shape_id;
   EngineApiU64 shape_ref_count = 0;
   EngineApiU64 creator_tx = 0;
@@ -125,14 +131,21 @@ std::string RequestDocumentName(const EngineApiRequest& request,
 
 std::map<std::string, std::string> ParsePayloadFragments(
     const EngineApiRequest& request,
-    const std::string& persisted_payload) {
+    const std::string& persisted_payload,
+    std::set<std::string>* null_paths) {
   std::map<std::string, std::string> fragments;
   for (const auto& [path, value] : request.assignments) {
-    if (!path.empty()) { fragments[path] = value.encoded_value; }
+    if (!path.empty()) {
+      fragments[path] = value.encoded_value;
+      if (value.isSqlNull()) null_paths->insert(path);
+    }
   }
   for (const auto& row : request.rows) {
     for (const auto& [path, value] : row.fields) {
-      if (!path.empty()) { fragments[path] = value.encoded_value; }
+      if (!path.empty()) {
+        fragments[path] = value.encoded_value;
+        if (value.isSqlNull()) null_paths->insert(path);
+      }
     }
   }
   if (!fragments.empty()) { return fragments; }
@@ -199,6 +212,7 @@ void RebuildDocumentIndexes(DocumentProviderState* state) {
 std::vector<std::pair<std::string, std::string>> DocumentRecordPairs(
     const PhysicalDocumentRecord& record) {
   return {
+      {"collection_uuid", record.collection_uuid},
       {"document_uuid", record.document_uuid},
       {"row_uuid", record.row_uuid},
       {"name", record.name},
@@ -207,6 +221,11 @@ std::vector<std::pair<std::string, std::string>> DocumentRecordPairs(
       {"shape_ref_count", std::to_string(record.shape_ref_count)},
       {"creator_tx", std::to_string(record.creator_tx)},
       {"fragments", EncodeCrudPairs(FragmentPairs(record.fragments))},
+      {"null_paths", EncodeCrudPairs([&] {
+         std::vector<std::pair<std::string, std::string>> paths;
+         for (const auto& path : record.null_paths) paths.push_back({path, "1"});
+         return paths;
+       }())},
   };
 }
 
@@ -217,6 +236,7 @@ PhysicalDocumentRecord DocumentRecordFromPairs(
     values[key] = value;
   }
   PhysicalDocumentRecord record;
+  record.collection_uuid = values["collection_uuid"];
   record.document_uuid = values["document_uuid"];
   record.row_uuid = values["row_uuid"];
   record.name = values["name"];
@@ -235,6 +255,9 @@ PhysicalDocumentRecord DocumentRecordFromPairs(
   }
   for (const auto& [path, value] : DecodeCrudPairs(values["fragments"])) {
     record.fragments[path] = value;
+  }
+  for (const auto& [path, marker] : DecodeCrudPairs(values["null_paths"])) {
+    if (marker == "1") record.null_paths.insert(path);
   }
   return record;
 }
@@ -269,13 +292,17 @@ void LoadDocumentProviderLocked(const EngineRequestContext& context,
       const auto verb = line.substr(first + 1, second - first - 1);
       auto record = DocumentRecordFromPairs(
           DecodeCrudPairs(line.substr(second + 1)));
+      if (record.collection_uuid.empty()) {
+        record.collection_uuid = DocumentCollectionUuid(context);
+      }
       if (record.document_uuid.empty() && record.name.empty()) { continue; }
       NormalizeProviderRecordIdentity(&record);
       if (record.document_uuid.empty()) { continue; }
       const auto erase_by_name = [&]() {
         if (record.name.empty()) { return; }
         for (auto it = state->documents.begin(); it != state->documents.end();) {
-          if (it->second.name == record.name) {
+          if (it->second.collection_uuid == record.collection_uuid &&
+              it->second.name == record.name) {
             it = state->documents.erase(it);
           } else {
             ++it;
@@ -303,11 +330,15 @@ void LoadDocumentProviderLocked(const EngineRequestContext& context,
 }
 
 std::vector<DocumentPathRowEvidence> ProviderRowsFromState(
-    const DocumentProviderState& state) {
+    const DocumentProviderState& state,
+    const std::string_view collection_uuid) {
   std::vector<DocumentPathRowEvidence> rows;
   for (const auto& [uuid, record] : state.documents) {
     (void)uuid;
-    if (record.fragments.empty()) { continue; }
+    if (record.collection_uuid != collection_uuid ||
+        record.fragments.empty()) {
+      continue;
+    }
     DocumentPathRowEvidence row;
     row.document_uuid = ProviderUuidOrGenerated(record.document_uuid, "object");
     row.row_uuid = ProviderUuidOrGenerated(record.row_uuid, "row");
@@ -316,6 +347,10 @@ std::vector<DocumentPathRowEvidence> ProviderRowsFromState(
     for (const auto& [path, value] : record.fragments) {
       EngineTypedValue typed;
       typed.encoded_value = value;
+      if (record.null_paths.contains(path)) {
+        typed.encoded_value.clear();
+        typed.setState(EngineValueState::sql_null);
+      }
       row.values.push_back({path, DocumentPathScalarFromTypedValue(typed)});
     }
     rows.push_back(std::move(row));
@@ -343,7 +378,8 @@ DocumentProviderWriteOutcome PublishProviderStateLocked(
     const EngineRequestContext& context,
     DocumentProviderState* state) {
   DocumentProviderWriteOutcome outcome;
-  const auto rows = ProviderRowsFromState(*state);
+  const auto rows =
+      ProviderRowsFromState(*state, DocumentCollectionUuid(context));
   DocumentPathProviderBuildRequest build;
   build.artifact_path = DocumentPathPhysicalProviderPath(context);
   build.identity =
@@ -385,15 +421,28 @@ DocumentProviderWriteOutcome PublishProviderStateLocked(
 
 DocumentProviderWriteOutcome UpsertPhysicalDocument(
     const EngineApiRequest& request,
-    const EngineApiResult& result) {
+    const EngineApiResult& result,
+    const std::string& bound_collection_uuid = {},
+    const std::string& bound_document_uuid = {},
+    const std::string& bound_row_uuid = {}) {
   DocumentProviderWriteOutcome outcome;
   PhysicalDocumentRecord record;
+  record.collection_uuid = bound_collection_uuid.empty()
+                               ? DocumentCollectionUuid(request.context)
+                               : bound_collection_uuid;
   record.name = RequestDocumentName(request, RowField(result, "name"));
   record.document_uuid =
-      ProviderUuidOrGenerated(result.primary_object.uuid.canonical, "object");
-  record.row_uuid = ProviderUuidOrGenerated(result.catalog_row_uuid.canonical, "row");
+      bound_document_uuid.empty()
+          ? ProviderUuidOrGenerated(result.primary_object.uuid.canonical,
+                                    "object")
+          : bound_document_uuid;
+  record.row_uuid =
+      bound_row_uuid.empty()
+          ? ProviderUuidOrGenerated(result.catalog_row_uuid.canonical, "row")
+          : bound_row_uuid;
   record.payload = RowField(result, "payload");
-  record.fragments = ParsePayloadFragments(request, record.payload);
+  record.fragments =
+      ParsePayloadFragments(request, record.payload, &record.null_paths);
   record.creator_tx = request.context.local_transaction_id;
   if (record.document_uuid.empty()) { return outcome; }
   {
@@ -401,7 +450,9 @@ DocumentProviderWriteOutcome UpsertPhysicalDocument(
     auto& state = DocumentStores()[StoreKey(request.context)];
     LoadDocumentProviderLocked(request.context, &state);
     for (auto it = state.documents.begin(); it != state.documents.end();) {
-      if (it->second.name == record.name && it->first != record.document_uuid) {
+      if (it->second.collection_uuid == record.collection_uuid &&
+          it->second.name == record.name &&
+          it->first != record.document_uuid) {
         it = state.documents.erase(it);
       } else {
         ++it;
@@ -427,8 +478,9 @@ DocumentProviderWriteOutcome DeletePhysicalDocument(
     auto& state = DocumentStores()[StoreKey(request.context)];
     LoadDocumentProviderLocked(request.context, &state);
     for (auto it = state.documents.begin(); it != state.documents.end(); ++it) {
-      if (it->second.document_uuid == request.target_object.uuid.canonical ||
-          it->second.name == requested) {
+      if (it->second.collection_uuid == DocumentCollectionUuid(request.context) &&
+          (it->second.document_uuid == request.target_object.uuid.canonical ||
+           it->second.name == requested)) {
         deleted = it->second;
         state.documents.erase(it);
         break;
@@ -450,10 +502,10 @@ template <typename TResult>
 TResult DiagnosticResult(const EngineRequestContext& context,
                          const std::string& operation_id,
                          const char* diagnostic_code) {
+  auto diagnostic = MakeInvalidRequestDiagnostic(operation_id, diagnostic_code);
+  diagnostic.code = diagnostic_code;
   return MakeApiBehaviorDiagnostic<TResult>(
-      context,
-      operation_id,
-      MakeInvalidRequestDiagnostic(operation_id, diagnostic_code));
+      context, operation_id, std::move(diagnostic));
 }
 
 void AddSelectionEvidence(const EngineNoSqlPhysicalProviderSelection& selection,
@@ -551,19 +603,95 @@ bool WildcardPathMatches(const std::string& pattern, const std::string& path) {
   return true;
 }
 
-bool PathMatches(const EngineDocumentFindRequest& request,
-                 const PhysicalDocumentRecord& record) {
-  if (request.path.empty()) { return true; }
+struct DocumentMatchResult {
+  bool valid{true};
+  bool matches{false};
+  std::string detail;
+};
+
+DocumentMatchResult CompareDocumentValue(
+    const EngineDocumentFindRequest& request,
+    const std::string& encoded_value,
+    const bool stored_null) {
+  if (!request.comparison_value_present) {
+    return {true,
+            request.equals_value.empty() || encoded_value == request.equals_value,
+            {}};
+  }
+  EngineTypedValue left;
+  left.descriptor = request.comparison_value.descriptor;
+  if (stored_null) {
+    left.setState(EngineValueState::sql_null);
+  } else {
+    left.encoded_value = encoded_value;
+    left.setState(EngineValueState::value);
+  }
+  EngineComparisonPredicateOperator operation =
+      EngineComparisonPredicateOperator::unspecified;
+  if (request.comparison_operator == "=") {
+    operation = EngineComparisonPredicateOperator::equal;
+  } else if (request.comparison_operator == "<>" ||
+             request.comparison_operator == "!=") {
+    operation = EngineComparisonPredicateOperator::not_equal;
+  } else if (request.comparison_operator == "<") {
+    operation = EngineComparisonPredicateOperator::less_than;
+  } else if (request.comparison_operator == "<=") {
+    operation = EngineComparisonPredicateOperator::less_than_or_equal;
+  } else if (request.comparison_operator == ">") {
+    operation = EngineComparisonPredicateOperator::greater_than;
+  } else if (request.comparison_operator == ">=") {
+    operation = EngineComparisonPredicateOperator::greater_than_or_equal;
+  }
+  int ordering = 0;
+  std::string refusal_detail;
+  if (!left.isSqlNull() && !request.comparison_value.isSqlNull()) {
+    if (scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+            request.comparison_value.descriptor.canonical_type_name) ==
+        scratchbird::core::datatypes::CanonicalTypeId::character) {
+      EngineCompareScalarValuesRequest compare_request;
+      compare_request.context = request.context;
+      compare_request.left_value = left;
+      compare_request.right_value = request.comparison_value;
+      const auto compared = EngineCompareScalarValues(compare_request);
+      if (!compared.ok) {
+        return {false, false,
+                compared.diagnostics.empty()
+                    ? "catalog-bound character comparison refused"
+                    : compared.diagnostics.front().detail};
+      }
+      ordering = compared.comparison;
+    } else if (!QowCompareCanonicalNonCollatedScalarsV1(
+                   left, request.comparison_value, &ordering,
+                   &refusal_detail)) {
+      return {false, false, refusal_detail};
+    }
+  }
+  EngineSqlTruthValue truth = EngineSqlTruthValue::unknown;
+  if (operation == EngineComparisonPredicateOperator::unspecified) {
+    return {false, false, "document comparison operator is not bound"};
+  }
+  if (!QowEvaluateCanonicalComparisonTruthV1(
+          left, request.comparison_value, ordering, operation, &truth,
+          &refusal_detail)) {
+    return {false, false, refusal_detail};
+  }
+  return {true, truth == EngineSqlTruthValue::true_value, {}};
+}
+
+DocumentMatchResult PathMatches(const EngineDocumentFindRequest& request,
+                                const PhysicalDocumentRecord& record) {
+  if (request.path.empty()) return {true, true, {}};
   for (const auto& [path, value] : record.fragments) {
     const bool path_match = request.wildcard_path
                                 ? WildcardPathMatches(request.path, path)
                                 : request.path == path;
-    if (path_match &&
-        (request.equals_value.empty() || value == request.equals_value)) {
-      return true;
+    if (path_match) {
+      auto compared = CompareDocumentValue(
+          request, value, record.null_paths.contains(path));
+      if (!compared.valid || compared.matches) return compared;
     }
   }
-  return false;
+  return {true, false, {}};
 }
 
 void AddDocumentPathEvidence(EngineApiResult* result,
@@ -671,9 +799,33 @@ EngineApiDiagnostic DocumentPathRouteCapabilityDiagnostic(
       true);
 }
 
-void AddProjectedDocumentRow(EngineApiResult* result,
+EngineDescriptor DocumentProjectionDescriptor(
+    const EngineDocumentFindRequest& request,
+    const std::size_t ordinal) {
+  if (ordinal < request.descriptors.size()) return request.descriptors[ordinal];
+  if (!request.comparison_value.descriptor.descriptor_uuid.canonical.empty()) {
+    return request.comparison_value.descriptor;
+  }
+  EngineDescriptor descriptor;
+  descriptor.descriptor_uuid.canonical =
+      "019f0000-0000-7200-8000-00000000d073";
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "text";
+  descriptor.encoded_descriptor = "type=text;nullable=true";
+  return descriptor;
+}
+
+bool AddProjectedDocumentRow(EngineDocumentFindResult* result,
                              const DocumentPathProviderCandidate& candidate,
-                             const EngineDocumentFindRequest& request) {
+                             const EngineDocumentFindRequest& request,
+                             std::size_t* retained_cells,
+                             std::uint64_t* retained_memory_bytes,
+                             bool* resource_refused) {
+  if (result == nullptr || retained_cells == nullptr ||
+      retained_memory_bytes == nullptr || resource_refused == nullptr) {
+    return false;
+  }
+  *resource_refused = false;
   std::vector<std::pair<std::string, std::string>> fields = {
       {"surface", "document"},
       {"document_uuid", candidate.document_uuid},
@@ -686,6 +838,96 @@ void AddProjectedDocumentRow(EngineApiResult* result,
   for (const auto& value : candidate.projected_values) {
     fields.push_back({"path:" + value.path, value.value.encoded_value});
   }
+
+  EngineDocumentTypedRow typed_row;
+  typed_row.document_uuid = candidate.document_uuid;
+  typed_row.row_uuid = candidate.row_uuid;
+  const auto append_value = [&](const std::string& path,
+                                const DocumentPathScalar* scalar,
+                                const std::size_t ordinal) {
+    EngineTypedValue value;
+    value.descriptor = DocumentProjectionDescriptor(request, ordinal);
+    if (scalar == nullptr) {
+      const bool nullable =
+          ordinal < request.projected_path_nullable.size()
+              ? request.projected_path_nullable[ordinal]
+              : request.explicit_nullable_missing_projection;
+      if (!nullable) return false;
+      // Preserve absence through the provider boundary.  The canonical model
+      // exchange (or expression projection immediately above it) owns the
+      // missing-to-SQL-NULL conversion for a nullable bound descriptor.
+      value.setState(EngineValueState::missing);
+    } else if (scalar->is_null) {
+      value.setState(EngineValueState::sql_null);
+    } else {
+      value.encoded_value = scalar->encoded_value;
+      value.setState(EngineValueState::value);
+    }
+    typed_row.values.push_back({path, std::move(value)});
+    return true;
+  };
+  if (!request.projected_paths.empty()) {
+    for (std::size_t ordinal = 0; ordinal < request.projected_paths.size();
+         ++ordinal) {
+      const auto& path = request.projected_paths[ordinal];
+      const auto found = std::ranges::find_if(
+          candidate.projected_values,
+          [&](const auto& value) { return value.path == path; });
+      const auto* scalar = found == candidate.projected_values.end()
+                               ? nullptr
+                               : &found->value;
+      if (!append_value(path, scalar, ordinal)) return false;
+    }
+  } else {
+    for (std::size_t ordinal = 0;
+         ordinal < candidate.projected_values.size(); ++ordinal) {
+      const auto& projected = candidate.projected_values[ordinal];
+      if (!append_value(projected.path, &projected.value, ordinal)) return false;
+    }
+  }
+  if (typed_row.values.size() >
+          std::numeric_limits<std::size_t>::max() - *retained_cells ||
+      *retained_cells + typed_row.values.size() > request.maximum_cells) {
+    *resource_refused = true;
+    return false;
+  }
+  std::uint64_t row_bytes = sizeof(EngineDocumentTypedRow);
+  const auto add_bytes = [&](const std::size_t amount) {
+    if (amount > std::numeric_limits<std::uint64_t>::max() - row_bytes) {
+      return false;
+    }
+    row_bytes += static_cast<std::uint64_t>(amount);
+    return true;
+  };
+  if (!add_bytes(typed_row.document_uuid.size()) ||
+      !add_bytes(typed_row.row_uuid.size())) {
+    *resource_refused = true;
+    return false;
+  }
+  for (const auto& path_value : typed_row.values) {
+    const auto& value = path_value.value;
+    if (!add_bytes(sizeof(EngineDocumentTypedPathValue)) ||
+        !add_bytes(path_value.path.size()) ||
+        !add_bytes(value.descriptor.descriptor_uuid.canonical.size()) ||
+        !add_bytes(value.descriptor.descriptor_kind.size()) ||
+        !add_bytes(value.descriptor.canonical_type_name.size()) ||
+        !add_bytes(value.descriptor.encoded_descriptor.size()) ||
+        !add_bytes(value.encoded_value.size()) ||
+        !add_bytes(value.binary_value.size())) {
+      *resource_refused = true;
+      return false;
+    }
+  }
+  if (row_bytes >
+          std::numeric_limits<std::uint64_t>::max() -
+              *retained_memory_bytes ||
+      *retained_memory_bytes + row_bytes > request.maximum_memory_bytes) {
+    *resource_refused = true;
+    return false;
+  }
+  *retained_cells += typed_row.values.size();
+  *retained_memory_bytes += row_bytes;
+  result->typed_rows.push_back(std::move(typed_row));
   AddApiBehaviorRow(result, std::move(fields));
   if (!candidate.shape_id.empty()) {
     AddApiBehaviorEvidence(result, "document_shape_dictionary", candidate.shape_id);
@@ -697,6 +939,7 @@ void AddProjectedDocumentRow(EngineApiResult* result,
   AddApiBehaviorEvidence(result,
                          "document_structural_sharing",
                          "shape_dictionary_membership_reopened");
+  return true;
 }
 
 std::vector<DocumentPathProviderProjectedValue> ProjectValuesFromSource(
@@ -716,6 +959,7 @@ std::vector<DocumentPathProviderProjectedValue> ProjectValuesFromSource(
     projected_value.path = path;
     projected_value.value.scalar_type = "string";
     projected_value.value.encoded_value = value;
+    projected_value.value.is_null = record.null_paths.contains(path);
     projected.push_back(std::move(projected_value));
   }
   return projected;
@@ -740,20 +984,243 @@ bool RecheckDocumentPathCandidate(
     const EngineRequestContext& context,
     const EngineDocumentFindRequest& request,
     const DocumentPathProviderCandidate& provider_candidate,
-    DocumentPathProviderCandidate* rechecked_candidate) {
+    DocumentPathProviderCandidate* rechecked_candidate,
+    std::string* refusal_detail) {
   std::lock_guard<std::mutex> guard(DocumentStoresMutex());
   auto& state = DocumentStores()[StoreKey(context)];
   LoadDocumentProviderLocked(context, &state);
   const auto record = state.documents.find(provider_candidate.document_uuid);
   if (record == state.documents.end()) { return false; }
+  const auto requested_collection =
+      request.target_object.uuid.canonical.empty()
+          ? DocumentCollectionUuid(context)
+          : request.target_object.uuid.canonical;
+  if (record->second.collection_uuid != requested_collection) { return false; }
   if (record->second.row_uuid != provider_candidate.row_uuid) { return false; }
-  if (!PathMatches(request, record->second)) { return false; }
+  const auto matched = PathMatches(request, record->second);
+  if (!matched.valid) {
+    *refusal_detail = matched.detail;
+    return false;
+  }
+  if (!matched.matches) return false;
   if (!SourceRecordVisibleToRequest(context, record->second)) { return false; }
 
   *rechecked_candidate = provider_candidate;
   rechecked_candidate->projected_values =
       ProjectValuesFromSource(record->second, request);
   return true;
+}
+
+EngineDocumentFindResult ExactCollectionDocumentFind(
+    const EngineDocumentFindRequest& request,
+    const std::string& operation_id) {
+  if (!request.exact_collection_fallback) {
+    return DiagnosticResult<EngineDocumentFindResult>(
+        request.context, operation_id,
+        kModelDocumentExactFallbackUnavailable);
+  }
+  const bool comparison_supported =
+      request.comparison_operator == "=" ||
+      request.comparison_operator == "<>" ||
+      request.comparison_operator == "!=" ||
+      request.comparison_operator == "<" ||
+      request.comparison_operator == "<=" ||
+      request.comparison_operator == ">" ||
+      request.comparison_operator == ">=";
+  if (!comparison_supported || request.maximum_rows == 0 ||
+      request.maximum_cells == 0 || request.maximum_memory_bytes == 0) {
+    return DiagnosticResult<EngineDocumentFindResult>(
+        request.context, operation_id,
+        "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1");
+  }
+
+  auto result =
+      MakeApiBehaviorSuccess<EngineDocumentFindResult>(request.context,
+                                                       operation_id);
+  std::lock_guard<std::mutex> guard(DocumentStoresMutex());
+  auto& state = DocumentStores()[StoreKey(request.context)];
+  LoadDocumentProviderLocked(request.context, &state);
+  const auto requested_collection =
+      request.target_object.uuid.canonical.empty()
+          ? DocumentCollectionUuid(request.context)
+          : request.target_object.uuid.canonical;
+  std::size_t collection_rows_scanned = 0;
+  std::size_t retained_cells = 0;
+  std::uint64_t retained_memory_bytes = 0;
+  const auto preflight_row = [&](const PhysicalDocumentRecord& record,
+                                 std::size_t* cells,
+                                 std::uint64_t* retained_row_bytes,
+                                 std::uint64_t* transient_bytes) {
+    if (cells == nullptr || retained_row_bytes == nullptr ||
+        transient_bytes == nullptr) {
+      return false;
+    }
+    *cells = 0;
+    *retained_row_bytes = sizeof(EngineDocumentTypedRow);
+    *transient_bytes = sizeof(DocumentPathProviderCandidate);
+    const auto checked_add = [](std::uint64_t* total,
+                                const std::size_t amount) {
+      if (total == nullptr ||
+          amount > std::numeric_limits<std::uint64_t>::max() - *total) {
+        return false;
+      }
+      *total += static_cast<std::uint64_t>(amount);
+      return true;
+    };
+    if (!checked_add(retained_row_bytes, record.document_uuid.size()) ||
+        !checked_add(retained_row_bytes, record.row_uuid.size()) ||
+        !checked_add(transient_bytes, record.document_uuid.size()) ||
+        !checked_add(transient_bytes, record.row_uuid.size()) ||
+        !checked_add(transient_bytes, record.shape_id.size()) ||
+        !checked_add(transient_bytes, 36) ||
+        !checked_add(transient_bytes,
+                     sizeof(std::pair<std::string, std::string>) * 6)) {
+      return false;
+    }
+    const auto account_path = [&](const std::string& path,
+                                  const std::string* encoded_value,
+                                  const std::size_t ordinal) {
+      const auto descriptor = DocumentProjectionDescriptor(request, ordinal);
+      const auto value_size =
+          encoded_value == nullptr ? 0 : encoded_value->size();
+      if (*cells == std::numeric_limits<std::size_t>::max()) return false;
+      ++*cells;
+      return checked_add(retained_row_bytes,
+                         sizeof(EngineDocumentTypedPathValue)) &&
+             checked_add(retained_row_bytes, path.size()) &&
+             checked_add(retained_row_bytes,
+                         descriptor.descriptor_uuid.canonical.size()) &&
+             checked_add(retained_row_bytes,
+                         descriptor.descriptor_kind.size()) &&
+             checked_add(retained_row_bytes,
+                         descriptor.canonical_type_name.size()) &&
+             checked_add(retained_row_bytes,
+                         descriptor.encoded_descriptor.size()) &&
+             checked_add(retained_row_bytes, value_size) &&
+             checked_add(transient_bytes,
+                         sizeof(DocumentPathProviderProjectedValue)) &&
+             checked_add(transient_bytes, path.size()) &&
+             checked_add(transient_bytes, sizeof("string") - 1) &&
+             checked_add(transient_bytes, value_size) &&
+             checked_add(transient_bytes,
+                         sizeof(std::pair<std::string, std::string>)) &&
+             checked_add(transient_bytes,
+                         (sizeof("path:") - 1) + path.size()) &&
+             checked_add(transient_bytes, value_size);
+    };
+    if (!request.projected_paths.empty()) {
+      for (std::size_t ordinal = 0; ordinal < request.projected_paths.size();
+           ++ordinal) {
+        const auto& path = request.projected_paths[ordinal];
+        const auto found = record.fragments.find(path);
+        const auto* value =
+            found == record.fragments.end() ? nullptr : &found->second;
+        if (!account_path(path, value, ordinal)) return false;
+      }
+    } else {
+      std::size_t ordinal = 0;
+      for (const auto& [path, value] : record.fragments) {
+        const bool matched =
+            (request.wildcard_path &&
+             WildcardPathMatches(request.path, path)) ||
+            (!request.wildcard_path && request.path == path);
+        if (!matched) continue;
+        if (!account_path(path, &value, ordinal++)) return false;
+      }
+    }
+    return true;
+  };
+  for (const auto& [uuid, record] : state.documents) {
+    (void)uuid;
+    if (record.collection_uuid != requested_collection) { continue; }
+    ++collection_rows_scanned;
+    try {
+      if (request.context.query_cancellation_requested &&
+          request.context.query_cancellation_requested()) {
+        return DiagnosticResult<EngineDocumentFindResult>(
+            request.context, operation_id,
+            "SB_MODEL_EXECUTION_CANCELLED_V1");
+      }
+    } catch (...) {
+      return DiagnosticResult<EngineDocumentFindResult>(
+          request.context, operation_id,
+          "SB_MODEL_COORDINATOR_LEG_FAILED_V1");
+    }
+    const auto matched = PathMatches(request, record);
+    if (!matched.valid) {
+      auto failure = DiagnosticResult<EngineDocumentFindResult>(
+          request.context, operation_id,
+          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1");
+      AddApiBehaviorEvidence(&failure, "document_comparison_refusal",
+                             matched.detail);
+      return failure;
+    }
+    if (!matched.matches ||
+        !SourceRecordVisibleToRequest(request.context, record)) {
+      continue;
+    }
+    if (result.typed_rows.size() >= request.maximum_rows) {
+      return DiagnosticResult<EngineDocumentFindResult>(
+          request.context, operation_id,
+          "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1");
+    }
+    std::size_t row_cells = 0;
+    std::uint64_t retained_row_bytes = 0;
+    std::uint64_t transient_bytes = 0;
+    std::uint64_t peak_bytes = 0;
+    if (!preflight_row(record, &row_cells, &retained_row_bytes,
+                       &transient_bytes) ||
+        row_cells > std::numeric_limits<std::size_t>::max() -
+                        retained_cells ||
+        retained_cells + row_cells > request.maximum_cells ||
+        retained_row_bytes >
+            std::numeric_limits<std::uint64_t>::max() -
+                retained_memory_bytes ||
+        !([&] {
+          peak_bytes = retained_memory_bytes + retained_row_bytes;
+          return transient_bytes <=
+                 std::numeric_limits<std::uint64_t>::max() - peak_bytes;
+        }()) ||
+        (peak_bytes += transient_bytes,
+         peak_bytes > request.maximum_memory_bytes)) {
+      return DiagnosticResult<EngineDocumentFindResult>(
+          request.context, operation_id,
+          "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1");
+    }
+    DocumentPathProviderCandidate candidate;
+    candidate.document_uuid = record.document_uuid;
+    candidate.row_uuid = record.row_uuid;
+    candidate.version_uuid = GenerateCrudEngineUuid("row");
+    candidate.row_ordinal = record.creator_tx;
+    candidate.shape_id = record.shape_id;
+    candidate.shape_ref_count = record.shape_ref_count;
+    candidate.projected_values = ProjectValuesFromSource(record, request);
+    bool resource_refused = false;
+    if (!AddProjectedDocumentRow(&result, candidate, request,
+                                 &retained_cells,
+                                 &retained_memory_bytes,
+                                 &resource_refused)) {
+      return DiagnosticResult<EngineDocumentFindResult>(
+          request.context, operation_id,
+          resource_refused ? "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1"
+                           : kModelDocumentMissingBindingRefusedApi);
+    }
+  }
+  result.exact_collection_fallback_used = true;
+  result.residual_recheck_complete = true;
+  result.base_row_mga_recheck_complete = true;
+  result.security_recheck_complete = true;
+  result.dml_summary.visible_rows_scanned = collection_rows_scanned;
+  result.dml_summary.benchmark_clean = true;
+  AddApiBehaviorEvidence(&result, "document_exact_fallback",
+                         "DOCUMENT_COLLECTION_SCAN_EXACT_V1");
+  AddApiBehaviorEvidence(&result, "document_exact_source_recheck",
+                         "mga_visibility_security_and_value_passed");
+  AddApiBehaviorEvidence(&result, "descriptor_scan_selected", "false");
+  AddApiBehaviorEvidence(&result, "behavior_store_scan_selected", "false");
+  AddApiBehaviorEvidence(&result, "mga_finality_authority",
+                         "engine_transaction_inventory");
+  return result;
 }
 
 EngineDocumentFindResult PhysicalDocumentFind(
@@ -823,9 +1290,18 @@ EngineDocumentFindResult PhysicalDocumentFind(
   std::vector<DocumentPathProviderCandidate> rechecked_candidates;
   for (const auto& candidate : probe.projection_plan.candidates) {
     DocumentPathProviderCandidate rechecked;
+    std::string refusal_detail;
     if (RecheckDocumentPathCandidate(
-            request.context, request, candidate, &rechecked)) {
+            request.context, request, candidate, &rechecked,
+            &refusal_detail)) {
       rechecked_candidates.push_back(std::move(rechecked));
+    } else if (!refusal_detail.empty()) {
+      auto failure = DiagnosticResult<EngineDocumentFindResult>(
+          request.context, operation_id,
+          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1");
+      AddApiBehaviorEvidence(&failure, "document_comparison_refusal",
+                             refusal_detail);
+      return failure;
     }
   }
   AddApiBehaviorEvidence(&result,
@@ -858,9 +1334,27 @@ EngineDocumentFindResult PhysicalDocumentFind(
           &result)) {
     return *failure;
   }
+  std::size_t retained_cells = 0;
+  std::uint64_t retained_memory_bytes = 0;
   for (const auto& candidate : rechecked_candidates) {
-    AddProjectedDocumentRow(&result, candidate, request);
+    bool resource_refused = false;
+    if (!AddProjectedDocumentRow(&result, candidate, request,
+                                 &retained_cells,
+                                 &retained_memory_bytes,
+                                 &resource_refused)) {
+      auto failure = MakeApiBehaviorDiagnostic<EngineDocumentFindResult>(
+          request.context, operation_id,
+          MakeInvalidRequestDiagnostic(
+              operation_id,
+              resource_refused ? "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1"
+                               : kModelDocumentMissingBindingRefusedApi));
+      AddApiBehaviorEvidence(&failure, "document_missing_path", "refused");
+      return failure;
+    }
   }
+  result.residual_recheck_complete = true;
+  result.base_row_mga_recheck_complete = true;
+  result.security_recheck_complete = true;
   result.dml_summary.index_probes = probe.index_probes;
   result.dml_summary.visible_rows_scanned = 0;
   result.dml_summary.benchmark_clean = true;
@@ -881,6 +1375,46 @@ EngineDocumentInsertResult EngineDocumentInsert(const EngineDocumentInsertReques
   if (!request.context.cluster_authority_available && EngineNoSqlRequiresClusterAuthority(request)) {
     return EngineNoSqlClusterAuthorityUnavailable<EngineDocumentInsertResult>(request, kOperation);
   }
+  const auto canonical_uuid = [](const std::string& value) {
+    const auto parsed = scratchbird::core::uuid::ParseUuid(value);
+    return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
+           scratchbird::core::uuid::UuidToString(parsed.value) == value;
+  };
+  if ((!request.collection_uuid.empty() &&
+       !canonical_uuid(request.collection_uuid)) ||
+      (!request.document_uuid.empty() &&
+       !canonical_uuid(request.document_uuid)) ||
+      (!request.row_uuid.empty() && !canonical_uuid(request.row_uuid))) {
+    return DiagnosticResult<EngineDocumentInsertResult>(
+        request.context, kOperation,
+        "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1");
+  }
+  if (!request.collection_uuid.empty()) {
+    const auto collection = LoadMgaRelationStorageDescriptor(
+        request.context, request.collection_uuid);
+    if (!collection.ok ||
+        collection.descriptor.relation_uuid.canonical !=
+            request.collection_uuid ||
+        collection.descriptor.database_uuid.canonical !=
+            request.context.database_uuid.canonical ||
+        collection.descriptor.relation_kind != "table" ||
+        collection.descriptor.storage_profile != "local_mga_rowstore_v1" ||
+        collection.descriptor.descriptor_generation == 0) {
+      return DiagnosticResult<EngineDocumentInsertResult>(
+          request.context, kOperation,
+          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1");
+    }
+    const auto authorization = EvaluateMaterializedAuthorization(
+        request.context, request.context.authorization_context, "INSERT",
+        request.collection_uuid);
+    if (!authorization.authorized || authorization.denied ||
+        authorization.policy_recheck_required ||
+        !authorization.diagnostics.empty()) {
+      return DiagnosticResult<EngineDocumentInsertResult>(
+          request.context, kOperation,
+          "SB_MODEL_SECURITY_ADMISSION_REFUSED_V1");
+    }
+  }
   auto result = EngineNoSqlPayloadAwarePersistedWriteResult<EngineDocumentInsertResult>(
       request,
       kOperation,
@@ -888,7 +1422,9 @@ EngineDocumentInsertResult EngineDocumentInsert(const EngineDocumentInsertReques
       true,
       "active");
   if (result.ok) {
-    const auto provider_write = UpsertPhysicalDocument(request, result);
+    const auto provider_write =
+        UpsertPhysicalDocument(request, result, request.collection_uuid,
+                               request.document_uuid, request.row_uuid);
     AddDocumentProviderWriteEvidence(&result, provider_write);
     if (!provider_write.ok) {
       result.ok = false;
@@ -905,6 +1441,87 @@ EngineDocumentFindResult EngineDocumentFind(const EngineDocumentFindRequest& req
   constexpr const char* kOperation = "nosql.document_find";
   if (!request.context.cluster_authority_available && EngineNoSqlRequiresClusterAuthority(request)) {
     return EngineNoSqlClusterAuthorityUnavailable<EngineDocumentFindResult>(request, kOperation);
+  }
+  if (request.comparison_value_present &&
+      (!QowCanonicalDescriptorIdentityV1(
+           request.comparison_value.descriptor) ||
+       request.comparison_value.descriptor.descriptor_kind != "scalar" ||
+       (request.comparison_value.state != EngineValueState::value &&
+        request.comparison_value.state != EngineValueState::sql_null))) {
+    return DiagnosticResult<EngineDocumentFindResult>(
+        request.context, kOperation,
+        "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1");
+  }
+  if (request.exact_collection_fallback) {
+    const auto exact_nullability = [](const std::string& encoded)
+        -> std::optional<bool> {
+      std::optional<bool> result;
+      bool canonical_seen = false;
+      bool storage_seen = false;
+      std::size_t offset = 0;
+      while (offset <= encoded.size()) {
+        const auto end = encoded.find(';', offset);
+        const auto field = encoded.substr(
+            offset, end == std::string::npos ? std::string::npos
+                                              : end - offset);
+        if (field.starts_with("nullability=")) {
+          if (canonical_seen) return std::nullopt;
+          canonical_seen = true;
+          const auto value = field.substr(12);
+          std::optional<bool> parsed;
+          if (value == "nullable") {
+            parsed = true;
+          } else if (value == "non_null") {
+            parsed = false;
+          } else {
+            return std::nullopt;
+          }
+          if (result.has_value() && result != parsed) return std::nullopt;
+          result = parsed;
+        } else if (field.starts_with("nullable=")) {
+          if (storage_seen) return std::nullopt;
+          storage_seen = true;
+          const auto value = field.substr(9);
+          std::optional<bool> parsed;
+          if (value == "true") {
+            parsed = true;
+          } else if (value == "false") {
+            parsed = false;
+          } else {
+            return std::nullopt;
+          }
+          if (result.has_value() && result != parsed) return std::nullopt;
+          result = parsed;
+        }
+        if (end == std::string::npos) break;
+        offset = end + 1;
+      }
+      return result;
+    };
+    if (request.projected_paths.empty() ||
+        request.projected_paths.size() !=
+            request.projected_path_nullable.size() ||
+        request.projected_paths.size() != request.descriptors.size()) {
+      return DiagnosticResult<EngineDocumentFindResult>(
+          request.context, kOperation, kModelDocumentMissingBindingRefusedApi);
+    }
+    for (std::size_t ordinal = 0; ordinal < request.descriptors.size();
+         ++ordinal) {
+      const auto& descriptor = request.descriptors[ordinal];
+      const auto nullable =
+          exact_nullability(descriptor.encoded_descriptor);
+      if (request.projected_paths[ordinal].empty() ||
+          !QowCanonicalDescriptorIdentityV1(descriptor) ||
+          (descriptor.descriptor_kind != "scalar" &&
+           descriptor.descriptor_kind != "canonical_type_descriptor") ||
+          !nullable.has_value() ||
+          *nullable != request.projected_path_nullable[ordinal]) {
+        return DiagnosticResult<EngineDocumentFindResult>(
+            request.context, kOperation,
+            "SB_MODEL_TYPED_EXCHANGE_INVALID_V1");
+      }
+    }
+    return ExactCollectionDocumentFind(request, kOperation);
   }
   if (request.require_benchmark_clean_index_runtime &&
       !request.physical_proof.provider_contract.provider_generation.proof_present) {

@@ -150,6 +150,23 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0, "record_count");
   }
   const bool planning_wire = dag.wire_version == 2;
+  // QOW-SOURCE-RCP073-TYPED-DAG-FUNCTIONLESS-UNNEST-V1
+  // DOCUMENT_UNNEST is a model-expand operation, not a catalog scalar
+  // function.  Its exact root therefore has no function UUID.  This early
+  // marker only permits the expression record to survive generic typed-field
+  // validation; the complete node/output/descriptor/reachability shape is
+  // validated below before the DAG can be accepted.
+  const auto document_expand_count = std::ranges::count_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1";
+      });
+  const auto document_expand_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1";
+      });
+  const bool document_expand_wire =
+      planning_wire && document_expand_count == 1 &&
+      document_expand_node != dag.nodes.end();
   std::size_t planning_reference_count = 0;
   const auto add_planning_references = [&](const std::size_t count) {
     if (count > limits.maximum_property_references -
@@ -220,13 +237,22 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         expression.expression_kind == RelationalExpressionKind::kIdentifier;
     const bool function_call =
         expression.expression_kind == RelationalExpressionKind::kFunctionCall;
+    const bool functionless_document_unnest =
+        document_expand_wire && function_call &&
+        !expression.function_uuid.has_value() &&
+        expression.operator_name == "DOCUMENT_UNNEST" &&
+        document_expand_node->bound_expression_ids.size() == 1 &&
+        document_expand_node->bound_expression_ids.front() ==
+            expression.expression_id;
     const bool operator_expression =
         expression.expression_kind == RelationalExpressionKind::kUnary ||
-        expression.expression_kind == RelationalExpressionKind::kBinary;
+        expression.expression_kind == RelationalExpressionKind::kBinary ||
+        functionless_document_unnest;
     if (literal != expression.literal_kind.has_value() ||
         (expression.literal_kind.has_value() &&
          !known_literal_kind(*expression.literal_kind)) ||
-        function_call != expression.function_uuid.has_value() ||
+        function_call != (expression.function_uuid.has_value() ||
+                          functionless_document_unnest) ||
         (expression.function_uuid.has_value() &&
          !canonical_uuid(*expression.function_uuid)) ||
         identifier != expression.bound_name_uuid.has_value() ||
@@ -243,7 +269,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     const auto child_count = expression.child_expression_ids.size();
     const bool valid_arity =
         ((literal || parameter || identifier) && child_count == 0) ||
-        (function_call) ||
+        (function_call &&
+         (!functionless_document_unnest || child_count == 2)) ||
         (expression.expression_kind == RelationalExpressionKind::kUnary &&
          child_count == 1) ||
         (expression.expression_kind == RelationalExpressionKind::kBinary &&
@@ -742,6 +769,118 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     if (!nodes_by_id.contains(output.relation_node_id)) {
       return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", output.relation_node_id,
                     "output_relation_node_id");
+    }
+  }
+  if (document_expand_wire) {
+    const auto& node = *document_expand_node;
+    std::vector<const RelationalOutputRecord*> expand_outputs;
+    for (const auto& output : dag.outputs) {
+      if (output.relation_node_id == node.node_id) {
+        expand_outputs.push_back(&output);
+      }
+    }
+    const auto root_expression_id =
+        node.bound_expression_ids.size() == 1
+            ? node.bound_expression_ids.front()
+            : 0;
+    const auto root = expressions_by_id.find(root_expression_id);
+    const RelationalExpressionRecord* document_expression = nullptr;
+    const RelationalExpressionRecord* path_expression = nullptr;
+    if (root != expressions_by_id.end() &&
+        root->second->child_expression_ids.size() == 2) {
+      const auto document =
+          expressions_by_id.find(root->second->child_expression_ids[0]);
+      const auto path =
+          expressions_by_id.find(root->second->child_expression_ids[1]);
+      if (document != expressions_by_id.end()) {
+        document_expression = document->second;
+      }
+      if (path != expressions_by_id.end()) path_expression = path->second;
+    }
+    const auto root_descriptor =
+        root == expressions_by_id.end()
+            ? descriptors_by_id.end()
+            : descriptors_by_id.find(root->second->result_descriptor_id);
+    const auto document_descriptor =
+        document_expression == nullptr
+            ? descriptors_by_id.end()
+            : descriptors_by_id.find(
+                  document_expression->result_descriptor_id);
+    const auto path_descriptor =
+        path_expression == nullptr
+            ? descriptors_by_id.end()
+            : descriptors_by_id.find(path_expression->result_descriptor_id);
+    std::unordered_set<std::uint32_t> reachable_expression_ids;
+    std::function<bool(std::uint32_t)> visit_unnest_expression =
+        [&](const std::uint32_t expression_id) {
+          if (!reachable_expression_ids.insert(expression_id).second) {
+            return true;
+          }
+          const auto expression = expressions_by_id.find(expression_id);
+          if (expression == expressions_by_id.end()) return false;
+          return std::ranges::all_of(
+              expression->second->child_expression_ids,
+              visit_unnest_expression);
+        };
+    const bool complete_reachability =
+        root != expressions_by_id.end() &&
+        visit_unnest_expression(root_expression_id) &&
+        reachable_expression_ids.size() == 3 &&
+        (dag.nodes.size() != 1 ||
+         reachable_expression_ids.size() == dag.expressions.size());
+    const auto exact_literal = [](const RelationalExpressionRecord* expression,
+                                  const RelationalLiteralKind literal_kind) {
+      return expression != nullptr &&
+             expression->expression_kind ==
+                 RelationalExpressionKind::kLiteral &&
+             expression->literal_kind == literal_kind &&
+             expression->literal_or_parameter_ref.has_value() &&
+             !expression->literal_or_parameter_ref->empty() &&
+             expression->child_expression_ids.empty() &&
+             !expression->function_uuid.has_value() &&
+             !expression->bound_name_uuid.has_value() &&
+             !expression->operator_name.has_value();
+    };
+    if (node.node_kind != RelationalDagNodeKind::kScan ||
+        !node.input_node_ids.empty() ||
+        !node.required_object_uuids.empty() ||
+        node.bound_expression_ids.size() != 1 ||
+        node.output_descriptor_ids.size() != 1 ||
+        expand_outputs.size() != 1 ||
+        root == expressions_by_id.end() ||
+        root->second->expression_kind !=
+            RelationalExpressionKind::kFunctionCall ||
+        root->second->function_uuid.has_value() ||
+        root->second->bound_name_uuid.has_value() ||
+        root->second->literal_kind.has_value() ||
+        root->second->literal_or_parameter_ref.has_value() ||
+        root->second->operator_name != "DOCUMENT_UNNEST" ||
+        root->second->child_expression_ids.size() != 2 ||
+        root->second->child_expression_ids[0] ==
+            root->second->child_expression_ids[1] ||
+        !exact_literal(document_expression,
+                       RelationalLiteralKind::kDocument) ||
+        !exact_literal(path_expression, RelationalLiteralKind::kString) ||
+        root_descriptor == descriptors_by_id.end() ||
+        document_descriptor == descriptors_by_id.end() ||
+        path_descriptor == descriptors_by_id.end() ||
+        root_descriptor->second->descriptor_id ==
+            document_descriptor->second->descriptor_id ||
+        path_descriptor->second->descriptor_id ==
+            root_descriptor->second->descriptor_id ||
+        path_descriptor->second->descriptor_id ==
+            document_descriptor->second->descriptor_id ||
+        root_descriptor->second->type_uuid !=
+            document_descriptor->second->type_uuid ||
+        expand_outputs.front()->expression_id != root_expression_id ||
+        expand_outputs.front()->descriptor_id !=
+            root->second->result_descriptor_id ||
+        !expand_outputs.front()->visible || expand_outputs.front()->ordinal != 0 ||
+        node.output_descriptor_ids.front() !=
+            root->second->result_descriptor_id ||
+        !complete_reachability) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                    "document_unnest_expression_root");
     }
   }
 

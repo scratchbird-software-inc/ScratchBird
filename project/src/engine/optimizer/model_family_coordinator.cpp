@@ -1,0 +1,237 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+// SPDX-License-Identifier: MPL-2.0
+
+#include "model_family_coordinator.hpp"
+
+#include <algorithm>
+#include <cctype>
+#include <limits>
+#include <unordered_set>
+
+namespace scratchbird::engine::optimizer {
+namespace {
+
+bool CanonicalUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-' ||
+      value == "00000000-0000-0000-0000-000000000000") {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const auto ch = static_cast<unsigned char>(value[index]);
+    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+  }
+  return true;
+}
+
+std::string DerivedUuid(const std::string_view seed) {
+  std::uint64_t high = 1469598103934665603ULL;
+  std::uint64_t low = 1099511628211ULL;
+  for (const auto ch : seed) {
+    high = (high ^ static_cast<unsigned char>(ch)) * 1099511628211ULL;
+    low = (low + static_cast<unsigned char>(ch)) * 1469598103934665603ULL;
+  }
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string raw(32, '0');
+  for (std::size_t index = 0; index < 16; ++index) {
+    raw[index] = kHex[(high >> ((15 - index) * 4)) & 0xf];
+    raw[16 + index] = kHex[(low >> ((15 - index) * 4)) & 0xf];
+  }
+  raw[12] = '7';
+  raw[16] = kHex[(static_cast<unsigned>(raw[16] <= '9'
+                                            ? raw[16] - '0'
+                                            : raw[16] - 'a' + 10) &
+                  0x3) |
+                 0x8];
+  return raw.substr(0, 8) + "-" + raw.substr(8, 4) + "-" +
+         raw.substr(12, 4) + "-" + raw.substr(16, 4) + "-" +
+         raw.substr(20, 12);
+}
+
+bool Add(std::uint64_t value, std::uint64_t* total) {
+  if (std::numeric_limits<std::uint64_t>::max() - *total < value) return false;
+  *total += value;
+  return true;
+}
+
+bool CandidateScore(const ModelFamilyCandidateV1& candidate,
+                    std::uint64_t* score) {
+  *score = 0;
+  return Add(candidate.cost.cpu_units, score) &&
+         Add(candidate.cost.sequential_read_units, score) &&
+         Add(candidate.cost.random_read_units, score) &&
+         Add(candidate.cost.memory_bytes_required, score) &&
+         Add(candidate.cost.uncertainty_penalty, score) &&
+         Add(candidate.cost.risk_penalty, score);
+}
+
+}  // namespace
+
+ModelFamilyCoordinatorResultV1 CoordinateDocumentFamilySourceV1(
+    const ModelFamilyCoordinatorRequestV1& request) {
+  // QOW-SOURCE-CES05-DOCUMENT-COORDINATOR-V1
+  ModelFamilyCoordinatorResultV1 result;
+  result.logical_operator_id = "LOGICAL_DOCUMENT_SOURCE_V1";
+  result.physical_operator_id = "PHYSICAL_DOCUMENT_PATH_SCAN_V1";
+  const auto refuse = [&](const char* diagnostic, std::string detail) {
+    result.diagnostic_id = diagnostic;
+    result.detail = std::move(detail);
+    return result;
+  };
+
+  const bool unnest = request.operation_id == "DOCUMENT_UNNEST";
+  if (request.abi_version != 1 || request.family_id != "document" ||
+      (request.operation_id != "DOCUMENT_FIND" &&
+       request.operation_id != "DOCUMENT_PATH" && !unnest) ||
+      request.logical_operator_id != "LOGICAL_DOCUMENT_SOURCE_V1" ||
+      request.logical_node_id == 0 || request.output_descriptor_ids.empty() ||
+      (!unnest && !CanonicalUuid(request.object_uuid)) ||
+      (unnest && !request.object_uuid.empty()) ||
+      !CanonicalUuid(request.bound_sblr_tree_uuid) ||
+      !CanonicalUuid(request.catalog_epoch_uuid) ||
+      !CanonicalUuid(request.security_context_uuid) ||
+      !CanonicalUuid(request.capability_snapshot_uuid) ||
+      !CanonicalUuid(request.resource_snapshot_uuid) ||
+      !CanonicalUuid(request.statistics_snapshot_uuid) ||
+      !CanonicalUuid(request.route_snapshot_uuid) ||
+      !scratchbird::engine::executor::PhysicalMgaStatementContextValid(
+          request.mga_statement_context) ||
+      request.catalog_generation == 0 || request.security_epoch == 0 ||
+      request.policy_epoch == 0 || request.resource_epoch == 0 ||
+      request.statistics_generation == 0 || request.route_epoch == 0 ||
+      request.route_generation == 0 || request.memory_budget_bytes == 0 ||
+      request.parser_planning_authority_claimed ||
+      request.transaction_finality_authority_claimed) {
+    return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "document logical source request is incomplete");
+  }
+  if (request.catalog_generation != request.current_catalog_generation) {
+    return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                  "document catalog generation is stale");
+  }
+  if (!request.security_admitted) {
+    return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                  "document source security admission was refused");
+  }
+
+  std::unordered_set<std::string> alternative_ids;
+  const ModelFamilyCandidateV1* selected = nullptr;
+  std::uint64_t selected_score = 0;
+  bool fallback_seen = false;
+  for (const auto& candidate : request.candidates) {
+    std::uint64_t score = 0;
+    if (!CanonicalUuid(candidate.alternative_uuid) ||
+        !alternative_ids.insert(candidate.alternative_uuid).second ||
+        !CanonicalUuid(candidate.provider_uuid) ||
+        !CanonicalUuid(candidate.capability_uuid) ||
+        !CanonicalUuid(candidate.cost.cost_vector_uuid) ||
+        candidate.provider_generation == 0 || !candidate.engine_owned ||
+        !candidate.local_scope || candidate.parser_planning_authority_claimed ||
+        candidate.transaction_finality_authority_claimed ||
+        candidate.implementation_id != "physical_document_path_scan_v1" ||
+        !CandidateScore(candidate, &score)) {
+      return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "document candidate domain is incomplete or duplicated");
+    }
+    fallback_seen = fallback_seen || candidate.exact_collection_fallback;
+    if (!candidate.available || !candidate.exact ||
+        !candidate.residual_recheck_required ||
+        !candidate.base_row_mga_recheck_required ||
+        !candidate.security_recheck_required) {
+      continue;
+    }
+    if (candidate.cost.memory_bytes_required > request.memory_budget_bytes) {
+      continue;
+    }
+    if (selected == nullptr || score < selected_score ||
+        (score == selected_score &&
+         candidate.alternative_uuid < selected->alternative_uuid)) {
+      selected = &candidate;
+      selected_score = score;
+    }
+  }
+  if (selected == nullptr) {
+    if (fallback_seen) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "no exact document candidate fits the memory grant");
+    }
+    return refuse("SB_MODEL_DOCUMENT_EXACT_FALLBACK_UNAVAILABLE_V1",
+                  "no exact document provider or collection fallback is available");
+  }
+
+  using namespace scratchbird::engine::executor;
+  TypedPhysicalNodeDag dag;
+  dag.abi_version = 1;
+  dag.selected_plan_uuid = DerivedUuid(
+      request.bound_sblr_tree_uuid + "|" + selected->alternative_uuid);
+  dag.root_physical_node_id = request.logical_node_id;
+  dag.local_transaction_id =
+      request.mga_statement_context.owning_local_transaction_id;
+  dag.statement_snapshot_id =
+      request.mga_statement_context.visible_committed_high_watermark;
+  dag.mga_statement_context = request.mga_statement_context;
+  dag.admission_evidence = {
+      {PhysicalAdmissionStage::kBoundRequest, request.bound_sblr_tree_uuid},
+      {PhysicalAdmissionStage::kCatalogEpoch, request.catalog_epoch_uuid},
+      {PhysicalAdmissionStage::kSecurity, request.security_context_uuid},
+      {PhysicalAdmissionStage::kMgaStatementBoundary,
+       request.mga_statement_context.statement_snapshot_uuid},
+      {PhysicalAdmissionStage::kPolicyCapability,
+       request.capability_snapshot_uuid},
+      {PhysicalAdmissionStage::kResource, request.resource_snapshot_uuid},
+      {PhysicalAdmissionStage::kStatisticsProvenance,
+       request.statistics_snapshot_uuid},
+      {PhysicalAdmissionStage::kCanonicalRoute, request.route_snapshot_uuid},
+  };
+  PhysicalNodeRecord node;
+  node.physical_node_id = request.logical_node_id;
+  node.relational_node_id = request.logical_node_id;
+  node.node_kind = PhysicalNodeKind::kScan;
+  node.implementation_id = selected->implementation_id;
+  node.output_descriptor_ids = request.output_descriptor_ids;
+  node.causal_counter_id = 1;
+  node.selected_alternative_uuid = selected->alternative_uuid;
+  node.executor_capability_uuid = selected->capability_uuid;
+  node.executor_capability_abi_version = 1;
+  node.cost_vector_uuid = selected->cost.cost_vector_uuid;
+  node.memory_bytes_required = selected->cost.memory_bytes_required;
+  node.engine_capability_validated = true;
+  node.mga_statement_context = request.mga_statement_context;
+  node.logical_semantic_variant_id = "logical_document_source_v1";
+  dag.nodes.push_back(std::move(node));
+  dag.bound_sblr_tree_uuid = request.bound_sblr_tree_uuid;
+  dag.catalog_epoch_uuid = request.catalog_epoch_uuid;
+  dag.security_context_uuid = request.security_context_uuid;
+  dag.capability_snapshot_uuid = request.capability_snapshot_uuid;
+  dag.resource_snapshot_uuid = request.resource_snapshot_uuid;
+  dag.statistics_snapshot_uuid = request.statistics_snapshot_uuid;
+  dag.route_snapshot_uuid = request.route_snapshot_uuid;
+  dag.catalog_generation = request.catalog_generation;
+  dag.security_epoch = request.security_epoch;
+  dag.policy_epoch = request.policy_epoch;
+  dag.resource_epoch = request.resource_epoch;
+  dag.statistics_generation = request.statistics_generation;
+  dag.route_epoch = request.route_epoch;
+  dag.route_generation = request.route_generation;
+  dag.memory_budget_bytes = request.memory_budget_bytes;
+  dag.optimizer_published = true;
+  dag.immutable_node_identity_validated = true;
+  dag.capability_validated_before_access = true;
+
+  const auto validation = ValidateTypedPhysicalNodeDag(dag);
+  if (!validation.accepted) {
+    return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "document physical DAG failed canonical ABI validation");
+  }
+  result.accepted = true;
+  result.selected = true;
+  result.data_access_allowed = true;
+  result.deterministic = true;
+  result.exact_fallback_selected = selected->exact_collection_fallback;
+  result.selected_candidate = *selected;
+  result.physical_dag = std::move(dag);
+  return result;
+}
+
+}  // namespace scratchbird::engine::optimizer
