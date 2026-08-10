@@ -18,6 +18,8 @@
 
 #include "scratchbird/engine/sblr/lowering.hpp"
 #include "scratchbird/engine/sblr_envelope.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -558,6 +560,95 @@ std::optional<ExactProjectedDescriptorFields> ParseExactProjectedDescriptor(
   return fields;
 }
 
+bool ExactGraphProjectedDescriptorCohort(
+    const ipc::PublicRelationDescriptor& projection) {
+  static constexpr std::array<std::string_view, 9> kNames{
+      "vertex_uuid",       "edge_uuid",       "path_uuid",
+      "vertex_labels",     "vertex_properties", "edge_properties",
+      "direction",         "depth",           "cycle_policy"};
+  static constexpr std::array<std::string_view, 9> kTypes{
+      "uuid", "uuid", "uuid", "text", "text", "text", "text",
+      "uint64", "text"};
+  static constexpr std::array<bool, 9> kNullable{
+      false, true, false, false, false, false, false, false, false};
+  if (projection.columns.size() != kNames.size()) return false;
+  const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return false;
+  std::unordered_set<std::string> column_uuids;
+  std::unordered_set<std::string> type_descriptor_uuids;
+  for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
+    const auto& column = projection.columns[ordinal];
+    const auto fields = ParseExactProjectedDescriptor(
+        column.encoded_type_descriptor, column.collation_uuid,
+        column.nullable);
+    const auto type_row =
+        scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+            manifest.manifest,
+            scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+                std::string(kTypes[ordinal])));
+    if (!type_row.ok() || type_row.manifest.descriptor_rows.size() != 1 ||
+        !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
+      return false;
+    }
+    const auto expected_type_uuid = scratchbird::core::uuid::UuidToString(
+        type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    std::unordered_set<std::string> encoded_keys;
+    std::size_t offset = 0;
+    while (offset <= column.encoded_type_descriptor.size()) {
+      const auto delimiter =
+          column.encoded_type_descriptor.find(';', offset);
+      const auto end = delimiter == std::string::npos
+                           ? column.encoded_type_descriptor.size()
+                           : delimiter;
+      const auto field = std::string_view(column.encoded_type_descriptor)
+                             .substr(offset, end - offset);
+      const auto equal = field.find('=');
+      if (field.empty() || equal == std::string_view::npos || equal == 0 ||
+          equal + 1 == field.size() ||
+          !encoded_keys.insert(std::string(field.substr(0, equal))).second ||
+          (field.substr(0, equal) != "canonical" &&
+           field.substr(0, equal) != "type_uuid" &&
+           field.substr(0, equal) != "nullability" &&
+           field.substr(0, equal) != "nullable")) {
+        return false;
+      }
+      if (field.substr(0, equal) == "canonical" &&
+          field.substr(equal + 1) != kTypes[ordinal]) {
+        return false;
+      }
+      if (delimiter == std::string::npos) break;
+      offset = delimiter + 1;
+    }
+    if (!encoded_keys.contains("type_uuid") ||
+        (encoded_keys.contains("nullability") ==
+         encoded_keys.contains("nullable")) ||
+        !CanonicalUuidBytes(column.column_uuid).has_value() ||
+        !column_uuids.insert(column.column_uuid).second ||
+        !CanonicalUuidBytes(column.type_descriptor_uuid).has_value() ||
+        !type_descriptor_uuids.insert(column.type_descriptor_uuid).second ||
+        column.ordinal != ordinal ||
+        column.canonical_name_key != kNames[ordinal] ||
+        column.type_descriptor_kind != "canonical_type_descriptor" ||
+        column.canonical_type_name != kTypes[ordinal] ||
+        column.nullable != kNullable[ordinal] || column.generated ||
+        column.identity_column || !column.charset_uuid.empty() ||
+        !column.charset_canonical_name.empty() ||
+        !column.collation_uuid.empty() ||
+        !column.collation_canonical_name.empty() ||
+        column.character_length != 0 || column.charset_min_bytes != 0 ||
+        column.charset_max_bytes != 0 || column.charset_variable_width ||
+        !fields.has_value() || fields->nullable != kNullable[ordinal] ||
+        fields->type_uuid != expected_type_uuid ||
+        fields->collation_uuid.has_value() ||
+        fields->timezone_profile_id.has_value() || fields->width.has_value() ||
+        fields->precision.has_value() || fields->scale.has_value()) {
+      return false;
+    }
+  }
+  return true;
+}
+
 std::optional<NativeRelationalBindingContext>
 BuildEngineProjectedNativeBindingContext(
     const NativeRelationalAstDocument& ast,
@@ -606,6 +697,383 @@ BuildEngineProjectedNativeBindingContext(
       context.catalog_epoch_uuid,
       context.local_transaction_id,
       context.snapshot_visible_through_local_transaction_id};
+
+  const auto graph_source = std::ranges::find_if(
+      ast.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kGraph;
+      });
+  if (graph_source != ast.catalog_relation_sources.end()) {
+    // QOW-SOURCE-RCP-074-ENGINE-GRAPH-BINDING-COHORT-V1
+    const bool graph_match = graph_source->model_operation_id == "GRAPH_MATCH";
+    const bool graph_expand =
+        graph_source->model_operation_id == "GRAPH_EXPAND";
+    if ((!graph_match && !graph_expand) ||
+        ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
+        ast.root_relation_id != ast.relations.front().relation_id ||
+        ast.relations.front().relation_kind !=
+            NativeRelationAstKind::kCatalogSource ||
+        ast.relations.front().relation_source_ids !=
+            std::vector<std::uint32_t>{graph_source->source_id} ||
+        ast.relations.front().predicate_expression_ids.size() != 1 ||
+        ast.relations.front().output_expression_ids.empty() ||
+        graph_source->source_id == 0 || graph_source->model_family_id != "graph" ||
+        graph_source->qualified_name.empty() || !graph_source->alias.has_value() ||
+        graph_source->model_graph_cycle_policy != "visited_set" ||
+        ast.model_object_resolution_requests.size() != 1 ||
+        resolved_object_reference_seeds.size() != 1) {
+      return fail("graph_ast_shape_invalid");
+    }
+    const auto encoded_source_name =
+        EncodeQualifiedPresentedName(graph_source->qualified_name);
+    const auto& request = ast.model_object_resolution_requests.front();
+    const auto& seed = resolved_object_reference_seeds.front();
+    const auto same_qualified_name = [](const auto& left, const auto& right) {
+      return left.size() == right.size() &&
+             std::ranges::equal(left, right, [](const auto& a, const auto& b) {
+               return a.spelling == b.spelling && a.quoted == b.quoted;
+             });
+    };
+    if (!encoded_source_name.has_value() ||
+        request.source_id != graph_source->source_id ||
+        request.model_family_id != "graph" || request.object_class != "graph" ||
+        !same_qualified_name(request.qualified_name,
+                             graph_source->qualified_name) ||
+        seed.ref.object_class != "graph" || seed.ref.quoted ||
+        seed.ref.create_reservation ||
+        seed.ref.presented_name != *encoded_source_name) {
+      return fail("graph_resolution_request_correspondence_invalid");
+    }
+
+    const auto find_expression = [&](const std::uint32_t expression_id)
+        -> const NativeExpressionAstNode* {
+      const auto found = std::ranges::find_if(
+          ast.expressions, [&](const auto& expression) {
+            return expression.expression_id == expression_id;
+          });
+      return found == ast.expressions.end() ? nullptr : &*found;
+    };
+    std::unordered_set<std::uint32_t> ast_expression_ids;
+    for (const auto& expression : ast.expressions) {
+      if (expression.expression_id == 0 ||
+          !ast_expression_ids.insert(expression.expression_id).second ||
+          ((expression.expression_kind == NativeExpressionAstKind::kIdentifier) !=
+           !expression.qualified_identifier.empty())) {
+        return fail("graph_expression_identity_invalid");
+      }
+      for (const auto child : expression.child_expression_ids) {
+        if (!ast_expression_ids.contains(child)) {
+          return fail("graph_expression_dependency_invalid");
+        }
+      }
+    }
+    const auto* root = find_expression(
+        ast.relations.front().predicate_expression_ids.front());
+    const auto* alias = graph_source->model_graph_alias_expression_id.has_value()
+                            ? find_expression(
+                                  *graph_source->model_graph_alias_expression_id)
+                            : nullptr;
+    std::unordered_set<std::uint32_t> graph_child_expression_ids;
+    if (root != nullptr) {
+      graph_child_expression_ids.insert(root->child_expression_ids.begin(),
+                                        root->child_expression_ids.end());
+    }
+    if (root == nullptr || alias == nullptr ||
+        root->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+        root->operator_name != graph_source->model_operation_id ||
+        alias->expression_kind != NativeExpressionAstKind::kIdentifier ||
+        alias->qualified_identifier.size() != 1 ||
+        graph_child_expression_ids.size() !=
+            root->child_expression_ids.size() ||
+        root->child_expression_ids.empty() ||
+        root->child_expression_ids.front() != alias->expression_id) {
+      return fail("graph_operation_expression_correspondence_invalid");
+    }
+    if (graph_match) {
+      const auto* pattern =
+          graph_source->model_pattern_expression_id.has_value()
+              ? find_expression(*graph_source->model_pattern_expression_id)
+              : nullptr;
+      if (pattern == nullptr ||
+          pattern->expression_kind != NativeExpressionAstKind::kLiteral ||
+          pattern->literal_kind != NativeLiteralAstKind::kString ||
+          !ExactBoundedGraphPatternV1(pattern->spelling) ||
+          root->child_expression_ids !=
+              std::vector<std::uint32_t>{alias->expression_id,
+                                         pattern->expression_id} ||
+          !graph_source->model_graph_direction.empty() ||
+          graph_source->model_graph_minimum_depth.has_value() ||
+          graph_source->model_graph_maximum_depth.has_value()) {
+        return fail("graph_match_operand_shape_invalid");
+      }
+    } else {
+      if (root->child_expression_ids.size() != 5 ||
+          graph_source->model_pattern_expression_id.has_value() ||
+          (graph_source->model_graph_direction != "outgoing" &&
+           graph_source->model_graph_direction != "incoming" &&
+           graph_source->model_graph_direction != "both") ||
+          !graph_source->model_graph_minimum_depth.has_value() ||
+          !graph_source->model_graph_maximum_depth.has_value() ||
+          *graph_source->model_graph_minimum_depth >
+              *graph_source->model_graph_maximum_depth) {
+        return fail("SB_MODEL_GRAPH_UNBOUNDED_EXPANSION_REFUSED_V1");
+      }
+      const auto* direction = find_expression(root->child_expression_ids[1]);
+      const auto* minimum = find_expression(root->child_expression_ids[2]);
+      const auto* maximum = find_expression(root->child_expression_ids[3]);
+      const auto* cycle = find_expression(root->child_expression_ids[4]);
+      if (direction == nullptr || minimum == nullptr || maximum == nullptr ||
+          cycle == nullptr ||
+          direction->literal_kind != NativeLiteralAstKind::kString ||
+          ToUpperAscii(direction->spelling) !=
+              ToUpperAscii(graph_source->model_graph_direction) ||
+          minimum->literal_kind != NativeLiteralAstKind::kNumeric ||
+          minimum->spelling != std::to_string(
+                                   *graph_source->model_graph_minimum_depth) ||
+          maximum->literal_kind != NativeLiteralAstKind::kNumeric ||
+          maximum->spelling != std::to_string(
+                                   *graph_source->model_graph_maximum_depth) ||
+          cycle->literal_kind != NativeLiteralAstKind::kString ||
+          cycle->spelling != "visited_set") {
+        return fail("graph_expand_operand_correspondence_invalid");
+      }
+    }
+
+    const auto& resolved = seed.resolved;
+    const auto& projection = resolved.relation_descriptor;
+    const bool relation_transport_class =
+        resolved.object_class == "relation" || resolved.object_class == "table";
+    if (!resolved.resolved || !relation_transport_class ||
+        !CanonicalUuidBytes(resolved.object_uuid).has_value() ||
+        resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
+        !projection.present ||
+        !CanonicalUuidBytes(projection.descriptor_uuid).has_value() ||
+        !CanonicalUuidBytes(projection.relation_uuid).has_value() ||
+        projection.relation_uuid != resolved.object_uuid ||
+        !CanonicalUuidBytes(projection.schema_uuid).has_value() ||
+        projection.descriptor_generation == 0 ||
+        projection.validated_resource_epoch == 0 ||
+        !ExactGraphProjectedDescriptorCohort(projection)) {
+      return fail("graph_projection_authority_incomplete");
+    }
+
+    NativeCatalogRelationBindingInput catalog_relation;
+    catalog_relation.source_id = graph_source->source_id;
+    catalog_relation.resolution_state =
+        NativeCatalogRelationResolutionState::kBound;
+    catalog_relation.object_uuid = resolved.object_uuid;
+    catalog_relation.resolved_object_type = "graph";
+    catalog_relation.resolved_schema_uuid = projection.schema_uuid;
+    catalog_relation.catalog_generation_id = resolved.catalog_epoch;
+    catalog_relation.security_epoch = resolved.security_epoch;
+    catalog_relation.resource_epoch = projection.validated_resource_epoch;
+    std::unordered_map<std::string, std::uint32_t> column_descriptor_by_name;
+    std::unordered_map<std::string, std::string> column_uuid_by_name;
+    std::unordered_set<std::string> descriptor_uuids;
+    std::unordered_set<std::string> column_uuids;
+    for (std::size_t ordinal = 0; ordinal < projection.columns.size(); ++ordinal) {
+      const auto& column = projection.columns[ordinal];
+      const auto descriptor_fields = ParseExactProjectedDescriptor(
+          column.encoded_type_descriptor, column.collation_uuid,
+          column.nullable);
+      if (column.ordinal != ordinal || column.canonical_name_key.empty() ||
+          !CanonicalUuidBytes(column.column_uuid).has_value() ||
+          !column_uuids.insert(column.column_uuid).second ||
+          !CanonicalUuidBytes(column.type_descriptor_uuid).has_value() ||
+          !descriptor_uuids.insert(column.type_descriptor_uuid).second ||
+          !descriptor_fields.has_value() ||
+          column_descriptor_by_name.contains(column.canonical_name_key)) {
+        return fail("graph_projection_column_descriptor_invalid");
+      }
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      descriptor.descriptor_uuid = column.type_descriptor_uuid;
+      descriptor.type_uuid = descriptor_fields->type_uuid;
+      descriptor.nullability = descriptor_fields->nullable
+                                   ? BoundNullability::kNullable
+                                   : BoundNullability::kNonNull;
+      descriptor.collation_uuid = descriptor_fields->collation_uuid;
+      descriptor.timezone_profile_id = descriptor_fields->timezone_profile_id;
+      descriptor.width_precision_scale.width = descriptor_fields->width;
+      descriptor.width_precision_scale.precision = descriptor_fields->precision;
+      descriptor.width_precision_scale.scale = descriptor_fields->scale;
+      context.descriptors.push_back(std::move(descriptor));
+      const auto descriptor_id = context.descriptors.back().descriptor_id;
+      column_descriptor_by_name.emplace(column.canonical_name_key,
+                                        descriptor_id);
+      column_uuid_by_name.emplace(column.canonical_name_key,
+                                  column.column_uuid);
+      catalog_relation.columns.push_back(
+          {static_cast<std::uint32_t>(ordinal), column.column_uuid,
+           descriptor_id, column.canonical_name_key});
+    }
+    context.catalog_relations.push_back(std::move(catalog_relation));
+
+    std::array<std::uint16_t, 11> next_profile_slot{};
+    const auto allocate_profile_descriptor =
+        [&](const std::uint8_t kind) -> std::optional<std::uint32_t> {
+      if (kind == 0 || kind >= next_profile_slot.size()) return std::nullopt;
+      const auto slot = next_profile_slot[kind]++;
+      const auto profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [&](const auto& candidate) {
+            return candidate.profile_kind == kind && candidate.slot == slot;
+          });
+      const bool expected_nullable = (kind % 2) == 0;
+      if (profile == statement_context.descriptor_profiles.end() ||
+          profile->nullable != expected_nullable ||
+          !CanonicalUuidBytes(profile->descriptor_uuid).has_value() ||
+          !descriptor_uuids.insert(profile->descriptor_uuid).second ||
+          !CanonicalUuidBytes(profile->type_uuid).has_value() ||
+          (!profile->collation_uuid.empty() &&
+           !CanonicalUuidBytes(profile->collation_uuid).has_value()) ||
+          profile->scale > profile->precision) {
+        return std::nullopt;
+      }
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      descriptor.descriptor_uuid = profile->descriptor_uuid;
+      descriptor.type_uuid = profile->type_uuid;
+      descriptor.nullability = profile->nullable
+                                   ? BoundNullability::kNullable
+                                   : BoundNullability::kNonNull;
+      if (!profile->collation_uuid.empty()) {
+        descriptor.collation_uuid = profile->collation_uuid;
+      }
+      if (profile->width != 0) {
+        descriptor.width_precision_scale.width = profile->width;
+      }
+      if (profile->precision != 0) {
+        descriptor.width_precision_scale.precision = profile->precision;
+        descriptor.width_precision_scale.scale = profile->scale;
+      }
+      context.descriptors.push_back(std::move(descriptor));
+      return context.descriptors.back().descriptor_id;
+    };
+
+    const bool wildcard_projection = std::ranges::any_of(
+        ast.relations.front().output_expression_ids,
+        [&](const auto expression_id) {
+          const auto* expression = find_expression(expression_id);
+          return expression != nullptr &&
+                 expression->expression_kind == NativeExpressionAstKind::kWildcard;
+        });
+    if (wildcard_projection &&
+        ast.relations.front().output_expression_ids.size() != 1) {
+      return fail("graph_wildcard_projection_shape_invalid");
+    }
+    std::uint32_t next_synthetic_expression_id = 1;
+    if (!ast_expression_ids.empty()) {
+      next_synthetic_expression_id =
+          *std::ranges::max_element(ast_expression_ids) + 1;
+    }
+    if (wildcard_projection) {
+      for (const auto& column : context.catalog_relations.front().columns) {
+        context.expressions.push_back(
+            {next_synthetic_expression_id++, column.descriptor_id,
+             std::nullopt, column.column_uuid});
+        context.outputs.push_back(
+            {static_cast<std::uint32_t>(context.outputs.size() + 1),
+             context.expressions.back().expression_id,
+             column.canonical_name_key, column.descriptor_id, true,
+             static_cast<std::uint32_t>(context.outputs.size()),
+             ast.relations.front().relation_id});
+      }
+    }
+
+    std::unordered_map<std::uint32_t, NativeExpressionBindingInput>
+        expression_binding_by_ast;
+    const auto& operation_alias =
+        graph_expand && graph_source->model_source_alias.has_value()
+            ? *graph_source->model_source_alias
+            : *graph_source->alias;
+    for (const auto& expression : ast.expressions) {
+      if (expression.expression_kind == NativeExpressionAstKind::kWildcard) {
+        continue;
+      }
+      std::optional<std::uint32_t> descriptor_id;
+      std::optional<std::string> bound_name_uuid;
+      switch (expression.expression_kind) {
+        case NativeExpressionAstKind::kIdentifier: {
+          if (expression.qualified_identifier.empty() ||
+              expression.qualified_identifier.size() > 2) {
+            break;
+          }
+          const auto column_name =
+              CanonicalColumnLookupKey(expression.qualified_identifier.back());
+          const auto column = column_descriptor_by_name.find(column_name);
+          if (column != column_descriptor_by_name.end()) {
+            descriptor_id = column->second;
+            bound_name_uuid = column_uuid_by_name.at(column_name);
+          } else if (expression.qualified_identifier.size() == 1 &&
+                     SameIdentifierComponent(
+                         expression.qualified_identifier.front(),
+                         operation_alias)) {
+            descriptor_id = allocate_profile_descriptor(8);
+            bound_name_uuid = context.catalog_relations.front().object_uuid;
+          }
+          break;
+        }
+        case NativeExpressionAstKind::kLiteral:
+          if (expression.literal_kind == NativeLiteralAstKind::kNumeric) {
+            descriptor_id = allocate_profile_descriptor(1);
+          } else if (expression.literal_kind == NativeLiteralAstKind::kString) {
+            descriptor_id = allocate_profile_descriptor(3);
+          }
+          break;
+        case NativeExpressionAstKind::kFunctionCall:
+          if (expression.operator_name == graph_source->model_operation_id) {
+            descriptor_id = allocate_profile_descriptor(8);
+          }
+          break;
+        case NativeExpressionAstKind::kParameter:
+        case NativeExpressionAstKind::kUnary:
+        case NativeExpressionAstKind::kBinary:
+        case NativeExpressionAstKind::kParenthesized:
+        case NativeExpressionAstKind::kWildcard:
+          break;
+      }
+      if (!descriptor_id.has_value()) {
+        return fail("graph_expression_profile_unsupported");
+      }
+      NativeExpressionBindingInput expression_binding{
+          expression.expression_id, *descriptor_id, std::nullopt,
+          std::move(bound_name_uuid)};
+      context.expressions.push_back(expression_binding);
+      expression_binding_by_ast.emplace(expression.expression_id,
+                                        std::move(expression_binding));
+    }
+    if (!wildcard_projection) {
+      for (std::size_t ordinal = 0;
+           ordinal < ast.relations.front().output_expression_ids.size();
+           ++ordinal) {
+        const auto expression_id =
+            ast.relations.front().output_expression_ids[ordinal];
+        const auto binding = expression_binding_by_ast.find(expression_id);
+        const auto* expression = find_expression(expression_id);
+        if (binding == expression_binding_by_ast.end() || expression == nullptr) {
+          return fail("graph_projection_binding_missing");
+        }
+        std::string output_name =
+            "graph_value_" + std::to_string(ordinal + 1);
+        if (expression->expression_kind == NativeExpressionAstKind::kIdentifier) {
+          output_name = expression->spelling;
+        }
+        context.outputs.push_back(
+            {static_cast<std::uint32_t>(ordinal + 1),
+             binding->second.expression_id, output_name,
+             binding->second.descriptor_id, true,
+             static_cast<std::uint32_t>(ordinal),
+             ast.relations.front().relation_id});
+      }
+    }
+    if (context.outputs.empty()) return fail("graph_projection_empty");
+    context.relations.push_back(
+        {ast.relations.front().relation_id,
+         graph_expand ? "sblr.model-expand.graph-expand.v1"
+                      : "sblr.model-source.graph-match.v1"});
+    return context;
+  }
 
   const auto document_source = std::ranges::find_if(
       ast.catalog_relation_sources, [](const auto& source) {
@@ -4464,6 +4932,32 @@ std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocu
 std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst,
                                                      const AstDocument& ast) {
   std::vector<ObjectReference> refs;
+  const bool graph_model_ast = std::ranges::any_of(
+      ast.native_relational.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kGraph;
+      });
+  if (graph_model_ast) {
+    // QOW-SOURCE-RCP-074-GRAPH-OBJECT-REFERENCE-V1
+    if (!ast.native_relational.accepted() ||
+        ast.native_relational.model_object_resolution_requests.size() != 1) {
+      return refs;
+    }
+    const auto& request =
+        ast.native_relational.model_object_resolution_requests.front();
+    if (request.source_id == 0 || request.model_family_id != "graph" ||
+        request.object_class != "graph" || request.qualified_name.empty()) {
+      return refs;
+    }
+    const auto presented_name =
+        EncodeQualifiedPresentedName(request.qualified_name);
+    if (!presented_name.has_value()) return refs;
+    ObjectReference ref;
+    ref.object_class = "graph";
+    ref.presented_name = *presented_name;
+    ref.quoted = false;
+    refs.push_back(std::move(ref));
+    return refs;
+  }
   const bool document_model_ast = std::ranges::any_of(
       ast.native_relational.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kDocument;
@@ -6965,6 +7459,52 @@ ResolvedObjectReferenceSeed Rcp073ProofSeed(const ObjectReference& ref) {
   return seed;
 }
 
+ResolvedObjectReferenceSeed Rcp074GraphProofSeed(const ObjectReference& ref) {
+  auto seed = Rcp073ProofSeed(ref);
+  auto& projection = seed.resolved.relation_descriptor;
+  projection.columns.clear();
+  static constexpr std::array<std::string_view, 9> kNames{
+      "vertex_uuid",       "edge_uuid",       "path_uuid",
+      "vertex_labels",     "vertex_properties", "edge_properties",
+      "direction",         "depth",           "cycle_policy"};
+  static constexpr std::array<std::string_view, 9> kTypes{
+      "uuid", "uuid", "uuid", "text", "text", "text", "text",
+      "uint64", "text"};
+  static constexpr std::array<bool, 9> kNullable{
+      false, true, false, false, false, false, false, false, false};
+  const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  for (std::uint32_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
+    ipc::PublicRelationColumnDescriptor column;
+    column.column_uuid = Rcp073ProofUuid(4500 + ordinal);
+    column.ordinal = ordinal;
+    column.canonical_name_key = std::string(kNames[ordinal]);
+    column.type_descriptor_uuid = Rcp073ProofUuid(4600 + ordinal);
+    column.type_descriptor_kind = "canonical_type_descriptor";
+    column.canonical_type_name = std::string(kTypes[ordinal]);
+    column.nullable = kNullable[ordinal];
+    std::string type_uuid;
+    if (manifest.ok()) {
+      const auto type_row =
+          scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+              manifest.manifest,
+              scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+                  std::string(kTypes[ordinal])));
+      if (type_row.ok() && type_row.manifest.descriptor_rows.size() == 1 &&
+          type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
+        type_uuid = scratchbird::core::uuid::UuidToString(
+            type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+      }
+    }
+    column.encoded_type_descriptor =
+        "type_uuid=" + type_uuid +
+        ";nullability=" +
+        (kNullable[ordinal] ? "nullable" : "non_null");
+    projection.columns.push_back(std::move(column));
+  }
+  return seed;
+}
+
 bool Rcp073BuildAndBind(const AstDocument& ast,
                        const std::vector<ResolvedObjectReferenceSeed>& seeds) {
   MessageVectorSet messages;
@@ -7217,10 +7757,188 @@ std::uint64_t Rcp073DocumentFrontdoorProofMaskImpl() {
   return mask;
 }
 
+std::uint64_t Rcp074GraphFrontdoorProofMaskImpl() {
+  // QOW-SOURCE-RCP-074-GRAPH-FRONTDOOR-PROOF-V1
+  std::uint64_t mask = 0;
+  const auto match_cst = BuildCst(
+      "SELECT * FROM GRAPH_SOURCE(app.graph_fixture) AS g "
+      "WHERE GRAPH_MATCH(g, 'vertex(label=Person)');");
+  const auto match_ast = BuildAst(match_cst);
+  const auto match_refs = ExtractObjectReferences(match_cst, match_ast);
+  if (match_ast.requires_name_resolution && !match_ast.produces_sblr &&
+      match_refs.size() == 1 && match_refs.front().object_class == "graph" &&
+      match_refs.front().presented_name == "app.graph_fixture" &&
+      !match_refs.front().quoted && !match_refs.front().create_reservation) {
+    mask |= 1ull << 0;
+  }
+  if (match_refs.size() == 1) {
+    auto seed = Rcp074GraphProofSeed(match_refs.front());
+    seed.resolved.canonical_name = "app.graph_fixture";
+    if (Rcp073BuildAndBind(match_ast, {seed})) mask |= 1ull << 1;
+  }
+
+  const auto expand_cst = BuildCst(
+      "SELECT * FROM GRAPH_SOURCE(app.graph_fixture) AS g, "
+      "GRAPH_EXPAND(g, OUTGOING, 1, 3) AS p;");
+  const auto expand_ast = BuildAst(expand_cst);
+  const auto expand_refs = ExtractObjectReferences(expand_cst, expand_ast);
+  auto graph_seed = expand_refs.size() == 1
+                        ? Rcp074GraphProofSeed(expand_refs.front())
+                        : ResolvedObjectReferenceSeed{};
+  graph_seed.resolved.canonical_name = "app.graph_fixture";
+  if (expand_refs.size() == 1 &&
+      Rcp073BuildAndBind(expand_ast, {graph_seed})) {
+    mask |= 1ull << 2;
+  }
+
+  MessageVectorSet messages;
+  if (!BuildEngineProjectedNativeBindingContext(
+           match_ast.native_relational, Rcp073ProofStatementContext(), {},
+           &messages)
+           .has_value()) {
+    mask |= 1ull << 3;
+  }
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           match_ast.native_relational, Rcp073ProofStatementContext(),
+           {graph_seed, graph_seed}, &messages)
+           .has_value()) {
+    mask |= 1ull << 4;
+  }
+  auto mutation = graph_seed;
+  mutation.ref.object_class = "relation";
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           expand_ast.native_relational, Rcp073ProofStatementContext(),
+           {mutation}, &messages)
+           .has_value()) {
+    mask |= 1ull << 5;
+  }
+  mutation = graph_seed;
+  mutation.resolved.relation_descriptor.present = false;
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           expand_ast.native_relational, Rcp073ProofStatementContext(),
+           {mutation}, &messages)
+           .has_value()) {
+    mask |= 1ull << 6;
+  }
+  auto semantic_substitution = expand_ast;
+  semantic_substitution.native_relational.catalog_relation_sources.front()
+      .model_operation_id = "DOCUMENT_UNNEST";
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           semantic_substitution.native_relational,
+           Rcp073ProofStatementContext(), {graph_seed}, &messages)
+           .has_value()) {
+    mask |= 1ull << 7;
+  }
+  const auto donor = BuildAst(
+      BuildCst("SELECT * FROM CYPHER_TEXT('MATCH (n) RETURN n');"));
+  if (std::ranges::any_of(
+          donor.native_relational.messages.diagnostics,
+          [](const auto& diagnostic) {
+            return diagnostic.code ==
+                   "SB_MODEL_GRAMMAR_DONOR_TEXT_REFUSED_V1";
+          })) {
+    mask |= 1ull << 8;
+  }
+  const auto write = BuildAst(BuildCst(
+      "UPDATE GRAPH_SOURCE(app.graph_fixture) SET payload = 'x';"));
+  if (std::ranges::any_of(
+          write.native_relational.messages.diagnostics,
+          [](const auto& diagnostic) {
+            return diagnostic.code == "SB_MODEL_QUERY_WRITE_REFUSED_V1";
+          })) {
+    mask |= 1ull << 9;
+  }
+  const auto unbounded = BuildAst(BuildCst(
+      "SELECT * FROM GRAPH_SOURCE(app.graph_fixture) AS g, "
+      "GRAPH_EXPAND(g, OUTGOING, 1, UNBOUNDED) AS p;"));
+  if (std::ranges::any_of(
+          unbounded.native_relational.messages.diagnostics,
+          [](const auto& diagnostic) {
+            return diagnostic.code ==
+                   "SB_MODEL_GRAPH_UNBOUNDED_EXPANSION_REFUSED_V1";
+          })) {
+    mask |= 1ull << 10;
+  }
+  auto allow_cycles = expand_ast;
+  allow_cycles.native_relational.catalog_relation_sources.front()
+      .model_graph_cycle_policy = "allow_cycles";
+  messages = {};
+  if (!BuildEngineProjectedNativeBindingContext(
+           allow_cycles.native_relational, Rcp073ProofStatementContext(),
+           {graph_seed}, &messages)
+           .has_value()) {
+    mask |= 1ull << 11;
+  }
+  const auto projection_refused = [&](ResolvedObjectReferenceSeed seed) {
+    MessageVectorSet mutation_messages;
+    return !BuildEngineProjectedNativeBindingContext(
+                expand_ast.native_relational, Rcp073ProofStatementContext(),
+                {std::move(seed)}, &mutation_messages)
+                .has_value();
+  };
+  auto descriptor_mutation = Rcp073ProofSeed(expand_refs.front());
+  descriptor_mutation.resolved.canonical_name = "app.graph_fixture";
+  if (projection_refused(std::move(descriptor_mutation))) mask |= 1ull << 12;
+  descriptor_mutation = graph_seed;
+  std::swap(descriptor_mutation.resolved.relation_descriptor.columns[0],
+            descriptor_mutation.resolved.relation_descriptor.columns[1]);
+  if (projection_refused(std::move(descriptor_mutation))) mask |= 1ull << 13;
+  descriptor_mutation = graph_seed;
+  descriptor_mutation.resolved.relation_descriptor.columns[0]
+      .canonical_type_name = "text";
+  if (projection_refused(std::move(descriptor_mutation))) mask |= 1ull << 14;
+  descriptor_mutation = graph_seed;
+  descriptor_mutation.resolved.relation_descriptor.columns[0].nullable = true;
+  if (projection_refused(std::move(descriptor_mutation))) mask |= 1ull << 15;
+  descriptor_mutation = graph_seed;
+  descriptor_mutation.resolved.relation_descriptor.columns[1]
+      .type_descriptor_uuid =
+      descriptor_mutation.resolved.relation_descriptor.columns[0]
+          .type_descriptor_uuid;
+  if (projection_refused(std::move(descriptor_mutation))) mask |= 1ull << 16;
+  descriptor_mutation = graph_seed;
+  descriptor_mutation.resolved.relation_descriptor.columns[0]
+      .encoded_type_descriptor =
+      descriptor_mutation.resolved.relation_descriptor.columns[3]
+          .encoded_type_descriptor;
+  if (projection_refused(std::move(descriptor_mutation))) mask |= 1ull << 17;
+  descriptor_mutation = graph_seed;
+  descriptor_mutation.resolved.relation_descriptor.columns[3].collation_uuid =
+      Rcp073ProofUuid(4990);
+  descriptor_mutation.resolved.relation_descriptor.columns[3]
+      .encoded_type_descriptor += ";collation_uuid=" + Rcp073ProofUuid(4990);
+  if (projection_refused(std::move(descriptor_mutation))) mask |= 1ull << 18;
+  descriptor_mutation = graph_seed;
+  descriptor_mutation.resolved.relation_descriptor.columns[0]
+      .identity_column = true;
+  if (projection_refused(std::move(descriptor_mutation))) mask |= 1ull << 19;
+  descriptor_mutation = graph_seed;
+  descriptor_mutation.resolved.relation_descriptor.columns[0]
+      .encoded_type_descriptor += ";unexpected=field";
+  if (projection_refused(std::move(descriptor_mutation))) mask |= 1ull << 20;
+  descriptor_mutation = graph_seed;
+  auto& duplicate_encoded = descriptor_mutation.resolved.relation_descriptor
+                                .columns[0]
+                                .encoded_type_descriptor;
+  duplicate_encoded += ";" +
+                       duplicate_encoded.substr(
+                           0, duplicate_encoded.find(';'));
+  if (projection_refused(std::move(descriptor_mutation))) mask |= 1ull << 21;
+  return mask;
+}
+
 } // namespace
 
 std::uint64_t Rcp073DocumentFrontdoorProofMaskForTest() {
   return Rcp073DocumentFrontdoorProofMaskImpl();
+}
+
+std::uint64_t Rcp074GraphFrontdoorProofMaskForTest() {
+  return Rcp074GraphFrontdoorProofMaskImpl();
 }
 
 SbsqlTestWireSession::SbsqlTestWireSession(ParserConfig config, ParserMetrics* metrics, SblrTemplateCache* cache)
@@ -7942,7 +8660,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         // reclassifies only after the returned relation UUID and descriptor
         // projection agree exactly.
         const auto transport_object_class =
-            ref.object_class == "document_collection"
+            ref.object_class == "document_collection" ||
+                    ref.object_class == "graph"
                 ? std::string_view("relation")
                 : std::string_view(ref.object_class);
         resolved = native_catalog_projection_required

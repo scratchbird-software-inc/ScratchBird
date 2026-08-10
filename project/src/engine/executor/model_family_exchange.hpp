@@ -35,6 +35,10 @@ struct ModelPropertyDescriptorV1 {
 struct ModelProviderRowIdentityV1 {
   std::string document_uuid;
   std::string row_uuid;
+  std::string vertex_uuid;
+  std::string edge_uuid;
+  std::string path_uuid;
+  std::uint64_t graph_depth{0};
 };
 
 struct ModelSourceInputDescriptorV1 {

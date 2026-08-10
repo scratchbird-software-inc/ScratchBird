@@ -32956,6 +32956,322 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     return envelope;
   }
 
+  const auto graph_source = std::ranges::find_if(
+      native.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kGraph;
+      });
+  if (graph_source != native.catalog_relation_sources.end()) {
+    // QOW-SOURCE-RCP-074-GRAPH-SBLR-V1
+    const bool graph_match = graph_source->model_operation_id == "GRAPH_MATCH";
+    const bool graph_expand =
+        graph_source->model_operation_id == "GRAPH_EXPAND";
+    const auto same_graph_alias = [](const NativeIdentifierAstNode& left,
+                                     const NativeIdentifierAstNode& right) {
+      return left.quoted == right.quoted &&
+             (left.quoted ? left.spelling == right.spelling
+                          : ToUpperAscii(left.spelling) ==
+                                ToUpperAscii(right.spelling));
+    };
+    const auto expected_semantic =
+        graph_expand ? std::string_view("sblr.model-expand.graph-expand.v1")
+                     : std::string_view("sblr.model-source.graph-match.v1");
+    if ((!graph_match && !graph_expand) ||
+        native.catalog_relation_sources.size() != 1 ||
+        native.relations.size() != 1 || native.scopes.size() != 1 ||
+        native.descriptors.empty() || native.expressions.empty() ||
+        native.outputs.empty() || graph_source->source_id == 0 ||
+        graph_source->model_family_id != "graph" ||
+        graph_source->resolution_state !=
+            NativeCatalogRelationResolutionState::kBound ||
+        graph_source->resolved_object_type != "graph" ||
+        !IsCanonicalBoundSourceUuid(graph_source->object_uuid) ||
+        !IsCanonicalBoundSourceUuid(graph_source->resolved_schema_uuid) ||
+        graph_source->catalog_generation_id == 0 ||
+        graph_source->security_epoch == 0 ||
+        graph_source->resource_epoch == 0 || graph_source->columns.empty() ||
+        graph_source->model_graph_cycle_policy != "visited_set" ||
+        !graph_source->alias.has_value() ||
+        (graph_match && graph_source->model_source_alias.has_value()) ||
+        (graph_expand && !graph_source->model_source_alias.has_value()) ||
+        (graph_expand && !graph_source->alias_is_explicit &&
+         !same_graph_alias(*graph_source->alias,
+                           *graph_source->model_source_alias)) ||
+        native.root_relation_id != native.relations.front().relation_id ||
+        native.scopes.front().scope_id != native.root_scope_id ||
+        native.scopes.front().visible_relation_ids !=
+            std::vector<std::uint32_t>{native.root_relation_id} ||
+        native.scopes.front().parent_scope_id.has_value() ||
+        !IsCanonicalBoundSourceUuid(native.bound_ast_uuid) ||
+        !IsCanonicalBoundSourceUuid(native.security_context_uuid) ||
+        !IsCanonicalBoundSourceUuid(native.scopes.front().catalog_epoch_uuid)) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+          "graph model source is missing its exact bound SBLR authority");
+      return envelope;
+    }
+    const auto& relation = native.relations.front();
+    if (relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
+        relation.semantic_variant_id != expected_semantic ||
+        relation.bound_object_uuid != graph_source->object_uuid ||
+        !relation.input_relation_ids.empty() || !relation.values_row_ids.empty() ||
+        relation.output_expression_ids.empty() ||
+        relation.predicate_expression_ids.size() != 1 ||
+        relation.aggregate_grouping_form != NativeAggregateGroupingForm::kNone ||
+        relation.aggregate_projection_form !=
+            NativeAggregateProjectionForm::kNone ||
+        !relation.grouping_key_expression_ids.empty() ||
+        !relation.aggregate_expression_ids.empty() ||
+        !relation.limit_expression_ids.empty() || !relation.ordering_terms.empty() ||
+        !graph_source->model_graph_alias_expression_id.has_value() ||
+        (graph_match &&
+         (!graph_source->model_pattern_expression_id.has_value() ||
+          !graph_source->model_graph_direction.empty() ||
+          graph_source->model_graph_minimum_depth.has_value() ||
+          graph_source->model_graph_maximum_depth.has_value())) ||
+        (graph_expand &&
+         (graph_source->model_pattern_expression_id.has_value() ||
+          (graph_source->model_graph_direction != "outgoing" &&
+           graph_source->model_graph_direction != "incoming" &&
+           graph_source->model_graph_direction != "both") ||
+          !graph_source->model_graph_minimum_depth.has_value() ||
+          !graph_source->model_graph_maximum_depth.has_value() ||
+          *graph_source->model_graph_minimum_depth >
+              *graph_source->model_graph_maximum_depth))) {
+      AddNativeRelationalLoweringError(
+          &envelope,
+          graph_expand ? "SB_MODEL_GRAPH_UNBOUNDED_EXPANSION_REFUSED_V1"
+                       : "SB_MODEL_BINDING_INCOMPLETE_V1",
+          "graph model relation operands are incomplete or ambiguous");
+      return envelope;
+    }
+
+    std::unordered_set<std::uint32_t> descriptor_ids;
+    for (const auto& descriptor : native.descriptors) {
+      if (descriptor.descriptor_id == 0 ||
+          !descriptor_ids.insert(descriptor.descriptor_id).second ||
+          !IsCanonicalBoundSourceUuid(descriptor.descriptor_uuid) ||
+          !IsCanonicalBoundSourceUuid(descriptor.type_uuid) ||
+          descriptor.nullability == BoundNullability::kUnknown) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "graph descriptor identity is incomplete");
+        return envelope;
+      }
+    }
+    std::unordered_map<std::uint32_t, const BoundExpressionAstRecord*>
+        expressions_by_id;
+    for (const auto& expression : native.expressions) {
+      if (expression.expression_id == 0 ||
+          !expressions_by_id.emplace(expression.expression_id, &expression).second ||
+          !descriptor_ids.contains(expression.result_descriptor_id) ||
+          std::ranges::any_of(expression.child_expression_ids,
+                              [&](const auto child) {
+                                return !expressions_by_id.contains(child);
+                              })) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "graph expression descriptor or dependency is incomplete");
+        return envelope;
+      }
+    }
+    const auto root = expressions_by_id.find(
+        relation.predicate_expression_ids.front());
+    const auto alias = expressions_by_id.find(
+        *graph_source->model_graph_alias_expression_id);
+    std::unordered_set<std::uint32_t> graph_child_expression_ids;
+    if (root != expressions_by_id.end()) {
+      graph_child_expression_ids.insert(
+          root->second->child_expression_ids.begin(),
+          root->second->child_expression_ids.end());
+    }
+    if (root == expressions_by_id.end() || alias == expressions_by_id.end() ||
+        root->second->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+        root->second->bound_function_uuid.has_value() ||
+        root->second->canonical_operator_name !=
+            graph_source->model_operation_id ||
+        alias->second->expression_kind != NativeExpressionAstKind::kIdentifier ||
+        alias->second->bound_name_uuid != graph_source->object_uuid ||
+        graph_child_expression_ids.size() !=
+            root->second->child_expression_ids.size() ||
+        root->second->child_expression_ids.empty() ||
+        root->second->child_expression_ids.front() != alias->first) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+          "graph operation root or graph-object alias is incomplete");
+      return envelope;
+    }
+    if (graph_match) {
+      const auto pattern = expressions_by_id.find(
+          *graph_source->model_pattern_expression_id);
+      if (pattern == expressions_by_id.end() ||
+          root->second->child_expression_ids !=
+              std::vector<std::uint32_t>{alias->first, pattern->first} ||
+          pattern->second->expression_kind !=
+              NativeExpressionAstKind::kLiteral ||
+          pattern->second->literal_kind != NativeLiteralAstKind::kString ||
+          !pattern->second->literal_or_parameter_ref.has_value() ||
+          !ExactBoundedGraphPatternV1(
+              *pattern->second->literal_or_parameter_ref)) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "GRAPH_MATCH typed pattern is incomplete");
+        return envelope;
+      }
+    } else {
+      if (root->second->child_expression_ids.size() != 5) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_GRAPH_UNBOUNDED_EXPANSION_REFUSED_V1",
+            "GRAPH_EXPAND ordered operands are incomplete");
+        return envelope;
+      }
+      const auto direction =
+          expressions_by_id.find(root->second->child_expression_ids[1]);
+      const auto minimum =
+          expressions_by_id.find(root->second->child_expression_ids[2]);
+      const auto maximum =
+          expressions_by_id.find(root->second->child_expression_ids[3]);
+      const auto cycle =
+          expressions_by_id.find(root->second->child_expression_ids[4]);
+      if (direction == expressions_by_id.end() ||
+          minimum == expressions_by_id.end() ||
+          maximum == expressions_by_id.end() || cycle == expressions_by_id.end() ||
+          direction->second->literal_kind != NativeLiteralAstKind::kString ||
+          !direction->second->literal_or_parameter_ref.has_value() ||
+          ToUpperAscii(*direction->second->literal_or_parameter_ref) !=
+              ToUpperAscii(graph_source->model_graph_direction) ||
+          minimum->second->literal_kind != NativeLiteralAstKind::kNumeric ||
+          minimum->second->literal_or_parameter_ref != std::to_string(
+              *graph_source->model_graph_minimum_depth) ||
+          maximum->second->literal_kind != NativeLiteralAstKind::kNumeric ||
+          maximum->second->literal_or_parameter_ref != std::to_string(
+              *graph_source->model_graph_maximum_depth) ||
+          cycle->second->literal_kind != NativeLiteralAstKind::kString ||
+          cycle->second->literal_or_parameter_ref != "visited_set") {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_GRAPH_UNBOUNDED_EXPANSION_REFUSED_V1",
+            "GRAPH_EXPAND direction, finite bounds, or cycle policy was substituted");
+        return envelope;
+      }
+    }
+    if (std::ranges::any_of(relation.bound_expression_ids,
+                            [&](const auto expression_id) {
+                              return !expressions_by_id.contains(expression_id);
+                            }) ||
+        native.outputs.size() != relation.output_expression_ids.size() ||
+        native.scopes.front().visible_projection_ids.size() !=
+            native.outputs.size()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+          "graph output expression lineage is incomplete");
+      return envelope;
+    }
+
+    envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
+    envelope.operands.push_back(
+        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_catalog_epoch_uuid",
+         native.scopes.front().catalog_epoch_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_security_context_uuid",
+         native.security_context_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_uuid", native.statement_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_owning_transaction_uuid",
+         native.owning_transaction_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_snapshot_uuid",
+         native.statement_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_metadata_snapshot_uuid",
+         native.statement_metadata_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uint64", "relational_local_transaction_id",
+         std::to_string(native.local_transaction_id)});
+    envelope.operands.push_back(
+        {"uint64", "relational_snapshot_visible_through_local_transaction_id",
+         std::to_string(native.snapshot_visible_through_local_transaction_id)});
+    envelope.operands.push_back(
+        {"uint32", "relational_root_node_id",
+         std::to_string(native.root_relation_id)});
+    for (const auto& descriptor : native.descriptors) {
+      envelope.operands.push_back(
+          {"relational_descriptor_v1", std::to_string(descriptor.descriptor_id),
+           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
+               std::to_string(static_cast<std::uint8_t>(
+                                  descriptor.nullability) +
+                              1) +
+               "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
+               "|" +
+               EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.width) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.precision) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.scale)});
+    }
+    for (const auto& expression : native.expressions) {
+      const auto literal_kind =
+          expression.literal_kind.has_value()
+              ? std::to_string(static_cast<std::uint8_t>(
+                                   *expression.literal_kind) +
+                               1)
+              : "-";
+      envelope.operands.push_back(
+          {"relational_expression_v1",
+           std::to_string(expression.expression_id),
+           std::to_string(static_cast<std::uint8_t>(
+                              expression.expression_kind) +
+                          1) +
+               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
+               "|" + std::to_string(expression.result_descriptor_id) + "|" +
+               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
+               "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
+               "|" + literal_kind + "|" +
+               EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
+               "|" + EncodeOptionalCanonicalHex(
+                           expression.literal_or_parameter_ref)});
+    }
+    std::vector<std::uint32_t> output_descriptor_ids;
+    for (std::size_t ordinal = 0; ordinal < native.outputs.size(); ++ordinal) {
+      const auto& output = native.outputs[ordinal];
+      if (output.output_id == 0 || output.relation_id != relation.relation_id ||
+          output.expression_id != relation.output_expression_ids[ordinal] ||
+          !expressions_by_id.contains(output.expression_id) ||
+          !descriptor_ids.contains(output.descriptor_id) ||
+          output.ordinal != ordinal || !output.visible ||
+          native.scopes.front().visible_projection_ids[ordinal] !=
+              output.output_id) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "graph output descriptor identity is incomplete");
+        envelope.operands.clear();
+        return envelope;
+      }
+      output_descriptor_ids.push_back(output.descriptor_id);
+      envelope.operands.push_back(
+          {"relational_output_v1", std::to_string(output.output_id),
+           std::to_string(output.relation_id) + "|" +
+               std::to_string(output.expression_id) + "|" +
+               std::to_string(output.descriptor_id) + "|1|" +
+               std::to_string(output.ordinal) + "|" +
+               EncodeCanonicalHex(output.output_name_utf8)});
+    }
+    envelope.operands.push_back(
+        {"relational_node_v1", std::to_string(relation.relation_id),
+         "1|0|-|" + JoinCanonicalHandleList(output_descriptor_ids) + "|-"});
+    envelope.operands.push_back(
+        {"relational_node_binding_v1", std::to_string(relation.relation_id),
+         EncodeCanonicalHex(graph_expand ? "SBLR_MODEL_EXPAND_V1"
+                                         : "SBLR_MODEL_SOURCE_V1") +
+             "|" + JoinCanonicalHandleList(relation.bound_expression_ids) +
+             "|" + graph_source->object_uuid + "|-|-"});
+    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
+    return envelope;
+  }
+
   const auto document_source = std::ranges::find_if(
       native.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kDocument;
@@ -39709,8 +40025,24 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
         "query.execute requires exactly one canonical document producer",
         "document_producer_node");
   }
-  const bool document_source_graph = document_source_node != nullptr;
-  const bool document_expand_graph = document_expand_node != nullptr;
+  const auto graph_match_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               expression.operator_name == "GRAPH_MATCH";
+      });
+  const auto graph_expand_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               expression.operator_name == "GRAPH_EXPAND";
+      });
+  const bool graph_source_graph =
+      document_source_node != nullptr && graph_match_root != graph.expressions.end();
+  const bool graph_expand_graph =
+      document_expand_node != nullptr && graph_expand_root != graph.expressions.end();
+  const bool document_source_graph =
+      document_source_node != nullptr && !graph_source_graph;
+  const bool document_expand_graph =
+      document_expand_node != nullptr && !graph_expand_graph;
   const auto document_expand_root_id =
       document_expand_graph && document_expand_node->bound_expression_ids.size() == 1
           ? std::optional<std::uint32_t>(
@@ -39800,19 +40132,22 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
         document_expand_root_id == expression.id &&
         !expression.function_uuid.has_value() &&
         expression.operator_name == "DOCUMENT_UNNEST";
+    const bool graph_model_operation =
+        (graph_source_graph && &expression == &*graph_match_root) ||
+        (graph_expand_graph && &expression == &*graph_expand_root);
     if (literal != expression.literal_kind.has_value() ||
         (expression.literal_kind.has_value() &&
         (*expression.literal_kind < 1 || *expression.literal_kind > 12)) ||
         function_call !=
             (expression.function_uuid.has_value() || document_path_operation ||
-             document_unnest_operation) ||
+             document_unnest_operation || graph_model_operation) ||
         (expression.function_uuid.has_value() &&
          !IsCanonicalRelationalUuid(*expression.function_uuid)) ||
         identifier != expression.bound_name_uuid.has_value() ||
         (expression.bound_name_uuid.has_value() &&
          !IsCanonicalRelationalUuid(*expression.bound_name_uuid)) ||
         (unary || binary || document_path_operation ||
-         document_unnest_operation) !=
+         document_unnest_operation || graph_model_operation) !=
             expression.operator_name.has_value() ||
         (expression.operator_name.has_value() &&
          expression.operator_name->empty()) ||
@@ -39824,6 +40159,11 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
          !expression.child_ids.empty()) ||
         (unary && expression.child_ids.size() != 1) ||
         (binary && expression.child_ids.size() != 2) ||
+        (graph_model_operation &&
+         ((expression.operator_name == "GRAPH_MATCH" &&
+           expression.child_ids.size() != 2) ||
+          (expression.operator_name == "GRAPH_EXPAND" &&
+           expression.child_ids.size() != 5))) ||
         (parenthesized && expression.child_ids.size() != 1)) {
       return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
                                    "relational expression typed fields or arity are invalid",
@@ -40082,6 +40422,144 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
           "SBLR.PLAN_TREE.INVALID_HANDLE",
           "document source path predicate root is incomplete or ambiguous",
           "document_path_predicate_root", node.id);
+    }
+  }
+  if (graph_source_graph || graph_expand_graph) {
+    // QOW-SOURCE-RCP-074-GRAPH-SBLR-VERIFIER-V1
+    const auto& node = graph_source_graph ? *document_source_node
+                                          : *document_expand_node;
+    const auto& root = graph_source_graph ? *graph_match_root
+                                          : *graph_expand_root;
+    const auto graph_operation_count = std::ranges::count_if(
+        graph.expressions, [](const auto& expression) {
+          return expression.operator_name == "GRAPH_MATCH" ||
+                 expression.operator_name == "GRAPH_EXPAND";
+        });
+    const auto expression_at = [&](const std::size_t ordinal)
+        -> const ParsedRelationalExpression* {
+      if (ordinal >= root.child_ids.size()) return nullptr;
+      const auto found = expressions.find(root.child_ids[ordinal]);
+      return found == expressions.end() ? nullptr : found->second;
+    };
+    const auto exact_literal = [](const ParsedRelationalExpression* expression,
+                                  const std::uint8_t literal_kind) {
+      return expression != nullptr && expression->kind == 1 &&
+             expression->literal_kind == literal_kind &&
+             expression->literal_or_parameter_ref.has_value() &&
+             !expression->literal_or_parameter_ref->empty() &&
+             expression->child_ids.empty() &&
+             !expression->function_uuid.has_value() &&
+             !expression->bound_name_uuid.has_value() &&
+             !expression->operator_name.has_value();
+    };
+    const auto* alias = expression_at(0);
+    const std::unordered_set<std::uint32_t> graph_child_ids(
+        root.child_ids.begin(), root.child_ids.end());
+    bool exact_operation =
+        node.required_object_uuids.size() == 1 && alias != nullptr &&
+        graph_child_ids.size() == root.child_ids.size() &&
+        alias->kind == 3 && alias->child_ids.empty() &&
+        alias->bound_name_uuid == node.required_object_uuids.front();
+    if (graph_source_graph) {
+      const auto* pattern = expression_at(1);
+      exact_operation =
+          exact_operation && root.child_ids.size() == 2 &&
+          exact_literal(pattern, 2) &&
+          ExactBoundedGraphPatternV1(*pattern->literal_or_parameter_ref);
+    } else {
+      const auto* direction = expression_at(1);
+      const auto* minimum = expression_at(2);
+      const auto* maximum = expression_at(3);
+      const auto* cycle = expression_at(4);
+      const auto uppercase = [](std::string value) {
+        std::ranges::transform(value, value.begin(), [](const unsigned char ch) {
+          return static_cast<char>(std::toupper(ch));
+        });
+        return value;
+      };
+      std::uint64_t minimum_depth = 0;
+      std::uint64_t maximum_depth = 0;
+      const auto parse_unsigned = [](const std::string& value,
+                                     std::uint64_t* parsed) {
+        if (value.empty()) return false;
+        const auto result = std::from_chars(
+            value.data(), value.data() + value.size(), *parsed);
+        return result.ec == std::errc{} &&
+               result.ptr == value.data() + value.size();
+      };
+      exact_operation =
+          exact_operation && root.child_ids.size() == 5 &&
+          exact_literal(direction, 2) &&
+          (uppercase(*direction->literal_or_parameter_ref) == "OUTGOING" ||
+           uppercase(*direction->literal_or_parameter_ref) == "INCOMING" ||
+           uppercase(*direction->literal_or_parameter_ref) == "BOTH") &&
+          exact_literal(minimum, 1) &&
+          parse_unsigned(*minimum->literal_or_parameter_ref, &minimum_depth) &&
+          exact_literal(maximum, 1) &&
+          parse_unsigned(*maximum->literal_or_parameter_ref, &maximum_depth) &&
+          minimum_depth <= maximum_depth &&
+          exact_literal(cycle, 2) &&
+          *cycle->literal_or_parameter_ref == "visited_set";
+      if (!exact_operation) {
+        return RefuseRelationalGraph(
+            "SB_MODEL_GRAPH_UNBOUNDED_EXPANSION_REFUSED_V1",
+            "GRAPH_EXPAND direction, finite bounds, or cycle policy is invalid",
+            "graph_expand_operands", node.id);
+      }
+    }
+    std::vector<const ParsedRelationalOutput*> graph_outputs;
+    for (const auto& output : graph.outputs) {
+      if (output.node_id == node.id) graph_outputs.push_back(&output);
+    }
+    std::ranges::sort(graph_outputs, [](const auto* left, const auto* right) {
+      return left->ordinal < right->ordinal;
+    });
+    std::unordered_set<std::uint32_t> reachable_expression_ids;
+    std::function<bool(std::uint32_t)> visit_graph_expression =
+        [&](const std::uint32_t expression_id) {
+          if (!reachable_expression_ids.insert(expression_id).second) return true;
+          const auto found = expressions.find(expression_id);
+          if (found == expressions.end()) return false;
+          return std::ranges::all_of(found->second->child_ids,
+                                     visit_graph_expression);
+        };
+    bool complete_reachability = visit_graph_expression(root.id);
+    for (const auto expression_id : node.bound_expression_ids) {
+      complete_reachability =
+          complete_reachability && visit_graph_expression(expression_id);
+    }
+    complete_reachability =
+        complete_reachability &&
+        reachable_expression_ids.size() == graph.expressions.size();
+    if (graph_operation_count != 1 || !exact_operation || node.kind != 1 ||
+        !node.input_ids.empty() || node.required_object_uuids.size() != 1 ||
+        !IsCanonicalRelationalUuid(node.required_object_uuids.front()) ||
+        node.bound_expression_ids.empty() || node.output_descriptor_ids.empty() ||
+        node.bound_expression_ids.size() != node.output_descriptor_ids.size() ||
+        graph_outputs.size() != node.output_descriptor_ids.size() ||
+        root.kind != 4 || root.function_uuid.has_value() ||
+        root.bound_name_uuid.has_value() || root.literal_kind.has_value() ||
+        root.literal_or_parameter_ref.has_value() || !complete_reachability) {
+      return RefuseRelationalGraph(
+          "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "graph operation root, object, output, or reachability is invalid",
+          "graph_model_operation_shape", node.id);
+    }
+    for (std::size_t ordinal = 0; ordinal < graph_outputs.size(); ++ordinal) {
+      const auto expression =
+          expressions.find(node.bound_expression_ids[ordinal]);
+      if (expression == expressions.end() ||
+          graph_outputs[ordinal]->expression_id !=
+              node.bound_expression_ids[ordinal] ||
+          graph_outputs[ordinal]->descriptor_id !=
+              node.output_descriptor_ids[ordinal] ||
+          expression->second->descriptor_id !=
+              node.output_descriptor_ids[ordinal]) {
+        return RefuseRelationalGraph(
+            "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "graph output binding is invalid", "graph_output_binding",
+            node.id);
+      }
     }
   }
   if (!nodes.contains(graph.root_node_id)) {
@@ -40616,6 +41094,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   if (document_source_predicate_root.has_value()) {
     expression_roots.insert(*document_source_predicate_root);
   }
+  if (graph_source_graph) expression_roots.insert(graph_match_root->id);
+  if (graph_expand_graph) expression_roots.insert(graph_expand_root->id);
   for (const auto& output : graph.outputs) {
     expression_roots.insert(output.expression_id);
   }

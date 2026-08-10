@@ -135,10 +135,19 @@ class NativeRelationalParser final {
         return !token->quoted && IsWord(*token, wanted);
       });
     };
-    if (contains_word("MONGO_PIPELINE")) {
+    if (contains_word("MONGO_PIPELINE") || contains_word("CYPHER_TEXT")) {
       RefuseExact("SB_MODEL_GRAMMAR_DONOR_TEXT_REFUSED_V1",
-                  "opaque donor pipeline text is not an executable SBSQL model source");
+                  "opaque donor text is not an executable SBSQL model source");
       return FinishRefusal();
+    }
+    if (contains_word("GRAPH_SOURCE") || contains_word("GRAPH_MATCH") ||
+        contains_word("GRAPH_EXPAND")) {
+      if (tokens_.empty() || !IsWord(*tokens_.front(), "SELECT")) {
+        RefuseExact("SB_MODEL_QUERY_WRITE_REFUSED_V1",
+                    "graph model sources are read-only query inputs");
+        return FinishRefusal();
+      }
+      return ParseGraphModelSelect();
     }
     if (contains_word("DOCUMENT_SOURCE") ||
         contains_word("DOCUMENT_UNNEST") ||
@@ -473,6 +482,327 @@ class NativeRelationalParser final {
       return FinishRefusal();
     }
     source.range = Span(source_operator, *source_end);
+    document_.catalog_relation_sources.push_back(std::move(source));
+    document_.relations.push_back(std::move(relation));
+    document_.root_relation_id = 1;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    (void)select;
+    return std::move(document_);
+  }
+
+  NativeRelationalAstDocument ParseGraphModelSelect() {
+    // QOW-SOURCE-RCP-074-GRAPH-GRAMMAR-V1
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded", "graph model query token limit exceeded");
+      return FinishRefusal();
+    }
+
+    const Token& select = Consume();
+    std::vector<std::uint32_t> projection_expression_ids;
+    if (AtSymbol("*")) {
+      const Token& wildcard_token = Consume();
+      NativeExpressionAstNode wildcard;
+      wildcard.expression_id = NextExpressionId();
+      wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+      wildcard.spelling = wildcard_token.text;
+      wildcard.range = TokenSourceRange(wildcard_token);
+      projection_expression_ids.push_back(wildcard.expression_id);
+      document_.expressions.push_back(std::move(wildcard));
+    } else {
+      while (!AtEnd()) {
+        const auto expression_id = ParseExpression(0, 0);
+        if (!expression_id.has_value()) return FinishRefusal();
+        projection_expression_ids.push_back(*expression_id);
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+    }
+    if (!RequireWord("FROM", "graph_from_required",
+                     "graph model source requires FROM") ||
+        AtEnd() || !IsWord(Current(), "GRAPH_SOURCE")) {
+      Refuse("graph_source_required", "FROM requires GRAPH_SOURCE");
+      return FinishRefusal();
+    }
+
+    const Token& source_operator = Consume();
+    if (!RequireSymbol("(", "graph_source_open_required",
+                       "GRAPH_SOURCE requires an opening parenthesis") ||
+        AtEnd() || !IsNameToken(Current())) {
+      Refuse("graph_qualified_name_required",
+             "GRAPH_SOURCE requires a qualified graph name");
+      return FinishRefusal();
+    }
+    NativeCatalogRelationSourceAstNode source;
+    source.source_id = 1;
+    source.source_kind = NativeRelationSourceAstKind::kGraph;
+    source.model_family_id = "graph";
+    source.model_operation_id = "GRAPH_MATCH";
+    source.model_graph_cycle_policy = "visited_set";
+    const Token& first_name = Consume();
+    const Token* last_name = &first_name;
+    source.qualified_name.push_back(
+        {first_name.text, first_name.quoted, TokenSourceRange(first_name)});
+    while (AtSymbol(".")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        Refuse("graph_qualified_name_incomplete",
+               "qualified graph name is incomplete");
+        return FinishRefusal();
+      }
+      last_name = &Consume();
+      source.qualified_name.push_back(
+          {last_name->text, last_name->quoted, TokenSourceRange(*last_name)});
+    }
+    source.qualified_name_range = Span(first_name, *last_name);
+    if (!RequireSymbol(")", "graph_source_close_required",
+                       "GRAPH_SOURCE requires a closing parenthesis")) {
+      return FinishRefusal();
+    }
+    const Token* source_end = &Previous();
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        Refuse("graph_alias_invalid",
+               "GRAPH_SOURCE AS requires an identifier");
+        return FinishRefusal();
+      }
+      const Token& source_alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          source_alias.text, source_alias.quoted,
+          TokenSourceRange(source_alias)};
+      source.alias_is_explicit = true;
+      source_end = &source_alias;
+    } else {
+      source.alias = NativeIdentifierAstNode{
+          last_name->text, last_name->quoted, TokenSourceRange(*last_name)};
+      source.alias_is_explicit = false;
+    }
+
+    const auto append_alias_expression = [&](const Token& alias) {
+      NativeExpressionAstNode expression;
+      expression.expression_id = NextExpressionId();
+      expression.expression_kind = NativeExpressionAstKind::kIdentifier;
+      expression.qualified_identifier.push_back(
+          {alias.text, alias.quoted, TokenSourceRange(alias)});
+      expression.spelling = alias.text;
+      expression.range = TokenSourceRange(alias);
+      document_.expressions.push_back(std::move(expression));
+      return document_.expressions.back().expression_id;
+    };
+    const auto append_literal = [&](const Token& token,
+                                    const NativeLiteralAstKind kind) {
+      NativeExpressionAstNode expression;
+      expression.expression_id = NextExpressionId();
+      expression.expression_kind = NativeExpressionAstKind::kLiteral;
+      expression.literal_kind = kind;
+      expression.spelling = token.text;
+      expression.range = TokenSourceRange(token);
+      document_.expressions.push_back(std::move(expression));
+      return document_.expressions.back().expression_id;
+    };
+    const auto parse_unsigned_depth = [&](std::uint64_t* value,
+                                          std::uint32_t* expression_id) {
+      if (AtEnd() || Current().kind != TokenKind::kNumericLiteral ||
+          Current().text.empty()) {
+        return false;
+      }
+      const Token& token = Consume();
+      const auto parsed = std::from_chars(
+          token.text.data(), token.text.data() + token.text.size(), *value);
+      if (parsed.ec != std::errc{} ||
+          parsed.ptr != token.text.data() + token.text.size()) {
+        return false;
+      }
+      *expression_id = append_literal(token, NativeLiteralAstKind::kNumeric);
+      document_.expressions.back().spelling = std::to_string(*value);
+      return true;
+    };
+
+    NativeRelationAstNode relation;
+    relation.relation_id = 1;
+    relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+    relation.relation_source_ids = {source.source_id};
+    relation.output_expression_ids = projection_expression_ids;
+
+    if (AtSymbol(",")) {
+      Consume();
+      if (AtEnd() || !IsWord(Current(), "GRAPH_EXPAND")) {
+        Refuse("graph_expand_required",
+               "a second graph source must be GRAPH_EXPAND");
+        return FinishRefusal();
+      }
+      const Token& expand = Consume();
+      if (!RequireSymbol("(", "graph_expand_open_required",
+                         "GRAPH_EXPAND requires an opening parenthesis") ||
+          AtEnd() || !IsNameToken(Current())) {
+        return FinishRefusal();
+      }
+      const Token& alias = Consume();
+      if (!SameIdentifier(*source.alias, alias)) {
+        Refuse("graph_alias_mismatch",
+               "GRAPH_EXPAND alias does not name GRAPH_SOURCE");
+        return FinishRefusal();
+      }
+      source.model_source_alias = source.alias;
+      const auto alias_expression_id = append_alias_expression(alias);
+      source.model_graph_alias_expression_id = alias_expression_id;
+      if (!RequireSymbol(",", "graph_direction_required",
+                         "GRAPH_EXPAND requires a direction") ||
+          AtEnd()) {
+        return FinishRefusal();
+      }
+      const Token& direction = Consume();
+      const auto direction_name = CanonicalTokenText(direction);
+      if (direction.quoted ||
+          (direction_name != "OUTGOING" && direction_name != "INCOMING" &&
+           direction_name != "BOTH")) {
+        Refuse("graph_direction_invalid",
+               "GRAPH_EXPAND direction must be OUTGOING, INCOMING, or BOTH");
+        return FinishRefusal();
+      }
+      source.model_graph_direction = ToLowerAscii(direction_name);
+      const auto direction_expression_id =
+          append_literal(direction, NativeLiteralAstKind::kString);
+      if (!RequireSymbol(",", "graph_minimum_depth_required",
+                         "GRAPH_EXPAND requires a minimum depth")) {
+        return FinishRefusal();
+      }
+      std::uint64_t minimum_depth = 0;
+      std::uint32_t minimum_expression_id = 0;
+      if (!parse_unsigned_depth(&minimum_depth, &minimum_expression_id) ||
+          !RequireSymbol(",", "graph_maximum_depth_required",
+                         "GRAPH_EXPAND requires a maximum depth")) {
+        RefuseExact("SB_MODEL_GRAPH_UNBOUNDED_EXPANSION_REFUSED_V1",
+                    "GRAPH_EXPAND requires finite unsigned depth bounds");
+        return FinishRefusal();
+      }
+      std::uint64_t maximum_depth = 0;
+      std::uint32_t maximum_expression_id = 0;
+      if (!parse_unsigned_depth(&maximum_depth, &maximum_expression_id) ||
+          maximum_depth < minimum_depth) {
+        RefuseExact("SB_MODEL_GRAPH_UNBOUNDED_EXPANSION_REFUSED_V1",
+                    "GRAPH_EXPAND depth bounds are inverted or unbounded");
+        return FinishRefusal();
+      }
+      if (!RequireSymbol(")", "graph_expand_close_required",
+                         "GRAPH_EXPAND requires a closing parenthesis")) {
+        return FinishRefusal();
+      }
+      NativeExpressionAstNode cycle_policy;
+      cycle_policy.expression_id = NextExpressionId();
+      cycle_policy.expression_kind = NativeExpressionAstKind::kLiteral;
+      cycle_policy.literal_kind = NativeLiteralAstKind::kString;
+      cycle_policy.spelling = "visited_set";
+      cycle_policy.range = TokenSourceRange(expand);
+      document_.expressions.push_back(std::move(cycle_policy));
+      const auto cycle_policy_expression_id =
+          document_.expressions.back().expression_id;
+      NativeExpressionAstNode root;
+      root.expression_id = NextExpressionId();
+      root.expression_kind = NativeExpressionAstKind::kFunctionCall;
+      root.child_expression_ids = {alias_expression_id,
+                                   direction_expression_id,
+                                   minimum_expression_id,
+                                   maximum_expression_id,
+                                   cycle_policy_expression_id};
+      root.operator_name = "GRAPH_EXPAND";
+      root.spelling = SourceSpelling(expand, Previous());
+      root.range = Span(expand, Previous());
+      document_.expressions.push_back(std::move(root));
+      relation.predicate_expression_ids = {
+          document_.expressions.back().expression_id};
+      source.model_operation_id = "GRAPH_EXPAND";
+      source.model_graph_minimum_depth = minimum_depth;
+      source.model_graph_maximum_depth = maximum_depth;
+      if (!AtEnd() && IsWord(Current(), "AS")) {
+        Consume();
+        if (AtEnd() || !IsNameToken(Current())) {
+          Refuse("graph_expand_alias_invalid",
+                 "GRAPH_EXPAND AS requires a result identifier");
+          return FinishRefusal();
+        }
+        const Token& result_alias = Consume();
+        source.alias = NativeIdentifierAstNode{
+            result_alias.text, result_alias.quoted,
+            TokenSourceRange(result_alias)};
+        source.alias_is_explicit = true;
+        source_end = &result_alias;
+      } else {
+        source.alias = source.model_source_alias;
+        source.alias_is_explicit = false;
+      }
+    } else {
+      if (AtEnd() || !IsWord(Current(), "WHERE")) {
+        Refuse("graph_match_required",
+               "GRAPH_SOURCE requires typed GRAPH_MATCH in this bounded profile");
+        return FinishRefusal();
+      }
+      Consume();
+      if (AtEnd() || !IsWord(Current(), "GRAPH_MATCH")) {
+        Refuse("graph_match_required", "graph WHERE requires GRAPH_MATCH");
+        return FinishRefusal();
+      }
+      const Token& match = Consume();
+      if (!RequireSymbol("(", "graph_match_open_required",
+                         "GRAPH_MATCH requires an opening parenthesis") ||
+          AtEnd() || !IsNameToken(Current())) {
+        return FinishRefusal();
+      }
+      const Token& alias = Consume();
+      if (!SameIdentifier(*source.alias, alias)) {
+        Refuse("graph_alias_mismatch",
+               "GRAPH_MATCH alias does not name GRAPH_SOURCE");
+        return FinishRefusal();
+      }
+      const auto alias_expression_id = append_alias_expression(alias);
+      source.model_graph_alias_expression_id = alias_expression_id;
+      if (!RequireSymbol(",", "graph_pattern_required",
+                         "GRAPH_MATCH requires a typed pattern literal") ||
+          AtEnd() || Current().kind != TokenKind::kStringLiteral) {
+        Refuse("graph_pattern_invalid",
+               "GRAPH_MATCH pattern must be a typed string literal");
+        return FinishRefusal();
+      }
+      const Token& pattern = Consume();
+      if (!ExactBoundedGraphPatternV1(pattern.text)) {
+        RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "GRAPH_MATCH typed pattern is outside the bounded profile");
+        return FinishRefusal();
+      }
+      const auto pattern_expression_id =
+          append_literal(pattern, NativeLiteralAstKind::kString);
+      source.model_pattern_expression_id = pattern_expression_id;
+      if (!RequireSymbol(")", "graph_match_close_required",
+                         "GRAPH_MATCH requires a closing parenthesis")) {
+        return FinishRefusal();
+      }
+      NativeExpressionAstNode root;
+      root.expression_id = NextExpressionId();
+      root.expression_kind = NativeExpressionAstKind::kFunctionCall;
+      root.child_expression_ids = {alias_expression_id,
+                                   pattern_expression_id};
+      root.operator_name = "GRAPH_MATCH";
+      root.spelling = SourceSpelling(match, Previous());
+      root.range = Span(match, Previous());
+      document_.expressions.push_back(std::move(root));
+      relation.predicate_expression_ids = {
+          document_.expressions.back().expression_id};
+      source_end = &Previous();
+    }
+
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      Refuse("graph_trailing_input",
+             "unexpected input follows the bounded graph model query");
+      return FinishRefusal();
+    }
+    relation.range = Span(source_operator, *source_end);
+    source.range = relation.range;
     document_.catalog_relation_sources.push_back(std::move(source));
     document_.relations.push_back(std::move(relation));
     document_.root_relation_id = 1;

@@ -41,15 +41,16 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
     refuse(input_validation.diagnostic_id.c_str(), input_validation.detail);
     return result;
   }
+  const bool graph_family = request.input.family_id == "graph";
   if (request.current_catalog_generation != request.input.catalog_generation) {
     refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
-           "document catalog generation changed before provider access");
+           "model-family catalog generation changed before provider access");
     return result;
   }
   if (request.current_descriptor_generation !=
       request.input.descriptor_generation) {
     refuse(kModelTypedExchangeInvalid,
-           "document descriptor generation changed before provider access");
+           "model-family descriptor generation changed before provider access");
     return result;
   }
   if (request.current_security_generation !=
@@ -58,13 +59,13 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
       request.current_resource_generation !=
           request.input.resource_generation) {
     refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
-           "document authority generation changed before access");
+           "model-family authority generation changed before access");
     return result;
   }
   if (request.current_provider_generation !=
       request.input.provider_generation) {
     refuse("SB_MODEL_PROVIDER_GENERATION_STALE_V1",
-           "document provider generation changed before access");
+           "model-family provider generation changed before access");
     return result;
   }
 
@@ -72,7 +73,8 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
       request.capability.capability_descriptor_id !=
           "SB_MODEL_CAPABILITY_DESCRIPTOR_V1" ||
       request.capability.family_id != request.input.family_id ||
-      request.capability.family_id != "document" ||
+      (request.capability.family_id != "document" &&
+       request.capability.family_id != "graph") ||
       request.capability.capability_uuid !=
           request.input.capability_uuid ||
       request.capability.provider_uuid != request.input.provider_uuid ||
@@ -91,18 +93,19 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
       !request.execute_provider || !request.cancellation_requested ||
       !request.cleanup_provider) {
     refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
-           "document executor capability is unavailable or semantically invalid");
+           "model-family executor capability is unavailable or semantically invalid");
     return result;
   }
   if (request.exact_fallback_selected &&
       !request.capability.exact_collection_fallback_available) {
-    refuse("SB_MODEL_DOCUMENT_EXACT_FALLBACK_UNAVAILABLE_V1",
-           "the exact document collection scan fallback is unavailable");
+    refuse(graph_family ? "SB_MODEL_GRAPH_EXACT_FALLBACK_UNAVAILABLE_V1"
+                        : "SB_MODEL_DOCUMENT_EXACT_FALLBACK_UNAVAILABLE_V1",
+           "the exact model-family fallback is unavailable");
     return result;
   }
   if (!request.security_admitted) {
     refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
-           "document provider access was not admitted by engine security");
+           "model-family provider access was not admitted by engine security");
     return result;
   }
   if (!PhysicalMgaStatementContextValid(
@@ -117,18 +120,18 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
   if (request.input.maximum_memory_bytes == 0 ||
       request.input.maximum_rows == 0 || request.input.maximum_cells == 0) {
     refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
-           "document executor has no bounded resource admission");
+           "model-family executor has no bounded resource admission");
     return result;
   }
   try {
     if (request.cancellation_requested()) {
       refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
-             "document execution was cancelled before data access");
+             "model-family execution was cancelled before data access");
       return result;
     }
   } catch (...) {
     refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
-           "document cancellation probe failed before data access");
+           "model-family cancellation probe failed before data access");
     return result;
   }
 
@@ -146,14 +149,14 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
       result.accepted = false;
       result.root_published = false;
       result.diagnostic_id = "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
-      result.detail = "document provider cleanup failed";
+      result.detail = "model-family provider cleanup failed";
     }
     return result.cleanup_complete;
   };
 
   if (request.fault_injected) {
     refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
-           "document provider leg failed before exchange");
+           "model-family provider leg failed before exchange");
     cleanup_once();
     return result;
   }
@@ -162,7 +165,7 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
     provider = request.execute_provider(request.input);
   } catch (...) {
     refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
-           "document provider threw during execution");
+           "model-family provider threw during execution");
     cleanup_once();
     return result;
   }
@@ -180,13 +183,13 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
   try {
     if (request.cancellation_requested()) {
       refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
-             "document execution was cancelled after provider access");
+             "model-family execution was cancelled after provider access");
       cleanup_once();
       return result;
     }
   } catch (...) {
     refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
-           "document cancellation probe failed after provider access");
+           "model-family cancellation probe failed after provider access");
     cleanup_once();
     return result;
   }
@@ -200,13 +203,13 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
   try {
     if (request.cancellation_requested()) {
       refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
-             "document execution was cancelled before root publication");
+             "model-family execution was cancelled before root publication");
       cleanup_once();
       return result;
     }
   } catch (...) {
     refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
-           "document cancellation probe failed before root publication");
+           "model-family cancellation probe failed before root publication");
     cleanup_once();
     return result;
   }

@@ -1452,6 +1452,8 @@ std::string NativeRelationSourceAstKindName(
       return "catalog_relation";
     case NativeRelationSourceAstKind::kDocument:
       return "document";
+    case NativeRelationSourceAstKind::kGraph:
+      return "graph";
   }
   return "unknown";
 }
@@ -1613,8 +1615,39 @@ AstDocument BuildAst(const CstDocument& cst) {
         });
     bool document_resolution_description_valid = true;
     std::size_t document_source_count = 0;
+    std::size_t document_collection_source_count = 0;
+    bool graph_resolution_description_valid = true;
+    std::size_t graph_source_count = 0;
     for (const auto& source :
          ast.native_relational.catalog_relation_sources) {
+      if (source.source_kind == NativeRelationSourceAstKind::kGraph) {
+        ++graph_source_count;
+        const bool graph_match =
+            source.model_operation_id == "GRAPH_MATCH";
+        const bool graph_expand =
+            source.model_operation_id == "GRAPH_EXPAND";
+        graph_resolution_description_valid =
+            graph_resolution_description_valid &&
+            source.model_family_id == "graph" &&
+            (graph_match || graph_expand) && !source.qualified_name.empty() &&
+            source.alias.has_value() &&
+            source.model_graph_alias_expression_id.has_value() &&
+            source.model_graph_cycle_policy == "visited_set" &&
+            ((graph_match && source.model_pattern_expression_id.has_value() &&
+              source.model_graph_direction.empty() &&
+              !source.model_graph_minimum_depth.has_value() &&
+              !source.model_graph_maximum_depth.has_value()) ||
+             (graph_expand && !source.model_pattern_expression_id.has_value() &&
+              !source.model_graph_direction.empty() &&
+              source.model_graph_minimum_depth.has_value() &&
+              source.model_graph_maximum_depth.has_value() &&
+              *source.model_graph_minimum_depth <=
+                  *source.model_graph_maximum_depth));
+        ast.native_relational.model_object_resolution_requests.push_back(
+            {source.source_id, "graph", "graph", source.qualified_name,
+             source.qualified_name_range});
+        continue;
+      }
       if (source.source_kind != NativeRelationSourceAstKind::kDocument) {
         continue;
       }
@@ -1636,18 +1669,24 @@ AstDocument BuildAst(const CstDocument& cst) {
         document_resolution_description_valid = false;
         continue;
       }
+      ++document_collection_source_count;
       ast.native_relational.model_object_resolution_requests.push_back(
           {source.source_id, "document", "document_collection",
            source.qualified_name, source.qualified_name_range});
     }
-    if (document_source_count > 1 ||
-        ast.native_relational.model_object_resolution_requests.size() > 1 ||
-        !document_resolution_description_valid) {
+    const auto expected_model_resolution_count =
+        document_collection_source_count + graph_source_count;
+    if (document_source_count > 1 || graph_source_count > 1 ||
+        expected_model_resolution_count > 1 ||
+        ast.native_relational.model_object_resolution_requests.size() !=
+            expected_model_resolution_count ||
+        !document_resolution_description_valid ||
+        !graph_resolution_description_valid) {
       ast.native_relational.status =
           NativeRelationalParseStatus::kRefused;
       ast.native_relational.messages.diagnostics.push_back(MakeDiagnostic(
           "SB_MODEL_BINDING_INCOMPLETE_V1", "ERROR",
-          "document model object-resolution description is ambiguous or incomplete",
+          "model object-resolution description is ambiguous or incomplete",
           "sbp_sbsql.ast"));
       ast.messages.diagnostics.push_back(
           ast.native_relational.messages.diagnostics.back());

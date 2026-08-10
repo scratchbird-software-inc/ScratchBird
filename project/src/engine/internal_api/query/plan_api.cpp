@@ -166,7 +166,43 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       });
   const bool document_expand_wire =
       planning_wire && document_expand_count == 1 &&
-      document_expand_node != dag.nodes.end();
+      document_expand_node != dag.nodes.end() &&
+      std::ranges::count_if(dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "DOCUMENT_UNNEST";
+      }) == 1;
+  const auto graph_operation_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "GRAPH_MATCH" ||
+               expression.operator_name == "GRAPH_EXPAND";
+      });
+  const auto graph_operation_expression = std::ranges::find_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "GRAPH_MATCH" ||
+               expression.operator_name == "GRAPH_EXPAND";
+      });
+  const auto graph_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1" ||
+               node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1";
+      });
+  const auto graph_model_node_count = std::ranges::count_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1" ||
+               node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1";
+      });
+  const bool graph_model_wire =
+      planning_wire && graph_operation_count == 1 &&
+      graph_model_node_count == 1 &&
+      graph_operation_expression != dag.expressions.end() &&
+      graph_node != dag.nodes.end() &&
+      ((graph_operation_expression->operator_name == "GRAPH_MATCH" &&
+        graph_node->semantic_variant_id == "SBLR_MODEL_SOURCE_V1") ||
+       (graph_operation_expression->operator_name == "GRAPH_EXPAND" &&
+        graph_node->semantic_variant_id == "SBLR_MODEL_EXPAND_V1"));
+  if (graph_operation_count != 0 && !graph_model_wire) {
+    return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
+                  "graph_model_operation_identity");
+  }
   std::size_t planning_reference_count = 0;
   const auto add_planning_references = [&](const std::size_t count) {
     if (count > limits.maximum_property_references -
@@ -244,15 +280,20 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         document_expand_node->bound_expression_ids.size() == 1 &&
         document_expand_node->bound_expression_ids.front() ==
             expression.expression_id;
+    const bool functionless_graph_operation =
+        graph_model_wire && function_call &&
+        !expression.function_uuid.has_value() &&
+        expression.expression_id == graph_operation_expression->expression_id;
     const bool operator_expression =
         expression.expression_kind == RelationalExpressionKind::kUnary ||
         expression.expression_kind == RelationalExpressionKind::kBinary ||
-        functionless_document_unnest;
+        functionless_document_unnest || functionless_graph_operation;
     if (literal != expression.literal_kind.has_value() ||
         (expression.literal_kind.has_value() &&
          !known_literal_kind(*expression.literal_kind)) ||
         function_call != (expression.function_uuid.has_value() ||
-                          functionless_document_unnest) ||
+                          functionless_document_unnest ||
+                          functionless_graph_operation) ||
         (expression.function_uuid.has_value() &&
          !canonical_uuid(*expression.function_uuid)) ||
         identifier != expression.bound_name_uuid.has_value() ||
@@ -270,7 +311,12 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     const bool valid_arity =
         ((literal || parameter || identifier) && child_count == 0) ||
         (function_call &&
-         (!functionless_document_unnest || child_count == 2)) ||
+         ((!functionless_document_unnest &&
+           !functionless_graph_operation) ||
+          (functionless_document_unnest && child_count == 2) ||
+          (functionless_graph_operation &&
+           ((expression.operator_name == "GRAPH_MATCH" && child_count == 2) ||
+            (expression.operator_name == "GRAPH_EXPAND" && child_count == 5))))) ||
         (expression.expression_kind == RelationalExpressionKind::kUnary &&
          child_count == 1) ||
         (expression.expression_kind == RelationalExpressionKind::kBinary &&
@@ -771,6 +817,13 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                     "output_relation_node_id");
     }
   }
+  if (std::ranges::any_of(dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id ==
+               "SBLR_GRAPH_UNBOUNDED_EXPAND_V1";
+      })) {
+    return refuse("SB_MODEL_GRAPH_UNBOUNDED_EXPANSION_REFUSED_V1", 0,
+                  "graph_expansion_semantic");
+  }
   if (document_expand_wire) {
     const auto& node = *document_expand_node;
     std::vector<const RelationalOutputRecord*> expand_outputs;
@@ -881,6 +934,280 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         !complete_reachability) {
       return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
                     "document_unnest_expression_root");
+    }
+  }
+  if (graph_model_wire) {
+    // QOW-SOURCE-RCP-074-TYPED-DAG-FUNCTIONLESS-GRAPH-V1
+    const auto& node = *graph_node;
+    const auto& root = *graph_operation_expression;
+    std::vector<const RelationalOutputRecord*> graph_outputs;
+    for (const auto& output : dag.outputs) {
+      if (output.relation_node_id == node.node_id) {
+        graph_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(graph_outputs, [](const auto* left, const auto* right) {
+      return left->ordinal < right->ordinal;
+    });
+    const auto exact_literal = [](const RelationalExpressionRecord* expression,
+                                  const RelationalLiteralKind literal_kind) {
+      return expression != nullptr &&
+             expression->expression_kind == RelationalExpressionKind::kLiteral &&
+             expression->literal_kind == literal_kind &&
+             expression->literal_or_parameter_ref.has_value() &&
+             !expression->literal_or_parameter_ref->empty() &&
+             expression->child_expression_ids.empty() &&
+             !expression->function_uuid.has_value() &&
+             !expression->bound_name_uuid.has_value() &&
+             !expression->operator_name.has_value();
+    };
+    const auto expression_at = [&](const std::size_t ordinal)
+        -> const RelationalExpressionRecord* {
+      if (ordinal >= root.child_expression_ids.size()) return nullptr;
+      const auto found =
+          expressions_by_id.find(root.child_expression_ids[ordinal]);
+      return found == expressions_by_id.end() ? nullptr : found->second;
+    };
+    const auto* alias = expression_at(0);
+    const std::unordered_set<std::uint32_t> operation_child_ids(
+        root.child_expression_ids.begin(), root.child_expression_ids.end());
+    const bool exact_alias =
+        node.required_object_uuids.size() == 1 && alias != nullptr &&
+        alias->expression_kind == RelationalExpressionKind::kIdentifier &&
+        alias->child_expression_ids.empty() && alias->bound_name_uuid.has_value() &&
+        *alias->bound_name_uuid == node.required_object_uuids.front() &&
+        !alias->function_uuid.has_value() && !alias->literal_kind.has_value() &&
+        !alias->literal_or_parameter_ref.has_value() &&
+        !alias->operator_name.has_value();
+    bool exact_operation =
+        exact_alias &&
+        operation_child_ids.size() == root.child_expression_ids.size();
+    if (root.operator_name == "GRAPH_MATCH") {
+      const auto* pattern = expression_at(1);
+      const auto exact_pattern = [](const std::string_view value) {
+        if (value == "vertex(*)") return true;
+        constexpr std::string_view kPrefix = "vertex(label=";
+        if (!value.starts_with(kPrefix) || !value.ends_with(')') ||
+            value.size() <= kPrefix.size() + 1) {
+          return false;
+        }
+        const auto label = value.substr(
+            kPrefix.size(), value.size() - kPrefix.size() - 1);
+        const auto start = [](const unsigned char ch) {
+          return (ch >= 'A' && ch <= 'Z') ||
+                 (ch >= 'a' && ch <= 'z') || ch == '_';
+        };
+        return start(static_cast<unsigned char>(label.front())) &&
+               std::ranges::all_of(
+                   label.substr(1), [&](const unsigned char ch) {
+                     return start(ch) || (ch >= '0' && ch <= '9');
+                   });
+      };
+      exact_operation = exact_operation && root.child_expression_ids.size() == 2 &&
+                        exact_literal(pattern,
+                                      RelationalLiteralKind::kString) &&
+                        exact_pattern(*pattern->literal_or_parameter_ref);
+    } else {
+      const auto* direction = expression_at(1);
+      const auto* minimum = expression_at(2);
+      const auto* maximum = expression_at(3);
+      const auto* cycle = expression_at(4);
+      const auto uppercase = [](std::string value) {
+        std::ranges::transform(value, value.begin(), [](const unsigned char ch) {
+          return static_cast<char>(std::toupper(ch));
+        });
+        return value;
+      };
+      std::uint64_t minimum_depth = 0;
+      std::uint64_t maximum_depth = 0;
+      const auto parse_unsigned = [](const std::string& value,
+                                     std::uint64_t* parsed) {
+        if (value.empty()) return false;
+        const auto result = std::from_chars(
+            value.data(), value.data() + value.size(), *parsed);
+        return result.ec == std::errc{} &&
+               result.ptr == value.data() + value.size();
+      };
+      const bool direction_exact =
+          exact_literal(direction, RelationalLiteralKind::kString) &&
+          (uppercase(*direction->literal_or_parameter_ref) == "OUTGOING" ||
+           uppercase(*direction->literal_or_parameter_ref) == "INCOMING" ||
+           uppercase(*direction->literal_or_parameter_ref) == "BOTH");
+      const bool minimum_exact =
+          exact_literal(minimum, RelationalLiteralKind::kNumeric) &&
+          parse_unsigned(*minimum->literal_or_parameter_ref, &minimum_depth);
+      const bool maximum_exact =
+          exact_literal(maximum, RelationalLiteralKind::kNumeric) &&
+          parse_unsigned(*maximum->literal_or_parameter_ref, &maximum_depth);
+      exact_operation =
+          exact_operation && root.child_expression_ids.size() == 5 &&
+          direction_exact && minimum_exact && maximum_exact &&
+          minimum_depth <= maximum_depth &&
+          exact_literal(cycle, RelationalLiteralKind::kString) &&
+          *cycle->literal_or_parameter_ref == "visited_set";
+      if (!exact_operation) {
+        return refuse("SB_MODEL_GRAPH_UNBOUNDED_EXPANSION_REFUSED_V1",
+                      node.node_id, "graph_expand_operands");
+      }
+    }
+
+    std::unordered_set<std::uint32_t> reachable_expression_ids;
+    std::function<bool(std::uint32_t)> visit_graph_expression =
+        [&](const std::uint32_t expression_id) {
+          if (!reachable_expression_ids.insert(expression_id).second) return true;
+          const auto expression = expressions_by_id.find(expression_id);
+          if (expression == expressions_by_id.end()) return false;
+          return std::ranges::all_of(expression->second->child_expression_ids,
+                                     visit_graph_expression);
+        };
+    bool complete_reachability = visit_graph_expression(root.expression_id);
+    for (const auto& carrier_node : dag.nodes) {
+      for (const auto expression_id : carrier_node.bound_expression_ids) {
+        complete_reachability =
+            complete_reachability && visit_graph_expression(expression_id);
+      }
+    }
+    for (const auto& output : dag.outputs) {
+      complete_reachability = complete_reachability &&
+                              visit_graph_expression(output.expression_id);
+    }
+    for (const auto& row : dag.values_rows) {
+      for (const auto expression_id : row.expression_ids) {
+        complete_reachability = complete_reachability &&
+                                visit_graph_expression(expression_id);
+      }
+    }
+    for (const auto& grouping_set : dag.grouping_sets) {
+      for (const auto expression_id : grouping_set.expression_ids) {
+        complete_reachability = complete_reachability &&
+                                visit_graph_expression(expression_id);
+      }
+    }
+    for (const auto& definition : dag.window_definitions) {
+      for (const auto expression_id : definition.partition_expression_ids) {
+        complete_reachability = complete_reachability &&
+                                visit_graph_expression(expression_id);
+      }
+      for (const auto& term : definition.ordering_terms) {
+        complete_reachability = complete_reachability &&
+                                visit_graph_expression(term.expression_id);
+      }
+      if (definition.frame_start.has_value() &&
+          definition.frame_start->offset_expression_id.has_value()) {
+        complete_reachability =
+            complete_reachability && visit_graph_expression(
+                                         *definition.frame_start
+                                              ->offset_expression_id);
+      }
+      if (definition.frame_end.has_value() &&
+          definition.frame_end->offset_expression_id.has_value()) {
+        complete_reachability =
+            complete_reachability && visit_graph_expression(
+                                         *definition.frame_end
+                                              ->offset_expression_id);
+      }
+    }
+    for (const auto& invocation : dag.window_invocations) {
+      complete_reachability = complete_reachability &&
+                              visit_graph_expression(
+                                  invocation.function_expression_id);
+      for (const auto expression_id : invocation.argument_expression_ids) {
+        complete_reachability = complete_reachability &&
+                                visit_graph_expression(expression_id);
+      }
+    }
+    for (const auto& property : dag.properties) {
+      for (const auto expression_id : property.expression_ids) {
+        complete_reachability = complete_reachability &&
+                                visit_graph_expression(expression_id);
+      }
+      for (const auto& term : property.ordering_terms) {
+        complete_reachability = complete_reachability &&
+                                visit_graph_expression(term.expression_id);
+      }
+    }
+    complete_reachability =
+        complete_reachability &&
+        reachable_expression_ids.size() == dag.expressions.size();
+    std::unordered_set<std::uint32_t> reachable_descriptor_ids;
+    for (const auto expression_id : reachable_expression_ids) {
+      reachable_descriptor_ids.insert(
+          expressions_by_id.at(expression_id)->result_descriptor_id);
+    }
+    for (const auto& carrier_node : dag.nodes) {
+      reachable_descriptor_ids.insert(carrier_node.output_descriptor_ids.begin(),
+                                      carrier_node.output_descriptor_ids.end());
+    }
+    for (const auto& output : dag.outputs) {
+      reachable_descriptor_ids.insert(output.descriptor_id);
+    }
+    for (const auto& invocation : dag.window_invocations) {
+      reachable_descriptor_ids.insert(invocation.result_descriptor_id);
+    }
+    complete_reachability =
+        complete_reachability &&
+        reachable_descriptor_ids.size() == dag.descriptors.size() &&
+        std::ranges::all_of(dag.descriptors, [&](const auto& descriptor) {
+          return reachable_descriptor_ids.contains(descriptor.descriptor_id);
+        });
+    const auto graph_identity_descriptor =
+        node.output_descriptor_ids.empty()
+            ? descriptors_by_id.end()
+            : descriptors_by_id.find(node.output_descriptor_ids.front());
+    const bool exact_graph_uuid_literals =
+        graph_identity_descriptor != descriptors_by_id.end() &&
+        std::ranges::all_of(dag.expressions, [&](const auto& expression) {
+          if (expression.expression_kind !=
+                  RelationalExpressionKind::kLiteral ||
+              expression.result_descriptor_id == 0) {
+            return true;
+          }
+          const auto descriptor =
+              descriptors_by_id.find(expression.result_descriptor_id);
+          if (descriptor == descriptors_by_id.end() ||
+              descriptor->second->type_uuid !=
+                  graph_identity_descriptor->second->type_uuid) {
+            return true;
+          }
+          return expression.literal_kind == RelationalLiteralKind::kUuid &&
+                 expression.literal_or_parameter_ref.has_value() &&
+                 canonical_uuid(*expression.literal_or_parameter_ref);
+        });
+    const bool exact_graph_set_output_lineage =
+        std::ranges::none_of(dag.outputs, [&](const auto& output) {
+          const auto owner = nodes_by_id.find(output.relation_node_id);
+          return owner != nodes_by_id.end() &&
+                 owner->second->node_kind ==
+                     RelationalDagNodeKind::kSetOperation;
+        });
+    if (node.node_kind != RelationalDagNodeKind::kScan ||
+        !node.input_node_ids.empty() || node.required_object_uuids.size() != 1 ||
+        !canonical_uuid(node.required_object_uuids.front()) ||
+        node.bound_expression_ids.empty() || node.output_descriptor_ids.empty() ||
+        node.bound_expression_ids.size() != node.output_descriptor_ids.size() ||
+        graph_outputs.size() != node.output_descriptor_ids.size() ||
+        root.expression_kind != RelationalExpressionKind::kFunctionCall ||
+        root.function_uuid.has_value() || root.bound_name_uuid.has_value() ||
+        root.literal_kind.has_value() ||
+        root.literal_or_parameter_ref.has_value() || !exact_operation ||
+        !complete_reachability || !exact_graph_uuid_literals ||
+        !exact_graph_set_output_lineage) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                    "graph_model_operation_shape");
+    }
+    for (std::size_t ordinal = 0; ordinal < graph_outputs.size(); ++ordinal) {
+      const auto expression =
+          expressions_by_id.find(node.bound_expression_ids[ordinal]);
+      if (expression == expressions_by_id.end() ||
+          graph_outputs[ordinal]->expression_id !=
+              node.bound_expression_ids[ordinal] ||
+          graph_outputs[ordinal]->descriptor_id !=
+              node.output_descriptor_ids[ordinal] ||
+          expression->second->result_descriptor_id !=
+              node.output_descriptor_ids[ordinal]) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                      "graph_output_binding");
+      }
     }
   }
 
@@ -1613,6 +1940,77 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
     const auto& issue = validation.issues.front();
     return refuse(issue.diagnostic_id, issue.node_id, issue.field_id);
   }
+  // QOW-SOURCE-RCP-074-CANONICAL-MODEL-FAMILY-POPULATION-V1
+  // The family marker is derived only after complete typed-DAG admission.
+  // Preserve the exact operator/semantic pairing used by the validator; an
+  // object UUID by itself is never graph-family evidence.
+  const auto graph_operation_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "GRAPH_MATCH" ||
+               expression.operator_name == "GRAPH_EXPAND";
+      });
+  const auto graph_operation = std::ranges::find_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "GRAPH_MATCH" ||
+               expression.operator_name == "GRAPH_EXPAND";
+      });
+  const auto graph_node = std::ranges::find_if(
+      dag.nodes, [&](const auto& node) {
+        return graph_operation != dag.expressions.end() &&
+               ((graph_operation->operator_name == "GRAPH_MATCH" &&
+                 node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1") ||
+                (graph_operation->operator_name == "GRAPH_EXPAND" &&
+                 node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1"));
+      });
+  const auto graph_model_node_count = std::ranges::count_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1" ||
+               node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1";
+      });
+  const auto graph_alias =
+      graph_operation == dag.expressions.end() ||
+              graph_operation->child_expression_ids.empty()
+          ? dag.expressions.end()
+          : std::ranges::find_if(dag.expressions, [&](const auto& expression) {
+              return expression.expression_id ==
+                     graph_operation->child_expression_ids.front();
+            });
+  std::unordered_set<std::uint32_t> graph_child_ids;
+  if (graph_operation != dag.expressions.end()) {
+    graph_child_ids.insert(graph_operation->child_expression_ids.begin(),
+                           graph_operation->child_expression_ids.end());
+  }
+  const bool exact_graph_family =
+      dag.wire_version == 2 && graph_operation_count == 1 &&
+      graph_model_node_count == 1 && graph_operation != dag.expressions.end() &&
+      graph_node != dag.nodes.end() && graph_alias != dag.expressions.end() &&
+      graph_operation->expression_kind ==
+          RelationalExpressionKind::kFunctionCall &&
+      !graph_operation->function_uuid.has_value() &&
+      !graph_operation->bound_name_uuid.has_value() &&
+      !graph_operation->literal_kind.has_value() &&
+      !graph_operation->literal_or_parameter_ref.has_value() &&
+      graph_child_ids.size() == graph_operation->child_expression_ids.size() &&
+      graph_node->required_object_uuids.size() == 1 &&
+      graph_alias->expression_kind == RelationalExpressionKind::kIdentifier &&
+      graph_alias->bound_name_uuid.has_value() &&
+      *graph_alias->bound_name_uuid == graph_node->required_object_uuids.front();
+  const auto document_expand_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "DOCUMENT_UNNEST";
+      });
+  const auto document_expand_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1";
+      });
+  const bool exact_document_expand =
+      dag.wire_version == 2 && document_expand_count == 1 &&
+      document_expand_node != dag.nodes.end();
+  if ((exact_graph_family && exact_document_expand) ||
+      (graph_operation_count != 0 && !exact_graph_family)) {
+    return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
+                  "model_family_operation_identity");
+  }
   if (dag.wire_version != 2 ||
       !engine_scope.metadata_snapshot_engine_owned ||
       !engine_scope.authorization_context_engine_owned ||
@@ -1707,6 +2105,14 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
     logical_node.origin_relational_node_ids = {node.node_id};
     logical_node.required_object_uuids = node.required_object_uuids;
     logical_node.semantic_variant_id = node.semantic_variant_id;
+    if (exact_graph_family && node.node_id == graph_node->node_id) {
+      logical_node.model_family_identity =
+          plan::CanonicalLogicalModelFamilyIdentity::kGraph;
+    } else if (exact_document_expand &&
+               node.node_id == document_expand_node->node_id) {
+      logical_node.model_family_identity =
+          plan::CanonicalLogicalModelFamilyIdentity::kDocument;
+    }
     logical_node.shareable = node.shareable;
     graph.nodes.push_back(std::move(logical_node));
     if (node.node_id == dag.root_node_id) {

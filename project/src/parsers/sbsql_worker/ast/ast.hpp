@@ -10,12 +10,34 @@
 
 #include "cst/cst.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::parser::sbsql {
+
+inline bool ExactBoundedGraphPatternV1(const std::string_view pattern) {
+  if (pattern == "vertex(*)") return true;
+  constexpr std::string_view kPrefix = "vertex(label=";
+  if (!pattern.starts_with(kPrefix) || !pattern.ends_with(')') ||
+      pattern.size() <= kPrefix.size() + 1) {
+    return false;
+  }
+  const auto label =
+      pattern.substr(kPrefix.size(), pattern.size() - kPrefix.size() - 1);
+  const auto identifier_start = [](const unsigned char ch) {
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+           ch == '_';
+  };
+  const auto identifier_continue = [&](const unsigned char ch) {
+    return identifier_start(ch) || (ch >= '0' && ch <= '9');
+  };
+  return identifier_start(static_cast<unsigned char>(label.front())) &&
+         std::ranges::all_of(label.substr(1), identifier_continue);
+}
 
 enum class StatementFamily {
   kUnknown,
@@ -109,6 +131,7 @@ enum class NativeWindowFrameExclusion {
 enum class NativeRelationSourceAstKind {
   kCatalogRelation,
   kDocument,
+  kGraph,
 };
 
 enum class NativeAggregateGroupingForm {
@@ -187,9 +210,18 @@ struct NativeCatalogRelationSourceAstNode {
   bool alias_is_explicit{false};
   std::string model_family_id;
   std::string model_operation_id;
+  // For object-backed graph expansion this is the alias of the preceding
+  // GRAPH_SOURCE. `alias` remains the output alias of the model source.
+  std::optional<NativeIdentifierAstNode> model_source_alias;
   std::optional<std::uint32_t> model_document_expression_id;
   std::optional<std::uint32_t> model_path_expression_id;
   std::optional<std::uint32_t> model_value_expression_id;
+  std::optional<std::uint32_t> model_pattern_expression_id;
+  std::optional<std::uint32_t> model_graph_alias_expression_id;
+  std::string model_graph_direction;
+  std::optional<std::uint64_t> model_graph_minimum_depth;
+  std::optional<std::uint64_t> model_graph_maximum_depth;
+  std::string model_graph_cycle_policy;
   std::string model_comparison_operator;
   bool model_wildcard_path{false};
   SourceRange qualified_name_range;

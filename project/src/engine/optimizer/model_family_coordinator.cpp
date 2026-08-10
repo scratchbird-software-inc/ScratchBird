@@ -68,23 +68,40 @@ bool CandidateScore(const ModelFamilyCandidateV1& candidate,
 
 }  // namespace
 
-ModelFamilyCoordinatorResultV1 CoordinateDocumentFamilySourceV1(
+ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     const ModelFamilyCoordinatorRequestV1& request) {
-  // QOW-SOURCE-CES05-DOCUMENT-COORDINATOR-V1
+  // QOW-SOURCE-RCP-074-COMMON-MODEL-COORDINATOR-V1
   ModelFamilyCoordinatorResultV1 result;
-  result.logical_operator_id = "LOGICAL_DOCUMENT_SOURCE_V1";
-  result.physical_operator_id = "PHYSICAL_DOCUMENT_PATH_SCAN_V1";
+  const bool document_family = request.family_id == "document";
+  const bool graph_family = request.family_id == "graph";
+  const bool unnest = request.operation_id == "DOCUMENT_UNNEST";
+  const bool valid_operation =
+      (document_family &&
+       (request.operation_id == "DOCUMENT_FIND" ||
+        request.operation_id == "DOCUMENT_PATH" || unnest)) ||
+      (graph_family &&
+       (request.operation_id == "GRAPH_MATCH" ||
+        request.operation_id == "GRAPH_EXPAND"));
+  const std::string expected_logical_operator =
+      graph_family ? "LOGICAL_GRAPH_SOURCE_V1"
+                   : "LOGICAL_DOCUMENT_SOURCE_V1";
+  const std::string expected_physical_operator =
+      graph_family ? "PHYSICAL_GRAPH_ADJACENCY_SCAN_V1"
+                   : "PHYSICAL_DOCUMENT_PATH_SCAN_V1";
+  const std::string expected_implementation =
+      graph_family ? "physical_graph_adjacency_scan_v1"
+                   : "physical_document_path_scan_v1";
+  result.logical_operator_id = expected_logical_operator;
+  result.physical_operator_id = expected_physical_operator;
   const auto refuse = [&](const char* diagnostic, std::string detail) {
     result.diagnostic_id = diagnostic;
     result.detail = std::move(detail);
     return result;
   };
 
-  const bool unnest = request.operation_id == "DOCUMENT_UNNEST";
-  if (request.abi_version != 1 || request.family_id != "document" ||
-      (request.operation_id != "DOCUMENT_FIND" &&
-       request.operation_id != "DOCUMENT_PATH" && !unnest) ||
-      request.logical_operator_id != "LOGICAL_DOCUMENT_SOURCE_V1" ||
+  if (request.abi_version != 1 || (!document_family && !graph_family) ||
+      !valid_operation ||
+      request.logical_operator_id != expected_logical_operator ||
       request.logical_node_id == 0 || request.output_descriptor_ids.empty() ||
       (!unnest && !CanonicalUuid(request.object_uuid)) ||
       (unnest && !request.object_uuid.empty()) ||
@@ -104,15 +121,15 @@ ModelFamilyCoordinatorResultV1 CoordinateDocumentFamilySourceV1(
       request.parser_planning_authority_claimed ||
       request.transaction_finality_authority_claimed) {
     return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
-                  "document logical source request is incomplete");
+                  "model-family logical source request is incomplete");
   }
   if (request.catalog_generation != request.current_catalog_generation) {
     return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
-                  "document catalog generation is stale");
+                  "model-family catalog generation is stale");
   }
   if (!request.security_admitted) {
     return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
-                  "document source security admission was refused");
+                  "model-family source security admission was refused");
   }
 
   std::unordered_set<std::string> alternative_ids;
@@ -129,10 +146,10 @@ ModelFamilyCoordinatorResultV1 CoordinateDocumentFamilySourceV1(
         candidate.provider_generation == 0 || !candidate.engine_owned ||
         !candidate.local_scope || candidate.parser_planning_authority_claimed ||
         candidate.transaction_finality_authority_claimed ||
-        candidate.implementation_id != "physical_document_path_scan_v1" ||
+        candidate.implementation_id != expected_implementation ||
         !CandidateScore(candidate, &score)) {
       return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
-                    "document candidate domain is incomplete or duplicated");
+                    "model-family candidate domain is incomplete or duplicated");
     }
     fallback_seen = fallback_seen || candidate.exact_collection_fallback;
     if (!candidate.available || !candidate.exact ||
@@ -154,10 +171,12 @@ ModelFamilyCoordinatorResultV1 CoordinateDocumentFamilySourceV1(
   if (selected == nullptr) {
     if (fallback_seen) {
       return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
-                    "no exact document candidate fits the memory grant");
+                    "no exact model-family candidate fits the memory grant");
     }
-    return refuse("SB_MODEL_DOCUMENT_EXACT_FALLBACK_UNAVAILABLE_V1",
-                  "no exact document provider or collection fallback is available");
+    return refuse(graph_family
+                      ? "SB_MODEL_GRAPH_EXACT_FALLBACK_UNAVAILABLE_V1"
+                      : "SB_MODEL_DOCUMENT_EXACT_FALLBACK_UNAVAILABLE_V1",
+                  "no exact model-family provider or fallback is available");
   }
 
   using namespace scratchbird::engine::executor;
@@ -198,7 +217,9 @@ ModelFamilyCoordinatorResultV1 CoordinateDocumentFamilySourceV1(
   node.memory_bytes_required = selected->cost.memory_bytes_required;
   node.engine_capability_validated = true;
   node.mga_statement_context = request.mga_statement_context;
-  node.logical_semantic_variant_id = "logical_document_source_v1";
+  node.logical_semantic_variant_id =
+      graph_family ? "logical_graph_source_v1"
+                   : "logical_document_source_v1";
   dag.nodes.push_back(std::move(node));
   dag.bound_sblr_tree_uuid = request.bound_sblr_tree_uuid;
   dag.catalog_epoch_uuid = request.catalog_epoch_uuid;
@@ -222,7 +243,7 @@ ModelFamilyCoordinatorResultV1 CoordinateDocumentFamilySourceV1(
   const auto validation = ValidateTypedPhysicalNodeDag(dag);
   if (!validation.accepted) {
     return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
-                  "document physical DAG failed canonical ABI validation");
+                  "model-family physical DAG failed canonical ABI validation");
   }
   result.accepted = true;
   result.selected = true;
@@ -232,6 +253,11 @@ ModelFamilyCoordinatorResultV1 CoordinateDocumentFamilySourceV1(
   result.selected_candidate = *selected;
   result.physical_dag = std::move(dag);
   return result;
+}
+
+ModelFamilyCoordinatorResultV1 CoordinateDocumentFamilySourceV1(
+    const ModelFamilyCoordinatorRequestV1& request) {
+  return CoordinateModelFamilySourceV1(request);
 }
 
 }  // namespace scratchbird::engine::optimizer

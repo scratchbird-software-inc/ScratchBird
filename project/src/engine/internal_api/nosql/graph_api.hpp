@@ -16,6 +16,8 @@
 
 namespace scratchbird::engine::internal_api {
 
+struct MgaRelationStorageDescriptor;
+
 inline constexpr const char* kGraphPhysicalProofMissing =
     "SB_GRAPH_PHYSICAL_PROOF_MISSING";
 inline constexpr const char* kGraphVertexIndexProofMissing =
@@ -38,6 +40,10 @@ inline constexpr const char* kGraphSeedRequired =
     "SB_GRAPH_SEED_REQUIRED";
 inline constexpr const char* kGraphVertexCorpusRequired =
     "SB_GRAPH_VERTEX_CORPUS_REQUIRED";
+inline constexpr const char* kGraphExactFallbackUnavailable =
+    "SB_MODEL_GRAPH_EXACT_FALLBACK_UNAVAILABLE_V1";
+inline constexpr const char* kGraphUnboundedExpansionRefused =
+    "SB_MODEL_GRAPH_UNBOUNDED_EXPANSION_REFUSED_V1";
 
 enum class EngineGraphTraversalDirection {
   kOutgoing,
@@ -94,6 +100,10 @@ struct EngineGraphPhysicalProof {
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_NOSQL_GRAPH_API
 struct EngineGraphQueryRequest : EngineApiRequest {
   bool physical_query = false;
+  bool persistent_graph_source = false;
+  std::string graph_object_uuid;
+  std::uint64_t provider_generation = 0;
+  std::string typed_pattern_literal;
   std::vector<EngineGraphVertexInput> vertices;
   std::vector<EngineGraphEdgeInput> edges;
   std::vector<std::string> seed_vertex_ids;
@@ -106,16 +116,28 @@ struct EngineGraphQueryRequest : EngineApiRequest {
   EngineGraphTraversalDirection direction =
       EngineGraphTraversalDirection::kOutgoing;
   std::string edge_type_filter;
+  EngineApiU64 min_depth = 0;
   EngineApiU64 max_depth = 1;
+  EngineApiU64 maximum_scanned_row_versions = 4096;
+  EngineApiU64 maximum_decoded_bytes = 4 * 1024 * 1024;
+  EngineApiU64 maximum_output_rows = 4096;
   EngineGraphCyclePolicy cycle_policy = EngineGraphCyclePolicy::kVisitedSet;
   std::string bidirectional_start_vertex_id;
   std::string bidirectional_end_vertex_id;
   EngineGraphPhysicalProof physical_proof;
 };
 struct EngineGraphQueryResult : EngineApiResult {};
+bool EngineGraphDescriptorCohortExact(
+    const MgaRelationStorageDescriptor& descriptor);
 EngineGraphQueryResult EngineGraphQuery(const EngineGraphQueryRequest& request);
 
-struct EngineGraphWriteRequest : EngineApiRequest {};
+struct EngineGraphWriteRequest : EngineApiRequest {
+  bool structured_graph_persist = false;
+  std::string graph_object_uuid;
+  std::uint64_t provider_generation = 0;
+  std::vector<EngineGraphVertexInput> vertices;
+  std::vector<EngineGraphEdgeInput> edges;
+};
 struct EngineGraphWriteResult : EngineApiResult {};
 EngineGraphWriteResult EngineGraphWrite(const EngineGraphWriteRequest& request);
 

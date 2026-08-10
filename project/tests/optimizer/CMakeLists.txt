@@ -420,6 +420,19 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   set_tests_properties(qow_ces05_document_execution_v1 PROPERTIES
     LABELS "qow_closure;RCP-073;CES05;document;model_family;typed_exchange;mga_transaction_regression;development_candidate"
   )
+  # QOW-CMAKE-RCP-074-GRAPH-EXECUTION-V1
+  add_executable(qow_ces05_graph_execution_test_v1
+    qow_ces05_graph_execution.cpp)
+  target_compile_features(qow_ces05_graph_execution_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_ces05_graph_execution_test_v1 PRIVATE
+    sb_qow_canonical_candidate_legality
+    sb_engine_executor
+  )
+  add_test(NAME qow_ces05_graph_execution_v1
+    COMMAND qow_ces05_graph_execution_test_v1)
+  set_tests_properties(qow_ces05_graph_execution_v1 PROPERTIES
+    LABELS "qow_closure;RCP-074;CES05;graph;model_family;typed_exchange;mga_transaction_regression;development_candidate"
+  )
   # Dependency-ordered QOW optimizer targets are added above this return by
   # their owning leaves. The broad optimizer suite remains disabled.
   set(SB_QOW_OPTIMIZER_TESTS_ENROLLED TRUE PARENT_SCOPE)
@@ -449,6 +462,24 @@ add_test(NAME qow_ces05_document_collection_exchange_v1
           $<TARGET_FILE:qow_ces05_document_production_route_test_v1>)
 set_tests_properties(qow_ces05_document_collection_exchange_v1 PROPERTIES
   LABELS "qow_closure;RCP-073;CES05;document;collection_isolation;nullable_missing;typed_exchange;mga_transaction_regression;development_candidate"
+)
+
+# QOW-CMAKE-RCP-074-GRAPH-PRODUCTION-QUERY-ROUTE-V1
+add_executable(qow_ces05_graph_production_route_test_v1
+  qow_ces05_graph_execution.cpp)
+target_compile_features(qow_ces05_graph_production_route_test_v1 PRIVATE
+  cxx_std_20)
+target_compile_definitions(qow_ces05_graph_production_route_test_v1 PRIVATE
+  SB_CES05_GRAPH_PRODUCTION_QUERY_ROUTE=1)
+target_link_libraries(qow_ces05_graph_production_route_test_v1 PRIVATE
+  sb_engine_sblr
+  sb_core_uuid
+  sb_storage_database
+)
+add_test(NAME qow_ces05_graph_production_route_v1
+  COMMAND qow_ces05_graph_production_route_test_v1)
+set_tests_properties(qow_ces05_graph_production_route_v1 PROPERTIES
+  LABELS "qow_closure;RCP-074;CES05;graph;production_query_execute;typed_exchange;mga_transaction_regression;development_candidate"
 )
 
 add_executable(

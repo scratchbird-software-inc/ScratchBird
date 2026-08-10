@@ -183,6 +183,16 @@ enum class CanonicalLogicalRelationalNodeKind : std::uint8_t {
   kTableFunctionInvoke,
 };
 
+// QOW-SOURCE-RCP-074-CANONICAL-MODEL-FAMILY-IDENTITY-V1
+// Closed semantic provenance populated only after exact typed-DAG model
+// operation admission.  It does not grant planning, access, visibility, or
+// transaction-finality authority.
+enum class CanonicalLogicalModelFamilyIdentity : std::uint8_t {
+  kUnspecified = 0,
+  kDocument,
+  kGraph,
+};
+
 struct CanonicalLogicalRelationalNode {
   std::uint32_t logical_node_id{0};
   CanonicalLogicalRelationalNodeKind node_kind{
@@ -196,6 +206,8 @@ struct CanonicalLogicalRelationalNode {
   bool shareable{false};
   std::vector<std::string> required_property_uuids;
   std::vector<std::string> delivered_property_uuids;
+  CanonicalLogicalModelFamilyIdentity model_family_identity{
+      CanonicalLogicalModelFamilyIdentity::kUnspecified};
 };
 
 struct CanonicalLogicalRelationalGraph {
@@ -310,6 +322,13 @@ ValidateCanonicalLogicalRelationalGraph(
            kind <=
                CanonicalLogicalRelationalNodeKind::kTableFunctionInvoke;
   };
+  const auto known_model_family = [](
+                                      const CanonicalLogicalModelFamilyIdentity
+                                          family) {
+    return family == CanonicalLogicalModelFamilyIdentity::kUnspecified ||
+           family == CanonicalLogicalModelFamilyIdentity::kDocument ||
+           family == CanonicalLogicalModelFamilyIdentity::kGraph;
+  };
   constexpr std::string_view kModelSourceSemantic =
       "SBLR_MODEL_SOURCE_V1";
   constexpr std::string_view kModelExpandSemantic =
@@ -402,18 +421,30 @@ ValidateCanonicalLogicalRelationalGraph(
         node.semantic_variant_id == kModelSourceSemantic;
     const bool model_expand =
         node.semantic_variant_id == kModelExpandSemantic;
-    if ((model_source || model_expand) &&
-        (node.node_kind !=
-             CanonicalLogicalRelationalNodeKind::kRelationSource ||
-         !node.input_logical_node_ids.empty() ||
-         node.bound_expression_ids.empty() ||
-         node.output_descriptor_ids.empty() ||
-         node.bound_expression_ids.size() !=
-             node.output_descriptor_ids.size() ||
-         (model_source &&
-          (node.required_object_uuids.size() != 1 ||
-           !canonical_uuid(node.required_object_uuids.front()))) ||
-         (model_expand && !node.required_object_uuids.empty()))) {
+    const bool model_semantic = model_source || model_expand;
+    const bool graph_family =
+        node.model_family_identity ==
+        CanonicalLogicalModelFamilyIdentity::kGraph;
+    if (!known_model_family(node.model_family_identity) ||
+        (!model_semantic &&
+         node.model_family_identity !=
+             CanonicalLogicalModelFamilyIdentity::kUnspecified) ||
+        (model_semantic &&
+         (node.node_kind !=
+              CanonicalLogicalRelationalNodeKind::kRelationSource ||
+          !node.input_logical_node_ids.empty() ||
+          node.bound_expression_ids.empty() ||
+          node.output_descriptor_ids.empty() ||
+          node.bound_expression_ids.size() !=
+              node.output_descriptor_ids.size() ||
+          (model_source &&
+           (node.required_object_uuids.size() != 1 ||
+            !canonical_uuid(node.required_object_uuids.front()))) ||
+          (model_expand && graph_family &&
+           (node.required_object_uuids.size() != 1 ||
+            !canonical_uuid(node.required_object_uuids.front()))) ||
+          (model_expand && !graph_family &&
+           !node.required_object_uuids.empty())))) {
       return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.logical_node_id,
                     "model_semantic_node_shape");
     }

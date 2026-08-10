@@ -13,12 +13,14 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace sbsql = scratchbird::parser::sbsql;
 
 namespace scratchbird::parser::sbsql {
 std::uint64_t Rcp073DocumentFrontdoorProofMaskForTest();
+std::uint64_t Rcp074GraphFrontdoorProofMaskForTest();
 }
 
 namespace {
@@ -49,6 +51,18 @@ bool HasOperand(const sbsql::SblrEnvelope& envelope,
     return operand.type == type && operand.name == name &&
            (value.empty() || operand.value == value);
   });
+}
+
+std::string DiagnosticSummary(const sbsql::MessageVectorSet& messages) {
+  std::string summary;
+  for (const auto& diagnostic : messages.diagnostics) {
+    if (!summary.empty()) summary += ",";
+    summary += diagnostic.code + ":" + diagnostic.message;
+    for (const auto& field : diagnostic.fields) {
+      summary += ":" + field.name + "=" + field.value;
+    }
+  }
+  return summary;
 }
 
 sbsql::ParserConfig Config() {
@@ -243,6 +257,115 @@ sbsql::NativeRelationalBindingContext ContextFor(
                       {2, Uuid(752), 3, "payload"}};
     context.catalog_relations.push_back(std::move(source));
   }
+  return context;
+}
+
+sbsql::NativeRelationalBindingContext GraphContextFor(
+    const sbsql::NativeRelationalAstDocument& ast) {
+  auto context = ContextFor(ast, false);
+  context.descriptors = {
+      {1, Uuid(721), Uuid(731), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {2, Uuid(722), Uuid(731), sbsql::BoundNullability::kNullable,
+       std::nullopt, std::nullopt, {}},
+      {3, Uuid(723), Uuid(731), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {4, Uuid(724), Uuid(733), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {5, Uuid(725), Uuid(733), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {6, Uuid(726), Uuid(733), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {7, Uuid(727), Uuid(733), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {8, Uuid(728), Uuid(732), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {9, Uuid(729), Uuid(733), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+  };
+  context.expressions.clear();
+  context.outputs.clear();
+  context.relations.clear();
+  context.catalog_relations.clear();
+  const bool wildcard = std::ranges::any_of(ast.expressions, [](const auto& e) {
+    return e.expression_kind == sbsql::NativeExpressionAstKind::kWildcard;
+  });
+  std::uint32_t next_expression = 101;
+  if (wildcard) {
+    static constexpr std::array<const char*, 9> kGraphColumns{
+        "vertex_uuid",       "edge_uuid",       "path_uuid",
+        "vertex_labels",     "vertex_properties", "edge_properties",
+        "direction",         "depth",           "cycle_policy"};
+    for (std::uint32_t ordinal = 0; ordinal < kGraphColumns.size(); ++ordinal) {
+      context.expressions.push_back(
+          {next_expression++, ordinal + 1, std::nullopt,
+           Uuid(750 + ordinal)});
+      context.outputs.push_back(
+          {ordinal + 1, context.expressions.back().expression_id,
+           kGraphColumns[ordinal],
+           ordinal + 1, true, ordinal, ast.relations.front().relation_id});
+    }
+  }
+  std::unordered_map<std::uint32_t, sbsql::NativeExpressionBindingInput>
+      binding_by_ast;
+  for (const auto& expression : ast.expressions) {
+    if (expression.expression_kind == sbsql::NativeExpressionAstKind::kWildcard) {
+      continue;
+    }
+    sbsql::NativeExpressionBindingInput input;
+    input.expression_id = next_expression++;
+    input.descriptor_id =
+        expression.literal_kind == sbsql::NativeLiteralAstKind::kNumeric
+            ? 8
+            : (expression.literal_kind == sbsql::NativeLiteralAstKind::kString
+                   ? 4
+                   : 1);
+    if (expression.expression_kind ==
+            sbsql::NativeExpressionAstKind::kIdentifier &&
+        expression.qualified_identifier.size() == 1) {
+      input.bound_name_uuid = Uuid(740);
+    }
+    context.expressions.push_back(input);
+    binding_by_ast.emplace(expression.expression_id, std::move(input));
+  }
+  if (!wildcard) {
+    for (std::size_t ordinal = 0;
+         ordinal < ast.relations.front().output_expression_ids.size(); ++ordinal) {
+      const auto& input =
+          binding_by_ast.at(ast.relations.front().output_expression_ids[ordinal]);
+      context.outputs.push_back(
+          {static_cast<std::uint32_t>(ordinal + 1), input.expression_id,
+           "graph_value_" + std::to_string(ordinal + 1), input.descriptor_id,
+           true, static_cast<std::uint32_t>(ordinal),
+           ast.relations.front().relation_id});
+    }
+  }
+  const auto& source_ast = ast.catalog_relation_sources.front();
+  context.relations.push_back(
+      {ast.relations.front().relation_id,
+       source_ast.model_operation_id == "GRAPH_EXPAND"
+           ? "sblr.model-expand.graph-expand.v1"
+           : "sblr.model-source.graph-match.v1"});
+  sbsql::NativeCatalogRelationBindingInput source;
+  source.source_id = source_ast.source_id;
+  source.resolution_state =
+      sbsql::NativeCatalogRelationResolutionState::kBound;
+  source.object_uuid = Uuid(740);
+  source.resolved_object_type = "graph";
+  source.resolved_schema_uuid = Uuid(742);
+  source.parent_object_uuid = Uuid(743);
+  source.catalog_generation_id = 7;
+  source.security_epoch = 7;
+  source.resource_epoch = 7;
+  static constexpr std::array<const char*, 9> kGraphColumns{
+      "vertex_uuid",       "edge_uuid",       "path_uuid",
+      "vertex_labels",     "vertex_properties", "edge_properties",
+      "direction",         "depth",           "cycle_policy"};
+  for (std::uint32_t ordinal = 0; ordinal < kGraphColumns.size(); ++ordinal) {
+    source.columns.push_back(
+        {ordinal, Uuid(750 + ordinal), ordinal + 1, kGraphColumns[ordinal]});
+  }
+  context.catalog_relations.push_back(std::move(source));
   return context;
 }
 
@@ -533,11 +656,243 @@ bool ExactRefusals() {
   return passed;
 }
 
+bool GraphGrammarBindingLowering() {
+  const auto match_cst = sbsql::BuildCst(
+      "SELECT * FROM GRAPH_SOURCE(app.graph_fixture) AS g "
+      "WHERE GRAPH_MATCH(g, 'vertex(label=Person)');");
+  const auto match_ast = sbsql::BuildAst(match_cst);
+  bool passed = Require(
+      match_ast.native_relational.accepted() &&
+          match_ast.requires_name_resolution && !match_ast.produces_sblr &&
+          match_ast.native_relational.catalog_relation_sources.size() == 1 &&
+          match_ast.native_relational.catalog_relation_sources.front()
+                  .source_kind == sbsql::NativeRelationSourceAstKind::kGraph &&
+          match_ast.native_relational.catalog_relation_sources.front()
+                  .model_operation_id == "GRAPH_MATCH" &&
+          match_ast.native_relational.model_object_resolution_requests.size() ==
+              1 &&
+          match_ast.native_relational.model_object_resolution_requests.front()
+                  .object_class == "graph",
+      "GRAPH_SOURCE/GRAPH_MATCH grammar or resolution identity drifted");
+  if (!passed) return false;
+  auto match_context = GraphContextFor(match_ast.native_relational);
+  const auto match_bound = sbsql::BindAst(
+      match_ast, match_cst, Config(), Session(), {}, &match_context);
+  passed &= Require(
+      match_bound.bound && match_bound.native_relational.bound &&
+          match_bound.native_relational.catalog_relation_sources.front()
+                  .object_uuid == Uuid(740) &&
+          match_bound.native_relational.relations.front().semantic_variant_id ==
+              "sblr.model-source.graph-match.v1",
+      "GRAPH_MATCH did not bind the exact graph UUID and semantic");
+  if (!match_bound.bound) return false;
+  const auto match_lowered =
+      sbsql::LowerToSblr(match_bound, match_cst, Session());
+  const auto match_verified = sbsql::VerifySblrEnvelope(match_lowered);
+  passed &= Require(
+      !match_lowered.messages.has_errors() &&
+          match_verified.admitted &&
+          std::ranges::any_of(match_lowered.operands, [](const auto& operand) {
+            return operand.type == "relational_node_binding_v1" &&
+                   operand.value.find(
+                       "53424c525f4d4f44454c5f534f555243455f5631") == 0;
+          }),
+      "GRAPH_MATCH did not lower as object-backed SBLR_MODEL_SOURCE_V1: " +
+          DiagnosticSummary(match_lowered.messages) + "/" +
+          DiagnosticSummary(match_verified.messages));
+
+  const auto implicit_match_cst = sbsql::BuildCst(
+      "SELECT * FROM GRAPH_SOURCE(app.graph_fixture) "
+      "WHERE GRAPH_MATCH(graph_fixture, 'vertex(*)');");
+  const auto implicit_match_ast = sbsql::BuildAst(implicit_match_cst);
+  passed &= Require(
+      implicit_match_ast.native_relational.accepted() &&
+          implicit_match_ast.native_relational.catalog_relation_sources.front()
+              .alias.has_value() &&
+          implicit_match_ast.native_relational.catalog_relation_sources.front()
+                  .alias->spelling == "graph_fixture" &&
+          !implicit_match_ast.native_relational.catalog_relation_sources.front()
+               .alias_is_explicit,
+      "GRAPH_SOURCE omitted alias did not derive the terminal graph name");
+  if (implicit_match_ast.native_relational.accepted()) {
+    auto implicit_context = GraphContextFor(implicit_match_ast.native_relational);
+    const auto implicit_bound = sbsql::BindAst(
+        implicit_match_ast, implicit_match_cst, Config(), Session(), {},
+        &implicit_context);
+    const auto implicit_lowered =
+        sbsql::LowerToSblr(implicit_bound, implicit_match_cst, Session());
+    passed &= Require(
+        implicit_bound.bound && !implicit_lowered.messages.has_errors() &&
+            sbsql::VerifySblrEnvelope(implicit_lowered).admitted,
+        "implicit GRAPH_SOURCE alias did not bind and lower exactly");
+  }
+
+  const auto malformed_pattern = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM GRAPH_SOURCE(app.graph_fixture) AS g "
+      "WHERE GRAPH_MATCH(g, 'opaque donor pattern');"));
+  passed &= Require(
+      malformed_pattern.native_relational.status ==
+              sbsql::NativeRelationalParseStatus::kRefused &&
+          !malformed_pattern.produces_sblr &&
+          HasDiagnostic(malformed_pattern.native_relational.messages,
+                        "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1"),
+      "opaque GRAPH_MATCH pattern survived parser admission");
+  const std::array<std::string, 3> unsafe_graph_patterns{
+      "vertex(label=Person-Admin)", "vertex(label=Person Admin)",
+      std::string("vertex(label=Person") + static_cast<char>(1) + "Admin)"};
+  for (const auto& unsafe_pattern : unsafe_graph_patterns) {
+    const auto unsafe = sbsql::BuildAst(sbsql::BuildCst(
+        "SELECT * FROM GRAPH_SOURCE(app.graph_fixture) AS g WHERE "
+        "GRAPH_MATCH(g, '" + unsafe_pattern + "');"));
+    passed &= Require(
+        unsafe.native_relational.status ==
+                sbsql::NativeRelationalParseStatus::kRefused &&
+            !unsafe.produces_sblr,
+        "unsafe GRAPH_MATCH label pattern survived parser admission");
+  }
+
+  const auto expand_cst = sbsql::BuildCst(
+      "SELECT * FROM GRAPH_SOURCE(app.graph_fixture) AS g, "
+      "GRAPH_EXPAND(g, BOTH, 0, 3) AS p;");
+  const auto expand_ast = sbsql::BuildAst(expand_cst);
+  passed &= Require(
+      expand_ast.native_relational.accepted() &&
+          expand_ast.native_relational.catalog_relation_sources.front()
+                  .model_operation_id == "GRAPH_EXPAND" &&
+          expand_ast.native_relational.catalog_relation_sources.front()
+                  .model_graph_minimum_depth == 0 &&
+          expand_ast.native_relational.catalog_relation_sources.front()
+                  .model_graph_maximum_depth == 3 &&
+          expand_ast.native_relational.catalog_relation_sources.front()
+                  .model_graph_cycle_policy == "visited_set",
+      "bounded GRAPH_EXPAND grammar or explicit visited-set policy drifted");
+  if (!expand_ast.native_relational.accepted()) return false;
+  auto expand_context = GraphContextFor(expand_ast.native_relational);
+  const auto expand_bound = sbsql::BindAst(
+      expand_ast, expand_cst, Config(), Session(), {}, &expand_context);
+  passed &= Require(
+      expand_bound.bound &&
+          expand_bound.native_relational.relations.front().semantic_variant_id ==
+              "sblr.model-expand.graph-expand.v1",
+      "GRAPH_EXPAND did not bind its object-backed model semantic");
+  if (!expand_bound.bound) return false;
+
+  auto missing_source_alias_ast = expand_ast;
+  missing_source_alias_ast.native_relational.catalog_relation_sources.front()
+      .model_source_alias.reset();
+  auto missing_source_alias_context =
+      GraphContextFor(missing_source_alias_ast.native_relational);
+  const auto missing_source_alias_bound = sbsql::BindAst(
+      missing_source_alias_ast, expand_cst, Config(), Session(), {},
+      &missing_source_alias_context);
+  passed &= Require(
+      !missing_source_alias_bound.bound,
+      "GRAPH_EXPAND admitted a cleared source-alias binding");
+
+  auto substituted_source_alias_ast = expand_ast;
+  substituted_source_alias_ast.native_relational.catalog_relation_sources
+      .front()
+      .model_source_alias->spelling = "substituted_graph_source";
+  auto substituted_source_alias_context =
+      GraphContextFor(substituted_source_alias_ast.native_relational);
+  const auto substituted_source_alias_bound = sbsql::BindAst(
+      substituted_source_alias_ast, expand_cst, Config(), Session(), {},
+      &substituted_source_alias_context);
+  passed &= Require(
+      !substituted_source_alias_bound.bound,
+      "GRAPH_EXPAND admitted a source alias that differed from its root operand");
+
+  const auto expand_lowered =
+      sbsql::LowerToSblr(expand_bound, expand_cst, Session());
+  const auto expand_verified = sbsql::VerifySblrEnvelope(expand_lowered);
+  passed &= Require(
+      !expand_lowered.messages.has_errors() &&
+          expand_verified.admitted &&
+          std::ranges::any_of(expand_lowered.operands, [](const auto& operand) {
+            return operand.type == "relational_node_binding_v1" &&
+                   operand.value.find(
+                       "53424c525f4d4f44454c5f455850414e445f5631") == 0 &&
+                   operand.value.find(Uuid(740)) != std::string::npos;
+          }),
+      "GRAPH_EXPAND did not lower as object-backed SBLR_MODEL_EXPAND_V1: " +
+          DiagnosticSummary(expand_lowered.messages) + "/" +
+          DiagnosticSummary(expand_verified.messages));
+
+  auto missing_lowered_source_alias = expand_bound;
+  missing_lowered_source_alias.native_relational.catalog_relation_sources
+      .front()
+      .model_source_alias.reset();
+  passed &= Require(
+      HasDiagnostic(
+          sbsql::LowerToSblr(missing_lowered_source_alias, expand_cst, Session())
+              .messages,
+          "SB_MODEL_BINDING_INCOMPLETE_V1"),
+      "GRAPH_EXPAND lowering admitted a cleared source-alias binding");
+
+  const auto optional_expand_cst = sbsql::BuildCst(
+      "SELECT * FROM GRAPH_SOURCE(app.graph_fixture) AS g, "
+      "GRAPH_EXPAND(g, OUTGOING, 001, 0257);");
+  const auto optional_expand_ast = sbsql::BuildAst(optional_expand_cst);
+  passed &= Require(
+      optional_expand_ast.native_relational.accepted() &&
+          optional_expand_ast.native_relational.catalog_relation_sources.front()
+                  .model_source_alias->spelling == "g" &&
+          optional_expand_ast.native_relational.catalog_relation_sources.front()
+                  .alias->spelling == "g" &&
+          !optional_expand_ast.native_relational.catalog_relation_sources.front()
+               .alias_is_explicit &&
+          optional_expand_ast.native_relational.catalog_relation_sources.front()
+                  .model_graph_minimum_depth == 1 &&
+          optional_expand_ast.native_relational.catalog_relation_sources.front()
+                  .model_graph_maximum_depth == 257,
+      "optional GRAPH_EXPAND alias or finite leading-zero depth drifted");
+  if (optional_expand_ast.native_relational.accepted()) {
+    auto optional_context = GraphContextFor(optional_expand_ast.native_relational);
+    const auto optional_bound = sbsql::BindAst(
+        optional_expand_ast, optional_expand_cst, Config(), Session(), {},
+        &optional_context);
+    const auto optional_lowered =
+        sbsql::LowerToSblr(optional_bound, optional_expand_cst, Session());
+    passed &= Require(
+        optional_bound.bound && !optional_lowered.messages.has_errors() &&
+            sbsql::VerifySblrEnvelope(optional_lowered).admitted,
+        "optional GRAPH_EXPAND alias did not preserve source binding/lowering");
+  }
+
+  auto allow_cycles = expand_bound;
+  allow_cycles.native_relational.catalog_relation_sources.front()
+      .model_graph_cycle_policy = "allow_cycles";
+  const auto allow_cycles_lowered =
+      sbsql::LowerToSblr(allow_cycles, expand_cst, Session());
+  passed &= Require(
+      HasDiagnostic(allow_cycles_lowered.messages,
+                    "SB_MODEL_BINDING_INCOMPLETE_V1"),
+      "allow-cycles substitution reached SBLR");
+  auto inverted = expand_bound;
+  inverted.native_relational.catalog_relation_sources.front()
+      .model_graph_minimum_depth = 4;
+  const auto inverted_lowered =
+      sbsql::LowerToSblr(inverted, expand_cst, Session());
+  passed &= Require(
+      HasDiagnostic(inverted_lowered.messages,
+                    "SB_MODEL_GRAPH_UNBOUNDED_EXPANSION_REFUSED_V1"),
+      "inverted graph bounds did not receive the exact refusal");
+  return passed;
+}
+
 bool WireFrontdoorProjectionCohort() {
   constexpr std::uint64_t kExpectedMask = (1ull << 22) - 1;
   const auto mask = sbsql::Rcp073DocumentFrontdoorProofMaskForTest();
   return Require(mask == kExpectedMask,
                  "wire front-door projection/refusal mask was incomplete: " +
+                     std::to_string(mask));
+}
+
+bool GraphWireFrontdoorProjectionCohort() {
+  constexpr std::uint64_t kExpectedMask = (1ull << 22) - 1;
+  const auto mask = sbsql::Rcp074GraphFrontdoorProofMaskForTest();
+  return Require(mask == kExpectedMask,
+                 "graph wire front-door/refusal mask was incomplete: " +
                      std::to_string(mask));
 }
 
@@ -548,6 +903,8 @@ int main() {
   passed &= SourcePathGrammarBindingLowering();
   passed &= UnnestGrammarBindingLowering();
   passed &= ExactRefusals();
+  passed &= GraphGrammarBindingLowering();
   passed &= WireFrontdoorProjectionCohort();
+  passed &= GraphWireFrontdoorProjectionCohort();
   return passed ? 0 : 1;
 }
