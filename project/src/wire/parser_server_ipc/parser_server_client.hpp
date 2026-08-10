@@ -132,6 +132,9 @@ bool DecodeAcquireStatementContextResultPayloadV5ForTest(
 bool DecodeAcquireStatementContextResultPayloadV6ForTest(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context);
+bool DecodeAcquireStatementContextResultPayloadV7ForTest(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context);
 std::vector<std::uint8_t>
 EncodeAcquireStatementContextRequestPayloadV1ForTest(
     const ParserSessionContext& session,

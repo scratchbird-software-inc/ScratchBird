@@ -225,6 +225,52 @@ std::string current_utc_timestamp_text() {
   return text;
 }
 
+bool canonical_statement_timestamp(std::string_view value) {
+  if (value.size() != 20 &&
+      (value.size() < 22 || value.size() > 30)) {
+    return false;
+  }
+  if (value[4] != '-' || value[7] != '-' || value[10] != 'T' ||
+      value[13] != ':' || value[16] != ':' || value.back() != 'Z') {
+    return false;
+  }
+  constexpr std::size_t kDigitIndexes[] = {
+      0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18};
+  for (const auto index : kDigitIndexes) {
+    if (value[index] < '0' || value[index] > '9') return false;
+  }
+  if (value.size() > 20) {
+    if (value[19] != '.') return false;
+    for (std::size_t index = 20; index + 1 < value.size(); ++index) {
+      if (value[index] < '0' || value[index] > '9') return false;
+    }
+  }
+  const auto decimal = [&](std::size_t offset, std::size_t digits) {
+    unsigned result = 0;
+    for (std::size_t index = 0; index < digits; ++index) {
+      result = result * 10 +
+               static_cast<unsigned>(value[offset + index] - '0');
+    }
+    return result;
+  };
+  const auto year = decimal(0, 4);
+  const auto month = decimal(5, 2);
+  const auto day = decimal(8, 2);
+  const auto hour = decimal(11, 2);
+  const auto minute = decimal(14, 2);
+  const auto second = decimal(17, 2);
+  if (year == 0 || month == 0 || month > 12 || hour > 23 || minute > 59 ||
+      second > 59) {
+    return false;
+  }
+  constexpr unsigned kDaysByMonth[] = {
+      0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  auto maximum_day = kDaysByMonth[month];
+  const bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  if (month == 2 && leap) ++maximum_day;
+  return day != 0 && day <= maximum_day;
+}
+
 std::string current_monotonic_ns_text() {
   return std::to_string(std::chrono::duration_cast<std::chrono::nanoseconds>(
                             std::chrono::steady_clock::now().time_since_epoch())
@@ -2257,11 +2303,20 @@ sb_engine_status_t AcquireStatementContextReceipt(
   engine_context.request_id = "private-statement-context-acquire";
   engine_context.statement_uuid.canonical = statement_uuid;
   engine_context.statement_snapshot_uuid.canonical.clear();
-  if (engine_context.statement_timestamp.empty()) {
-    engine_context.statement_timestamp = current_utc_timestamp_text();
-  }
-  if (engine_context.current_timestamp.empty()) {
-    engine_context.current_timestamp = engine_context.statement_timestamp;
+  // QOW-SOURCE-RCP-075-ENGINE-STATEMENT-TIMESTAMP-ACQUISITION-V1
+  // Receipt acquisition is the sole production clock boundary for the
+  // statement timestamp. Caller/server materialization is deliberately
+  // overwritten so no earlier layer can become TTL time authority.
+  engine_context.statement_timestamp = current_utc_timestamp_text();
+  engine_context.current_timestamp = engine_context.statement_timestamp;
+  if (!canonical_statement_timestamp(engine_context.statement_timestamp)) {
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4040,
+        "ENGINE.STATEMENT_CONTEXT.MATERIALIZED_CONTEXT_INCOMPLETE",
+        "engine.statement_context.materialized_context_incomplete",
+        "statement_timestamp_invalid");
   }
   if (engine_context.current_monotonic_ns.empty()) {
     engine_context.current_monotonic_ns = current_monotonic_ns_text();
@@ -2514,6 +2569,19 @@ sb_engine_status_t AcquireStatementContextReceipt(
   }
 
   view.statement_uuid = statement_uuid;
+  view.statement_timestamp = engine_context.statement_timestamp;
+  if (!canonical_statement_timestamp(view.statement_timestamp) ||
+      view.statement_timestamp != engine_context.current_timestamp) {
+    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
+        snapshot.snapshot_uuid);
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4040,
+        "ENGINE.STATEMENT_CONTEXT.MATERIALIZED_CONTEXT_INCOMPLETE",
+        "engine.statement_context.materialized_context_incomplete",
+        "statement_timestamp_carrier_mismatch");
+  }
   view.owning_transaction_uuid =
       std::string(request->exact_transaction_uuid);
   view.statement_snapshot_uuid = statement_snapshot_uuid;

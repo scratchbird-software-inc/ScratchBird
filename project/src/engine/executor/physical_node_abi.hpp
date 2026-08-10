@@ -42,12 +42,14 @@ struct PhysicalMgaStatementContext {
   bool inventory_authoritative{false};
   bool complete{false};
   bool current{false};
+  std::string statement_timestamp;
 };
 
 inline bool PhysicalMgaStatementContextEqual(
     const PhysicalMgaStatementContext& left,
     const PhysicalMgaStatementContext& right) {
   return left.statement_uuid == right.statement_uuid &&
+         left.statement_timestamp == right.statement_timestamp &&
          left.owning_transaction_uuid == right.owning_transaction_uuid &&
          left.statement_snapshot_uuid == right.statement_snapshot_uuid &&
          left.statement_metadata_snapshot_uuid ==

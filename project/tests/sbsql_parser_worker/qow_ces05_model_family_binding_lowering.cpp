@@ -89,6 +89,7 @@ sbsql::SessionContext Session() {
 void SetEngineAuthority(sbsql::NativeRelationalBindingContext* context) {
   auto& authority = context->engine_statement_authority;
   authority.statement_uuid = context->statement_uuid;
+  authority.statement_timestamp = context->statement_timestamp;
   authority.transaction_uuid = context->owning_transaction_uuid;
   authority.statement_snapshot_uuid = context->statement_snapshot_uuid;
   authority.statement_metadata_snapshot_uuid =
@@ -366,6 +367,145 @@ sbsql::NativeRelationalBindingContext GraphContextFor(
         {ordinal, Uuid(750 + ordinal), ordinal + 1, kGraphColumns[ordinal]});
   }
   context.catalog_relations.push_back(std::move(source));
+  return context;
+}
+
+sbsql::NativeRelationalBindingContext KeyValueContextFor(
+    const sbsql::NativeRelationalAstDocument& ast) {
+  sbsql::NativeRelationalBindingContext context;
+  context.bound_ast_uuid = Uuid(810);
+  context.catalog_epoch_uuid = Uuid(811);
+  context.security_context_uuid = Uuid(812);
+  context.statement_uuid = Uuid(813);
+  context.statement_timestamp = "2026-08-10T12:00:00.123456789Z";
+  context.owning_transaction_uuid = Uuid(814);
+  context.statement_snapshot_uuid = Uuid(815);
+  context.statement_metadata_snapshot_uuid = Uuid(816);
+  context.local_transaction_id = 75;
+  context.snapshot_visible_through_local_transaction_id = 74;
+  SetEngineAuthority(&context);
+  context.descriptors = {
+      {1, Uuid(821), Uuid(831), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {2, Uuid(822), Uuid(832), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {3, Uuid(823), Uuid(832), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {4, Uuid(824), Uuid(834), sbsql::BoundNullability::kNullable,
+       std::nullopt, std::nullopt, {}},
+  };
+  const auto& source_ast = ast.catalog_relation_sources.front();
+  sbsql::NativeCatalogRelationBindingInput source;
+  source.source_id = source_ast.source_id;
+  source.resolution_state =
+      sbsql::NativeCatalogRelationResolutionState::kBound;
+  source.object_uuid = Uuid(840);
+  source.resolved_object_type = "key_value";
+  source.resolved_schema_uuid = Uuid(841);
+  source.parent_object_uuid = Uuid(842);
+  source.catalog_generation_id = 75;
+  source.security_epoch = 76;
+  source.resource_epoch = 77;
+  source.columns = {{0, Uuid(850), 1, "row_uuid"},
+                    {1, Uuid(851), 2, "key"},
+                    {2, Uuid(852), 3, "value"}};
+  context.catalog_relations.push_back(std::move(source));
+  context.relations.push_back(
+      {ast.relations.front().relation_id,
+       source_ast.model_operation_id == "KEY_VALUE_GET"
+           ? "sblr.model-source.key-value-get.v1"
+           : (source_ast.model_operation_id == "KEY_VALUE_MULTI_GET"
+                  ? "sblr.model-source.key-value-multi-get.v1"
+                  : "sblr.model-source.key-value-prefix-range.v1")});
+
+  const bool wildcard = std::ranges::any_of(ast.expressions, [](const auto& e) {
+    return e.expression_kind == sbsql::NativeExpressionAstKind::kWildcard;
+  });
+  std::uint32_t next_expression = 101;
+  if (wildcard) {
+    static constexpr std::array<const char*, 3> kNames{
+        "row_uuid", "key", "value"};
+    for (std::uint32_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
+      context.expressions.push_back(
+          {next_expression++, ordinal + 1, std::nullopt,
+           Uuid(850 + ordinal)});
+      context.outputs.push_back(
+          {ordinal + 1, context.expressions.back().expression_id,
+           kNames[ordinal], ordinal + 1, true, ordinal,
+           ast.relations.front().relation_id});
+    }
+  }
+
+  const std::unordered_map<std::string, std::pair<std::uint32_t, std::string>>
+      projected_columns{{"row_uuid", {1, Uuid(850)}},
+                        {"key", {2, Uuid(851)}},
+                        {"value", {3, Uuid(852)}}};
+  const std::unordered_map<std::uint32_t, bool> key_nodes = [&] {
+    std::unordered_map<std::uint32_t, bool> result;
+    for (const auto id : source_ast.model_key_expression_ids) {
+      result.emplace(id, true);
+    }
+    return result;
+  }();
+  std::unordered_map<std::uint32_t, sbsql::NativeExpressionBindingInput>
+      binding_by_ast;
+  for (const auto& expression : ast.expressions) {
+    if (expression.expression_kind ==
+        sbsql::NativeExpressionAstKind::kWildcard) {
+      continue;
+    }
+    sbsql::NativeExpressionBindingInput input;
+    input.expression_id = next_expression++;
+    if (key_nodes.contains(expression.expression_id) ||
+        expression.literal_kind == sbsql::NativeLiteralAstKind::kString) {
+      input.descriptor_id = 2;
+    } else if (expression.expression_kind ==
+               sbsql::NativeExpressionAstKind::kIdentifier) {
+      input.descriptor_id = 2;
+      if (!expression.qualified_identifier.empty()) {
+        const auto& terminal = expression.qualified_identifier.back().spelling;
+        const auto projected = projected_columns.find(terminal);
+        if (projected != projected_columns.end()) {
+          input.descriptor_id = projected->second.first;
+          input.bound_name_uuid = projected->second.second;
+        } else {
+          input.bound_name_uuid = Uuid(840);
+        }
+      }
+    } else if (expression.expression_kind ==
+                   sbsql::NativeExpressionAstKind::kFunctionCall &&
+               expression.operator_name == "KV_KEY") {
+      input.descriptor_id = 2;
+    } else if (expression.expression_kind ==
+                   sbsql::NativeExpressionAstKind::kFunctionCall ||
+               (expression.expression_kind ==
+                    sbsql::NativeExpressionAstKind::kBinary &&
+                expression.operator_name == "=")) {
+      input.descriptor_id = 4;
+    } else {
+      input.descriptor_id = 2;
+    }
+    context.expressions.push_back(input);
+    binding_by_ast.emplace(expression.expression_id, std::move(input));
+  }
+  if (!wildcard) {
+    for (std::size_t ordinal = 0;
+         ordinal < ast.relations.front().output_expression_ids.size();
+         ++ordinal) {
+      const auto ast_expression_id =
+          ast.relations.front().output_expression_ids[ordinal];
+      const auto& input = binding_by_ast.at(ast_expression_id);
+      const auto expression = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == ast_expression_id;
+          });
+      const auto name = expression->qualified_identifier.back().spelling;
+      context.outputs.push_back(
+          {static_cast<std::uint32_t>(ordinal + 1), input.expression_id, name,
+           input.descriptor_id, true, static_cast<std::uint32_t>(ordinal),
+           ast.relations.front().relation_id});
+    }
+  }
   return context;
 }
 
@@ -656,6 +796,160 @@ bool ExactRefusals() {
   return passed;
 }
 
+bool KeyValueGrammarBindingLowering() {
+  struct Case {
+    std::string sql;
+    std::string operation;
+    std::string semantic;
+    std::size_t key_count;
+  };
+  const std::array<Case, 3> cases{{
+      {"SELECT * FROM KEY_VALUE_SOURCE(app.kv_fixture) AS kv "
+       "WHERE KV_KEY(kv) = 'alpha';",
+       "KEY_VALUE_GET", "sblr.model-source.key-value-get.v1", 1},
+      {"SELECT row_uuid, key, value FROM "
+       "KEY_VALUE_SOURCE(app.kv_fixture) AS kv "
+       "WHERE KV_MULTI_GET(kv, 'gamma', 'alpha', 'gamma');",
+       "KEY_VALUE_MULTI_GET",
+       "sblr.model-source.key-value-multi-get.v1", 3},
+      {"SELECT * FROM KEY_VALUE_SOURCE(app.kv_fixture) kv "
+       "WHERE KV_PREFIX(kv, 'al');",
+       "KEY_VALUE_PREFIX_RANGE",
+       "sblr.model-source.key-value-prefix-range.v1", 1},
+  }};
+  bool passed = true;
+  std::optional<sbsql::BoundStatement> retained_multi;
+  std::optional<sbsql::CstDocument> retained_multi_cst;
+  for (const auto& test : cases) {
+    const auto cst = sbsql::BuildCst(test.sql);
+    const auto ast = sbsql::BuildAst(cst);
+    passed &= Require(
+        ast.native_relational.accepted() && ast.requires_name_resolution &&
+            !ast.produces_sblr &&
+            ast.native_relational.catalog_relation_sources.size() == 1 &&
+            ast.native_relational.catalog_relation_sources.front().source_kind ==
+                sbsql::NativeRelationSourceAstKind::kKeyValue &&
+            ast.native_relational.catalog_relation_sources.front()
+                    .model_family_id == "key_value" &&
+            ast.native_relational.catalog_relation_sources.front()
+                    .model_operation_id == test.operation &&
+            ast.native_relational.catalog_relation_sources.front()
+                    .model_key_expression_ids.size() == test.key_count &&
+            ast.native_relational.model_object_resolution_requests.size() == 1 &&
+            ast.native_relational.model_object_resolution_requests.front()
+                    .object_class == "key_value",
+        "ordinary KEY_VALUE_SOURCE grammar/object extraction drifted for " +
+            test.operation);
+    if (!ast.native_relational.accepted()) continue;
+    auto context = KeyValueContextFor(ast.native_relational);
+    const auto bound =
+        sbsql::BindAst(ast, cst, Config(), Session(), {}, &context);
+    passed &= Require(
+        bound.bound && bound.native_relational.bound &&
+            bound.native_relational.statement_timestamp ==
+                context.statement_timestamp &&
+            bound.native_relational.catalog_relation_sources.front()
+                    .object_uuid == Uuid(840) &&
+            bound.native_relational.catalog_relation_sources.front()
+                    .model_key_expression_ids.size() == test.key_count &&
+            bound.native_relational.relations.front().semantic_variant_id ==
+                test.semantic,
+        "KEY_VALUE_SOURCE engine-projected binding drifted for " +
+            test.operation + ":" + DiagnosticSummary(bound.messages));
+    if (!bound.bound) continue;
+    const auto lowered = sbsql::LowerToSblr(bound, cst, Session());
+    const auto verified = sbsql::VerifySblrEnvelope(lowered);
+    if (!verified.admitted) {
+      for (const auto& operand : lowered.operands) {
+        if (operand.type == "relational_expression_v1") {
+          std::cerr << test.operation << " expression " << operand.name
+                    << '=' << operand.value << '\n';
+        }
+      }
+    }
+    passed &= Require(
+        !lowered.messages.has_errors() && verified.admitted &&
+            HasOperand(lowered, "text", "relational_statement_timestamp",
+                       context.statement_timestamp) &&
+            std::ranges::any_of(lowered.operands, [](const auto& operand) {
+              return operand.type == "relational_node_binding_v1" &&
+                     operand.value.find(
+                         "53424c525f4d4f44454c5f534f555243455f5631") == 0;
+            }),
+        "KEY_VALUE_SOURCE did not lower through SBLR_MODEL_SOURCE_V1 for " +
+            test.operation + ":" + DiagnosticSummary(lowered.messages) + "/" +
+            DiagnosticSummary(verified.messages));
+    if (test.operation == "KEY_VALUE_MULTI_GET") {
+      retained_multi = bound;
+      retained_multi_cst = cst;
+    }
+  }
+
+  const auto exact_cst = sbsql::BuildCst(cases.front().sql);
+  const auto exact_ast = sbsql::BuildAst(exact_cst);
+  auto timestamp_context = KeyValueContextFor(exact_ast.native_relational);
+  timestamp_context.engine_statement_authority.statement_timestamp =
+      "2026-08-10T12:00:00.123456788Z";
+  const auto timestamp_refused = sbsql::BindAst(
+      exact_ast, exact_cst, Config(), Session(), {}, &timestamp_context);
+  passed &= Require(
+      !timestamp_refused.bound &&
+          HasDiagnostic(timestamp_refused.messages,
+                        "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1"),
+      "key/value binding admitted a substituted statement timestamp");
+  auto type_context = KeyValueContextFor(exact_ast.native_relational);
+  type_context.descriptors[1].nullability =
+      sbsql::BoundNullability::kNullable;
+  const auto type_refused = sbsql::BindAst(
+      exact_ast, exact_cst, Config(), Session(), {}, &type_context);
+  passed &= Require(
+      !type_refused.bound &&
+          HasDiagnostic(type_refused.messages,
+                        "SB_MODEL_KEY_VALUE_KEY_TYPE_REFUSED_V1"),
+      "key/value binding admitted a nullable key expression");
+
+  if (retained_multi.has_value() && retained_multi_cst.has_value()) {
+    auto reordered = *retained_multi;
+    const auto operation = std::ranges::find_if(
+        reordered.native_relational.expressions, [](const auto& expression) {
+          return expression.canonical_operator_name == "KV_MULTI_GET";
+        });
+    if (operation != reordered.native_relational.expressions.end() &&
+        operation->child_expression_ids.size() >= 3) {
+      std::swap(operation->child_expression_ids[1],
+                operation->child_expression_ids[2]);
+    }
+    const auto refused =
+        sbsql::LowerToSblr(reordered, *retained_multi_cst, Session());
+    passed &= Require(
+        HasDiagnostic(refused.messages,
+                      "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1"),
+        "key/value lowering admitted reordered multi-get child identity");
+  }
+
+  const auto wrong_operator = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM KEY_VALUE_SOURCE(app.kv_fixture) kv "
+      "WHERE KV_KEY(kv) <> 'alpha';"));
+  const auto empty_multi = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM KEY_VALUE_SOURCE(app.kv_fixture) kv "
+      "WHERE KV_MULTI_GET(kv);"));
+  const auto extra_prefix = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM KEY_VALUE_SOURCE(app.kv_fixture) kv "
+      "WHERE KV_PREFIX(kv, 'a', 'b');"));
+  passed &= Require(
+      HasDiagnostic(wrong_operator.native_relational.messages,
+                    "SB_MODEL_KEY_VALUE_OPERATOR_REFUSED_V1") &&
+          HasDiagnostic(empty_multi.native_relational.messages,
+                        "SB_MODEL_KEY_VALUE_MULTI_GET_EMPTY_REFUSED_V1") &&
+          HasDiagnostic(extra_prefix.native_relational.messages,
+                        "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1"),
+      "key/value parser refusal identities drifted:" +
+          DiagnosticSummary(wrong_operator.native_relational.messages) + "/" +
+          DiagnosticSummary(empty_multi.native_relational.messages) + "/" +
+          DiagnosticSummary(extra_prefix.native_relational.messages));
+  return passed;
+}
+
 bool GraphGrammarBindingLowering() {
   const auto match_cst = sbsql::BuildCst(
       "SELECT * FROM GRAPH_SOURCE(app.graph_fixture) AS g "
@@ -903,6 +1197,7 @@ int main() {
   passed &= SourcePathGrammarBindingLowering();
   passed &= UnnestGrammarBindingLowering();
   passed &= ExactRefusals();
+  passed &= KeyValueGrammarBindingLowering();
   passed &= GraphGrammarBindingLowering();
   passed &= WireFrontdoorProjectionCohort();
   passed &= GraphWireFrontdoorProjectionCohort();

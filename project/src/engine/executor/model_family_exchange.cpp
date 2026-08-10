@@ -27,6 +27,90 @@ bool CanonicalUuid(const std::string_view value) {
   return true;
 }
 
+bool CanonicalStatementTimestamp(const std::string_view value) {
+  if (value.size() != 20 && (value.size() < 22 || value.size() > 30)) {
+    return false;
+  }
+  if (value[4] != '-' || value[7] != '-' || value[10] != 'T' ||
+      value[13] != ':' || value[16] != ':' || value.back() != 'Z') {
+    return false;
+  }
+  constexpr std::size_t kDigits[] = {
+      0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18};
+  for (const auto index : kDigits) {
+    if (value[index] < '0' || value[index] > '9') return false;
+  }
+  if (value.size() > 20) {
+    if (value[19] != '.') return false;
+    for (std::size_t index = 20; index + 1 < value.size(); ++index) {
+      if (value[index] < '0' || value[index] > '9') return false;
+    }
+  }
+  const auto decimal = [&](const std::size_t begin,
+                           const std::size_t count) {
+    unsigned out = 0;
+    for (std::size_t index = 0; index < count; ++index) {
+      out = out * 10 + static_cast<unsigned>(value[begin + index] - '0');
+    }
+    return out;
+  };
+  const auto year = decimal(0, 4);
+  const auto month = decimal(5, 2);
+  const auto day = decimal(8, 2);
+  const auto hour = decimal(11, 2);
+  const auto minute = decimal(14, 2);
+  const auto second = decimal(17, 2);
+  if (year == 0 || month == 0 || month > 12 || hour > 23 || minute > 59 ||
+      second > 59) {
+    return false;
+  }
+  constexpr unsigned kDays[] = {
+      0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  auto maximum_day = kDays[month];
+  if (month == 2 &&
+      ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) {
+    ++maximum_day;
+  }
+  return day != 0 && day <= maximum_day;
+}
+
+bool WellFormedUtf8(const std::string_view value) {
+  std::size_t offset = 0;
+  while (offset < value.size()) {
+    const auto first = static_cast<unsigned char>(value[offset]);
+    std::uint32_t code_point = 0;
+    std::size_t continuation_count = 0;
+    if (first <= 0x7f) {
+      code_point = first;
+    } else if (first >= 0xc2 && first <= 0xdf) {
+      code_point = first & 0x1f;
+      continuation_count = 1;
+    } else if (first >= 0xe0 && first <= 0xef) {
+      code_point = first & 0x0f;
+      continuation_count = 2;
+    } else if (first >= 0xf0 && first <= 0xf4) {
+      code_point = first & 0x07;
+      continuation_count = 3;
+    } else {
+      return false;
+    }
+    if (continuation_count > value.size() - offset - 1) return false;
+    for (std::size_t index = 1; index <= continuation_count; ++index) {
+      const auto next = static_cast<unsigned char>(value[offset + index]);
+      if ((next & 0xc0) != 0x80) return false;
+      code_point = (code_point << 6) | (next & 0x3f);
+    }
+    if ((continuation_count == 2 && code_point < 0x800) ||
+        (continuation_count == 3 && code_point < 0x10000) ||
+        (code_point >= 0xd800 && code_point <= 0xdfff) ||
+        code_point > 0x10ffff) {
+      return false;
+    }
+    offset += continuation_count + 1;
+  }
+  return true;
+}
+
 ModelExchangeResultV1 Refuse(const char* diagnostic, std::string detail) {
   ModelExchangeResultV1 result;
   result.diagnostic_id = diagnostic;
@@ -41,6 +125,7 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
   ModelInputValidationResultV1 result;
   const bool document_family = input.family_id == "document";
   const bool graph_family = input.family_id == "graph";
+  const bool key_value_family = input.family_id == "key_value";
   const bool valid_operation =
       (document_family &&
        (input.operation_id == "DOCUMENT_FIND" ||
@@ -48,10 +133,25 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
         input.operation_id == "DOCUMENT_UNNEST")) ||
       (graph_family &&
        (input.operation_id == "GRAPH_MATCH" ||
-        input.operation_id == "GRAPH_EXPAND"));
+        input.operation_id == "GRAPH_EXPAND")) ||
+      (key_value_family &&
+       (input.operation_id == "KEY_VALUE_GET" ||
+        input.operation_id == "KEY_VALUE_MULTI_GET" ||
+        input.operation_id == "KEY_VALUE_PREFIX_RANGE"));
+  if (key_value_family !=
+          !input.mga_statement_context.statement_timestamp.empty() ||
+      (key_value_family &&
+       !CanonicalStatementTimestamp(
+           input.mga_statement_context.statement_timestamp))) {
+    result.diagnostic_id =
+        "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1";
+    result.detail = "key/value typed input statement timestamp is invalid";
+    return result;
+  }
   if (input.abi_version != 1 ||
       input.input_descriptor_id != "SB_MODEL_SOURCE_INPUT_DESCRIPTOR_V1" ||
-      (!document_family && !graph_family) || !valid_operation ||
+      (!document_family && !graph_family && !key_value_family) ||
+      !valid_operation ||
       (input.operation_id == "DOCUMENT_UNNEST" && !input.object_uuid.empty()) ||
       (input.operation_id != "DOCUMENT_UNNEST" &&
        !CanonicalUuid(input.object_uuid)) ||
@@ -84,6 +184,8 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     const ModelSourceInputDescriptorV1& input,
     const ModelProviderBatchV1& provider_batch) {
   // QOW-SOURCE-CES05-MODEL-TYPED-EXCHANGE-V1
+  const bool graph_family = input.family_id == "graph";
+  const bool key_value_family = input.family_id == "key_value";
   const auto input_validation = ValidateModelFamilySourceInputV1(input);
   if (!input_validation.accepted) {
     return Refuse(input_validation.diagnostic_id.c_str(),
@@ -95,6 +197,12 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
   }
   if (provider_batch.provider_uuid != input.provider_uuid ||
       provider_batch.provider_generation != input.provider_generation ||
+      (key_value_family &&
+       (provider_batch.selected_alternative_uuid !=
+            input.selected_alternative_uuid ||
+        provider_batch.capability_uuid != input.capability_uuid ||
+        provider_batch.exact_fallback_selected !=
+            input.exact_fallback_selected)) ||
       provider_batch.result_handle_uuid != input.result_handle_uuid ||
       provider_batch.causal_counter_id != input.causal_counter_id ||
       !PhysicalMgaStatementContextEqual(provider_batch.mga_statement_context,
@@ -109,8 +217,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     return Refuse(kModelTypedExchangeInvalid,
                   "provider output descriptors differ from the bound input");
   }
-  const bool graph_family = input.family_id == "graph";
-  if (graph_family) {
+  if (graph_family || key_value_family) {
     std::size_t preflight_cell_count = 0;
     // The provider batch is caller/provider-owned. The grant covers every
     // allocation copied into the engine-owned output descriptor at the same
@@ -155,6 +262,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
         !preflight_string(provider_batch.properties.partitioning_id) ||
         !preflight_string(provider_batch.properties.uniqueness_id) ||
         !preflight_string(input.mga_statement_context.statement_uuid) ||
+        !preflight_string(input.mga_statement_context.statement_timestamp) ||
         !preflight_string(input.mga_statement_context.owning_transaction_uuid) ||
         !preflight_string(input.mga_statement_context.statement_snapshot_uuid) ||
         !preflight_string(
@@ -174,6 +282,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       if (!preflight_account(sizeof(ModelProviderRowIdentityV1)) ||
           !preflight_string(identity.document_uuid) ||
           !preflight_string(identity.row_uuid) ||
+          !preflight_string(identity.key) ||
           !preflight_string(identity.vertex_uuid) ||
           !preflight_string(identity.edge_uuid) ||
           !preflight_string(identity.path_uuid)) {
@@ -223,7 +332,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
   if (provider_batch.ordered_row_identities.size() !=
       provider_batch.batch.rows.size()) {
     return Refuse(kModelTypedExchangeInvalid,
-                  "document ordered row identity cardinality is incomplete");
+                  "model-family ordered row identity cardinality is incomplete");
   }
   if (graph_family) {
     std::uint64_t uniqueness_peak =
@@ -255,10 +364,12 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     std::unordered_set<std::string> path_uuids;
     for (const auto& identity : provider_batch.ordered_row_identities) {
       const bool document_identity =
-          !graph_family && CanonicalUuid(identity.document_uuid) &&
+          !graph_family && !key_value_family &&
+          CanonicalUuid(identity.document_uuid) &&
           CanonicalUuid(identity.row_uuid) &&
           document_uuids.insert(identity.document_uuid).second &&
           row_uuids.insert(identity.row_uuid).second &&
+          identity.key.empty() &&
           identity.vertex_uuid.empty() && identity.edge_uuid.empty() &&
           identity.path_uuid.empty() && identity.graph_depth == 0;
       const bool graph_edge_identity =
@@ -272,9 +383,17 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           CanonicalUuid(identity.row_uuid) &&
           CanonicalUuid(identity.vertex_uuid) && graph_edge_identity &&
           CanonicalUuid(identity.path_uuid) &&
+          identity.key.empty() &&
           row_uuids.insert(identity.row_uuid).second &&
           path_uuids.insert(identity.path_uuid).second;
-      if (!document_identity && !graph_identity) {
+      const bool key_value_identity =
+          key_value_family && identity.document_uuid.empty() &&
+          CanonicalUuid(identity.row_uuid) && WellFormedUtf8(identity.key) &&
+          identity.vertex_uuid.empty() && identity.edge_uuid.empty() &&
+          identity.path_uuid.empty() && identity.graph_depth == 0 &&
+          row_uuids.insert(identity.row_uuid).second &&
+          document_uuids.insert(identity.key).second;
+      if (!document_identity && !graph_identity && !key_value_identity) {
         return Refuse(
             kModelTypedExchangeInvalid,
             "model-family row uniqueness or ordering identity is invalid");
@@ -286,11 +405,19 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           "SB_MODEL_PROPERTY_DESCRIPTOR_V1" ||
       !CanonicalUuid(provider_batch.properties.property_uuid) ||
       !provider_batch.properties.exact ||
-      provider_batch.properties.ordering_id != "fixture_order" ||
       provider_batch.properties.partitioning_id !=
           "single_local_partition" ||
       provider_batch.properties.uniqueness_id !=
-          (graph_family ? "path_uuid" : "document_uuid") ||
+          (graph_family ? "path_uuid"
+                        : key_value_family ? "key" : "document_uuid") ||
+      provider_batch.properties.ordering_id !=
+          (input.operation_id == "KEY_VALUE_GET"
+               ? "key_value_unordered_v1"
+               : input.operation_id == "KEY_VALUE_MULTI_GET"
+                     ? "first_distinct_request_order_v1"
+                     : input.operation_id == "KEY_VALUE_PREFIX_RANGE"
+                           ? "key_utf8_byte_ascending_v1"
+                           : "fixture_order") ||
       !provider_batch.residual_recheck_complete ||
       !provider_batch.base_row_mga_recheck_complete ||
       !provider_batch.security_recheck_complete ||
@@ -439,6 +566,47 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     }
   }
 
+  if (key_value_family) {
+    const auto validation = ValidateCanonicalDescriptorBatch(
+        provider_batch.batch, input.output_descriptor_ids);
+    if (!validation.ok || provider_batch.batch.columns.size() != 3) {
+      return Refuse(kModelTypedExchangeInvalid,
+                    validation.ok
+                        ? "key/value public descriptor width is not three"
+                        : validation.detail);
+    }
+    static constexpr std::string_view kNames[] = {
+        "row_uuid", "key", "value"};
+    static constexpr std::string_view kTypes[] = {"uuid", "text", "text"};
+    for (std::size_t ordinal = 0; ordinal < 3; ++ordinal) {
+      const auto& column = provider_batch.batch.columns[ordinal];
+      if (column.stable_name != kNames[ordinal] || column.nullable ||
+          column.descriptor.canonical_type_name != kTypes[ordinal]) {
+        return Refuse(kModelTypedExchangeInvalid,
+                      "key/value public descriptor contract drifted");
+      }
+    }
+    for (std::size_t ordinal = 0;
+         ordinal < provider_batch.batch.rows.size(); ++ordinal) {
+      const auto& row = provider_batch.batch.rows[ordinal];
+      const auto& identity = provider_batch.ordered_row_identities[ordinal];
+      if (row.values.size() != 3 ||
+          row.values[0].state != internal_api::EngineValueState::value ||
+          row.values[0].is_null || !row.values[0].binary_value.empty() ||
+          row.values[0].encoded_value != identity.row_uuid ||
+          row.values[1].state != internal_api::EngineValueState::value ||
+          row.values[1].is_null || !row.values[1].binary_value.empty() ||
+          row.values[1].encoded_value != identity.key ||
+          !WellFormedUtf8(row.values[1].encoded_value) ||
+          row.values[2].state != internal_api::EngineValueState::value ||
+          row.values[2].is_null || !row.values[2].binary_value.empty() ||
+          !WellFormedUtf8(row.values[2].encoded_value)) {
+        return Refuse(kModelTypedExchangeInvalid,
+                      "key/value row values differ from ordered identity");
+      }
+    }
+  }
+
   DescriptorBatch normalized = provider_batch.batch;
   std::size_t cell_count = 0;
   std::uint64_t memory_bytes = sizeof(DescriptorBatch);
@@ -453,6 +621,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     if (!account_bytes(sizeof(ModelProviderRowIdentityV1)) ||
         !account_bytes(identity.document_uuid.size()) ||
         !account_bytes(identity.row_uuid.size()) ||
+        !account_bytes(identity.key.size()) ||
         !account_bytes(identity.vertex_uuid.size()) ||
         !account_bytes(identity.edge_uuid.size()) ||
         !account_bytes(identity.path_uuid.size())) {
@@ -484,7 +653,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     cell_count += row.values.size();
     for (std::size_t column = 0; column < row.values.size(); ++column) {
       auto& value = row.values[column];
-      if (!graph_family && value.state ==
+      if (!graph_family && !key_value_family && value.state ==
           scratchbird::engine::internal_api::EngineValueState::missing) {
         if (column >= normalized.columns.size() ||
             !normalized.columns[column].nullable) {
@@ -495,10 +664,10 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
         value.binary_value.clear();
         value.setState(
             scratchbird::engine::internal_api::EngineValueState::sql_null);
-      } else if (graph_family && value.state ==
+      } else if ((graph_family || key_value_family) && value.state ==
                      scratchbird::engine::internal_api::EngineValueState::missing) {
         return Refuse(kModelTypedExchangeInvalid,
-                      "graph provider returned an unbound missing value");
+                      "model-family provider returned an unbound missing value");
       }
       if (!account_bytes(sizeof(internal_api::EngineTypedValue)) ||
           !account_bytes(value.descriptor.descriptor_uuid.canonical.size()) ||
@@ -545,6 +714,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
   result.output.mga_statement_context = input.mga_statement_context;
   result.output.security_receipt_uuid = provider_batch.security_receipt_uuid;
   result.output.exact_exchange_validated = true;
+  result.output.exact_fallback_selected = input.exact_fallback_selected;
   return result;
 }
 

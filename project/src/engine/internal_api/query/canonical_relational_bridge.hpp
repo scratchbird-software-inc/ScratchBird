@@ -21,6 +21,7 @@ struct CanonicalRelationalPlanningScope {
   std::string catalog_epoch_uuid;
   std::string security_context_uuid;
   std::string statement_uuid;
+  std::string statement_timestamp;
   std::string owning_transaction_uuid;
   std::string statement_snapshot_uuid;
   std::string statement_metadata_snapshot_uuid;

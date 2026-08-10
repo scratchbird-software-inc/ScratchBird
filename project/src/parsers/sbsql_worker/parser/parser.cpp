@@ -135,7 +135,8 @@ class NativeRelationalParser final {
         return !token->quoted && IsWord(*token, wanted);
       });
     };
-    if (contains_word("MONGO_PIPELINE") || contains_word("CYPHER_TEXT")) {
+    if (contains_word("MONGO_PIPELINE") || contains_word("CYPHER_TEXT") ||
+        contains_word("REDIS_COMMAND")) {
       RefuseExact("SB_MODEL_GRAMMAR_DONOR_TEXT_REFUSED_V1",
                   "opaque donor text is not an executable SBSQL model source");
       return FinishRefusal();
@@ -148,6 +149,15 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
       return ParseGraphModelSelect();
+    }
+    if (contains_word("KEY_VALUE_SOURCE") || contains_word("KV_KEY") ||
+        contains_word("KV_MULTI_GET") || contains_word("KV_PREFIX")) {
+      if (tokens_.empty() || !IsWord(*tokens_.front(), "SELECT")) {
+        RefuseExact("SB_MODEL_QUERY_WRITE_REFUSED_V1",
+                    "key/value model sources are read-only query inputs");
+        return FinishRefusal();
+      }
+      return ParseKeyValueModelSelect();
     }
     if (contains_word("DOCUMENT_SOURCE") ||
         contains_word("DOCUMENT_UNNEST") ||
@@ -246,6 +256,268 @@ class NativeRelationalParser final {
     document_.messages.diagnostics.push_back(MakeDiagnostic(
         std::string(diagnostic_id), "ERROR", std::string(message),
         "sbp_sbsql.document_model_parser"));
+  }
+
+  NativeRelationalAstDocument ParseKeyValueModelSelect() {
+    // QOW-SOURCE-RCP-075-KEY-VALUE-GRAMMAR-V1
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded",
+             "key/value model query token limit exceeded");
+      return FinishRefusal();
+    }
+
+    const Token& select = Consume();
+    std::vector<std::uint32_t> projection_expression_ids;
+    if (AtSymbol("*")) {
+      const Token& wildcard_token = Consume();
+      NativeExpressionAstNode wildcard;
+      wildcard.expression_id = NextExpressionId();
+      wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+      wildcard.spelling = wildcard_token.text;
+      wildcard.range = TokenSourceRange(wildcard_token);
+      projection_expression_ids.push_back(wildcard.expression_id);
+      document_.expressions.push_back(std::move(wildcard));
+    } else {
+      while (!AtEnd()) {
+        const auto expression_id = ParseExpression(0, 0);
+        if (!expression_id.has_value()) return FinishRefusal();
+        projection_expression_ids.push_back(*expression_id);
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+    }
+    if (!RequireWord("FROM", "key_value_from_required",
+                     "key/value model source requires FROM") ||
+        AtEnd() || !IsWord(Current(), "KEY_VALUE_SOURCE")) {
+      Refuse("key_value_source_required", "FROM requires KEY_VALUE_SOURCE");
+      return FinishRefusal();
+    }
+
+    const Token& source_operator = Consume();
+    if (!RequireSymbol("(", "key_value_source_open_required",
+                       "KEY_VALUE_SOURCE requires an opening parenthesis") ||
+        AtEnd() || !IsNameToken(Current())) {
+      Refuse("key_value_qualified_name_required",
+             "KEY_VALUE_SOURCE requires a qualified collection name");
+      return FinishRefusal();
+    }
+    NativeCatalogRelationSourceAstNode source;
+    source.source_id = 1;
+    source.source_kind = NativeRelationSourceAstKind::kKeyValue;
+    source.model_family_id = "key_value";
+    const Token& first_name = Consume();
+    const Token* last_name = &first_name;
+    source.qualified_name.push_back(
+        {first_name.text, first_name.quoted, TokenSourceRange(first_name)});
+    while (AtSymbol(".")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        Refuse("key_value_qualified_name_incomplete",
+               "qualified key/value collection name is incomplete");
+        return FinishRefusal();
+      }
+      last_name = &Consume();
+      source.qualified_name.push_back(
+          {last_name->text, last_name->quoted, TokenSourceRange(*last_name)});
+    }
+    source.qualified_name_range = Span(first_name, *last_name);
+    if (!RequireSymbol(")", "key_value_source_close_required",
+                       "KEY_VALUE_SOURCE requires a closing parenthesis")) {
+      return FinishRefusal();
+    }
+    const Token* source_end = &Previous();
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        Refuse("key_value_alias_invalid",
+               "KEY_VALUE_SOURCE AS requires an identifier");
+        return FinishRefusal();
+      }
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source.alias_is_explicit = true;
+      source_end = &alias;
+    } else if (!AtEnd() && Current().kind == TokenKind::kIdentifier &&
+               !IsWord(Current(), "WHERE")) {
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source_end = &alias;
+    } else {
+      source.alias = NativeIdentifierAstNode{
+          last_name->text, last_name->quoted, TokenSourceRange(*last_name)};
+    }
+
+    NativeRelationAstNode relation;
+    relation.relation_id = 1;
+    relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+    relation.relation_source_ids = {source.source_id};
+    relation.output_expression_ids = projection_expression_ids;
+
+    if (AtEnd() || !IsWord(Current(), "WHERE")) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "KEY_VALUE_SOURCE requires one exact get, multi-get, or prefix operation");
+      return FinishRefusal();
+    }
+    Consume();
+    if (AtEnd() || (!IsWord(Current(), "KV_KEY") &&
+                    !IsWord(Current(), "KV_MULTI_GET") &&
+                    !IsWord(Current(), "KV_PREFIX"))) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "key/value WHERE operation is outside the closed profile");
+      return FinishRefusal();
+    }
+    const Token& operation = Consume();
+    const bool exact_get = IsWord(operation, "KV_KEY");
+    const bool multi_get = IsWord(operation, "KV_MULTI_GET");
+    source.model_operation_id = exact_get
+                                    ? "KEY_VALUE_GET"
+                                    : (multi_get ? "KEY_VALUE_MULTI_GET"
+                                                 : "KEY_VALUE_PREFIX_RANGE");
+    if (!RequireSymbol("(", "key_value_operation_open_required",
+                       "key/value operation requires an opening parenthesis") ||
+        AtEnd() || !IsNameToken(Current())) {
+      return FinishRefusal();
+    }
+    const Token& operation_alias = Consume();
+    if (!source.alias.has_value() ||
+        !SameIdentifier(*source.alias, operation_alias)) {
+      Refuse("key_value_alias_mismatch",
+             "key/value operation alias does not name KEY_VALUE_SOURCE");
+      return FinishRefusal();
+    }
+    NativeExpressionAstNode alias_expression;
+    alias_expression.expression_id = NextExpressionId();
+    alias_expression.expression_kind = NativeExpressionAstKind::kIdentifier;
+    alias_expression.qualified_identifier.push_back(
+        {operation_alias.text, operation_alias.quoted,
+         TokenSourceRange(operation_alias)});
+    alias_expression.spelling = operation_alias.text;
+    alias_expression.range = TokenSourceRange(operation_alias);
+    document_.expressions.push_back(std::move(alias_expression));
+    const auto alias_expression_id = document_.expressions.back().expression_id;
+
+    std::vector<std::uint32_t> key_expression_ids;
+    if (exact_get) {
+      if (!RequireSymbol(")", "key_value_operation_close_required",
+                         "KV_KEY accepts only its bound source alias")) {
+        return FinishRefusal();
+      }
+    } else {
+      if (!AtSymbol(",")) {
+        RefuseExact(multi_get
+                        ? "SB_MODEL_KEY_VALUE_MULTI_GET_EMPTY_REFUSED_V1"
+                        : "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    multi_get
+                        ? "KV_MULTI_GET requires at least one key expression"
+                        : "KV_PREFIX requires one prefix expression");
+        return FinishRefusal();
+      }
+      Consume();
+      while (!AtEnd() && !AtSymbol(")")) {
+        const auto key_expression_id = ParseExpression(0, 0);
+        if (!key_expression_id.has_value()) return FinishRefusal();
+        key_expression_ids.push_back(*key_expression_id);
+        if (!AtSymbol(",")) break;
+        if (!multi_get) {
+          RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                      "prefix accepts exactly one expression");
+          return FinishRefusal();
+        }
+        Consume();
+        if (AtEnd() || AtSymbol(")")) {
+          RefuseExact("SB_MODEL_KEY_VALUE_MULTI_GET_EMPTY_REFUSED_V1",
+                      "KV_MULTI_GET key separator requires another expression");
+          return FinishRefusal();
+        }
+      }
+      if (key_expression_ids.empty()) {
+        RefuseExact(multi_get
+                        ? "SB_MODEL_KEY_VALUE_MULTI_GET_EMPTY_REFUSED_V1"
+                        : "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "key/value operation has no key or prefix expression");
+        return FinishRefusal();
+      }
+      if ((!multi_get && key_expression_ids.size() != 1) ||
+          !RequireSymbol(")", "key_value_operation_close_required",
+                         "key/value operation requires a closing parenthesis")) {
+        return FinishRefusal();
+      }
+      source.model_key_expression_ids = key_expression_ids;
+    }
+
+    NativeExpressionAstNode operation_root;
+    operation_root.expression_id = NextExpressionId();
+    operation_root.expression_kind = NativeExpressionAstKind::kFunctionCall;
+    operation_root.child_expression_ids.push_back(alias_expression_id);
+    if (!exact_get) {
+      operation_root.child_expression_ids.insert(
+          operation_root.child_expression_ids.end(), key_expression_ids.begin(),
+          key_expression_ids.end());
+    }
+    operation_root.operator_name = exact_get
+                                       ? "KV_KEY"
+                                       : (multi_get ? "KV_MULTI_GET"
+                                                    : "KV_PREFIX");
+    operation_root.spelling = SourceSpelling(operation, Previous());
+    operation_root.range = Span(operation, Previous());
+    document_.expressions.push_back(std::move(operation_root));
+    auto root_expression_id = document_.expressions.back().expression_id;
+
+    if (exact_get) {
+      if (AtEnd()) {
+        RefuseExact("SB_MODEL_KEY_VALUE_OPERATOR_REFUSED_V1",
+                    "KV_KEY requires equality");
+        return FinishRefusal();
+      }
+      const auto comparison = BinaryOperatorFor(Current());
+      if (!comparison.has_value() || comparison->canonical_name != "=") {
+        RefuseExact("SB_MODEL_KEY_VALUE_OPERATOR_REFUSED_V1",
+                    "KV_KEY admits equality only");
+        return FinishRefusal();
+      }
+      Consume();
+      const auto value_expression_id = ParseExpression(0, 0);
+      if (!value_expression_id.has_value()) return FinishRefusal();
+      // The grammar carries the exact key as the equality right operand. The
+      // KV_KEY functionless node carries only its bound source alias.
+      source.model_key_expression_ids = {*value_expression_id};
+      source.model_comparison_operator = "=";
+      NativeExpressionAstNode predicate;
+      predicate.expression_id = NextExpressionId();
+      predicate.expression_kind = NativeExpressionAstKind::kBinary;
+      predicate.child_expression_ids = {root_expression_id,
+                                         *value_expression_id};
+      predicate.operator_name = "=";
+      const Token& value_end = TokenForRangeEnd(
+          document_.expressions[*value_expression_id - 1].range);
+      predicate.spelling = SourceSpelling(operation, value_end);
+      predicate.range = Span(operation, value_end);
+      document_.expressions.push_back(std::move(predicate));
+      root_expression_id = document_.expressions.back().expression_id;
+    }
+    relation.predicate_expression_ids = {root_expression_id};
+    source_end = &Previous();
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      Refuse("key_value_trailing_input",
+             "unexpected input follows the bounded key/value model query");
+      return FinishRefusal();
+    }
+    relation.range = Span(source_operator, *source_end);
+    source.range = relation.range;
+    document_.catalog_relation_sources.push_back(std::move(source));
+    document_.relations.push_back(std::move(relation));
+    document_.root_relation_id = 1;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    (void)select;
+    return std::move(document_);
   }
 
   NativeRelationalAstDocument ParseDocumentModelSelect() {

@@ -74,6 +74,52 @@ constexpr std::size_t kMaxStableRelationNameResolutionCacheEntries = 4096;
 std::optional<std::array<std::uint8_t, 16>> CanonicalUuidBytes(
     std::string_view text);
 
+bool IsCanonicalStatementTimestamp(std::string_view value) {
+  if (value.size() != 20 &&
+      (value.size() < 22 || value.size() > 30)) {
+    return false;
+  }
+  if (value[4] != '-' || value[7] != '-' || value[10] != 'T' ||
+      value[13] != ':' || value[16] != ':' || value.back() != 'Z') {
+    return false;
+  }
+  constexpr std::size_t kDigitIndexes[] = {
+      0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18};
+  for (const auto index : kDigitIndexes) {
+    if (value[index] < '0' || value[index] > '9') return false;
+  }
+  if (value.size() > 20) {
+    if (value[19] != '.') return false;
+    for (std::size_t index = 20; index + 1 < value.size(); ++index) {
+      if (value[index] < '0' || value[index] > '9') return false;
+    }
+  }
+  const auto decimal = [&](std::size_t offset, std::size_t digits) {
+    unsigned result = 0;
+    for (std::size_t index = 0; index < digits; ++index) {
+      result = result * 10 +
+               static_cast<unsigned>(value[offset + index] - '0');
+    }
+    return result;
+  };
+  const auto year = decimal(0, 4);
+  const auto month = decimal(5, 2);
+  const auto day = decimal(8, 2);
+  const auto hour = decimal(11, 2);
+  const auto minute = decimal(14, 2);
+  const auto second = decimal(17, 2);
+  if (year == 0 || month == 0 || month > 12 || hour > 23 || minute > 59 ||
+      second > 59) {
+    return false;
+  }
+  constexpr unsigned kDaysByMonth[] = {
+      0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  auto maximum_day = kDaysByMonth[month];
+  const bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  if (month == 2 && leap) ++maximum_day;
+  return day != 0 && day <= maximum_day;
+}
+
 std::uint64_t CurrentUnixMillis() {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
   return static_cast<std::uint64_t>(
@@ -649,6 +695,62 @@ bool ExactGraphProjectedDescriptorCohort(
   return true;
 }
 
+bool ExactKeyValueStorageDescriptorCohort(
+    const ipc::PublicRelationDescriptor& projection) {
+  // QOW-SOURCE-RCP-075-KEY-VALUE-STORAGE-DESCRIPTOR-V1
+  static constexpr std::array<std::string_view, 3> kNames{
+      "key", "value", "expires_at"};
+  static constexpr std::array<std::string_view, 3> kTypes{
+      "text", "text", "timestamp_tz"};
+  static constexpr std::array<bool, 3> kNullable{false, false, true};
+  if (projection.columns.size() != kNames.size()) return false;
+  const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return false;
+  std::unordered_set<std::string> column_uuids;
+  std::unordered_set<std::string> descriptor_uuids;
+  for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
+    const auto& column = projection.columns[ordinal];
+    const auto fields = ParseExactProjectedDescriptor(
+        column.encoded_type_descriptor, column.collation_uuid,
+        column.nullable);
+    const auto type_row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+        manifest.manifest,
+        scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+            std::string(kTypes[ordinal])));
+    if (!type_row.ok() || type_row.manifest.descriptor_rows.size() != 1 ||
+        !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
+      return false;
+    }
+    const auto expected_type_uuid = scratchbird::core::uuid::UuidToString(
+        type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    if (column.ordinal != ordinal ||
+        column.canonical_name_key != kNames[ordinal] ||
+        column.canonical_type_name != kTypes[ordinal] ||
+        column.type_descriptor_kind != "canonical_type_descriptor" ||
+        column.nullable != kNullable[ordinal] || column.generated ||
+        column.identity_column ||
+        !CanonicalUuidBytes(column.column_uuid).has_value() ||
+        !column_uuids.insert(column.column_uuid).second ||
+        !CanonicalUuidBytes(column.type_descriptor_uuid).has_value() ||
+        !descriptor_uuids.insert(column.type_descriptor_uuid).second ||
+        !fields.has_value() || fields->type_uuid != expected_type_uuid ||
+        fields->nullable != kNullable[ordinal] ||
+        fields->collation_uuid.has_value() || fields->width.has_value() ||
+        fields->precision.has_value() || fields->scale.has_value() ||
+        !column.charset_uuid.empty() ||
+        !column.charset_canonical_name.empty() ||
+        !column.collation_uuid.empty() ||
+        !column.collation_canonical_name.empty() ||
+        column.character_length != 0 || column.charset_min_bytes != 0 ||
+        column.charset_max_bytes != 0 || column.charset_variable_width) {
+      return false;
+    }
+    if (ordinal != 2 && fields->timezone_profile_id.has_value()) return false;
+  }
+  return true;
+}
+
 std::optional<NativeRelationalBindingContext>
 BuildEngineProjectedNativeBindingContext(
     const NativeRelationalAstDocument& ast,
@@ -679,6 +781,7 @@ BuildEngineProjectedNativeBindingContext(
   context.catalog_epoch_uuid = statement_context.catalog_epoch_uuid;
   context.security_context_uuid = statement_context.security_context_uuid;
   context.statement_uuid = statement_context.statement_uuid;
+  context.statement_timestamp = statement_context.statement_timestamp;
   context.owning_transaction_uuid =
       statement_context.transaction.transaction_uuid;
   context.statement_snapshot_uuid =
@@ -691,12 +794,432 @@ BuildEngineProjectedNativeBindingContext(
       statement_context.snapshot_visible_through_local_transaction_id;
   context.engine_statement_authority = {
       context.statement_uuid,
+      context.statement_timestamp,
       context.owning_transaction_uuid,
       context.statement_snapshot_uuid,
       context.statement_metadata_snapshot_uuid,
       context.catalog_epoch_uuid,
       context.local_transaction_id,
       context.snapshot_visible_through_local_transaction_id};
+
+  const auto key_value_source = std::ranges::find_if(
+      ast.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kKeyValue;
+      });
+  if (key_value_source != ast.catalog_relation_sources.end()) {
+    // QOW-SOURCE-RCP-075-ENGINE-KEY-VALUE-BINDING-COHORT-V1
+    const auto refuse = [&](const char* diagnostic, std::string detail)
+        -> std::optional<NativeRelationalBindingContext> {
+      messages->diagnostics.push_back(MakeDiagnostic(
+          diagnostic, "ERROR", std::move(detail), "sbp_sbsql.wire"));
+      return std::nullopt;
+    };
+    if (!IsCanonicalStatementTimestamp(context.statement_timestamp)) {
+      return refuse(
+          "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1",
+          "key/value source requires the exact canonical engine-issued "
+          "statement timestamp");
+    }
+    if (!statement_context.native_v7_complete()) {
+      return refuse(
+          "SB_MODEL_BINDING_INCOMPLETE_V1",
+          "key/value source requires the complete V7 native statement "
+          "context cohort");
+    }
+    const bool exact_get =
+        key_value_source->model_operation_id == "KEY_VALUE_GET";
+    const bool multi_get =
+        key_value_source->model_operation_id == "KEY_VALUE_MULTI_GET";
+    const bool prefix =
+        key_value_source->model_operation_id == "KEY_VALUE_PREFIX_RANGE";
+    if ((!exact_get && !multi_get && !prefix) ||
+        ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
+        ast.root_relation_id != ast.relations.front().relation_id ||
+        ast.relations.front().relation_kind !=
+            NativeRelationAstKind::kCatalogSource ||
+        ast.relations.front().relation_source_ids !=
+            std::vector<std::uint32_t>{key_value_source->source_id} ||
+        ast.relations.front().predicate_expression_ids.size() != 1 ||
+        ast.relations.front().output_expression_ids.empty() ||
+        key_value_source->source_id == 0 ||
+        key_value_source->model_family_id != "key_value" ||
+        key_value_source->qualified_name.empty() ||
+        !key_value_source->alias.has_value() ||
+        key_value_source->model_key_expression_ids.empty() ||
+        (!multi_get && key_value_source->model_key_expression_ids.size() != 1) ||
+        ((exact_get && key_value_source->model_comparison_operator != "=") ||
+         (!exact_get && !key_value_source->model_comparison_operator.empty())) ||
+        ast.model_object_resolution_requests.size() != 1 ||
+        resolved_object_reference_seeds.size() != 1) {
+      return refuse(exact_get ? "SB_MODEL_KEY_VALUE_OPERATOR_REFUSED_V1"
+                              : "SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "key/value AST or binding cohort shape is invalid");
+    }
+    const auto encoded_source_name =
+        EncodeQualifiedPresentedName(key_value_source->qualified_name);
+    const auto& object_request = ast.model_object_resolution_requests.front();
+    const auto& seed = resolved_object_reference_seeds.front();
+    const auto same_qualified_name = [](const auto& left, const auto& right) {
+      return left.size() == right.size() &&
+             std::ranges::equal(left, right, [](const auto& a, const auto& b) {
+               return a.spelling == b.spelling && a.quoted == b.quoted;
+             });
+    };
+    if (!encoded_source_name.has_value() ||
+        object_request.source_id != key_value_source->source_id ||
+        object_request.model_family_id != "key_value" ||
+        object_request.object_class != "key_value" ||
+        !same_qualified_name(object_request.qualified_name,
+                             key_value_source->qualified_name) ||
+        seed.ref.object_class != "key_value" || seed.ref.quoted ||
+        seed.ref.create_reservation ||
+        seed.ref.presented_name != *encoded_source_name) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "key/value object-resolution request correspondence is invalid");
+    }
+
+    const auto find_expression = [&](const std::uint32_t expression_id)
+        -> const NativeExpressionAstNode* {
+      const auto found = std::ranges::find_if(
+          ast.expressions, [&](const auto& expression) {
+            return expression.expression_id == expression_id;
+          });
+      return found == ast.expressions.end() ? nullptr : &*found;
+    };
+    std::unordered_set<std::uint32_t> expression_ids;
+    for (const auto& expression : ast.expressions) {
+      if (expression.expression_id == 0 ||
+          !expression_ids.insert(expression.expression_id).second ||
+          ((expression.expression_kind == NativeExpressionAstKind::kIdentifier) !=
+           !expression.qualified_identifier.empty())) {
+        return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                      "key/value expression identity is invalid");
+      }
+      for (const auto child : expression.child_expression_ids) {
+        if (!expression_ids.contains(child)) {
+          return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                        "key/value expression dependency is unreachable");
+        }
+      }
+    }
+    const auto* root =
+        find_expression(ast.relations.front().predicate_expression_ids.front());
+    const NativeExpressionAstNode* operation = root;
+    if (exact_get) {
+      if (root == nullptr ||
+          root->expression_kind != NativeExpressionAstKind::kBinary ||
+          root->operator_name != "=" || root->child_expression_ids.size() != 2 ||
+          root->child_expression_ids[1] !=
+              key_value_source->model_key_expression_ids.front()) {
+        return refuse("SB_MODEL_KEY_VALUE_OPERATOR_REFUSED_V1",
+                      "KV_KEY admits exact equality only");
+      }
+      operation = find_expression(root->child_expression_ids.front());
+    }
+    if (operation == nullptr ||
+        operation->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+        operation->operator_name !=
+            (exact_get ? "KV_KEY" : (multi_get ? "KV_MULTI_GET" : "KV_PREFIX")) ||
+        operation->child_expression_ids.empty()) {
+      return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "key/value functionless operation is incomplete");
+    }
+    const auto* alias = find_expression(operation->child_expression_ids.front());
+    if (alias == nullptr ||
+        alias->expression_kind != NativeExpressionAstKind::kIdentifier ||
+        alias->qualified_identifier.size() != 1 ||
+        !SameIdentifierComponent(alias->qualified_identifier.front(),
+                                 *key_value_source->alias)) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "key/value source alias correspondence is invalid");
+    }
+    std::vector<std::uint32_t> expected_children{alias->expression_id};
+    if (!exact_get) {
+      expected_children.insert(expected_children.end(),
+                               key_value_source->model_key_expression_ids.begin(),
+                               key_value_source->model_key_expression_ids.end());
+    }
+    std::unordered_set<std::uint32_t> unique_children(
+        operation->child_expression_ids.begin(),
+        operation->child_expression_ids.end());
+    std::unordered_set<std::uint32_t> unique_key_nodes(
+        key_value_source->model_key_expression_ids.begin(),
+        key_value_source->model_key_expression_ids.end());
+    if (operation->child_expression_ids != expected_children ||
+        unique_children.size() != operation->child_expression_ids.size() ||
+        unique_key_nodes.size() !=
+            key_value_source->model_key_expression_ids.size()) {
+      return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "key/value typed-DAG child identity is duplicated or reordered");
+    }
+    for (const auto expression_id : key_value_source->model_key_expression_ids) {
+      const auto* expression = find_expression(expression_id);
+      if (expression == nullptr ||
+          (expression->expression_kind == NativeExpressionAstKind::kLiteral &&
+           expression->literal_kind != NativeLiteralAstKind::kString)) {
+        return refuse("SB_MODEL_KEY_VALUE_KEY_TYPE_REFUSED_V1",
+                      "key/value input is not non-null TEXT");
+      }
+    }
+
+    const auto& resolved = seed.resolved;
+    const auto& storage_projection = resolved.relation_descriptor;
+    const bool relation_transport_class =
+        resolved.object_class == "relation" || resolved.object_class == "table";
+    if (!resolved.resolved || !relation_transport_class ||
+        !CanonicalUuidBytes(resolved.object_uuid).has_value() ||
+        resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
+        !storage_projection.present ||
+        !CanonicalUuidBytes(storage_projection.descriptor_uuid).has_value() ||
+        !CanonicalUuidBytes(storage_projection.relation_uuid).has_value() ||
+        storage_projection.relation_uuid != resolved.object_uuid ||
+        !CanonicalUuidBytes(storage_projection.schema_uuid).has_value() ||
+        storage_projection.descriptor_generation == 0 ||
+        storage_projection.validated_resource_epoch == 0 ||
+        !ExactKeyValueStorageDescriptorCohort(storage_projection)) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "key/value persistent storage descriptor is incomplete");
+    }
+
+    NativeCatalogRelationBindingInput catalog_relation;
+    catalog_relation.source_id = key_value_source->source_id;
+    catalog_relation.resolution_state =
+        NativeCatalogRelationResolutionState::kBound;
+    catalog_relation.object_uuid = resolved.object_uuid;
+    catalog_relation.resolved_object_type = "key_value";
+    catalog_relation.resolved_schema_uuid = storage_projection.schema_uuid;
+    catalog_relation.catalog_generation_id = resolved.catalog_epoch;
+    catalog_relation.security_epoch = resolved.security_epoch;
+    catalog_relation.resource_epoch =
+        storage_projection.validated_resource_epoch;
+    std::unordered_map<std::string, std::uint32_t> descriptor_by_name;
+    std::unordered_map<std::string, std::string> column_uuid_by_name;
+    std::unordered_set<std::string> descriptor_uuids;
+    const auto datatype_manifest =
+        scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!datatype_manifest.ok()) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "canonical datatype catalog is unavailable");
+    }
+    const auto uuid_type =
+        scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+            datatype_manifest.manifest,
+            scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+                "uuid"));
+    if (!uuid_type.ok() ||
+        uuid_type.manifest.descriptor_rows.size() != 1 ||
+        !uuid_type.manifest.descriptor_rows.front().descriptor_uuid.valid() ||
+        !descriptor_uuids.insert(storage_projection.descriptor_uuid).second) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "engine row-identity descriptor is unavailable");
+    }
+    NativeDescriptorBindingInput row_identity_descriptor;
+    row_identity_descriptor.descriptor_id = 1;
+    row_identity_descriptor.descriptor_uuid =
+        storage_projection.descriptor_uuid;
+    row_identity_descriptor.type_uuid = scratchbird::core::uuid::UuidToString(
+        uuid_type.manifest.descriptor_rows.front().descriptor_uuid.value);
+    row_identity_descriptor.nullability = BoundNullability::kNonNull;
+    context.descriptors.push_back(std::move(row_identity_descriptor));
+    descriptor_by_name.emplace("row_uuid", 1);
+    // The relation UUID is the engine-issued bound-name identity for the
+    // system row-identity projection. It is not a user storage column UUID.
+    column_uuid_by_name.emplace("row_uuid", resolved.object_uuid);
+    catalog_relation.columns.push_back(
+        {0, resolved.object_uuid, 1, "row_uuid"});
+
+    for (std::size_t storage_ordinal = 0; storage_ordinal < 2;
+         ++storage_ordinal) {
+      const auto& column = storage_projection.columns[storage_ordinal];
+      const auto fields = ParseExactProjectedDescriptor(
+          column.encoded_type_descriptor, column.collation_uuid,
+          column.nullable);
+      if (!fields.has_value() ||
+          !descriptor_uuids.insert(column.type_descriptor_uuid).second) {
+        return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "key/value public descriptor is incomplete");
+      }
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      descriptor.descriptor_uuid = column.type_descriptor_uuid;
+      descriptor.type_uuid = fields->type_uuid;
+      descriptor.nullability = fields->nullable
+                                   ? BoundNullability::kNullable
+                                   : BoundNullability::kNonNull;
+      descriptor.collation_uuid = fields->collation_uuid;
+      descriptor.timezone_profile_id = fields->timezone_profile_id;
+      context.descriptors.push_back(std::move(descriptor));
+      descriptor_by_name.emplace(column.canonical_name_key,
+                                 context.descriptors.back().descriptor_id);
+      column_uuid_by_name.emplace(column.canonical_name_key,
+                                  column.column_uuid);
+      catalog_relation.columns.push_back(
+          {static_cast<std::uint32_t>(storage_ordinal + 1), column.column_uuid,
+           context.descriptors.back().descriptor_id,
+           column.canonical_name_key});
+    }
+    context.catalog_relations.push_back(std::move(catalog_relation));
+
+    const auto boolean_profile = std::ranges::find_if(
+        statement_context.descriptor_profiles, [](const auto& candidate) {
+          return candidate.profile_kind == 6 && candidate.slot == 0;
+        });
+    if (boolean_profile == statement_context.descriptor_profiles.end() ||
+        !boolean_profile->nullable ||
+        !CanonicalUuidBytes(boolean_profile->descriptor_uuid).has_value() ||
+        !CanonicalUuidBytes(boolean_profile->type_uuid).has_value() ||
+        !descriptor_uuids.insert(boolean_profile->descriptor_uuid).second) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "key/value boolean operation descriptor is unavailable");
+    }
+    NativeDescriptorBindingInput boolean_descriptor;
+    boolean_descriptor.descriptor_id =
+        static_cast<std::uint32_t>(context.descriptors.size() + 1);
+    boolean_descriptor.descriptor_uuid = boolean_profile->descriptor_uuid;
+    boolean_descriptor.type_uuid = boolean_profile->type_uuid;
+    boolean_descriptor.nullability = BoundNullability::kNullable;
+    context.descriptors.push_back(std::move(boolean_descriptor));
+    const auto boolean_descriptor_id = context.descriptors.back().descriptor_id;
+    const auto key_descriptor_id = descriptor_by_name.at("key");
+
+    const bool wildcard_projection = std::ranges::any_of(
+        ast.relations.front().output_expression_ids,
+        [&](const auto expression_id) {
+          const auto* expression = find_expression(expression_id);
+          return expression != nullptr &&
+                 expression->expression_kind == NativeExpressionAstKind::kWildcard;
+        });
+    if (wildcard_projection &&
+        ast.relations.front().output_expression_ids.size() != 1) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "key/value wildcard projection is not exact");
+    }
+    std::uint32_t next_expression_id = 1;
+    if (!expression_ids.empty()) {
+      next_expression_id = *std::ranges::max_element(expression_ids) + 1;
+    }
+    if (wildcard_projection) {
+      for (std::size_t ordinal = 0; ordinal < 3; ++ordinal) {
+        const auto& column = context.catalog_relations.front().columns[ordinal];
+        context.expressions.push_back(
+            {next_expression_id++, column.descriptor_id, std::nullopt,
+             column.column_uuid});
+        context.outputs.push_back(
+            {static_cast<std::uint32_t>(ordinal + 1),
+             context.expressions.back().expression_id,
+             column.canonical_name_key, column.descriptor_id, true,
+             static_cast<std::uint32_t>(ordinal),
+             ast.relations.front().relation_id});
+      }
+    }
+
+    std::unordered_map<std::uint32_t, NativeExpressionBindingInput>
+        binding_by_ast;
+    const std::unordered_set<std::uint32_t> key_expression_ids(
+        key_value_source->model_key_expression_ids.begin(),
+        key_value_source->model_key_expression_ids.end());
+    for (const auto& expression : ast.expressions) {
+      if (expression.expression_kind == NativeExpressionAstKind::kWildcard) {
+        continue;
+      }
+      std::optional<std::uint32_t> descriptor_id;
+      std::optional<std::string> bound_name_uuid;
+      if (key_expression_ids.contains(expression.expression_id)) {
+        descriptor_id = key_descriptor_id;
+      } else if (expression.expression_kind ==
+                     NativeExpressionAstKind::kIdentifier) {
+        if (expression.expression_id == alias->expression_id) {
+          descriptor_id = key_descriptor_id;
+          bound_name_uuid = resolved.object_uuid;
+        } else if (!expression.qualified_identifier.empty() &&
+                   expression.qualified_identifier.size() <= 2) {
+          if (expression.qualified_identifier.size() == 2 &&
+              !SameIdentifierComponent(expression.qualified_identifier.front(),
+                                       *key_value_source->alias)) {
+            return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                          "key/value projection qualifier is invalid");
+          }
+          const auto column_name =
+              CanonicalColumnLookupKey(expression.qualified_identifier.back());
+          const auto descriptor = descriptor_by_name.find(column_name);
+          if (descriptor != descriptor_by_name.end()) {
+            descriptor_id = descriptor->second;
+            bound_name_uuid = column_uuid_by_name.at(column_name);
+          }
+        }
+      } else if (expression.expression_kind ==
+                     NativeExpressionAstKind::kFunctionCall &&
+                 (expression.operator_name == "KV_KEY" ||
+                  expression.operator_name == "KV_MULTI_GET" ||
+                  expression.operator_name == "KV_PREFIX")) {
+        descriptor_id = expression.operator_name == "KV_KEY"
+                            ? key_descriptor_id
+                            : boolean_descriptor_id;
+      } else if (expression.expression_kind == NativeExpressionAstKind::kBinary &&
+                 expression.operator_name == "=") {
+        descriptor_id = boolean_descriptor_id;
+      } else if (expression.expression_kind ==
+                     NativeExpressionAstKind::kParenthesized &&
+                 expression.child_expression_ids.size() == 1) {
+        const auto child =
+            binding_by_ast.find(expression.child_expression_ids.front());
+        if (child != binding_by_ast.end()) {
+          descriptor_id = child->second.descriptor_id;
+        }
+      }
+      if (!descriptor_id.has_value()) {
+        return refuse(key_expression_ids.contains(expression.expression_id)
+                          ? "SB_MODEL_KEY_VALUE_KEY_TYPE_REFUSED_V1"
+                          : "SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "key/value expression profile is unsupported");
+      }
+      NativeExpressionBindingInput binding{
+          expression.expression_id, *descriptor_id, std::nullopt,
+          std::move(bound_name_uuid)};
+      context.expressions.push_back(binding);
+      binding_by_ast.emplace(expression.expression_id, std::move(binding));
+    }
+    if (!wildcard_projection) {
+      for (std::size_t ordinal = 0;
+           ordinal < ast.relations.front().output_expression_ids.size();
+           ++ordinal) {
+        const auto expression_id =
+            ast.relations.front().output_expression_ids[ordinal];
+        const auto binding = binding_by_ast.find(expression_id);
+        const auto* expression = find_expression(expression_id);
+        if (binding == binding_by_ast.end() || expression == nullptr ||
+            expression->expression_kind != NativeExpressionAstKind::kIdentifier) {
+          return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                        "key/value projection expression is invalid");
+        }
+        const auto column_name =
+            CanonicalColumnLookupKey(expression->qualified_identifier.back());
+        if (!descriptor_by_name.contains(column_name)) {
+          return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                        "key/value projection exposes a hidden storage field");
+        }
+        context.outputs.push_back(
+            {static_cast<std::uint32_t>(ordinal + 1),
+             binding->second.expression_id, column_name,
+             binding->second.descriptor_id, true,
+             static_cast<std::uint32_t>(ordinal),
+             ast.relations.front().relation_id});
+      }
+    }
+    if (context.outputs.empty()) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "key/value public projection is empty");
+    }
+    context.relations.push_back(
+        {ast.relations.front().relation_id,
+         exact_get
+             ? "sblr.model-source.key-value-get.v1"
+             : (multi_get
+                    ? "sblr.model-source.key-value-multi-get.v1"
+                    : "sblr.model-source.key-value-prefix-range.v1")});
+    return context;
+  }
 
   const auto graph_source = std::ranges::find_if(
       ast.catalog_relation_sources, [](const auto& source) {
@@ -4932,6 +5455,32 @@ std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocu
 std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst,
                                                      const AstDocument& ast) {
   std::vector<ObjectReference> refs;
+  const bool key_value_model_ast = std::ranges::any_of(
+      ast.native_relational.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kKeyValue;
+      });
+  if (key_value_model_ast) {
+    // QOW-SOURCE-RCP-075-KEY-VALUE-OBJECT-REFERENCE-V1
+    if (!ast.native_relational.accepted() ||
+        ast.native_relational.model_object_resolution_requests.size() != 1) {
+      return refs;
+    }
+    const auto& request =
+        ast.native_relational.model_object_resolution_requests.front();
+    if (request.source_id == 0 || request.model_family_id != "key_value" ||
+        request.object_class != "key_value" || request.qualified_name.empty()) {
+      return refs;
+    }
+    const auto presented_name =
+        EncodeQualifiedPresentedName(request.qualified_name);
+    if (!presented_name.has_value()) return refs;
+    ObjectReference ref;
+    ref.object_class = "key_value";
+    ref.presented_name = *presented_name;
+    ref.quoted = false;
+    refs.push_back(std::move(ref));
+    return refs;
+  }
   const bool graph_model_ast = std::ranges::any_of(
       ast.native_relational.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kGraph;

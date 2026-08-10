@@ -226,6 +226,52 @@ void PutString(std::vector<std::uint8_t>* out, const std::string& value) {
   out->insert(out->end(), value.begin(), value.end());
 }
 
+bool IsCanonicalStatementTimestamp(std::string_view value) {
+  if (value.size() != 20 &&
+      (value.size() < 22 || value.size() > 30)) {
+    return false;
+  }
+  if (value[4] != '-' || value[7] != '-' || value[10] != 'T' ||
+      value[13] != ':' || value[16] != ':' || value.back() != 'Z') {
+    return false;
+  }
+  constexpr std::size_t kDigitIndexes[] = {
+      0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18};
+  for (const auto index : kDigitIndexes) {
+    if (value[index] < '0' || value[index] > '9') return false;
+  }
+  if (value.size() > 20) {
+    if (value[19] != '.') return false;
+    for (std::size_t index = 20; index + 1 < value.size(); ++index) {
+      if (value[index] < '0' || value[index] > '9') return false;
+    }
+  }
+  const auto decimal = [&](std::size_t offset, std::size_t digits) {
+    unsigned result = 0;
+    for (std::size_t index = 0; index < digits; ++index) {
+      result = result * 10 +
+               static_cast<unsigned>(value[offset + index] - '0');
+    }
+    return result;
+  };
+  const auto year = decimal(0, 4);
+  const auto month = decimal(5, 2);
+  const auto day = decimal(8, 2);
+  const auto hour = decimal(11, 2);
+  const auto minute = decimal(14, 2);
+  const auto second = decimal(17, 2);
+  if (year == 0 || month == 0 || month > 12 || hour > 23 || minute > 59 ||
+      second > 59) {
+    return false;
+  }
+  constexpr unsigned kDaysByMonth[] = {
+      0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  auto maximum_day = kDaysByMonth[month];
+  const bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  if (month == 2 && leap) ++maximum_day;
+  return day != 0 && day <= maximum_day;
+}
+
 bool ReadString(const std::vector<std::uint8_t>& data, std::size_t* offset, std::string* out) {
   if (*offset + 2 > data.size()) return false;
   const auto length = GetU16(data, *offset);
@@ -2896,21 +2942,33 @@ SessionOperationResult HandleAcquireStatementContext(
   const bool native_projection_v6 =
       request.header.payload_schema_id ==
           sbps::kSchemaAcquireStatementContextRequestV6;
+  const bool native_projection_v7 =
+      request.header.payload_schema_id ==
+          sbps::kSchemaAcquireStatementContextRequestV7;
   const bool native_projection =
       native_projection_v2 || native_projection_v3 || native_projection_v4 ||
-      native_projection_v5 || native_projection_v6;
-  result.response_schema_id =
-      native_projection_v6
-          ? sbps::kSchemaAcquireStatementContextResultV6
-          : (native_projection_v5
-          ? sbps::kSchemaAcquireStatementContextResultV5
-          : (native_projection_v4
-          ? sbps::kSchemaAcquireStatementContextResultV4
-          : (native_projection_v3
-                 ? sbps::kSchemaAcquireStatementContextResultV3
-                 : (native_projection_v2
-                        ? sbps::kSchemaAcquireStatementContextResultV2
-                        : sbps::kSchemaAcquireStatementContextResultV1))));
+      native_projection_v5 || native_projection_v6 || native_projection_v7;
+  std::uint16_t projection_version = 1;
+  result.response_schema_id = sbps::kSchemaAcquireStatementContextResultV1;
+  if (native_projection_v2) {
+    projection_version = 2;
+    result.response_schema_id = sbps::kSchemaAcquireStatementContextResultV2;
+  } else if (native_projection_v3) {
+    projection_version = 3;
+    result.response_schema_id = sbps::kSchemaAcquireStatementContextResultV3;
+  } else if (native_projection_v4) {
+    projection_version = 4;
+    result.response_schema_id = sbps::kSchemaAcquireStatementContextResultV4;
+  } else if (native_projection_v5) {
+    projection_version = 5;
+    result.response_schema_id = sbps::kSchemaAcquireStatementContextResultV5;
+  } else if (native_projection_v6) {
+    projection_version = 6;
+    result.response_schema_id = sbps::kSchemaAcquireStatementContextResultV6;
+  } else if (native_projection_v7) {
+    projection_version = 7;
+    result.response_schema_id = sbps::kSchemaAcquireStatementContextResultV7;
+  }
   result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
   result.session_uuid = request.header.session_uuid;
   const auto refuse = [&](std::string code, std::string detail) {
@@ -2930,15 +2988,7 @@ SessionOperationResult HandleAcquireStatementContext(
            sbps::kSchemaAcquireStatementContextRequestV1 &&
        !native_projection) ||
       request.payload.size() != kRequestBytes ||
-      GetU16(request.payload, 0) !=
-          (native_projection_v6
-               ? 6
-               : (native_projection_v5
-               ? 5
-               : (native_projection_v4
-               ? 4
-               : (native_projection_v3 ? 3
-                                       : (native_projection_v2 ? 2 : 1)))))) {
+      GetU16(request.payload, 0) != projection_version) {
     return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_REQUEST_INVALID",
                   "schema_version_or_size_invalid");
   }
@@ -3001,6 +3051,8 @@ SessionOperationResult HandleAcquireStatementContext(
   engine_context.optimizer_capability_snapshot_uuid.canonical.clear();
   engine_context.optimizer_resource_snapshot_uuid.canonical.clear();
   engine_context.optimizer_route_snapshot_uuid.canonical.clear();
+  engine_context.statement_timestamp.clear();
+  engine_context.current_timestamp.clear();
   engine_context.local_transaction_id = transaction.local_transaction_id;
   engine_context.transaction_uuid.canonical = transaction.transaction_uuid;
   engine_context.snapshot_visible_through_local_transaction_id =
@@ -3027,6 +3079,12 @@ SessionOperationResult HandleAcquireStatementContext(
                   std::string("engine_status=") +
                       sb_engine_status_name(status));
   }
+  if (native_projection_v7 &&
+      !IsCanonicalStatementTimestamp(view.statement_timestamp)) {
+    (void)engine_bridge::ReleaseStatementContextReceipt(receipt);
+    return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_ENGINE_REFUSED",
+                  "engine_statement_timestamp_invalid");
+  }
 
   ServerStatementContextRecord record;
   record.session_uuid = session.session_uuid;
@@ -3046,15 +3104,7 @@ SessionOperationResult HandleAcquireStatementContext(
     }
   }
 
-  PutU16(&result.payload,
-         native_projection_v6
-             ? 6
-             : (native_projection_v5
-             ? 5
-             : (native_projection_v4
-             ? 4
-             : (native_projection_v3 ? 3
-                                     : (native_projection_v2 ? 2 : 1)))));
+  PutU16(&result.payload, projection_version);
   result.payload.push_back(1);
   PutUuid(&result.payload, TextToUuid(view.statement_uuid));
   PutU64(&result.payload, view.owning_local_transaction_id);
@@ -3065,18 +3115,22 @@ SessionOperationResult HandleAcquireStatementContext(
   PutUuid(&result.payload, TextToUuid(view.catalog_epoch_uuid));
   PutUuid(&result.payload, TextToUuid(view.security_context_uuid));
   PutU64(&result.payload, view.visible_committed_high_watermark);
+  if (native_projection_v7) {
+    PutString(&result.payload, view.statement_timestamp);
+  }
   if (native_projection) {
     PutUuid(&result.payload, TextToUuid(view.bound_ast_uuid));
     PutUuid(&result.payload, TextToUuid(view.count_function_uuid));
     PutUuid(&result.payload, TextToUuid(view.sum_function_uuid));
     if (native_projection_v3 || native_projection_v4 ||
-        native_projection_v5 || native_projection_v6) {
+        native_projection_v5 || native_projection_v6 ||
+        native_projection_v7) {
       PutUuid(&result.payload, TextToUuid(view.avg_function_uuid));
       PutUuid(&result.payload, TextToUuid(view.min_function_uuid));
       PutUuid(&result.payload, TextToUuid(view.max_function_uuid));
     }
     if (native_projection_v4 || native_projection_v5 ||
-        native_projection_v6) {
+        native_projection_v6 || native_projection_v7) {
       PutU16(&result.payload, static_cast<std::uint16_t>(
                                   view.aggregate_function_profiles.size()));
       for (const auto& function : view.aggregate_function_profiles) {
@@ -3086,7 +3140,7 @@ SessionOperationResult HandleAcquireStatementContext(
         result.payload.push_back(function.executable ? 1 : 0);
       }
     }
-    if (native_projection_v6) {
+    if (native_projection_v6 || native_projection_v7) {
       PutU16(&result.payload, static_cast<std::uint16_t>(
                                   view.window_function_profiles.size()));
       for (const auto& function : view.window_function_profiles) {
@@ -3101,12 +3155,14 @@ SessionOperationResult HandleAcquireStatementContext(
                       view.descriptor_profiles.end(),
                       [&](const auto& profile) {
                         return native_projection_v5 || native_projection_v6 ||
+                               native_projection_v7 ||
                                static_cast<std::uint8_t>(profile.profile_kind) <=
                                    6;
                       }));
     PutU16(&result.payload, descriptor_profile_count);
     for (const auto& profile : view.descriptor_profiles) {
       if (!native_projection_v5 && !native_projection_v6 &&
+          !native_projection_v7 &&
           static_cast<std::uint8_t>(profile.profile_kind) > 6) {
         continue;
       }

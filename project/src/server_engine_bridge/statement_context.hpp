@@ -76,6 +76,9 @@ struct StatementWindowFunctionProfile {
 struct StatementContextReceiptView {
   std::string receipt_uuid;
   std::string statement_uuid;
+  // Captured exactly once by the engine while issuing this receipt. It is a
+  // statement-stable value carrier, never transaction visibility/finality.
+  std::string statement_timestamp;
   std::string owning_transaction_uuid;
   std::string statement_snapshot_uuid;
   std::string statement_metadata_snapshot_uuid;

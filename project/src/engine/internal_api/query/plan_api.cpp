@@ -125,6 +125,52 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     }
     return true;
   };
+  const auto canonical_statement_timestamp = [](std::string_view value) {
+    if (value.size() != 20 &&
+        (value.size() < 22 || value.size() > 30)) {
+      return false;
+    }
+    if (value[4] != '-' || value[7] != '-' || value[10] != 'T' ||
+        value[13] != ':' || value[16] != ':' || value.back() != 'Z') {
+      return false;
+    }
+    constexpr std::size_t kDigitIndexes[] = {
+        0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18};
+    for (const auto index : kDigitIndexes) {
+      if (value[index] < '0' || value[index] > '9') return false;
+    }
+    if (value.size() > 20) {
+      if (value[19] != '.') return false;
+      for (std::size_t index = 20; index + 1 < value.size(); ++index) {
+        if (value[index] < '0' || value[index] > '9') return false;
+      }
+    }
+    const auto decimal = [&](std::size_t offset, std::size_t digits) {
+      unsigned parsed = 0;
+      for (std::size_t index = 0; index < digits; ++index) {
+        parsed = parsed * 10 +
+                 static_cast<unsigned>(value[offset + index] - '0');
+      }
+      return parsed;
+    };
+    const auto year = decimal(0, 4);
+    const auto month = decimal(5, 2);
+    const auto day = decimal(8, 2);
+    const auto hour = decimal(11, 2);
+    const auto minute = decimal(14, 2);
+    const auto second = decimal(17, 2);
+    if (year == 0 || month == 0 || month > 12 || hour > 23 || minute > 59 ||
+        second > 59) {
+      return false;
+    }
+    constexpr unsigned kDaysByMonth[] = {
+        0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    auto maximum_day = kDaysByMonth[month];
+    const bool leap =
+        (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    if (month == 2 && leap) ++maximum_day;
+    return day != 0 && day <= maximum_day;
+  };
 
   if (dag.wire_version != 1 && dag.wire_version != 2) {
     return refuse("SBLR.PLAN_TREE.INVALID_VERSION", 0, "wire_version");
@@ -202,6 +248,42 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   if (graph_operation_count != 0 && !graph_model_wire) {
     return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
                   "graph_model_operation_identity");
+  }
+  // QOW-SOURCE-RCP-075-TYPED-DAG-FUNCTIONLESS-KEY-VALUE-V1
+  const auto key_value_operation_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "KV_KEY" ||
+               expression.operator_name == "KV_MULTI_GET" ||
+               expression.operator_name == "KV_PREFIX";
+      });
+  const auto key_value_operation_expression = std::ranges::find_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "KV_KEY" ||
+               expression.operator_name == "KV_MULTI_GET" ||
+               expression.operator_name == "KV_PREFIX";
+      });
+  const auto key_value_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
+      });
+  const auto key_value_model_node_count = std::ranges::count_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
+      });
+  const bool key_value_model_wire =
+      planning_wire && key_value_operation_count == 1 &&
+      key_value_model_node_count == 1 &&
+      key_value_operation_expression != dag.expressions.end() &&
+      key_value_node != dag.nodes.end();
+  if (key_value_operation_count != 0 && !key_value_model_wire) {
+    return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", 0,
+                  "key_value_model_operation_identity");
+  }
+  if (key_value_model_wire != !dag.statement_timestamp.empty() ||
+      (key_value_model_wire &&
+       !canonical_statement_timestamp(dag.statement_timestamp))) {
+    return refuse("SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1", 0,
+                  "statement_timestamp");
   }
   std::size_t planning_reference_count = 0;
   const auto add_planning_references = [&](const std::size_t count) {
@@ -284,16 +366,23 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         graph_model_wire && function_call &&
         !expression.function_uuid.has_value() &&
         expression.expression_id == graph_operation_expression->expression_id;
+    const bool functionless_key_value_operation =
+        key_value_model_wire && function_call &&
+        !expression.function_uuid.has_value() &&
+        expression.expression_id ==
+            key_value_operation_expression->expression_id;
     const bool operator_expression =
         expression.expression_kind == RelationalExpressionKind::kUnary ||
         expression.expression_kind == RelationalExpressionKind::kBinary ||
-        functionless_document_unnest || functionless_graph_operation;
+        functionless_document_unnest || functionless_graph_operation ||
+        functionless_key_value_operation;
     if (literal != expression.literal_kind.has_value() ||
         (expression.literal_kind.has_value() &&
          !known_literal_kind(*expression.literal_kind)) ||
         function_call != (expression.function_uuid.has_value() ||
                           functionless_document_unnest ||
-                          functionless_graph_operation) ||
+                          functionless_graph_operation ||
+                          functionless_key_value_operation) ||
         (expression.function_uuid.has_value() &&
          !canonical_uuid(*expression.function_uuid)) ||
         identifier != expression.bound_name_uuid.has_value() ||
@@ -312,11 +401,16 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         ((literal || parameter || identifier) && child_count == 0) ||
         (function_call &&
          ((!functionless_document_unnest &&
-           !functionless_graph_operation) ||
+           !functionless_graph_operation &&
+           !functionless_key_value_operation) ||
           (functionless_document_unnest && child_count == 2) ||
           (functionless_graph_operation &&
            ((expression.operator_name == "GRAPH_MATCH" && child_count == 2) ||
-            (expression.operator_name == "GRAPH_EXPAND" && child_count == 5))))) ||
+            (expression.operator_name == "GRAPH_EXPAND" && child_count == 5))) ||
+          (functionless_key_value_operation &&
+           ((expression.operator_name == "KV_KEY" && child_count == 1) ||
+            (expression.operator_name == "KV_MULTI_GET" && child_count >= 2) ||
+            (expression.operator_name == "KV_PREFIX" && child_count == 2))))) ||
         (expression.expression_kind == RelationalExpressionKind::kUnary &&
          child_count == 1) ||
         (expression.expression_kind == RelationalExpressionKind::kBinary &&
@@ -2006,10 +2100,23 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
   const bool exact_document_expand =
       dag.wire_version == 2 && document_expand_count == 1 &&
       document_expand_node != dag.nodes.end();
+  const auto key_value_operation_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "KV_KEY" ||
+               expression.operator_name == "KV_MULTI_GET" ||
+               expression.operator_name == "KV_PREFIX";
+      });
+  const bool exact_key_value_family = key_value_operation_count == 1;
   if ((exact_graph_family && exact_document_expand) ||
       (graph_operation_count != 0 && !exact_graph_family)) {
     return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
                   "model_family_operation_identity");
+  }
+  if (exact_key_value_family != !engine_scope.statement_timestamp.empty() ||
+      (exact_key_value_family &&
+       dag.statement_timestamp != engine_scope.statement_timestamp)) {
+    return refuse("SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1", 0,
+                  "statement_timestamp");
   }
   if (dag.wire_version != 2 ||
       !engine_scope.metadata_snapshot_engine_owned ||
@@ -2037,6 +2144,8 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
   graph.statement_snapshot_id =
       engine_scope.snapshot_visible_through_local_transaction_id;
   graph.mga_statement_context.statement_uuid = engine_scope.statement_uuid;
+  graph.mga_statement_context.statement_timestamp =
+      engine_scope.statement_timestamp;
   graph.mga_statement_context.owning_transaction_uuid =
       engine_scope.owning_transaction_uuid;
   graph.mga_statement_context.statement_snapshot_uuid =
@@ -2108,6 +2217,10 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
     if (exact_graph_family && node.node_id == graph_node->node_id) {
       logical_node.model_family_identity =
           plan::CanonicalLogicalModelFamilyIdentity::kGraph;
+    } else if (exact_key_value_family &&
+               node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1") {
+      logical_node.model_family_identity =
+          plan::CanonicalLogicalModelFamilyIdentity::kKeyValue;
     } else if (exact_document_expand &&
                node.node_id == document_expand_node->node_id) {
       logical_node.model_family_identity =

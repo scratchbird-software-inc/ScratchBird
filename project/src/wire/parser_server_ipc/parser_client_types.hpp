@@ -112,6 +112,9 @@ struct ParserStatementContext {
   std::string catalog_epoch_uuid;
   std::string security_context_uuid;
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
+  // Exact engine-issued UTC bytes from SBPS statement-context V7. This is a
+  // statement-stable value carrier only, never transaction finality.
+  std::string statement_timestamp;
   std::string bound_ast_uuid;
   std::string count_function_uuid;
   std::string sum_function_uuid;
@@ -127,6 +130,16 @@ struct ParserStatementContext {
            !statement_snapshot_uuid.empty() &&
            !statement_metadata_snapshot_uuid.empty() &&
            !catalog_epoch_uuid.empty() && !security_context_uuid.empty();
+  }
+
+  [[nodiscard]] bool native_v7_complete() const {
+    return complete() && !statement_timestamp.empty() &&
+           !bound_ast_uuid.empty() && !count_function_uuid.empty() &&
+           !sum_function_uuid.empty() && !avg_function_uuid.empty() &&
+           !min_function_uuid.empty() && !max_function_uuid.empty() &&
+           aggregate_function_profiles.size() == 43 &&
+           window_function_profiles.size() == 11 &&
+           descriptor_profiles.size() == 320;
   }
 };
 

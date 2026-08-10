@@ -1717,8 +1717,11 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                 : (version == 5
                        ? ipc::DecodeAcquireStatementContextResultPayloadV5ForTest(
                              projected.payload, &projected_context)
-                       : ipc::DecodeAcquireStatementContextResultPayloadV6ForTest(
-                             projected.payload, &projected_context));
+                       : (version == 6
+                              ? ipc::DecodeAcquireStatementContextResultPayloadV6ForTest(
+                                    projected.payload, &projected_context)
+                              : ipc::DecodeAcquireStatementContextResultPayloadV7ForTest(
+                                    projected.payload, &projected_context)));
         std::array<std::uint16_t, 11> profiles_by_kind{};
         for (const auto& profile : projected_context.descriptor_profiles) {
           if (profile.profile_kind < profiles_by_kind.size()) {
@@ -1739,13 +1742,20 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                         expected_window_function_count &&
                     projected_context.descriptor_profiles.size() ==
                         expected_profile_count &&
-                    exact_profile_families,
+                    exact_profile_families &&
+                    (version == 7
+                         ? projected_context.native_v7_complete()
+                         : projected_context.statement_timestamp.empty()),
                 "native statement-context descriptor projection drifted");
         const auto projected_statement =
             registry.statement_contexts_by_statement_uuid.find(
                 projected_context.statement_uuid);
         Require(projected_statement !=
                     registry.statement_contexts_by_statement_uuid.end() &&
+                    (version != 7 ||
+                     (!projected_context.statement_timestamp.empty() &&
+                      projected_context.statement_timestamp ==
+                          projected_statement->second.view.statement_timestamp)) &&
                     bridge::ReleaseStatementContextReceipt(
                         projected_statement->second.receipt) ==
                         SB_ENGINE_STATUS_OK,
@@ -1774,8 +1784,64 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       320,
       10,
       11);
+  verify_native_projection(
+      7,
+      sbps::kSchemaAcquireStatementContextRequestV7,
+      sbps::kSchemaAcquireStatementContextResultV7,
+      320,
+      10,
+      11);
   Require(registry.statement_contexts_by_statement_uuid.size() == 1,
           "native projection compatibility receipts escaped test cleanup");
+
+  const auto v7_projection = server::HandleAcquireStatementContext(
+      &registry, engine_state,
+      AcquireNativeFrame(session_uuid,
+                         server_transaction.local_transaction_id,
+                         transaction_uuid.value.bytes, 7,
+                         sbps::kSchemaAcquireStatementContextRequestV7));
+  ipc::ParserStatementContext v7_context;
+  Require(v7_projection.accepted &&
+              ipc::DecodeAcquireStatementContextResultPayloadV7ForTest(
+                  v7_projection.payload, &v7_context) &&
+              v7_context.native_v7_complete(),
+          "native V7 statement timestamp projection was not current");
+  constexpr std::size_t kV7TimestampLengthOffset =
+      2 + 1 + (6 * 16) + (2 * 8);
+  auto missing_timestamp = v7_projection.payload;
+  Require(missing_timestamp.size() > kV7TimestampLengthOffset + 2,
+          "native V7 timestamp payload was unexpectedly short");
+  missing_timestamp[kV7TimestampLengthOffset] = 0;
+  missing_timestamp[kV7TimestampLengthOffset + 1] = 0;
+  ipc::ParserStatementContext refused_timestamp;
+  Require(!ipc::DecodeAcquireStatementContextResultPayloadV7ForTest(
+              missing_timestamp, &refused_timestamp),
+          "native V7 decoder admitted a missing statement timestamp");
+  auto malformed_timestamp = v7_projection.payload;
+  malformed_timestamp[kV7TimestampLengthOffset + 2 + 10] = 'X';
+  Require(!ipc::DecodeAcquireStatementContextResultPayloadV7ForTest(
+              malformed_timestamp, &refused_timestamp),
+          "native V7 decoder admitted a malformed statement timestamp");
+  const auto v7_statement = registry.statement_contexts_by_statement_uuid.find(
+      v7_context.statement_uuid);
+  Require(v7_statement != registry.statement_contexts_by_statement_uuid.end() &&
+              bridge::ReleaseStatementContextReceipt(
+                  v7_statement->second.receipt) == SB_ENGINE_STATUS_OK,
+          "native V7 timestamp test receipt cleanup failed");
+  registry.statement_contexts_by_statement_uuid.erase(v7_statement);
+
+  const auto mismatched_version = server::HandleAcquireStatementContext(
+      &registry, engine_state,
+      AcquireNativeFrame(session_uuid,
+                         server_transaction.local_transaction_id,
+                         transaction_uuid.value.bytes, 6,
+                         sbps::kSchemaAcquireStatementContextRequestV7));
+  Require(!mismatched_version.accepted &&
+              !mismatched_version.diagnostics.empty() &&
+              mismatched_version.diagnostics.front().code ==
+                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_REQUEST_INVALID" &&
+              registry.statement_contexts_by_statement_uuid.size() == 1,
+          "native V7 schema admitted a mismatched version carrier");
 
   auto swapped_uuid = NewTypedUuid(platform::UuidKind::transaction,
                                    fixture.salt + 91).value.bytes;
@@ -1845,7 +1911,9 @@ int main() {
   bridge::StatementContextReceiptView first_view;
   const auto first = Acquire(owner.get(), transaction, &first_view);
   Require(first && first_view.snapshot_complete &&
-              first_view.inventory_authoritative,
+              first_view.inventory_authoritative &&
+              !first_view.statement_timestamp.empty() &&
+              first_view.statement_timestamp.back() == 'Z',
           "live statement-context receipt is incomplete");
   Require(first_view.owning_transaction_uuid ==
                   transaction.transaction_uuid.canonical &&
@@ -1885,6 +1953,21 @@ int main() {
           "live statement-context receipt did not enforce exactly-once release");
   Require(!api::EngineResolveStatementSnapshot(resolve).ok,
           "released statement snapshot remained resolvable");
+
+  auto caller_timestamp = transaction;
+  caller_timestamp.statement_timestamp = "2000-01-01T00:00:00Z";
+  caller_timestamp.current_timestamp = caller_timestamp.statement_timestamp;
+  bridge::StatementContextReceiptView engine_timestamp_view;
+  const auto engine_timestamp_receipt =
+      Acquire(owner.get(), caller_timestamp, &engine_timestamp_view);
+  Require(engine_timestamp_receipt &&
+              engine_timestamp_view.statement_timestamp !=
+                  caller_timestamp.statement_timestamp &&
+              engine_timestamp_view.statement_timestamp.back() == 'Z',
+          "caller timestamp substituted the current engine statement clock");
+  Require(bridge::ReleaseStatementContextReceipt(engine_timestamp_receipt) ==
+              SB_ENGINE_STATUS_OK,
+          "engine statement-timestamp proof receipt cleanup failed");
 
   bridge::StatementContextReceiptView cleanup_view;
   const auto cleanup_receipt = Acquire(owner.get(), transaction, &cleanup_view);

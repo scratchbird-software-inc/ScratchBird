@@ -42,6 +42,7 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
     return result;
   }
   const bool graph_family = request.input.family_id == "graph";
+  const bool key_value_family = request.input.family_id == "key_value";
   if (request.current_catalog_generation != request.input.catalog_generation) {
     refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
            "model-family catalog generation changed before provider access");
@@ -74,7 +75,8 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
           "SB_MODEL_CAPABILITY_DESCRIPTOR_V1" ||
       request.capability.family_id != request.input.family_id ||
       (request.capability.family_id != "document" &&
-       request.capability.family_id != "graph") ||
+       request.capability.family_id != "graph" &&
+       request.capability.family_id != "key_value") ||
       request.capability.capability_uuid !=
           request.input.capability_uuid ||
       request.capability.provider_uuid != request.input.provider_uuid ||
@@ -90,6 +92,9 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
       !request.capability.security_recheck_supported ||
       request.capability.provider_visibility_authority_claimed ||
       request.capability.provider_finality_authority_claimed ||
+      (key_value_family &&
+       request.exact_fallback_selected !=
+           request.input.exact_fallback_selected) ||
       !request.execute_provider || !request.cancellation_requested ||
       !request.cleanup_provider) {
     refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
@@ -98,8 +103,11 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
   }
   if (request.exact_fallback_selected &&
       !request.capability.exact_collection_fallback_available) {
-    refuse(graph_family ? "SB_MODEL_GRAPH_EXACT_FALLBACK_UNAVAILABLE_V1"
-                        : "SB_MODEL_DOCUMENT_EXACT_FALLBACK_UNAVAILABLE_V1",
+    refuse(graph_family
+               ? "SB_MODEL_GRAPH_EXACT_FALLBACK_UNAVAILABLE_V1"
+               : key_value_family
+                     ? "SB_MODEL_KEY_VALUE_EXACT_FALLBACK_UNAVAILABLE_V1"
+                     : "SB_MODEL_DOCUMENT_EXACT_FALLBACK_UNAVAILABLE_V1",
            "the exact model-family fallback is unavailable");
     return result;
   }

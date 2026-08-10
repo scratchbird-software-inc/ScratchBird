@@ -11,6 +11,9 @@
 #include "api_types.hpp"
 #include "nosql/nosql_physical_provider_contract.hpp"
 
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -89,5 +92,67 @@ struct EngineKeyValueAtomicProgramRequest : EngineApiRequest {
 struct EngineKeyValueAtomicProgramResult : EngineApiResult {};
 EngineKeyValueAtomicProgramResult EngineKeyValueAtomicProgram(
     const EngineKeyValueAtomicProgramRequest& request);
+
+// RCP-075 engine-bound, read-only key/value model-source contract. The
+// request carries query operands and immutable engine authority only; stored
+// rows are read from the bound MGA relation and can never be supplied here.
+enum class EngineBoundKeyValueReadOperationV1 : std::uint8_t {
+  kGet = 1,
+  kMultiGet = 2,
+  kPrefixRange = 3,
+};
+
+struct EngineBoundKeyValueReadRequestV1 : EngineApiRequest {
+  std::uint16_t abi_version{1};
+  EngineBoundKeyValueReadOperationV1 operation{
+      EngineBoundKeyValueReadOperationV1::kGet};
+  std::string object_uuid;
+  std::vector<EngineTypedValue> request_values;
+  std::string statement_timestamp;
+  std::string expected_descriptor_uuid;
+  std::uint64_t expected_descriptor_generation{0};
+  std::string selected_alternative_uuid;
+  std::string capability_uuid;
+  std::string provider_uuid;
+  std::uint64_t provider_generation{0};
+  std::size_t maximum_request_keys{0};
+  std::uint64_t maximum_request_bytes{0};
+  std::uint64_t maximum_scanned_row_versions{0};
+  std::uint64_t maximum_decoded_bytes{0};
+  std::size_t maximum_output_rows{0};
+  std::uint64_t maximum_value_bytes{0};
+  std::uint64_t maximum_result_bytes{0};
+  std::uint64_t maximum_memory_bytes{0};
+  bool exact_fallback_selected{false};
+  std::function<bool()> cancellation_requested;
+};
+
+struct EngineBoundKeyValueRowV1 {
+  std::string row_uuid;
+  std::string key;
+  std::string value;
+};
+
+struct EngineBoundKeyValueReadResultV1 : EngineApiResult {
+  bool data_access_observed{false};
+  bool exact_fallback_observed{false};
+  bool residual_recheck_complete{false};
+  bool base_row_mga_recheck_complete{false};
+  bool security_recheck_complete{false};
+  std::uint64_t scanned_row_version_count{0};
+  std::uint64_t selected_visible_row_count{0};
+  std::uint64_t result_byte_count{0};
+  std::string ordering_id;
+  std::string descriptor_uuid;
+  std::uint64_t descriptor_generation{0};
+  std::string selected_alternative_uuid;
+  std::string capability_uuid;
+  std::string provider_uuid;
+  std::uint64_t provider_generation{0};
+  std::vector<EngineBoundKeyValueRowV1> rows;
+};
+
+EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(
+    const EngineBoundKeyValueReadRequestV1& request);
 
 }  // namespace scratchbird::engine::internal_api

@@ -132,6 +132,7 @@ enum class NativeRelationSourceAstKind {
   kCatalogRelation,
   kDocument,
   kGraph,
+  kKeyValue,
 };
 
 enum class NativeAggregateGroupingForm {
@@ -218,6 +219,10 @@ struct NativeCatalogRelationSourceAstNode {
   std::optional<std::uint32_t> model_value_expression_id;
   std::optional<std::uint32_t> model_pattern_expression_id;
   std::optional<std::uint32_t> model_graph_alias_expression_id;
+  // Ordered key/prefix expression identities for the key/value family.
+  // Distinct nodes may evaluate to equal TEXT bytes; semantic normalization
+  // occurs only after evaluation.
+  std::vector<std::uint32_t> model_key_expression_ids;
   std::string model_graph_direction;
   std::optional<std::uint64_t> model_graph_minimum_depth;
   std::optional<std::uint64_t> model_graph_maximum_depth;

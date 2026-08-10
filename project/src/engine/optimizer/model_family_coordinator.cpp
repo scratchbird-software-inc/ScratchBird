@@ -66,6 +66,53 @@ bool CandidateScore(const ModelFamilyCandidateV1& candidate,
          Add(candidate.cost.risk_penalty, score);
 }
 
+bool CanonicalStatementTimestamp(const std::string_view value) {
+  if (value.size() != 20 && (value.size() < 22 || value.size() > 30)) {
+    return false;
+  }
+  if (value[4] != '-' || value[7] != '-' || value[10] != 'T' ||
+      value[13] != ':' || value[16] != ':' || value.back() != 'Z') {
+    return false;
+  }
+  constexpr std::size_t kDigits[] = {
+      0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18};
+  for (const auto index : kDigits) {
+    if (value[index] < '0' || value[index] > '9') return false;
+  }
+  if (value.size() > 20) {
+    if (value[19] != '.') return false;
+    for (std::size_t index = 20; index + 1 < value.size(); ++index) {
+      if (value[index] < '0' || value[index] > '9') return false;
+    }
+  }
+  const auto decimal = [&](const std::size_t begin,
+                           const std::size_t count) {
+    unsigned out = 0;
+    for (std::size_t index = 0; index < count; ++index) {
+      out = out * 10 + static_cast<unsigned>(value[begin + index] - '0');
+    }
+    return out;
+  };
+  const auto year = decimal(0, 4);
+  const auto month = decimal(5, 2);
+  const auto day = decimal(8, 2);
+  const auto hour = decimal(11, 2);
+  const auto minute = decimal(14, 2);
+  const auto second = decimal(17, 2);
+  if (year == 0 || month == 0 || month > 12 || hour > 23 || minute > 59 ||
+      second > 59) {
+    return false;
+  }
+  constexpr unsigned kDays[] = {
+      0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  auto maximum_day = kDays[month];
+  if (month == 2 &&
+      ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) {
+    ++maximum_day;
+  }
+  return day != 0 && day <= maximum_day;
+}
+
 }  // namespace
 
 ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
@@ -74,6 +121,7 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
   ModelFamilyCoordinatorResultV1 result;
   const bool document_family = request.family_id == "document";
   const bool graph_family = request.family_id == "graph";
+  const bool key_value_family = request.family_id == "key_value";
   const bool unnest = request.operation_id == "DOCUMENT_UNNEST";
   const bool valid_operation =
       (document_family &&
@@ -81,16 +129,23 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
         request.operation_id == "DOCUMENT_PATH" || unnest)) ||
       (graph_family &&
        (request.operation_id == "GRAPH_MATCH" ||
-        request.operation_id == "GRAPH_EXPAND"));
+        request.operation_id == "GRAPH_EXPAND")) ||
+      (key_value_family &&
+       (request.operation_id == "KEY_VALUE_GET" ||
+        request.operation_id == "KEY_VALUE_MULTI_GET" ||
+        request.operation_id == "KEY_VALUE_PREFIX_RANGE"));
   const std::string expected_logical_operator =
       graph_family ? "LOGICAL_GRAPH_SOURCE_V1"
-                   : "LOGICAL_DOCUMENT_SOURCE_V1";
+                   : key_value_family ? "LOGICAL_KEY_VALUE_SOURCE_V1"
+                                      : "LOGICAL_DOCUMENT_SOURCE_V1";
   const std::string expected_physical_operator =
       graph_family ? "PHYSICAL_GRAPH_ADJACENCY_SCAN_V1"
-                   : "PHYSICAL_DOCUMENT_PATH_SCAN_V1";
+                   : key_value_family ? "PHYSICAL_KEY_VALUE_SCAN_V1"
+                                      : "PHYSICAL_DOCUMENT_PATH_SCAN_V1";
   const std::string expected_implementation =
       graph_family ? "physical_graph_adjacency_scan_v1"
-                   : "physical_document_path_scan_v1";
+                   : key_value_family ? "physical_key_value_scan_v1"
+                                      : "physical_document_path_scan_v1";
   result.logical_operator_id = expected_logical_operator;
   result.physical_operator_id = expected_physical_operator;
   const auto refuse = [&](const char* diagnostic, std::string detail) {
@@ -99,7 +154,16 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     return result;
   };
 
-  if (request.abi_version != 1 || (!document_family && !graph_family) ||
+  if (key_value_family !=
+          !request.mga_statement_context.statement_timestamp.empty() ||
+      (key_value_family &&
+       !CanonicalStatementTimestamp(
+           request.mga_statement_context.statement_timestamp))) {
+    return refuse("SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1",
+                  "key/value coordinator statement timestamp is invalid");
+  }
+  if (request.abi_version != 1 ||
+      (!document_family && !graph_family && !key_value_family) ||
       !valid_operation ||
       request.logical_operator_id != expected_logical_operator ||
       request.logical_node_id == 0 || request.output_descriptor_ids.empty() ||
@@ -136,6 +200,7 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
   const ModelFamilyCandidateV1* selected = nullptr;
   std::uint64_t selected_score = 0;
   bool fallback_seen = false;
+  bool memory_refusal_observed = false;
   for (const auto& candidate : request.candidates) {
     std::uint64_t score = 0;
     if (!CanonicalUuid(candidate.alternative_uuid) ||
@@ -159,6 +224,7 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
       continue;
     }
     if (candidate.cost.memory_bytes_required > request.memory_budget_bytes) {
+      memory_refusal_observed = true;
       continue;
     }
     if (selected == nullptr || score < selected_score ||
@@ -169,13 +235,15 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     }
   }
   if (selected == nullptr) {
-    if (fallback_seen) {
+    if (key_value_family ? memory_refusal_observed : fallback_seen) {
       return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                     "no exact model-family candidate fits the memory grant");
     }
     return refuse(graph_family
                       ? "SB_MODEL_GRAPH_EXACT_FALLBACK_UNAVAILABLE_V1"
-                      : "SB_MODEL_DOCUMENT_EXACT_FALLBACK_UNAVAILABLE_V1",
+                      : key_value_family
+                            ? "SB_MODEL_KEY_VALUE_EXACT_FALLBACK_UNAVAILABLE_V1"
+                            : "SB_MODEL_DOCUMENT_EXACT_FALLBACK_UNAVAILABLE_V1",
                   "no exact model-family provider or fallback is available");
   }
 
@@ -219,7 +287,8 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
   node.mga_statement_context = request.mga_statement_context;
   node.logical_semantic_variant_id =
       graph_family ? "logical_graph_source_v1"
-                   : "logical_document_source_v1";
+                   : key_value_family ? "logical_key_value_source_v1"
+                                      : "logical_document_source_v1";
   dag.nodes.push_back(std::move(node));
   dag.bound_sblr_tree_uuid = request.bound_sblr_tree_uuid;
   dag.catalog_epoch_uuid = request.catalog_epoch_uuid;
@@ -256,6 +325,11 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
 }
 
 ModelFamilyCoordinatorResultV1 CoordinateDocumentFamilySourceV1(
+    const ModelFamilyCoordinatorRequestV1& request) {
+  return CoordinateModelFamilySourceV1(request);
+}
+
+ModelFamilyCoordinatorResultV1 CoordinateKeyValueFamilySourceV1(
     const ModelFamilyCoordinatorRequestV1& request) {
   return CoordinateModelFamilySourceV1(request);
 }

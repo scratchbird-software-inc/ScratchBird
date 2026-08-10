@@ -58,6 +58,8 @@ constexpr std::uint32_t kSchemaAcquireStatementContextRequestV5 = 7019;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV5 = 7020;
 constexpr std::uint32_t kSchemaAcquireStatementContextRequestV6 = 7021;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV6 = 7022;
+constexpr std::uint32_t kSchemaAcquireStatementContextRequestV7 = 7023;
+constexpr std::uint32_t kSchemaAcquireStatementContextResultV7 = 7024;
 constexpr std::uint32_t kSchemaExecuteCanonicalSblrV1 = 4015;
 
 constexpr std::uint8_t kCapabilityBaseline = 0x01u;

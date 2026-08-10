@@ -103,6 +103,7 @@ struct NativeCatalogRelationBindingInput {
 // never creates, selects, resolves, or repairs MGA authority.
 struct NativeRelationalEngineStatementAuthority {
   std::string statement_uuid;
+  std::string statement_timestamp;
   std::string transaction_uuid;
   std::string statement_snapshot_uuid;
   std::string statement_metadata_snapshot_uuid;
@@ -116,6 +117,7 @@ struct NativeRelationalBindingContext {
   std::string catalog_epoch_uuid;
   std::string security_context_uuid;
   std::string statement_uuid;
+  std::string statement_timestamp;
   std::string owning_transaction_uuid;
   std::string statement_snapshot_uuid;
   std::string statement_metadata_snapshot_uuid;
@@ -264,6 +266,7 @@ struct BoundCatalogRelationSourceAstRecord {
   std::optional<std::uint32_t> model_value_expression_id;
   std::optional<std::uint32_t> model_pattern_expression_id;
   std::optional<std::uint32_t> model_graph_alias_expression_id;
+  std::vector<std::uint32_t> model_key_expression_ids;
   std::string model_graph_direction;
   std::optional<std::uint64_t> model_graph_minimum_depth;
   std::optional<std::uint64_t> model_graph_maximum_depth;
@@ -287,6 +290,7 @@ struct BoundNativeRelationalDocument {
   std::string bound_ast_uuid;
   std::string security_context_uuid;
   std::string statement_uuid;
+  std::string statement_timestamp;
   std::string owning_transaction_uuid;
   std::string statement_snapshot_uuid;
   std::string statement_metadata_snapshot_uuid;

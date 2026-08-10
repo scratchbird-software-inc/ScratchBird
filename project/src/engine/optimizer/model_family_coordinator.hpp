@@ -89,6 +89,9 @@ struct ModelFamilyCoordinatorResultV1 {
 ModelFamilyCoordinatorResultV1 CoordinateDocumentFamilySourceV1(
     const ModelFamilyCoordinatorRequestV1& request);
 
+ModelFamilyCoordinatorResultV1 CoordinateKeyValueFamilySourceV1(
+    const ModelFamilyCoordinatorRequestV1& request);
+
 ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     const ModelFamilyCoordinatorRequestV1& request);
 

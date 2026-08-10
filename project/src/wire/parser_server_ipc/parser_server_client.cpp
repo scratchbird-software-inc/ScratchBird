@@ -95,6 +95,8 @@ constexpr std::uint32_t kSchemaAcquireStatementContextRequestV5 = 7019;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV5 = 7020;
 constexpr std::uint32_t kSchemaAcquireStatementContextRequestV6 = 7021;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV6 = 7022;
+constexpr std::uint32_t kSchemaAcquireStatementContextRequestV7 = 7023;
+constexpr std::uint32_t kSchemaAcquireStatementContextResultV7 = 7024;
 constexpr std::uint16_t kMessageHello = 1;
 constexpr std::uint16_t kMessageHelloAccept = 2;
 constexpr std::uint16_t kMessageAuthHandoff = 10;
@@ -898,6 +900,60 @@ std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV6(
   return out;
 }
 
+std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV7(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction) {
+  auto out = EncodeAcquireStatementContextPayloadV1(session, transaction);
+  out[0] = 7;
+  return out;
+}
+
+bool IsCanonicalStatementTimestamp(std::string_view value) {
+  if (value.size() != 20 &&
+      (value.size() < 22 || value.size() > 30)) {
+    return false;
+  }
+  if (value[4] != '-' || value[7] != '-' || value[10] != 'T' ||
+      value[13] != ':' || value[16] != ':' || value.back() != 'Z') {
+    return false;
+  }
+  constexpr std::size_t kDigitIndexes[] = {
+      0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18};
+  for (const auto index : kDigitIndexes) {
+    if (value[index] < '0' || value[index] > '9') return false;
+  }
+  if (value.size() > 20) {
+    if (value[19] != '.') return false;
+    for (std::size_t index = 20; index + 1 < value.size(); ++index) {
+      if (value[index] < '0' || value[index] > '9') return false;
+    }
+  }
+  const auto decimal = [&](std::size_t offset, std::size_t digits) {
+    unsigned result = 0;
+    for (std::size_t index = 0; index < digits; ++index) {
+      result = result * 10 +
+               static_cast<unsigned>(value[offset + index] - '0');
+    }
+    return result;
+  };
+  const auto year = decimal(0, 4);
+  const auto month = decimal(5, 2);
+  const auto day = decimal(8, 2);
+  const auto hour = decimal(11, 2);
+  const auto minute = decimal(14, 2);
+  const auto second = decimal(17, 2);
+  if (year == 0 || month == 0 || month > 12 || hour > 23 || minute > 59 ||
+      second > 59) {
+    return false;
+  }
+  constexpr unsigned kDaysByMonth[] = {
+      0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  auto maximum_day = kDaysByMonth[month];
+  const bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  if (month == 2 && leap) ++maximum_day;
+  return day != 0 && day <= maximum_day;
+}
+
 bool DecodeAcquireStatementContextPayloadV1(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
@@ -953,11 +1009,13 @@ bool DecodeAcquireStatementContextPayloadNative(
     const bool complete_aggregate_registry,
     const bool complete_window_registry,
     const std::uint8_t maximum_profile_kind,
+    const bool has_statement_timestamp,
     ParserStatementContext* context) {
   constexpr std::size_t kBaseBytes = 2 + 1 + (6 * 16) + (2 * 8);
   constexpr std::size_t kProfileBytes = 1 + 2 + (3 * 16) + 1 + (3 * 4);
   const std::size_t native_prefix_bytes =
-      (extended_aggregate_registry ? 6U : 3U) * 16U + 2U;
+      (extended_aggregate_registry ? 6U : 3U) * 16U + 2U +
+      (has_statement_timestamp ? 22U : 0U);
   if (context == nullptr || payload.size() < kBaseBytes + native_prefix_bytes ||
       GetU16(payload, 0) != expected_version || payload[2] != 1) {
     return false;
@@ -970,6 +1028,11 @@ bool DecodeAcquireStatementContextPayloadNative(
   if (!DecodeAcquireStatementContextPayloadV1(base, &decoded)) return false;
 
   std::size_t offset = kBaseBytes;
+  if (has_statement_timestamp &&
+      (!ReadString(payload, &offset, &decoded.statement_timestamp) ||
+       !IsCanonicalStatementTimestamp(decoded.statement_timestamp))) {
+    return false;
+  }
   const auto bound_ast_uuid = GetUuid(payload, offset);
   offset += 16;
   const auto count_function_uuid = GetUuid(payload, offset);
@@ -1119,6 +1182,7 @@ bool DecodeAcquireStatementContextPayloadNative(
     decoded.min_function_uuid = UuidToText(min_function_uuid);
     decoded.max_function_uuid = UuidToText(max_function_uuid);
   }
+  if (has_statement_timestamp && !decoded.native_v7_complete()) return false;
   *context = std::move(decoded);
   return true;
 }
@@ -1127,7 +1191,7 @@ bool DecodeAcquireStatementContextPayloadV2(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 2, false,
-                                                     false, false, 6,
+                                                     false, false, 6, false,
                                                      context);
 }
 
@@ -1135,7 +1199,7 @@ bool DecodeAcquireStatementContextPayloadV3(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 3, true,
-                                                     false, false, 6,
+                                                     false, false, 6, false,
                                                      context);
 }
 
@@ -1143,7 +1207,7 @@ bool DecodeAcquireStatementContextPayloadV4(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 4, true, true,
-                                                     false, 6,
+                                                     false, 6, false,
                                                      context);
 }
 
@@ -1151,7 +1215,7 @@ bool DecodeAcquireStatementContextPayloadV5(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 5, true, true,
-                                                     false, 10,
+                                                     false, 10, false,
                                                      context);
 }
 
@@ -1159,7 +1223,15 @@ bool DecodeAcquireStatementContextPayloadV6(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 6, true, true,
-                                                     true, 10,
+                                                     true, 10, false,
+                                                     context);
+}
+
+bool DecodeAcquireStatementContextPayloadV7(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  return DecodeAcquireStatementContextPayloadNative(payload, 7, true, true,
+                                                     true, 10, true,
                                                      context);
 }
 
@@ -3229,6 +3301,12 @@ bool DecodeAcquireStatementContextResultPayloadV6ForTest(
   return DecodeAcquireStatementContextPayloadV6(payload, context);
 }
 
+bool DecodeAcquireStatementContextResultPayloadV7ForTest(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  return DecodeAcquireStatementContextPayloadV7(payload, context);
+}
+
 std::vector<std::uint8_t>
 EncodeAcquireStatementContextRequestPayloadV1ForTest(
     const ParserSessionContext& session,
@@ -4295,10 +4373,10 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   if (!SendRequest(
           endpoint_,
           BaseHeader(kMessageAcquireStatementContextRequest,
-                     kSchemaAcquireStatementContextRequestV6,
+                     kSchemaAcquireStatementContextRequestV7,
                      session_uuid,
                      connection_uuid),
-          EncodeAcquireStatementContextPayloadV6(session, transaction),
+          EncodeAcquireStatementContextPayloadV7(session, transaction),
           &response,
           &messages,
           ActiveSocketCacheKey())) {
@@ -4307,19 +4385,19 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   }
   if (response.header.message_type !=
           kMessageAcquireStatementContextResult ||
-      response.header.schema_id != kSchemaAcquireStatementContextResultV6 ||
+      response.header.schema_id != kSchemaAcquireStatementContextResultV7 ||
       IsErrorFrame(response)) {
     AddFrameDiagnostics(response, &messages);
     if (!IsErrorFrame(response)) {
       AddDiagnostic(
           &messages,
           "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_SCHEMA_MISMATCH",
-          "The server did not return the native statement-context V6 result schema.");
+          "The server did not return the native statement-context V7 result schema.");
     }
     result.messages = std::move(messages);
     return result;
   }
-  if (!DecodeAcquireStatementContextPayloadV6(response.payload,
+  if (!DecodeAcquireStatementContextPayloadV7(response.payload,
                                                &result.context) ||
       result.context.transaction.local_transaction_id !=
           transaction.local_transaction_id ||

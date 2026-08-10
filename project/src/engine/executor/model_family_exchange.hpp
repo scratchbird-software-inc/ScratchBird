@@ -39,6 +39,7 @@ struct ModelProviderRowIdentityV1 {
   std::string edge_uuid;
   std::string path_uuid;
   std::uint64_t graph_depth{0};
+  std::string key;
 };
 
 struct ModelSourceInputDescriptorV1 {
@@ -70,12 +71,16 @@ struct ModelSourceInputDescriptorV1 {
   std::uint64_t maximum_memory_bytes{0};
   bool parser_execution_authority_claimed{false};
   bool transaction_finality_authority_claimed{false};
+  bool exact_fallback_selected{false};
 };
 
 struct ModelProviderBatchV1 {
   std::uint16_t abi_version{1};
   std::string provider_uuid;
   std::uint64_t provider_generation{0};
+  std::string selected_alternative_uuid;
+  std::string capability_uuid;
+  bool exact_fallback_selected{false};
   std::string result_handle_uuid;
   std::uint64_t causal_counter_id{0};
   std::vector<std::uint32_t> output_descriptor_ids;
@@ -111,6 +116,7 @@ struct ModelSourceOutputDescriptorV1 {
   PhysicalMgaStatementContext mga_statement_context;
   std::string security_receipt_uuid;
   bool exact_exchange_validated{false};
+  bool exact_fallback_selected{false};
 };
 
 struct ModelExchangeResultV1 {

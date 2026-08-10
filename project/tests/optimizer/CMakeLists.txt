@@ -433,6 +433,59 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   set_tests_properties(qow_ces05_graph_execution_v1 PROPERTIES
     LABELS "qow_closure;RCP-074;CES05;graph;model_family;typed_exchange;mga_transaction_regression;development_candidate"
   )
+  # QOW-CMAKE-RCP-075-KEY-VALUE-EXECUTION-V1
+  # Enroll the actual-database dependency before the later CLI subtree can
+  # create it ahead of its resource dependency in isolated closure builds.
+  if(NOT TARGET sb_core_resources)
+    add_subdirectory(
+      "${PROJECT_SOURCE_DIR}/src/core/resources"
+      "${CMAKE_CURRENT_BINARY_DIR}/qow_core_resources"
+    )
+  endif()
+  if(NOT TARGET sb_storage_database)
+    add_subdirectory(
+      "${PROJECT_SOURCE_DIR}/src/storage/database"
+      "${CMAKE_CURRENT_BINARY_DIR}/qow_storage_database"
+    )
+  endif()
+  # The closure topology normally enrolls a focused internal-API contract.
+  # This production-route proof also needs the actual key/value, DDL, DML,
+  # and MGA implementations, so enroll the full internal API under a bounded
+  # local option override and restore the closure option immediately.
+  if(NOT TARGET sb_engine_internal_api OR NOT TARGET sb_engine_sblr)
+    set(_sb_qow_closure_tests_saved "${SB_BUILD_QOW_CLOSURE_TESTS}")
+    set(SB_BUILD_QOW_CLOSURE_TESTS OFF)
+    if(NOT TARGET sb_engine_internal_api)
+      add_subdirectory(
+        "${PROJECT_SOURCE_DIR}/src/engine/internal_api"
+        "${CMAKE_CURRENT_BINARY_DIR}/qow_engine_internal_api"
+      )
+    endif()
+    if(NOT TARGET sb_engine_sblr)
+      add_subdirectory(
+        "${PROJECT_SOURCE_DIR}/src/engine/sblr"
+        "${CMAKE_CURRENT_BINARY_DIR}/qow_engine_sblr"
+      )
+    endif()
+    set(SB_BUILD_QOW_CLOSURE_TESTS "${_sb_qow_closure_tests_saved}")
+    unset(_sb_qow_closure_tests_saved)
+  endif()
+  add_executable(qow_ces05_key_value_execution_test_v1
+    qow_ces05_key_value_execution.cpp)
+  target_compile_features(qow_ces05_key_value_execution_test_v1 PRIVATE
+    cxx_std_23)
+  target_link_libraries(qow_ces05_key_value_execution_test_v1 PRIVATE
+    sb_engine_sblr
+    sb_core_hash
+    sb_core_uuid
+    sb_storage_database
+    sbl_sbsql_parser_worker_core
+  )
+  add_test(NAME qow_ces05_key_value_execution_v1
+    COMMAND qow_ces05_key_value_execution_test_v1)
+  set_tests_properties(qow_ces05_key_value_execution_v1 PROPERTIES
+    LABELS "qow_closure;RCP-075;CES05;key_value;model_family;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
+  )
   # Dependency-ordered QOW optimizer targets are added above this return by
   # their owning leaves. The broad optimizer suite remains disabled.
   set(SB_QOW_OPTIMIZER_TESTS_ENROLLED TRUE PARENT_SCOPE)
@@ -480,6 +533,44 @@ add_test(NAME qow_ces05_graph_production_route_v1
   COMMAND qow_ces05_graph_production_route_test_v1)
 set_tests_properties(qow_ces05_graph_production_route_v1 PROPERTIES
   LABELS "qow_closure;RCP-074;CES05;graph;production_query_execute;typed_exchange;mga_transaction_regression;development_candidate"
+)
+
+# QOW-CMAKE-RCP-075-KEY-VALUE-DIRECT-EXECUTION-V1
+add_executable(qow_ces05_key_value_execution_test_v1
+  qow_ces05_key_value_execution.cpp)
+target_compile_features(qow_ces05_key_value_execution_test_v1 PRIVATE
+  cxx_std_23)
+target_link_libraries(qow_ces05_key_value_execution_test_v1 PRIVATE
+  sb_engine_sblr
+  sb_core_hash
+  sb_core_uuid
+  sb_storage_database
+  sbl_sbsql_parser_worker_core
+)
+add_test(NAME qow_ces05_key_value_execution_v1
+  COMMAND qow_ces05_key_value_execution_test_v1)
+set_tests_properties(qow_ces05_key_value_execution_v1 PROPERTIES
+  LABELS "qow_closure;RCP-075;CES05;key_value;model_family;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
+)
+
+# QOW-CMAKE-RCP-075-KEY-VALUE-PRODUCTION-QUERY-ROUTE-V1
+add_executable(qow_ces05_key_value_production_route_test_v1
+  qow_ces05_key_value_execution.cpp)
+target_compile_features(qow_ces05_key_value_production_route_test_v1 PRIVATE
+  cxx_std_23)
+target_compile_definitions(qow_ces05_key_value_production_route_test_v1 PRIVATE
+  SB_CES05_KEY_VALUE_PRODUCTION_QUERY_ROUTE=1)
+target_link_libraries(qow_ces05_key_value_production_route_test_v1 PRIVATE
+  sb_engine_sblr
+  sb_core_hash
+  sb_core_uuid
+  sb_storage_database
+  sbl_sbsql_parser_worker_core
+)
+add_test(NAME qow_ces05_key_value_production_route_v1
+  COMMAND qow_ces05_key_value_production_route_test_v1)
+set_tests_properties(qow_ces05_key_value_production_route_v1 PROPERTIES
+  LABELS "qow_closure;RCP-075;CES05;key_value;production_query_execute;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
 )
 
 add_executable(

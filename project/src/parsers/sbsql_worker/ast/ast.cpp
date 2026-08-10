@@ -1454,6 +1454,8 @@ std::string NativeRelationSourceAstKindName(
       return "document";
     case NativeRelationSourceAstKind::kGraph:
       return "graph";
+    case NativeRelationSourceAstKind::kKeyValue:
+      return "key_value";
   }
   return "unknown";
 }
@@ -1618,8 +1620,32 @@ AstDocument BuildAst(const CstDocument& cst) {
     std::size_t document_collection_source_count = 0;
     bool graph_resolution_description_valid = true;
     std::size_t graph_source_count = 0;
+    bool key_value_resolution_description_valid = true;
+    std::size_t key_value_source_count = 0;
     for (const auto& source :
          ast.native_relational.catalog_relation_sources) {
+      if (source.source_kind == NativeRelationSourceAstKind::kKeyValue) {
+        ++key_value_source_count;
+        const bool exact_get =
+            source.model_operation_id == "KEY_VALUE_GET";
+        const bool multi_get =
+            source.model_operation_id == "KEY_VALUE_MULTI_GET";
+        const bool prefix =
+            source.model_operation_id == "KEY_VALUE_PREFIX_RANGE";
+        key_value_resolution_description_valid =
+            key_value_resolution_description_valid &&
+            source.model_family_id == "key_value" &&
+            (exact_get || multi_get || prefix) &&
+            !source.qualified_name.empty() && source.alias.has_value() &&
+            !source.model_key_expression_ids.empty() &&
+            (multi_get || source.model_key_expression_ids.size() == 1) &&
+            ((exact_get && source.model_comparison_operator == "=") ||
+             (!exact_get && source.model_comparison_operator.empty()));
+        ast.native_relational.model_object_resolution_requests.push_back(
+            {source.source_id, "key_value", "key_value",
+             source.qualified_name, source.qualified_name_range});
+        continue;
+      }
       if (source.source_kind == NativeRelationSourceAstKind::kGraph) {
         ++graph_source_count;
         const bool graph_match =
@@ -1675,13 +1701,16 @@ AstDocument BuildAst(const CstDocument& cst) {
            source.qualified_name, source.qualified_name_range});
     }
     const auto expected_model_resolution_count =
-        document_collection_source_count + graph_source_count;
+        document_collection_source_count + graph_source_count +
+        key_value_source_count;
     if (document_source_count > 1 || graph_source_count > 1 ||
+        key_value_source_count > 1 ||
         expected_model_resolution_count > 1 ||
         ast.native_relational.model_object_resolution_requests.size() !=
             expected_model_resolution_count ||
         !document_resolution_description_valid ||
-        !graph_resolution_description_valid) {
+        !graph_resolution_description_valid ||
+        !key_value_resolution_description_valid) {
       ast.native_relational.status =
           NativeRelationalParseStatus::kRefused;
       ast.native_relational.messages.diagnostics.push_back(MakeDiagnostic(

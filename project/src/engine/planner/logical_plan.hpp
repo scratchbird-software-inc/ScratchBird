@@ -42,12 +42,14 @@ struct CanonicalMgaStatementContext {
   bool inventory_authoritative{false};
   bool complete{false};
   bool current{false};
+  std::string statement_timestamp;
 };
 
 inline bool CanonicalMgaStatementContextEqual(
     const CanonicalMgaStatementContext& left,
     const CanonicalMgaStatementContext& right) {
   return left.statement_uuid == right.statement_uuid &&
+         left.statement_timestamp == right.statement_timestamp &&
          left.owning_transaction_uuid == right.owning_transaction_uuid &&
          left.statement_snapshot_uuid == right.statement_snapshot_uuid &&
          left.statement_metadata_snapshot_uuid ==
@@ -191,6 +193,7 @@ enum class CanonicalLogicalModelFamilyIdentity : std::uint8_t {
   kUnspecified = 0,
   kDocument,
   kGraph,
+  kKeyValue,
 };
 
 struct CanonicalLogicalRelationalNode {
@@ -327,7 +330,8 @@ ValidateCanonicalLogicalRelationalGraph(
                                           family) {
     return family == CanonicalLogicalModelFamilyIdentity::kUnspecified ||
            family == CanonicalLogicalModelFamilyIdentity::kDocument ||
-           family == CanonicalLogicalModelFamilyIdentity::kGraph;
+           family == CanonicalLogicalModelFamilyIdentity::kGraph ||
+           family == CanonicalLogicalModelFamilyIdentity::kKeyValue;
   };
   constexpr std::string_view kModelSourceSemantic =
       "SBLR_MODEL_SOURCE_V1";
@@ -1184,6 +1188,9 @@ inline std::string SerializeCanonicalMgaStatementContext(
       "|active_excluded=";
   for (const auto id : context.active_excluded_local_transaction_ids) {
     serialized += std::to_string(id) + ",";
+  }
+  if (!context.statement_timestamp.empty()) {
+    serialized += "|statement_timestamp=" + context.statement_timestamp;
   }
   serialized += "|in_doubt_excluded=";
   for (const auto id : context.in_doubt_excluded_local_transaction_ids) {

@@ -235,6 +235,7 @@ struct TypedRelationalDag {
   std::string bound_catalog_epoch_uuid;
   std::string bound_security_context_uuid;
   std::string statement_uuid;
+  std::string statement_timestamp;
   std::string owning_transaction_uuid;
   std::string statement_snapshot_uuid;
   std::string statement_metadata_snapshot_uuid;

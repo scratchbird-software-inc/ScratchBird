@@ -202,6 +202,52 @@ bool IsCanonicalNonNilUuid(const std::string_view value) {
   return true;
 }
 
+bool IsCanonicalStatementTimestamp(std::string_view value) {
+  if (value.size() != 20 &&
+      (value.size() < 22 || value.size() > 30)) {
+    return false;
+  }
+  if (value[4] != '-' || value[7] != '-' || value[10] != 'T' ||
+      value[13] != ':' || value[16] != ':' || value.back() != 'Z') {
+    return false;
+  }
+  constexpr std::size_t kDigitIndexes[] = {
+      0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18};
+  for (const auto index : kDigitIndexes) {
+    if (value[index] < '0' || value[index] > '9') return false;
+  }
+  if (value.size() > 20) {
+    if (value[19] != '.') return false;
+    for (std::size_t index = 20; index + 1 < value.size(); ++index) {
+      if (value[index] < '0' || value[index] > '9') return false;
+    }
+  }
+  const auto decimal = [&](std::size_t offset, std::size_t digits) {
+    unsigned result = 0;
+    for (std::size_t index = 0; index < digits; ++index) {
+      result = result * 10 +
+               static_cast<unsigned>(value[offset + index] - '0');
+    }
+    return result;
+  };
+  const auto year = decimal(0, 4);
+  const auto month = decimal(5, 2);
+  const auto day = decimal(8, 2);
+  const auto hour = decimal(11, 2);
+  const auto minute = decimal(14, 2);
+  const auto second = decimal(17, 2);
+  if (year == 0 || month == 0 || month > 12 || hour > 23 || minute > 59 ||
+      second > 59) {
+    return false;
+  }
+  constexpr unsigned kDaysByMonth[] = {
+      0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  auto maximum_day = kDaysByMonth[month];
+  const bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  if (month == 2 && leap) ++maximum_day;
+  return day != 0 && day <= maximum_day;
+}
+
 bool CanonicalQueryApiPayloadEmpty(const api::EngineApiRequest& request) {
   const auto object_reference_empty = [](const api::EngineObjectReference& ref) {
     return ref.uuid.canonical.empty() && ref.object_kind.empty();
@@ -502,6 +548,20 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
           {"uint64",
            "relational_snapshot_visible_through_local_transaction_id"},
       }};
+  const auto timestamp_operand = std::ranges::find_if(
+      dispatch_request.envelope.operands, [](const auto& operand) {
+        return operand.name == "relational_statement_timestamp";
+      });
+  if (timestamp_operand != dispatch_request.envelope.operands.end() &&
+      (dispatch_request.envelope.operands.size() <= 10 ||
+       timestamp_operand != dispatch_request.envelope.operands.begin() + 10 ||
+       timestamp_operand->type != "text")) {
+    decoded.diagnostic_id =
+        "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1";
+    decoded.detail =
+        "key/value statement timestamp is reordered or has the wrong type";
+    return decoded;
+  }
   if (dispatch_request.envelope.operands.size() < kLeadingOperands.size()) {
     decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
     decoded.detail =
@@ -524,7 +584,11 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
                operand.name == "relational_root_node_id";
       });
   if (root_operand != dispatch_request.envelope.operands.end() &&
-      root_operand != dispatch_request.envelope.operands.begin() + 10) {
+      root_operand != dispatch_request.envelope.operands.begin() +
+                          (timestamp_operand ==
+                                   dispatch_request.envelope.operands.end()
+                               ? 10
+                               : 11)) {
     decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
     decoded.detail = "relational root is out of corrected wire-v2 order";
     return decoded;
@@ -539,6 +603,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
   bool owning_transaction_uuid_present = false;
   bool statement_snapshot_uuid_present = false;
   bool statement_metadata_snapshot_uuid_present = false;
+  bool statement_timestamp_present = false;
   bool local_transaction_id_present = false;
   bool snapshot_visible_through_local_transaction_id_present = false;
   for (const auto& operand : dispatch_request.envelope.operands) {
@@ -685,6 +750,20 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       decoded.request.relational_dag
           .snapshot_visible_through_local_transaction_id = visible_through;
       snapshot_visible_through_local_transaction_id_present = true;
+      continue;
+    }
+    if (operand.type == "text" &&
+        operand.name == "relational_statement_timestamp") {
+      if (statement_timestamp_present ||
+          !IsCanonicalStatementTimestamp(operand.value)) {
+        decoded.diagnostic_id =
+            "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1";
+        decoded.detail =
+            "key/value statement timestamp is malformed or duplicated";
+        return decoded;
+      }
+      decoded.request.relational_dag.statement_timestamp = operand.value;
+      statement_timestamp_present = true;
       continue;
     }
     if (operand.type == "uint32" &&
@@ -1173,6 +1252,33 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
   }
   const auto& dag = decoded.request.relational_dag;
   const auto& context = dispatch_request.context;
+  const bool key_value_model_source = std::ranges::any_of(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
+      });
+  const bool key_value_operation = std::ranges::any_of(
+      dag.expressions, [](const auto& expression) {
+        return expression.expression_kind ==
+                   api::RelationalExpressionKind::kFunctionCall &&
+               !expression.function_uuid.has_value() &&
+               (expression.operator_name == "KV_KEY" ||
+                expression.operator_name == "KV_MULTI_GET" ||
+                expression.operator_name == "KV_PREFIX");
+      });
+  const bool key_value_graph = key_value_model_source && key_value_operation;
+  if (key_value_graph != statement_timestamp_present ||
+      (key_value_graph &&
+       (!IsCanonicalStatementTimestamp(dag.statement_timestamp) ||
+        dag.statement_timestamp != context.statement_timestamp))) {
+    decoded.diagnostic_id =
+        "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1";
+    decoded.detail = key_value_graph
+                         ? "carried key/value statement timestamp does not "
+                           "exactly match engine statement authority"
+                         : "statement timestamp is admitted only for "
+                           "key/value model-source input";
+    return decoded;
+  }
   if (dag.bound_catalog_epoch_uuid != context.catalog_epoch_uuid.canonical ||
       dag.bound_security_context_uuid !=
           context.authorization_context.authority_uuid.canonical ||
@@ -1269,6 +1375,9 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
   planning_scope.security_context_uuid =
       request.context.authorization_context.authority_uuid.canonical;
   planning_scope.statement_uuid = request.context.statement_uuid.canonical;
+  if (!decoded.request.relational_dag.statement_timestamp.empty()) {
+    planning_scope.statement_timestamp = request.context.statement_timestamp;
+  }
   planning_scope.owning_transaction_uuid =
       request.context.transaction_uuid.canonical;
   planning_scope.statement_snapshot_uuid =
@@ -1297,6 +1406,7 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
 #ifndef SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY
   planner::CanonicalMgaStatementContext canonical_mga;
   canonical_mga.statement_uuid = request.context.statement_uuid.canonical;
+  canonical_mga.statement_timestamp = planning_scope.statement_timestamp;
   canonical_mga.owning_transaction_uuid =
       request.context.transaction_uuid.canonical;
   canonical_mga.statement_snapshot_uuid =
