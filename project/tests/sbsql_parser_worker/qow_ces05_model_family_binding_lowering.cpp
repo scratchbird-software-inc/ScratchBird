@@ -54,6 +54,25 @@ bool HasOperand(const sbsql::SblrEnvelope& envelope,
   });
 }
 
+std::string Hex(const std::string_view value) {
+  static constexpr char kDigits[] = "0123456789abcdef";
+  std::string encoded;
+  encoded.reserve(value.size() * 2);
+  for (const unsigned char byte : value) {
+    encoded.push_back(kDigits[byte >> 4]);
+    encoded.push_back(kDigits[byte & 0x0f]);
+  }
+  return encoded;
+}
+
+bool HasRelationalExpressionFragment(const sbsql::SblrEnvelope& envelope,
+                                     const std::string_view fragment) {
+  return std::ranges::any_of(envelope.operands, [&](const auto& operand) {
+    return operand.type == "relational_expression_v1" &&
+           operand.value.find(fragment) != std::string::npos;
+  });
+}
+
 std::string DiagnosticSummary(const sbsql::MessageVectorSet& messages) {
   std::string summary;
   for (const auto& diagnostic : messages.diagnostics) {
@@ -685,6 +704,137 @@ sbsql::NativeRelationalBindingContext VectorContextFor(
     } else if (expression.expression_id ==
                source_ast.model_vector_metadata_value_expression_id.value_or(
                    0)) {
+      input.descriptor_id = 2;
+    } else {
+      input.descriptor_id = 6;
+    }
+    context.expressions.push_back(std::move(input));
+  }
+  return context;
+}
+
+sbsql::NativeRelationalBindingContext SearchContextFor(
+    const sbsql::NativeRelationalAstDocument& ast) {
+  sbsql::NativeRelationalBindingContext context;
+  context.bound_ast_uuid = Uuid(1110);
+  context.catalog_epoch_uuid = Uuid(1111);
+  context.security_context_uuid = Uuid(1112);
+  context.statement_uuid = Uuid(1113);
+  context.statement_timestamp = "2026-08-11T13:00:00.123456789Z";
+  context.owning_transaction_uuid = Uuid(1114);
+  context.statement_snapshot_uuid = Uuid(1115);
+  context.statement_metadata_snapshot_uuid = Uuid(1116);
+  context.local_transaction_id = 87;
+  context.snapshot_visible_through_local_transaction_id = 86;
+  context.search_analyzer_uuid = Uuid(1142);
+  context.search_analyzer_generation = 17;
+  SetEngineAuthority(&context);
+  const auto descriptor = [](const std::uint32_t id,
+                             const std::uint64_t descriptor_uuid,
+                             const std::uint64_t type_uuid,
+                             const std::string& canonical_type) {
+    sbsql::NativeDescriptorBindingInput input;
+    input.descriptor_id = id;
+    input.descriptor_uuid = Uuid(descriptor_uuid);
+    input.type_uuid = Uuid(type_uuid);
+    input.nullability = sbsql::BoundNullability::kNonNull;
+    input.canonical_type_name = canonical_type;
+    return input;
+  };
+  context.descriptors = {
+      descriptor(1, 1121, 1131, "text"),
+      descriptor(2, 1122, 1131, "text"),
+      descriptor(3, 1123, 1133, "uuid"),
+      descriptor(4, 1124, 1134, "uint64"),
+      descriptor(5, 1125, 1135, "real64"),
+      descriptor(6, 1126, 1136, "boolean"),
+      descriptor(7, 1127, 1133, "uuid"),
+      descriptor(8, 1128, 1134, "uint64"),
+  };
+  const auto& source_ast = ast.catalog_relation_sources.front();
+  sbsql::NativeCatalogRelationBindingInput source;
+  source.source_id = source_ast.source_id;
+  source.resolution_state =
+      sbsql::NativeCatalogRelationResolutionState::kBound;
+  source.object_uuid = Uuid(1140);
+  source.resolved_object_type = "search";
+  source.resolved_schema_uuid = Uuid(1141);
+  source.catalog_generation_id = 87;
+  source.security_epoch = 88;
+  source.resource_epoch = 89;
+  source.columns = {{0, Uuid(1150), 1, "body"},
+                    {1, Uuid(1151), 2, "category"}};
+  context.catalog_relations.push_back(std::move(source));
+  const bool filtered =
+      source_ast.model_search_filter_expression_id.has_value();
+  context.relations.push_back(
+      {ast.relations.front().relation_id,
+       std::string("sblr.model-source.search-") +
+           (source_ast.model_operation_id == "SEARCH_RANKED_QUERY"
+                ? "ranked-query"
+                : (source_ast.model_operation_id == "SEARCH_PHRASE_QUERY"
+                       ? "phrase-query"
+                       : "fuzzy-query")) +
+           (filtered ? "-structured-filter.v1" : ".v1")});
+  const auto maximum_ast_expression = std::ranges::max_element(
+      ast.expressions, {}, &sbsql::NativeExpressionAstNode::expression_id);
+  std::uint32_t next_expression = maximum_ast_expression->expression_id + 1;
+  static constexpr std::array<const char*, 5> kNames{
+      "document_uuid", "analyzer_uuid", "analyzer_generation", "score",
+      "rank"};
+  const std::array<std::uint32_t, 5> public_descriptors{3, 7, 4, 5, 8};
+  for (std::uint32_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
+    context.expressions.push_back(
+        {next_expression, public_descriptors[ordinal], std::nullopt,
+         ordinal == 0 ? std::optional<std::string>{Uuid(1140)}
+                      : (ordinal == 1 || ordinal == 2
+                             ? std::optional<std::string>{Uuid(1142)}
+                             : std::optional<std::string>{Uuid(1140)})});
+    context.outputs.push_back(
+        {ordinal + 1, next_expression, kNames[ordinal],
+         public_descriptors[ordinal], true, ordinal,
+         ast.relations.front().relation_id});
+    ++next_expression;
+  }
+  for (const auto& expression : ast.expressions) {
+    if (expression.expression_kind ==
+        sbsql::NativeExpressionAstKind::kWildcard) {
+      continue;
+    }
+    sbsql::NativeExpressionBindingInput input;
+    input.expression_id = expression.expression_id;
+    if (expression.expression_id ==
+        source_ast.model_search_alias_expression_id.value_or(0)) {
+      input.descriptor_id = 1;
+      input.bound_name_uuid = Uuid(1140);
+    } else if (source_ast.alias.has_value() &&
+               expression.expression_kind ==
+                   sbsql::NativeExpressionAstKind::kIdentifier &&
+               expression.qualified_identifier.size() == 1 &&
+               expression.qualified_identifier.front().quoted ==
+                   source_ast.alias->quoted &&
+               expression.qualified_identifier.front().spelling ==
+                   source_ast.alias->spelling) {
+      input.descriptor_id = 1;
+      input.bound_name_uuid = Uuid(1140);
+    } else if (expression.expression_id ==
+               source_ast.model_search_text_expression_id.value_or(0)) {
+      input.descriptor_id = 1;
+    } else if (expression.expression_id ==
+               source_ast.model_search_analyzer_expression_id.value_or(0)) {
+      input.descriptor_id = 3;
+      input.bound_name_uuid = Uuid(1142);
+    } else if (expression.expression_id ==
+                   source_ast.model_search_top_k_expression_id.value_or(0) ||
+               expression.expression_id ==
+                   source_ast.model_search_edit_expression_id.value_or(0)) {
+      input.descriptor_id = 4;
+    } else if (expression.expression_id ==
+               source_ast.model_search_category_column_expression_id.value_or(0)) {
+      input.descriptor_id = 2;
+      input.bound_name_uuid = Uuid(1151);
+    } else if (expression.expression_id ==
+               source_ast.model_search_category_value_expression_id.value_or(0)) {
       input.descriptor_id = 2;
     } else {
       input.descriptor_id = 6;
@@ -1824,6 +1974,149 @@ bool VectorGrammarBindingLowering() {
   return passed;
 }
 
+bool SearchGrammarBindingLowering() {
+  struct Case {
+    const char* sql;
+    const char* operation;
+    const char* query_kind;
+    bool filtered;
+  };
+  const std::array<Case, 4> cases{{
+      {"SELECT * FROM SEARCH_SOURCE(app.search_fixture) AS s WHERE "
+       "SEARCH_MATCH(s, SEARCH_TERMS('quick fox'), app.ascii_v1, 3);",
+       "SEARCH_RANKED_QUERY", "SEARCH_TERMS", false},
+      {"SELECT * FROM SEARCH_SOURCE(app.search_fixture) AS s WHERE "
+       "SEARCH_MATCH(s, SEARCH_PHRASE('quick fox'), app.ascii_v1, 3);",
+       "SEARCH_PHRASE_QUERY", "SEARCH_PHRASE", false},
+      {"SELECT * FROM SEARCH_SOURCE(app.search_fixture) AS s WHERE "
+       "SEARCH_MATCH(s, SEARCH_FUZZY('quik', 1), app.ascii_v1, 3);",
+       "SEARCH_FUZZY_QUERY", "SEARCH_FUZZY", false},
+      {"SELECT * FROM SEARCH_SOURCE(app.search_fixture) AS s WHERE "
+       "SEARCH_MATCH(s, SEARCH_TERMS('quick fox'), app.ascii_v1, 3) AND "
+       "SEARCH_FILTER(s, s.category = 'news');",
+       "SEARCH_RANKED_QUERY", "SEARCH_TERMS", true},
+  }};
+  bool passed = true;
+  for (const auto& test : cases) {
+    const auto cst = sbsql::BuildCst(test.sql);
+    const auto ast = sbsql::BuildAst(cst);
+    passed &= Require(
+        ast.native_relational.accepted() && ast.requires_name_resolution &&
+            !ast.produces_sblr &&
+            ast.native_relational.catalog_relation_sources.size() == 1 &&
+            ast.native_relational.catalog_relation_sources.front().source_kind ==
+                sbsql::NativeRelationSourceAstKind::kSearch &&
+            ast.native_relational.catalog_relation_sources.front()
+                    .model_operation_id == test.operation &&
+            ast.native_relational.catalog_relation_sources.front()
+                    .model_search_query_kind == test.query_kind &&
+            ast.native_relational.catalog_relation_sources.front()
+                    .model_search_top_k == 3 &&
+            ast.native_relational.model_object_resolution_requests.size() == 2 &&
+            ast.native_relational.model_object_resolution_requests[0]
+                    .object_class == "search" &&
+            ast.native_relational.model_object_resolution_requests[1]
+                    .object_class == "search_analyzer",
+        std::string("ordinary search grammar/object extraction drifted: ") +
+            DiagnosticSummary(ast.native_relational.messages));
+    if (!ast.native_relational.accepted()) continue;
+    const auto& source = ast.native_relational.catalog_relation_sources.front();
+    passed &= Require(
+        source.model_search_alias_expression_id.has_value() &&
+            source.model_search_match_expression_id.has_value() &&
+            source.model_search_query_expression_id.has_value() &&
+            source.model_search_text_expression_id.has_value() &&
+            source.model_search_analyzer_expression_id.has_value() &&
+            source.model_search_top_k_expression_id.has_value() &&
+            (test.filtered ==
+             source.model_search_filter_expression_id.has_value()) &&
+            ((std::string(test.query_kind) == "SEARCH_FUZZY") ==
+             source.model_search_edit_expression_id.has_value()),
+        "search typed-DAG identity is incomplete");
+    auto context = SearchContextFor(ast.native_relational);
+    const auto bound =
+        sbsql::BindAst(ast, cst, Config(), Session(), {}, &context);
+    passed &= Require(
+        bound.bound && bound.native_relational.bound &&
+            bound.native_relational.catalog_relation_sources.size() == 1 &&
+            bound.native_relational.catalog_relation_sources.front()
+                    .object_uuid == Uuid(1140) &&
+            bound.native_relational.catalog_relation_sources.front()
+                    .model_search_analyzer_uuid == Uuid(1142) &&
+            bound.native_relational.catalog_relation_sources.front()
+                    .model_search_analyzer_generation == 17 &&
+            bound.native_relational.outputs.size() == 5,
+        std::string("search engine-projected binding drifted: ") +
+            DiagnosticSummary(bound.messages));
+    if (!bound.bound) continue;
+    const auto lowered = sbsql::LowerToSblr(bound, cst, Session());
+    const auto verified = sbsql::VerifySblrEnvelope(lowered);
+    passed &= Require(
+        !lowered.messages.has_errors() && verified.admitted &&
+            HasRelationalExpressionFragment(
+                lowered, Hex("SEARCH_ANALYZER_BINDING")) &&
+            HasRelationalExpressionFragment(lowered, Uuid(1142)) &&
+            HasRelationalExpressionFragment(lowered, Hex("17")) &&
+            HasRelationalExpressionFragment(
+                lowered,
+                Hex("9033908d159ddd442f2042467fd49e0a12b47679f7514e9aa6e55488e151d316")) &&
+            HasRelationalExpressionFragment(lowered, Hex(test.query_kind)) &&
+            HasRelationalExpressionFragment(lowered, Hex("3")) &&
+            std::ranges::any_of(lowered.operands, [](const auto& operand) {
+              return operand.type == "relational_node_binding_v1" &&
+                     operand.value.find(
+                         "53424c525f4d4f44454c5f534f555243455f5631") == 0;
+            }),
+        std::string("search did not lower through SBLR_MODEL_SOURCE_V1: ") +
+            DiagnosticSummary(lowered.messages) + "/" +
+            DiagnosticSummary(verified.messages));
+
+    auto stale_analyzer = context;
+    stale_analyzer.search_analyzer_generation = 0;
+    const auto analyzer_refused = sbsql::BindAst(
+        ast, cst, Config(), Session(), {}, &stale_analyzer);
+    passed &= Require(
+        !analyzer_refused.bound &&
+            HasDiagnostic(analyzer_refused.messages,
+                          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1"),
+        "search binding admitted an absent analyzer generation");
+  }
+  const std::array<std::pair<const char*, const char*>, 8> refusals{{
+      {"SELECT * FROM SEARCH_SOURCE(app.search_fixture) AS s;",
+       "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1"},
+      {"SELECT * FROM SEARCH_SOURCE(app.search_fixture) AS s WHERE "
+       "SEARCH_MATCH(s, SEARCH_TERMS('fox'), app.ascii_v1, 0);",
+       "SB_MODEL_SEARCH_TOP_K_REFUSED_V1"},
+      {"SELECT * FROM SEARCH_SOURCE(app.search_fixture) AS s WHERE "
+       "SEARCH_MATCH(s, SEARCH_FUZZY('fox', 2), app.ascii_v1, 3);",
+       "SB_MODEL_SEARCH_QUERY_TOKEN_LIMIT_REFUSED_V1"},
+      {"SELECT * FROM SEARCH_SOURCE(app.search_fixture) AS s WHERE "
+       "SEARCH_MATCH(other, SEARCH_TERMS('fox'), app.ascii_v1, 3);",
+       "SB_MODEL_SEARCH_QUERY_TYPE_REFUSED_V1"},
+      {"SELECT * FROM SEARCH_SOURCE(app.search_fixture) AS s WHERE "
+       "SEARCH_MATCH(s, SEARCH_TERMS('fox'), app.ascii_v1, 3) AND "
+       "SEARCH_FILTER(s, s.category <> 'news');",
+       "SB_MODEL_SEARCH_FILTER_REFUSED_V1"},
+      {"SELECT * FROM OPENSEARCH_DSL('{\"query\":{}}');",
+       "SB_MODEL_GRAMMAR_DONOR_TEXT_REFUSED_V1"},
+      {"SEARCH_UPSERT app.search_fixture;",
+       "SB_MODEL_QUERY_WRITE_REFUSED_V1"},
+      {"SELECT * FROM SEARCH_SOURCE(app.search_fixture) AS s WHERE "
+       "SEARCH_MATCH(s, SEARCH_UNKNOWN('fox'), app.ascii_v1, 3);",
+       "SB_MODEL_SEARCH_QUERY_TYPE_REFUSED_V1"},
+  }};
+  for (const auto& [sql, diagnostic] : refusals) {
+    const auto ast = sbsql::BuildAst(sbsql::BuildCst(sql));
+    passed &= Require(
+        ast.native_relational.status ==
+                sbsql::NativeRelationalParseStatus::kRefused &&
+            HasDiagnostic(ast.native_relational.messages, diagnostic),
+        std::string("search parser refusal identity drifted: ") + diagnostic +
+            ":" + DiagnosticSummary(ast.native_relational.messages));
+  }
+  return passed;
+}
+
 bool GraphGrammarBindingLowering() {
   const auto match_cst = sbsql::BuildCst(
       "SELECT * FROM GRAPH_SOURCE(app.graph_fixture) AS g "
@@ -2082,6 +2375,7 @@ int main() {
   passed &= KeyValueGrammarBindingLowering();
   passed &= TimeSeriesGrammarBindingLowering();
   passed &= VectorGrammarBindingLowering();
+  passed &= SearchGrammarBindingLowering();
   passed &= GraphGrammarBindingLowering();
   passed &= WireFrontdoorProjectionCohort();
   passed &= GraphWireFrontdoorProjectionCohort();

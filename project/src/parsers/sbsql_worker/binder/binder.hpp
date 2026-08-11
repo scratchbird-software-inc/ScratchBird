@@ -134,6 +134,8 @@ struct NativeRelationalBindingContext {
   std::vector<NativeRelationBindingInput> relations;
   std::vector<NativeWindowFunctionBindingInput> window_functions;
   std::vector<NativeCatalogRelationBindingInput> catalog_relations;
+  std::string search_analyzer_uuid;
+  std::uint64_t search_analyzer_generation{0};
 };
 
 struct BoundDescriptorAstRecord {
@@ -296,6 +298,23 @@ struct BoundCatalogRelationSourceAstRecord {
   std::optional<NativeIdentifierAstNode> model_vector_result_alias;
   std::string model_vector_metric_id;
   std::optional<std::uint64_t> model_vector_top_k;
+  std::optional<std::uint32_t> model_search_alias_expression_id;
+  std::optional<std::uint32_t> model_search_match_expression_id;
+  std::optional<std::uint32_t> model_search_query_expression_id;
+  std::optional<std::uint32_t> model_search_text_expression_id;
+  std::optional<std::uint32_t> model_search_edit_expression_id;
+  std::optional<std::uint32_t> model_search_analyzer_expression_id;
+  std::optional<std::uint32_t> model_search_top_k_expression_id;
+  std::optional<std::uint32_t> model_search_filter_expression_id;
+  std::optional<std::uint32_t> model_search_category_predicate_expression_id;
+  std::optional<std::uint32_t> model_search_category_column_expression_id;
+  std::optional<std::uint32_t> model_search_category_value_expression_id;
+  std::optional<NativeIdentifierAstNode> model_search_result_alias;
+  std::vector<NativeIdentifierAstNode> model_search_analyzer_name;
+  std::string model_search_query_kind;
+  std::optional<std::uint64_t> model_search_top_k;
+  std::string model_search_analyzer_uuid;
+  std::uint64_t model_search_analyzer_generation{0};
   std::string model_graph_direction;
   std::optional<std::uint64_t> model_graph_minimum_depth;
   std::optional<std::uint64_t> model_graph_maximum_depth;

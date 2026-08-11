@@ -119,6 +119,11 @@ bool IsKnownScalarType(const EngineDescriptor& descriptor) {
     case CanonicalTypeId::int32:
     case CanonicalTypeId::int64:
     case CanonicalTypeId::int128:
+    case CanonicalTypeId::uint8:
+    case CanonicalTypeId::uint16:
+    case CanonicalTypeId::uint32:
+    case CanonicalTypeId::uint64:
+    case CanonicalTypeId::uint128:
     case CanonicalTypeId::real32:
     case CanonicalTypeId::real64:
     case CanonicalTypeId::real128:
@@ -140,6 +145,11 @@ bool IsKnownScalarType(const EngineDescriptor& descriptor) {
 bool RequiresExpandedScalarValidation(const EngineDescriptor& descriptor) {
   switch (CanonicalDescriptorTypeId(descriptor)) {
     case CanonicalTypeId::int128:
+    case CanonicalTypeId::uint8:
+    case CanonicalTypeId::uint16:
+    case CanonicalTypeId::uint32:
+    case CanonicalTypeId::uint64:
+    case CanonicalTypeId::uint128:
     case CanonicalTypeId::real32:
     case CanonicalTypeId::real128:
     case CanonicalTypeId::decimal:

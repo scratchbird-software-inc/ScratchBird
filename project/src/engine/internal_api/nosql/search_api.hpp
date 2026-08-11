@@ -9,8 +9,11 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "mga_relation_store/mga_relation_descriptor.hpp"
 #include "nosql/nosql_physical_provider_contract.hpp"
 
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -59,5 +62,97 @@ struct EngineSearchQueryRequest : EngineApiRequest {
 };
 struct EngineSearchQueryResult : EngineApiResult {};
 EngineSearchQueryResult EngineSearchQuery(const EngineSearchQueryRequest& request);
+
+// QOW-RCP-078-BOUND-SEARCH-READ-V1
+// Canonical query execution uses this engine-bound, read-only contract. It is
+// deliberately distinct from the legacy caller-corpus EngineSearchQuery API:
+// no corpus rows, raw donor/provider query, proof booleans, or caller-created
+// storage/generation identities are admitted.
+enum class EngineBoundSearchOperationV1 : std::uint8_t {
+  kUnknown = 0,
+  kTerms,
+  kPhrase,
+  kFuzzy,
+};
+
+enum class EngineBoundSearchPhysicalRouteV1 : std::uint8_t {
+  kUnknown = 0,
+  kExactCorpusScan,
+  kSegmentWithExactFallback,
+};
+
+struct EngineBoundSearchFilterV1 {
+  bool present = false;
+  std::string category_text;
+};
+
+struct EngineBoundSearchReadRequestV1 {
+  EngineRequestContext context;
+  std::string collection_uuid;
+  std::string selected_alternative_uuid;
+  std::string selected_provider_uuid;
+  std::string selected_capability_uuid;
+  std::string selected_implementation_id;
+  EngineBoundSearchOperationV1 operation =
+      EngineBoundSearchOperationV1::kUnknown;
+  EngineBoundSearchPhysicalRouteV1 physical_route =
+      EngineBoundSearchPhysicalRouteV1::kUnknown;
+  std::string bound_query_text;
+  std::uint32_t fuzzy_maximum_edits = 0;
+  std::uint32_t top_k = 0;
+  EngineBoundSearchFilterV1 filter;
+  std::string analyzer_uuid;
+  std::uint64_t analyzer_generation = 0;
+  std::string analyzer_pipeline_sha256;
+  // document_uuid, analyzer_uuid, analyzer_generation, score, rank.
+  std::vector<EngineDescriptor> output_descriptors;
+  std::uint64_t maximum_scanned_row_versions = 0;
+  std::uint64_t maximum_decoded_bytes = 0;
+  std::uint64_t maximum_tokens = 0;
+  std::uint64_t maximum_positions = 0;
+  std::uint64_t maximum_candidates = 0;
+  std::uint64_t maximum_scored_rows = 0;
+  std::uint64_t maximum_output_rows = 0;
+  std::uint64_t maximum_memory_bytes = 0;
+  std::function<bool()> cancellation_requested;
+};
+
+struct EngineBoundSearchRowV1 {
+  std::string document_uuid;
+  std::string analyzer_uuid;
+  std::uint64_t analyzer_generation = 0;
+  double score = 0.0;
+  std::uint64_t rank = 0;
+  std::string encoded_score;
+};
+
+struct EngineBoundSearchReadResultV1 {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  MgaRelationStorageDescriptor relation_descriptor;
+  std::vector<EngineDescriptor> output_descriptors;
+  std::vector<EngineBoundSearchRowV1> rows;
+  std::uint64_t current_relation_base_generation = 0;
+  std::uint64_t scanned_row_version_count = 0;
+  std::uint64_t decoded_byte_count = 0;
+  std::uint64_t visible_base_row_count = 0;
+  std::uint64_t filtered_base_row_count = 0;
+  std::uint64_t analyzed_token_count = 0;
+  std::uint64_t analyzed_position_count = 0;
+  std::uint64_t scored_base_row_count = 0;
+  std::uint64_t result_byte_count = 0;
+  bool segment_carrier_loaded = false;
+  bool segment_candidate_hint_selected = false;
+  bool exact_fallback_selected = false;
+  bool full_corpus_exact_recheck_complete = false;
+  bool base_row_mga_recheck_complete = false;
+  bool security_recheck_complete = false;
+  bool execution_resource_acquired = false;
+  std::uint64_t cleanup_count = 0;
+  std::vector<EngineEvidenceReference> evidence;
+};
+
+EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
+    const EngineBoundSearchReadRequestV1& request);
 
 }  // namespace scratchbird::engine::internal_api

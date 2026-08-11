@@ -495,6 +495,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       ast.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kVector;
       });
+  const auto search_source_ast = std::ranges::find_if(
+      ast.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kSearch;
+      });
   if (!LooksLikeUuidV7(context.bound_ast_uuid)) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-SCOPE",
                           "binding requires a non-null UUIDv7 BoundAST identity");
@@ -542,7 +546,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
   const bool timestamp_model_source =
       key_value_source_ast != ast.catalog_relation_sources.end() ||
       time_series_source_ast != ast.catalog_relation_sources.end() ||
-      vector_source_ast != ast.catalog_relation_sources.end();
+      vector_source_ast != ast.catalog_relation_sources.end() ||
+      search_source_ast != ast.catalog_relation_sources.end();
   if (timestamp_model_source &&
       (!IsCanonicalStatementTimestamp(context.statement_timestamp) ||
        context.statement_timestamp != authority.statement_timestamp)) {
@@ -550,7 +555,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         &bound,
         time_series_source_ast != ast.catalog_relation_sources.end()
             ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
-            : (vector_source_ast != ast.catalog_relation_sources.end()
+            : (vector_source_ast != ast.catalog_relation_sources.end() ||
+               search_source_ast != ast.catalog_relation_sources.end()
                    ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
                    : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1"),
         "model binding timestamp does not exactly match engine authority");
@@ -615,6 +621,516 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kCatalogSource;
       });
+  if (search_source_ast != ast.catalog_relation_sources.end()) {
+    // QOW-SOURCE-RCP-078-SEARCH-BINDING-V1
+    const auto refuse_search = [&](const char* diagnostic,
+                                   const char* detail) {
+      AddBoundAstDiagnostic(&bound, diagnostic, detail);
+      return RefusedBoundAst(std::move(bound));
+    };
+    const bool ranked =
+        search_source_ast->model_operation_id == "SEARCH_RANKED_QUERY";
+    const bool phrase =
+        search_source_ast->model_operation_id == "SEARCH_PHRASE_QUERY";
+    const bool fuzzy =
+        search_source_ast->model_operation_id == "SEARCH_FUZZY_QUERY";
+    const bool any_filter =
+        search_source_ast->model_search_filter_expression_id.has_value() ||
+        search_source_ast->model_search_category_predicate_expression_id.has_value() ||
+        search_source_ast->model_search_category_column_expression_id.has_value() ||
+        search_source_ast->model_search_category_value_expression_id.has_value();
+    const bool complete_filter =
+        search_source_ast->model_search_filter_expression_id.has_value() &&
+        search_source_ast->model_search_category_predicate_expression_id.has_value() &&
+        search_source_ast->model_search_category_column_expression_id.has_value() &&
+        search_source_ast->model_search_category_value_expression_id.has_value();
+    const std::string semantic =
+        std::string("sblr.model-source.search-") +
+        (ranked ? "ranked-query" : (phrase ? "phrase-query" : "fuzzy-query")) +
+        (complete_filter ? "-structured-filter.v1" : ".v1");
+    if (!IsCanonicalStatementTimestamp(context.statement_timestamp) ||
+        ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
+        ast.root_relation_id != ast.relations.front().relation_id ||
+        ast.relations.front().relation_kind !=
+            NativeRelationAstKind::kCatalogSource ||
+        ast.relations.front().relation_source_ids !=
+            std::vector<std::uint32_t>{search_source_ast->source_id} ||
+        ast.relations.front().predicate_expression_ids.size() != 1 ||
+        search_source_ast->model_family_id != "search" ||
+        (!ranked && !phrase && !fuzzy) || (any_filter && !complete_filter) ||
+        fuzzy != search_source_ast->model_search_edit_expression_id.has_value() ||
+        !search_source_ast->model_search_top_k.has_value() ||
+        *search_source_ast->model_search_top_k == 0 ||
+        *search_source_ast->model_search_top_k > 0xffffffffULL ||
+        search_source_ast->qualified_name.empty() ||
+        !search_source_ast->alias.has_value() ||
+        !search_source_ast->model_search_alias_expression_id.has_value() ||
+        !search_source_ast->model_search_match_expression_id.has_value() ||
+        !search_source_ast->model_search_query_expression_id.has_value() ||
+        !search_source_ast->model_search_text_expression_id.has_value() ||
+        !search_source_ast->model_search_analyzer_expression_id.has_value() ||
+        !search_source_ast->model_search_top_k_expression_id.has_value() ||
+        search_source_ast->model_search_analyzer_name.empty() ||
+        ast.model_object_resolution_requests.size() != 2 ||
+        context.catalog_relations.size() != 1 || context.relations.size() != 1 ||
+        context.relations.front().relation_id !=
+            ast.relations.front().relation_id ||
+        context.relations.front().semantic_variant_id != semantic ||
+        !IsNonNullCanonicalUuid(context.search_analyzer_uuid) ||
+        context.search_analyzer_generation == 0) {
+      return refuse_search("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                           "search AST or binding cohort is incomplete");
+    }
+    const auto& collection_request = ast.model_object_resolution_requests[0];
+    const auto& analyzer_request = ast.model_object_resolution_requests[1];
+    const auto same_presented_name = [](const auto& left,
+                                        const auto& right) {
+      return left.size() == right.size() &&
+             std::ranges::equal(left, right, [](const auto& lhs,
+                                                const auto& rhs) {
+               return lhs.spelling == rhs.spelling &&
+                      lhs.quoted == rhs.quoted;
+             });
+    };
+    if (collection_request.source_id != search_source_ast->source_id ||
+        collection_request.model_family_id != "search" ||
+        collection_request.object_class != "search" ||
+        analyzer_request.source_id != search_source_ast->source_id ||
+        analyzer_request.model_family_id != "search" ||
+        analyzer_request.object_class != "search_analyzer" ||
+        !same_presented_name(collection_request.qualified_name,
+                             search_source_ast->qualified_name) ||
+        !same_presented_name(analyzer_request.qualified_name,
+                             search_source_ast->model_search_analyzer_name)) {
+      return refuse_search("SB_MODEL_BINDING_INCOMPLETE_V1",
+                           "search resolution descriptions were substituted");
+    }
+    const auto& resolution = context.catalog_relations.front();
+    if (resolution.source_id != search_source_ast->source_id ||
+        resolution.resolution_state !=
+            NativeCatalogRelationResolutionState::kBound ||
+        !IsNonNullCanonicalUuid(resolution.object_uuid) ||
+        !IsNonNullCanonicalUuid(resolution.resolved_schema_uuid) ||
+        resolution.resolved_object_type != "search" ||
+        resolution.catalog_generation_id == 0 || resolution.security_epoch == 0 ||
+        resolution.resource_epoch == 0 || resolution.columns.size() != 2 ||
+        resolution.columns[0].ordinal != 0 ||
+        resolution.columns[0].canonical_name_key != "body" ||
+        resolution.columns[1].ordinal != 1 ||
+        resolution.columns[1].canonical_name_key != "category" ||
+        !IsNonNullCanonicalUuid(resolution.columns[0].column_uuid) ||
+        !IsNonNullCanonicalUuid(resolution.columns[1].column_uuid) ||
+        !descriptor_by_id.contains(resolution.columns[0].descriptor_id) ||
+        !descriptor_by_id.contains(resolution.columns[1].descriptor_id)) {
+      return refuse_search("SB_MODEL_BINDING_INCOMPLETE_V1",
+                           "search storage descriptor is not BODY/CATEGORY");
+    }
+    const auto* body_descriptor =
+        descriptor_by_id.at(resolution.columns[0].descriptor_id);
+    const auto* category_descriptor =
+        descriptor_by_id.at(resolution.columns[1].descriptor_id);
+    if (body_descriptor->nullability != BoundNullability::kNonNull ||
+        category_descriptor->nullability != BoundNullability::kNonNull ||
+        body_descriptor->canonical_type_name != "text" ||
+        category_descriptor->canonical_type_name != "text") {
+      return refuse_search("SB_MODEL_SEARCH_DOCUMENT_INVALID_V1",
+                           "search storage descriptors are not non-null TEXT");
+    }
+    const auto ast_expression_by_id = [&](const std::uint32_t expression_id)
+        -> const NativeExpressionAstNode* {
+      const auto found = std::ranges::find_if(
+          ast.expressions, [&](const auto& expression) {
+            return expression.expression_id == expression_id;
+          });
+      return found == ast.expressions.end() ? nullptr : &*found;
+    };
+    const auto* match = ast_expression_by_id(
+        *search_source_ast->model_search_match_expression_id);
+    const auto* alias = ast_expression_by_id(
+        *search_source_ast->model_search_alias_expression_id);
+    const auto* query = ast_expression_by_id(
+        *search_source_ast->model_search_query_expression_id);
+    const auto* text = ast_expression_by_id(
+        *search_source_ast->model_search_text_expression_id);
+    const auto* analyzer = ast_expression_by_id(
+        *search_source_ast->model_search_analyzer_expression_id);
+    const auto* top_k = ast_expression_by_id(
+        *search_source_ast->model_search_top_k_expression_id);
+    if (match == nullptr || alias == nullptr || query == nullptr ||
+        text == nullptr || analyzer == nullptr || top_k == nullptr ||
+        match->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+        match->operator_name != "SEARCH_MATCH" ||
+        match->child_expression_ids !=
+            std::vector<std::uint32_t>{alias->expression_id,
+                                       query->expression_id,
+                                       analyzer->expression_id,
+                                       top_k->expression_id} ||
+        query->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+        query->operator_name != search_source_ast->model_search_query_kind ||
+        query->child_expression_ids.empty() ||
+        query->child_expression_ids.front() != text->expression_id ||
+        alias->expression_kind != NativeExpressionAstKind::kIdentifier ||
+        analyzer->expression_kind != NativeExpressionAstKind::kIdentifier ||
+        !same_presented_name(analyzer->qualified_identifier,
+                             search_source_ast->model_search_analyzer_name) ||
+        top_k->expression_kind != NativeExpressionAstKind::kLiteral ||
+        top_k->literal_kind != NativeLiteralAstKind::kNumeric ||
+        top_k->spelling !=
+            std::to_string(*search_source_ast->model_search_top_k)) {
+      return refuse_search("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                           "search typed-DAG identity/order drifted");
+    }
+    for (const auto& descriptor : context.descriptors) {
+      bound.descriptors.push_back(
+          {descriptor.descriptor_id, descriptor.descriptor_uuid,
+           descriptor.type_uuid, descriptor.nullability,
+           descriptor.collation_uuid, descriptor.timezone_profile_id,
+           descriptor.width_precision_scale, descriptor.canonical_type_name,
+           descriptor.element_profile});
+    }
+    std::ranges::sort(bound.descriptors, {},
+                      &BoundDescriptorAstRecord::descriptor_id);
+    if (context.outputs.size() != 5 || context.expressions.size() < 5) {
+      return refuse_search("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                           "search public output cohort is incomplete");
+    }
+    static constexpr std::array<std::string_view, 5> kNames{
+        "document_uuid", "analyzer_uuid", "analyzer_generation", "score",
+        "rank"};
+    static constexpr std::array<std::string_view, 5> kTypes{
+        "uuid", "uuid", "uint64", "real64", "uint64"};
+    BoundRelationAstRecord bound_relation;
+    bound_relation.relation_id = ast.relations.front().relation_id;
+    bound_relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+    bound_relation.semantic_variant_id = semantic;
+    bound_relation.bound_object_uuid = resolution.object_uuid;
+    std::unordered_set<std::uint32_t> public_descriptor_ids;
+    for (std::size_t index = 0; index < kNames.size(); ++index) {
+      const auto& output = context.outputs[index];
+      const auto& expression = context.expressions[index];
+      const auto& expected_output_binding =
+          (index == 1 || index == 2) ? context.search_analyzer_uuid
+                                     : resolution.object_uuid;
+      if (output.output_id != index + 1 || output.ordinal != index ||
+          output.relation_id != bound_relation.relation_id ||
+          output.expression_id != expression.expression_id ||
+          output.output_name_utf8 != kNames[index] || !output.visible ||
+          output.descriptor_id != expression.descriptor_id ||
+          !descriptor_by_id.contains(output.descriptor_id) ||
+          descriptor_by_id.at(output.descriptor_id)->canonical_type_name !=
+              kTypes[index] ||
+          descriptor_by_id.at(output.descriptor_id)->nullability !=
+              BoundNullability::kNonNull ||
+          expression.bound_name_uuid != expected_output_binding ||
+          !public_descriptor_ids.insert(output.descriptor_id).second) {
+        return refuse_search("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                             "search public output order/type drifted");
+      }
+      bound.expressions.push_back(
+          {expression.expression_id, NativeExpressionAstKind::kIdentifier,
+           std::nullopt, {}, expression.descriptor_id, std::nullopt,
+           expression.bound_name_uuid, std::nullopt, std::nullopt});
+      bound_relation.output_expression_ids.push_back(expression.expression_id);
+      bound.outputs.push_back(
+          {output.output_id, output.relation_id, output.expression_id,
+           output.output_name_utf8, output.descriptor_id, output.visible,
+           output.ordinal});
+    }
+    std::unordered_map<std::uint32_t, std::uint32_t> ast_to_bound;
+    std::size_t binding_index = 5;
+    for (const auto& ast_expression : ast.expressions) {
+      if (ast_expression.expression_kind == NativeExpressionAstKind::kWildcard) {
+        continue;
+      }
+      if (binding_index >= context.expressions.size()) {
+        return refuse_search("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                             "search expression binding is incomplete");
+      }
+      const auto& expression = context.expressions[binding_index++];
+      if (expression.expression_id != ast_expression.expression_id ||
+          !descriptor_by_id.contains(expression.descriptor_id) ||
+          expression.function_uuid.has_value() ||
+          (expression.bound_name_uuid.has_value() &&
+           !IsNonNullCanonicalUuid(*expression.bound_name_uuid)) ||
+          !ast_to_bound.emplace(ast_expression.expression_id,
+                                expression.expression_id).second) {
+        return refuse_search("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                             "search expression binding is invalid");
+      }
+      BoundExpressionAstRecord record;
+      record.expression_id = expression.expression_id;
+      record.expression_kind = ast_expression.expression_kind;
+      record.literal_kind = ast_expression.literal_kind;
+      record.result_descriptor_id = expression.descriptor_id;
+      record.bound_name_uuid = expression.bound_name_uuid;
+      if (!ast_expression.operator_name.empty()) {
+        record.canonical_operator_name = ast_expression.operator_name;
+      }
+      if (ast_expression.expression_kind == NativeExpressionAstKind::kLiteral ||
+          ast_expression.expression_kind == NativeExpressionAstKind::kParameter) {
+        record.literal_or_parameter_ref = ast_expression.spelling;
+      }
+      for (const auto child : ast_expression.child_expression_ids) {
+        const auto mapped = ast_to_bound.find(child);
+        if (mapped == ast_to_bound.end()) {
+          return refuse_search("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                               "search expression child is unreachable/reordered");
+        }
+        record.child_expression_ids.push_back(mapped->second);
+      }
+      bound.expressions.push_back(std::move(record));
+    }
+    if (binding_index != context.expressions.size()) {
+      return refuse_search("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                           "search expression binding has extra nodes");
+    }
+    const auto mapped_id = [&](const std::optional<std::uint32_t> id)
+        -> std::optional<std::uint32_t> {
+      if (!id.has_value()) return std::nullopt;
+      const auto found = ast_to_bound.find(*id);
+      return found == ast_to_bound.end()
+                 ? std::nullopt
+                 : std::optional<std::uint32_t>(found->second);
+    };
+    const auto mapped_alias =
+        mapped_id(search_source_ast->model_search_alias_expression_id);
+    const auto mapped_text =
+        mapped_id(search_source_ast->model_search_text_expression_id);
+    const auto mapped_analyzer =
+        mapped_id(search_source_ast->model_search_analyzer_expression_id);
+    const auto mapped_top_k =
+        mapped_id(search_source_ast->model_search_top_k_expression_id);
+    const auto find_bound = [&](const std::optional<std::uint32_t> id)
+        -> const BoundExpressionAstRecord* {
+      if (!id.has_value()) return nullptr;
+      const auto found = std::ranges::find_if(
+          bound.expressions, [&](const auto& expression) {
+            return expression.expression_id == *id;
+          });
+      return found == bound.expressions.end() ? nullptr : &*found;
+    };
+    const auto* bound_alias = find_bound(mapped_alias);
+    const auto* bound_text = find_bound(mapped_text);
+    const auto* bound_analyzer = find_bound(mapped_analyzer);
+    const auto* bound_top_k = find_bound(mapped_top_k);
+    if (bound_alias == nullptr || bound_text == nullptr ||
+        bound_analyzer == nullptr || bound_top_k == nullptr ||
+        bound_alias->bound_name_uuid != resolution.object_uuid ||
+        bound_analyzer->bound_name_uuid != context.search_analyzer_uuid ||
+        descriptor_by_id.at(bound_text->result_descriptor_id)
+                ->canonical_type_name != "text" ||
+        descriptor_by_id.at(bound_text->result_descriptor_id)->nullability !=
+            BoundNullability::kNonNull ||
+        descriptor_by_id.at(bound_top_k->result_descriptor_id)
+                ->canonical_type_name != "uint64" ||
+        descriptor_by_id.at(bound_top_k->result_descriptor_id)->nullability !=
+            BoundNullability::kNonNull) {
+      return refuse_search("SB_MODEL_SEARCH_QUERY_TYPE_REFUSED_V1",
+                           "search query/analyzer/top-k binding drifted");
+    }
+    if (complete_filter) {
+      const auto* filter = find_bound(mapped_id(
+          search_source_ast->model_search_filter_expression_id));
+      const auto* filter_alias =
+          filter == nullptr || filter->child_expression_ids.empty()
+              ? nullptr
+              : find_bound(filter->child_expression_ids.front());
+      const auto* column = find_bound(mapped_id(
+          search_source_ast->model_search_category_column_expression_id));
+      const auto* value = find_bound(mapped_id(
+          search_source_ast->model_search_category_value_expression_id));
+      if (filter == nullptr || filter_alias == nullptr || column == nullptr ||
+          value == nullptr ||
+          filter_alias->bound_name_uuid != resolution.object_uuid ||
+          column->bound_name_uuid != resolution.columns[1].column_uuid ||
+          column->result_descriptor_id != resolution.columns[1].descriptor_id ||
+          descriptor_by_id.at(value->result_descriptor_id)
+                  ->canonical_type_name != "text" ||
+          descriptor_by_id.at(value->result_descriptor_id)->nullability !=
+              BoundNullability::kNonNull) {
+        return refuse_search("SB_MODEL_SEARCH_FILTER_REFUSED_V1",
+                             "search category filter binding drifted");
+      }
+    }
+    std::uint32_t maximum_expression_id = 0;
+    for (const auto& expression : bound.expressions) {
+      maximum_expression_id =
+          std::max(maximum_expression_id, expression.expression_id);
+    }
+    const std::uint32_t synthetic_expression_count = complete_filter ? 3 : 4;
+    if (maximum_expression_id >
+            std::numeric_limits<std::uint32_t>::max() -
+                synthetic_expression_count ||
+        !mapped_analyzer.has_value() ||
+        !mapped_id(search_source_ast->model_search_match_expression_id)
+             .has_value()) {
+      return refuse_search("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                           "search analyzer binding expression IDs overflow");
+    }
+    const auto analyzer_generation_expression_id = maximum_expression_id + 1;
+    const auto analyzer_digest_expression_id = maximum_expression_id + 2;
+    const auto analyzer_binding_expression_id = maximum_expression_id + 3;
+    const auto category_binding_expression_id =
+        complete_filter ? std::optional<std::uint32_t>{}
+                        : std::optional<std::uint32_t>{maximum_expression_id + 4};
+    const auto analyzer_descriptor_id = bound_analyzer->result_descriptor_id;
+    const auto analyzer_generation_descriptor_id =
+        bound_top_k->result_descriptor_id;
+    const auto analyzer_digest_descriptor_id = bound_text->result_descriptor_id;
+    BoundExpressionAstRecord analyzer_generation_expression;
+    analyzer_generation_expression.expression_id =
+        analyzer_generation_expression_id;
+    analyzer_generation_expression.expression_kind =
+        NativeExpressionAstKind::kLiteral;
+    analyzer_generation_expression.literal_kind = NativeLiteralAstKind::kNumeric;
+    analyzer_generation_expression.result_descriptor_id =
+        analyzer_generation_descriptor_id;
+    analyzer_generation_expression.literal_or_parameter_ref =
+        std::to_string(context.search_analyzer_generation);
+    bound.expressions.push_back(std::move(analyzer_generation_expression));
+
+    BoundExpressionAstRecord analyzer_digest_expression;
+    analyzer_digest_expression.expression_id = analyzer_digest_expression_id;
+    analyzer_digest_expression.expression_kind =
+        NativeExpressionAstKind::kLiteral;
+    analyzer_digest_expression.literal_kind = NativeLiteralAstKind::kString;
+    analyzer_digest_expression.result_descriptor_id =
+        analyzer_digest_descriptor_id;
+    analyzer_digest_expression.literal_or_parameter_ref =
+        "9033908d159ddd442f2042467fd49e0a12b47679f7514e9aa6e55488e151d316";
+    bound.expressions.push_back(std::move(analyzer_digest_expression));
+
+    BoundExpressionAstRecord analyzer_binding_expression;
+    analyzer_binding_expression.expression_id = analyzer_binding_expression_id;
+    analyzer_binding_expression.expression_kind =
+        NativeExpressionAstKind::kFunctionCall;
+    analyzer_binding_expression.child_expression_ids = {
+        *mapped_analyzer, analyzer_generation_expression_id,
+        analyzer_digest_expression_id};
+    analyzer_binding_expression.result_descriptor_id = analyzer_descriptor_id;
+    analyzer_binding_expression.canonical_operator_name =
+        "SEARCH_ANALYZER_BINDING";
+    bound.expressions.push_back(std::move(analyzer_binding_expression));
+    if (category_binding_expression_id.has_value()) {
+      BoundExpressionAstRecord category_binding_expression;
+      category_binding_expression.expression_id =
+          *category_binding_expression_id;
+      category_binding_expression.expression_kind =
+          NativeExpressionAstKind::kIdentifier;
+      category_binding_expression.result_descriptor_id =
+          resolution.columns[1].descriptor_id;
+      category_binding_expression.bound_name_uuid =
+          resolution.columns[1].column_uuid;
+      bound.expressions.push_back(std::move(category_binding_expression));
+    }
+
+    const auto mapped_match =
+        *mapped_id(search_source_ast->model_search_match_expression_id);
+    const auto bound_match = std::ranges::find_if(
+        bound.expressions, [&](const auto& expression) {
+          return expression.expression_id == mapped_match;
+        });
+    if (bound_match == bound.expressions.end() ||
+        bound_match->child_expression_ids.size() != 4 ||
+        bound_match->child_expression_ids[2] != *mapped_analyzer) {
+      return refuse_search("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                           "search analyzer binding root cannot be attached");
+    }
+    bound_match->child_expression_ids[2] = analyzer_binding_expression_id;
+    const auto match_offset =
+        static_cast<std::size_t>(bound_match - bound.expressions.begin());
+    std::rotate(bound.expressions.begin() + match_offset,
+                bound.expressions.end() - synthetic_expression_count,
+                bound.expressions.end());
+
+    BoundCatalogRelationSourceAstRecord bound_source;
+    bound_source.source_id = search_source_ast->source_id;
+    bound_source.source_kind = search_source_ast->source_kind;
+    bound_source.resolution_state = NativeCatalogRelationResolutionState::kBound;
+    bound_source.qualified_name = search_source_ast->qualified_name;
+    bound_source.alias = search_source_ast->alias;
+    bound_source.alias_is_explicit = search_source_ast->alias_is_explicit;
+    bound_source.model_family_id = search_source_ast->model_family_id;
+    bound_source.model_operation_id = search_source_ast->model_operation_id;
+    bound_source.model_search_alias_expression_id = mapped_alias;
+    bound_source.model_search_match_expression_id = mapped_id(
+        search_source_ast->model_search_match_expression_id);
+    bound_source.model_search_query_expression_id = mapped_id(
+        search_source_ast->model_search_query_expression_id);
+    bound_source.model_search_text_expression_id = mapped_text;
+    bound_source.model_search_edit_expression_id = mapped_id(
+        search_source_ast->model_search_edit_expression_id);
+    bound_source.model_search_analyzer_expression_id =
+        analyzer_binding_expression_id;
+    bound_source.model_search_top_k_expression_id = mapped_top_k;
+    bound_source.model_search_filter_expression_id = mapped_id(
+        search_source_ast->model_search_filter_expression_id);
+    bound_source.model_search_category_predicate_expression_id = mapped_id(
+        search_source_ast->model_search_category_predicate_expression_id);
+    bound_source.model_search_category_column_expression_id = mapped_id(
+        search_source_ast->model_search_category_column_expression_id);
+    bound_source.model_search_category_value_expression_id = mapped_id(
+        search_source_ast->model_search_category_value_expression_id);
+    bound_source.model_search_result_alias =
+        search_source_ast->model_search_result_alias;
+    bound_source.model_search_analyzer_name =
+        search_source_ast->model_search_analyzer_name;
+    bound_source.model_search_query_kind =
+        search_source_ast->model_search_query_kind;
+    bound_source.model_search_top_k = search_source_ast->model_search_top_k;
+    bound_source.model_search_analyzer_uuid = context.search_analyzer_uuid;
+    bound_source.model_search_analyzer_generation =
+        context.search_analyzer_generation;
+    bound_source.qualified_name_range = search_source_ast->qualified_name_range;
+    bound_source.range = search_source_ast->range;
+    bound_source.object_uuid = resolution.object_uuid;
+    bound_source.resolved_object_type = resolution.resolved_object_type;
+    bound_source.resolved_schema_uuid = resolution.resolved_schema_uuid;
+    bound_source.parent_object_uuid = resolution.parent_object_uuid;
+    bound_source.catalog_generation_id = resolution.catalog_generation_id;
+    bound_source.security_epoch = resolution.security_epoch;
+    bound_source.resource_epoch = resolution.resource_epoch;
+    for (const auto& column : resolution.columns) {
+      bound_source.columns.push_back(
+          {column.ordinal, column.column_uuid, column.descriptor_id,
+           column.canonical_name_key});
+    }
+    const auto root = ast_to_bound.find(
+        ast.relations.front().predicate_expression_ids.front());
+    if (root == ast_to_bound.end()) {
+      return refuse_search("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                           "search predicate root is unreachable");
+    }
+    bound_relation.predicate_expression_ids = {root->second};
+    bound_relation.bound_expression_ids = bound_relation.output_expression_ids;
+    for (const auto& ast_expression : ast.expressions) {
+      if (ast_expression.expression_kind == NativeExpressionAstKind::kWildcard) {
+        continue;
+      }
+      bound_relation.bound_expression_ids.push_back(
+          ast_to_bound.at(ast_expression.expression_id));
+    }
+    if (category_binding_expression_id.has_value()) {
+      bound_relation.bound_expression_ids.push_back(
+          *category_binding_expression_id);
+    }
+    bound.catalog_relation_sources.push_back(std::move(bound_source));
+    bound.relations.push_back(std::move(bound_relation));
+    BoundScopeAstRecord scope;
+    scope.scope_id = 1;
+    scope.visible_relation_ids = {ast.root_relation_id};
+    for (const auto& output : bound.outputs) {
+      if (output.visible) scope.visible_projection_ids.push_back(output.output_id);
+    }
+    scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
+    bound.scopes.push_back(std::move(scope));
+    bound.bound_ast_uuid = context.bound_ast_uuid;
+    bound.security_context_uuid = context.security_context_uuid;
+    bound.root_relation_id = ast.root_relation_id;
+    bound.root_scope_id = 1;
+    bound.bound = true;
+    return bound;
+  }
   if (vector_source_ast != ast.catalog_relation_sources.end()) {
     // QOW-SOURCE-RCP-077-VECTOR-BINDING-V1
     const auto refuse_vector = [&](const char* diagnostic,

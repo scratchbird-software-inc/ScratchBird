@@ -430,7 +430,7 @@ bool SamePersistedRowDescriptor(
     const auto key = field.substr(0, separator);
     const auto value = field.substr(separator + 1);
 
-    if (key == "canonical") {
+    if (key == "canonical" || key == "type") {
       if (canonical_seen || value.empty() ||
           value != actual.canonical_type_name) {
         return false;

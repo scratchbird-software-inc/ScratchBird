@@ -59,6 +59,13 @@ struct ModelProviderRowIdentityV1 {
   // strings are rechecked against the typed batch before publication.
   std::string vector_distance;
   std::string vector_score;
+  // RCP-078 exact public search result identity. The relation UUID lives in
+  // document_uuid; analyzer identity, score, and gap-free rank are carried
+  // independently so the typed exchange can reject cell substitution.
+  std::string search_analyzer_uuid;
+  std::uint64_t search_analyzer_generation{0};
+  std::string search_score;
+  std::uint64_t search_rank{0};
 };
 
 struct ModelSourceInputDescriptorV1 {

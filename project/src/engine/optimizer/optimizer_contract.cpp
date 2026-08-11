@@ -1228,7 +1228,8 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
          candidate.model_family_id != "graph.local.v1" &&
          candidate.model_family_id != "key_value.local.v1" &&
          candidate.model_family_id != "time_series.local.v1" &&
-         candidate.model_family_id != "vector.local.v1") ||
+         candidate.model_family_id != "vector.local.v1" &&
+         candidate.model_family_id != "search.local.v1") ||
         (model_family_id.has_value() &&
          candidate.model_family_id != *model_family_id) ||
         !candidate.derived_from_admitted_statistics ||
@@ -1856,7 +1857,8 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
        search.model_family_id != "graph.local.v1" &&
        search.model_family_id != "key_value.local.v1" &&
        search.model_family_id != "time_series.local.v1" &&
-       search.model_family_id != "vector.local.v1") ||
+       search.model_family_id != "vector.local.v1" &&
+       search.model_family_id != "search.local.v1") ||
       !canonical_uuid(search.calibration_profile_uuid) ||
       search.memo_group_count != admission_request.logical_graph.nodes.size() ||
       search.memo_groups.size() != admission_request.logical_graph.nodes.size() ||

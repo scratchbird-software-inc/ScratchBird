@@ -2626,6 +2626,75 @@ sb_engine_status_t AcquireStatementContextReceipt(
     view.descriptor_profiles.push_back(std::move(profile));
   }
 
+  // QOW-SOURCE-RCP-078-STATEMENT-SEARCH-DESCRIPTORS-V9: V9 extends the
+  // exact V8 prefix with four engine-issued result-slot identities. Core
+  // datatype catalog rows own the UUID/UINT64 type identities; neither the
+  // parser nor a model-family provider may manufacture or relabel them.
+  const auto uuid_count = std::ranges::count_if(
+      core_manifest.manifest.descriptor_rows,
+      [](const auto& row) { return row.stable_name == "uuid"; });
+  const auto uint64_count = std::ranges::count_if(
+      core_manifest.manifest.descriptor_rows,
+      [](const auto& row) { return row.stable_name == "uint64"; });
+  const auto uuid_row = std::ranges::find_if(
+      core_manifest.manifest.descriptor_rows,
+      [](const auto& row) { return row.stable_name == "uuid"; });
+  const auto uint64_row = std::ranges::find_if(
+      core_manifest.manifest.descriptor_rows,
+      [](const auto& row) { return row.stable_name == "uint64"; });
+  if (uuid_count != 1 || uint64_count != 1 ||
+      uuid_row == core_manifest.manifest.descriptor_rows.end() ||
+      uint64_row == core_manifest.manifest.descriptor_rows.end() ||
+      !uuid_row->descriptor_uuid.valid() ||
+      !uint64_row->descriptor_uuid.valid()) {
+    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
+        snapshot.snapshot_uuid);
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4040,
+        "ENGINE.STATEMENT_CONTEXT.MATERIALIZED_CONTEXT_INCOMPLETE",
+        "engine.statement_context.materialized_context_incomplete",
+        "statement_v9_descriptor_type_cohort");
+  }
+  const auto uuid_type_uuid = scratchbird::core::uuid::UuidToString(
+      uuid_row->descriptor_uuid.value);
+  const auto uint64_type_uuid = scratchbird::core::uuid::UuidToString(
+      uint64_row->descriptor_uuid.value);
+  std::array<std::string, 4> search_descriptor_uuids;
+  if (uuid_type_uuid.empty() || uint64_type_uuid.empty() ||
+      uuid_type_uuid == uint64_type_uuid ||
+      !issue_identity(&search_descriptor_uuids[0]) ||
+      !issue_identity(&search_descriptor_uuids[1]) ||
+      !issue_identity(&search_descriptor_uuids[2]) ||
+      !issue_identity(&search_descriptor_uuids[3])) {
+    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
+        snapshot.snapshot_uuid);
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4044,
+        "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
+        "engine.statement_context.identity_unavailable",
+        "statement_search_descriptor_identity");
+  }
+  for (std::uint16_t slot = 0; slot < 2; ++slot) {
+    StatementDescriptorProfile profile;
+    profile.profile_kind = StatementDescriptorProfileKind::kUuidNonNull;
+    profile.slot = slot;
+    profile.descriptor_uuid = std::move(search_descriptor_uuids[slot]);
+    profile.type_uuid = uuid_type_uuid;
+    view.descriptor_profiles.push_back(std::move(profile));
+  }
+  for (std::uint16_t slot = 0; slot < 2; ++slot) {
+    StatementDescriptorProfile profile;
+    profile.profile_kind = StatementDescriptorProfileKind::kUint64NonNull;
+    profile.slot = slot;
+    profile.descriptor_uuid = std::move(search_descriptor_uuids[slot + 2]);
+    profile.type_uuid = uint64_type_uuid;
+    view.descriptor_profiles.push_back(std::move(profile));
+  }
+
   view.statement_uuid = statement_uuid;
   view.statement_timestamp = engine_context.statement_timestamp;
   if (!canonical_statement_timestamp(view.statement_timestamp) ||

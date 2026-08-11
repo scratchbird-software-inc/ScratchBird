@@ -10,18 +10,27 @@
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
 #include "nosql/nosql_batch_point_lookup_support.hpp"
+#include "nosql/nosql_provider_generation_store.hpp"
 #include "nosql/nosql_surface_support.hpp"
+#include "security/security_model.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cfenv>
+#include <charconv>
 #include <cctype>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -463,6 +472,849 @@ EngineSearchQueryResult EngineSearchQuery(const EngineSearchQueryRequest& reques
   }
   AddApiBehaviorEvidence(&result, "search_query", "full_text_descriptor_query");
   AddEngineNoSqlSurfaceEvidence(&result, "search", "specialized_descriptor_fallback");
+  return result;
+}
+
+namespace {
+
+constexpr std::string_view kBoundSearchAnalyzerDigest =
+    "9033908d159ddd442f2042467fd49e0a12b47679f7514e9aa6e55488e151d316";
+
+bool CanonicalBoundSearchUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-' ||
+      value == "00000000-0000-0000-0000-000000000000") {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const char ch = value[index];
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ValidBoundSearchUtf8(const std::string_view value) {
+  std::size_t offset = 0;
+  while (offset < value.size()) {
+    const auto first = static_cast<unsigned char>(value[offset]);
+    if (first <= 0x7fU) {
+      ++offset;
+      continue;
+    }
+    std::size_t continuation = 0;
+    std::uint32_t codepoint = 0;
+    if (first >= 0xc2U && first <= 0xdfU) {
+      continuation = 1;
+      codepoint = first & 0x1fU;
+    } else if (first >= 0xe0U && first <= 0xefU) {
+      continuation = 2;
+      codepoint = first & 0x0fU;
+    } else if (first >= 0xf0U && first <= 0xf4U) {
+      continuation = 3;
+      codepoint = first & 0x07U;
+    } else {
+      return false;
+    }
+    if (offset + continuation >= value.size()) return false;
+    for (std::size_t index = 1; index <= continuation; ++index) {
+      const auto ch = static_cast<unsigned char>(value[offset + index]);
+      if ((ch & 0xc0U) != 0x80U) return false;
+      codepoint = (codepoint << 6U) | (ch & 0x3fU);
+    }
+    if ((continuation == 1 && codepoint < 0x80U) ||
+        (continuation == 2 && codepoint < 0x800U) ||
+        (continuation == 3 && codepoint < 0x10000U) ||
+        codepoint > 0x10ffffU ||
+        (codepoint >= 0xd800U && codepoint <= 0xdfffU)) {
+      return false;
+    }
+    offset += continuation + 1;
+  }
+  return true;
+}
+
+struct BoundSearchAnalysis {
+  bool ok = false;
+  bool input_too_large = false;
+  bool token_too_large = false;
+  std::vector<std::string> tokens;
+};
+
+BoundSearchAnalysis AnalyzeBoundSearchAscii(const std::string_view input) {
+  BoundSearchAnalysis result;
+  if (input.size() > 1U * 1024U * 1024U) {
+    result.input_too_large = true;
+    return result;
+  }
+  std::string token;
+  for (const unsigned char raw : input) {
+    if (raw < 0x20U || raw > 0x7eU) return result;
+    const char folded = raw >= 'A' && raw <= 'Z'
+                            ? static_cast<char>(raw - 'A' + 'a')
+                            : static_cast<char>(raw);
+    const bool token_byte =
+        (folded >= 'a' && folded <= 'z') ||
+        (folded >= '0' && folded <= '9');
+    if (token_byte) {
+      token.push_back(folded);
+      if (token.size() > 64) {
+        result.token_too_large = true;
+        return result;
+      }
+    } else if (!token.empty()) {
+      result.tokens.push_back(std::move(token));
+      token.clear();
+    }
+  }
+  if (!token.empty()) result.tokens.push_back(std::move(token));
+  result.ok = true;
+  return result;
+}
+
+std::vector<std::string> UniqueBoundSearchTerms(
+    const std::vector<std::string>& terms) {
+  std::unordered_set<std::string> seen;
+  std::vector<std::string> unique;
+  for (const auto& term : terms) {
+    if (seen.insert(term).second) unique.push_back(term);
+  }
+  return unique;
+}
+
+std::size_t BoundSearchLevenshteinAtMostOne(const std::string_view left,
+                                             const std::string_view right) {
+  if (left.size() + 1 < right.size() || right.size() + 1 < left.size()) {
+    return 2;
+  }
+  if (left.size() == right.size()) {
+    std::size_t differences = 0;
+    for (std::size_t index = 0; index < left.size(); ++index) {
+      differences += left[index] != right[index];
+      if (differences > 1) return 2;
+    }
+    return differences;
+  }
+  const auto shorter = left.size() < right.size() ? left : right;
+  const auto longer = left.size() < right.size() ? right : left;
+  std::size_t short_index = 0;
+  std::size_t long_index = 0;
+  std::size_t edits = 0;
+  while (short_index < shorter.size() && long_index < longer.size()) {
+    if (shorter[short_index] == longer[long_index]) {
+      ++short_index;
+      ++long_index;
+      continue;
+    }
+    if (++edits > 1) return 2;
+    ++long_index;
+  }
+  return edits + (long_index < longer.size() ? 1U : 0U);
+}
+
+bool BoundSearchPhraseMatch(const std::vector<std::string>& document,
+                            const std::vector<std::string>& query) {
+  if (query.empty() || query.size() > document.size()) return false;
+  for (std::size_t start = 0; start + query.size() <= document.size();
+       ++start) {
+    bool match = true;
+    for (std::size_t index = 0; index < query.size(); ++index) {
+      if (document[start + index] != query[index]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return true;
+  }
+  return false;
+}
+
+std::string BoundSearchDescriptorField(const std::string_view descriptor,
+                                       const std::string_view name) {
+  std::size_t offset = 0;
+  while (offset <= descriptor.size()) {
+    const auto end = descriptor.find(';', offset);
+    const auto field = descriptor.substr(
+        offset, end == std::string_view::npos ? descriptor.size() - offset
+                                              : end - offset);
+    const auto equals = field.find('=');
+    if (equals != std::string_view::npos && field.substr(0, equals) == name) {
+      return std::string(field.substr(equals + 1));
+    }
+    if (end == std::string_view::npos) break;
+    offset = end + 1;
+  }
+  return {};
+}
+
+std::string BoundSearchTypeUuid(const EngineDescriptor& descriptor) {
+  return BoundSearchDescriptorField(descriptor.encoded_descriptor,
+                                    "type_uuid");
+}
+
+bool ExactBoundSearchStorageDescriptor(
+    const MgaRelationStorageDescriptor& descriptor,
+    const std::string_view collection_uuid) {
+  if (descriptor.relation_uuid.canonical != collection_uuid ||
+      descriptor.relation_kind != "table" ||
+      descriptor.storage_profile != "local_mga_rowstore_v1" ||
+      descriptor.descriptor_generation == 0 ||
+      !CanonicalBoundSearchUuid(descriptor.descriptor_uuid.canonical) ||
+      descriptor.columns.size() != 2) {
+    return false;
+  }
+  const auto exact_text = [](const auto& column,
+                             const std::uint32_t ordinal,
+                             const std::string_view name) {
+    return column.ordinal == ordinal && column.canonical_name_key == name &&
+           !column.nullable &&
+           column.value_descriptor.canonical_type_name == "text" &&
+           CanonicalBoundSearchUuid(column.column_uuid.canonical) &&
+           CanonicalBoundSearchUuid(
+               column.value_descriptor.descriptor_uuid.canonical) &&
+           CanonicalBoundSearchUuid(
+               BoundSearchTypeUuid(column.value_descriptor));
+  };
+  return exact_text(descriptor.columns[0], 0, "body") &&
+         exact_text(descriptor.columns[1], 1, "category");
+}
+
+bool ExactBoundSearchOutputDescriptors(
+    const std::vector<EngineDescriptor>& descriptors) {
+  if (descriptors.size() != 5) return false;
+  static constexpr std::array<std::string_view, 5> kTypes{
+      "uuid", "uuid", "uint64", "real64", "uint64"};
+  for (std::size_t index = 0; index < descriptors.size(); ++index) {
+    const auto& descriptor = descriptors[index];
+    if (!CanonicalBoundSearchUuid(descriptor.descriptor_uuid.canonical) ||
+        descriptor.descriptor_kind.empty() ||
+        descriptor.canonical_type_name != kTypes[index] ||
+        !CanonicalBoundSearchUuid(BoundSearchTypeUuid(descriptor))) {
+      return false;
+    }
+    const auto nullability = BoundSearchDescriptorField(
+        descriptor.encoded_descriptor, "nullability");
+    const auto nullable = BoundSearchDescriptorField(
+        descriptor.encoded_descriptor, "nullable");
+    if (nullability != "non_null" && nullability != "not_null" &&
+        nullable != "false" && nullable != "0") {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool CheckedBoundSearchAdd(const std::uint64_t left,
+                           const std::uint64_t right,
+                           std::uint64_t* result) {
+  if (result == nullptr ||
+      right > std::numeric_limits<std::uint64_t>::max() - left) {
+    return false;
+  }
+  *result = left + right;
+  return true;
+}
+
+class BoundSearchFloatingEnvironment final {
+ public:
+  BoundSearchFloatingEnvironment() {
+    active_ = std::fegetenv(&saved_) == 0;
+    if (active_) {
+      std::feclearexcept(FE_ALL_EXCEPT);
+      if (std::fesetround(FE_TONEAREST) != 0) active_ = false;
+    }
+  }
+  ~BoundSearchFloatingEnvironment() {
+    if (active_) std::fesetenv(&saved_);
+  }
+  bool active() const { return active_; }
+
+ private:
+  std::fenv_t saved_{};
+  bool active_ = false;
+};
+
+std::string CanonicalBoundSearchReal64(double value) {
+  if (!std::isfinite(value)) return {};
+  if (value == 0.0) value = 0.0;
+  std::array<char, 128> encoded{};
+  const auto rendered = std::to_chars(encoded.data(),
+                                      encoded.data() + encoded.size(), value,
+                                      std::chars_format::general);
+  if (rendered.ec != std::errc{}) return {};
+  return std::string(encoded.data(), rendered.ptr);
+}
+
+struct BoundSearchDocument {
+  std::string document_uuid;
+  std::string category;
+  std::vector<std::string> tokens;
+};
+
+struct BoundSearchScoredRow {
+  std::string document_uuid;
+  double score = 0.0;
+  std::string encoded_score;
+};
+
+bool BoundSearchCarrierContextMatches(
+    const EngineBoundSearchReadRequestV1& request,
+    const EngineNoSqlProviderGenerationMetadata& carrier) {
+  const auto& context = request.context;
+  return carrier.family == EngineNoSqlProviderFamily::kSearch &&
+         carrier.provider_id == request.selected_provider_uuid &&
+         carrier.search_segment_capability_uuid ==
+             request.selected_capability_uuid &&
+         carrier.database_identity ==
+             EngineNoSqlProviderDatabaseIdentity(context) &&
+         carrier.database_uuid == context.database_uuid.canonical &&
+         carrier.collection_uuid == request.collection_uuid &&
+         carrier.search_segment_base_relation_uuid == request.collection_uuid &&
+         carrier.search_segment_analyzer_uuid == request.analyzer_uuid &&
+         carrier.search_segment_analyzer_generation ==
+             request.analyzer_generation &&
+         carrier.search_segment_analyzer_pipeline_sha256 ==
+             request.analyzer_pipeline_sha256 &&
+         carrier.search_segment_statement_uuid ==
+             context.statement_uuid.canonical &&
+         carrier.search_segment_statement_snapshot_uuid ==
+             context.statement_snapshot_uuid.canonical &&
+         carrier.search_segment_statement_metadata_snapshot_uuid ==
+             context.statement_metadata_snapshot_uuid.canonical &&
+         carrier.search_segment_owning_transaction_uuid ==
+             context.transaction_uuid.canonical &&
+         carrier.search_segment_local_transaction_id ==
+             context.local_transaction_id &&
+         carrier.search_segment_snapshot_visible_through_local_transaction_id ==
+             context.snapshot_visible_through_local_transaction_id &&
+         carrier.search_segment_security_context_uuid ==
+             context.authorization_context.authority_uuid.canonical &&
+         carrier.search_segment_catalog_epoch_uuid ==
+             context.catalog_epoch_uuid.canonical &&
+         carrier.security_epoch == context.security_epoch &&
+         carrier.catalog_epoch == context.catalog_generation_id &&
+         carrier.search_segment_exact_fallback_available &&
+         carrier.search_segment_full_corpus_exact_recheck_required &&
+         carrier.search_segment_residual_recheck_required &&
+         carrier.search_segment_base_row_mga_recheck_required &&
+         carrier.search_segment_security_recheck_required &&
+         !carrier.provider_claims_visibility_authority &&
+         !carrier.provider_claims_transaction_finality_authority;
+}
+
+bool BoundSearchCarrierDescriptorMatches(
+    const EngineNoSqlProviderGenerationMetadata& carrier,
+    const MgaRelationStorageDescriptor& descriptor) {
+  return carrier.search_segment_relation_descriptor_uuid ==
+             descriptor.descriptor_uuid.canonical &&
+         carrier.search_segment_relation_descriptor_generation ==
+             descriptor.descriptor_generation &&
+         carrier.search_segment_body_column_uuid ==
+             descriptor.columns[0].column_uuid.canonical &&
+         carrier.search_segment_body_descriptor_uuid ==
+             descriptor.columns[0].value_descriptor.descriptor_uuid.canonical &&
+         carrier.search_segment_body_type_uuid ==
+             BoundSearchTypeUuid(descriptor.columns[0].value_descriptor) &&
+         carrier.search_segment_category_column_uuid ==
+             descriptor.columns[1].column_uuid.canonical &&
+         carrier.search_segment_category_descriptor_uuid ==
+             descriptor.columns[1].value_descriptor.descriptor_uuid.canonical &&
+         carrier.search_segment_category_type_uuid ==
+             BoundSearchTypeUuid(descriptor.columns[1].value_descriptor);
+}
+
+}  // namespace
+
+EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
+    const EngineBoundSearchReadRequestV1& request) {
+  bool resource_acquired = false;
+  std::uint64_t scanned_row_versions = 0;
+  std::uint64_t decoded_bytes = 0;
+  const auto refuse = [&](const std::string& diagnostic_id,
+                          const std::string& detail) {
+    EngineBoundSearchReadResultV1 result;
+    result.ok = false;
+    result.diagnostic = MakeEngineApiDiagnostic(
+        diagnostic_id, diagnostic_id, detail, true);
+    result.scanned_row_version_count = scanned_row_versions;
+    result.decoded_byte_count = decoded_bytes;
+    result.execution_resource_acquired = resource_acquired;
+    result.cleanup_count = resource_acquired ? 1 : 0;
+    result.evidence.push_back({"bound_search_failure_atomic", "true"});
+    result.evidence.push_back(
+        {"bound_search_mga_authority", "engine_transaction_inventory"});
+    result.evidence.push_back(
+        {"bound_search_segment_visibility_authority", "false"});
+    result.evidence.push_back(
+        {"bound_search_segment_finality_authority", "false"});
+    return result;
+  };
+  const auto cancelled = [&]() {
+    return request.cancellation_requested && request.cancellation_requested();
+  };
+
+  if (cancelled()) {
+    return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                  "search execution cancelled before access");
+  }
+  if (!CanonicalBoundSearchUuid(request.collection_uuid) ||
+      !CanonicalBoundSearchUuid(request.selected_alternative_uuid) ||
+      !CanonicalBoundSearchUuid(request.selected_provider_uuid) ||
+      !CanonicalBoundSearchUuid(request.selected_capability_uuid) ||
+      request.selected_implementation_id !=
+          "physical_search_rank_scan_v1" ||
+      (request.operation != EngineBoundSearchOperationV1::kTerms &&
+       request.operation != EngineBoundSearchOperationV1::kPhrase &&
+       request.operation != EngineBoundSearchOperationV1::kFuzzy) ||
+      (request.physical_route !=
+           EngineBoundSearchPhysicalRouteV1::kExactCorpusScan &&
+       request.physical_route !=
+           EngineBoundSearchPhysicalRouteV1::kSegmentWithExactFallback)) {
+    return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "bound search operation or selected alternative is invalid");
+  }
+  if (!CanonicalBoundSearchUuid(request.analyzer_uuid) ||
+      request.analyzer_generation == 0 ||
+      request.analyzer_pipeline_sha256 != kBoundSearchAnalyzerDigest) {
+    return refuse("SB_MODEL_SEARCH_ANALYZER_BINDING_REQUIRED_V1",
+                  "bound search analyzer cohort is absent or substituted");
+  }
+  const auto query = AnalyzeBoundSearchAscii(request.bound_query_text);
+  if (!query.ok || query.tokens.empty()) {
+    return refuse(query.input_too_large || query.token_too_large
+                      ? "SB_MODEL_SEARCH_QUERY_TOKEN_LIMIT_REFUSED_V1"
+                      : "SB_MODEL_SEARCH_QUERY_TYPE_REFUSED_V1",
+                  "bound search query is outside SB_ASCII_POSITIONAL_V1");
+  }
+  if (query.tokens.size() > 16 ||
+      (request.operation == EngineBoundSearchOperationV1::kFuzzy &&
+       (query.tokens.size() != 1 || request.fuzzy_maximum_edits != 1)) ||
+      (request.operation != EngineBoundSearchOperationV1::kFuzzy &&
+       request.fuzzy_maximum_edits != 0)) {
+    return refuse("SB_MODEL_SEARCH_QUERY_TOKEN_LIMIT_REFUSED_V1",
+                  "bound search query token/edit contract is invalid");
+  }
+  if (request.top_k == 0) {
+    return refuse("SB_MODEL_SEARCH_TOP_K_REFUSED_V1",
+                  "bound search top-k is zero");
+  }
+  if (request.filter.present &&
+      (!ValidBoundSearchUtf8(request.filter.category_text) ||
+       request.filter.category_text.size() > 4096)) {
+    return refuse("SB_MODEL_SEARCH_FILTER_REFUSED_V1",
+                  "bound category filter is invalid TEXT");
+  }
+  if (!ExactBoundSearchOutputDescriptors(request.output_descriptors)) {
+    return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                  "bound search public descriptor cohort is invalid");
+  }
+  if (request.maximum_scanned_row_versions == 0 ||
+      request.maximum_decoded_bytes == 0 || request.maximum_tokens == 0 ||
+      request.maximum_positions == 0 || request.maximum_candidates == 0 ||
+      request.maximum_scored_rows == 0 ||
+      request.maximum_output_rows == 0 || request.maximum_memory_bytes == 0 ||
+      request.top_k > request.maximum_output_rows ||
+      !request.cancellation_requested) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "bound search resource/cancellation contract is incomplete");
+  }
+  std::uint64_t accounted_memory = request.bound_query_text.size();
+  if (!CheckedBoundSearchAdd(accounted_memory,
+                             request.filter.category_text.size(),
+                             &accounted_memory) ||
+      !CheckedBoundSearchAdd(accounted_memory,
+                             request.output_descriptors.size() * 256U,
+                             &accounted_memory) ||
+      accounted_memory > request.maximum_memory_bytes) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "bound search pre-access memory contract is exceeded");
+  }
+  BoundSearchFloatingEnvironment floating_environment;
+  if (!floating_environment.active()) {
+    return refuse("SB_MODEL_SEARCH_SCORE_INVALID_V1",
+                  "round-to-nearest floating-point environment is unavailable");
+  }
+  const auto authorization = EvaluateMaterializedAuthorization(
+      request.context, request.context.authorization_context, "SELECT",
+      request.collection_uuid);
+  if (!authorization.authorized || authorization.denied ||
+      authorization.policy_recheck_required ||
+      request.context.authorization_context.security_epoch !=
+          request.context.security_epoch ||
+      request.context.authorization_context.catalog_generation_id !=
+          request.context.catalog_generation_id) {
+    return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                  "current materialized search SELECT authorization is stale");
+  }
+
+  bool segment_carrier_loaded = false;
+  bool exact_fallback_selected = false;
+  EngineNoSqlProviderGenerationMetadata carrier;
+  if (request.physical_route ==
+      EngineBoundSearchPhysicalRouteV1::kSegmentWithExactFallback) {
+    const auto loaded = LoadNoSqlProviderGeneration(
+        request.context, EngineNoSqlProviderFamily::kSearch,
+        request.selected_provider_uuid, request.collection_uuid);
+    if (!loaded.ok) {
+      if (loaded.diagnostic.detail == kNoSqlProviderGenerationUnavailable ||
+          loaded.diagnostic.detail.ends_with(
+              std::string(":") + kNoSqlProviderGenerationUnavailable)) {
+        exact_fallback_selected = true;
+      } else {
+        return refuse("SB_MODEL_PROVIDER_GENERATION_STALE_V1",
+                      "search segment carrier is corrupt, partial, or duplicated");
+      }
+    } else if (!ValidateSearchSegmentCapabilityBindingV1(loaded.metadata) ||
+               !BoundSearchCarrierContextMatches(request, loaded.metadata)) {
+      return refuse("SB_MODEL_PROVIDER_GENERATION_STALE_V1",
+                    "search segment identity or statement cohort is stale");
+    } else {
+      segment_carrier_loaded = true;
+      carrier = loaded.metadata;
+    }
+  }
+
+  resource_acquired = true;
+  MgaVisibleHeapRelationReadRequest read_request;
+  read_request.relation_uuid = request.collection_uuid;
+  read_request.maximum_scanned_row_versions =
+      request.maximum_scanned_row_versions;
+  read_request.maximum_decoded_bytes = request.maximum_decoded_bytes;
+  read_request.maximum_output_rows = request.maximum_output_rows;
+  read_request.cancellation_requested = request.cancellation_requested;
+  const auto read = ReadVisibleMgaHeapRelation(request.context, read_request);
+  scanned_row_versions = read.scanned_row_version_count;
+  decoded_bytes = read.decoded_byte_count;
+  if (!read.ok) {
+    if (read.cancellation_observed || cancelled()) {
+      return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                    "search execution cancelled during MGA base read");
+    }
+    if (read.diagnostic.detail.find("maximum") != std::string::npos ||
+        read.diagnostic.detail.find("bound") != std::string::npos ||
+        read.diagnostic.detail.find("overflow") != std::string::npos) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "bounded MGA search base read exceeded its contract");
+    }
+    return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
+                  "current MGA-visible search base relation is unavailable");
+  }
+  if (!ExactBoundSearchStorageDescriptor(read.descriptor,
+                                         request.collection_uuid) ||
+      read.current_relation_base_generation == 0) {
+    return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                  "current search storage descriptor/generation is stale");
+  }
+  // The ordinary heap projection intentionally returns one newest visible
+  // version per row UUID.  Search has one additional, stricter invariant:
+  // two independently-current chain heads cannot both claim the same hidden
+  // document UUID.  Inspect the same transaction-inventory-authorized scoped
+  // rows and distinguish ordinary linked versions (a visible successor names
+  // its predecessor) from disconnected current heads before analysis.
+  const auto scoped_rows =
+      LoadMgaRelationStoreRowsOnlyForMutationTarget(request.context,
+                                                    request.collection_uuid);
+  if (!scoped_rows.ok ||
+      scoped_rows.state.row_versions.size() >
+          request.maximum_scanned_row_versions) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "bounded duplicate-document recheck is unavailable");
+  }
+  std::unordered_set<std::string> visible_version_uuids;
+  std::unordered_set<std::string> visible_predecessor_uuids;
+  for (const auto& row : scoped_rows.state.row_versions) {
+    if (row.table_uuid == request.collection_uuid &&
+        CrudRowVersionVisibleToContext(scoped_rows.state.crud_metadata, row,
+                                       request.context)) {
+      visible_version_uuids.insert(row.version_uuid);
+    }
+  }
+  for (const auto& row : scoped_rows.state.row_versions) {
+    if (visible_version_uuids.contains(row.version_uuid) &&
+        !row.previous_version_uuid.empty() &&
+        visible_version_uuids.contains(row.previous_version_uuid)) {
+      visible_predecessor_uuids.insert(row.previous_version_uuid);
+    }
+  }
+  std::unordered_set<std::string> current_document_uuids;
+  for (const auto& row : scoped_rows.state.row_versions) {
+    if (!visible_version_uuids.contains(row.version_uuid) || row.deleted ||
+        visible_predecessor_uuids.contains(row.version_uuid)) {
+      continue;
+    }
+    if (!current_document_uuids.insert(row.row_uuid).second) {
+      return refuse(
+          "SB_MODEL_SEARCH_DUPLICATE_VISIBLE_DOCUMENT_UUID_REFUSED_V1",
+          "multiple current visible chain heads claim one document UUID");
+    }
+  }
+  bool segment_candidate_hint_selected = false;
+  if (segment_carrier_loaded) {
+    if (!BoundSearchCarrierDescriptorMatches(carrier, read.descriptor) ||
+        carrier.search_segment_base_relation_generation >
+            read.current_relation_base_generation) {
+      return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                    "search segment is ahead of or substituted for the base");
+    }
+    if (carrier.search_segment_base_relation_generation <
+            read.current_relation_base_generation ||
+        (request.operation == EngineBoundSearchOperationV1::kPhrase &&
+         !carrier.search_segment_position_payload_present)) {
+      exact_fallback_selected = true;
+    } else {
+      segment_candidate_hint_selected = true;
+    }
+  }
+
+  std::vector<BoundSearchDocument> documents;
+  documents.reserve(read.visible_rows.size());
+  std::unordered_set<std::string> visible_document_uuids;
+  std::uint64_t analyzed_tokens = 0;
+  std::uint64_t analyzed_positions = 0;
+  std::uint64_t filtered_rows = 0;
+  for (const auto& base_row : read.visible_rows) {
+    if (cancelled()) {
+      return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                    "search execution cancelled during row validation");
+    }
+    if (!CanonicalBoundSearchUuid(base_row.row_uuid) ||
+        !visible_document_uuids.insert(base_row.row_uuid).second) {
+      return refuse("SB_MODEL_SEARCH_DUPLICATE_VISIBLE_DOCUMENT_UUID_REFUSED_V1",
+                    "visible search document UUID is invalid or duplicated");
+    }
+    if (base_row.values.size() != 2 ||
+        base_row.values[0].first != "body" ||
+        base_row.values[1].first != "category" ||
+        !ValidBoundSearchUtf8(base_row.values[1].second) ||
+        base_row.values[1].second.size() > 4096) {
+      return refuse("SB_MODEL_SEARCH_DOCUMENT_INVALID_V1",
+                    "visible search row does not match BODY/CATEGORY TEXT");
+    }
+    const auto analysis = AnalyzeBoundSearchAscii(base_row.values[0].second);
+    if (!analysis.ok) {
+      return refuse(analysis.input_too_large || analysis.token_too_large
+                        ? "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1"
+                        : "SB_MODEL_SEARCH_DOCUMENT_INVALID_V1",
+                    "visible search body is outside the bound analyzer");
+    }
+    if (!CheckedBoundSearchAdd(analyzed_tokens, analysis.tokens.size(),
+                               &analyzed_tokens) ||
+        !CheckedBoundSearchAdd(analyzed_positions, analysis.tokens.size(),
+                               &analyzed_positions) ||
+        analyzed_tokens > request.maximum_tokens ||
+        analyzed_positions > request.maximum_positions) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "search token/position contract is exceeded");
+    }
+    std::uint64_t row_memory = sizeof(BoundSearchDocument);
+    if (!CheckedBoundSearchAdd(row_memory, base_row.row_uuid.size(),
+                               &row_memory) ||
+        !CheckedBoundSearchAdd(row_memory, base_row.values[0].second.size(),
+                               &row_memory) ||
+        !CheckedBoundSearchAdd(row_memory, base_row.values[1].second.size(),
+                               &row_memory) ||
+        !CheckedBoundSearchAdd(accounted_memory, row_memory,
+                               &accounted_memory) ||
+        accounted_memory > request.maximum_memory_bytes) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "search corpus analysis memory contract is exceeded");
+    }
+    if (request.filter.present &&
+        base_row.values[1].second != request.filter.category_text) {
+      ++filtered_rows;
+      continue;
+    }
+    documents.push_back({base_row.row_uuid, base_row.values[1].second,
+                         analysis.tokens});
+  }
+  if (documents.size() > request.maximum_candidates) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "search candidate contract is exceeded");
+  }
+
+  const auto unique_query = UniqueBoundSearchTerms(query.tokens);
+  std::map<std::string, std::uint64_t> document_frequency;
+  std::uint64_t total_document_tokens = 0;
+  std::uint64_t fuzzy_document_frequency = 0;
+  for (const auto& document : documents) {
+    if (cancelled()) {
+      return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                    "search execution cancelled during statistics");
+    }
+    total_document_tokens += document.tokens.size();
+    const std::unordered_set<std::string> document_terms(
+        document.tokens.begin(), document.tokens.end());
+    for (const auto& term : unique_query) {
+      if (document_terms.contains(term)) ++document_frequency[term];
+    }
+    if (request.operation == EngineBoundSearchOperationV1::kFuzzy &&
+        std::ranges::any_of(document.tokens, [&](const auto& term) {
+          return BoundSearchLevenshteinAtMostOne(term, query.tokens.front()) <= 1;
+        })) {
+      ++fuzzy_document_frequency;
+    }
+  }
+  const double average_document_length =
+      documents.empty()
+          ? 0.0
+          : static_cast<double>(total_document_tokens) /
+                static_cast<double>(documents.size());
+
+  std::vector<BoundSearchScoredRow> scored_rows;
+  for (const auto& document : documents) {
+    if (cancelled()) {
+      return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                    "search execution cancelled during exact scoring");
+    }
+    std::map<std::string, std::uint64_t> term_frequency;
+    for (const auto& term : document.tokens) ++term_frequency[term];
+    const bool phrase_match =
+        request.operation != EngineBoundSearchOperationV1::kPhrase ||
+        BoundSearchPhraseMatch(document.tokens, query.tokens);
+    std::uint64_t fuzzy_tf = 0;
+    if (request.operation == EngineBoundSearchOperationV1::kFuzzy) {
+      for (const auto& term : document.tokens) {
+        fuzzy_tf += BoundSearchLevenshteinAtMostOne(
+                        term, query.tokens.front()) <= 1;
+      }
+    }
+    const bool eligible = phrase_match &&
+        (request.operation == EngineBoundSearchOperationV1::kFuzzy
+             ? fuzzy_tf != 0
+             : std::ranges::any_of(unique_query, [&](const auto& term) {
+                 return term_frequency[term] != 0;
+               }));
+    if (!eligible) continue;
+    volatile double score = 0.0;
+    const auto contribute = [&](const std::uint64_t tf,
+                                const std::uint64_t df) -> bool {
+      if (tf == 0 || df == 0 || df > documents.size() ||
+          average_document_length <= 0.0) {
+        return false;
+      }
+      volatile double n = static_cast<double>(documents.size());
+      volatile double frequency = static_cast<double>(df);
+      volatile double ratio = (n - frequency + 0.5) / (frequency + 0.5);
+      volatile double idf = std::log1p(static_cast<double>(ratio));
+      volatile double normalized =
+          static_cast<double>(document.tokens.size()) /
+          average_document_length;
+      volatile double denominator =
+          static_cast<double>(tf) +
+          1.2 * (1.0 - 0.75 + 0.75 * normalized);
+      volatile double numerator = static_cast<double>(tf) * (1.2 + 1.0);
+      volatile double contribution = idf * numerator / denominator;
+      if (!std::isfinite(static_cast<double>(contribution)) ||
+          contribution <= 0.0) {
+        return false;
+      }
+      score = score + contribution;
+      return true;
+    };
+    bool valid_score = true;
+    if (request.operation == EngineBoundSearchOperationV1::kFuzzy) {
+      valid_score = contribute(fuzzy_tf, fuzzy_document_frequency);
+    } else {
+      for (const auto& term : unique_query) {
+        if (term_frequency[term] != 0 &&
+            !contribute(term_frequency[term], document_frequency[term])) {
+          valid_score = false;
+          break;
+        }
+      }
+    }
+    BoundSearchScoredRow scored;
+    scored.document_uuid = document.document_uuid;
+    scored.score = static_cast<double>(score);
+    scored.encoded_score = CanonicalBoundSearchReal64(scored.score);
+    if (!valid_score || !std::isfinite(scored.score) || scored.score <= 0.0 ||
+        scored.encoded_score.empty()) {
+      return refuse("SB_MODEL_SEARCH_SCORE_INVALID_V1",
+                    "search BM25 score is invalid");
+    }
+    scored_rows.push_back(std::move(scored));
+    if (scored_rows.size() > request.maximum_scored_rows) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "search scored-row contract is exceeded");
+    }
+  }
+  std::ranges::sort(scored_rows, [](const auto& left, const auto& right) {
+    if (left.score != right.score) return left.score > right.score;
+    return left.document_uuid < right.document_uuid;
+  });
+  if (scored_rows.size() > request.top_k) scored_rows.resize(request.top_k);
+  if (cancelled()) {
+    return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                  "search execution cancelled before materialization");
+  }
+
+  EngineBoundSearchReadResultV1 result;
+  result.ok = true;
+  result.diagnostic = MakeEngineApiDiagnostic(
+      "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  result.relation_descriptor = read.descriptor;
+  result.output_descriptors = request.output_descriptors;
+  result.current_relation_base_generation =
+      read.current_relation_base_generation;
+  result.scanned_row_version_count = read.scanned_row_version_count;
+  result.decoded_byte_count = read.decoded_byte_count;
+  result.visible_base_row_count = read.visible_rows.size();
+  result.filtered_base_row_count = filtered_rows;
+  result.analyzed_token_count = analyzed_tokens;
+  result.analyzed_position_count = analyzed_positions;
+  result.scored_base_row_count = scored_rows.size();
+  result.segment_carrier_loaded = segment_carrier_loaded;
+  result.segment_candidate_hint_selected = segment_candidate_hint_selected;
+  result.exact_fallback_selected = exact_fallback_selected;
+  result.full_corpus_exact_recheck_complete = true;
+  result.base_row_mga_recheck_complete = true;
+  result.security_recheck_complete = true;
+  result.execution_resource_acquired = true;
+  result.cleanup_count = 1;
+  result.rows.reserve(scored_rows.size());
+  std::uint64_t rank = 1;
+  for (const auto& scored : scored_rows) {
+    std::uint64_t row_bytes = scored.document_uuid.size();
+    if (!CheckedBoundSearchAdd(row_bytes, request.analyzer_uuid.size(),
+                               &row_bytes) ||
+        !CheckedBoundSearchAdd(row_bytes, scored.encoded_score.size(),
+                               &row_bytes) ||
+        !CheckedBoundSearchAdd(row_bytes, 32, &row_bytes) ||
+        !CheckedBoundSearchAdd(result.result_byte_count, row_bytes,
+                               &result.result_byte_count) ||
+        result.result_byte_count > request.maximum_decoded_bytes) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "search result byte contract is exceeded");
+    }
+    result.rows.push_back({scored.document_uuid, request.analyzer_uuid,
+                           request.analyzer_generation, scored.score, rank++,
+                           scored.encoded_score});
+  }
+  if (cancelled()) {
+    return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                  "search execution cancelled before atomic publication");
+  }
+  result.evidence.push_back(
+      {"bound_search_physical_route",
+       segment_candidate_hint_selected
+           ? "segment_hint_full_corpus_exact_recheck"
+           : "exact_full_corpus_scan"});
+  result.evidence.push_back(
+      {"bound_search_exact_fallback_selected",
+       exact_fallback_selected ? "true" : "false"});
+  result.evidence.push_back(
+      {"bound_search_result_ordering",
+       "score_numeric_descending_then_document_uuid_bytes_ascending"});
+  result.evidence.push_back(
+      {"bound_search_full_corpus_exact_recheck", "true"});
+  result.evidence.push_back(
+      {"bound_search_mga_authority", "engine_transaction_inventory"});
+  result.evidence.push_back(
+      {"bound_search_segment_visibility_authority", "false"});
+  result.evidence.push_back(
+      {"bound_search_segment_finality_authority", "false"});
   return result;
 }
 

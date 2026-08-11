@@ -112,6 +112,68 @@ struct EngineNoSqlProviderGenerationMetadata {
   bool vector_ann_reference_claims_transaction_finality_authority = false;
   bool vector_ann_wal_claims_visibility_authority = false;
   bool vector_ann_wal_claims_transaction_finality_authority = false;
+  // QOW-RCP-078-SEARCH-SEGMENT-CARRIER-V1. These fields are persisted
+  // candidate-admission evidence only. A segment never owns final rows,
+  // token identity, score/rank, visibility, transaction finality, or recovery.
+  bool search_segment_candidate_present = false;
+  std::string search_segment_capability_uuid;
+  std::string search_segment_index_uuid;
+  std::string search_segment_uuid;
+  std::string search_segment_base_relation_uuid;
+  std::uint64_t search_segment_base_relation_generation = 0;
+  std::string search_segment_relation_descriptor_uuid;
+  std::uint64_t search_segment_relation_descriptor_generation = 0;
+  std::string search_segment_body_column_uuid;
+  std::string search_segment_body_descriptor_uuid;
+  std::string search_segment_body_type_uuid;
+  std::string search_segment_category_column_uuid;
+  std::string search_segment_category_descriptor_uuid;
+  std::string search_segment_category_type_uuid;
+  std::string search_segment_search_type_descriptor_uuid;
+  std::uint64_t search_segment_search_type_descriptor_generation = 0;
+  std::string search_segment_analyzer_uuid;
+  std::uint64_t search_segment_analyzer_generation = 0;
+  std::string search_segment_analyzer_pipeline_sha256;
+  std::string search_segment_tokenizer_uuid;
+  std::uint64_t search_segment_tokenizer_generation = 0;
+  std::string search_segment_language_profile_uuid;
+  std::uint64_t search_segment_language_profile_generation = 0;
+  std::string search_segment_ranking_model_uuid;
+  std::uint64_t search_segment_ranking_model_generation = 0;
+  std::string search_segment_phrase_profile_uuid;
+  std::uint64_t search_segment_phrase_profile_generation = 0;
+  std::string search_segment_query_syntax_profile_uuid;
+  std::uint64_t search_segment_query_syntax_profile_generation = 0;
+  std::string search_segment_index_profile_id;
+  std::uint64_t search_segment_generation = 0;
+  bool search_segment_position_payload_present = false;
+  bool search_segment_checksum_valid = false;
+  bool search_segment_sealed_generation = false;
+  std::string search_segment_publish_attestation_state;
+  std::string search_segment_statement_uuid;
+  std::string search_segment_statement_snapshot_uuid;
+  std::string search_segment_statement_metadata_snapshot_uuid;
+  std::string search_segment_owning_transaction_uuid;
+  std::uint64_t search_segment_local_transaction_id = 0;
+  std::uint64_t
+      search_segment_snapshot_visible_through_local_transaction_id = 0;
+  std::string search_segment_security_context_uuid;
+  std::string search_segment_catalog_epoch_uuid;
+  bool search_segment_exact_fallback_available = false;
+  bool search_segment_full_corpus_exact_recheck_required = false;
+  bool search_segment_residual_recheck_required = false;
+  bool search_segment_base_row_mga_recheck_required = false;
+  bool search_segment_security_recheck_required = false;
+  bool search_segment_index_claims_visibility_authority = false;
+  bool search_segment_index_claims_transaction_finality_authority = false;
+  bool search_segment_parser_claims_visibility_authority = false;
+  bool search_segment_parser_claims_transaction_finality_authority = false;
+  bool search_segment_client_claims_visibility_authority = false;
+  bool search_segment_client_claims_transaction_finality_authority = false;
+  bool search_segment_reference_claims_visibility_authority = false;
+  bool search_segment_reference_claims_transaction_finality_authority = false;
+  bool search_segment_wal_claims_visibility_authority = false;
+  bool search_segment_wal_claims_transaction_finality_authority = false;
 };
 
 struct EngineNoSqlProviderGenerationResult {
@@ -147,6 +209,16 @@ std::string DeriveVectorAnnCapabilityUuidV1(
     const EngineNoSqlProviderGenerationMetadata& metadata);
 
 bool ValidateVectorAnnCapabilityBindingV1(
+    const EngineNoSqlProviderGenerationMetadata& metadata);
+
+// QOW-RCP-078-SEARCH-SEGMENT-CAPABILITY-BINDING-V1. The capability UUID is
+// an integrity binding over the complete active persisted carrier. It grants
+// no candidate correctness, visibility, finality, security, or recovery
+// authority.
+std::string DeriveSearchSegmentCapabilityUuidV1(
+    const EngineNoSqlProviderGenerationMetadata& metadata);
+
+bool ValidateSearchSegmentCapabilityBindingV1(
     const EngineNoSqlProviderGenerationMetadata& metadata);
 
 inline constexpr const char* kNoSqlProviderGenerationIdentityMismatch =

@@ -229,6 +229,158 @@ bool RawVectorCarrierPairsValid(
   return true;
 }
 
+bool RawSearchCarrierPairsValid(
+    const std::vector<std::pair<std::string, std::string>>& pairs) {
+  static constexpr std::array<std::string_view, 58> kSearchKeys = {
+      "search_segment_candidate_present",
+      "search_segment_capability_uuid",
+      "search_segment_index_uuid",
+      "search_segment_uuid",
+      "search_segment_base_relation_uuid",
+      "search_segment_base_relation_generation",
+      "search_segment_relation_descriptor_uuid",
+      "search_segment_relation_descriptor_generation",
+      "search_segment_body_column_uuid",
+      "search_segment_body_descriptor_uuid",
+      "search_segment_body_type_uuid",
+      "search_segment_category_column_uuid",
+      "search_segment_category_descriptor_uuid",
+      "search_segment_category_type_uuid",
+      "search_segment_search_type_descriptor_uuid",
+      "search_segment_search_type_descriptor_generation",
+      "search_segment_analyzer_uuid",
+      "search_segment_analyzer_generation",
+      "search_segment_analyzer_pipeline_sha256",
+      "search_segment_tokenizer_uuid",
+      "search_segment_tokenizer_generation",
+      "search_segment_language_profile_uuid",
+      "search_segment_language_profile_generation",
+      "search_segment_ranking_model_uuid",
+      "search_segment_ranking_model_generation",
+      "search_segment_phrase_profile_uuid",
+      "search_segment_phrase_profile_generation",
+      "search_segment_query_syntax_profile_uuid",
+      "search_segment_query_syntax_profile_generation",
+      "search_segment_index_profile_id",
+      "search_segment_generation",
+      "search_segment_position_payload_present",
+      "search_segment_checksum_valid",
+      "search_segment_sealed_generation",
+      "search_segment_publish_attestation_state",
+      "search_segment_statement_uuid",
+      "search_segment_statement_snapshot_uuid",
+      "search_segment_statement_metadata_snapshot_uuid",
+      "search_segment_owning_transaction_uuid",
+      "search_segment_local_transaction_id",
+      "search_segment_snapshot_visible_through_local_transaction_id",
+      "search_segment_security_context_uuid",
+      "search_segment_catalog_epoch_uuid",
+      "search_segment_exact_fallback_available",
+      "search_segment_full_corpus_exact_recheck_required",
+      "search_segment_residual_recheck_required",
+      "search_segment_base_row_mga_recheck_required",
+      "search_segment_security_recheck_required",
+      "search_segment_index_claims_visibility_authority",
+      "search_segment_index_claims_transaction_finality_authority",
+      "search_segment_parser_claims_visibility_authority",
+      "search_segment_parser_claims_transaction_finality_authority",
+      "search_segment_client_claims_visibility_authority",
+      "search_segment_client_claims_transaction_finality_authority",
+      "search_segment_reference_claims_visibility_authority",
+      "search_segment_reference_claims_transaction_finality_authority",
+      "search_segment_wal_claims_visibility_authority",
+      "search_segment_wal_claims_transaction_finality_authority",
+  };
+  static constexpr std::array<std::string_view, 15> kGenericSeedKeys = {
+      "family", "provider_id", "database_identity", "database_uuid",
+      "collection_uuid", "generation_uuid", "generation_id",
+      "descriptor_epoch", "security_epoch", "redaction_epoch",
+      "catalog_epoch", "publish_state", "validation_state",
+      "provider_claims_transaction_finality_authority",
+      "provider_claims_visibility_authority",
+  };
+  static constexpr std::array<std::string_view, 19> kBoolKeys = {
+      "search_segment_candidate_present",
+      "search_segment_position_payload_present",
+      "search_segment_checksum_valid",
+      "search_segment_sealed_generation",
+      "search_segment_exact_fallback_available",
+      "search_segment_full_corpus_exact_recheck_required",
+      "search_segment_residual_recheck_required",
+      "search_segment_base_row_mga_recheck_required",
+      "search_segment_security_recheck_required",
+      "search_segment_index_claims_visibility_authority",
+      "search_segment_index_claims_transaction_finality_authority",
+      "search_segment_parser_claims_visibility_authority",
+      "search_segment_parser_claims_transaction_finality_authority",
+      "search_segment_client_claims_visibility_authority",
+      "search_segment_client_claims_transaction_finality_authority",
+      "search_segment_reference_claims_visibility_authority",
+      "search_segment_reference_claims_transaction_finality_authority",
+      "search_segment_wal_claims_visibility_authority",
+      "search_segment_wal_claims_transaction_finality_authority",
+  };
+  static constexpr std::array<std::string_view, 12> kU64Keys = {
+      "search_segment_base_relation_generation",
+      "search_segment_relation_descriptor_generation",
+      "search_segment_search_type_descriptor_generation",
+      "search_segment_analyzer_generation",
+      "search_segment_tokenizer_generation",
+      "search_segment_language_profile_generation",
+      "search_segment_ranking_model_generation",
+      "search_segment_phrase_profile_generation",
+      "search_segment_query_syntax_profile_generation",
+      "search_segment_generation",
+      "search_segment_local_transaction_id",
+      "search_segment_snapshot_visible_through_local_transaction_id",
+  };
+  static constexpr std::array<std::string_view, 5> kGenericU64Keys = {
+      "generation_id", "descriptor_epoch", "security_epoch",
+      "redaction_epoch", "catalog_epoch",
+  };
+  static constexpr std::array<std::string_view, 2> kGenericBoolKeys = {
+      "provider_claims_transaction_finality_authority",
+      "provider_claims_visibility_authority",
+  };
+
+  bool has_search_key = false;
+  std::map<std::string_view, std::size_t> counts;
+  std::map<std::string_view, std::string_view> values;
+  for (const auto& [key, value] : pairs) {
+    const bool search_key = key.starts_with("search_segment_");
+    has_search_key = has_search_key || search_key;
+    if (search_key || std::ranges::find(kGenericSeedKeys, key) !=
+                          kGenericSeedKeys.end()) {
+      ++counts[key];
+      values[key] = value;
+    }
+  }
+  if (!has_search_key) return true;
+  for (const auto key : kSearchKeys) {
+    if (counts[key] != 1) return false;
+  }
+  for (const auto key : kGenericSeedKeys) {
+    if (counts[key] != 1) return false;
+  }
+  for (const auto key : kBoolKeys) {
+    if (!CanonicalPersistedBool(values[key])) return false;
+  }
+  for (const auto key : kGenericBoolKeys) {
+    if (!CanonicalPersistedBool(values[key])) return false;
+  }
+  for (const auto key : kU64Keys) {
+    if (!CanonicalPersistedU64(values[key])) return false;
+  }
+  for (const auto key : kGenericU64Keys) {
+    if (!CanonicalPersistedU64(values[key])) return false;
+  }
+  if (values["search_segment_candidate_present"] == "true" &&
+      values["family"] != "search") {
+    return false;
+  }
+  return true;
+}
+
 bool IsCanonicalLowercaseNonzeroUuid(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
       value[18] != '-' || value[23] != '-') {
@@ -638,6 +790,271 @@ std::string DeriveVectorAnnCapabilityUuidImpl(
   }
 }
 
+bool LowercaseHexDigest(const std::string_view value) {
+  return value.size() == 64 && std::ranges::all_of(value, [](const char ch) {
+           return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+         });
+}
+
+bool HasExactSearchSegmentBindingInput(
+    const EngineNoSqlProviderGenerationMetadata& metadata) {
+  const auto uuid = [](const std::string& value) {
+    return IsCanonicalLowercaseNonzeroUuid(value);
+  };
+  return metadata.search_segment_candidate_present &&
+         metadata.family == EngineNoSqlProviderFamily::kSearch &&
+         uuid(metadata.provider_id) && !metadata.database_identity.empty() &&
+         uuid(metadata.database_uuid) && uuid(metadata.collection_uuid) &&
+         uuid(metadata.generation_uuid) && metadata.generation_id != 0 &&
+         metadata.descriptor_epoch != 0 && metadata.security_epoch != 0 &&
+         metadata.redaction_epoch != 0 && metadata.catalog_epoch != 0 &&
+         metadata.publish_state == "published" &&
+         metadata.validation_state == "validated" &&
+         !metadata.provider_claims_transaction_finality_authority &&
+         !metadata.provider_claims_visibility_authority &&
+         uuid(metadata.search_segment_index_uuid) &&
+         uuid(metadata.search_segment_uuid) &&
+         uuid(metadata.search_segment_base_relation_uuid) &&
+         metadata.search_segment_base_relation_uuid ==
+             metadata.collection_uuid &&
+         metadata.search_segment_base_relation_generation != 0 &&
+         uuid(metadata.search_segment_relation_descriptor_uuid) &&
+         metadata.search_segment_relation_descriptor_generation != 0 &&
+         uuid(metadata.search_segment_body_column_uuid) &&
+         uuid(metadata.search_segment_body_descriptor_uuid) &&
+         uuid(metadata.search_segment_body_type_uuid) &&
+         uuid(metadata.search_segment_category_column_uuid) &&
+         uuid(metadata.search_segment_category_descriptor_uuid) &&
+         uuid(metadata.search_segment_category_type_uuid) &&
+         uuid(metadata.search_segment_search_type_descriptor_uuid) &&
+         metadata.search_segment_search_type_descriptor_generation != 0 &&
+         uuid(metadata.search_segment_analyzer_uuid) &&
+         metadata.search_segment_analyzer_generation != 0 &&
+         LowercaseHexDigest(metadata.search_segment_analyzer_pipeline_sha256) &&
+         uuid(metadata.search_segment_tokenizer_uuid) &&
+         metadata.search_segment_tokenizer_generation != 0 &&
+         uuid(metadata.search_segment_language_profile_uuid) &&
+         metadata.search_segment_language_profile_generation != 0 &&
+         uuid(metadata.search_segment_ranking_model_uuid) &&
+         metadata.search_segment_ranking_model_generation != 0 &&
+         uuid(metadata.search_segment_phrase_profile_uuid) &&
+         metadata.search_segment_phrase_profile_generation != 0 &&
+         uuid(metadata.search_segment_query_syntax_profile_uuid) &&
+         metadata.search_segment_query_syntax_profile_generation != 0 &&
+         metadata.search_segment_index_profile_id ==
+             "sb_full_text_positioned_v1" &&
+         metadata.search_segment_generation != 0 &&
+         metadata.search_segment_position_payload_present &&
+         metadata.search_segment_checksum_valid &&
+         metadata.search_segment_sealed_generation &&
+         metadata.search_segment_publish_attestation_state ==
+             "SEARCH_SEGMENT_SECTION_9_FULL_CORPUS_EXACT_V1" &&
+         uuid(metadata.search_segment_statement_uuid) &&
+         uuid(metadata.search_segment_statement_snapshot_uuid) &&
+         uuid(metadata.search_segment_statement_metadata_snapshot_uuid) &&
+         uuid(metadata.search_segment_owning_transaction_uuid) &&
+         metadata.search_segment_local_transaction_id != 0 &&
+         metadata
+                 .search_segment_snapshot_visible_through_local_transaction_id !=
+             0 &&
+         uuid(metadata.search_segment_security_context_uuid) &&
+         uuid(metadata.search_segment_catalog_epoch_uuid) &&
+         metadata.search_segment_exact_fallback_available &&
+         metadata.search_segment_full_corpus_exact_recheck_required &&
+         metadata.search_segment_residual_recheck_required &&
+         metadata.search_segment_base_row_mga_recheck_required &&
+         metadata.search_segment_security_recheck_required &&
+         !metadata.search_segment_index_claims_visibility_authority &&
+         !metadata.search_segment_index_claims_transaction_finality_authority &&
+         !metadata.search_segment_parser_claims_visibility_authority &&
+         !metadata.search_segment_parser_claims_transaction_finality_authority &&
+         !metadata.search_segment_client_claims_visibility_authority &&
+         !metadata.search_segment_client_claims_transaction_finality_authority &&
+         !metadata.search_segment_reference_claims_visibility_authority &&
+         !metadata.search_segment_reference_claims_transaction_finality_authority &&
+         !metadata.search_segment_wal_claims_visibility_authority &&
+         !metadata.search_segment_wal_claims_transaction_finality_authority;
+}
+
+std::string DeriveSearchSegmentCapabilityUuidImpl(
+    const EngineNoSqlProviderGenerationMetadata& metadata) {
+  if (!HasExactSearchSegmentBindingInput(metadata)) return {};
+  try {
+    std::string seed;
+    const auto append_field = [&](const std::string_view name,
+                                  const std::string& value) {
+      return AppendLengthPrefixed(name, &seed) &&
+             AppendLengthPrefixed(value, &seed);
+    };
+    const auto append_u64 = [&](const std::string_view name,
+                                const std::uint64_t value) {
+      return append_field(name, std::to_string(value));
+    };
+    const auto append_bool = [&](const std::string_view name,
+                                 const bool value) {
+      return append_field(name, BoolText(value));
+    };
+    if (!AppendLengthPrefixed(
+            "SCRATCHBIRD.SEARCH_SEGMENT_CAPABILITY_BINDING.V1", &seed) ||
+        !append_field("family", EngineNoSqlProviderFamilyName(metadata.family)) ||
+        !append_field("provider_id", metadata.provider_id) ||
+        !append_field("database_identity", metadata.database_identity) ||
+        !append_field("database_uuid", metadata.database_uuid) ||
+        !append_field("collection_uuid", metadata.collection_uuid) ||
+        !append_field("generation_uuid", metadata.generation_uuid) ||
+        !append_u64("generation_id", metadata.generation_id) ||
+        !append_u64("descriptor_epoch", metadata.descriptor_epoch) ||
+        !append_u64("security_epoch", metadata.security_epoch) ||
+        !append_u64("redaction_epoch", metadata.redaction_epoch) ||
+        !append_u64("catalog_epoch", metadata.catalog_epoch) ||
+        !append_field("publish_state", metadata.publish_state) ||
+        !append_field("validation_state", metadata.validation_state) ||
+        !append_bool("provider_claims_transaction_finality_authority",
+                     metadata.provider_claims_transaction_finality_authority) ||
+        !append_bool("provider_claims_visibility_authority",
+                     metadata.provider_claims_visibility_authority) ||
+        !append_bool("search_segment_candidate_present",
+                     metadata.search_segment_candidate_present) ||
+        !append_field("search_segment_index_uuid",
+                      metadata.search_segment_index_uuid) ||
+        !append_field("search_segment_uuid", metadata.search_segment_uuid) ||
+        !append_field("search_segment_base_relation_uuid",
+                      metadata.search_segment_base_relation_uuid) ||
+        !append_u64("search_segment_base_relation_generation",
+                    metadata.search_segment_base_relation_generation) ||
+        !append_field("search_segment_relation_descriptor_uuid",
+                      metadata.search_segment_relation_descriptor_uuid) ||
+        !append_u64("search_segment_relation_descriptor_generation",
+                    metadata.search_segment_relation_descriptor_generation) ||
+        !append_field("search_segment_body_column_uuid",
+                      metadata.search_segment_body_column_uuid) ||
+        !append_field("search_segment_body_descriptor_uuid",
+                      metadata.search_segment_body_descriptor_uuid) ||
+        !append_field("search_segment_body_type_uuid",
+                      metadata.search_segment_body_type_uuid) ||
+        !append_field("search_segment_category_column_uuid",
+                      metadata.search_segment_category_column_uuid) ||
+        !append_field("search_segment_category_descriptor_uuid",
+                      metadata.search_segment_category_descriptor_uuid) ||
+        !append_field("search_segment_category_type_uuid",
+                      metadata.search_segment_category_type_uuid) ||
+        !append_field("search_segment_search_type_descriptor_uuid",
+                      metadata.search_segment_search_type_descriptor_uuid) ||
+        !append_u64("search_segment_search_type_descriptor_generation",
+                    metadata.search_segment_search_type_descriptor_generation) ||
+        !append_field("search_segment_analyzer_uuid",
+                      metadata.search_segment_analyzer_uuid) ||
+        !append_u64("search_segment_analyzer_generation",
+                    metadata.search_segment_analyzer_generation) ||
+        !append_field("search_segment_analyzer_pipeline_sha256",
+                      metadata.search_segment_analyzer_pipeline_sha256) ||
+        !append_field("search_segment_tokenizer_uuid",
+                      metadata.search_segment_tokenizer_uuid) ||
+        !append_u64("search_segment_tokenizer_generation",
+                    metadata.search_segment_tokenizer_generation) ||
+        !append_field("search_segment_language_profile_uuid",
+                      metadata.search_segment_language_profile_uuid) ||
+        !append_u64("search_segment_language_profile_generation",
+                    metadata.search_segment_language_profile_generation) ||
+        !append_field("search_segment_ranking_model_uuid",
+                      metadata.search_segment_ranking_model_uuid) ||
+        !append_u64("search_segment_ranking_model_generation",
+                    metadata.search_segment_ranking_model_generation) ||
+        !append_field("search_segment_phrase_profile_uuid",
+                      metadata.search_segment_phrase_profile_uuid) ||
+        !append_u64("search_segment_phrase_profile_generation",
+                    metadata.search_segment_phrase_profile_generation) ||
+        !append_field("search_segment_query_syntax_profile_uuid",
+                      metadata.search_segment_query_syntax_profile_uuid) ||
+        !append_u64("search_segment_query_syntax_profile_generation",
+                    metadata.search_segment_query_syntax_profile_generation) ||
+        !append_field("search_segment_index_profile_id",
+                      metadata.search_segment_index_profile_id) ||
+        !append_u64("search_segment_generation",
+                    metadata.search_segment_generation) ||
+        !append_bool("search_segment_position_payload_present",
+                     metadata.search_segment_position_payload_present) ||
+        !append_bool("search_segment_checksum_valid",
+                     metadata.search_segment_checksum_valid) ||
+        !append_bool("search_segment_sealed_generation",
+                     metadata.search_segment_sealed_generation) ||
+        !append_field("search_segment_publish_attestation_state",
+                      metadata.search_segment_publish_attestation_state) ||
+        !append_field("search_segment_statement_uuid",
+                      metadata.search_segment_statement_uuid) ||
+        !append_field("search_segment_statement_snapshot_uuid",
+                      metadata.search_segment_statement_snapshot_uuid) ||
+        !append_field("search_segment_statement_metadata_snapshot_uuid",
+                      metadata.search_segment_statement_metadata_snapshot_uuid) ||
+        !append_field("search_segment_owning_transaction_uuid",
+                      metadata.search_segment_owning_transaction_uuid) ||
+        !append_u64("search_segment_local_transaction_id",
+                    metadata.search_segment_local_transaction_id) ||
+        !append_u64(
+            "search_segment_snapshot_visible_through_local_transaction_id",
+            metadata.search_segment_snapshot_visible_through_local_transaction_id) ||
+        !append_field("search_segment_security_context_uuid",
+                      metadata.search_segment_security_context_uuid) ||
+        !append_field("search_segment_catalog_epoch_uuid",
+                      metadata.search_segment_catalog_epoch_uuid) ||
+        !append_bool("search_segment_exact_fallback_available",
+                     metadata.search_segment_exact_fallback_available) ||
+        !append_bool("search_segment_full_corpus_exact_recheck_required",
+                     metadata.search_segment_full_corpus_exact_recheck_required) ||
+        !append_bool("search_segment_residual_recheck_required",
+                     metadata.search_segment_residual_recheck_required) ||
+        !append_bool("search_segment_base_row_mga_recheck_required",
+                     metadata.search_segment_base_row_mga_recheck_required) ||
+        !append_bool("search_segment_security_recheck_required",
+                     metadata.search_segment_security_recheck_required) ||
+        !append_bool("search_segment_index_claims_visibility_authority",
+                     metadata.search_segment_index_claims_visibility_authority) ||
+        !append_bool(
+            "search_segment_index_claims_transaction_finality_authority",
+            metadata.search_segment_index_claims_transaction_finality_authority) ||
+        !append_bool("search_segment_parser_claims_visibility_authority",
+                     metadata.search_segment_parser_claims_visibility_authority) ||
+        !append_bool(
+            "search_segment_parser_claims_transaction_finality_authority",
+            metadata.search_segment_parser_claims_transaction_finality_authority) ||
+        !append_bool("search_segment_client_claims_visibility_authority",
+                     metadata.search_segment_client_claims_visibility_authority) ||
+        !append_bool(
+            "search_segment_client_claims_transaction_finality_authority",
+            metadata.search_segment_client_claims_transaction_finality_authority) ||
+        !append_bool("search_segment_reference_claims_visibility_authority",
+                     metadata.search_segment_reference_claims_visibility_authority) ||
+        !append_bool(
+            "search_segment_reference_claims_transaction_finality_authority",
+            metadata.search_segment_reference_claims_transaction_finality_authority) ||
+        !append_bool("search_segment_wal_claims_visibility_authority",
+                     metadata.search_segment_wal_claims_visibility_authority) ||
+        !append_bool("search_segment_wal_claims_transaction_finality_authority",
+                     metadata.search_segment_wal_claims_transaction_finality_authority)) {
+      return {};
+    }
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+        reinterpret_cast<const scratchbird::core::platform::byte*>(seed.data()),
+        seed.size());
+    if (!digest.ok() || digest.digest_bytes != 32) return {};
+    std::array<std::uint8_t, 16> uuid_bytes{};
+    std::copy_n(digest.digest.begin(), uuid_bytes.size(), uuid_bytes.begin());
+    uuid_bytes[6] =
+        static_cast<std::uint8_t>((uuid_bytes[6] & 0x0fU) | 0x80U);
+    uuid_bytes[8] =
+        static_cast<std::uint8_t>((uuid_bytes[8] & 0x3fU) | 0x80U);
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (std::size_t index = 0; index < uuid_bytes.size(); ++index) {
+      if (index == 4 || index == 6 || index == 8 || index == 10) out << '-';
+      out << std::setw(2) << static_cast<unsigned>(uuid_bytes[index]);
+    }
+    return out.str();
+  } catch (...) {
+    return {};
+  }
+}
+
 bool ConstantTimeTextEqual(const std::string_view left,
                            const std::string_view right) {
   std::size_t different = left.size() ^ right.size();
@@ -861,6 +1278,125 @@ std::vector<std::pair<std::string, std::string>> MetadataPairs(
        BoolText(metadata.vector_ann_wal_claims_visibility_authority)},
       {"vector_ann_wal_claims_transaction_finality_authority",
        BoolText(metadata.vector_ann_wal_claims_transaction_finality_authority)},
+      {"search_segment_candidate_present",
+       BoolText(metadata.search_segment_candidate_present)},
+      {"search_segment_capability_uuid",
+       metadata.search_segment_capability_uuid},
+      {"search_segment_index_uuid", metadata.search_segment_index_uuid},
+      {"search_segment_uuid", metadata.search_segment_uuid},
+      {"search_segment_base_relation_uuid",
+       metadata.search_segment_base_relation_uuid},
+      {"search_segment_base_relation_generation",
+       std::to_string(metadata.search_segment_base_relation_generation)},
+      {"search_segment_relation_descriptor_uuid",
+       metadata.search_segment_relation_descriptor_uuid},
+      {"search_segment_relation_descriptor_generation",
+       std::to_string(metadata.search_segment_relation_descriptor_generation)},
+      {"search_segment_body_column_uuid",
+       metadata.search_segment_body_column_uuid},
+      {"search_segment_body_descriptor_uuid",
+       metadata.search_segment_body_descriptor_uuid},
+      {"search_segment_body_type_uuid",
+       metadata.search_segment_body_type_uuid},
+      {"search_segment_category_column_uuid",
+       metadata.search_segment_category_column_uuid},
+      {"search_segment_category_descriptor_uuid",
+       metadata.search_segment_category_descriptor_uuid},
+      {"search_segment_category_type_uuid",
+       metadata.search_segment_category_type_uuid},
+      {"search_segment_search_type_descriptor_uuid",
+       metadata.search_segment_search_type_descriptor_uuid},
+      {"search_segment_search_type_descriptor_generation",
+       std::to_string(
+           metadata.search_segment_search_type_descriptor_generation)},
+      {"search_segment_analyzer_uuid", metadata.search_segment_analyzer_uuid},
+      {"search_segment_analyzer_generation",
+       std::to_string(metadata.search_segment_analyzer_generation)},
+      {"search_segment_analyzer_pipeline_sha256",
+       metadata.search_segment_analyzer_pipeline_sha256},
+      {"search_segment_tokenizer_uuid",
+       metadata.search_segment_tokenizer_uuid},
+      {"search_segment_tokenizer_generation",
+       std::to_string(metadata.search_segment_tokenizer_generation)},
+      {"search_segment_language_profile_uuid",
+       metadata.search_segment_language_profile_uuid},
+      {"search_segment_language_profile_generation",
+       std::to_string(metadata.search_segment_language_profile_generation)},
+      {"search_segment_ranking_model_uuid",
+       metadata.search_segment_ranking_model_uuid},
+      {"search_segment_ranking_model_generation",
+       std::to_string(metadata.search_segment_ranking_model_generation)},
+      {"search_segment_phrase_profile_uuid",
+       metadata.search_segment_phrase_profile_uuid},
+      {"search_segment_phrase_profile_generation",
+       std::to_string(metadata.search_segment_phrase_profile_generation)},
+      {"search_segment_query_syntax_profile_uuid",
+       metadata.search_segment_query_syntax_profile_uuid},
+      {"search_segment_query_syntax_profile_generation",
+       std::to_string(metadata.search_segment_query_syntax_profile_generation)},
+      {"search_segment_index_profile_id",
+       metadata.search_segment_index_profile_id},
+      {"search_segment_generation",
+       std::to_string(metadata.search_segment_generation)},
+      {"search_segment_position_payload_present",
+       BoolText(metadata.search_segment_position_payload_present)},
+      {"search_segment_checksum_valid",
+       BoolText(metadata.search_segment_checksum_valid)},
+      {"search_segment_sealed_generation",
+       BoolText(metadata.search_segment_sealed_generation)},
+      {"search_segment_publish_attestation_state",
+       metadata.search_segment_publish_attestation_state},
+      {"search_segment_statement_uuid",
+       metadata.search_segment_statement_uuid},
+      {"search_segment_statement_snapshot_uuid",
+       metadata.search_segment_statement_snapshot_uuid},
+      {"search_segment_statement_metadata_snapshot_uuid",
+       metadata.search_segment_statement_metadata_snapshot_uuid},
+      {"search_segment_owning_transaction_uuid",
+       metadata.search_segment_owning_transaction_uuid},
+      {"search_segment_local_transaction_id",
+       std::to_string(metadata.search_segment_local_transaction_id)},
+      {"search_segment_snapshot_visible_through_local_transaction_id",
+       std::to_string(
+           metadata.search_segment_snapshot_visible_through_local_transaction_id)},
+      {"search_segment_security_context_uuid",
+       metadata.search_segment_security_context_uuid},
+      {"search_segment_catalog_epoch_uuid",
+       metadata.search_segment_catalog_epoch_uuid},
+      {"search_segment_exact_fallback_available",
+       BoolText(metadata.search_segment_exact_fallback_available)},
+      {"search_segment_full_corpus_exact_recheck_required",
+       BoolText(metadata.search_segment_full_corpus_exact_recheck_required)},
+      {"search_segment_residual_recheck_required",
+       BoolText(metadata.search_segment_residual_recheck_required)},
+      {"search_segment_base_row_mga_recheck_required",
+       BoolText(metadata.search_segment_base_row_mga_recheck_required)},
+      {"search_segment_security_recheck_required",
+       BoolText(metadata.search_segment_security_recheck_required)},
+      {"search_segment_index_claims_visibility_authority",
+       BoolText(metadata.search_segment_index_claims_visibility_authority)},
+      {"search_segment_index_claims_transaction_finality_authority",
+       BoolText(
+           metadata.search_segment_index_claims_transaction_finality_authority)},
+      {"search_segment_parser_claims_visibility_authority",
+       BoolText(metadata.search_segment_parser_claims_visibility_authority)},
+      {"search_segment_parser_claims_transaction_finality_authority",
+       BoolText(
+           metadata.search_segment_parser_claims_transaction_finality_authority)},
+      {"search_segment_client_claims_visibility_authority",
+       BoolText(metadata.search_segment_client_claims_visibility_authority)},
+      {"search_segment_client_claims_transaction_finality_authority",
+       BoolText(
+           metadata.search_segment_client_claims_transaction_finality_authority)},
+      {"search_segment_reference_claims_visibility_authority",
+       BoolText(metadata.search_segment_reference_claims_visibility_authority)},
+      {"search_segment_reference_claims_transaction_finality_authority",
+       BoolText(metadata
+                    .search_segment_reference_claims_transaction_finality_authority)},
+      {"search_segment_wal_claims_visibility_authority",
+       BoolText(metadata.search_segment_wal_claims_visibility_authority)},
+      {"search_segment_wal_claims_transaction_finality_authority",
+       BoolText(metadata.search_segment_wal_claims_transaction_finality_authority)},
   };
 }
 
@@ -1038,6 +1574,133 @@ EngineNoSqlProviderGenerationMetadata MetadataFromPairs(
       ValueOr(values, "vector_ann_wal_claims_visibility_authority"));
   metadata.vector_ann_wal_claims_transaction_finality_authority = ParseBool(
       ValueOr(values, "vector_ann_wal_claims_transaction_finality_authority"));
+  metadata.search_segment_candidate_present =
+      ParseBool(ValueOr(values, "search_segment_candidate_present"));
+  metadata.search_segment_capability_uuid =
+      ValueOr(values, "search_segment_capability_uuid");
+  metadata.search_segment_index_uuid =
+      ValueOr(values, "search_segment_index_uuid");
+  metadata.search_segment_uuid = ValueOr(values, "search_segment_uuid");
+  metadata.search_segment_base_relation_uuid =
+      ValueOr(values, "search_segment_base_relation_uuid");
+  metadata.search_segment_base_relation_generation =
+      ParseU64(ValueOr(values, "search_segment_base_relation_generation"));
+  metadata.search_segment_relation_descriptor_uuid =
+      ValueOr(values, "search_segment_relation_descriptor_uuid");
+  metadata.search_segment_relation_descriptor_generation = ParseU64(
+      ValueOr(values, "search_segment_relation_descriptor_generation"));
+  metadata.search_segment_body_column_uuid =
+      ValueOr(values, "search_segment_body_column_uuid");
+  metadata.search_segment_body_descriptor_uuid =
+      ValueOr(values, "search_segment_body_descriptor_uuid");
+  metadata.search_segment_body_type_uuid =
+      ValueOr(values, "search_segment_body_type_uuid");
+  metadata.search_segment_category_column_uuid =
+      ValueOr(values, "search_segment_category_column_uuid");
+  metadata.search_segment_category_descriptor_uuid =
+      ValueOr(values, "search_segment_category_descriptor_uuid");
+  metadata.search_segment_category_type_uuid =
+      ValueOr(values, "search_segment_category_type_uuid");
+  metadata.search_segment_search_type_descriptor_uuid =
+      ValueOr(values, "search_segment_search_type_descriptor_uuid");
+  metadata.search_segment_search_type_descriptor_generation = ParseU64(
+      ValueOr(values, "search_segment_search_type_descriptor_generation"));
+  metadata.search_segment_analyzer_uuid =
+      ValueOr(values, "search_segment_analyzer_uuid");
+  metadata.search_segment_analyzer_generation =
+      ParseU64(ValueOr(values, "search_segment_analyzer_generation"));
+  metadata.search_segment_analyzer_pipeline_sha256 =
+      ValueOr(values, "search_segment_analyzer_pipeline_sha256");
+  metadata.search_segment_tokenizer_uuid =
+      ValueOr(values, "search_segment_tokenizer_uuid");
+  metadata.search_segment_tokenizer_generation =
+      ParseU64(ValueOr(values, "search_segment_tokenizer_generation"));
+  metadata.search_segment_language_profile_uuid =
+      ValueOr(values, "search_segment_language_profile_uuid");
+  metadata.search_segment_language_profile_generation = ParseU64(
+      ValueOr(values, "search_segment_language_profile_generation"));
+  metadata.search_segment_ranking_model_uuid =
+      ValueOr(values, "search_segment_ranking_model_uuid");
+  metadata.search_segment_ranking_model_generation = ParseU64(
+      ValueOr(values, "search_segment_ranking_model_generation"));
+  metadata.search_segment_phrase_profile_uuid =
+      ValueOr(values, "search_segment_phrase_profile_uuid");
+  metadata.search_segment_phrase_profile_generation = ParseU64(
+      ValueOr(values, "search_segment_phrase_profile_generation"));
+  metadata.search_segment_query_syntax_profile_uuid =
+      ValueOr(values, "search_segment_query_syntax_profile_uuid");
+  metadata.search_segment_query_syntax_profile_generation = ParseU64(
+      ValueOr(values, "search_segment_query_syntax_profile_generation"));
+  metadata.search_segment_index_profile_id =
+      ValueOr(values, "search_segment_index_profile_id");
+  metadata.search_segment_generation =
+      ParseU64(ValueOr(values, "search_segment_generation"));
+  metadata.search_segment_position_payload_present =
+      ParseBool(ValueOr(values, "search_segment_position_payload_present"));
+  metadata.search_segment_checksum_valid =
+      ParseBool(ValueOr(values, "search_segment_checksum_valid"));
+  metadata.search_segment_sealed_generation =
+      ParseBool(ValueOr(values, "search_segment_sealed_generation"));
+  metadata.search_segment_publish_attestation_state =
+      ValueOr(values, "search_segment_publish_attestation_state");
+  metadata.search_segment_statement_uuid =
+      ValueOr(values, "search_segment_statement_uuid");
+  metadata.search_segment_statement_snapshot_uuid =
+      ValueOr(values, "search_segment_statement_snapshot_uuid");
+  metadata.search_segment_statement_metadata_snapshot_uuid =
+      ValueOr(values, "search_segment_statement_metadata_snapshot_uuid");
+  metadata.search_segment_owning_transaction_uuid =
+      ValueOr(values, "search_segment_owning_transaction_uuid");
+  metadata.search_segment_local_transaction_id =
+      ParseU64(ValueOr(values, "search_segment_local_transaction_id"));
+  metadata.search_segment_snapshot_visible_through_local_transaction_id =
+      ParseU64(ValueOr(
+          values,
+          "search_segment_snapshot_visible_through_local_transaction_id"));
+  metadata.search_segment_security_context_uuid =
+      ValueOr(values, "search_segment_security_context_uuid");
+  metadata.search_segment_catalog_epoch_uuid =
+      ValueOr(values, "search_segment_catalog_epoch_uuid");
+  metadata.search_segment_exact_fallback_available =
+      ParseBool(ValueOr(values, "search_segment_exact_fallback_available"));
+  metadata.search_segment_full_corpus_exact_recheck_required = ParseBool(
+      ValueOr(values, "search_segment_full_corpus_exact_recheck_required"));
+  metadata.search_segment_residual_recheck_required = ParseBool(
+      ValueOr(values, "search_segment_residual_recheck_required"));
+  metadata.search_segment_base_row_mga_recheck_required = ParseBool(
+      ValueOr(values, "search_segment_base_row_mga_recheck_required"));
+  metadata.search_segment_security_recheck_required =
+      ParseBool(ValueOr(values, "search_segment_security_recheck_required"));
+  metadata.search_segment_index_claims_visibility_authority = ParseBool(
+      ValueOr(values, "search_segment_index_claims_visibility_authority"));
+  metadata.search_segment_index_claims_transaction_finality_authority =
+      ParseBool(ValueOr(
+          values,
+          "search_segment_index_claims_transaction_finality_authority"));
+  metadata.search_segment_parser_claims_visibility_authority = ParseBool(
+      ValueOr(values, "search_segment_parser_claims_visibility_authority"));
+  metadata.search_segment_parser_claims_transaction_finality_authority =
+      ParseBool(ValueOr(
+          values,
+          "search_segment_parser_claims_transaction_finality_authority"));
+  metadata.search_segment_client_claims_visibility_authority = ParseBool(
+      ValueOr(values, "search_segment_client_claims_visibility_authority"));
+  metadata.search_segment_client_claims_transaction_finality_authority =
+      ParseBool(ValueOr(
+          values,
+          "search_segment_client_claims_transaction_finality_authority"));
+  metadata.search_segment_reference_claims_visibility_authority = ParseBool(
+      ValueOr(values, "search_segment_reference_claims_visibility_authority"));
+  metadata.search_segment_reference_claims_transaction_finality_authority =
+      ParseBool(ValueOr(
+          values,
+          "search_segment_reference_claims_transaction_finality_authority"));
+  metadata.search_segment_wal_claims_visibility_authority = ParseBool(
+      ValueOr(values, "search_segment_wal_claims_visibility_authority"));
+  metadata.search_segment_wal_claims_transaction_finality_authority =
+      ParseBool(ValueOr(
+          values,
+          "search_segment_wal_claims_transaction_finality_authority"));
   return metadata;
 }
 
@@ -1160,6 +1823,15 @@ void AddCommonEvidence(EngineNoSqlProviderGenerationResult* result) {
       "provider_generation_vector_ann_binding_valid=" +
       BoolText(metadata.vector_ann_candidate_present &&
                ValidateVectorAnnCapabilityBindingV1(metadata)));
+  for (const auto& [key, value] : MetadataPairs(metadata)) {
+    if (key.starts_with("search_segment_")) {
+      result->evidence.push_back("provider_generation_" + key + "=" + value);
+    }
+  }
+  result->evidence.push_back(
+      "provider_generation_search_segment_binding_valid=" +
+      BoolText(metadata.search_segment_candidate_present &&
+               ValidateSearchSegmentCapabilityBindingV1(metadata)));
 }
 
 bool Matches(const EngineNoSqlProviderGenerationMetadata& metadata,
@@ -1283,6 +1955,82 @@ bool HasValidVectorAnnCarrier(
          ConstantTimeTextEqual(metadata.vector_ann_capability_uuid, derived);
 }
 
+bool HasDefaultSearchSegmentCarrier(
+    const EngineNoSqlProviderGenerationMetadata& metadata) {
+  return !metadata.search_segment_candidate_present &&
+         metadata.search_segment_capability_uuid.empty() &&
+         metadata.search_segment_index_uuid.empty() &&
+         metadata.search_segment_uuid.empty() &&
+         metadata.search_segment_base_relation_uuid.empty() &&
+         metadata.search_segment_base_relation_generation == 0 &&
+         metadata.search_segment_relation_descriptor_uuid.empty() &&
+         metadata.search_segment_relation_descriptor_generation == 0 &&
+         metadata.search_segment_body_column_uuid.empty() &&
+         metadata.search_segment_body_descriptor_uuid.empty() &&
+         metadata.search_segment_body_type_uuid.empty() &&
+         metadata.search_segment_category_column_uuid.empty() &&
+         metadata.search_segment_category_descriptor_uuid.empty() &&
+         metadata.search_segment_category_type_uuid.empty() &&
+         metadata.search_segment_search_type_descriptor_uuid.empty() &&
+         metadata.search_segment_search_type_descriptor_generation == 0 &&
+         metadata.search_segment_analyzer_uuid.empty() &&
+         metadata.search_segment_analyzer_generation == 0 &&
+         metadata.search_segment_analyzer_pipeline_sha256.empty() &&
+         metadata.search_segment_tokenizer_uuid.empty() &&
+         metadata.search_segment_tokenizer_generation == 0 &&
+         metadata.search_segment_language_profile_uuid.empty() &&
+         metadata.search_segment_language_profile_generation == 0 &&
+         metadata.search_segment_ranking_model_uuid.empty() &&
+         metadata.search_segment_ranking_model_generation == 0 &&
+         metadata.search_segment_phrase_profile_uuid.empty() &&
+         metadata.search_segment_phrase_profile_generation == 0 &&
+         metadata.search_segment_query_syntax_profile_uuid.empty() &&
+         metadata.search_segment_query_syntax_profile_generation == 0 &&
+         metadata.search_segment_index_profile_id.empty() &&
+         metadata.search_segment_generation == 0 &&
+         !metadata.search_segment_position_payload_present &&
+         !metadata.search_segment_checksum_valid &&
+         !metadata.search_segment_sealed_generation &&
+         metadata.search_segment_publish_attestation_state.empty() &&
+         metadata.search_segment_statement_uuid.empty() &&
+         metadata.search_segment_statement_snapshot_uuid.empty() &&
+         metadata.search_segment_statement_metadata_snapshot_uuid.empty() &&
+         metadata.search_segment_owning_transaction_uuid.empty() &&
+         metadata.search_segment_local_transaction_id == 0 &&
+         metadata
+                 .search_segment_snapshot_visible_through_local_transaction_id ==
+             0 &&
+         metadata.search_segment_security_context_uuid.empty() &&
+         metadata.search_segment_catalog_epoch_uuid.empty() &&
+         !metadata.search_segment_exact_fallback_available &&
+         !metadata.search_segment_full_corpus_exact_recheck_required &&
+         !metadata.search_segment_residual_recheck_required &&
+         !metadata.search_segment_base_row_mga_recheck_required &&
+         !metadata.search_segment_security_recheck_required &&
+         !metadata.search_segment_index_claims_visibility_authority &&
+         !metadata.search_segment_index_claims_transaction_finality_authority &&
+         !metadata.search_segment_parser_claims_visibility_authority &&
+         !metadata.search_segment_parser_claims_transaction_finality_authority &&
+         !metadata.search_segment_client_claims_visibility_authority &&
+         !metadata.search_segment_client_claims_transaction_finality_authority &&
+         !metadata.search_segment_reference_claims_visibility_authority &&
+         !metadata.search_segment_reference_claims_transaction_finality_authority &&
+         !metadata.search_segment_wal_claims_visibility_authority &&
+         !metadata.search_segment_wal_claims_transaction_finality_authority;
+}
+
+bool HasValidSearchSegmentCarrier(
+    const EngineNoSqlProviderGenerationMetadata& metadata) {
+  if (!metadata.search_segment_candidate_present) {
+    return HasDefaultSearchSegmentCarrier(metadata);
+  }
+  const auto derived = DeriveSearchSegmentCapabilityUuidImpl(metadata);
+  return !derived.empty() &&
+         metadata.search_segment_capability_uuid != metadata.generation_uuid &&
+         ConstantTimeTextEqual(metadata.search_segment_capability_uuid,
+                               derived);
+}
+
 bool HasLifecycleMetadata(
     const EngineNoSqlProviderGenerationMetadata& metadata) {
   return metadata.family != EngineNoSqlProviderFamily::kUnknown &&
@@ -1300,8 +2048,11 @@ bool HasLifecycleMetadata(
          !metadata.support_bundle_evidence_id.empty() &&
          HasValidTimeSeriesRollupCarrier(metadata) &&
          HasValidVectorAnnCarrier(metadata) &&
+         HasValidSearchSegmentCarrier(metadata) &&
          (metadata.family == EngineNoSqlProviderFamily::kVector ||
-          !metadata.vector_ann_candidate_present);
+          !metadata.vector_ann_candidate_present) &&
+         (metadata.family == EngineNoSqlProviderFamily::kSearch ||
+          !metadata.search_segment_candidate_present);
 }
 
 bool MetadataRefMismatch(
@@ -1354,9 +2105,9 @@ std::vector<EngineNoSqlProviderGenerationMetadata> LoadLocked(
   }
 
   std::vector<EngineNoSqlProviderGenerationMetadata> loaded;
-  // Non-vector families retain their historical latest-wins log behavior.
-  // Active vector carriers are deliberately retained as a cohort so a raw
-  // duplicated carrier cannot be normalized away before admission rejects it.
+  // Pre-existing ordinary families retain latest-wins log behavior. Active
+  // vector/search carriers are retained as cohorts so a duplicated raw
+  // carrier cannot be normalized away before canonical admission rejects it.
   std::map<std::string,
            std::vector<EngineNoSqlProviderGenerationMetadata>> latest;
   const auto path = GenerationPath(context);
@@ -1372,22 +2123,27 @@ std::vector<EngineNoSqlProviderGenerationMetadata> LoadLocked(
         if (parts.size() >= 3 && parts[1] == std::string("DROP")) {
           const auto decoded = DecodeCrudPairs(parts[2]);
           auto metadata = MetadataFromPairs(decoded);
-          if (!RawVectorCarrierPairsValid(decoded)) {
+          const bool raw_vector_valid = RawVectorCarrierPairsValid(decoded);
+          const bool raw_search_valid = RawSearchCarrierPairsValid(decoded);
+          if (!raw_vector_valid) {
             metadata.vector_ann_candidate_present = false;
             metadata.vector_ann_capability_uuid = "invalid-raw-carrier";
-            if (BoundToContext(context, metadata) ||
-                metadata.time_series_rollup_candidate_present ||
-                !HasDefaultVectorAnnCarrier(metadata)) {
-              // A malformed tombstone is evidence of corrupt persistence, not
-              // authority to erase the last valid generation and turn the
-              // corruption into benign absence.
-              latest[GenerationKey(metadata)] = {std::move(metadata)};
-            }
+          }
+          if (!raw_search_valid) {
+            metadata.search_segment_candidate_present = false;
+            metadata.search_segment_capability_uuid = "invalid-raw-carrier";
+          }
+          if (!raw_vector_valid || !raw_search_valid) {
+            // A malformed tombstone is evidence of corrupt persistence, not
+            // authority to erase the last valid generation and turn the
+            // corruption into benign absence.
+            latest[GenerationKey(metadata)] = {std::move(metadata)};
             continue;
           }
           if (BoundToContext(context, metadata) ||
               metadata.time_series_rollup_candidate_present ||
-              !HasDefaultVectorAnnCarrier(metadata)) {
+              !HasDefaultVectorAnnCarrier(metadata) ||
+              !HasDefaultSearchSegmentCarrier(metadata)) {
             latest.erase(GenerationKey(metadata));
           }
         }
@@ -1401,9 +2157,14 @@ std::vector<EngineNoSqlProviderGenerationMetadata> LoadLocked(
         metadata.vector_ann_candidate_present = false;
         metadata.vector_ann_capability_uuid = "invalid-raw-carrier";
       }
+      if (!RawSearchCarrierPairsValid(decoded)) {
+        metadata.search_segment_candidate_present = false;
+        metadata.search_segment_capability_uuid = "invalid-raw-carrier";
+      }
       if (!BoundToContext(context, metadata) &&
           !metadata.time_series_rollup_candidate_present &&
-          HasDefaultVectorAnnCarrier(metadata)) {
+          HasDefaultVectorAnnCarrier(metadata) &&
+          HasDefaultSearchSegmentCarrier(metadata)) {
         continue;
       }
       // Candidate rows retain their decoded identity so the capability binding
@@ -1412,12 +2173,15 @@ std::vector<EngineNoSqlProviderGenerationMetadata> LoadLocked(
       // canonical admission sees it.  Legacy/default rows keep the historical
       // context normalization behavior.
       if (!metadata.time_series_rollup_candidate_present &&
-          HasDefaultVectorAnnCarrier(metadata)) {
+          HasDefaultVectorAnnCarrier(metadata) &&
+          HasDefaultSearchSegmentCarrier(metadata)) {
         metadata.database_identity = identity;
       }
       const auto key = GenerationKey(metadata);
-      if (metadata.family == EngineNoSqlProviderFamily::kVector &&
-          !HasDefaultVectorAnnCarrier(metadata)) {
+      if ((metadata.family == EngineNoSqlProviderFamily::kVector &&
+           !HasDefaultVectorAnnCarrier(metadata)) ||
+          (metadata.family == EngineNoSqlProviderFamily::kSearch &&
+           !HasDefaultSearchSegmentCarrier(metadata))) {
         latest[key].push_back(std::move(metadata));
       } else {
         latest[key] = {std::move(metadata)};
@@ -1460,6 +2224,20 @@ bool ValidateVectorAnnCapabilityBindingV1(
   const auto derived = DeriveVectorAnnCapabilityUuidImpl(metadata);
   return !derived.empty() &&
          ConstantTimeTextEqual(metadata.vector_ann_capability_uuid, derived);
+}
+
+std::string DeriveSearchSegmentCapabilityUuidV1(
+    const EngineNoSqlProviderGenerationMetadata& metadata) {
+  return DeriveSearchSegmentCapabilityUuidImpl(metadata);
+}
+
+bool ValidateSearchSegmentCapabilityBindingV1(
+    const EngineNoSqlProviderGenerationMetadata& metadata) {
+  if (!metadata.search_segment_candidate_present) return false;
+  const auto derived = DeriveSearchSegmentCapabilityUuidImpl(metadata);
+  return !derived.empty() &&
+         ConstantTimeTextEqual(metadata.search_segment_capability_uuid,
+                               derived);
 }
 
 std::string EngineNoSqlProviderDatabaseIdentity(
@@ -1550,7 +2328,8 @@ EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
 
   const auto identity = EngineNoSqlProviderDatabaseIdentity(context);
   auto generations = LoadLocked(context);
-  if (writable.family == EngineNoSqlProviderFamily::kVector) {
+  if (writable.family == EngineNoSqlProviderFamily::kVector ||
+      writable.family == EngineNoSqlProviderFamily::kSearch) {
     std::size_t matching = 0;
     for (const auto& existing : generations) {
       if (!Matches(existing, writable.family, writable.provider_id,
@@ -1558,7 +2337,10 @@ EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
         continue;
       }
       ++matching;
-      if (!HasValidVectorAnnCarrier(existing)) {
+      if ((writable.family == EngineNoSqlProviderFamily::kVector &&
+           !HasValidVectorAnnCarrier(existing)) ||
+          (writable.family == EngineNoSqlProviderFamily::kSearch &&
+           !HasValidSearchSegmentCarrier(existing))) {
         return Failure(context,
                        "nosql.provider_generation.publish",
                        kNoSqlProviderGenerationMetadataMissing);
@@ -1581,9 +2363,10 @@ EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
                      }),
       generations.end());
   generations.push_back(writable);
-  if (writable.family == EngineNoSqlProviderFamily::kVector) {
-    // Vector publication is a single-current-generation replacement.  It
-    // never converts a matching corrupt/duplicate carrier into a repair.
+  if (writable.family == EngineNoSqlProviderFamily::kVector ||
+      writable.family == EngineNoSqlProviderFamily::kSearch) {
+    // Vector/search publication is a single-current-generation replacement.
+    // It never converts a matching corrupt/duplicate carrier into a repair.
     if (!RewriteLocked(context, generations)) {
       return Failure(context,
                      "nosql.provider_generation.publish",
@@ -1633,14 +2416,20 @@ EngineNoSqlProviderGenerationResult LoadNoSqlProviderGeneration(
   const auto loaded = LoadLocked(context);
   EngineNoSqlProviderGenerationResult result;
   std::size_t matching_vector_carriers = 0;
+  std::size_t matching_search_carriers = 0;
   for (const auto& metadata : loaded) {
     if (Matches(metadata, family, provider_id, collection_uuid) &&
         family == EngineNoSqlProviderFamily::kVector &&
         !HasDefaultVectorAnnCarrier(metadata)) {
       ++matching_vector_carriers;
     }
+    if (Matches(metadata, family, provider_id, collection_uuid) &&
+        family == EngineNoSqlProviderFamily::kSearch &&
+        !HasDefaultSearchSegmentCarrier(metadata)) {
+      ++matching_search_carriers;
+    }
   }
-  if (matching_vector_carriers > 1) {
+  if (matching_vector_carriers > 1 || matching_search_carriers > 1) {
     return Failure(context,
                    "nosql.provider_generation.load",
                    kNoSqlProviderGenerationMetadataMissing);
@@ -1654,6 +2443,11 @@ EngineNoSqlProviderGenerationResult LoadNoSqlProviderGeneration(
                        kNoSqlProviderGenerationMetadataMissing);
       }
       if (!HasValidVectorAnnCarrier(metadata)) {
+        return Failure(context,
+                       "nosql.provider_generation.load",
+                       kNoSqlProviderGenerationMetadataMissing);
+      }
+      if (!HasValidSearchSegmentCarrier(metadata)) {
         return Failure(context,
                        "nosql.provider_generation.load",
                        kNoSqlProviderGenerationMetadataMissing);

@@ -887,6 +887,51 @@ bool ExactVectorStorageDescriptorCohort(
   return true;
 }
 
+bool ExactSearchStorageDescriptorCohort(
+    const ipc::PublicRelationDescriptor& projection) {
+  // QOW-SOURCE-RCP-078-SEARCH-STORAGE-DESCRIPTOR-V1
+  static constexpr std::array<std::string_view, 2> kNames{"body", "category"};
+  if (projection.columns.size() != kNames.size()) return false;
+  const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return false;
+  const auto type_row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+      manifest.manifest,
+      scratchbird::core::datatypes::CanonicalTypeIdFromStableName("text"));
+  if (!type_row.ok() || type_row.manifest.descriptor_rows.size() != 1 ||
+      !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
+    return false;
+  }
+  const auto text_uuid = scratchbird::core::uuid::UuidToString(
+      type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+  std::unordered_set<std::string> column_uuids;
+  std::unordered_set<std::string> descriptor_uuids;
+  for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
+    const auto& column = projection.columns[ordinal];
+    const auto fields = ParseExactProjectedDescriptor(
+        column.encoded_type_descriptor, column.collation_uuid,
+        column.nullable);
+    if (column.ordinal != ordinal ||
+        column.canonical_name_key != kNames[ordinal] ||
+        column.canonical_type_name != "text" || column.nullable ||
+        column.generated || column.identity_column ||
+        !CanonicalUuidBytes(column.column_uuid).has_value() ||
+        !column_uuids.insert(column.column_uuid).second ||
+        !CanonicalUuidBytes(column.type_descriptor_uuid).has_value() ||
+        !descriptor_uuids.insert(column.type_descriptor_uuid).second ||
+        !fields.has_value() || fields->type_uuid != text_uuid ||
+        fields->nullable || fields->collation_uuid.has_value() ||
+        fields->timezone_profile_id.has_value() || fields->width.has_value() ||
+        fields->precision.has_value() || fields->scale.has_value() ||
+        !column.charset_uuid.empty() || !column.charset_canonical_name.empty() ||
+        !column.collation_uuid.empty() ||
+        !column.collation_canonical_name.empty()) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool ExactTimeSeriesPreResolutionAst(
     const NativeRelationalAstDocument& ast) {
   const auto source = std::ranges::find_if(
@@ -976,6 +1021,357 @@ BuildEngineProjectedNativeBindingContext(
       context.local_transaction_id,
       context.snapshot_visible_through_local_transaction_id};
 
+  const auto search_source = std::ranges::find_if(
+      ast.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kSearch;
+      });
+  if (search_source != ast.catalog_relation_sources.end()) {
+    // QOW-SOURCE-RCP-078-ENGINE-SEARCH-BINDING-COHORT-V1
+    const auto refuse = [&](const char* diagnostic, std::string detail)
+        -> std::optional<NativeRelationalBindingContext> {
+      messages->diagnostics.push_back(MakeDiagnostic(
+          diagnostic, "ERROR", std::move(detail), "sbp_sbsql.wire"));
+      return std::nullopt;
+    };
+    const bool ranked =
+        search_source->model_operation_id == "SEARCH_RANKED_QUERY";
+    const bool phrase =
+        search_source->model_operation_id == "SEARCH_PHRASE_QUERY";
+    const bool fuzzy =
+        search_source->model_operation_id == "SEARCH_FUZZY_QUERY";
+    const bool complete_filter =
+        search_source->model_search_filter_expression_id.has_value() &&
+        search_source->model_search_category_predicate_expression_id.has_value() &&
+        search_source->model_search_category_column_expression_id.has_value() &&
+        search_source->model_search_category_value_expression_id.has_value();
+    const bool any_filter =
+        search_source->model_search_filter_expression_id.has_value() ||
+        search_source->model_search_category_predicate_expression_id.has_value() ||
+        search_source->model_search_category_column_expression_id.has_value() ||
+        search_source->model_search_category_value_expression_id.has_value();
+    if (!IsCanonicalStatementTimestamp(context.statement_timestamp) ||
+        !statement_context.native_v9_complete() ||
+        (!ranked && !phrase && !fuzzy) || (any_filter && !complete_filter) ||
+        fuzzy != search_source->model_search_edit_expression_id.has_value() ||
+        ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
+        ast.root_relation_id != ast.relations.front().relation_id ||
+        ast.relations.front().relation_kind !=
+            NativeRelationAstKind::kCatalogSource ||
+        ast.relations.front().relation_source_ids !=
+            std::vector<std::uint32_t>{search_source->source_id} ||
+        ast.relations.front().predicate_expression_ids.size() != 1 ||
+        search_source->source_id == 0 ||
+        search_source->model_family_id != "search" ||
+        search_source->qualified_name.empty() || !search_source->alias.has_value() ||
+        !search_source->model_search_alias_expression_id.has_value() ||
+        !search_source->model_search_match_expression_id.has_value() ||
+        !search_source->model_search_query_expression_id.has_value() ||
+        !search_source->model_search_text_expression_id.has_value() ||
+        !search_source->model_search_analyzer_expression_id.has_value() ||
+        !search_source->model_search_top_k_expression_id.has_value() ||
+        !search_source->model_search_top_k.has_value() ||
+        *search_source->model_search_top_k == 0 ||
+        ast.model_object_resolution_requests.size() != 2 ||
+        resolved_object_reference_seeds.size() != 2) {
+      return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "search AST or engine binding cohort shape is invalid");
+    }
+    const auto collection_name =
+        EncodeQualifiedPresentedName(search_source->qualified_name);
+    const auto analyzer_name =
+        EncodeQualifiedPresentedName(search_source->model_search_analyzer_name);
+    const auto& collection_request = ast.model_object_resolution_requests[0];
+    const auto& analyzer_request = ast.model_object_resolution_requests[1];
+    const auto& collection_seed = resolved_object_reference_seeds[0];
+    const auto& analyzer_seed = resolved_object_reference_seeds[1];
+    if (!collection_name.has_value() || !analyzer_name.has_value() ||
+        collection_request.object_class != "search" ||
+        analyzer_request.object_class != "search_analyzer" ||
+        collection_seed.ref.object_class != "search" ||
+        analyzer_seed.ref.object_class != "search_analyzer" ||
+        collection_seed.ref.presented_name != *collection_name ||
+        analyzer_seed.ref.presented_name != *analyzer_name ||
+        collection_seed.ref.quoted || analyzer_seed.ref.quoted ||
+        collection_seed.ref.create_reservation ||
+        analyzer_seed.ref.create_reservation) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "search object-resolution requests were substituted");
+    }
+    const auto& resolved = collection_seed.resolved;
+    const auto& projection = resolved.relation_descriptor;
+    const auto& analyzer = analyzer_seed.resolved;
+    const bool relation_transport_class =
+        resolved.object_class == "relation" || resolved.object_class == "table";
+    if (!resolved.resolved || !relation_transport_class ||
+        !CanonicalUuidBytes(resolved.object_uuid).has_value() ||
+        resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
+        !projection.present ||
+        !CanonicalUuidBytes(projection.descriptor_uuid).has_value() ||
+        !CanonicalUuidBytes(projection.relation_uuid).has_value() ||
+        projection.relation_uuid != resolved.object_uuid ||
+        !CanonicalUuidBytes(projection.schema_uuid).has_value() ||
+        projection.descriptor_generation == 0 ||
+        projection.validated_resource_epoch == 0 ||
+        !ExactSearchStorageDescriptorCohort(projection) ||
+        !analyzer.resolved ||
+        !CanonicalUuidBytes(analyzer.object_uuid).has_value() ||
+        analyzer.catalog_epoch == 0 || analyzer.security_epoch == 0) {
+      return refuse("SB_MODEL_SEARCH_ANALYZER_BINDING_REQUIRED_V1",
+                    "search collection/analyzer projection is incomplete");
+    }
+    context.search_analyzer_uuid = analyzer.object_uuid;
+    context.search_analyzer_generation = analyzer.catalog_epoch;
+    const auto manifest =
+        scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!manifest.ok()) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "canonical datatype catalog is unavailable");
+    }
+    const auto canonical_type_uuid = [&](const std::string& type)
+        -> std::optional<std::string> {
+      const auto row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+          manifest.manifest,
+          scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type));
+      if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
+          !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
+        return std::nullopt;
+      }
+      return scratchbird::core::uuid::UuidToString(
+          row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    };
+    const auto uuid_type = canonical_type_uuid("uuid");
+    const auto uint64_type = canonical_type_uuid("uint64");
+    const auto real64_type = canonical_type_uuid("real64");
+    const auto boolean_type = canonical_type_uuid("boolean");
+    if (!uuid_type.has_value() || !uint64_type.has_value() ||
+        !real64_type.has_value() || !boolean_type.has_value()) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "search public datatype identities are unavailable");
+    }
+    if (statement_context.descriptor_profiles.size() != 326) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "search V9 result descriptor cohort is unavailable");
+    }
+    const auto* document_uuid_profile =
+        &statement_context.descriptor_profiles[322];
+    const auto* analyzer_uuid_profile =
+        &statement_context.descriptor_profiles[323];
+    const auto* analyzer_generation_profile =
+        &statement_context.descriptor_profiles[324];
+    const auto* score_profile = &statement_context.descriptor_profiles[320];
+    const auto* rank_profile = &statement_context.descriptor_profiles[325];
+    const auto exact_result_profile = [&](const auto* profile,
+                                          const std::uint8_t kind,
+                                          const std::uint16_t slot,
+                                          const std::string& type_uuid) {
+      return profile->profile_kind == kind && profile->slot == slot &&
+             profile->type_uuid == type_uuid &&
+             CanonicalUuidBytes(profile->descriptor_uuid).has_value() &&
+             !profile->nullable && profile->collation_uuid.empty() &&
+             profile->width == 0 && profile->precision == 0 &&
+             profile->scale == 0;
+    };
+    const std::array<const ipc::ParserStatementContext::DescriptorProfile*, 5>
+        public_profiles{document_uuid_profile, analyzer_uuid_profile,
+                        analyzer_generation_profile, score_profile,
+                        rank_profile};
+    std::unordered_set<std::string> public_profile_descriptor_uuids;
+    if (!exact_result_profile(document_uuid_profile, 12, 0, *uuid_type) ||
+        !exact_result_profile(analyzer_uuid_profile, 12, 1, *uuid_type) ||
+        !exact_result_profile(analyzer_generation_profile, 13, 0,
+                              *uint64_type) ||
+        !exact_result_profile(score_profile, 11, 0, *real64_type) ||
+        !exact_result_profile(rank_profile, 13, 1, *uint64_type) ||
+        !std::ranges::all_of(public_profiles, [&](const auto* profile) {
+          return public_profile_descriptor_uuids
+              .insert(profile->descriptor_uuid)
+              .second;
+        })) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "search V9 result descriptor identities are invalid");
+    }
+    std::unordered_map<std::string, std::uint32_t> descriptor_by_name;
+    std::unordered_map<std::string, std::uint32_t> scalar_descriptor_by_type;
+    std::unordered_set<std::string> descriptor_uuids;
+    const auto add_descriptor = [&](const std::string& descriptor_uuid,
+                                    const std::string& type_uuid,
+                                    const std::string& canonical_type)
+        -> std::optional<std::uint32_t> {
+      if (!CanonicalUuidBytes(descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(type_uuid).has_value()) {
+        return std::nullopt;
+      }
+      if (const auto existing = scalar_descriptor_by_type.find(
+              descriptor_uuid + "\x1f" + type_uuid);
+          existing != scalar_descriptor_by_type.end()) {
+        return existing->second;
+      }
+      if (!descriptor_uuids.insert(descriptor_uuid).second) return std::nullopt;
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      descriptor.descriptor_uuid = descriptor_uuid;
+      descriptor.type_uuid = type_uuid;
+      descriptor.nullability = BoundNullability::kNonNull;
+      descriptor.canonical_type_name = canonical_type;
+      context.descriptors.push_back(std::move(descriptor));
+      scalar_descriptor_by_type.emplace(descriptor_uuid + "\x1f" + type_uuid,
+                                        context.descriptors.back().descriptor_id);
+      return context.descriptors.back().descriptor_id;
+    };
+    for (const auto& column : projection.columns) {
+      const auto fields = ParseExactProjectedDescriptor(
+          column.encoded_type_descriptor, column.collation_uuid,
+          column.nullable);
+      if (!fields.has_value()) {
+        return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "search storage descriptor cannot be decoded");
+      }
+      const auto descriptor_id = add_descriptor(
+          column.type_descriptor_uuid, fields->type_uuid, "text");
+      if (!descriptor_id.has_value()) {
+        return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "search storage descriptor identity is duplicated");
+      }
+      descriptor_by_name.emplace(column.canonical_name_key, *descriptor_id);
+    }
+    const auto document_uuid_descriptor = add_descriptor(
+        document_uuid_profile->descriptor_uuid,
+        document_uuid_profile->type_uuid, "uuid");
+    const auto analyzer_uuid_descriptor = add_descriptor(
+        analyzer_uuid_profile->descriptor_uuid,
+        analyzer_uuid_profile->type_uuid, "uuid");
+    const auto analyzer_generation_descriptor = add_descriptor(
+        analyzer_generation_profile->descriptor_uuid,
+        analyzer_generation_profile->type_uuid, "uint64");
+    const auto score_descriptor = add_descriptor(
+        score_profile->descriptor_uuid, score_profile->type_uuid, "real64");
+    const auto rank_descriptor = add_descriptor(
+        rank_profile->descriptor_uuid, rank_profile->type_uuid, "uint64");
+    const auto boolean_descriptor =
+        add_descriptor(*boolean_type, *boolean_type, "boolean");
+    if (!document_uuid_descriptor.has_value() ||
+        !analyzer_uuid_descriptor.has_value() ||
+        !analyzer_generation_descriptor.has_value() ||
+        !score_descriptor.has_value() || !rank_descriptor.has_value() ||
+        !boolean_descriptor.has_value()) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "search operation descriptor identity is duplicated");
+    }
+    NativeCatalogRelationBindingInput catalog_relation;
+    catalog_relation.source_id = search_source->source_id;
+    catalog_relation.resolution_state =
+        NativeCatalogRelationResolutionState::kBound;
+    catalog_relation.object_uuid = resolved.object_uuid;
+    catalog_relation.resolved_object_type = "search";
+    catalog_relation.resolved_schema_uuid = projection.schema_uuid;
+    catalog_relation.catalog_generation_id = resolved.catalog_epoch;
+    catalog_relation.security_epoch = resolved.security_epoch;
+    catalog_relation.resource_epoch = projection.validated_resource_epoch;
+    for (const auto& column : projection.columns) {
+      catalog_relation.columns.push_back(
+          {column.ordinal, column.column_uuid,
+           descriptor_by_name.at(column.canonical_name_key),
+           column.canonical_name_key});
+    }
+    context.catalog_relations.push_back(std::move(catalog_relation));
+    const auto maximum_ast_expression_id = std::ranges::max_element(
+        ast.expressions, {}, &NativeExpressionAstNode::expression_id);
+    if (maximum_ast_expression_id == ast.expressions.end() ||
+        maximum_ast_expression_id->expression_id >
+            std::numeric_limits<std::uint32_t>::max() - 5) {
+      return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "search expression identity range is invalid");
+    }
+    std::uint32_t next_expression_id =
+        maximum_ast_expression_id->expression_id + 1;
+    static constexpr std::array<std::string_view, 5> kPublicNames{
+        "document_uuid", "analyzer_uuid", "analyzer_generation", "score",
+        "rank"};
+    const std::array<std::uint32_t, 5> public_descriptors{
+        *document_uuid_descriptor, *analyzer_uuid_descriptor,
+        *analyzer_generation_descriptor, *score_descriptor,
+        *rank_descriptor};
+    for (std::size_t ordinal = 0; ordinal < kPublicNames.size(); ++ordinal) {
+      const auto expression_id = next_expression_id++;
+      context.expressions.push_back(
+          {expression_id, public_descriptors[ordinal], std::nullopt,
+           ordinal == 0 ? std::optional<std::string>{resolved.object_uuid}
+                        : (ordinal == 1 || ordinal == 2
+                               ? std::optional<std::string>{analyzer.object_uuid}
+                               : std::optional<std::string>{
+                                     resolved.object_uuid})});
+      context.outputs.push_back(
+          {static_cast<std::uint32_t>(ordinal + 1), expression_id,
+           std::string(kPublicNames[ordinal]), public_descriptors[ordinal], true,
+           static_cast<std::uint32_t>(ordinal),
+           ast.relations.front().relation_id});
+    }
+    const auto* category_column = &projection.columns[1];
+    std::optional<std::uint32_t> filter_alias_expression_id;
+    if (search_source->model_search_filter_expression_id.has_value()) {
+      const auto filter = std::ranges::find_if(
+          ast.expressions, [&](const auto& expression) {
+            return expression.expression_id ==
+                   *search_source->model_search_filter_expression_id;
+          });
+      if (filter == ast.expressions.end() ||
+          filter->child_expression_ids.size() != 2) {
+        return refuse("SB_MODEL_SEARCH_FILTER_REFUSED_V1",
+                      "search filter alias binding is unavailable");
+      }
+      filter_alias_expression_id = filter->child_expression_ids.front();
+    }
+    for (const auto& expression : ast.expressions) {
+      if (expression.expression_kind == NativeExpressionAstKind::kWildcard) continue;
+      std::optional<std::uint32_t> descriptor_id;
+      std::optional<std::string> bound_name_uuid;
+      if (expression.expression_id ==
+              *search_source->model_search_alias_expression_id ||
+          filter_alias_expression_id == expression.expression_id) {
+        descriptor_id = descriptor_by_name.at("body");
+        bound_name_uuid = resolved.object_uuid;
+      } else if (expression.expression_id ==
+                 *search_source->model_search_text_expression_id) {
+        descriptor_id = descriptor_by_name.at("body");
+      } else if (expression.expression_id ==
+                 *search_source->model_search_analyzer_expression_id) {
+        descriptor_id = *analyzer_uuid_descriptor;
+        bound_name_uuid = analyzer.object_uuid;
+      } else if (expression.expression_id ==
+                     *search_source->model_search_top_k_expression_id ||
+                 search_source->model_search_edit_expression_id ==
+                     expression.expression_id) {
+        descriptor_id = *analyzer_generation_descriptor;
+      } else if (search_source->model_search_category_column_expression_id ==
+                 expression.expression_id) {
+        descriptor_id = descriptor_by_name.at("category");
+        bound_name_uuid = category_column->column_uuid;
+      } else if (search_source->model_search_category_value_expression_id ==
+                 expression.expression_id) {
+        descriptor_id = descriptor_by_name.at("category");
+      } else if (expression.expression_kind ==
+                     NativeExpressionAstKind::kFunctionCall ||
+                 expression.expression_kind == NativeExpressionAstKind::kBinary) {
+        descriptor_id = *boolean_descriptor;
+      }
+      if (!descriptor_id.has_value()) {
+        return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                      "search expression profile is unsupported");
+      }
+      context.expressions.push_back(
+          {expression.expression_id, *descriptor_id, std::nullopt,
+           std::move(bound_name_uuid)});
+    }
+    const std::string semantic =
+        std::string("sblr.model-source.search-") +
+        (ranked ? "ranked-query" : (phrase ? "phrase-query" : "fuzzy-query")) +
+        (complete_filter ? "-structured-filter.v1" : ".v1");
+    context.relations.push_back(
+        {ast.relations.front().relation_id, semantic});
+    return context;
+  }
+
   const auto vector_source = std::ranges::find_if(
       ast.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kVector;
@@ -1003,7 +1399,9 @@ BuildEngineProjectedNativeBindingContext(
         vector_source->model_vector_metadata_column_expression_id.has_value() ||
         vector_source->model_vector_metadata_value_expression_id.has_value();
     if (!IsCanonicalStatementTimestamp(context.statement_timestamp) ||
-        !statement_context.native_v8_complete() || (!exact && !filtered) ||
+        (!statement_context.native_v8_complete() &&
+         !statement_context.native_v9_complete()) ||
+        (!exact && !filtered) ||
         (exact && any_filter) || (filtered && !complete_filter) ||
         ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
         ast.root_relation_id != ast.relations.front().relation_id ||
@@ -1093,15 +1491,12 @@ BuildEngineProjectedNativeBindingContext(
       return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
                     "vector public datatype identities are unavailable");
     }
-    const auto real64_profile_begin = statement_context.descriptor_profiles.begin();
+    const auto real64_profile_begin =
+        statement_context.descriptor_profiles.begin();
     const auto real64_profiles = std::ranges::subrange(
-        std::ranges::find_if(real64_profile_begin,
-                             statement_context.descriptor_profiles.end(),
-                             [](const auto& profile) {
-                               return profile.profile_kind == 11;
-                             }),
-        statement_context.descriptor_profiles.end());
-    if (statement_context.descriptor_profiles.size() != 322 ||
+        real64_profile_begin + 320, real64_profile_begin + 322);
+    if ((statement_context.descriptor_profiles.size() != 322 &&
+         statement_context.descriptor_profiles.size() != 326) ||
         real64_profiles.begin() !=
             statement_context.descriptor_profiles.begin() + 320 ||
         std::ranges::distance(real64_profiles) != 2 ||
@@ -1320,9 +1715,10 @@ BuildEngineProjectedNativeBindingContext(
       return refuse("SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1",
                     "time-series source requires the canonical engine timestamp");
     }
-    if (!statement_context.native_v8_complete()) {
+    if (!statement_context.native_v8_complete() &&
+        !statement_context.native_v9_complete()) {
       return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
-                    "time-series source requires the complete V8 statement cohort");
+                    "time-series source requires a complete V8/V9 statement cohort");
     }
     if ((!range_read && !downsample) ||
         ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
@@ -1811,10 +2207,11 @@ BuildEngineProjectedNativeBindingContext(
           "key/value source requires the exact canonical engine-issued "
           "statement timestamp");
     }
-    if (!statement_context.native_v8_complete()) {
+    if (!statement_context.native_v8_complete() &&
+        !statement_context.native_v9_complete()) {
       return refuse(
           "SB_MODEL_BINDING_INCOMPLETE_V1",
-          "key/value source requires the complete V8 native statement "
+          "key/value source requires a complete V8/V9 native statement "
           "context cohort");
     }
     const bool exact_get =
@@ -6446,6 +6843,38 @@ std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocu
 std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst,
                                                      const AstDocument& ast) {
   std::vector<ObjectReference> refs;
+  const bool search_model_ast = std::ranges::any_of(
+      ast.native_relational.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kSearch;
+      });
+  if (search_model_ast) {
+    // QOW-SOURCE-RCP-078-SEARCH-OBJECT-REFERENCE-V1
+    if (!ast.native_relational.accepted() ||
+        ast.native_relational.model_object_resolution_requests.size() != 2) {
+      return refs;
+    }
+    static constexpr std::array<std::string_view, 2> kClasses{
+        "search", "search_analyzer"};
+    for (std::size_t index = 0; index < kClasses.size(); ++index) {
+      const auto& request =
+          ast.native_relational.model_object_resolution_requests[index];
+      if (request.source_id == 0 || request.model_family_id != "search" ||
+          request.object_class != kClasses[index] ||
+          request.qualified_name.empty()) {
+        refs.clear();
+        return refs;
+      }
+      const auto presented_name =
+          EncodeQualifiedPresentedName(request.qualified_name);
+      if (!presented_name.has_value()) {
+        refs.clear();
+        return refs;
+      }
+      refs.push_back({*presented_name, std::string(kClasses[index]), false,
+                      false});
+    }
+    return refs;
+  }
   const bool vector_model_ast = std::ranges::any_of(
       ast.native_relational.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kVector;
@@ -10313,7 +10742,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         // projection agree exactly.
         const auto transport_object_class =
             ref.object_class == "document_collection" ||
-                    ref.object_class == "graph"
+                    ref.object_class == "graph" ||
+                    ref.object_class == "search"
                 ? std::string_view("relation")
                 : std::string_view(ref.object_class);
         resolved = native_catalog_projection_required

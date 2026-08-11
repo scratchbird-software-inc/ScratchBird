@@ -33073,6 +33073,379 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     return envelope;
   }
 
+  const auto search_source = std::ranges::find_if(
+      native.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kSearch;
+      });
+  if (search_source != native.catalog_relation_sources.end()) {
+    // QOW-SOURCE-RCP-078-SEARCH-SBLR-V1
+    const bool ranked =
+        search_source->model_operation_id == "SEARCH_RANKED_QUERY";
+    const bool phrase =
+        search_source->model_operation_id == "SEARCH_PHRASE_QUERY";
+    const bool fuzzy =
+        search_source->model_operation_id == "SEARCH_FUZZY_QUERY";
+    const bool complete_filter =
+        search_source->model_search_filter_expression_id.has_value() &&
+        search_source->model_search_category_predicate_expression_id.has_value() &&
+        search_source->model_search_category_column_expression_id.has_value() &&
+        search_source->model_search_category_value_expression_id.has_value();
+    const bool any_filter =
+        search_source->model_search_filter_expression_id.has_value() ||
+        search_source->model_search_category_predicate_expression_id.has_value() ||
+        search_source->model_search_category_column_expression_id.has_value() ||
+        search_source->model_search_category_value_expression_id.has_value();
+    const std::string expected_semantic =
+        std::string("sblr.model-source.search-") +
+        (ranked ? "ranked-query" : (phrase ? "phrase-query" : "fuzzy-query")) +
+        (complete_filter ? "-structured-filter.v1" : ".v1");
+    const bool operation_shape =
+        (ranked || phrase || fuzzy) && (!any_filter || complete_filter) &&
+        fuzzy == search_source->model_search_edit_expression_id.has_value();
+    const bool document_shape =
+        native.catalog_relation_sources.size() == 1 &&
+        native.relations.size() == 1 && native.scopes.size() == 1 &&
+        !native.descriptors.empty() && !native.expressions.empty() &&
+        native.outputs.size() == 5 && search_source->source_id != 0 &&
+        search_source->model_family_id == "search";
+    const bool source_binding_shape =
+        search_source->resolution_state ==
+            NativeCatalogRelationResolutionState::kBound &&
+        search_source->resolved_object_type == "search" &&
+        IsCanonicalBoundSourceUuid(search_source->object_uuid) &&
+        IsCanonicalBoundSourceUuid(search_source->resolved_schema_uuid) &&
+        IsCanonicalBoundSourceUuid(search_source->model_search_analyzer_uuid) &&
+        search_source->model_search_analyzer_generation != 0 &&
+        search_source->catalog_generation_id != 0 &&
+        search_source->security_epoch != 0 &&
+        search_source->resource_epoch != 0 && search_source->alias.has_value() &&
+        search_source->columns.size() == 2 &&
+        search_source->columns[0].ordinal == 0 &&
+        search_source->columns[0].canonical_name_key == "body" &&
+        search_source->columns[1].ordinal == 1 &&
+        search_source->columns[1].canonical_name_key == "category";
+    const bool typed_dag_shape =
+        search_source->model_search_alias_expression_id.has_value() &&
+        search_source->model_search_match_expression_id.has_value() &&
+        search_source->model_search_query_expression_id.has_value() &&
+        search_source->model_search_text_expression_id.has_value() &&
+        search_source->model_search_analyzer_expression_id.has_value() &&
+        search_source->model_search_top_k_expression_id.has_value() &&
+        search_source->model_search_top_k.has_value() &&
+        *search_source->model_search_top_k != 0 &&
+        *search_source->model_search_top_k <= 0xffffffffULL;
+    const bool statement_shape =
+        document_shape &&
+        native.root_relation_id == native.relations.front().relation_id &&
+        native.scopes.front().scope_id == native.root_scope_id &&
+        native.scopes.front().visible_relation_ids ==
+            std::vector<std::uint32_t>{native.root_relation_id} &&
+        !native.scopes.front().parent_scope_id.has_value() &&
+        IsCanonicalBoundSourceUuid(native.bound_ast_uuid) &&
+        IsCanonicalBoundSourceUuid(native.security_context_uuid) &&
+        IsCanonicalBoundSourceUuid(native.scopes.front().catalog_epoch_uuid) &&
+        IsCanonicalBoundStatementTimestamp(native.statement_timestamp);
+    if (!operation_shape || !document_shape || !source_binding_shape ||
+        !typed_dag_shape || !statement_shape) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+          std::string("search model source is missing exact bound SBLR authority: ") +
+              (operation_shape ? "" : "operation_shape ") +
+              (document_shape ? "" : "document_shape ") +
+              (source_binding_shape ? "" : "source_binding_shape ") +
+              (typed_dag_shape ? "" : "typed_dag_shape ") +
+              (statement_shape ? "" : "statement_shape "),
+          {{"operation_shape", operation_shape ? "true" : "false"},
+           {"document_shape", document_shape ? "true" : "false"},
+           {"source_binding_shape", source_binding_shape ? "true" : "false"},
+           {"typed_dag_shape", typed_dag_shape ? "true" : "false"},
+           {"statement_shape", statement_shape ? "true" : "false"}});
+      return envelope;
+    }
+    const auto& relation = native.relations.front();
+    if (relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
+        relation.semantic_variant_id != expected_semantic ||
+        relation.bound_object_uuid != search_source->object_uuid ||
+        !relation.input_relation_ids.empty() || !relation.values_row_ids.empty() ||
+        relation.output_expression_ids.size() != 5 ||
+        relation.predicate_expression_ids.size() != 1 ||
+        relation.aggregate_grouping_form != NativeAggregateGroupingForm::kNone ||
+        relation.aggregate_projection_form !=
+            NativeAggregateProjectionForm::kNone ||
+        !relation.grouping_key_expression_ids.empty() ||
+        !relation.aggregate_expression_ids.empty() ||
+        !relation.limit_expression_ids.empty() || !relation.ordering_terms.empty()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+          "search relation operands are incomplete or ambiguous");
+      return envelope;
+    }
+    std::unordered_map<std::uint32_t, const BoundDescriptorAstRecord*>
+        descriptors_by_id;
+    for (const auto& descriptor : native.descriptors) {
+      if (descriptor.descriptor_id == 0 ||
+          !descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor).second ||
+          !IsCanonicalBoundSourceUuid(descriptor.descriptor_uuid) ||
+          !IsCanonicalBoundSourceUuid(descriptor.type_uuid) ||
+          descriptor.nullability == BoundNullability::kUnknown) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "search descriptor identity is incomplete");
+        return envelope;
+      }
+    }
+    const auto body_descriptor =
+        descriptors_by_id.find(search_source->columns[0].descriptor_id);
+    const auto category_descriptor =
+        descriptors_by_id.find(search_source->columns[1].descriptor_id);
+    if (body_descriptor == descriptors_by_id.end() ||
+        category_descriptor == descriptors_by_id.end() ||
+        body_descriptor->second->canonical_type_name != "text" ||
+        category_descriptor->second->canonical_type_name != "text" ||
+        body_descriptor->second->nullability != BoundNullability::kNonNull ||
+        category_descriptor->second->nullability != BoundNullability::kNonNull) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_SEARCH_DOCUMENT_INVALID_V1",
+          "search storage descriptor type profile drifted");
+      return envelope;
+    }
+    std::unordered_map<std::uint32_t, const BoundExpressionAstRecord*>
+        expressions_by_id;
+    for (const auto& expression : native.expressions) {
+      if (expression.expression_id == 0 ||
+          !expressions_by_id.emplace(expression.expression_id, &expression).second ||
+          !descriptors_by_id.contains(expression.result_descriptor_id) ||
+          std::ranges::any_of(expression.child_expression_ids,
+                              [&](const auto child) {
+                                return !expressions_by_id.contains(child);
+                              })) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+            "search expression descriptor/dependency is incomplete");
+        return envelope;
+      }
+    }
+    const auto match = expressions_by_id.find(
+        *search_source->model_search_match_expression_id);
+    const auto alias = expressions_by_id.find(
+        *search_source->model_search_alias_expression_id);
+    const auto query = expressions_by_id.find(
+        *search_source->model_search_query_expression_id);
+    const auto text = expressions_by_id.find(
+        *search_source->model_search_text_expression_id);
+    const auto analyzer = expressions_by_id.find(
+        *search_source->model_search_analyzer_expression_id);
+    const auto top_k = expressions_by_id.find(
+        *search_source->model_search_top_k_expression_id);
+    const auto analyzer_identity =
+        analyzer == expressions_by_id.end() ||
+                analyzer->second->child_expression_ids.size() != 3
+            ? expressions_by_id.end()
+            : expressions_by_id.find(
+                  analyzer->second->child_expression_ids[0]);
+    const auto analyzer_generation =
+        analyzer == expressions_by_id.end() ||
+                analyzer->second->child_expression_ids.size() != 3
+            ? expressions_by_id.end()
+            : expressions_by_id.find(
+                  analyzer->second->child_expression_ids[1]);
+    const auto analyzer_digest =
+        analyzer == expressions_by_id.end() ||
+                analyzer->second->child_expression_ids.size() != 3
+            ? expressions_by_id.end()
+            : expressions_by_id.find(
+                  analyzer->second->child_expression_ids[2]);
+    if (match == expressions_by_id.end() || alias == expressions_by_id.end() ||
+        query == expressions_by_id.end() || text == expressions_by_id.end() ||
+        analyzer == expressions_by_id.end() || top_k == expressions_by_id.end() ||
+        match->second->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+        match->second->bound_function_uuid.has_value() ||
+        match->second->canonical_operator_name != "SEARCH_MATCH" ||
+        match->second->child_expression_ids !=
+            std::vector<std::uint32_t>{alias->first, query->first,
+                                       analyzer->first, top_k->first} ||
+        alias->second->bound_name_uuid != search_source->object_uuid ||
+        query->second->canonical_operator_name !=
+            search_source->model_search_query_kind ||
+        query->second->child_expression_ids.empty() ||
+        query->second->child_expression_ids.front() != text->first ||
+        analyzer->second->expression_kind !=
+            NativeExpressionAstKind::kFunctionCall ||
+        analyzer->second->bound_function_uuid.has_value() ||
+        analyzer->second->canonical_operator_name !=
+            "SEARCH_ANALYZER_BINDING" ||
+        analyzer->second->child_expression_ids.size() != 3 ||
+        analyzer_identity == expressions_by_id.end() ||
+        analyzer_generation == expressions_by_id.end() ||
+        analyzer_digest == expressions_by_id.end() ||
+        analyzer_identity->second->expression_kind !=
+            NativeExpressionAstKind::kIdentifier ||
+        analyzer_identity->second->bound_name_uuid !=
+            search_source->model_search_analyzer_uuid ||
+        analyzer_generation->second->expression_kind !=
+            NativeExpressionAstKind::kLiteral ||
+        analyzer_generation->second->literal_kind !=
+            NativeLiteralAstKind::kNumeric ||
+        analyzer_generation->second->literal_or_parameter_ref !=
+            std::to_string(search_source->model_search_analyzer_generation) ||
+        analyzer_digest->second->expression_kind !=
+            NativeExpressionAstKind::kLiteral ||
+        analyzer_digest->second->literal_kind != NativeLiteralAstKind::kString ||
+        analyzer_digest->second->literal_or_parameter_ref !=
+            "9033908d159ddd442f2042467fd49e0a12b47679f7514e9aa6e55488e151d316" ||
+        descriptors_by_id.at(text->second->result_descriptor_id)
+                ->canonical_type_name != "text" ||
+        descriptors_by_id.at(text->second->result_descriptor_id)->nullability !=
+            BoundNullability::kNonNull ||
+        top_k->second->literal_or_parameter_ref !=
+            std::to_string(*search_source->model_search_top_k) ||
+        descriptors_by_id.at(top_k->second->result_descriptor_id)
+                ->canonical_type_name != "uint64") {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_SEARCH_QUERY_TYPE_REFUSED_V1",
+          "search typed-DAG identity/order/type drifted");
+      return envelope;
+    }
+    if (complete_filter) {
+      const auto filter = expressions_by_id.find(
+          *search_source->model_search_filter_expression_id);
+      const auto filter_alias =
+          filter == expressions_by_id.end() ||
+                  filter->second->child_expression_ids.empty()
+              ? expressions_by_id.end()
+              : expressions_by_id.find(
+                    filter->second->child_expression_ids.front());
+      const auto predicate = expressions_by_id.find(
+          *search_source->model_search_category_predicate_expression_id);
+      const auto column = expressions_by_id.find(
+          *search_source->model_search_category_column_expression_id);
+      const auto value = expressions_by_id.find(
+          *search_source->model_search_category_value_expression_id);
+      if (filter == expressions_by_id.end() ||
+          filter_alias == expressions_by_id.end() ||
+          predicate == expressions_by_id.end() ||
+          column == expressions_by_id.end() || value == expressions_by_id.end() ||
+          filter->second->canonical_operator_name != "SEARCH_FILTER" ||
+          filter_alias->second->bound_name_uuid != search_source->object_uuid ||
+          predicate->second->canonical_operator_name != "=" ||
+          column->second->bound_name_uuid !=
+              search_source->columns[1].column_uuid ||
+          descriptors_by_id.at(value->second->result_descriptor_id)
+                  ->canonical_type_name != "text") {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_SEARCH_FILTER_REFUSED_V1",
+            "search filter typed-DAG identity/type drifted");
+        return envelope;
+      }
+    }
+
+    envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
+    envelope.operands.push_back(
+        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_catalog_epoch_uuid",
+         native.scopes.front().catalog_epoch_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_security_context_uuid",
+         native.security_context_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_uuid", native.statement_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_owning_transaction_uuid",
+         native.owning_transaction_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_snapshot_uuid",
+         native.statement_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_metadata_snapshot_uuid",
+         native.statement_metadata_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uint64", "relational_local_transaction_id",
+         std::to_string(native.local_transaction_id)});
+    envelope.operands.push_back(
+        {"uint64", "relational_snapshot_visible_through_local_transaction_id",
+         std::to_string(native.snapshot_visible_through_local_transaction_id)});
+    envelope.operands.push_back(
+        {"text", "relational_statement_timestamp", native.statement_timestamp});
+    envelope.operands.push_back(
+        {"uint32", "relational_root_node_id",
+         std::to_string(native.root_relation_id)});
+    for (const auto& descriptor : native.descriptors) {
+      envelope.operands.push_back(
+          {"relational_descriptor_v1", std::to_string(descriptor.descriptor_id),
+           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
+               std::to_string(static_cast<std::uint8_t>(descriptor.nullability) + 1) +
+               "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
+               "|" + EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.width) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.precision) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.scale)});
+    }
+    for (const auto& expression : native.expressions) {
+      const auto literal_kind =
+          expression.literal_kind.has_value()
+              ? std::to_string(static_cast<std::uint8_t>(*expression.literal_kind) + 1)
+              : "-";
+      envelope.operands.push_back(
+          {"relational_expression_v1", std::to_string(expression.expression_id),
+           std::to_string(static_cast<std::uint8_t>(expression.expression_kind) + 1) +
+               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
+               "|" + std::to_string(expression.result_descriptor_id) + "|" +
+               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
+               "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
+               "|" + literal_kind + "|" +
+               EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
+               "|" + EncodeOptionalCanonicalHex(
+                           expression.literal_or_parameter_ref)});
+    }
+    static constexpr std::array<std::string_view, 5> kOutputNames{
+        "document_uuid", "analyzer_uuid", "analyzer_generation", "score",
+        "rank"};
+    static constexpr std::array<std::string_view, 5> kOutputTypes{
+        "uuid", "uuid", "uint64", "real64", "uint64"};
+    std::vector<std::uint32_t> output_descriptor_ids;
+    for (std::size_t ordinal = 0; ordinal < native.outputs.size(); ++ordinal) {
+      const auto& output = native.outputs[ordinal];
+      const auto descriptor = descriptors_by_id.find(output.descriptor_id);
+      if (output.output_id == 0 || output.relation_id != relation.relation_id ||
+          output.expression_id != relation.output_expression_ids[ordinal] ||
+          !expressions_by_id.contains(output.expression_id) ||
+          descriptor == descriptors_by_id.end() || output.ordinal != ordinal ||
+          !output.visible || output.output_name_utf8 != kOutputNames[ordinal] ||
+          descriptor->second->canonical_type_name != kOutputTypes[ordinal] ||
+          descriptor->second->nullability != BoundNullability::kNonNull ||
+          native.scopes.front().visible_projection_ids[ordinal] !=
+              output.output_id) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+            "search output descriptor identity/type is incomplete");
+        envelope.operands.clear();
+        return envelope;
+      }
+      output_descriptor_ids.push_back(output.descriptor_id);
+      envelope.operands.push_back(
+          {"relational_output_v1", std::to_string(output.output_id),
+           std::to_string(output.relation_id) + "|" +
+               std::to_string(output.expression_id) + "|" +
+               std::to_string(output.descriptor_id) + "|1|" +
+               std::to_string(output.ordinal) + "|" +
+               EncodeCanonicalHex(output.output_name_utf8)});
+    }
+    envelope.operands.push_back(
+        {"relational_node_v1", std::to_string(relation.relation_id),
+         "1|0|-|" + JoinCanonicalHandleList(output_descriptor_ids) + "|-"});
+    envelope.operands.push_back(
+        {"relational_node_binding_v1", std::to_string(relation.relation_id),
+         EncodeCanonicalHex("SBLR_MODEL_SOURCE_V1") + "|" +
+             JoinCanonicalHandleList(relation.bound_expression_ids) + "|" +
+             search_source->object_uuid + "|-|-"});
+    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
+    return envelope;
+  }
+
   const auto vector_source = std::ranges::find_if(
       native.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kVector;
@@ -41353,6 +41726,28 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
         return expression.kind == 4 && !expression.function_uuid.has_value() &&
                expression.operator_name == "VECTOR_FILTER";
       });
+  const auto search_match_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               expression.operator_name == "SEARCH_MATCH";
+      });
+  const auto search_query_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               (expression.operator_name == "SEARCH_TERMS" ||
+                expression.operator_name == "SEARCH_PHRASE" ||
+                expression.operator_name == "SEARCH_FUZZY");
+      });
+  const auto search_filter_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               expression.operator_name == "SEARCH_FILTER";
+      });
+  const auto search_analyzer_binding_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               expression.operator_name == "SEARCH_ANALYZER_BINDING";
+      });
   const bool time_series_graph =
       time_range_root != graph.expressions.end() &&
       ((document_source_node != nullptr &&
@@ -41367,15 +41762,18 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   const bool vector_graph =
       document_source_node != nullptr &&
       vector_nearest_root != graph.expressions.end();
+  const bool search_graph =
+      document_source_node != nullptr &&
+      search_match_root != graph.expressions.end();
   const bool timestamp_model_graph =
-      key_value_graph || time_series_graph || vector_graph;
+      key_value_graph || time_series_graph || vector_graph || search_graph;
   if (timestamp_model_graph != !graph.statement_timestamp.empty() ||
       (timestamp_model_graph &&
        !IsCanonicalBoundStatementTimestamp(graph.statement_timestamp))) {
     return RefuseRelationalGraph(
         time_series_graph
             ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
-            : (vector_graph ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
+            : ((vector_graph || search_graph) ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
                             : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1"),
         timestamp_model_graph
             ? "timestamp-carrying model graph requires one canonical statement timestamp"
@@ -41388,7 +41786,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
       document_expand_node != nullptr && graph_expand_root != graph.expressions.end();
   const bool document_source_graph =
       document_source_node != nullptr && !graph_source_graph &&
-      !key_value_graph && !time_series_graph && !vector_graph;
+      !key_value_graph && !time_series_graph && !vector_graph && !search_graph;
   const bool document_expand_graph =
       document_expand_node != nullptr && !graph_expand_graph;
   const auto document_expand_root_id =
@@ -41434,6 +41832,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   std::optional<std::uint32_t> key_value_predicate_root;
   std::optional<std::uint32_t> time_series_predicate_root;
   std::optional<std::uint32_t> vector_predicate_root;
+  std::optional<std::uint32_t> search_predicate_root;
   std::unordered_map<std::uint32_t, const ParsedRelationalDescriptor*>
       descriptors;
   std::unordered_set<std::string> descriptor_uuids;
@@ -41500,6 +41899,15 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
         (&expression == &*vector_nearest_root ||
          (vector_filter_root != graph.expressions.end() &&
           &expression == &*vector_filter_root));
+    const bool search_model_operation =
+        search_graph &&
+        (&expression == &*search_match_root ||
+         (search_query_root != graph.expressions.end() &&
+          &expression == &*search_query_root) ||
+         (search_filter_root != graph.expressions.end() &&
+          &expression == &*search_filter_root) ||
+         (search_analyzer_binding_root != graph.expressions.end() &&
+          &expression == &*search_analyzer_binding_root));
     if (literal != expression.literal_kind.has_value() ||
         (expression.literal_kind.has_value() &&
         (*expression.literal_kind < 1 || *expression.literal_kind > 12)) ||
@@ -41507,7 +41915,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
             (expression.function_uuid.has_value() || document_path_operation ||
              document_unnest_operation || graph_model_operation ||
              key_value_model_operation || time_series_model_operation ||
-             vector_model_operation) ||
+             vector_model_operation || search_model_operation) ||
         (expression.function_uuid.has_value() &&
          !IsCanonicalRelationalUuid(*expression.function_uuid)) ||
         identifier != expression.bound_name_uuid.has_value() ||
@@ -41516,7 +41924,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
         (unary || binary || document_path_operation ||
          document_unnest_operation || graph_model_operation ||
          key_value_model_operation || time_series_model_operation ||
-         vector_model_operation) !=
+         vector_model_operation || search_model_operation) !=
             expression.operator_name.has_value() ||
         (expression.operator_name.has_value() &&
          expression.operator_name->empty()) ||
@@ -41552,10 +41960,25 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
            expression.child_ids.size() != 4) ||
           (expression.operator_name == "VECTOR_FILTER" &&
            expression.child_ids.size() != 2))) ||
+        (search_model_operation &&
+         ((expression.operator_name == "SEARCH_MATCH" &&
+           expression.child_ids.size() != 4) ||
+          ((expression.operator_name == "SEARCH_TERMS" ||
+            expression.operator_name == "SEARCH_PHRASE") &&
+           expression.child_ids.size() != 1) ||
+          (expression.operator_name == "SEARCH_FUZZY" &&
+           expression.child_ids.size() != 2) ||
+          (expression.operator_name == "SEARCH_FILTER" &&
+           expression.child_ids.size() != 2) ||
+          (expression.operator_name == "SEARCH_ANALYZER_BINDING" &&
+           expression.child_ids.size() != 3))) ||
         (parenthesized && expression.child_ids.size() != 1)) {
-      return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
-                                   "relational expression typed fields or arity are invalid",
-                                   "expression_typed_fields");
+      return RefuseRelationalGraph(
+          "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "relational expression typed fields or arity are invalid: kind=" +
+              std::to_string(expression.kind) + ",operator=" +
+              expression.operator_name.value_or("-"),
+          "expression_typed_fields", expression.id);
     }
   }
   for (const auto& expression : graph.expressions) {
@@ -41909,6 +42332,239 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
           "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
           "key/value operation, typed children, or public output is invalid",
           "key_value_operation_root", node.id);
+    }
+  }
+  if (search_graph) {
+    // QOW-SOURCE-RCP-078-SEARCH-SBLR-VERIFIER-V1
+    const auto& node = *document_source_node;
+    const auto& match = *search_match_root;
+    const auto child = [&](const ParsedRelationalExpression& expression,
+                           const std::size_t ordinal)
+        -> const ParsedRelationalExpression* {
+      if (ordinal >= expression.child_ids.size()) return nullptr;
+      const auto found = expressions.find(expression.child_ids[ordinal]);
+      return found == expressions.end() ? nullptr : found->second;
+    };
+    const auto* alias = child(match, 0);
+    const auto* query = child(match, 1);
+    const auto* analyzer_binding = child(match, 2);
+    const auto* top_k = child(match, 3);
+    const auto* query_text =
+        query == nullptr ? nullptr : child(*query, 0);
+    const auto* fuzzy_edit =
+        query != nullptr && query->operator_name == "SEARCH_FUZZY"
+            ? child(*query, 1)
+            : nullptr;
+    const auto* analyzer_identity =
+        analyzer_binding == nullptr ? nullptr : child(*analyzer_binding, 0);
+    const auto* analyzer_generation =
+        analyzer_binding == nullptr ? nullptr : child(*analyzer_binding, 1);
+    const auto* analyzer_digest =
+        analyzer_binding == nullptr ? nullptr : child(*analyzer_binding, 2);
+    const auto match_count = std::ranges::count_if(
+        graph.expressions, [](const auto& expression) {
+          return expression.operator_name == "SEARCH_MATCH";
+        });
+    const auto query_count = std::ranges::count_if(
+        graph.expressions, [](const auto& expression) {
+          return expression.operator_name == "SEARCH_TERMS" ||
+                 expression.operator_name == "SEARCH_PHRASE" ||
+                 expression.operator_name == "SEARCH_FUZZY";
+        });
+    const auto analyzer_binding_count = std::ranges::count_if(
+        graph.expressions, [](const auto& expression) {
+          return expression.operator_name == "SEARCH_ANALYZER_BINDING";
+        });
+    const auto filter_count = std::ranges::count_if(
+        graph.expressions, [](const auto& expression) {
+          return expression.operator_name == "SEARCH_FILTER";
+        });
+    std::uint64_t top_k_value = 0;
+    bool exact_top_k = top_k != nullptr && top_k->kind == 1 &&
+                       top_k->literal_kind == 1 &&
+                       top_k->literal_or_parameter_ref.has_value();
+    if (exact_top_k) {
+      const auto& spelling = *top_k->literal_or_parameter_ref;
+      const auto parsed = std::from_chars(
+          spelling.data(), spelling.data() + spelling.size(), top_k_value);
+      exact_top_k = !spelling.empty() &&
+                    (spelling.size() == 1 || spelling.front() != '0') &&
+                    parsed.ec == std::errc{} &&
+                    parsed.ptr == spelling.data() + spelling.size() &&
+                    top_k_value > 0 && top_k_value <= 0xffffffffULL;
+    }
+    const bool terms = query != nullptr &&
+                       query->operator_name == "SEARCH_TERMS";
+    const bool phrase = query != nullptr &&
+                        query->operator_name == "SEARCH_PHRASE";
+    const bool fuzzy = query != nullptr &&
+                       query->operator_name == "SEARCH_FUZZY";
+    bool exact_operation =
+        match_count == 1 && query_count == 1 && analyzer_binding_count == 1 &&
+        filter_count <= 1 && node.required_object_uuids.size() == 1 &&
+        node.input_ids.empty() && match.kind == 4 &&
+        !match.function_uuid.has_value() && match.child_ids.size() == 4 &&
+        std::unordered_set<std::uint32_t>(match.child_ids.begin(),
+                                          match.child_ids.end()).size() == 4 &&
+        alias != nullptr && alias->kind == 3 && alias->child_ids.empty() &&
+        alias->bound_name_uuid == node.required_object_uuids.front() &&
+        search_query_root != graph.expressions.end() &&
+        query == &*search_query_root && (terms || phrase || fuzzy) &&
+        query->kind == 4 && !query->function_uuid.has_value() &&
+        query_text != nullptr &&
+        (query_text->kind == 1 || query_text->kind == 2) &&
+        (query_text->kind != 1 || query_text->literal_kind == 2) &&
+        descriptors.at(query_text->descriptor_id)->nullability == 1 &&
+        search_analyzer_binding_root != graph.expressions.end() &&
+        analyzer_binding == &*search_analyzer_binding_root &&
+        analyzer_binding->kind == 4 &&
+        !analyzer_binding->function_uuid.has_value() &&
+        analyzer_binding->child_ids.size() == 3 &&
+        analyzer_identity != nullptr && analyzer_identity->kind == 3 &&
+        analyzer_identity->child_ids.empty() &&
+        analyzer_identity->bound_name_uuid.has_value() &&
+        analyzer_generation != nullptr && analyzer_generation->kind == 1 &&
+        analyzer_generation->literal_kind == 1 &&
+        analyzer_generation->literal_or_parameter_ref.has_value() &&
+        *analyzer_generation->literal_or_parameter_ref != "0" &&
+        descriptors.at(analyzer_generation->descriptor_id)->nullability == 1 &&
+        analyzer_digest != nullptr && analyzer_digest->kind == 1 &&
+        analyzer_digest->literal_kind == 2 &&
+        analyzer_digest->literal_or_parameter_ref ==
+            "9033908d159ddd442f2042467fd49e0a12b47679f7514e9aa6e55488e151d316" &&
+        analyzer_digest->descriptor_id == query_text->descriptor_id &&
+        exact_top_k && descriptors.at(top_k->descriptor_id)->nullability == 1;
+    if (exact_operation) {
+      std::uint64_t analyzer_generation_value = 0;
+      const auto& spelling = *analyzer_generation->literal_or_parameter_ref;
+      const auto parsed = std::from_chars(
+          spelling.data(), spelling.data() + spelling.size(),
+          analyzer_generation_value);
+      exact_operation =
+          !spelling.empty() &&
+          (spelling.size() == 1 || spelling.front() != '0') &&
+          parsed.ec == std::errc{} &&
+          parsed.ptr == spelling.data() + spelling.size() &&
+          analyzer_generation_value != 0;
+    }
+    if (fuzzy) {
+      exact_operation =
+          exact_operation && query->child_ids.size() == 2 &&
+          fuzzy_edit != nullptr && fuzzy_edit->kind == 1 &&
+          fuzzy_edit->literal_kind == 1 &&
+          fuzzy_edit->literal_or_parameter_ref == "1";
+    } else {
+      exact_operation = exact_operation && query->child_ids.size() == 1;
+    }
+    const bool filtered = search_filter_root != graph.expressions.end();
+    const ParsedRelationalExpression* category_binding = nullptr;
+    if (filtered) {
+      const auto& filter = *search_filter_root;
+      const auto* filter_alias = child(filter, 0);
+      const auto* predicate = child(filter, 1);
+      const auto* category_column =
+          predicate == nullptr ? nullptr : child(*predicate, 0);
+      const auto* category_value =
+          predicate == nullptr ? nullptr : child(*predicate, 1);
+      const auto conjunction = std::ranges::find_if(
+          graph.expressions, [&](const auto& expression) {
+            return expression.kind == 6 && expression.operator_name == "AND" &&
+                   expression.child_ids ==
+                       std::vector<std::uint32_t>{match.id, filter.id};
+          });
+      exact_operation =
+          exact_operation && filter_count == 1 && filter.kind == 4 &&
+          !filter.function_uuid.has_value() && filter.child_ids.size() == 2 &&
+          filter_alias != nullptr && filter_alias->kind == 3 &&
+          filter_alias->bound_name_uuid == node.required_object_uuids.front() &&
+          predicate != nullptr && predicate->kind == 6 &&
+          predicate->operator_name == "=" && predicate->child_ids.size() == 2 &&
+          category_column != nullptr && category_column->kind == 3 &&
+          category_column->bound_name_uuid.has_value() &&
+          category_column->bound_name_uuid !=
+              node.required_object_uuids.front() &&
+          category_column->bound_name_uuid != analyzer_identity->bound_name_uuid &&
+          category_value != nullptr &&
+          (category_value->kind == 1 || category_value->kind == 2) &&
+          (category_value->kind != 1 || category_value->literal_kind == 2) &&
+          category_value->descriptor_id == category_column->descriptor_id &&
+          descriptors.at(category_value->descriptor_id)->nullability == 1 &&
+          conjunction != graph.expressions.end();
+      if (conjunction != graph.expressions.end()) {
+        search_predicate_root = conjunction->id;
+      }
+      category_binding = category_column;
+    } else {
+      search_predicate_root = match.id;
+      std::vector<const ParsedRelationalExpression*> category_bindings;
+      for (const auto& expression : graph.expressions) {
+        if (expression.kind == 3 && expression.bound_name_uuid.has_value() &&
+            expression.bound_name_uuid != node.required_object_uuids.front() &&
+            (analyzer_identity == nullptr ||
+             expression.bound_name_uuid !=
+                 analyzer_identity->bound_name_uuid)) {
+          category_bindings.push_back(&expression);
+        }
+      }
+      exact_operation =
+          exact_operation && category_bindings.size() == 1 &&
+          std::ranges::find(node.bound_expression_ids,
+                            category_bindings.front()->id) !=
+              node.bound_expression_ids.end();
+      if (category_bindings.size() == 1) {
+        category_binding = category_bindings.front();
+      }
+    }
+    exact_operation =
+        exact_operation && category_binding != nullptr &&
+        descriptors.at(category_binding->descriptor_id)->nullability == 1 &&
+        descriptors.at(category_binding->descriptor_id)->type_uuid ==
+            descriptors.at(query_text->descriptor_id)->type_uuid;
+    std::vector<const ParsedRelationalOutput*> search_outputs;
+    for (const auto& output : graph.outputs) {
+      if (output.node_id == node.id) search_outputs.push_back(&output);
+    }
+    std::ranges::sort(search_outputs, [](const auto* left, const auto* right) {
+      return left->ordinal < right->ordinal;
+    });
+    static constexpr std::array<std::string_view, 5> kNames{
+        "document_uuid", "analyzer_uuid", "analyzer_generation", "score",
+        "rank"};
+    exact_operation =
+        exact_operation && search_outputs.size() == kNames.size() &&
+        node.output_descriptor_ids.size() == kNames.size();
+    for (std::size_t ordinal = 0;
+         exact_operation && ordinal < search_outputs.size(); ++ordinal) {
+      const auto* output = search_outputs[ordinal];
+      const auto output_expression = expressions.find(output->expression_id);
+      const auto& expected_output_binding =
+          (ordinal == 1 || ordinal == 2)
+              ? analyzer_identity->bound_name_uuid
+              : std::optional<std::string>{node.required_object_uuids.front()};
+      exact_operation =
+          output->ordinal == ordinal && output->visible &&
+          output->name_utf8 == kNames[ordinal] &&
+          output->descriptor_id == node.output_descriptor_ids[ordinal] &&
+          output_expression != expressions.end() &&
+          output_expression->second->kind == 3 &&
+          output_expression->second->bound_name_uuid ==
+              expected_output_binding &&
+          output_expression->second->descriptor_id == output->descriptor_id &&
+          descriptors.at(output->descriptor_id)->nullability == 1;
+    }
+    exact_operation =
+        exact_operation && search_outputs.size() == 5 &&
+        descriptors.at(search_outputs[0]->descriptor_id)->type_uuid ==
+            descriptors.at(search_outputs[1]->descriptor_id)->type_uuid &&
+        descriptors.at(search_outputs[2]->descriptor_id)->type_uuid ==
+            descriptors.at(search_outputs[4]->descriptor_id)->type_uuid &&
+        descriptors.at(search_outputs[3]->descriptor_id)->type_uuid !=
+            descriptors.at(search_outputs[2]->descriptor_id)->type_uuid;
+    if (!exact_operation) {
+      return RefuseRelationalGraph(
+          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+          "search operation, analyzer binding, predicate, or public output is invalid",
+          "search_operation_root", node.id);
     }
   }
   if (vector_graph) {
@@ -42954,6 +43610,9 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   }
   if (vector_predicate_root.has_value()) {
     expression_roots.insert(*vector_predicate_root);
+  }
+  if (search_predicate_root.has_value()) {
+    expression_roots.insert(*search_predicate_root);
   }
   if (graph_source_graph) expression_roots.insert(graph_match_root->id);
   if (graph_expand_graph) expression_roots.insert(graph_expand_root->id);

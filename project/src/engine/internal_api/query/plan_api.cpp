@@ -344,14 +344,53 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", 0,
                   "vector_model_operation_identity");
   }
+  // QOW-SOURCE-RCP-078-TYPED-DAG-FUNCTIONLESS-SEARCH-V1
+  const auto search_match_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "SEARCH_MATCH";
+      });
+  const auto search_query_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "SEARCH_TERMS" ||
+               expression.operator_name == "SEARCH_PHRASE" ||
+               expression.operator_name == "SEARCH_FUZZY";
+      });
+  const auto search_filter_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "SEARCH_FILTER";
+      });
+  const auto search_analyzer_binding_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "SEARCH_ANALYZER_BINDING";
+      });
+  const auto search_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1" &&
+               node.output_descriptor_ids.size() == 5 &&
+               (node.bound_expression_ids.size() == 12 ||
+                node.bound_expression_ids.size() == 13 ||
+                node.bound_expression_ids.size() == 17 ||
+                node.bound_expression_ids.size() == 18);
+      });
+  const bool search_model_wire =
+      planning_wire && search_match_count == 1 && search_query_count == 1 &&
+      search_filter_count <= 1 && search_analyzer_binding_count == 1 &&
+      search_node != dag.nodes.end();
+  if ((search_match_count != 0 || search_query_count != 0 ||
+       search_filter_count != 0 || search_analyzer_binding_count != 0) &&
+      !search_model_wire) {
+    return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", 0,
+                  "search_model_operation_identity");
+  }
   const bool timestamp_model_wire =
-      key_value_model_wire || time_series_model_wire || vector_model_wire;
+      key_value_model_wire || time_series_model_wire || vector_model_wire ||
+      search_model_wire;
   if (timestamp_model_wire != !dag.statement_timestamp.empty() ||
       (timestamp_model_wire &&
        !canonical_statement_timestamp(dag.statement_timestamp))) {
     return refuse(time_series_model_wire
                       ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
-                      : vector_model_wire
+                      : (vector_model_wire || search_model_wire)
                             ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
                             : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1",
                   0,
@@ -454,12 +493,21 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         !expression.function_uuid.has_value() &&
         (expression.operator_name == "VECTOR_NEAREST" ||
          expression.operator_name == "VECTOR_FILTER");
+    const bool functionless_search_operation =
+        search_model_wire && function_call &&
+        !expression.function_uuid.has_value() &&
+        (expression.operator_name == "SEARCH_MATCH" ||
+         expression.operator_name == "SEARCH_TERMS" ||
+         expression.operator_name == "SEARCH_PHRASE" ||
+         expression.operator_name == "SEARCH_FUZZY" ||
+         expression.operator_name == "SEARCH_FILTER" ||
+         expression.operator_name == "SEARCH_ANALYZER_BINDING");
     const bool operator_expression =
         expression.expression_kind == RelationalExpressionKind::kUnary ||
         expression.expression_kind == RelationalExpressionKind::kBinary ||
         functionless_document_unnest || functionless_graph_operation ||
         functionless_key_value_operation || functionless_time_series_operation ||
-        functionless_vector_operation;
+        functionless_vector_operation || functionless_search_operation;
     if (literal != expression.literal_kind.has_value() ||
         (expression.literal_kind.has_value() &&
          !known_literal_kind(*expression.literal_kind)) ||
@@ -468,7 +516,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                           functionless_graph_operation ||
                           functionless_key_value_operation ||
                           functionless_time_series_operation ||
-                          functionless_vector_operation) ||
+                          functionless_vector_operation ||
+                          functionless_search_operation) ||
         (expression.function_uuid.has_value() &&
          !canonical_uuid(*expression.function_uuid)) ||
         identifier != expression.bound_name_uuid.has_value() ||
@@ -490,7 +539,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
            !functionless_graph_operation &&
            !functionless_key_value_operation &&
            !functionless_time_series_operation &&
-           !functionless_vector_operation) ||
+           !functionless_vector_operation &&
+           !functionless_search_operation) ||
           (functionless_document_unnest && child_count == 2) ||
           (functionless_graph_operation &&
            ((expression.operator_name == "GRAPH_MATCH" && child_count == 2) ||
@@ -508,7 +558,19 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
            ((expression.operator_name == "VECTOR_NEAREST" &&
              child_count == 4) ||
             (expression.operator_name == "VECTOR_FILTER" &&
-             child_count == 2))))) ||
+             child_count == 2))) ||
+          (functionless_search_operation &&
+           ((expression.operator_name == "SEARCH_MATCH" &&
+             child_count == 4) ||
+            ((expression.operator_name == "SEARCH_TERMS" ||
+              expression.operator_name == "SEARCH_PHRASE") &&
+             child_count == 1) ||
+            (expression.operator_name == "SEARCH_FUZZY" &&
+             child_count == 2) ||
+            (expression.operator_name == "SEARCH_FILTER" &&
+             child_count == 2) ||
+            (expression.operator_name == "SEARCH_ANALYZER_BINDING" &&
+             child_count == 3))))) ||
         (expression.expression_kind == RelationalExpressionKind::kUnary &&
          child_count == 1) ||
         (expression.expression_kind == RelationalExpressionKind::kBinary &&
@@ -2675,22 +2737,56 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
         vector_node->bound_expression_ids.size() == 8) ||
        (vector_filter_count == 1 &&
         vector_node->bound_expression_ids.size() == 14));
+  const auto search_match_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "SEARCH_MATCH";
+      });
+  const auto search_query_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "SEARCH_TERMS" ||
+               expression.operator_name == "SEARCH_PHRASE" ||
+               expression.operator_name == "SEARCH_FUZZY";
+      });
+  const auto search_filter_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "SEARCH_FILTER";
+      });
+  const auto search_analyzer_binding_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "SEARCH_ANALYZER_BINDING";
+      });
+  const auto search_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1" &&
+               node.output_descriptor_ids.size() == 5 &&
+               (node.bound_expression_ids.size() == 12 ||
+                node.bound_expression_ids.size() == 13 ||
+                node.bound_expression_ids.size() == 17 ||
+                node.bound_expression_ids.size() == 18);
+      });
+  const bool exact_search_family =
+      search_match_count == 1 && search_query_count == 1 &&
+      search_filter_count <= 1 && search_analyzer_binding_count == 1 &&
+      search_node != dag.nodes.end();
   if ((exact_graph_family && exact_document_expand) ||
       (graph_operation_count != 0 && !exact_graph_family) ||
       (vector_nearest_count != 0 && !exact_vector_family) ||
-      (vector_filter_count != 0 && !exact_vector_family)) {
+      (vector_filter_count != 0 && !exact_vector_family) ||
+      ((search_match_count != 0 || search_query_count != 0 ||
+        search_filter_count != 0 || search_analyzer_binding_count != 0) &&
+       !exact_search_family)) {
     return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
                   "model_family_operation_identity");
   }
   const bool exact_timestamp_family =
       exact_key_value_family || exact_time_series_family ||
-      exact_vector_family;
+      exact_vector_family || exact_search_family;
   if (exact_timestamp_family != !engine_scope.statement_timestamp.empty() ||
       (exact_timestamp_family &&
        dag.statement_timestamp != engine_scope.statement_timestamp)) {
     return refuse(exact_time_series_family
                       ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
-                      : (exact_vector_family
+                      : ((exact_vector_family || exact_search_family)
                              ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
                              : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1"),
                   0,
@@ -2807,6 +2903,10 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
                node.node_id == vector_node->node_id) {
       logical_node.model_family_identity =
           plan::CanonicalLogicalModelFamilyIdentity::kVector;
+    } else if (exact_search_family &&
+               node.node_id == search_node->node_id) {
+      logical_node.model_family_identity =
+          plan::CanonicalLogicalModelFamilyIdentity::kSearch;
     } else if (exact_document_expand &&
                node.node_id == document_expand_node->node_id) {
       logical_node.model_family_identity =

@@ -42,6 +42,8 @@ enum class StatementDescriptorProfileKind : std::uint8_t {
   kTextListNonNull = 9,
   kTextListNullable = 10,
   kReal64NonNull = 11,
+  kUuidNonNull = 12,
+  kUint64NonNull = 13,
 };
 
 struct StatementDescriptorProfile {

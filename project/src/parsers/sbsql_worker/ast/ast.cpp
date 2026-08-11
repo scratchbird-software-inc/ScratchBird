@@ -1460,6 +1460,8 @@ std::string NativeRelationSourceAstKindName(
       return "time_series";
     case NativeRelationSourceAstKind::kVector:
       return "vector";
+    case NativeRelationSourceAstKind::kSearch:
+      return "search";
   }
   return "unknown";
 }
@@ -1630,6 +1632,8 @@ AstDocument BuildAst(const CstDocument& cst) {
     std::size_t time_series_source_count = 0;
     bool vector_resolution_description_valid = true;
     std::size_t vector_source_count = 0;
+    bool search_resolution_description_valid = true;
+    std::size_t search_source_count = 0;
     for (const auto& source :
          ast.native_relational.catalog_relation_sources) {
       if (source.source_kind == NativeRelationSourceAstKind::kKeyValue) {
@@ -1724,6 +1728,50 @@ AstDocument BuildAst(const CstDocument& cst) {
              source.qualified_name_range});
         continue;
       }
+      if (source.source_kind == NativeRelationSourceAstKind::kSearch) {
+        ++search_source_count;
+        const bool ranked =
+            source.model_operation_id == "SEARCH_RANKED_QUERY";
+        const bool phrase =
+            source.model_operation_id == "SEARCH_PHRASE_QUERY";
+        const bool fuzzy =
+            source.model_operation_id == "SEARCH_FUZZY_QUERY";
+        const bool any_filter =
+            source.model_search_filter_expression_id.has_value() ||
+            source.model_search_category_predicate_expression_id.has_value() ||
+            source.model_search_category_column_expression_id.has_value() ||
+            source.model_search_category_value_expression_id.has_value();
+        const bool complete_filter =
+            source.model_search_filter_expression_id.has_value() &&
+            source.model_search_category_predicate_expression_id.has_value() &&
+            source.model_search_category_column_expression_id.has_value() &&
+            source.model_search_category_value_expression_id.has_value();
+        search_resolution_description_valid =
+            search_resolution_description_valid &&
+            source.model_family_id == "search" &&
+            (ranked || phrase || fuzzy) && !source.qualified_name.empty() &&
+            source.alias.has_value() &&
+            source.model_search_alias_expression_id.has_value() &&
+            source.model_search_match_expression_id.has_value() &&
+            source.model_search_query_expression_id.has_value() &&
+            source.model_search_text_expression_id.has_value() &&
+            source.model_search_analyzer_expression_id.has_value() &&
+            source.model_search_top_k_expression_id.has_value() &&
+            !source.model_search_analyzer_name.empty() &&
+            source.model_search_top_k.has_value() &&
+            *source.model_search_top_k >= 1 &&
+            *source.model_search_top_k <= 0xffffffffULL &&
+            (fuzzy == source.model_search_edit_expression_id.has_value()) &&
+            (!any_filter || complete_filter);
+        ast.native_relational.model_object_resolution_requests.push_back(
+            {source.source_id, "search", "search", source.qualified_name,
+             source.qualified_name_range});
+        ast.native_relational.model_object_resolution_requests.push_back(
+            {source.source_id, "search", "search_analyzer",
+             source.model_search_analyzer_name,
+             source.model_search_analyzer_name.front().range});
+        continue;
+      }
       if (source.source_kind == NativeRelationSourceAstKind::kGraph) {
         ++graph_source_count;
         const bool graph_match =
@@ -1780,18 +1828,24 @@ AstDocument BuildAst(const CstDocument& cst) {
     }
     const auto expected_model_resolution_count =
         document_collection_source_count + graph_source_count +
-        key_value_source_count + time_series_source_count + vector_source_count;
+        key_value_source_count + time_series_source_count + vector_source_count +
+        (search_source_count * 2);
+    const auto model_source_count =
+        document_collection_source_count + graph_source_count +
+        key_value_source_count + time_series_source_count + vector_source_count +
+        search_source_count;
     if (document_source_count > 1 || graph_source_count > 1 ||
         key_value_source_count > 1 ||
         time_series_source_count > 1 || vector_source_count > 1 ||
-        expected_model_resolution_count > 1 ||
+        search_source_count > 1 || model_source_count > 1 ||
         ast.native_relational.model_object_resolution_requests.size() !=
             expected_model_resolution_count ||
         !document_resolution_description_valid ||
         !graph_resolution_description_valid ||
         !key_value_resolution_description_valid ||
         !time_series_resolution_description_valid ||
-        !vector_resolution_description_valid) {
+        !vector_resolution_description_valid ||
+        !search_resolution_description_valid) {
       ast.native_relational.status =
           NativeRelationalParseStatus::kRefused;
       ast.native_relational.messages.diagnostics.push_back(MakeDiagnostic(
@@ -1802,7 +1856,7 @@ AstDocument BuildAst(const CstDocument& cst) {
           ast.native_relational.messages.diagnostics.back());
     }
     const bool document_collection_source_query =
-        ast.native_relational.model_object_resolution_requests.size() == 1;
+        !ast.native_relational.model_object_resolution_requests.empty();
     ast.requires_name_resolution =
         catalog_source_query || document_collection_source_query;
     ast.produces_sblr =

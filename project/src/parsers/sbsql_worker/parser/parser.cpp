@@ -138,10 +138,23 @@ class NativeRelationalParser final {
     if (contains_word("MONGO_PIPELINE") || contains_word("CYPHER_TEXT") ||
         contains_word("REDIS_COMMAND") ||
         contains_word("INFLUX_LINE_PROTOCOL") ||
-        contains_word("VECTOR_PROVIDER_REQUEST")) {
+        contains_word("VECTOR_PROVIDER_REQUEST") ||
+        contains_word("OPENSEARCH_DSL")) {
       RefuseExact("SB_MODEL_GRAMMAR_DONOR_TEXT_REFUSED_V1",
                   "opaque donor text is not an executable SBSQL model source");
       return FinishRefusal();
+    }
+    if (contains_word("SEARCH_SOURCE") || contains_word("SEARCH_MATCH") ||
+        contains_word("SEARCH_TERMS") || contains_word("SEARCH_PHRASE") ||
+        contains_word("SEARCH_FUZZY") || contains_word("SEARCH_FILTER") ||
+        contains_word("SEARCH_INSERT") || contains_word("SEARCH_UPSERT")) {
+      if (tokens_.empty() || !IsWord(*tokens_.front(), "SELECT") ||
+          contains_word("SEARCH_INSERT") || contains_word("SEARCH_UPSERT")) {
+        RefuseExact("SB_MODEL_QUERY_WRITE_REFUSED_V1",
+                    "search model sources are read-only query inputs");
+        return FinishRefusal();
+      }
+      return ParseSearchModelSelect();
     }
     if (contains_word("VECTOR_SOURCE") || contains_word("VECTOR_NEAREST") ||
         contains_word("VECTOR_FILTER") || contains_word("VECTOR_INSERT") ||
@@ -290,6 +303,316 @@ class NativeRelationalParser final {
     document_.messages.diagnostics.push_back(MakeDiagnostic(
         std::string(diagnostic_id), "ERROR", std::string(message),
         "sbp_sbsql.document_model_parser"));
+  }
+
+  NativeRelationalAstDocument ParseSearchModelSelect() {
+    // QOW-SOURCE-RCP-078-SEARCH-GRAMMAR-V1
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded", "search query token limit exceeded");
+      return FinishRefusal();
+    }
+    const Token& select = Consume();
+    std::vector<std::uint32_t> projection_expression_ids;
+    if (AtSymbol("*")) {
+      const Token& token = Consume();
+      NativeExpressionAstNode wildcard;
+      wildcard.expression_id = NextExpressionId();
+      wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+      wildcard.spelling = token.text;
+      wildcard.range = TokenSourceRange(token);
+      projection_expression_ids.push_back(wildcard.expression_id);
+      document_.expressions.push_back(std::move(wildcard));
+    } else {
+      while (!AtEnd()) {
+        const auto expression_id = ParseExpression(0, 0);
+        if (!expression_id.has_value()) return FinishRefusal();
+        projection_expression_ids.push_back(*expression_id);
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+    }
+    if (!RequireWord("FROM", "search_from_required",
+                     "search source requires FROM") ||
+        AtEnd() || !IsWord(Current(), "SEARCH_SOURCE")) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "FROM requires exactly one SEARCH_SOURCE");
+      return FinishRefusal();
+    }
+    const Token& source_operator = Consume();
+    if (!RequireSymbol("(", "search_source_open_required",
+                       "SEARCH_SOURCE requires an opening parenthesis") ||
+        AtEnd() || !IsNameToken(Current())) {
+      RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                  "SEARCH_SOURCE requires a qualified collection name");
+      return FinishRefusal();
+    }
+    NativeCatalogRelationSourceAstNode source;
+    source.source_id = 1;
+    source.source_kind = NativeRelationSourceAstKind::kSearch;
+    source.model_family_id = "search";
+    const Token& first_name = Consume();
+    const Token* last_name = &first_name;
+    source.qualified_name.push_back(
+        {first_name.text, first_name.quoted, TokenSourceRange(first_name)});
+    while (AtSymbol(".")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "qualified search collection name is incomplete");
+        return FinishRefusal();
+      }
+      last_name = &Consume();
+      source.qualified_name.push_back(
+          {last_name->text, last_name->quoted, TokenSourceRange(*last_name)});
+    }
+    source.qualified_name_range = Span(first_name, *last_name);
+    if (!RequireSymbol(")", "search_source_close_required",
+                       "SEARCH_SOURCE requires a closing parenthesis")) {
+      return FinishRefusal();
+    }
+    const Token* source_end = &Previous();
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "SEARCH_SOURCE AS requires an alias");
+        return FinishRefusal();
+      }
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source.alias_is_explicit = true;
+      source_end = &alias;
+    } else if (!AtEnd() && Current().kind == TokenKind::kIdentifier &&
+               !IsWord(Current(), "WHERE")) {
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source_end = &alias;
+    } else {
+      source.alias = NativeIdentifierAstNode{
+          last_name->text, last_name->quoted, TokenSourceRange(*last_name)};
+    }
+    if (AtEnd() || !IsWord(Current(), "WHERE")) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "SEARCH_SOURCE requires exactly one SEARCH_MATCH");
+      return FinishRefusal();
+    }
+    Consume();
+    const auto match_id = ParseExpression(3, 0);
+    if (!match_id.has_value()) return FinishRefusal();
+    const auto expression_at = [&](const std::uint32_t id)
+        -> NativeExpressionAstNode* {
+      return id == 0 || id > document_.expressions.size()
+                 ? nullptr
+                 : &document_.expressions[id - 1];
+    };
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "SEARCH_MATCH AS requires a result alias");
+        return FinishRefusal();
+      }
+      const Token& result_alias = Consume();
+      source.model_search_result_alias = NativeIdentifierAstNode{
+          result_alias.text, result_alias.quoted,
+          TokenSourceRange(result_alias)};
+    }
+    std::optional<std::uint32_t> filter_id;
+    std::uint32_t predicate_id = *match_id;
+    if (!AtEnd() && IsWord(Current(), "AND")) {
+      const Token& and_token = Consume();
+      const auto parsed_filter_id = ParseExpression(3, 0);
+      if (!parsed_filter_id.has_value()) return FinishRefusal();
+      filter_id = *parsed_filter_id;
+      const auto* parsed_filter = expression_at(*parsed_filter_id);
+      NativeExpressionAstNode conjunction;
+      conjunction.expression_id = NextExpressionId();
+      conjunction.expression_kind = NativeExpressionAstKind::kBinary;
+      conjunction.child_expression_ids = {*match_id, *parsed_filter_id};
+      conjunction.operator_name = "AND";
+      conjunction.range = RangeFromTokenAndRange(
+          and_token, parsed_filter == nullptr ? TokenSourceRange(and_token)
+                                              : parsed_filter->range);
+      conjunction.spelling = SourceForRange(conjunction.range);
+      predicate_id = conjunction.expression_id;
+      document_.expressions.push_back(std::move(conjunction));
+    }
+    auto* match = expression_at(*match_id);
+    auto* filter = filter_id.has_value() ? expression_at(*filter_id) : nullptr;
+    if (match == nullptr ||
+        match->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+        ToUpperAscii(match->operator_name) != "SEARCH_MATCH" ||
+        match->child_expression_ids.size() != 4) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "SEARCH_MATCH requires alias, query, analyzer, and top-k");
+      return FinishRefusal();
+    }
+    match->operator_name = "SEARCH_MATCH";
+    auto* alias = expression_at(match->child_expression_ids[0]);
+    auto* query = expression_at(match->child_expression_ids[1]);
+    auto* analyzer = expression_at(match->child_expression_ids[2]);
+    auto* top_k = expression_at(match->child_expression_ids[3]);
+    const auto same_alias = [&](const NativeExpressionAstNode* expression) {
+      if (expression == nullptr || !source.alias.has_value() ||
+          expression->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          expression->qualified_identifier.size() != 1) {
+        return false;
+      }
+      const auto& presented = expression->qualified_identifier.front();
+      return presented.quoted == source.alias->quoted &&
+             (presented.quoted
+                  ? presented.spelling == source.alias->spelling
+                  : ToLowerAscii(presented.spelling) ==
+                        ToLowerAscii(source.alias->spelling));
+    };
+    if (!same_alias(alias) || query == nullptr || analyzer == nullptr ||
+        top_k == nullptr ||
+        query->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+        analyzer->expression_kind != NativeExpressionAstKind::kIdentifier ||
+        analyzer->qualified_identifier.empty() ||
+        top_k->expression_kind != NativeExpressionAstKind::kLiteral ||
+        top_k->literal_kind != NativeLiteralAstKind::kNumeric) {
+      RefuseExact("SB_MODEL_SEARCH_QUERY_TYPE_REFUSED_V1",
+                  "SEARCH_MATCH operands are not the exact typed shape");
+      return FinishRefusal();
+    }
+    const auto query_kind = ToUpperAscii(query->operator_name);
+    const bool fuzzy = query_kind == "SEARCH_FUZZY";
+    if (query_kind != "SEARCH_TERMS" && query_kind != "SEARCH_PHRASE" &&
+        !fuzzy) {
+      RefuseExact("SB_MODEL_SEARCH_QUERY_TYPE_REFUSED_V1",
+                  "search query constructor is outside the closed v1 set");
+      return FinishRefusal();
+    }
+    if ((!fuzzy && query->child_expression_ids.size() != 1) ||
+        (fuzzy && query->child_expression_ids.size() != 2)) {
+      RefuseExact("SB_MODEL_SEARCH_QUERY_TYPE_REFUSED_V1",
+                  "search query constructor has invalid arity");
+      return FinishRefusal();
+    }
+    auto* text = expression_at(query->child_expression_ids[0]);
+    auto* edit = fuzzy ? expression_at(query->child_expression_ids[1]) : nullptr;
+    if (text == nullptr ||
+        !((text->expression_kind == NativeExpressionAstKind::kLiteral &&
+           text->literal_kind == NativeLiteralAstKind::kString) ||
+          text->expression_kind == NativeExpressionAstKind::kParameter) ||
+        (fuzzy &&
+         (edit == nullptr ||
+          edit->expression_kind != NativeExpressionAstKind::kLiteral ||
+          edit->literal_kind != NativeLiteralAstKind::kNumeric ||
+          edit->spelling != "1"))) {
+      RefuseExact(fuzzy ? "SB_MODEL_SEARCH_QUERY_TOKEN_LIMIT_REFUSED_V1"
+                        : "SB_MODEL_SEARCH_QUERY_TYPE_REFUSED_V1",
+                  "search query TEXT/edit operands are invalid");
+      return FinishRefusal();
+    }
+    std::uint64_t top_k_value = 0;
+    const auto converted = std::from_chars(
+        top_k->spelling.data(), top_k->spelling.data() + top_k->spelling.size(),
+        top_k_value);
+    if (top_k->spelling.empty() ||
+        (top_k->spelling.size() > 1 && top_k->spelling.front() == '0') ||
+        converted.ec != std::errc{} ||
+        converted.ptr != top_k->spelling.data() + top_k->spelling.size() ||
+        top_k_value == 0 || top_k_value > 0xffffffffULL) {
+      RefuseExact("SB_MODEL_SEARCH_TOP_K_REFUSED_V1",
+                  "search top-k must be a canonical uint32 literal");
+      return FinishRefusal();
+    }
+    query->operator_name = query_kind;
+    source.model_search_alias_expression_id = alias->expression_id;
+    source.model_search_match_expression_id = match->expression_id;
+    source.model_search_query_expression_id = query->expression_id;
+    source.model_search_text_expression_id = text->expression_id;
+    if (edit != nullptr) source.model_search_edit_expression_id = edit->expression_id;
+    source.model_search_analyzer_expression_id = analyzer->expression_id;
+    source.model_search_top_k_expression_id = top_k->expression_id;
+    source.model_search_analyzer_name = analyzer->qualified_identifier;
+    source.model_search_query_kind = query_kind;
+    source.model_search_top_k = top_k_value;
+
+    if (filter != nullptr) {
+      if (filter->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+          ToUpperAscii(filter->operator_name) != "SEARCH_FILTER" ||
+          filter->child_expression_ids.size() != 2) {
+        RefuseExact("SB_MODEL_SEARCH_FILTER_REFUSED_V1",
+                    "SEARCH_FILTER has an invalid function shape");
+        return FinishRefusal();
+      }
+      filter->operator_name = "SEARCH_FILTER";
+      auto* filter_alias = expression_at(filter->child_expression_ids[0]);
+      auto* predicate = expression_at(filter->child_expression_ids[1]);
+      auto* column = predicate != nullptr &&
+                             predicate->child_expression_ids.size() == 2
+                         ? expression_at(predicate->child_expression_ids[0])
+                         : nullptr;
+      auto* value = predicate != nullptr &&
+                            predicate->child_expression_ids.size() == 2
+                        ? expression_at(predicate->child_expression_ids[1])
+                        : nullptr;
+      const bool exact_category =
+          column != nullptr && source.alias.has_value() &&
+          column->expression_kind == NativeExpressionAstKind::kIdentifier &&
+          column->qualified_identifier.size() == 2 &&
+          column->qualified_identifier[0].quoted == source.alias->quoted &&
+          (source.alias->quoted
+               ? column->qualified_identifier[0].spelling ==
+                     source.alias->spelling
+               : ToLowerAscii(column->qualified_identifier[0].spelling) ==
+                     ToLowerAscii(source.alias->spelling)) &&
+          (column->qualified_identifier[1].quoted
+               ? column->qualified_identifier[1].spelling == "category"
+               : ToLowerAscii(column->qualified_identifier[1].spelling) ==
+                     "category");
+      if (!same_alias(filter_alias) || predicate == nullptr ||
+          predicate->expression_kind != NativeExpressionAstKind::kBinary ||
+          predicate->operator_name != "=" || !exact_category ||
+          value == nullptr ||
+          !((value->expression_kind == NativeExpressionAstKind::kLiteral &&
+             value->literal_kind == NativeLiteralAstKind::kString) ||
+            value->expression_kind == NativeExpressionAstKind::kParameter)) {
+        RefuseExact("SB_MODEL_SEARCH_FILTER_REFUSED_V1",
+                    "SEARCH_FILTER requires alias and category = TEXT");
+        return FinishRefusal();
+      }
+      source.model_search_filter_expression_id = filter->expression_id;
+      source.model_search_category_predicate_expression_id =
+          predicate->expression_id;
+      source.model_search_category_column_expression_id = column->expression_id;
+      source.model_search_category_value_expression_id = value->expression_id;
+    }
+    source.model_operation_id =
+        query_kind == "SEARCH_PHRASE"
+            ? "SEARCH_PHRASE_QUERY"
+            : (query_kind == "SEARCH_FUZZY" ? "SEARCH_FUZZY_QUERY"
+                                             : "SEARCH_RANKED_QUERY");
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "unexpected input follows the bounded search query");
+      return FinishRefusal();
+    }
+    NativeRelationAstNode relation;
+    relation.relation_id = 1;
+    relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+    relation.relation_source_ids = {source.source_id};
+    relation.output_expression_ids = projection_expression_ids;
+    relation.predicate_expression_ids = {predicate_id};
+    relation.range = Span(source_operator, *source_end);
+    source.range = relation.range;
+    document_.catalog_relation_sources.push_back(std::move(source));
+    document_.relations.push_back(std::move(relation));
+    document_.root_relation_id = 1;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    (void)select;
+    return std::move(document_);
   }
 
   NativeRelationalAstDocument ParseVectorModelSelect() {

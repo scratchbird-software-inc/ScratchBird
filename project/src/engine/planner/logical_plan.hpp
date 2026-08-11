@@ -196,6 +196,7 @@ enum class CanonicalLogicalModelFamilyIdentity : std::uint8_t {
   kKeyValue,
   kTimeSeries,
   kVector,
+  kSearch,
 };
 
 struct CanonicalLogicalRelationalNode {
@@ -335,7 +336,8 @@ ValidateCanonicalLogicalRelationalGraph(
            family == CanonicalLogicalModelFamilyIdentity::kGraph ||
            family == CanonicalLogicalModelFamilyIdentity::kKeyValue ||
            family == CanonicalLogicalModelFamilyIdentity::kTimeSeries ||
-           family == CanonicalLogicalModelFamilyIdentity::kVector;
+           family == CanonicalLogicalModelFamilyIdentity::kVector ||
+           family == CanonicalLogicalModelFamilyIdentity::kSearch;
   };
   constexpr std::string_view kModelSourceSemantic =
       "SBLR_MODEL_SOURCE_V1";
@@ -446,6 +448,9 @@ ValidateCanonicalLogicalRelationalGraph(
     const bool vector_family =
         node.model_family_identity ==
         CanonicalLogicalModelFamilyIdentity::kVector;
+    const bool search_family =
+        node.model_family_identity ==
+        CanonicalLogicalModelFamilyIdentity::kSearch;
     const bool exact_time_series_attachment_width =
         time_series_family &&
         ((model_source &&
@@ -461,6 +466,13 @@ ValidateCanonicalLogicalRelationalGraph(
         node.output_descriptor_ids.size() == 3 &&
         (node.bound_expression_ids.size() == 8 ||
          node.bound_expression_ids.size() == 14);
+    const bool exact_search_attachment_width =
+        search_family && model_source &&
+        node.output_descriptor_ids.size() == 5 &&
+        (node.bound_expression_ids.size() == 12 ||
+         node.bound_expression_ids.size() == 13 ||
+         node.bound_expression_ids.size() == 17 ||
+         node.bound_expression_ids.size() == 18);
     if (!known_model_family(node.model_family_identity) ||
         (!model_semantic &&
          node.model_family_identity !=
@@ -477,6 +489,7 @@ ValidateCanonicalLogicalRelationalGraph(
           node.output_descriptor_ids.empty() ||
           (!exact_time_series_attachment_width &&
            !exact_vector_attachment_width &&
+           !exact_search_attachment_width &&
            node.bound_expression_ids.size() !=
                node.output_descriptor_ids.size()) ||
           (model_source &&

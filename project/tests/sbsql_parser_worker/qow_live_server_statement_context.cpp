@@ -1626,7 +1626,7 @@ std::string PayloadUuidText(const std::vector<std::uint8_t>& payload,
   return server::UuidBytesToText(bytes);
 }
 
-struct V8PayloadLayout {
+struct NativePayloadLayout {
   std::size_t timestamp_length_offset{0};
   std::size_t timestamp_bytes_offset{0};
   std::size_t profile_count_offset{0};
@@ -1634,14 +1634,16 @@ struct V8PayloadLayout {
   std::uint16_t profile_count{0};
 };
 
-std::optional<V8PayloadLayout> LocateV8PayloadLayout(
-    const std::vector<std::uint8_t>& payload) {
+std::optional<NativePayloadLayout> LocateNativePayloadLayout(
+    const std::vector<std::uint8_t>& payload,
+    const std::uint16_t expected_version) {
   constexpr std::size_t kBaseBytes = 2 + 1 + (6 * 16) + (2 * 8);
   constexpr std::size_t kProfileBytes = 64;
-  if (payload.size() < kBaseBytes + 2 || PayloadU16(payload, 0) != 8) {
+  if (payload.size() < kBaseBytes + 2 ||
+      PayloadU16(payload, 0) != expected_version) {
     return std::nullopt;
   }
-  V8PayloadLayout layout;
+  NativePayloadLayout layout;
   std::size_t offset = kBaseBytes;
   layout.timestamp_length_offset = offset;
   const auto timestamp_size = PayloadU16(payload, offset);
@@ -1856,7 +1858,10 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                                request_schema_id));
         ipc::ParserStatementContext projected_context;
         const bool decoded =
-            version == 8
+            version == 9
+                ? ipc::DecodeAcquireStatementContextResultPayloadV9ForTest(
+                      projected.payload, &projected_context)
+                : version == 8
                 ? ipc::DecodeAcquireStatementContextResultPayloadV8ForTest(
                       projected.payload, &projected_context)
                 : version == 4
@@ -1870,7 +1875,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                                     projected.payload, &projected_context)
                               : ipc::DecodeAcquireStatementContextResultPayloadV7ForTest(
                                     projected.payload, &projected_context)));
-        std::array<std::uint16_t, 12> profiles_by_kind{};
+        std::array<std::uint16_t, 14> profiles_by_kind{};
         for (const auto& profile : projected_context.descriptor_profiles) {
           if (profile.profile_kind < profiles_by_kind.size()) {
             ++profiles_by_kind[profile.profile_kind];
@@ -1880,7 +1885,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
         for (std::uint8_t kind = 1; kind <= expected_maximum_kind; ++kind) {
           exact_profile_families =
               exact_profile_families &&
-              profiles_by_kind[kind] == (kind == 11 ? 2 : 32);
+              profiles_by_kind[kind] == (kind >= 11 ? 2 : 32);
         }
         Require(projected.accepted &&
                     projected.response_schema_id == response_schema_id &&
@@ -1892,11 +1897,13 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                     projected_context.descriptor_profiles.size() ==
                         expected_profile_count &&
                     exact_profile_families &&
-                    (version == 8
-                         ? projected_context.native_v8_complete()
+                    (version == 9
+                         ? projected_context.native_v9_complete()
+                         : (version == 8
+                                ? projected_context.native_v8_complete()
                          : (version == 7
                                 ? projected_context.native_v7_complete()
-                                : projected_context.statement_timestamp.empty())),
+                                : projected_context.statement_timestamp.empty()))),
                 "native statement-context descriptor projection drifted");
         const auto projected_statement =
             registry.statement_contexts_by_statement_uuid.find(
@@ -1949,6 +1956,13 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       322,
       11,
       11);
+  verify_native_projection(
+      9,
+      sbps::kSchemaAcquireStatementContextRequestV9,
+      sbps::kSchemaAcquireStatementContextResultV9,
+      326,
+      13,
+      11);
   Require(registry.statement_contexts_by_statement_uuid.size() == 1,
           "native projection compatibility receipts escaped test cleanup");
 
@@ -1996,7 +2010,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                          transaction_uuid.value.bytes, 8,
                          sbps::kSchemaAcquireStatementContextRequestV8));
   ipc::ParserStatementContext v8_context;
-  const auto v8_layout = LocateV8PayloadLayout(v8_projection.payload);
+  const auto v8_layout = LocateNativePayloadLayout(v8_projection.payload, 8);
   const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   const auto real64_count =
       core_manifest.ok()
@@ -2222,6 +2236,233 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
           "native V8 mutation test receipt cleanup failed");
   registry.statement_contexts_by_statement_uuid.erase(v8_statement);
 
+  // QOW-SOURCE-RCP-078-LIVE-STATEMENT-CONTEXT-V9-PROOF
+  const auto v9_projection = server::HandleAcquireStatementContext(
+      &registry, engine_state,
+      AcquireNativeFrame(session_uuid,
+                         server_transaction.local_transaction_id,
+                         transaction_uuid.value.bytes, 9,
+                         sbps::kSchemaAcquireStatementContextRequestV9));
+  ipc::ParserStatementContext v9_context;
+  const auto v9_layout = LocateNativePayloadLayout(v9_projection.payload, 9);
+  const auto canonical_type_uuid = [&](const std::string_view stable_name) {
+    const auto count =
+        core_manifest.ok()
+            ? std::count_if(core_manifest.manifest.descriptor_rows.begin(),
+                            core_manifest.manifest.descriptor_rows.end(),
+                            [&](const auto& row) {
+                              return row.stable_name == stable_name;
+                            })
+            : 0;
+    const auto row =
+        core_manifest.ok()
+            ? std::find_if(core_manifest.manifest.descriptor_rows.begin(),
+                           core_manifest.manifest.descriptor_rows.end(),
+                           [&](const auto& candidate) {
+                             return candidate.stable_name == stable_name;
+                           })
+            : core_manifest.manifest.descriptor_rows.end();
+    return count == 1 &&
+                   row != core_manifest.manifest.descriptor_rows.end() &&
+                   row->descriptor_uuid.valid()
+               ? uuid::UuidToString(row->descriptor_uuid.value)
+               : std::string{};
+  };
+  const auto canonical_uuid_type_uuid = canonical_type_uuid("uuid");
+  const auto canonical_uint64_type_uuid = canonical_type_uuid("uint64");
+  std::set<std::string> v9_descriptor_uuids;
+  bool v9_unique_descriptors = false;
+  if (ipc::DecodeAcquireStatementContextResultPayloadV9ForTest(
+          v9_projection.payload, &v9_context)) {
+    v9_unique_descriptors =
+        std::all_of(v9_context.descriptor_profiles.begin(),
+                    v9_context.descriptor_profiles.end(),
+                    [&](const auto& profile) {
+                      return v9_descriptor_uuids.insert(
+                                 profile.descriptor_uuid)
+                          .second;
+                    });
+  const auto exact_v9_profile = [&](const std::size_t ordinal,
+                                    const std::uint8_t kind,
+                                    const std::uint16_t slot,
+                                    const std::string& type_uuid) {
+    const auto& profile = v9_context.descriptor_profiles[ordinal];
+    return profile.profile_kind == kind && profile.slot == slot &&
+           profile.type_uuid == type_uuid && !profile.descriptor_uuid.empty() &&
+           !profile.nullable && profile.collation_uuid.empty() &&
+           profile.width == 0 && profile.precision == 0 &&
+           profile.scale == 0;
+  };
+  Require(v9_projection.accepted &&
+              v9_projection.response_schema_id ==
+                  sbps::kSchemaAcquireStatementContextResultV9 &&
+              v9_layout.has_value() && v9_layout->profile_count == 326 &&
+              v9_context.native_v9_complete() && v9_unique_descriptors &&
+              v9_descriptor_uuids.size() == 326 &&
+              !canonical_real64_type_uuid.empty() &&
+              !canonical_uuid_type_uuid.empty() &&
+              !canonical_uint64_type_uuid.empty() &&
+              exact_v9_profile(320, 11, 0, canonical_real64_type_uuid) &&
+              exact_v9_profile(321, 11, 1, canonical_real64_type_uuid) &&
+              exact_v9_profile(322, 12, 0, canonical_uuid_type_uuid) &&
+              exact_v9_profile(323, 12, 1, canonical_uuid_type_uuid) &&
+              exact_v9_profile(324, 13, 0, canonical_uint64_type_uuid) &&
+              exact_v9_profile(325, 13, 1, canonical_uint64_type_uuid),
+          "native V9 search result descriptor projection drifted");
+
+  const auto v9_profile_offset = [&](const std::size_t ordinal) {
+    return v9_layout->profiles_offset + ordinal * kProfileBytes;
+  };
+  std::size_t v9_mutation_count = 0;
+  const auto expect_v9_refusal = [&](std::string_view mutation,
+                                     const std::vector<std::uint8_t>& payload) {
+    ++v9_mutation_count;
+    ipc::ParserStatementContext refused;
+    Require(!ipc::DecodeAcquireStatementContextResultPayloadV9ForTest(
+                payload, &refused),
+            mutation);
+  };
+  {
+    auto mutation = v9_projection.payload;
+    SetPayloadU16(&mutation, v9_layout->profile_count_offset, 325);
+    expect_v9_refusal("MUT-001 V9 admitted a wrong total profile count",
+                      mutation);
+  }
+  for (std::size_t ordinal = 322; ordinal < 326; ++ordinal) {
+    auto mutation = v9_projection.payload;
+    mutation.erase(
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v9_profile_offset(ordinal)),
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v9_profile_offset(ordinal + 1)));
+    SetPayloadU16(&mutation, v9_layout->profile_count_offset, 325);
+    expect_v9_refusal("MUT-002..005 V9 admitted a missing appended profile",
+                      mutation);
+  }
+  {
+    auto mutation = v9_projection.payload;
+    std::array<std::uint8_t, kProfileBytes> extra_profile{};
+    std::copy_n(
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v9_profile_offset(325)),
+        kProfileBytes, extra_profile.begin());
+    mutation.insert(mutation.end(), extra_profile.begin(),
+                    extra_profile.end());
+    SetPayloadU16(&mutation, v9_layout->profile_count_offset, 327);
+    expect_v9_refusal("MUT-006 V9 admitted an extra profile", mutation);
+  }
+  for (std::size_t ordinal = 322; ordinal < 325; ++ordinal) {
+    auto mutation = v9_projection.payload;
+    std::swap_ranges(
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v9_profile_offset(ordinal)),
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v9_profile_offset(ordinal + 1)),
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v9_profile_offset(ordinal + 1)));
+    expect_v9_refusal("MUT-007..009 V9 admitted reordered appended profiles",
+                      mutation);
+  }
+  for (std::size_t ordinal = 322; ordinal < 326; ++ordinal) {
+    auto mutation = v9_projection.payload;
+    mutation[v9_profile_offset(ordinal)] =
+        ordinal < 324 ? static_cast<std::uint8_t>(13)
+                      : static_cast<std::uint8_t>(12);
+    expect_v9_refusal("MUT-010..013 V9 admitted a wrong profile kind",
+                      mutation);
+  }
+  for (std::size_t ordinal = 322; ordinal < 326; ++ordinal) {
+    auto mutation = v9_projection.payload;
+    SetPayloadU16(&mutation, v9_profile_offset(ordinal) + 1,
+                  static_cast<std::uint16_t>(ordinal % 2 + 2));
+    expect_v9_refusal("MUT-014..017 V9 admitted a wrong profile slot",
+                      mutation);
+  }
+  for (std::size_t ordinal = 322; ordinal < 326; ++ordinal) {
+    auto mutation = v9_projection.payload;
+    mutation[v9_profile_offset(ordinal) + 3 + 6] &= 0x0fu;
+    mutation[v9_profile_offset(ordinal) + 3 + 8] &= 0x3fu;
+    expect_v9_refusal(
+        "MUT-018..021 V9 admitted a noncanonical descriptor UUID", mutation);
+  }
+  for (std::size_t ordinal = 322; ordinal < 326; ++ordinal) {
+    auto mutation = v9_projection.payload;
+    const auto source_ordinal = ordinal == 322 ? 321 : ordinal - 1;
+    std::copy_n(
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v9_profile_offset(source_ordinal) + 3),
+        16,
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v9_profile_offset(ordinal) + 3));
+    expect_v9_refusal("MUT-022..025 V9 admitted a duplicate descriptor UUID",
+                      mutation);
+  }
+  for (std::size_t ordinal = 322; ordinal < 326; ++ordinal) {
+    auto mutation = v9_projection.payload;
+    const auto source_ordinal = ordinal < 324 ? 324 : 322;
+    std::copy_n(
+        mutation.begin() + static_cast<std::ptrdiff_t>(
+                               v9_profile_offset(source_ordinal) + 19),
+        16,
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v9_profile_offset(ordinal) + 19));
+    expect_v9_refusal("MUT-026..029 V9 admitted a wrong canonical type UUID",
+                      mutation);
+  }
+  for (std::size_t ordinal = 322; ordinal < 326; ++ordinal) {
+    auto mutation = v9_projection.payload;
+    mutation[v9_profile_offset(ordinal) + 51] = 1;
+    expect_v9_refusal("MUT-030..033 V9 admitted a nullable appended profile",
+                      mutation);
+  }
+  for (std::size_t ordinal = 322; ordinal < 326; ++ordinal) {
+    auto mutation = v9_projection.payload;
+    std::copy_n(
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v9_profile_offset(ordinal) + 3),
+        16,
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v9_profile_offset(ordinal) + 35));
+    expect_v9_refusal("MUT-034..037 V9 admitted a collation UUID", mutation);
+  }
+  for (std::size_t ordinal = 322; ordinal < 326; ++ordinal) {
+    auto mutation = v9_projection.payload;
+    SetPayloadU32(&mutation, v9_profile_offset(ordinal) + 52, 1);
+    expect_v9_refusal("MUT-038..041 V9 admitted nonzero width", mutation);
+  }
+  for (std::size_t ordinal = 322; ordinal < 326; ++ordinal) {
+    auto mutation = v9_projection.payload;
+    SetPayloadU32(&mutation, v9_profile_offset(ordinal) + 56, 1);
+    expect_v9_refusal("MUT-042..045 V9 admitted nonzero precision",
+                      mutation);
+  }
+  for (std::size_t ordinal = 322; ordinal < 326; ++ordinal) {
+    auto mutation = v9_projection.payload;
+    SetPayloadU32(&mutation, v9_profile_offset(ordinal) + 60, 1);
+    expect_v9_refusal("MUT-046..049 V9 admitted nonzero scale", mutation);
+  }
+  {
+    auto mutation = v9_projection.payload;
+    mutation.pop_back();
+    expect_v9_refusal("MUT-050 V9 admitted a truncated payload", mutation);
+  }
+  {
+    auto mutation = v9_projection.payload;
+    mutation.push_back(0);
+    expect_v9_refusal("MUT-051 V9 admitted trailing payload bytes", mutation);
+  }
+  Require(v9_mutation_count == 51,
+          "native V9 mutation inventory did not execute exactly 51 cases");
+
+  const auto v9_statement = registry.statement_contexts_by_statement_uuid.find(
+      v9_context.statement_uuid);
+  Require(v9_statement != registry.statement_contexts_by_statement_uuid.end() &&
+              bridge::ReleaseStatementContextReceipt(
+                  v9_statement->second.receipt) == SB_ENGINE_STATUS_OK,
+          "native V9 mutation test receipt cleanup failed");
+  registry.statement_contexts_by_statement_uuid.erase(v9_statement);
+  }
+
   const auto v8_schema_v7_version = server::HandleAcquireStatementContext(
       &registry, engine_state,
       AcquireNativeFrame(session_uuid,
@@ -2243,6 +2484,28 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
               v7_schema_v8_version.diagnostics.front().code ==
                   "PARSER_SERVER_IPC.STATEMENT_CONTEXT_REQUEST_INVALID",
           "V7/V8 statement-context schema/version collision was admitted");
+
+  const auto v9_schema_v8_version = server::HandleAcquireStatementContext(
+      &registry, engine_state,
+      AcquireNativeFrame(session_uuid,
+                         server_transaction.local_transaction_id,
+                         transaction_uuid.value.bytes, 8,
+                         sbps::kSchemaAcquireStatementContextRequestV9));
+  const auto v8_schema_v9_version = server::HandleAcquireStatementContext(
+      &registry, engine_state,
+      AcquireNativeFrame(session_uuid,
+                         server_transaction.local_transaction_id,
+                         transaction_uuid.value.bytes, 9,
+                         sbps::kSchemaAcquireStatementContextRequestV8));
+  Require(!v9_schema_v8_version.accepted &&
+              !v8_schema_v9_version.accepted &&
+              !v9_schema_v8_version.diagnostics.empty() &&
+              !v8_schema_v9_version.diagnostics.empty() &&
+              v9_schema_v8_version.diagnostics.front().code ==
+                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_REQUEST_INVALID" &&
+              v8_schema_v9_version.diagnostics.front().code ==
+                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_REQUEST_INVALID",
+          "V8/V9 statement-context schema/version collision was admitted");
 
   const auto mismatched_version = server::HandleAcquireStatementContext(
       &registry, engine_state,
