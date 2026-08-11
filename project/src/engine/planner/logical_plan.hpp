@@ -195,6 +195,7 @@ enum class CanonicalLogicalModelFamilyIdentity : std::uint8_t {
   kGraph,
   kKeyValue,
   kTimeSeries,
+  kVector,
 };
 
 struct CanonicalLogicalRelationalNode {
@@ -333,7 +334,8 @@ ValidateCanonicalLogicalRelationalGraph(
            family == CanonicalLogicalModelFamilyIdentity::kDocument ||
            family == CanonicalLogicalModelFamilyIdentity::kGraph ||
            family == CanonicalLogicalModelFamilyIdentity::kKeyValue ||
-           family == CanonicalLogicalModelFamilyIdentity::kTimeSeries;
+           family == CanonicalLogicalModelFamilyIdentity::kTimeSeries ||
+           family == CanonicalLogicalModelFamilyIdentity::kVector;
   };
   constexpr std::string_view kModelSourceSemantic =
       "SBLR_MODEL_SOURCE_V1";
@@ -441,6 +443,9 @@ ValidateCanonicalLogicalRelationalGraph(
     const bool time_series_family =
         node.model_family_identity ==
         CanonicalLogicalModelFamilyIdentity::kTimeSeries;
+    const bool vector_family =
+        node.model_family_identity ==
+        CanonicalLogicalModelFamilyIdentity::kVector;
     const bool exact_time_series_attachment_width =
         time_series_family &&
         ((model_source &&
@@ -448,9 +453,14 @@ ValidateCanonicalLogicalRelationalGraph(
             node.bound_expression_ids.size() == 7) ||
            (node.output_descriptor_ids.size() == 1 &&
             node.bound_expression_ids.size() == 6))) ||
-         (model_aggregate && node.output_descriptor_ids.size() == 7 &&
+           (model_aggregate && node.output_descriptor_ids.size() == 7 &&
           (node.bound_expression_ids.size() == 9 ||
            node.bound_expression_ids.size() == 10)));
+    const bool exact_vector_attachment_width =
+        vector_family && model_source &&
+        node.output_descriptor_ids.size() == 3 &&
+        (node.bound_expression_ids.size() == 8 ||
+         node.bound_expression_ids.size() == 14);
     if (!known_model_family(node.model_family_identity) ||
         (!model_semantic &&
          node.model_family_identity !=
@@ -466,6 +476,7 @@ ValidateCanonicalLogicalRelationalGraph(
           node.bound_expression_ids.empty() ||
           node.output_descriptor_ids.empty() ||
           (!exact_time_series_attachment_width &&
+           !exact_vector_attachment_width &&
            node.bound_expression_ids.size() !=
                node.output_descriptor_ids.size()) ||
           (model_source &&

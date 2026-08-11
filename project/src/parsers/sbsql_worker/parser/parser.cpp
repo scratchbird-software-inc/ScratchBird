@@ -137,10 +137,22 @@ class NativeRelationalParser final {
     };
     if (contains_word("MONGO_PIPELINE") || contains_word("CYPHER_TEXT") ||
         contains_word("REDIS_COMMAND") ||
-        contains_word("INFLUX_LINE_PROTOCOL")) {
+        contains_word("INFLUX_LINE_PROTOCOL") ||
+        contains_word("VECTOR_PROVIDER_REQUEST")) {
       RefuseExact("SB_MODEL_GRAMMAR_DONOR_TEXT_REFUSED_V1",
                   "opaque donor text is not an executable SBSQL model source");
       return FinishRefusal();
+    }
+    if (contains_word("VECTOR_SOURCE") || contains_word("VECTOR_NEAREST") ||
+        contains_word("VECTOR_FILTER") || contains_word("VECTOR_INSERT") ||
+        contains_word("VECTOR_UPSERT")) {
+      if (tokens_.empty() || !IsWord(*tokens_.front(), "SELECT") ||
+          contains_word("VECTOR_INSERT") || contains_word("VECTOR_UPSERT")) {
+        RefuseExact("SB_MODEL_QUERY_WRITE_REFUSED_V1",
+                    "vector model sources are read-only query inputs");
+        return FinishRefusal();
+      }
+      return ParseVectorModelSelect();
     }
     if (contains_word("TIME_SERIES_SOURCE") || contains_word("TIME_RANGE") ||
         contains_word("TIME_BUCKET") || contains_word("TIME_DOWNSAMPLE") ||
@@ -278,6 +290,316 @@ class NativeRelationalParser final {
     document_.messages.diagnostics.push_back(MakeDiagnostic(
         std::string(diagnostic_id), "ERROR", std::string(message),
         "sbp_sbsql.document_model_parser"));
+  }
+
+  NativeRelationalAstDocument ParseVectorModelSelect() {
+    // QOW-SOURCE-RCP-077-VECTOR-GRAMMAR-V1
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded", "vector query token limit exceeded");
+      return FinishRefusal();
+    }
+
+    const Token& select = Consume();
+    std::vector<std::uint32_t> projection_expression_ids;
+    if (AtSymbol("*")) {
+      const Token& token = Consume();
+      NativeExpressionAstNode wildcard;
+      wildcard.expression_id = NextExpressionId();
+      wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+      wildcard.spelling = token.text;
+      wildcard.range = TokenSourceRange(token);
+      projection_expression_ids.push_back(wildcard.expression_id);
+      document_.expressions.push_back(std::move(wildcard));
+    } else {
+      while (!AtEnd()) {
+        const auto expression_id = ParseExpression(0, 0);
+        if (!expression_id.has_value()) return FinishRefusal();
+        projection_expression_ids.push_back(*expression_id);
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+    }
+    if (!RequireWord("FROM", "vector_from_required",
+                     "vector source requires FROM") ||
+        AtEnd() || !IsWord(Current(), "VECTOR_SOURCE")) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "FROM requires exactly one VECTOR_SOURCE");
+      return FinishRefusal();
+    }
+
+    const Token& source_operator = Consume();
+    if (!RequireSymbol("(", "vector_source_open_required",
+                       "VECTOR_SOURCE requires an opening parenthesis") ||
+        AtEnd() || !IsNameToken(Current())) {
+      RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                  "VECTOR_SOURCE requires a qualified collection name");
+      return FinishRefusal();
+    }
+    NativeCatalogRelationSourceAstNode source;
+    source.source_id = 1;
+    source.source_kind = NativeRelationSourceAstKind::kVector;
+    source.model_family_id = "vector";
+    const Token& first_name = Consume();
+    const Token* last_name = &first_name;
+    source.qualified_name.push_back(
+        {first_name.text, first_name.quoted, TokenSourceRange(first_name)});
+    while (AtSymbol(".")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "qualified vector collection name is incomplete");
+        return FinishRefusal();
+      }
+      last_name = &Consume();
+      source.qualified_name.push_back(
+          {last_name->text, last_name->quoted, TokenSourceRange(*last_name)});
+    }
+    source.qualified_name_range = Span(first_name, *last_name);
+    if (!RequireSymbol(")", "vector_source_close_required",
+                       "VECTOR_SOURCE requires a closing parenthesis")) {
+      return FinishRefusal();
+    }
+    const Token* source_end = &Previous();
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "VECTOR_SOURCE AS requires an alias");
+        return FinishRefusal();
+      }
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source.alias_is_explicit = true;
+      source_end = &alias;
+    } else if (!AtEnd() && Current().kind == TokenKind::kIdentifier &&
+               !IsWord(Current(), "WHERE")) {
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source_end = &alias;
+    } else {
+      source.alias = NativeIdentifierAstNode{
+          last_name->text, last_name->quoted, TokenSourceRange(*last_name)};
+    }
+
+    if (AtEnd() || !IsWord(Current(), "WHERE")) {
+      RefuseExact("SB_MODEL_VECTOR_NEAREST_REFUSED_V1",
+                  "VECTOR_SOURCE requires exactly one VECTOR_NEAREST");
+      return FinishRefusal();
+    }
+    Consume();
+    // Parse the nearest producer independently so its optional result alias is
+    // not confused with the VECTOR_SOURCE alias or a filter child.
+    const auto nearest_id = ParseExpression(3, 0);
+    if (!nearest_id.has_value()) return FinishRefusal();
+    const auto expression_at = [&](const std::uint32_t id)
+        -> NativeExpressionAstNode* {
+      return id == 0 || id > document_.expressions.size()
+                 ? nullptr
+                 : &document_.expressions[id - 1];
+    };
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "VECTOR_NEAREST AS requires a result alias");
+        return FinishRefusal();
+      }
+      const Token& result_alias = Consume();
+      source.model_vector_result_alias = NativeIdentifierAstNode{
+          result_alias.text, result_alias.quoted,
+          TokenSourceRange(result_alias)};
+    }
+    std::optional<std::uint32_t> vector_filter_id;
+    std::uint32_t predicate_id = *nearest_id;
+    if (!AtEnd() && IsWord(Current(), "AND")) {
+      const Token& and_token = Consume();
+      const auto filter_id = ParseExpression(3, 0);
+      if (!filter_id.has_value()) return FinishRefusal();
+      vector_filter_id = *filter_id;
+      const auto* parsed_filter = expression_at(*filter_id);
+      NativeExpressionAstNode conjunction;
+      conjunction.expression_id = NextExpressionId();
+      conjunction.expression_kind = NativeExpressionAstKind::kBinary;
+      conjunction.child_expression_ids = {*nearest_id, *filter_id};
+      conjunction.operator_name = "AND";
+      conjunction.range = RangeFromTokenAndRange(
+          and_token, parsed_filter == nullptr ? TokenSourceRange(and_token)
+                                              : parsed_filter->range);
+      conjunction.spelling = SourceForRange(conjunction.range);
+      predicate_id = conjunction.expression_id;
+      document_.expressions.push_back(std::move(conjunction));
+    }
+    auto* nearest = expression_at(*nearest_id);
+    auto* filter = vector_filter_id.has_value()
+                       ? expression_at(*vector_filter_id)
+                       : nullptr;
+    if (nearest == nullptr ||
+        nearest->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+        ToUpperAscii(nearest->operator_name) != "VECTOR_NEAREST" ||
+        nearest->child_expression_ids.size() != 4) {
+      RefuseExact("SB_MODEL_VECTOR_NEAREST_REFUSED_V1",
+                  "VECTOR_NEAREST requires alias, query, metric, and top-k");
+      return FinishRefusal();
+    }
+    nearest->operator_name = "VECTOR_NEAREST";
+    auto* alias = expression_at(nearest->child_expression_ids[0]);
+    auto* query = expression_at(nearest->child_expression_ids[1]);
+    auto* metric = expression_at(nearest->child_expression_ids[2]);
+    auto* top_k = expression_at(nearest->child_expression_ids[3]);
+    const auto same_alias = [&](const NativeExpressionAstNode* expression) {
+      if (expression == nullptr || !source.alias.has_value() ||
+          expression->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          expression->qualified_identifier.size() != 1) {
+        return false;
+      }
+      const auto& presented = expression->qualified_identifier.front();
+      return presented.quoted == source.alias->quoted &&
+             (presented.quoted
+                  ? presented.spelling == source.alias->spelling
+                  : ToLowerAscii(presented.spelling) ==
+                        ToLowerAscii(source.alias->spelling));
+    };
+    if (!same_alias(alias) || query == nullptr || metric == nullptr ||
+        top_k == nullptr ||
+        !((query->expression_kind == NativeExpressionAstKind::kLiteral &&
+           query->literal_kind == NativeLiteralAstKind::kVector) ||
+          query->expression_kind == NativeExpressionAstKind::kParameter) ||
+        metric->expression_kind != NativeExpressionAstKind::kIdentifier ||
+        metric->qualified_identifier.size() != 1 ||
+        metric->qualified_identifier.front().quoted ||
+        top_k->expression_kind != NativeExpressionAstKind::kLiteral ||
+        top_k->literal_kind != NativeLiteralAstKind::kNumeric) {
+      RefuseExact("SB_MODEL_VECTOR_VALUE_REFUSED_V1",
+                  "VECTOR_NEAREST operands are not the exact typed shape");
+      return FinishRefusal();
+    }
+    const auto metric_id =
+        ToUpperAscii(metric->qualified_identifier.front().spelling);
+    if (metric_id != "L2_SQUARED" && metric_id != "COSINE" &&
+        metric_id != "INNER_PRODUCT") {
+      RefuseExact("SB_MODEL_VECTOR_METRIC_REFUSED_V1",
+                  "vector metric is outside the closed v1 set");
+      return FinishRefusal();
+    }
+    std::uint64_t top_k_value = 0;
+    const auto converted = std::from_chars(
+        top_k->spelling.data(), top_k->spelling.data() + top_k->spelling.size(),
+        top_k_value);
+    if (top_k->spelling.empty() ||
+        (top_k->spelling.size() > 1 && top_k->spelling.front() == '0') ||
+        converted.ec != std::errc{} ||
+        converted.ptr != top_k->spelling.data() + top_k->spelling.size() ||
+        top_k_value == 0 || top_k_value > 0xffffffffULL) {
+      RefuseExact("SB_MODEL_VECTOR_TOP_K_REFUSED_V1",
+                  "vector top-k must be a canonical uint32 literal");
+      return FinishRefusal();
+    }
+    metric->expression_kind = NativeExpressionAstKind::kLiteral;
+    metric->literal_kind = NativeLiteralAstKind::kString;
+    metric->qualified_identifier.clear();
+    metric->spelling = metric_id;
+
+    source.model_vector_alias_expression_id = alias->expression_id;
+    source.model_vector_nearest_expression_id = nearest->expression_id;
+    source.model_vector_query_expression_id = query->expression_id;
+    source.model_vector_metric_expression_id = metric->expression_id;
+    source.model_vector_top_k_expression_id = top_k->expression_id;
+    source.model_vector_metric_id = metric_id;
+    source.model_vector_top_k = top_k_value;
+
+    if (filter != nullptr) {
+      if (filter->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+          ToUpperAscii(filter->operator_name) != "VECTOR_FILTER" ||
+          filter->child_expression_ids.size() != 2) {
+        RefuseExact("SB_MODEL_VECTOR_FILTER_REFUSED_V1",
+                    "VECTOR_FILTER has an invalid function shape");
+        return FinishRefusal();
+      }
+      filter->operator_name = "VECTOR_FILTER";
+      auto* filter_alias = expression_at(filter->child_expression_ids[0]);
+      auto* metadata_predicate =
+          expression_at(filter->child_expression_ids[1]);
+      auto* metadata_column =
+          metadata_predicate != nullptr &&
+                  metadata_predicate->child_expression_ids.size() == 2
+              ? expression_at(metadata_predicate->child_expression_ids[0])
+              : nullptr;
+      auto* metadata_value =
+          metadata_predicate != nullptr &&
+                  metadata_predicate->child_expression_ids.size() == 2
+              ? expression_at(metadata_predicate->child_expression_ids[1])
+              : nullptr;
+      const bool exact_metadata_column =
+          metadata_column != nullptr && source.alias.has_value() &&
+          metadata_column->expression_kind ==
+              NativeExpressionAstKind::kIdentifier &&
+          metadata_column->qualified_identifier.size() == 2 &&
+          metadata_column->qualified_identifier[0].quoted ==
+              source.alias->quoted &&
+          (source.alias->quoted
+               ? metadata_column->qualified_identifier[0].spelling ==
+                     source.alias->spelling
+               : ToLowerAscii(
+                     metadata_column->qualified_identifier[0].spelling) ==
+                     ToLowerAscii(source.alias->spelling)) &&
+          (metadata_column->qualified_identifier[1].quoted
+               ? metadata_column->qualified_identifier[1].spelling ==
+                     "metadata"
+               : ToLowerAscii(
+                     metadata_column->qualified_identifier[1].spelling) ==
+                     "metadata");
+      if (!same_alias(filter_alias) || metadata_predicate == nullptr ||
+          metadata_predicate->expression_kind !=
+              NativeExpressionAstKind::kBinary ||
+          metadata_predicate->operator_name != "=" ||
+          !exact_metadata_column || metadata_value == nullptr ||
+          !((metadata_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+             metadata_value->literal_kind == NativeLiteralAstKind::kString) ||
+            metadata_value->expression_kind ==
+                NativeExpressionAstKind::kParameter)) {
+        RefuseExact("SB_MODEL_VECTOR_FILTER_REFUSED_V1",
+                    "VECTOR_FILTER requires alias and metadata = TEXT");
+        return FinishRefusal();
+      }
+      source.model_vector_filter_expression_id = filter->expression_id;
+      source.model_vector_metadata_predicate_expression_id =
+          metadata_predicate->expression_id;
+      source.model_vector_metadata_column_expression_id =
+          metadata_column->expression_id;
+      source.model_vector_metadata_value_expression_id =
+          metadata_value->expression_id;
+      source.model_operation_id = "VECTOR_FILTERED_SEARCH";
+    } else {
+      source.model_operation_id = "VECTOR_EXACT_SEARCH";
+    }
+
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "unexpected input follows the bounded vector query");
+      return FinishRefusal();
+    }
+    NativeRelationAstNode relation;
+    relation.relation_id = 1;
+    relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+    relation.relation_source_ids = {source.source_id};
+    relation.output_expression_ids = projection_expression_ids;
+    relation.predicate_expression_ids = {predicate_id};
+    relation.range = Span(source_operator, *source_end);
+    source.range = relation.range;
+    document_.catalog_relation_sources.push_back(std::move(source));
+    document_.relations.push_back(std::move(relation));
+    document_.root_relation_id = 1;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    (void)select;
+    return std::move(document_);
   }
 
   NativeRelationalAstDocument ParseTimeSeriesModelSelect() {

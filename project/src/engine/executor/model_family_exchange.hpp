@@ -55,6 +55,10 @@ struct ModelProviderRowIdentityV1 {
   std::string time_series_raw_value;
   std::string time_series_sample_count;
   std::string time_series_aggregate_value;
+  // RCP-077 exact public vector result identity. These canonical REAL64
+  // strings are rechecked against the typed batch before publication.
+  std::string vector_distance;
+  std::string vector_score;
 };
 
 struct ModelSourceInputDescriptorV1 {

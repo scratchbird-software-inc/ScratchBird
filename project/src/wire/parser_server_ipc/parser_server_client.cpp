@@ -97,6 +97,8 @@ constexpr std::uint32_t kSchemaAcquireStatementContextRequestV6 = 7021;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV6 = 7022;
 constexpr std::uint32_t kSchemaAcquireStatementContextRequestV7 = 7023;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV7 = 7024;
+constexpr std::uint32_t kSchemaAcquireStatementContextRequestV8 = 7025;
+constexpr std::uint32_t kSchemaAcquireStatementContextResultV8 = 7026;
 constexpr std::uint16_t kMessageHello = 1;
 constexpr std::uint16_t kMessageHelloAccept = 2;
 constexpr std::uint16_t kMessageAuthHandoff = 10;
@@ -908,6 +910,14 @@ std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV7(
   return out;
 }
 
+std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV8(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction) {
+  auto out = EncodeAcquireStatementContextPayloadV1(session, transaction);
+  out[0] = 8;
+  return out;
+}
+
 bool IsCanonicalStatementTimestamp(std::string_view value) {
   if (value.size() != 20 &&
       (value.size() < 22 || value.size() > 30)) {
@@ -1010,6 +1020,7 @@ bool DecodeAcquireStatementContextPayloadNative(
     const bool complete_window_registry,
     const std::uint8_t maximum_profile_kind,
     const bool has_statement_timestamp,
+    const bool exact_v8_descriptor_cohort,
     ParserStatementContext* context) {
   constexpr std::size_t kBaseBytes = 2 + 1 + (6 * 16) + (2 * 8);
   constexpr std::size_t kProfileBytes = 1 + 2 + (3 * 16) + 1 + (3 * 4);
@@ -1127,14 +1138,16 @@ bool DecodeAcquireStatementContextPayloadNative(
         !UuidPresent(max_function_uuid))) ||
       profile_count == 0 ||
       profile_count > static_cast<std::uint16_t>(maximum_profile_kind) * 32u ||
+      (exact_v8_descriptor_cohort && profile_count != 322) ||
       payload.size() != offset +
                             static_cast<std::size_t>(profile_count) *
                                 kProfileBytes) {
     return false;
   }
 
-  std::array<std::uint16_t, 11> expected_slots{};
+  std::array<std::uint16_t, 12> expected_slots{};
   std::set<std::string> descriptor_uuids;
+  std::string real64_type_uuid;
   decoded.descriptor_profiles.reserve(profile_count);
   for (std::uint16_t index = 0; index < profile_count; ++index) {
     ParserStatementContext::DescriptorProfile profile;
@@ -1157,7 +1170,19 @@ bool DecodeAcquireStatementContextPayloadNative(
     if (profile.profile_kind < 1 ||
         profile.profile_kind > maximum_profile_kind ||
         profile.slot != expected_slots[profile.profile_kind]++ ||
+        (exact_v8_descriptor_cohort &&
+         (profile.profile_kind !=
+              (index < 320 ? static_cast<std::uint8_t>(index / 32 + 1)
+                           : static_cast<std::uint8_t>(11)) ||
+          profile.slot !=
+              (index < 320 ? static_cast<std::uint16_t>(index % 32)
+                           : static_cast<std::uint16_t>(index - 320)))) ||
         !UuidPresent(descriptor_uuid) || !UuidPresent(type_uuid) ||
+        (exact_v8_descriptor_cohort &&
+         (((descriptor_uuid[6] & 0xf0u) != 0x70u) ||
+          ((descriptor_uuid[8] & 0xc0u) != 0x80u) ||
+          ((type_uuid[6] & 0xf0u) == 0) ||
+          ((type_uuid[8] & 0xc0u) != 0x80u))) ||
         nullable > 1 ||
         (profile.profile_kind % 2 == 0) != (nullable == 1) ||
         profile.scale > profile.precision) {
@@ -1168,11 +1193,27 @@ bool DecodeAcquireStatementContextPayloadNative(
     profile.collation_uuid = OptionalUuidToText(collation_uuid);
     profile.nullable = nullable == 1;
     if (!descriptor_uuids.insert(profile.descriptor_uuid).second) return false;
+    if (exact_v8_descriptor_cohort && profile.profile_kind == 11) {
+      if (profile.nullable || UuidPresent(collation_uuid) ||
+          profile.width != 0 || profile.precision != 0 ||
+          profile.scale != 0) {
+        return false;
+      }
+      if (real64_type_uuid.empty()) {
+        real64_type_uuid = profile.type_uuid;
+      } else if (profile.type_uuid != real64_type_uuid) {
+        return false;
+      }
+    }
     decoded.descriptor_profiles.push_back(std::move(profile));
   }
   if (offset != payload.size()) return false;
   for (std::size_t kind = 1; kind <= maximum_profile_kind; ++kind) {
-    if (expected_slots[kind] == 0) return false;
+    if (expected_slots[kind] == 0 ||
+        (exact_v8_descriptor_cohort &&
+         expected_slots[kind] != (kind == 11 ? 2 : 32))) {
+      return false;
+    }
   }
   decoded.bound_ast_uuid = UuidToText(bound_ast_uuid);
   decoded.count_function_uuid = UuidToText(count_function_uuid);
@@ -1182,7 +1223,11 @@ bool DecodeAcquireStatementContextPayloadNative(
     decoded.min_function_uuid = UuidToText(min_function_uuid);
     decoded.max_function_uuid = UuidToText(max_function_uuid);
   }
-  if (has_statement_timestamp && !decoded.native_v7_complete()) return false;
+  if (has_statement_timestamp && !exact_v8_descriptor_cohort &&
+      !decoded.native_v7_complete()) {
+    return false;
+  }
+  if (exact_v8_descriptor_cohort && !decoded.native_v8_complete()) return false;
   *context = std::move(decoded);
   return true;
 }
@@ -1192,7 +1237,7 @@ bool DecodeAcquireStatementContextPayloadV2(
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 2, false,
                                                      false, false, 6, false,
-                                                     context);
+                                                     false, context);
 }
 
 bool DecodeAcquireStatementContextPayloadV3(
@@ -1200,7 +1245,7 @@ bool DecodeAcquireStatementContextPayloadV3(
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 3, true,
                                                      false, false, 6, false,
-                                                     context);
+                                                     false, context);
 }
 
 bool DecodeAcquireStatementContextPayloadV4(
@@ -1208,7 +1253,7 @@ bool DecodeAcquireStatementContextPayloadV4(
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 4, true, true,
                                                      false, 6, false,
-                                                     context);
+                                                     false, context);
 }
 
 bool DecodeAcquireStatementContextPayloadV5(
@@ -1216,7 +1261,7 @@ bool DecodeAcquireStatementContextPayloadV5(
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 5, true, true,
                                                      false, 10, false,
-                                                     context);
+                                                     false, context);
 }
 
 bool DecodeAcquireStatementContextPayloadV6(
@@ -1224,7 +1269,7 @@ bool DecodeAcquireStatementContextPayloadV6(
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 6, true, true,
                                                      true, 10, false,
-                                                     context);
+                                                     false, context);
 }
 
 bool DecodeAcquireStatementContextPayloadV7(
@@ -1232,6 +1277,14 @@ bool DecodeAcquireStatementContextPayloadV7(
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 7, true, true,
                                                      true, 10, true,
+                                                     false, context);
+}
+
+bool DecodeAcquireStatementContextPayloadV8(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  return DecodeAcquireStatementContextPayloadNative(payload, 8, true, true,
+                                                     true, 11, true, true,
                                                      context);
 }
 
@@ -3307,6 +3360,12 @@ bool DecodeAcquireStatementContextResultPayloadV7ForTest(
   return DecodeAcquireStatementContextPayloadV7(payload, context);
 }
 
+bool DecodeAcquireStatementContextResultPayloadV8ForTest(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  return DecodeAcquireStatementContextPayloadV8(payload, context);
+}
+
 std::vector<std::uint8_t>
 EncodeAcquireStatementContextRequestPayloadV1ForTest(
     const ParserSessionContext& session,
@@ -4373,10 +4432,10 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   if (!SendRequest(
           endpoint_,
           BaseHeader(kMessageAcquireStatementContextRequest,
-                     kSchemaAcquireStatementContextRequestV7,
+                     kSchemaAcquireStatementContextRequestV8,
                      session_uuid,
                      connection_uuid),
-          EncodeAcquireStatementContextPayloadV7(session, transaction),
+          EncodeAcquireStatementContextPayloadV8(session, transaction),
           &response,
           &messages,
           ActiveSocketCacheKey())) {
@@ -4385,19 +4444,19 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   }
   if (response.header.message_type !=
           kMessageAcquireStatementContextResult ||
-      response.header.schema_id != kSchemaAcquireStatementContextResultV7 ||
+      response.header.schema_id != kSchemaAcquireStatementContextResultV8 ||
       IsErrorFrame(response)) {
     AddFrameDiagnostics(response, &messages);
     if (!IsErrorFrame(response)) {
       AddDiagnostic(
           &messages,
           "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_SCHEMA_MISMATCH",
-          "The server did not return the native statement-context V7 result schema.");
+          "The server did not return the native statement-context V8 result schema.");
     }
     result.messages = std::move(messages);
     return result;
   }
-  if (!DecodeAcquireStatementContextPayloadV7(response.payload,
+  if (!DecodeAcquireStatementContextPayloadV8(response.payload,
                                                &result.context) ||
       result.context.transaction.local_transaction_id !=
           transaction.local_transaction_id ||

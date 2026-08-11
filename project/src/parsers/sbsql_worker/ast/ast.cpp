@@ -1458,6 +1458,8 @@ std::string NativeRelationSourceAstKindName(
       return "key_value";
     case NativeRelationSourceAstKind::kTimeSeries:
       return "time_series";
+    case NativeRelationSourceAstKind::kVector:
+      return "vector";
   }
   return "unknown";
 }
@@ -1626,6 +1628,8 @@ AstDocument BuildAst(const CstDocument& cst) {
     std::size_t key_value_source_count = 0;
     bool time_series_resolution_description_valid = true;
     std::size_t time_series_source_count = 0;
+    bool vector_resolution_description_valid = true;
+    std::size_t vector_source_count = 0;
     for (const auto& source :
          ast.native_relational.catalog_relation_sources) {
       if (source.source_kind == NativeRelationSourceAstKind::kKeyValue) {
@@ -1677,6 +1681,47 @@ AstDocument BuildAst(const CstDocument& cst) {
         ast.native_relational.model_object_resolution_requests.push_back(
             {source.source_id, "time_series", "time_series",
              source.qualified_name, source.qualified_name_range});
+        continue;
+      }
+      if (source.source_kind == NativeRelationSourceAstKind::kVector) {
+        ++vector_source_count;
+        const bool exact_search =
+            source.model_operation_id == "VECTOR_EXACT_SEARCH";
+        const bool filtered_search =
+            source.model_operation_id == "VECTOR_FILTERED_SEARCH";
+        const bool any_filter =
+            source.model_vector_filter_expression_id.has_value() ||
+            source.model_vector_metadata_predicate_expression_id.has_value() ||
+            source.model_vector_metadata_column_expression_id.has_value() ||
+            source.model_vector_metadata_value_expression_id.has_value();
+        const bool complete_filter =
+            source.model_vector_filter_expression_id.has_value() &&
+            source.model_vector_metadata_predicate_expression_id.has_value() &&
+            source.model_vector_metadata_column_expression_id.has_value() &&
+            source.model_vector_metadata_value_expression_id.has_value();
+        const bool exact_metric =
+            source.model_vector_metric_id == "L2_SQUARED" ||
+            source.model_vector_metric_id == "COSINE" ||
+            source.model_vector_metric_id == "INNER_PRODUCT";
+        vector_resolution_description_valid =
+            vector_resolution_description_valid &&
+            source.model_family_id == "vector" &&
+            (exact_search || filtered_search) &&
+            !source.qualified_name.empty() && source.alias.has_value() &&
+            source.model_vector_alias_expression_id.has_value() &&
+            source.model_vector_nearest_expression_id.has_value() &&
+            source.model_vector_query_expression_id.has_value() &&
+            source.model_vector_metric_expression_id.has_value() &&
+            source.model_vector_top_k_expression_id.has_value() &&
+            exact_metric &&
+            source.model_vector_top_k.has_value() &&
+            (*source.model_vector_top_k >= 1 &&
+             *source.model_vector_top_k <= 0xffffffffULL) &&
+            ((exact_search && !any_filter) ||
+             (filtered_search && complete_filter));
+        ast.native_relational.model_object_resolution_requests.push_back(
+            {source.source_id, "vector", "vector", source.qualified_name,
+             source.qualified_name_range});
         continue;
       }
       if (source.source_kind == NativeRelationSourceAstKind::kGraph) {
@@ -1735,17 +1780,18 @@ AstDocument BuildAst(const CstDocument& cst) {
     }
     const auto expected_model_resolution_count =
         document_collection_source_count + graph_source_count +
-        key_value_source_count + time_series_source_count;
+        key_value_source_count + time_series_source_count + vector_source_count;
     if (document_source_count > 1 || graph_source_count > 1 ||
         key_value_source_count > 1 ||
-        time_series_source_count > 1 ||
+        time_series_source_count > 1 || vector_source_count > 1 ||
         expected_model_resolution_count > 1 ||
         ast.native_relational.model_object_resolution_requests.size() !=
             expected_model_resolution_count ||
         !document_resolution_description_valid ||
         !graph_resolution_description_valid ||
         !key_value_resolution_description_valid ||
-        !time_series_resolution_description_valid) {
+        !time_series_resolution_description_valid ||
+        !vector_resolution_description_valid) {
       ast.native_relational.status =
           NativeRelationalParseStatus::kRefused;
       ast.native_relational.messages.diagnostics.push_back(MakeDiagnostic(

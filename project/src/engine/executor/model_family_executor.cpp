@@ -192,6 +192,7 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
   const bool graph_family = request.input.family_id == "graph";
   const bool key_value_family = request.input.family_id == "key_value";
   const bool time_series_family = request.input.family_id == "time_series";
+  const bool vector_family = request.input.family_id == "vector";
   if (request.current_catalog_generation != request.input.catalog_generation) {
     refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
            "model-family catalog generation changed before provider access");
@@ -226,7 +227,8 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
       (request.capability.family_id != "document" &&
        request.capability.family_id != "graph" &&
        request.capability.family_id != "key_value" &&
-       request.capability.family_id != "time_series") ||
+       request.capability.family_id != "time_series" &&
+       request.capability.family_id != "vector") ||
       request.capability.capability_uuid !=
           request.input.capability_uuid ||
       request.capability.provider_uuid != request.input.provider_uuid ||
@@ -242,7 +244,7 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
       !request.capability.security_recheck_supported ||
       request.capability.provider_visibility_authority_claimed ||
       request.capability.provider_finality_authority_claimed ||
-      ((key_value_family || time_series_family) &&
+      ((key_value_family || time_series_family || vector_family) &&
        request.exact_fallback_selected !=
            request.input.exact_fallback_selected) ||
       !request.execute_provider || !request.cancellation_requested ||
@@ -259,6 +261,8 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
                      ? "SB_MODEL_KEY_VALUE_EXACT_FALLBACK_UNAVAILABLE_V1"
                      : time_series_family
                            ? "SB_MODEL_TIME_SERIES_EXACT_FALLBACK_UNAVAILABLE_V1"
+                     : vector_family
+                           ? "SB_MODEL_VECTOR_EXACT_FALLBACK_UNAVAILABLE_V1"
                      : "SB_MODEL_DOCUMENT_EXACT_FALLBACK_UNAVAILABLE_V1",
            "the exact model-family fallback is unavailable");
     return result;

@@ -116,6 +116,10 @@ struct MgaVisibleHeapRelationReadResult {
   EngineApiDiagnostic diagnostic;
   MgaRelationStorageDescriptor descriptor;
   std::vector<CrudRowVersionRecord> visible_rows;
+  // Conservative physical base-mutation generation for the exact bounded
+  // relation read. This is not MGA visibility or transaction-finality
+  // authority and remains zero on every refused or incomplete read.
+  std::uint64_t current_relation_base_generation = 0;
   std::uint64_t scanned_row_version_count = 0;
   std::uint64_t decoded_byte_count = 0;
   std::uint64_t visibility_recheck_count = 0;

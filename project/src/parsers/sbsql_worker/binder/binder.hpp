@@ -43,6 +43,10 @@ struct NativeDescriptorBindingInput {
   std::optional<std::string> collation_uuid;
   std::optional<std::string> timezone_profile_id;
   BoundWidthPrecisionScale width_precision_scale;
+  // Engine-projected canonical type evidence used by closed model profiles.
+  // Names never replace descriptor/type UUID authority.
+  std::string canonical_type_name;
+  std::string element_profile;
 };
 
 struct NativeExpressionBindingInput {
@@ -140,6 +144,8 @@ struct BoundDescriptorAstRecord {
   std::optional<std::string> collation_uuid;
   std::optional<std::string> timezone_profile_id;
   BoundWidthPrecisionScale width_precision_scale;
+  std::string canonical_type_name;
+  std::string element_profile;
 };
 
 struct BoundExpressionAstRecord {
@@ -278,6 +284,18 @@ struct BoundCatalogRelationSourceAstRecord {
   std::optional<std::uint32_t> model_bucket_time_input_expression_id;
   std::optional<std::uint32_t> model_downsample_expression_id;
   std::string model_time_series_aggregate_id;
+  std::optional<std::uint32_t> model_vector_alias_expression_id;
+  std::optional<std::uint32_t> model_vector_nearest_expression_id;
+  std::optional<std::uint32_t> model_vector_query_expression_id;
+  std::optional<std::uint32_t> model_vector_metric_expression_id;
+  std::optional<std::uint32_t> model_vector_top_k_expression_id;
+  std::optional<std::uint32_t> model_vector_filter_expression_id;
+  std::optional<std::uint32_t> model_vector_metadata_predicate_expression_id;
+  std::optional<std::uint32_t> model_vector_metadata_column_expression_id;
+  std::optional<std::uint32_t> model_vector_metadata_value_expression_id;
+  std::optional<NativeIdentifierAstNode> model_vector_result_alias;
+  std::string model_vector_metric_id;
+  std::optional<std::uint64_t> model_vector_top_k;
   std::string model_graph_direction;
   std::optional<std::uint64_t> model_graph_minimum_depth;
   std::optional<std::uint64_t> model_graph_maximum_depth;

@@ -10,17 +10,27 @@
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "datatype_document.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
 #include "nosql/nosql_batch_point_lookup_support.hpp"
+#include "nosql/nosql_provider_generation_store.hpp"
 #include "nosql/nosql_surface_support.hpp"
+#include "security/security_model.hpp"
 #include "vector_index_generation_publication.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cfenv>
+#include <charconv>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -478,6 +488,375 @@ EngineVectorSearchResult PhysicalVectorSearch(
   return result;
 }
 
+bool CanonicalBoundVectorUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-' ||
+      value == "00000000-0000-0000-0000-000000000000") {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const char ch = value[index];
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string BoundVectorDescriptorField(const std::string_view descriptor,
+                                       const std::string_view name) {
+  std::size_t offset = 0;
+  while (offset <= descriptor.size()) {
+    const auto end = descriptor.find(';', offset);
+    const auto field = descriptor.substr(
+        offset, end == std::string_view::npos ? descriptor.size() - offset
+                                              : end - offset);
+    const auto equals = field.find('=');
+    if (equals != std::string_view::npos && field.substr(0, equals) == name) {
+      return std::string(field.substr(equals + 1));
+    }
+    if (end == std::string_view::npos) break;
+    offset = end + 1;
+  }
+  return {};
+}
+
+std::string BoundVectorTypeUuid(const EngineDescriptor& descriptor) {
+  return BoundVectorDescriptorField(descriptor.encoded_descriptor,
+                                    "type_uuid");
+}
+
+bool ExactBoundVectorStorageDescriptor(
+    const MgaRelationStorageDescriptor& descriptor,
+    const std::string_view collection_uuid) {
+  if (descriptor.relation_uuid.canonical != collection_uuid ||
+      descriptor.relation_kind != "table" ||
+      descriptor.storage_profile != "local_mga_rowstore_v1" ||
+      descriptor.descriptor_generation == 0 ||
+      !CanonicalBoundVectorUuid(descriptor.descriptor_uuid.canonical) ||
+      descriptor.columns.size() != 2) {
+    return false;
+  }
+  const auto& embedding = descriptor.columns[0];
+  const auto& metadata = descriptor.columns[1];
+  const auto dimension = BoundVectorDescriptorField(
+      embedding.value_descriptor.encoded_descriptor, "dimension");
+  const auto width = BoundVectorDescriptorField(
+      embedding.value_descriptor.encoded_descriptor, "width");
+  auto element = BoundVectorDescriptorField(
+      embedding.value_descriptor.encoded_descriptor, "element");
+  if (element.empty()) {
+    element = BoundVectorDescriptorField(
+        embedding.value_descriptor.encoded_descriptor, "element_profile");
+  }
+  if (element.empty()) {
+    element = BoundVectorDescriptorField(
+        embedding.value_descriptor.encoded_descriptor, "element_type");
+  }
+  return embedding.ordinal == 0 &&
+         embedding.canonical_name_key == "embedding" && !embedding.nullable &&
+         embedding.value_descriptor.canonical_type_name == "dense_vector" &&
+         (dimension == "3" || width == "3") && element == "real32" &&
+         metadata.ordinal == 1 &&
+         metadata.canonical_name_key == "metadata" && !metadata.nullable &&
+         metadata.value_descriptor.canonical_type_name == "text" &&
+         CanonicalBoundVectorUuid(embedding.column_uuid.canonical) &&
+         CanonicalBoundVectorUuid(metadata.column_uuid.canonical) &&
+         CanonicalBoundVectorUuid(
+             embedding.value_descriptor.descriptor_uuid.canonical) &&
+         CanonicalBoundVectorUuid(
+             metadata.value_descriptor.descriptor_uuid.canonical) &&
+         CanonicalBoundVectorUuid(
+             BoundVectorTypeUuid(embedding.value_descriptor)) &&
+         CanonicalBoundVectorUuid(
+             BoundVectorTypeUuid(metadata.value_descriptor));
+}
+
+bool ExactBoundVectorOutputDescriptors(
+    const std::vector<EngineDescriptor>& descriptors) {
+  if (descriptors.size() != 3) return false;
+  static constexpr std::array<std::string_view, 3> kTypes{
+      "uuid", "real64", "real64"};
+  for (std::size_t index = 0; index < descriptors.size(); ++index) {
+    const auto& descriptor = descriptors[index];
+    if (!CanonicalBoundVectorUuid(descriptor.descriptor_uuid.canonical) ||
+        descriptor.descriptor_kind.empty() ||
+        descriptor.canonical_type_name != kTypes[index] ||
+        !CanonicalBoundVectorUuid(BoundVectorTypeUuid(descriptor))) {
+      return false;
+    }
+    const auto nullability = BoundVectorDescriptorField(
+        descriptor.encoded_descriptor, "nullability");
+    const auto nullable = BoundVectorDescriptorField(
+        descriptor.encoded_descriptor, "nullable");
+    if (nullability != "non_null" && nullability != "not_null" &&
+        nullable != "false" && nullable != "0") {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ParseCanonicalBoundVectorReal32(const std::string_view text,
+                                     float* value) {
+  if (value == nullptr || text.empty() || text.front() == '+' ||
+      text.find('E') != std::string_view::npos) {
+    return false;
+  }
+  float parsed = 0.0F;
+  const auto conversion =
+      std::from_chars(text.data(), text.data() + text.size(), parsed,
+                      std::chars_format::general);
+  if (conversion.ec != std::errc{} ||
+      conversion.ptr != text.data() + text.size() || !std::isfinite(parsed)) {
+    return false;
+  }
+  if (parsed == 0.0F) parsed = 0.0F;
+  std::array<char, 64> canonical{};
+  const auto rendered = std::to_chars(canonical.data(),
+                                      canonical.data() + canonical.size(),
+                                      parsed, std::chars_format::general);
+  if (rendered.ec != std::errc{} ||
+      text != std::string_view(canonical.data(),
+                               static_cast<std::size_t>(rendered.ptr -
+                                                        canonical.data()))) {
+    return false;
+  }
+  *value = parsed;
+  return true;
+}
+
+bool ParseCanonicalBoundVectorLiteral(
+    const std::string_view literal, std::array<float, 3>* vector) {
+  if (vector == nullptr || literal.size() < 7 || literal.front() != '[' ||
+      literal.back() != ']' || literal.find_first_of(" \t\r\n") !=
+                                     std::string_view::npos) {
+    return false;
+  }
+  const auto payload = literal.substr(1, literal.size() - 2);
+  std::size_t offset = 0;
+  for (std::size_t ordinal = 0; ordinal < vector->size(); ++ordinal) {
+    const auto comma = payload.find(',', offset);
+    if ((ordinal + 1 < vector->size() && comma == std::string_view::npos) ||
+        (ordinal + 1 == vector->size() && comma != std::string_view::npos)) {
+      return false;
+    }
+    const auto end = comma == std::string_view::npos ? payload.size() : comma;
+    if (!ParseCanonicalBoundVectorReal32(payload.substr(offset, end - offset),
+                                         &(*vector)[ordinal])) {
+      return false;
+    }
+    offset = end + 1;
+  }
+  return offset == payload.size() + 1;
+}
+
+bool CanonicalBoundVectorMetadata(const std::string& value) {
+  scratchbird::core::datatypes::DocumentCanonicalizationRequest request;
+  request.type_id =
+      scratchbird::core::datatypes::CanonicalTypeId::json_document;
+  request.encoded_value = value;
+  const auto canonical =
+      scratchbird::core::datatypes::CanonicalizeDocumentValue(request);
+  return canonical.ok() && canonical.canonical_value == value &&
+         !value.empty() && value.front() == '{' && value.back() == '}';
+}
+
+bool CheckedBoundVectorAdd(const std::uint64_t left,
+                           const std::uint64_t right,
+                           std::uint64_t* result) {
+  if (result == nullptr ||
+      right > std::numeric_limits<std::uint64_t>::max() - left) {
+    return false;
+  }
+  *result = left + right;
+  return true;
+}
+
+bool CheckedBoundVectorMultiply(const std::uint64_t left,
+                                const std::uint64_t right,
+                                std::uint64_t* result) {
+  if (result == nullptr ||
+      (left != 0 &&
+       right > std::numeric_limits<std::uint64_t>::max() / left)) {
+    return false;
+  }
+  *result = left * right;
+  return true;
+}
+
+class BoundVectorFloatingEnvironment final {
+ public:
+  BoundVectorFloatingEnvironment() {
+    active_ = std::fegetenv(&saved_) == 0;
+    if (active_) {
+      std::feclearexcept(FE_ALL_EXCEPT);
+      if (std::fesetround(FE_TONEAREST) != 0) active_ = false;
+    }
+  }
+
+  ~BoundVectorFloatingEnvironment() {
+    if (active_) std::fesetenv(&saved_);
+  }
+
+  bool active() const { return active_; }
+
+ private:
+  std::fenv_t saved_{};
+  bool active_ = false;
+};
+
+std::string CanonicalBoundVectorReal64(double value) {
+  if (!std::isfinite(value)) return {};
+  if (value == 0.0) value = 0.0;
+  std::array<char, 128> encoded{};
+  const auto rendered = std::to_chars(encoded.data(),
+                                      encoded.data() + encoded.size(), value,
+                                      std::chars_format::general);
+  if (rendered.ec != std::errc{}) return {};
+  return std::string(encoded.data(), rendered.ptr);
+}
+
+const char* BoundVectorMetricName(const EngineBoundVectorMetricV1 metric) {
+  switch (metric) {
+    case EngineBoundVectorMetricV1::kL2Squared: return "L2_SQUARED";
+    case EngineBoundVectorMetricV1::kCosine: return "COSINE";
+    case EngineBoundVectorMetricV1::kInnerProduct: return "INNER_PRODUCT";
+    case EngineBoundVectorMetricV1::kUnknown: break;
+  }
+  return "UNKNOWN";
+}
+
+struct BoundVectorScoredRow {
+  std::string row_uuid;
+  double distance = 0.0;
+  double score = 0.0;
+  std::string encoded_distance;
+  std::string encoded_score;
+};
+
+bool ScoreBoundVectorRow(const std::array<float, 3>& query,
+                         const std::array<float, 3>& stored,
+                         const EngineBoundVectorMetricV1 metric,
+                         BoundVectorScoredRow* row,
+                         bool* cosine_zero_norm) {
+  if (row == nullptr || cosine_zero_norm == nullptr) return false;
+  *cosine_zero_norm = false;
+  volatile double dot = 0.0;
+  volatile double query_norm = 0.0;
+  volatile double stored_norm = 0.0;
+  volatile double l2 = 0.0;
+  for (std::size_t ordinal = 0; ordinal < query.size(); ++ordinal) {
+    volatile double q = static_cast<double>(query[ordinal]);
+    volatile double x = static_cast<double>(stored[ordinal]);
+    volatile double product = q * x;
+    dot = dot + product;
+    volatile double query_square = q * q;
+    query_norm = query_norm + query_square;
+    volatile double stored_square = x * x;
+    stored_norm = stored_norm + stored_square;
+    volatile double delta = q - x;
+    volatile double square = delta * delta;
+    l2 = l2 + square;
+  }
+  switch (metric) {
+    case EngineBoundVectorMetricV1::kL2Squared:
+      row->distance = l2;
+      row->score = -row->distance;
+      break;
+    case EngineBoundVectorMetricV1::kInnerProduct:
+      row->distance = -dot;
+      row->score = dot;
+      break;
+    case EngineBoundVectorMetricV1::kCosine: {
+      if (query_norm == 0.0 || stored_norm == 0.0) {
+        *cosine_zero_norm = true;
+        return false;
+      }
+      volatile double denominator =
+          std::sqrt(static_cast<double>(query_norm)) *
+          std::sqrt(static_cast<double>(stored_norm));
+      volatile double similarity = dot / denominator;
+      row->distance = 1.0 - similarity;
+      row->score = 1.0 - row->distance;
+      break;
+    }
+    case EngineBoundVectorMetricV1::kUnknown: return false;
+  }
+  row->encoded_distance = CanonicalBoundVectorReal64(row->distance);
+  row->encoded_score = CanonicalBoundVectorReal64(row->score);
+  return !row->encoded_distance.empty() && !row->encoded_score.empty() &&
+         std::isfinite(row->distance) && std::isfinite(row->score);
+}
+
+bool BoundVectorCarrierContextMatches(
+    const EngineBoundVectorReadRequestV1& request,
+    const EngineNoSqlProviderGenerationMetadata& carrier) {
+  const auto& context = request.context;
+  return carrier.family == EngineNoSqlProviderFamily::kVector &&
+         carrier.provider_id == request.selected_provider_uuid &&
+         carrier.vector_ann_capability_uuid ==
+             request.selected_capability_uuid &&
+         carrier.database_identity ==
+             EngineNoSqlProviderDatabaseIdentity(context) &&
+         carrier.database_uuid == context.database_uuid.canonical &&
+         carrier.collection_uuid == request.collection_uuid &&
+         carrier.vector_ann_base_relation_uuid == request.collection_uuid &&
+         carrier.vector_ann_metric_id == BoundVectorMetricName(request.metric) &&
+         carrier.vector_ann_statement_uuid == context.statement_uuid.canonical &&
+         carrier.vector_ann_statement_snapshot_uuid ==
+             context.statement_snapshot_uuid.canonical &&
+         carrier.vector_ann_statement_metadata_snapshot_uuid ==
+             context.statement_metadata_snapshot_uuid.canonical &&
+         carrier.vector_ann_owning_transaction_uuid ==
+             context.transaction_uuid.canonical &&
+         carrier.vector_ann_local_transaction_id ==
+             context.local_transaction_id &&
+         carrier.vector_ann_snapshot_visible_through_local_transaction_id ==
+             context.snapshot_visible_through_local_transaction_id &&
+         carrier.vector_ann_security_context_uuid ==
+             context.authorization_context.authority_uuid.canonical &&
+         carrier.vector_ann_catalog_epoch_uuid ==
+             context.catalog_epoch_uuid.canonical &&
+         carrier.security_epoch == context.security_epoch &&
+         carrier.catalog_epoch == context.catalog_generation_id &&
+         carrier.vector_ann_exact_fallback_available &&
+         carrier.vector_ann_full_base_exact_recheck_required &&
+         carrier.vector_ann_base_row_mga_recheck_required &&
+         carrier.vector_ann_security_recheck_required &&
+         !carrier.provider_claims_visibility_authority &&
+         !carrier.provider_claims_transaction_finality_authority &&
+         !carrier.vector_ann_index_claims_visibility_authority &&
+         !carrier.vector_ann_index_claims_transaction_finality_authority &&
+         !carrier.vector_ann_parser_claims_visibility_authority &&
+         !carrier.vector_ann_parser_claims_transaction_finality_authority &&
+         !carrier.vector_ann_client_claims_visibility_authority &&
+         !carrier.vector_ann_client_claims_transaction_finality_authority &&
+         !carrier.vector_ann_reference_claims_visibility_authority &&
+         !carrier.vector_ann_reference_claims_transaction_finality_authority &&
+         !carrier.vector_ann_wal_claims_visibility_authority &&
+         !carrier.vector_ann_wal_claims_transaction_finality_authority;
+}
+
+bool BoundVectorCarrierDescriptorMatches(
+    const EngineNoSqlProviderGenerationMetadata& carrier,
+    const MgaRelationStorageDescriptor& descriptor) {
+  const auto& embedding = descriptor.columns.front();
+  return carrier.vector_ann_relation_descriptor_uuid ==
+             descriptor.descriptor_uuid.canonical &&
+         carrier.vector_ann_relation_descriptor_generation ==
+             descriptor.descriptor_generation &&
+         carrier.vector_ann_embedding_column_uuid ==
+             embedding.column_uuid.canonical &&
+         carrier.vector_ann_embedding_descriptor_uuid ==
+             embedding.value_descriptor.descriptor_uuid.canonical &&
+         carrier.vector_ann_embedding_type_uuid ==
+             BoundVectorTypeUuid(embedding.value_descriptor) &&
+         carrier.vector_ann_dimension == 3 &&
+         carrier.vector_ann_element_profile == "real32";
+}
+
 }  // namespace
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_NOSQL_VECTOR_API_BEHAVIOR
@@ -506,6 +885,381 @@ EngineVectorSearchResult EngineVectorSearch(const EngineVectorSearchRequest& req
                               {"approximate_requires_evidence", "true"}});
   AddApiBehaviorEvidence(&result, "vector_search", "exact_fallback_available");
   AddEngineNoSqlSurfaceEvidence(&result, "vector", "exact_scan_until_vector_index_available");
+  return result;
+}
+
+EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
+    const EngineBoundVectorReadRequestV1& request) {
+  constexpr std::string_view kOperation = "nosql.bound_vector_read_v1";
+  bool resource_acquired = false;
+  std::uint64_t scanned_row_versions = 0;
+  std::uint64_t decoded_bytes = 0;
+  const auto refuse = [&](const std::string& diagnostic_id,
+                          const std::string& detail) {
+    EngineBoundVectorReadResultV1 result;
+    result.ok = false;
+    result.diagnostic = MakeEngineApiDiagnostic(
+        diagnostic_id, diagnostic_id, detail, true);
+    result.scanned_row_version_count = scanned_row_versions;
+    result.decoded_byte_count = decoded_bytes;
+    result.execution_resource_acquired = resource_acquired;
+    result.cleanup_count = resource_acquired ? 1 : 0;
+    result.evidence.push_back({"bound_vector_failure_atomic", "true"});
+    result.evidence.push_back({"bound_vector_mga_authority",
+                               "engine_transaction_inventory"});
+    result.evidence.push_back({"bound_vector_provider_visibility_authority",
+                               "false"});
+    result.evidence.push_back({"bound_vector_provider_finality_authority",
+                               "false"});
+    return result;
+  };
+  const auto cancelled = [&]() {
+    return request.cancellation_requested &&
+           request.cancellation_requested();
+  };
+
+  if (cancelled()) {
+    return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                  "vector execution cancelled before access");
+  }
+  const bool filtered = request.operation ==
+                        EngineBoundVectorReadOperationV1::kFilteredSearch;
+  const bool ann_operation =
+      request.operation == EngineBoundVectorReadOperationV1::kAnnSearch;
+  if (!CanonicalBoundVectorUuid(request.collection_uuid) ||
+      !CanonicalBoundVectorUuid(request.selected_alternative_uuid) ||
+      !CanonicalBoundVectorUuid(request.selected_provider_uuid) ||
+      !CanonicalBoundVectorUuid(request.selected_capability_uuid) ||
+      request.selected_implementation_id != "physical_vector_search_v1" ||
+      (request.operation != EngineBoundVectorReadOperationV1::kExactSearch &&
+       !ann_operation && !filtered) ||
+      (request.physical_route !=
+           EngineBoundVectorPhysicalRouteV1::kExactScan &&
+       request.physical_route !=
+           EngineBoundVectorPhysicalRouteV1::kAnnWithExactFallback) ||
+      (ann_operation &&
+       request.physical_route !=
+           EngineBoundVectorPhysicalRouteV1::kAnnWithExactFallback) ||
+      filtered != request.filter.present) {
+    return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "bound vector operation or selected alternative is invalid");
+  }
+  if (request.metric == EngineBoundVectorMetricV1::kUnknown) {
+    return refuse("SB_MODEL_VECTOR_METRIC_REFUSED_V1",
+                  "bound vector metric is outside the closed v1 set");
+  }
+  std::array<float, 3> query_vector{};
+  if (!ParseCanonicalBoundVectorLiteral(request.bound_query_vector_literal,
+                                        &query_vector)) {
+    return refuse("SB_MODEL_VECTOR_QUERY_TYPE_REFUSED_V1",
+                  "bound query vector is not canonical DENSE_VECTOR(3,REAL32)");
+  }
+  if (request.top_k == 0) {
+    return refuse("SB_MODEL_VECTOR_TOP_K_REFUSED_V1",
+                  "bound vector top-k is zero");
+  }
+  if (request.filter.present &&
+      !CanonicalBoundVectorMetadata(
+          request.filter.canonical_metadata_json)) {
+    return refuse("SB_MODEL_VECTOR_FILTER_REFUSED_V1",
+                  "bound vector filter value is not canonical JSON object text");
+  }
+  if (!ExactBoundVectorOutputDescriptors(request.output_descriptors)) {
+    return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                  "bound vector public descriptor cohort is invalid");
+  }
+  if (request.maximum_scanned_row_versions == 0 ||
+      request.maximum_decoded_bytes == 0 ||
+      request.maximum_output_rows == 0 || request.maximum_memory_bytes == 0 ||
+      request.top_k > request.maximum_output_rows ||
+      !request.cancellation_requested) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "bound vector resource or cancellation contract is incomplete");
+  }
+  std::uint64_t preflight_bytes = request.bound_query_vector_literal.size();
+  if (!CheckedBoundVectorAdd(preflight_bytes,
+                             request.filter.canonical_metadata_json.size(),
+                             &preflight_bytes) ||
+      !CheckedBoundVectorAdd(preflight_bytes,
+                             request.output_descriptors.size() * 256U,
+                             &preflight_bytes) ||
+      preflight_bytes > request.maximum_memory_bytes) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "bound vector pre-access memory contract is exceeded");
+  }
+
+  BoundVectorFloatingEnvironment floating_environment;
+  if (!floating_environment.active()) {
+    return refuse("SB_MODEL_VECTOR_ELEMENT_INVALID_V1",
+                  "round-to-nearest floating-point environment is unavailable");
+  }
+  if (request.metric == EngineBoundVectorMetricV1::kCosine) {
+    volatile double query_norm = 0.0;
+    for (const float component : query_vector) {
+      volatile double widened = static_cast<double>(component);
+      volatile double square = widened * widened;
+      query_norm = query_norm + square;
+    }
+    if (query_norm == 0.0) {
+      return refuse("SB_MODEL_VECTOR_COSINE_ZERO_NORM_REFUSED_V1",
+                    "cosine query vector has zero norm");
+    }
+  }
+
+  const auto authorization = EvaluateMaterializedAuthorization(
+      request.context, request.context.authorization_context, "SELECT",
+      request.collection_uuid);
+  if (!authorization.authorized || authorization.denied ||
+      authorization.policy_recheck_required ||
+      request.context.authorization_context.security_epoch !=
+          request.context.security_epoch ||
+      request.context.authorization_context.catalog_generation_id !=
+          request.context.catalog_generation_id) {
+    return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                  "current materialized vector SELECT authorization is absent or stale");
+  }
+
+  bool ann_carrier_loaded = false;
+  // An ordinary exact scan is the requested physical route, not a fallback.
+  // This receipt becomes true only when an admitted ANN-with-exact-fallback
+  // route cannot use its current carrier and reconstructs from the MGA base.
+  bool exact_fallback_selected = false;
+  EngineNoSqlProviderGenerationMetadata carrier;
+  if (request.physical_route ==
+      EngineBoundVectorPhysicalRouteV1::kAnnWithExactFallback) {
+    const auto loaded = LoadNoSqlProviderGeneration(
+        request.context, EngineNoSqlProviderFamily::kVector,
+        request.selected_provider_uuid, request.collection_uuid);
+    if (!loaded.ok) {
+      if (loaded.diagnostic.detail == kNoSqlProviderGenerationUnavailable) {
+        exact_fallback_selected = true;
+      } else {
+        return refuse("SB_MODEL_PROVIDER_GENERATION_STALE_V1",
+                      "vector ANN carrier is corrupt, partial, or duplicated");
+      }
+    } else if (!ValidateVectorAnnCapabilityBindingV1(loaded.metadata) ||
+               !BoundVectorCarrierContextMatches(request, loaded.metadata)) {
+      return refuse("SB_MODEL_PROVIDER_GENERATION_STALE_V1",
+                    "vector ANN carrier identity or statement cohort is stale");
+    } else {
+      ann_carrier_loaded = true;
+      carrier = loaded.metadata;
+    }
+  }
+
+  resource_acquired = true;
+  MgaVisibleHeapRelationReadRequest read_request;
+  read_request.relation_uuid = request.collection_uuid;
+  read_request.maximum_scanned_row_versions =
+      request.maximum_scanned_row_versions;
+  read_request.maximum_decoded_bytes = request.maximum_decoded_bytes;
+  read_request.maximum_output_rows = request.maximum_output_rows;
+  read_request.cancellation_requested = request.cancellation_requested;
+  const auto read = ReadVisibleMgaHeapRelation(request.context, read_request);
+  scanned_row_versions = read.scanned_row_version_count;
+  decoded_bytes = read.decoded_byte_count;
+  if (!read.ok) {
+    if (read.cancellation_observed || cancelled()) {
+      return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                    "vector execution cancelled during MGA base read");
+    }
+    if (read.diagnostic.detail.find("maximum") != std::string::npos ||
+        read.diagnostic.detail.find("bound") != std::string::npos ||
+        read.diagnostic.detail.find("overflow") != std::string::npos) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "bounded MGA vector base read exceeded its contract");
+    }
+    return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
+                  "current MGA-visible vector base relation is unavailable");
+  }
+  if (!ExactBoundVectorStorageDescriptor(read.descriptor,
+                                         request.collection_uuid)) {
+    return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                  "current vector storage descriptor is outside the exact v1 profile");
+  }
+  if (read.current_relation_base_generation == 0) {
+    return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                  "current vector base generation is absent");
+  }
+
+  bool ann_candidate_hint_selected = false;
+  if (ann_carrier_loaded) {
+    if (!BoundVectorCarrierDescriptorMatches(carrier, read.descriptor) ||
+        carrier.vector_ann_base_relation_generation >
+            read.current_relation_base_generation) {
+      return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                    "vector ANN carrier is ahead of or substituted for the current base");
+    }
+    const bool recall_unusable =
+        !carrier.vector_ann_recall_attestation_present ||
+        !carrier.vector_ann_recall_sample_deterministic ||
+        carrier.vector_ann_observed_recall_ppm <
+            carrier.vector_ann_required_recall_ppm ||
+        request.top_k > carrier.vector_ann_recall_contract_top_k;
+    if (carrier.vector_ann_base_relation_generation <
+            read.current_relation_base_generation ||
+        recall_unusable) {
+      exact_fallback_selected = true;
+    } else {
+      ann_candidate_hint_selected = true;
+    }
+  }
+
+  std::vector<BoundVectorScoredRow> scored_rows;
+  scored_rows.reserve(read.visible_rows.size());
+  std::unordered_set<std::string> visible_row_uuids;
+  std::uint64_t filtered_rows = 0;
+  std::uint64_t accounted_memory = preflight_bytes;
+  for (const auto& base_row : read.visible_rows) {
+    if (cancelled()) {
+      return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                    "vector execution cancelled during exact base validation");
+    }
+    if (!CanonicalBoundVectorUuid(base_row.row_uuid) ||
+        !visible_row_uuids.insert(base_row.row_uuid).second) {
+      return refuse("SB_MODEL_VECTOR_DUPLICATE_VISIBLE_ROW_UUID_REFUSED_V1",
+                    "current MGA-visible vector row UUID is invalid or duplicated");
+    }
+    if (base_row.values.size() != 2 ||
+        base_row.values[0].first != "embedding" ||
+        base_row.values[1].first != "metadata") {
+      return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                    "current vector row does not match the persisted descriptor");
+    }
+    std::array<float, 3> stored_vector{};
+    if (!ParseCanonicalBoundVectorLiteral(base_row.values[0].second,
+                                          &stored_vector)) {
+      return refuse("SB_MODEL_VECTOR_ELEMENT_INVALID_V1",
+                    "current MGA-visible stored vector is invalid");
+    }
+    if (!CanonicalBoundVectorMetadata(base_row.values[1].second)) {
+      return refuse("SB_MODEL_VECTOR_METADATA_INVALID_V1",
+                    "current MGA-visible metadata is not canonical JSON object text");
+    }
+    if (request.filter.present &&
+        base_row.values[1].second !=
+            request.filter.canonical_metadata_json) {
+      ++filtered_rows;
+      if (request.metric == EngineBoundVectorMetricV1::kCosine) {
+        BoundVectorScoredRow validation;
+        bool cosine_zero_norm = false;
+        if (!ScoreBoundVectorRow(query_vector, stored_vector, request.metric,
+                                 &validation, &cosine_zero_norm)) {
+          return refuse(
+              cosine_zero_norm
+                  ? "SB_MODEL_VECTOR_COSINE_ZERO_NORM_REFUSED_V1"
+                  : "SB_MODEL_VECTOR_ELEMENT_INVALID_V1",
+              "current MGA-visible vector failed exact metric validation");
+        }
+      }
+      continue;
+    }
+    BoundVectorScoredRow scored;
+    scored.row_uuid = base_row.row_uuid;
+    bool cosine_zero_norm = false;
+    if (!ScoreBoundVectorRow(query_vector, stored_vector, request.metric,
+                             &scored, &cosine_zero_norm)) {
+      return refuse(
+          cosine_zero_norm
+              ? "SB_MODEL_VECTOR_COSINE_ZERO_NORM_REFUSED_V1"
+              : "SB_MODEL_VECTOR_ELEMENT_INVALID_V1",
+          "current MGA-visible vector failed exact metric validation");
+    }
+    std::uint64_t row_memory = sizeof(BoundVectorScoredRow);
+    if (!CheckedBoundVectorAdd(row_memory, scored.row_uuid.size(),
+                               &row_memory) ||
+        !CheckedBoundVectorAdd(row_memory, scored.encoded_distance.size(),
+                               &row_memory) ||
+        !CheckedBoundVectorAdd(row_memory, scored.encoded_score.size(),
+                               &row_memory) ||
+        !CheckedBoundVectorAdd(accounted_memory, row_memory,
+                               &accounted_memory) ||
+        accounted_memory > request.maximum_memory_bytes) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "vector exact scoring memory contract is exceeded");
+    }
+    scored_rows.push_back(std::move(scored));
+  }
+  if (cancelled()) {
+    return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                  "vector execution cancelled before exact ordering");
+  }
+  std::ranges::sort(scored_rows, [](const auto& left, const auto& right) {
+    if (left.distance != right.distance) return left.distance < right.distance;
+    return left.row_uuid < right.row_uuid;
+  });
+  if (scored_rows.size() > request.top_k) {
+    scored_rows.resize(request.top_k);
+  }
+
+  EngineBoundVectorReadResultV1 result;
+  result.ok = true;
+  result.diagnostic = MakeEngineApiDiagnostic(
+      "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  result.relation_descriptor = read.descriptor;
+  result.output_descriptors = request.output_descriptors;
+  result.current_relation_base_generation =
+      read.current_relation_base_generation;
+  result.scanned_row_version_count = read.scanned_row_version_count;
+  result.decoded_byte_count = read.decoded_byte_count;
+  result.visible_base_row_count = read.visible_rows.size();
+  result.filtered_base_row_count = filtered_rows;
+  result.scored_base_row_count =
+      read.visible_rows.size() - filtered_rows;
+  result.ann_carrier_loaded = ann_carrier_loaded;
+  result.ann_candidate_hint_selected = ann_candidate_hint_selected;
+  result.exact_fallback_selected = exact_fallback_selected;
+  result.full_base_exact_recheck_complete = true;
+  result.base_row_mga_recheck_complete = true;
+  result.security_recheck_complete = true;
+  result.execution_resource_acquired = true;
+  result.cleanup_count = 1;
+  result.rows.reserve(scored_rows.size());
+  for (const auto& scored : scored_rows) {
+    if (cancelled()) {
+      return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                    "vector execution cancelled during result materialization");
+    }
+    std::uint64_t row_bytes = scored.row_uuid.size();
+    if (!CheckedBoundVectorAdd(row_bytes, scored.encoded_distance.size(),
+                               &row_bytes) ||
+        !CheckedBoundVectorAdd(row_bytes, scored.encoded_score.size(),
+                               &row_bytes) ||
+        !CheckedBoundVectorAdd(row_bytes, 3, &row_bytes) ||
+        !CheckedBoundVectorAdd(result.result_byte_count, row_bytes,
+                               &result.result_byte_count) ||
+        result.result_byte_count > request.maximum_decoded_bytes) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "vector result byte contract is exceeded");
+    }
+    result.rows.push_back({scored.row_uuid, scored.distance, scored.score,
+                           scored.encoded_distance, scored.encoded_score});
+  }
+  if (cancelled()) {
+    return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                  "vector execution cancelled before atomic publication");
+  }
+  result.evidence.push_back(
+      {"bound_vector_physical_route",
+       ann_candidate_hint_selected ? "ann_hint_full_base_exact_recheck"
+                                   : "exact_full_base_scan"});
+  result.evidence.push_back(
+      {"bound_vector_exact_fallback_selected",
+       exact_fallback_selected ? "true" : "false"});
+  result.evidence.push_back(
+      {"bound_vector_relation_base_generation",
+       std::to_string(result.current_relation_base_generation)});
+  result.evidence.push_back(
+      {"bound_vector_result_ordering",
+       "distance_numeric_ascending_then_row_uuid_bytes_ascending"});
+  result.evidence.push_back(
+      {"bound_vector_full_base_exact_recheck", "true"});
+  result.evidence.push_back(
+      {"bound_vector_mga_authority", "engine_transaction_inventory"});
+  result.evidence.push_back(
+      {"bound_vector_provider_visibility_authority", "false"});
+  result.evidence.push_back(
+      {"bound_vector_provider_finality_authority", "false"});
   return result;
 }
 

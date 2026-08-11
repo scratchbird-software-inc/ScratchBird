@@ -491,6 +491,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       ast.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kTimeSeries;
       });
+  const auto vector_source_ast = std::ranges::find_if(
+      ast.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kVector;
+      });
   if (!LooksLikeUuidV7(context.bound_ast_uuid)) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-SCOPE",
                           "binding requires a non-null UUIDv7 BoundAST identity");
@@ -537,7 +541,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
   }
   const bool timestamp_model_source =
       key_value_source_ast != ast.catalog_relation_sources.end() ||
-      time_series_source_ast != ast.catalog_relation_sources.end();
+      time_series_source_ast != ast.catalog_relation_sources.end() ||
+      vector_source_ast != ast.catalog_relation_sources.end();
   if (timestamp_model_source &&
       (!IsCanonicalStatementTimestamp(context.statement_timestamp) ||
        context.statement_timestamp != authority.statement_timestamp)) {
@@ -545,7 +550,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         &bound,
         time_series_source_ast != ast.catalog_relation_sources.end()
             ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
-            : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1",
+            : (vector_source_ast != ast.catalog_relation_sources.end()
+                   ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
+                   : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1"),
         "model binding timestamp does not exactly match engine authority");
     return RefusedBoundAst(std::move(bound));
   }
@@ -608,6 +615,489 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kCatalogSource;
       });
+  if (vector_source_ast != ast.catalog_relation_sources.end()) {
+    // QOW-SOURCE-RCP-077-VECTOR-BINDING-V1
+    const auto refuse_vector = [&](const char* diagnostic,
+                                   const char* detail) {
+      AddBoundAstDiagnostic(&bound, diagnostic, detail);
+      return RefusedBoundAst(std::move(bound));
+    };
+    const bool filtered =
+        vector_source_ast->model_operation_id == "VECTOR_FILTERED_SEARCH";
+    const bool exact =
+        vector_source_ast->model_operation_id == "VECTOR_EXACT_SEARCH";
+    const bool any_filter =
+        vector_source_ast->model_vector_filter_expression_id.has_value() ||
+        vector_source_ast->model_vector_metadata_predicate_expression_id.has_value() ||
+        vector_source_ast->model_vector_metadata_column_expression_id.has_value() ||
+        vector_source_ast->model_vector_metadata_value_expression_id.has_value();
+    const bool complete_filter =
+        vector_source_ast->model_vector_filter_expression_id.has_value() &&
+        vector_source_ast->model_vector_metadata_predicate_expression_id.has_value() &&
+        vector_source_ast->model_vector_metadata_column_expression_id.has_value() &&
+        vector_source_ast->model_vector_metadata_value_expression_id.has_value();
+    const bool exact_metric =
+        vector_source_ast->model_vector_metric_id == "L2_SQUARED" ||
+        vector_source_ast->model_vector_metric_id == "COSINE" ||
+        vector_source_ast->model_vector_metric_id == "INNER_PRODUCT";
+    const std::string_view expected_semantic =
+        filtered ? "sblr.model-source.vector-filtered-search.v1"
+                 : "sblr.model-source.vector-exact-search.v1";
+    if (!IsCanonicalStatementTimestamp(context.statement_timestamp) ||
+        ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
+        ast.root_relation_id != ast.relations.front().relation_id ||
+        ast.relations.front().relation_kind !=
+            NativeRelationAstKind::kCatalogSource ||
+        ast.relations.front().relation_source_ids !=
+            std::vector<std::uint32_t>{vector_source_ast->source_id} ||
+        ast.relations.front().predicate_expression_ids.size() != 1 ||
+        vector_source_ast->model_family_id != "vector" ||
+        (!exact && !filtered) || (exact && any_filter) ||
+        (filtered && !complete_filter) || !exact_metric ||
+        !vector_source_ast->model_vector_top_k.has_value() ||
+        *vector_source_ast->model_vector_top_k == 0 ||
+        *vector_source_ast->model_vector_top_k > 0xffffffffULL ||
+        vector_source_ast->qualified_name.empty() ||
+        !vector_source_ast->alias.has_value() ||
+        !vector_source_ast->model_vector_alias_expression_id.has_value() ||
+        !vector_source_ast->model_vector_nearest_expression_id.has_value() ||
+        !vector_source_ast->model_vector_query_expression_id.has_value() ||
+        !vector_source_ast->model_vector_metric_expression_id.has_value() ||
+        !vector_source_ast->model_vector_top_k_expression_id.has_value() ||
+        ast.model_object_resolution_requests.size() != 1 ||
+        context.catalog_relations.size() != 1 || context.relations.size() != 1 ||
+        context.relations.front().relation_id !=
+            ast.relations.front().relation_id ||
+        context.relations.front().semantic_variant_id != expected_semantic) {
+      return refuse_vector("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                           "vector AST or binding cohort is incomplete");
+    }
+    const auto& request = ast.model_object_resolution_requests.front();
+    if (request.source_id != vector_source_ast->source_id ||
+        request.model_family_id != "vector" ||
+        request.object_class != "vector" ||
+        request.qualified_name.size() != vector_source_ast->qualified_name.size() ||
+        !std::ranges::equal(
+            request.qualified_name, vector_source_ast->qualified_name,
+            [](const auto& left, const auto& right) {
+              return left.spelling == right.spelling &&
+                     left.quoted == right.quoted;
+            })) {
+      return refuse_vector("SB_MODEL_BINDING_INCOMPLETE_V1",
+                           "vector resolution request does not match its source");
+    }
+    const auto& resolution = context.catalog_relations.front();
+    if (resolution.source_id != vector_source_ast->source_id ||
+        resolution.resolution_state !=
+            NativeCatalogRelationResolutionState::kBound ||
+        !IsNonNullCanonicalUuid(resolution.object_uuid) ||
+        !IsNonNullCanonicalUuid(resolution.resolved_schema_uuid) ||
+        resolution.resolved_object_type != "vector" ||
+        resolution.catalog_generation_id == 0 || resolution.security_epoch == 0 ||
+        resolution.resource_epoch == 0 || resolution.columns.size() != 2 ||
+        resolution.columns[0].ordinal != 0 ||
+        resolution.columns[0].canonical_name_key != "embedding" ||
+        resolution.columns[1].ordinal != 1 ||
+        resolution.columns[1].canonical_name_key != "metadata" ||
+        !IsNonNullCanonicalUuid(resolution.columns[0].column_uuid) ||
+        !IsNonNullCanonicalUuid(resolution.columns[1].column_uuid) ||
+        !descriptor_by_id.contains(resolution.columns[0].descriptor_id) ||
+        !descriptor_by_id.contains(resolution.columns[1].descriptor_id)) {
+      return refuse_vector("SB_MODEL_BINDING_INCOMPLETE_V1",
+                           "vector storage descriptor is not the exact two-column shape");
+    }
+    const auto* embedding_descriptor =
+        descriptor_by_id.at(resolution.columns[0].descriptor_id);
+    const auto* metadata_descriptor =
+        descriptor_by_id.at(resolution.columns[1].descriptor_id);
+    if (embedding_descriptor->nullability != BoundNullability::kNonNull ||
+        metadata_descriptor->nullability != BoundNullability::kNonNull ||
+        embedding_descriptor->canonical_type_name != "dense_vector" ||
+        embedding_descriptor->element_profile != "real32" ||
+        metadata_descriptor->canonical_type_name != "text" ||
+        !metadata_descriptor->element_profile.empty() ||
+        !embedding_descriptor->width_precision_scale.width.has_value() ||
+        *embedding_descriptor->width_precision_scale.width != 3) {
+      return refuse_vector("SB_MODEL_VECTOR_VALUE_REFUSED_V1",
+                           "vector storage types are not DENSE_VECTOR(3,REAL32)/TEXT");
+    }
+
+    const auto ast_expression_by_id = [&](const std::uint32_t expression_id)
+        -> const NativeExpressionAstNode* {
+      const auto found = std::ranges::find_if(
+          ast.expressions, [&](const auto& expression) {
+            return expression.expression_id == expression_id;
+          });
+      return found == ast.expressions.end() ? nullptr : &*found;
+    };
+    const auto* nearest = ast_expression_by_id(
+        *vector_source_ast->model_vector_nearest_expression_id);
+    const auto* alias = ast_expression_by_id(
+        *vector_source_ast->model_vector_alias_expression_id);
+    const auto* query = ast_expression_by_id(
+        *vector_source_ast->model_vector_query_expression_id);
+    const auto* metric = ast_expression_by_id(
+        *vector_source_ast->model_vector_metric_expression_id);
+    const auto* top_k = ast_expression_by_id(
+        *vector_source_ast->model_vector_top_k_expression_id);
+    if (nearest == nullptr || alias == nullptr || query == nullptr ||
+        metric == nullptr || top_k == nullptr ||
+        nearest->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+        nearest->operator_name != "VECTOR_NEAREST" ||
+        nearest->child_expression_ids !=
+            std::vector<std::uint32_t>{alias->expression_id,
+                                       query->expression_id,
+                                       metric->expression_id,
+                                       top_k->expression_id} ||
+        alias->expression_kind != NativeExpressionAstKind::kIdentifier ||
+        alias->qualified_identifier.size() != 1 ||
+        !((query->expression_kind == NativeExpressionAstKind::kLiteral &&
+           query->literal_kind == NativeLiteralAstKind::kVector) ||
+          query->expression_kind == NativeExpressionAstKind::kParameter) ||
+        metric->expression_kind != NativeExpressionAstKind::kLiteral ||
+        metric->literal_kind != NativeLiteralAstKind::kString ||
+        metric->spelling != vector_source_ast->model_vector_metric_id ||
+        top_k->expression_kind != NativeExpressionAstKind::kLiteral ||
+        top_k->literal_kind != NativeLiteralAstKind::kNumeric ||
+        top_k->spelling != std::to_string(*vector_source_ast->model_vector_top_k)) {
+      return refuse_vector("SB_MODEL_VECTOR_NEAREST_REFUSED_V1",
+                           "vector nearest typed-DAG identity/order drifted");
+    }
+    const auto same_alias = [](const NativeIdentifierAstNode& left,
+                               const NativeIdentifierAstNode& right) {
+      return left.quoted == right.quoted &&
+             (left.quoted ? left.spelling == right.spelling
+                          : ToUpperAscii(left.spelling) ==
+                                ToUpperAscii(right.spelling));
+    };
+    if (!same_alias(alias->qualified_identifier.front(),
+                    *vector_source_ast->alias)) {
+      return refuse_vector("SB_MODEL_BINDING_INCOMPLETE_V1",
+                           "vector alias identity is substituted");
+    }
+    if (filtered) {
+      const auto* filter = ast_expression_by_id(
+          *vector_source_ast->model_vector_filter_expression_id);
+      const auto* metadata_predicate = ast_expression_by_id(
+          *vector_source_ast->model_vector_metadata_predicate_expression_id);
+      const auto* metadata_column = ast_expression_by_id(
+          *vector_source_ast->model_vector_metadata_column_expression_id);
+      const auto* metadata_value = ast_expression_by_id(
+          *vector_source_ast->model_vector_metadata_value_expression_id);
+      const auto* filter_alias =
+          filter != nullptr && filter->child_expression_ids.size() == 2
+              ? ast_expression_by_id(filter->child_expression_ids[0])
+              : nullptr;
+      if (filter == nullptr || metadata_predicate == nullptr ||
+          metadata_column == nullptr || metadata_value == nullptr ||
+          filter_alias == nullptr ||
+          filter->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+          filter->operator_name != "VECTOR_FILTER" ||
+          filter->child_expression_ids !=
+              std::vector<std::uint32_t>{filter_alias->expression_id,
+                                         metadata_predicate->expression_id} ||
+          filter_alias->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          filter_alias->qualified_identifier.size() != 1 ||
+          !same_alias(filter_alias->qualified_identifier.front(),
+                      *vector_source_ast->alias) ||
+          metadata_predicate->expression_kind != NativeExpressionAstKind::kBinary ||
+          metadata_predicate->operator_name != "=" ||
+          metadata_predicate->child_expression_ids !=
+              std::vector<std::uint32_t>{metadata_column->expression_id,
+                                         metadata_value->expression_id} ||
+          metadata_column->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          metadata_column->qualified_identifier.size() != 2 ||
+          !same_alias(metadata_column->qualified_identifier.front(),
+                      *vector_source_ast->alias) ||
+          ToUpperAscii(metadata_column->qualified_identifier.back().spelling) !=
+              "METADATA" ||
+          !((metadata_value->expression_kind == NativeExpressionAstKind::kLiteral &&
+             metadata_value->literal_kind == NativeLiteralAstKind::kString) ||
+            metadata_value->expression_kind ==
+                NativeExpressionAstKind::kParameter)) {
+        return refuse_vector("SB_MODEL_VECTOR_FILTER_REFUSED_V1",
+                             "vector metadata filter typed-DAG drifted");
+      }
+    }
+
+    for (const auto& descriptor : context.descriptors) {
+      bound.descriptors.push_back(
+          {descriptor.descriptor_id, descriptor.descriptor_uuid,
+           descriptor.type_uuid, descriptor.nullability,
+           descriptor.collation_uuid, descriptor.timezone_profile_id,
+           descriptor.width_precision_scale, descriptor.canonical_type_name,
+           descriptor.element_profile});
+    }
+    std::ranges::sort(bound.descriptors, {},
+                      &BoundDescriptorAstRecord::descriptor_id);
+
+    const bool wildcard =
+        ast.relations.front().output_expression_ids.size() == 1 &&
+        ast_expression_by_id(ast.relations.front().output_expression_ids.front()) !=
+            nullptr &&
+        ast_expression_by_id(ast.relations.front().output_expression_ids.front())
+                ->expression_kind == NativeExpressionAstKind::kWildcard;
+    if (!wildcard || context.outputs.size() != 3 ||
+        context.expressions.size() != ast.expressions.size() - 1 + 3) {
+      return refuse_vector("SB_MODEL_BINDING_INCOMPLETE_V1",
+                           "vector v1 requires its exact three-field projection");
+    }
+    const auto maximum_ast_expression = std::ranges::max_element(
+        ast.expressions, {}, &NativeExpressionAstNode::expression_id);
+    std::unordered_set<std::uint32_t> context_expression_ids;
+    if (maximum_ast_expression == ast.expressions.end() ||
+        maximum_ast_expression->expression_id >
+            std::numeric_limits<std::uint32_t>::max() - 3 ||
+        std::ranges::any_of(context.expressions, [&](const auto& expression) {
+          return expression.expression_id == 0 ||
+                 !context_expression_ids.insert(expression.expression_id).second;
+        })) {
+      return refuse_vector("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                           "vector expression identities are zero or duplicated");
+    }
+    for (std::size_t ordinal = 0; ordinal < 3; ++ordinal) {
+      if (context.expressions[ordinal].expression_id !=
+          maximum_ast_expression->expression_id + ordinal + 1) {
+        return refuse_vector("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                             "vector public expression identities were substituted");
+      }
+    }
+    static constexpr std::array<std::string_view, 3> kOutputNames{
+        "row_uuid", "distance", "score"};
+    BoundRelationAstRecord bound_relation;
+    bound_relation.relation_id = ast.relations.front().relation_id;
+    bound_relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+    bound_relation.semantic_variant_id = std::string(expected_semantic);
+    bound_relation.bound_object_uuid = resolution.object_uuid;
+    for (std::size_t ordinal = 0; ordinal < kOutputNames.size(); ++ordinal) {
+      const auto& output = context.outputs[ordinal];
+      const auto& expression = context.expressions[ordinal];
+      const auto* descriptor = descriptor_by_id.contains(output.descriptor_id)
+                                   ? descriptor_by_id.at(output.descriptor_id)
+                                   : nullptr;
+      if (output.output_id == 0 || output.ordinal != ordinal ||
+          output.relation_id != bound_relation.relation_id ||
+          output.output_name_utf8 != kOutputNames[ordinal] ||
+          output.expression_id != expression.expression_id ||
+          output.descriptor_id != expression.descriptor_id ||
+          descriptor == nullptr ||
+          descriptor->nullability != BoundNullability::kNonNull ||
+          descriptor->canonical_type_name !=
+              (ordinal == 0 ? "uuid" : "real64") ||
+          !descriptor->element_profile.empty() ||
+          !expression.bound_name_uuid.has_value() ||
+          !IsNonNullCanonicalUuid(*expression.bound_name_uuid)) {
+        return refuse_vector("SB_MODEL_BINDING_INCOMPLETE_V1",
+                             "vector public projection binding is invalid");
+      }
+      bound.expressions.push_back(
+          {expression.expression_id, NativeExpressionAstKind::kIdentifier,
+           std::nullopt, {}, expression.descriptor_id, std::nullopt,
+           expression.bound_name_uuid, std::nullopt, std::nullopt});
+      bound_relation.output_expression_ids.push_back(expression.expression_id);
+      bound.outputs.push_back(
+          {output.output_id, output.relation_id, output.expression_id,
+           output.output_name_utf8, output.descriptor_id, output.visible,
+           output.ordinal});
+    }
+    if (context.outputs[0].descriptor_id == context.outputs[1].descriptor_id ||
+        context.outputs[0].descriptor_id == context.outputs[2].descriptor_id ||
+        context.outputs[1].descriptor_id == context.outputs[2].descriptor_id ||
+        descriptor_by_id.at(context.outputs[1].descriptor_id)->type_uuid !=
+            descriptor_by_id.at(context.outputs[2].descriptor_id)->type_uuid) {
+      return refuse_vector("SB_MODEL_BINDING_INCOMPLETE_V1",
+                           "vector public descriptor handles are duplicated or type-inconsistent");
+    }
+
+    std::unordered_map<std::uint32_t, std::uint32_t> ast_to_bound;
+    std::size_t binding_index = 3;
+    for (const auto& ast_expression : ast.expressions) {
+      if (ast_expression.expression_kind == NativeExpressionAstKind::kWildcard) {
+        continue;
+      }
+      const auto& expression = context.expressions[binding_index++];
+      if (expression.expression_id != ast_expression.expression_id ||
+          !descriptor_by_id.contains(expression.descriptor_id) ||
+          (expression.function_uuid.has_value() &&
+           (ast_expression.operator_name == "VECTOR_NEAREST" ||
+            ast_expression.operator_name == "VECTOR_FILTER")) ||
+          (expression.function_uuid.has_value() &&
+           !IsNonNullCanonicalUuid(*expression.function_uuid)) ||
+          (expression.bound_name_uuid.has_value() &&
+           !IsNonNullCanonicalUuid(*expression.bound_name_uuid)) ||
+          !ast_to_bound.emplace(ast_expression.expression_id,
+                                expression.expression_id).second) {
+        return refuse_vector("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                             "vector expression binding is invalid");
+      }
+      BoundExpressionAstRecord record;
+      record.expression_id = expression.expression_id;
+      record.expression_kind = ast_expression.expression_kind;
+      record.literal_kind = ast_expression.literal_kind;
+      record.result_descriptor_id = expression.descriptor_id;
+      record.bound_function_uuid = expression.function_uuid;
+      record.bound_name_uuid = expression.bound_name_uuid;
+      if (!ast_expression.operator_name.empty()) {
+        record.canonical_operator_name = ast_expression.operator_name;
+      }
+      if (ast_expression.expression_kind == NativeExpressionAstKind::kLiteral ||
+          ast_expression.expression_kind == NativeExpressionAstKind::kParameter) {
+        record.literal_or_parameter_ref = ast_expression.spelling;
+      }
+      for (const auto child : ast_expression.child_expression_ids) {
+        const auto mapped = ast_to_bound.find(child);
+        if (mapped == ast_to_bound.end()) {
+          return refuse_vector("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                               "vector expression child is unreachable/reordered");
+        }
+        record.child_expression_ids.push_back(mapped->second);
+      }
+      bound.expressions.push_back(std::move(record));
+    }
+    const auto mapped_id = [&](const std::optional<std::uint32_t> id)
+        -> std::optional<std::uint32_t> {
+      if (!id.has_value()) return std::nullopt;
+      const auto found = ast_to_bound.find(*id);
+      return found == ast_to_bound.end()
+                 ? std::nullopt
+                 : std::optional<std::uint32_t>(found->second);
+    };
+    const auto mapped_alias = mapped_id(
+        vector_source_ast->model_vector_alias_expression_id);
+    const auto mapped_query = mapped_id(
+        vector_source_ast->model_vector_query_expression_id);
+    const auto mapped_metric = mapped_id(
+        vector_source_ast->model_vector_metric_expression_id);
+    const auto mapped_top_k = mapped_id(
+        vector_source_ast->model_vector_top_k_expression_id);
+    const auto find_bound = [&](const std::optional<std::uint32_t> id)
+        -> const BoundExpressionAstRecord* {
+      if (!id.has_value()) return nullptr;
+      const auto found = std::ranges::find_if(
+          bound.expressions, [&](const auto& expression) {
+            return expression.expression_id == *id;
+          });
+      return found == bound.expressions.end() ? nullptr : &*found;
+    };
+    const auto* bound_alias = find_bound(mapped_alias);
+    const auto* bound_query = find_bound(mapped_query);
+    const auto* bound_metric = find_bound(mapped_metric);
+    const auto* bound_top_k = find_bound(mapped_top_k);
+    if (bound_alias == nullptr || bound_query == nullptr ||
+        bound_metric == nullptr || bound_top_k == nullptr ||
+        bound_alias->bound_name_uuid != resolution.object_uuid ||
+        bound_query->result_descriptor_id != resolution.columns[0].descriptor_id ||
+        descriptor_by_id.at(bound_query->result_descriptor_id)->nullability !=
+            BoundNullability::kNonNull ||
+        descriptor_by_id.at(bound_metric->result_descriptor_id)->nullability !=
+            BoundNullability::kNonNull ||
+        descriptor_by_id.at(bound_metric->result_descriptor_id)
+                ->canonical_type_name != "text" ||
+        descriptor_by_id.at(bound_top_k->result_descriptor_id)->nullability !=
+            BoundNullability::kNonNull ||
+        descriptor_by_id.at(bound_top_k->result_descriptor_id)
+                ->canonical_type_name != "uint64") {
+      return refuse_vector("SB_MODEL_VECTOR_VALUE_REFUSED_V1",
+                           "vector query/metric/top-k descriptor binding drifted");
+    }
+    if (filtered) {
+      const auto* bound_column = find_bound(mapped_id(
+          vector_source_ast->model_vector_metadata_column_expression_id));
+      const auto* bound_value = find_bound(mapped_id(
+          vector_source_ast->model_vector_metadata_value_expression_id));
+      if (bound_column == nullptr || bound_value == nullptr ||
+          bound_column->bound_name_uuid != resolution.columns[1].column_uuid ||
+          bound_column->result_descriptor_id != resolution.columns[1].descriptor_id ||
+          descriptor_by_id.at(bound_value->result_descriptor_id)->type_uuid !=
+              metadata_descriptor->type_uuid ||
+          descriptor_by_id.at(bound_value->result_descriptor_id)
+                  ->canonical_type_name != "text" ||
+          descriptor_by_id.at(bound_value->result_descriptor_id)->nullability !=
+              BoundNullability::kNonNull) {
+        return refuse_vector("SB_MODEL_VECTOR_FILTER_REFUSED_V1",
+                             "vector metadata filter descriptor binding drifted");
+      }
+    }
+
+    BoundCatalogRelationSourceAstRecord bound_source;
+    bound_source.source_id = vector_source_ast->source_id;
+    bound_source.source_kind = vector_source_ast->source_kind;
+    bound_source.resolution_state =
+        NativeCatalogRelationResolutionState::kBound;
+    bound_source.qualified_name = vector_source_ast->qualified_name;
+    bound_source.alias = vector_source_ast->alias;
+    bound_source.alias_is_explicit = vector_source_ast->alias_is_explicit;
+    bound_source.model_family_id = vector_source_ast->model_family_id;
+    bound_source.model_operation_id = vector_source_ast->model_operation_id;
+    bound_source.model_vector_alias_expression_id = mapped_alias;
+    bound_source.model_vector_nearest_expression_id = mapped_id(
+        vector_source_ast->model_vector_nearest_expression_id);
+    bound_source.model_vector_query_expression_id = mapped_query;
+    bound_source.model_vector_metric_expression_id = mapped_metric;
+    bound_source.model_vector_top_k_expression_id = mapped_top_k;
+    bound_source.model_vector_filter_expression_id = mapped_id(
+        vector_source_ast->model_vector_filter_expression_id);
+    bound_source.model_vector_metadata_predicate_expression_id = mapped_id(
+        vector_source_ast->model_vector_metadata_predicate_expression_id);
+    bound_source.model_vector_metadata_column_expression_id = mapped_id(
+        vector_source_ast->model_vector_metadata_column_expression_id);
+    bound_source.model_vector_metadata_value_expression_id = mapped_id(
+        vector_source_ast->model_vector_metadata_value_expression_id);
+    bound_source.model_vector_result_alias =
+        vector_source_ast->model_vector_result_alias;
+    bound_source.model_vector_metric_id =
+        vector_source_ast->model_vector_metric_id;
+    bound_source.model_vector_top_k = vector_source_ast->model_vector_top_k;
+    bound_source.qualified_name_range = vector_source_ast->qualified_name_range;
+    bound_source.range = vector_source_ast->range;
+    bound_source.object_uuid = resolution.object_uuid;
+    bound_source.resolved_object_type = resolution.resolved_object_type;
+    bound_source.resolved_schema_uuid = resolution.resolved_schema_uuid;
+    bound_source.parent_object_uuid = resolution.parent_object_uuid;
+    bound_source.catalog_generation_id = resolution.catalog_generation_id;
+    bound_source.security_epoch = resolution.security_epoch;
+    bound_source.resource_epoch = resolution.resource_epoch;
+    for (const auto& column : resolution.columns) {
+      bound_source.columns.push_back(
+          {column.ordinal, column.column_uuid, column.descriptor_id,
+           column.canonical_name_key});
+    }
+    const auto root = ast_to_bound.find(
+        ast.relations.front().predicate_expression_ids.front());
+    if (root == ast_to_bound.end()) {
+      return refuse_vector("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                           "vector predicate root is unreachable");
+    }
+    bound_relation.predicate_expression_ids = {root->second};
+    bound_relation.bound_expression_ids = bound_relation.output_expression_ids;
+    for (const auto& ast_expression : ast.expressions) {
+      if (ast_expression.expression_kind == NativeExpressionAstKind::kWildcard) {
+        continue;
+      }
+      const auto mapped = ast_to_bound.find(ast_expression.expression_id);
+      if (mapped == ast_to_bound.end()) {
+        return refuse_vector("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                             "vector bound-expression order is incomplete");
+      }
+      bound_relation.bound_expression_ids.push_back(mapped->second);
+    }
+    bound.catalog_relation_sources.push_back(std::move(bound_source));
+    bound.relations.push_back(std::move(bound_relation));
+    BoundScopeAstRecord scope;
+    scope.scope_id = 1;
+    scope.visible_relation_ids = {ast.root_relation_id};
+    for (const auto& output : bound.outputs) {
+      if (output.visible) scope.visible_projection_ids.push_back(output.output_id);
+    }
+    scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
+    bound.scopes.push_back(std::move(scope));
+    bound.bound_ast_uuid = context.bound_ast_uuid;
+    bound.security_context_uuid = context.security_context_uuid;
+    bound.root_relation_id = ast.root_relation_id;
+    bound.root_scope_id = 1;
+    bound.bound = true;
+    return bound;
+  }
   if (time_series_source_ast != ast.catalog_relation_sources.end()) {
     // QOW-SOURCE-RCP-076-TIME-SERIES-BINDING-V1
     const auto refuse_time_series = [&](const char* diagnostic,

@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -804,6 +805,88 @@ bool ExactTimeSeriesStorageDescriptorCohort(
   return true;
 }
 
+std::optional<std::string_view> ExactEncodedDescriptorField(
+    const std::string_view encoded, const std::string_view key) {
+  std::optional<std::string_view> value;
+  std::size_t offset = 0;
+  while (offset <= encoded.size()) {
+    const auto delimiter = encoded.find(';', offset);
+    const auto end = delimiter == std::string_view::npos ? encoded.size()
+                                                         : delimiter;
+    const auto field = encoded.substr(offset, end - offset);
+    const auto equal = field.find('=');
+    if (equal != std::string_view::npos && field.substr(0, equal) == key) {
+      if (value.has_value() || equal + 1 == field.size()) return std::nullopt;
+      value = field.substr(equal + 1);
+    }
+    if (delimiter == std::string_view::npos) break;
+    offset = delimiter + 1;
+  }
+  return value;
+}
+
+bool ExactVectorStorageDescriptorCohort(
+    const ipc::PublicRelationDescriptor& projection) {
+  // QOW-SOURCE-RCP-077-VECTOR-STORAGE-DESCRIPTOR-V1
+  static constexpr std::array<std::string_view, 2> kNames{
+      "embedding", "metadata"};
+  static constexpr std::array<std::string_view, 2> kTypes{
+      "dense_vector", "text"};
+  if (projection.columns.size() != kNames.size()) return false;
+  const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return false;
+  std::unordered_set<std::string> column_uuids;
+  std::unordered_set<std::string> descriptor_uuids;
+  for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
+    const auto& column = projection.columns[ordinal];
+    const auto fields = ParseExactProjectedDescriptor(
+        column.encoded_type_descriptor, column.collation_uuid,
+        column.nullable);
+    const auto type_row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+        manifest.manifest,
+        scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+            std::string(kTypes[ordinal])));
+    if (!type_row.ok() || type_row.manifest.descriptor_rows.size() != 1 ||
+        !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
+      return false;
+    }
+    const auto expected_type_uuid = scratchbird::core::uuid::UuidToString(
+        type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    if (column.ordinal != ordinal ||
+        column.canonical_name_key != kNames[ordinal] ||
+        column.canonical_type_name != kTypes[ordinal] || column.nullable ||
+        column.generated || column.identity_column ||
+        !CanonicalUuidBytes(column.column_uuid).has_value() ||
+        !column_uuids.insert(column.column_uuid).second ||
+        !CanonicalUuidBytes(column.type_descriptor_uuid).has_value() ||
+        !descriptor_uuids.insert(column.type_descriptor_uuid).second ||
+        !fields.has_value() || fields->type_uuid != expected_type_uuid ||
+        fields->nullable || fields->collation_uuid.has_value() ||
+        fields->timezone_profile_id.has_value() ||
+        fields->precision.has_value() || fields->scale.has_value() ||
+        !column.charset_uuid.empty() || !column.charset_canonical_name.empty() ||
+        !column.collation_uuid.empty() ||
+        !column.collation_canonical_name.empty()) {
+      return false;
+    }
+    if (ordinal == 0) {
+      const auto dimension = ExactEncodedDescriptorField(
+          column.encoded_type_descriptor, "dimension");
+      const auto element = ExactEncodedDescriptorField(
+          column.encoded_type_descriptor, "element_type");
+      if ((!fields->width.has_value() || *fields->width != 3) &&
+          dimension != std::optional<std::string_view>("3")) {
+        return false;
+      }
+      if (element != std::optional<std::string_view>("real32")) return false;
+    } else if (fields->width.has_value()) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool ExactTimeSeriesPreResolutionAst(
     const NativeRelationalAstDocument& ast) {
   const auto source = std::ranges::find_if(
@@ -893,6 +976,328 @@ BuildEngineProjectedNativeBindingContext(
       context.local_transaction_id,
       context.snapshot_visible_through_local_transaction_id};
 
+  const auto vector_source = std::ranges::find_if(
+      ast.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kVector;
+      });
+  if (vector_source != ast.catalog_relation_sources.end()) {
+    // QOW-SOURCE-RCP-077-ENGINE-VECTOR-BINDING-COHORT-V1
+    const auto refuse = [&](const char* diagnostic, std::string detail)
+        -> std::optional<NativeRelationalBindingContext> {
+      messages->diagnostics.push_back(MakeDiagnostic(
+          diagnostic, "ERROR", std::move(detail), "sbp_sbsql.wire"));
+      return std::nullopt;
+    };
+    const bool filtered =
+        vector_source->model_operation_id == "VECTOR_FILTERED_SEARCH";
+    const bool exact =
+        vector_source->model_operation_id == "VECTOR_EXACT_SEARCH";
+    const bool complete_filter =
+        vector_source->model_vector_filter_expression_id.has_value() &&
+        vector_source->model_vector_metadata_predicate_expression_id.has_value() &&
+        vector_source->model_vector_metadata_column_expression_id.has_value() &&
+        vector_source->model_vector_metadata_value_expression_id.has_value();
+    const bool any_filter =
+        vector_source->model_vector_filter_expression_id.has_value() ||
+        vector_source->model_vector_metadata_predicate_expression_id.has_value() ||
+        vector_source->model_vector_metadata_column_expression_id.has_value() ||
+        vector_source->model_vector_metadata_value_expression_id.has_value();
+    if (!IsCanonicalStatementTimestamp(context.statement_timestamp) ||
+        !statement_context.native_v8_complete() || (!exact && !filtered) ||
+        (exact && any_filter) || (filtered && !complete_filter) ||
+        ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
+        ast.root_relation_id != ast.relations.front().relation_id ||
+        ast.relations.front().relation_kind !=
+            NativeRelationAstKind::kCatalogSource ||
+        ast.relations.front().relation_source_ids !=
+            std::vector<std::uint32_t>{vector_source->source_id} ||
+        ast.relations.front().predicate_expression_ids.size() != 1 ||
+        ast.relations.front().output_expression_ids.size() != 1 ||
+        vector_source->source_id == 0 ||
+        vector_source->model_family_id != "vector" ||
+        vector_source->qualified_name.empty() || !vector_source->alias.has_value() ||
+        !vector_source->model_vector_alias_expression_id.has_value() ||
+        !vector_source->model_vector_nearest_expression_id.has_value() ||
+        !vector_source->model_vector_query_expression_id.has_value() ||
+        !vector_source->model_vector_metric_expression_id.has_value() ||
+        !vector_source->model_vector_top_k_expression_id.has_value() ||
+        ast.model_object_resolution_requests.size() != 1 ||
+        resolved_object_reference_seeds.size() != 1) {
+      return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "vector AST or engine binding cohort shape is invalid");
+    }
+    const auto encoded_source_name =
+        EncodeQualifiedPresentedName(vector_source->qualified_name);
+    const auto& object_request = ast.model_object_resolution_requests.front();
+    const auto& seed = resolved_object_reference_seeds.front();
+    if (!encoded_source_name.has_value() ||
+        object_request.source_id != vector_source->source_id ||
+        object_request.model_family_id != "vector" ||
+        object_request.object_class != "vector" ||
+        object_request.qualified_name.size() !=
+            vector_source->qualified_name.size() ||
+        !std::ranges::equal(
+            object_request.qualified_name, vector_source->qualified_name,
+            [](const auto& left, const auto& right) {
+              return left.spelling == right.spelling &&
+                     left.quoted == right.quoted;
+            }) ||
+        seed.ref.object_class != "vector" || seed.ref.quoted ||
+        seed.ref.create_reservation ||
+        seed.ref.presented_name != *encoded_source_name) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "vector object-resolution request was substituted");
+    }
+    const auto& resolved = seed.resolved;
+    const auto& projection = resolved.relation_descriptor;
+    const bool relation_transport_class =
+        resolved.object_class == "relation" || resolved.object_class == "table";
+    if (!resolved.resolved || !relation_transport_class ||
+        !CanonicalUuidBytes(resolved.object_uuid).has_value() ||
+        resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
+        !projection.present ||
+        !CanonicalUuidBytes(projection.descriptor_uuid).has_value() ||
+        !CanonicalUuidBytes(projection.relation_uuid).has_value() ||
+        projection.relation_uuid != resolved.object_uuid ||
+        !CanonicalUuidBytes(projection.schema_uuid).has_value() ||
+        projection.descriptor_generation == 0 ||
+        projection.validated_resource_epoch == 0 ||
+        !ExactVectorStorageDescriptorCohort(projection)) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "vector persistent storage descriptor is incomplete");
+    }
+    const auto manifest =
+        scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!manifest.ok()) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "canonical datatype catalog is unavailable");
+    }
+    const auto canonical_type_uuid = [&](const std::string& type)
+        -> std::optional<std::string> {
+      const auto row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+          manifest.manifest,
+          scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type));
+      if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
+          !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
+        return std::nullopt;
+      }
+      return scratchbird::core::uuid::UuidToString(
+          row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    };
+    const auto uuid_type = canonical_type_uuid("uuid");
+    const auto real64_type = canonical_type_uuid("real64");
+    const auto uint64_type = canonical_type_uuid("uint64");
+    const auto boolean_type = canonical_type_uuid("boolean");
+    if (!uuid_type.has_value() || !real64_type.has_value() ||
+        !uint64_type.has_value() || !boolean_type.has_value()) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "vector public datatype identities are unavailable");
+    }
+    const auto real64_profile_begin = statement_context.descriptor_profiles.begin();
+    const auto real64_profiles = std::ranges::subrange(
+        std::ranges::find_if(real64_profile_begin,
+                             statement_context.descriptor_profiles.end(),
+                             [](const auto& profile) {
+                               return profile.profile_kind == 11;
+                             }),
+        statement_context.descriptor_profiles.end());
+    if (statement_context.descriptor_profiles.size() != 322 ||
+        real64_profiles.begin() !=
+            statement_context.descriptor_profiles.begin() + 320 ||
+        std::ranges::distance(real64_profiles) != 2 ||
+        real64_profiles.begin()->profile_kind != 11 ||
+        real64_profiles.begin()->slot != 0 ||
+        std::next(real64_profiles.begin())->profile_kind != 11 ||
+        std::next(real64_profiles.begin())->slot != 1 ||
+        real64_profiles.begin()->type_uuid != *real64_type ||
+        std::next(real64_profiles.begin())->type_uuid != *real64_type ||
+        real64_profiles.begin()->descriptor_uuid ==
+            std::next(real64_profiles.begin())->descriptor_uuid ||
+        real64_profiles.begin()->nullable ||
+        std::next(real64_profiles.begin())->nullable ||
+        !real64_profiles.begin()->collation_uuid.empty() ||
+        !std::next(real64_profiles.begin())->collation_uuid.empty() ||
+        real64_profiles.begin()->width != 0 ||
+        std::next(real64_profiles.begin())->width != 0 ||
+        real64_profiles.begin()->precision != 0 ||
+        std::next(real64_profiles.begin())->precision != 0 ||
+        real64_profiles.begin()->scale != 0 ||
+        std::next(real64_profiles.begin())->scale != 0) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "vector REAL64 result descriptor cohort is invalid");
+    }
+    std::unordered_map<std::string, std::uint32_t> descriptor_by_name;
+    std::unordered_set<std::string> descriptor_uuids;
+    const auto add_descriptor = [&](const std::string& descriptor_uuid,
+                                    const std::string& type_uuid,
+                                    const std::string& canonical_type,
+                                    const std::string& element_profile,
+                                    const std::optional<std::uint32_t> width)
+        -> std::optional<std::uint32_t> {
+      if (!CanonicalUuidBytes(descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(type_uuid).has_value() ||
+          !descriptor_uuids.insert(descriptor_uuid).second) {
+        return std::nullopt;
+      }
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      descriptor.descriptor_uuid = descriptor_uuid;
+      descriptor.type_uuid = type_uuid;
+      descriptor.nullability = BoundNullability::kNonNull;
+      descriptor.width_precision_scale.width = width;
+      descriptor.canonical_type_name = canonical_type;
+      descriptor.element_profile = element_profile;
+      context.descriptors.push_back(std::move(descriptor));
+      return context.descriptors.back().descriptor_id;
+    };
+    for (const auto& column : projection.columns) {
+      const auto fields = ParseExactProjectedDescriptor(
+          column.encoded_type_descriptor, column.collation_uuid,
+          column.nullable);
+      if (!fields.has_value()) {
+        return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "vector storage type descriptor cannot be decoded");
+      }
+      const auto descriptor_id = add_descriptor(
+          column.type_descriptor_uuid, fields->type_uuid,
+          column.canonical_type_name,
+          column.canonical_name_key == "embedding" ? "real32" : "",
+          column.canonical_name_key == "embedding"
+              ? std::optional<std::uint32_t>{3}
+              : std::nullopt);
+      if (!descriptor_id.has_value()) {
+        return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "vector storage descriptor identity is duplicated");
+      }
+      descriptor_by_name.emplace(column.canonical_name_key, *descriptor_id);
+    }
+    const auto row_uuid_descriptor = add_descriptor(
+        *uuid_type, *uuid_type, "uuid", "", std::nullopt);
+    const auto distance_descriptor = add_descriptor(
+        real64_profiles.begin()->descriptor_uuid,
+        real64_profiles.begin()->type_uuid, "real64", "", std::nullopt);
+    const auto score_descriptor = add_descriptor(
+        std::next(real64_profiles.begin())->descriptor_uuid,
+        std::next(real64_profiles.begin())->type_uuid, "real64", "",
+        std::nullopt);
+    const auto uint64_descriptor = add_descriptor(
+        *uint64_type, *uint64_type, "uint64", "", std::nullopt);
+    const auto boolean_descriptor = add_descriptor(
+        *boolean_type, *boolean_type, "boolean", "", std::nullopt);
+    if (!row_uuid_descriptor.has_value() ||
+        !distance_descriptor.has_value() || !score_descriptor.has_value() ||
+        !uint64_descriptor.has_value() || !boolean_descriptor.has_value()) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "vector operation descriptor identity is duplicated");
+    }
+    NativeCatalogRelationBindingInput catalog_relation;
+    catalog_relation.source_id = vector_source->source_id;
+    catalog_relation.resolution_state =
+        NativeCatalogRelationResolutionState::kBound;
+    catalog_relation.object_uuid = resolved.object_uuid;
+    catalog_relation.resolved_object_type = "vector";
+    catalog_relation.resolved_schema_uuid = projection.schema_uuid;
+    catalog_relation.catalog_generation_id = resolved.catalog_epoch;
+    catalog_relation.security_epoch = resolved.security_epoch;
+    catalog_relation.resource_epoch = projection.validated_resource_epoch;
+    for (const auto& column : projection.columns) {
+      catalog_relation.columns.push_back(
+          {column.ordinal, column.column_uuid,
+           descriptor_by_name.at(column.canonical_name_key),
+           column.canonical_name_key});
+    }
+    context.catalog_relations.push_back(std::move(catalog_relation));
+
+    const auto maximum_ast_expression_id = std::ranges::max_element(
+        ast.expressions, {}, &NativeExpressionAstNode::expression_id);
+    if (maximum_ast_expression_id == ast.expressions.end() ||
+        maximum_ast_expression_id->expression_id >
+            std::numeric_limits<std::uint32_t>::max() - 3) {
+      return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "vector expression identity range is invalid");
+    }
+    std::uint32_t next_expression_id =
+        maximum_ast_expression_id->expression_id + 1;
+    static constexpr std::array<std::string_view, 3> kPublicNames{
+        "row_uuid", "distance", "score"};
+    const std::array<std::uint32_t, 3> public_descriptors{
+        *row_uuid_descriptor, *distance_descriptor, *score_descriptor};
+    for (std::size_t ordinal = 0; ordinal < kPublicNames.size(); ++ordinal) {
+      const auto expression_id = next_expression_id++;
+      context.expressions.push_back(
+          {expression_id, public_descriptors[ordinal], std::nullopt,
+           resolved.object_uuid});
+      context.outputs.push_back(
+          {static_cast<std::uint32_t>(ordinal + 1), expression_id,
+           std::string(kPublicNames[ordinal]), public_descriptors[ordinal], true,
+           static_cast<std::uint32_t>(ordinal),
+           ast.relations.front().relation_id});
+    }
+    const auto find_column = [&](const std::string_view name)
+        -> const ipc::PublicRelationColumnDescriptor* {
+      const auto found = std::ranges::find_if(
+          projection.columns, [&](const auto& column) {
+            return column.canonical_name_key == name;
+          });
+      return found == projection.columns.end() ? nullptr : &*found;
+    };
+    const auto* metadata_column = find_column("metadata");
+    for (const auto& expression : ast.expressions) {
+      if (expression.expression_kind == NativeExpressionAstKind::kWildcard) {
+        continue;
+      }
+      std::optional<std::uint32_t> descriptor_id;
+      std::optional<std::string> bound_name_uuid;
+      if (expression.expression_id ==
+          *vector_source->model_vector_alias_expression_id) {
+        descriptor_id = descriptor_by_name.at("embedding");
+        bound_name_uuid = resolved.object_uuid;
+      } else if (expression.expression_id ==
+                 *vector_source->model_vector_query_expression_id) {
+        descriptor_id = descriptor_by_name.at("embedding");
+      } else if (expression.expression_id ==
+                 *vector_source->model_vector_metric_expression_id) {
+        descriptor_id = descriptor_by_name.at("metadata");
+      } else if (expression.expression_id ==
+                 *vector_source->model_vector_top_k_expression_id) {
+        descriptor_id = *uint64_descriptor;
+      } else if (vector_source->model_vector_metadata_column_expression_id ==
+                 expression.expression_id) {
+        descriptor_id = descriptor_by_name.at("metadata");
+        if (metadata_column != nullptr) {
+          bound_name_uuid = metadata_column->column_uuid;
+        }
+      } else if (vector_source->model_vector_metadata_value_expression_id ==
+                 expression.expression_id) {
+        descriptor_id = descriptor_by_name.at("metadata");
+      } else if (expression.expression_kind ==
+                     NativeExpressionAstKind::kFunctionCall ||
+                 expression.expression_kind == NativeExpressionAstKind::kBinary) {
+        descriptor_id = *boolean_descriptor;
+      } else if (expression.expression_kind ==
+                     NativeExpressionAstKind::kIdentifier &&
+                 expression.qualified_identifier.size() == 1 &&
+                 SameIdentifierComponent(expression.qualified_identifier.front(),
+                                         *vector_source->alias)) {
+        descriptor_id = descriptor_by_name.at("embedding");
+        bound_name_uuid = resolved.object_uuid;
+      }
+      if (!descriptor_id.has_value()) {
+        return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                      "vector expression profile is unsupported");
+      }
+      context.expressions.push_back(
+          {expression.expression_id, *descriptor_id, std::nullopt,
+           std::move(bound_name_uuid)});
+    }
+    context.relations.push_back(
+        {ast.relations.front().relation_id,
+         filtered ? "sblr.model-source.vector-filtered-search.v1"
+                  : "sblr.model-source.vector-exact-search.v1"});
+    return context;
+  }
+
   const auto time_series_source = std::ranges::find_if(
       ast.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kTimeSeries;
@@ -915,9 +1320,9 @@ BuildEngineProjectedNativeBindingContext(
       return refuse("SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1",
                     "time-series source requires the canonical engine timestamp");
     }
-    if (!statement_context.native_v7_complete()) {
+    if (!statement_context.native_v8_complete()) {
       return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
-                    "time-series source requires the complete V7 statement cohort");
+                    "time-series source requires the complete V8 statement cohort");
     }
     if ((!range_read && !downsample) ||
         ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
@@ -1406,10 +1811,10 @@ BuildEngineProjectedNativeBindingContext(
           "key/value source requires the exact canonical engine-issued "
           "statement timestamp");
     }
-    if (!statement_context.native_v7_complete()) {
+    if (!statement_context.native_v8_complete()) {
       return refuse(
           "SB_MODEL_BINDING_INCOMPLETE_V1",
-          "key/value source requires the complete V7 native statement "
+          "key/value source requires the complete V8 native statement "
           "context cohort");
     }
     const bool exact_get =
@@ -6041,6 +6446,32 @@ std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocu
 std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst,
                                                      const AstDocument& ast) {
   std::vector<ObjectReference> refs;
+  const bool vector_model_ast = std::ranges::any_of(
+      ast.native_relational.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kVector;
+      });
+  if (vector_model_ast) {
+    // QOW-SOURCE-RCP-077-VECTOR-OBJECT-REFERENCE-V1
+    if (!ast.native_relational.accepted() ||
+        ast.native_relational.model_object_resolution_requests.size() != 1) {
+      return refs;
+    }
+    const auto& request =
+        ast.native_relational.model_object_resolution_requests.front();
+    if (request.source_id == 0 || request.model_family_id != "vector" ||
+        request.object_class != "vector" || request.qualified_name.empty()) {
+      return refs;
+    }
+    const auto presented_name =
+        EncodeQualifiedPresentedName(request.qualified_name);
+    if (!presented_name.has_value()) return refs;
+    ObjectReference ref;
+    ref.object_class = "vector";
+    ref.presented_name = *presented_name;
+    ref.quoted = false;
+    refs.push_back(std::move(ref));
+    return refs;
+  }
   const bool time_series_model_ast = std::ranges::any_of(
       ast.native_relational.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kTimeSeries;

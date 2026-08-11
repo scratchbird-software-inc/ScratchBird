@@ -134,6 +134,7 @@ enum class NativeRelationSourceAstKind {
   kGraph,
   kKeyValue,
   kTimeSeries,
+  kVector,
 };
 
 enum class NativeAggregateGroupingForm {
@@ -235,6 +236,18 @@ struct NativeCatalogRelationSourceAstNode {
   std::optional<std::uint32_t> model_bucket_time_input_expression_id;
   std::optional<std::uint32_t> model_downsample_expression_id;
   std::string model_time_series_aggregate_id;
+  std::optional<std::uint32_t> model_vector_alias_expression_id;
+  std::optional<std::uint32_t> model_vector_nearest_expression_id;
+  std::optional<std::uint32_t> model_vector_query_expression_id;
+  std::optional<std::uint32_t> model_vector_metric_expression_id;
+  std::optional<std::uint32_t> model_vector_top_k_expression_id;
+  std::optional<std::uint32_t> model_vector_filter_expression_id;
+  std::optional<std::uint32_t> model_vector_metadata_predicate_expression_id;
+  std::optional<std::uint32_t> model_vector_metadata_column_expression_id;
+  std::optional<std::uint32_t> model_vector_metadata_value_expression_id;
+  std::optional<NativeIdentifierAstNode> model_vector_result_alias;
+  std::string model_vector_metric_id;
+  std::optional<std::uint64_t> model_vector_top_k;
   std::string model_graph_direction;
   std::optional<std::uint64_t> model_graph_minimum_depth;
   std::optional<std::uint64_t> model_graph_maximum_depth;

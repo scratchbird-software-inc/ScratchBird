@@ -33073,6 +33073,326 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     return envelope;
   }
 
+  const auto vector_source = std::ranges::find_if(
+      native.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kVector;
+      });
+  if (vector_source != native.catalog_relation_sources.end()) {
+    // QOW-SOURCE-RCP-077-VECTOR-SBLR-V1
+    const bool filtered =
+        vector_source->model_operation_id == "VECTOR_FILTERED_SEARCH";
+    const bool exact =
+        vector_source->model_operation_id == "VECTOR_EXACT_SEARCH";
+    const std::string_view expected_semantic =
+        filtered ? "sblr.model-source.vector-filtered-search.v1"
+                 : "sblr.model-source.vector-exact-search.v1";
+    const bool complete_filter =
+        vector_source->model_vector_filter_expression_id.has_value() &&
+        vector_source->model_vector_metadata_predicate_expression_id.has_value() &&
+        vector_source->model_vector_metadata_column_expression_id.has_value() &&
+        vector_source->model_vector_metadata_value_expression_id.has_value();
+    const bool any_filter =
+        vector_source->model_vector_filter_expression_id.has_value() ||
+        vector_source->model_vector_metadata_predicate_expression_id.has_value() ||
+        vector_source->model_vector_metadata_column_expression_id.has_value() ||
+        vector_source->model_vector_metadata_value_expression_id.has_value();
+    if ((!exact && !filtered) || (exact && any_filter) ||
+        (filtered && !complete_filter) ||
+        native.catalog_relation_sources.size() != 1 ||
+        native.relations.size() != 1 || native.scopes.size() != 1 ||
+        native.descriptors.empty() || native.expressions.empty() ||
+        native.outputs.size() != 3 || vector_source->source_id == 0 ||
+        vector_source->model_family_id != "vector" ||
+        vector_source->resolution_state !=
+            NativeCatalogRelationResolutionState::kBound ||
+        vector_source->resolved_object_type != "vector" ||
+        !IsCanonicalBoundSourceUuid(vector_source->object_uuid) ||
+        !IsCanonicalBoundSourceUuid(vector_source->resolved_schema_uuid) ||
+        vector_source->catalog_generation_id == 0 ||
+        vector_source->security_epoch == 0 ||
+        vector_source->resource_epoch == 0 ||
+        !vector_source->alias.has_value() ||
+        vector_source->columns.size() != 2 ||
+        vector_source->columns[0].ordinal != 0 ||
+        vector_source->columns[0].canonical_name_key != "embedding" ||
+        vector_source->columns[1].ordinal != 1 ||
+        vector_source->columns[1].canonical_name_key != "metadata" ||
+        !vector_source->model_vector_alias_expression_id.has_value() ||
+        !vector_source->model_vector_nearest_expression_id.has_value() ||
+        !vector_source->model_vector_query_expression_id.has_value() ||
+        !vector_source->model_vector_metric_expression_id.has_value() ||
+        !vector_source->model_vector_top_k_expression_id.has_value() ||
+        !vector_source->model_vector_top_k.has_value() ||
+        *vector_source->model_vector_top_k == 0 ||
+        *vector_source->model_vector_top_k > 0xffffffffULL ||
+        (vector_source->model_vector_metric_id != "L2_SQUARED" &&
+         vector_source->model_vector_metric_id != "COSINE" &&
+         vector_source->model_vector_metric_id != "INNER_PRODUCT") ||
+        native.root_relation_id != native.relations.front().relation_id ||
+        native.scopes.front().scope_id != native.root_scope_id ||
+        native.scopes.front().visible_relation_ids !=
+            std::vector<std::uint32_t>{native.root_relation_id} ||
+        native.scopes.front().parent_scope_id.has_value() ||
+        !IsCanonicalBoundSourceUuid(native.bound_ast_uuid) ||
+        !IsCanonicalBoundSourceUuid(native.security_context_uuid) ||
+        !IsCanonicalBoundSourceUuid(native.scopes.front().catalog_epoch_uuid) ||
+        !IsCanonicalBoundStatementTimestamp(native.statement_timestamp)) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+          "vector model source is missing exact bound SBLR authority");
+      return envelope;
+    }
+    const auto& relation = native.relations.front();
+    if (relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
+        relation.semantic_variant_id != expected_semantic ||
+        relation.bound_object_uuid != vector_source->object_uuid ||
+        !relation.input_relation_ids.empty() || !relation.values_row_ids.empty() ||
+        relation.output_expression_ids.size() != 3 ||
+        relation.predicate_expression_ids.size() != 1 ||
+        relation.aggregate_grouping_form != NativeAggregateGroupingForm::kNone ||
+        relation.aggregate_projection_form !=
+            NativeAggregateProjectionForm::kNone ||
+        !relation.grouping_key_expression_ids.empty() ||
+        !relation.aggregate_expression_ids.empty() ||
+        !relation.limit_expression_ids.empty() || !relation.ordering_terms.empty()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+          "vector relation operands are incomplete or ambiguous");
+      return envelope;
+    }
+    std::unordered_map<std::uint32_t, const BoundDescriptorAstRecord*>
+        descriptors_by_id;
+    for (const auto& descriptor : native.descriptors) {
+      if (descriptor.descriptor_id == 0 ||
+          !descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor).second ||
+          !IsCanonicalBoundSourceUuid(descriptor.descriptor_uuid) ||
+          !IsCanonicalBoundSourceUuid(descriptor.type_uuid) ||
+          descriptor.nullability == BoundNullability::kUnknown) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "vector descriptor identity is incomplete");
+        return envelope;
+      }
+    }
+    const auto embedding_descriptor =
+        descriptors_by_id.find(vector_source->columns[0].descriptor_id);
+    const auto metadata_descriptor =
+        descriptors_by_id.find(vector_source->columns[1].descriptor_id);
+    if (embedding_descriptor == descriptors_by_id.end() ||
+        metadata_descriptor == descriptors_by_id.end() ||
+        embedding_descriptor->second->canonical_type_name != "dense_vector" ||
+        embedding_descriptor->second->element_profile != "real32" ||
+        embedding_descriptor->second->nullability != BoundNullability::kNonNull ||
+        !embedding_descriptor->second->width_precision_scale.width.has_value() ||
+        *embedding_descriptor->second->width_precision_scale.width != 3 ||
+        metadata_descriptor->second->canonical_type_name != "text" ||
+        metadata_descriptor->second->nullability != BoundNullability::kNonNull) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_VECTOR_VALUE_REFUSED_V1",
+          "vector storage descriptor type profile drifted");
+      return envelope;
+    }
+    std::unordered_map<std::uint32_t, const BoundExpressionAstRecord*>
+        expressions_by_id;
+    for (const auto& expression : native.expressions) {
+      if (expression.expression_id == 0 ||
+          !expressions_by_id.emplace(expression.expression_id, &expression).second ||
+          !descriptors_by_id.contains(expression.result_descriptor_id) ||
+          std::ranges::any_of(expression.child_expression_ids,
+                              [&](const auto child) {
+                                return !expressions_by_id.contains(child);
+                              })) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+            "vector expression descriptor/dependency is incomplete");
+        return envelope;
+      }
+    }
+    const auto nearest = expressions_by_id.find(
+        *vector_source->model_vector_nearest_expression_id);
+    const auto alias = expressions_by_id.find(
+        *vector_source->model_vector_alias_expression_id);
+    const auto query = expressions_by_id.find(
+        *vector_source->model_vector_query_expression_id);
+    const auto metric = expressions_by_id.find(
+        *vector_source->model_vector_metric_expression_id);
+    const auto top_k = expressions_by_id.find(
+        *vector_source->model_vector_top_k_expression_id);
+    if (nearest == expressions_by_id.end() || alias == expressions_by_id.end() ||
+        query == expressions_by_id.end() || metric == expressions_by_id.end() ||
+        top_k == expressions_by_id.end() ||
+        nearest->second->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+        nearest->second->bound_function_uuid.has_value() ||
+        nearest->second->canonical_operator_name != "VECTOR_NEAREST" ||
+        nearest->second->child_expression_ids !=
+            std::vector<std::uint32_t>{alias->first, query->first,
+                                       metric->first, top_k->first} ||
+        alias->second->expression_kind != NativeExpressionAstKind::kIdentifier ||
+        alias->second->bound_name_uuid != vector_source->object_uuid ||
+        query->second->result_descriptor_id !=
+            vector_source->columns[0].descriptor_id ||
+        descriptors_by_id.at(query->second->result_descriptor_id)->nullability !=
+            BoundNullability::kNonNull ||
+        metric->second->literal_or_parameter_ref !=
+            vector_source->model_vector_metric_id ||
+        descriptors_by_id.at(metric->second->result_descriptor_id)
+                ->canonical_type_name != "text" ||
+        top_k->second->literal_or_parameter_ref !=
+            std::to_string(*vector_source->model_vector_top_k) ||
+        descriptors_by_id.at(top_k->second->result_descriptor_id)
+                ->canonical_type_name != "uint64") {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_VECTOR_NEAREST_REFUSED_V1",
+          "vector nearest typed-DAG identity/order/type drifted");
+      return envelope;
+    }
+    if (filtered) {
+      const auto filter = expressions_by_id.find(
+          *vector_source->model_vector_filter_expression_id);
+      const auto predicate = expressions_by_id.find(
+          *vector_source->model_vector_metadata_predicate_expression_id);
+      const auto column = expressions_by_id.find(
+          *vector_source->model_vector_metadata_column_expression_id);
+      const auto value = expressions_by_id.find(
+          *vector_source->model_vector_metadata_value_expression_id);
+      if (filter == expressions_by_id.end() ||
+          predicate == expressions_by_id.end() ||
+          column == expressions_by_id.end() || value == expressions_by_id.end() ||
+          filter->second->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+          filter->second->bound_function_uuid.has_value() ||
+          filter->second->canonical_operator_name != "VECTOR_FILTER" ||
+          predicate->second->expression_kind != NativeExpressionAstKind::kBinary ||
+          predicate->second->canonical_operator_name != "=" ||
+          column->second->bound_name_uuid != vector_source->columns[1].column_uuid ||
+          column->second->result_descriptor_id !=
+              vector_source->columns[1].descriptor_id ||
+          descriptors_by_id.at(value->second->result_descriptor_id)->type_uuid !=
+              metadata_descriptor->second->type_uuid ||
+          descriptors_by_id.at(value->second->result_descriptor_id)->nullability !=
+              BoundNullability::kNonNull) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_VECTOR_FILTER_REFUSED_V1",
+            "vector filter typed-DAG identity/type drifted");
+        return envelope;
+      }
+    }
+    if (std::ranges::any_of(relation.bound_expression_ids,
+                            [&](const auto expression_id) {
+                              return !expressions_by_id.contains(expression_id);
+                            }) ||
+        native.scopes.front().visible_projection_ids.size() != 3) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+          "vector bound-expression/output lineage is incomplete");
+      return envelope;
+    }
+
+    envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
+    envelope.operands.push_back(
+        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_catalog_epoch_uuid",
+         native.scopes.front().catalog_epoch_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_security_context_uuid",
+         native.security_context_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_uuid", native.statement_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_owning_transaction_uuid",
+         native.owning_transaction_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_snapshot_uuid",
+         native.statement_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_metadata_snapshot_uuid",
+         native.statement_metadata_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uint64", "relational_local_transaction_id",
+         std::to_string(native.local_transaction_id)});
+    envelope.operands.push_back(
+        {"uint64", "relational_snapshot_visible_through_local_transaction_id",
+         std::to_string(native.snapshot_visible_through_local_transaction_id)});
+    envelope.operands.push_back(
+        {"text", "relational_statement_timestamp", native.statement_timestamp});
+    envelope.operands.push_back(
+        {"uint32", "relational_root_node_id",
+         std::to_string(native.root_relation_id)});
+    for (const auto& descriptor : native.descriptors) {
+      envelope.operands.push_back(
+          {"relational_descriptor_v1", std::to_string(descriptor.descriptor_id),
+           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
+               std::to_string(static_cast<std::uint8_t>(descriptor.nullability) + 1) +
+               "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
+               "|" + EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.width) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.precision) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.scale)});
+    }
+    for (const auto& expression : native.expressions) {
+      const auto literal_kind =
+          expression.literal_kind.has_value()
+              ? std::to_string(static_cast<std::uint8_t>(*expression.literal_kind) + 1)
+              : "-";
+      envelope.operands.push_back(
+          {"relational_expression_v1", std::to_string(expression.expression_id),
+           std::to_string(static_cast<std::uint8_t>(expression.expression_kind) + 1) +
+               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
+               "|" + std::to_string(expression.result_descriptor_id) + "|" +
+               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
+               "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
+               "|" + literal_kind + "|" +
+               EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
+               "|" + EncodeOptionalCanonicalHex(
+                           expression.literal_or_parameter_ref)});
+    }
+    static constexpr std::array<std::string_view, 3> kOutputNames{
+        "row_uuid", "distance", "score"};
+    static constexpr std::array<std::string_view, 3> kOutputTypes{
+        "uuid", "real64", "real64"};
+    std::vector<std::uint32_t> output_descriptor_ids;
+    for (std::size_t ordinal = 0; ordinal < native.outputs.size(); ++ordinal) {
+      const auto& output = native.outputs[ordinal];
+      const auto descriptor = descriptors_by_id.find(output.descriptor_id);
+      if (output.output_id == 0 || output.relation_id != relation.relation_id ||
+          output.expression_id != relation.output_expression_ids[ordinal] ||
+          !expressions_by_id.contains(output.expression_id) ||
+          descriptor == descriptors_by_id.end() || output.ordinal != ordinal ||
+          !output.visible || output.output_name_utf8 != kOutputNames[ordinal] ||
+          descriptor->second->canonical_type_name != kOutputTypes[ordinal] ||
+          descriptor->second->nullability != BoundNullability::kNonNull ||
+          native.scopes.front().visible_projection_ids[ordinal] !=
+              output.output_id) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "vector output descriptor identity/type is incomplete");
+        envelope.operands.clear();
+        return envelope;
+      }
+      output_descriptor_ids.push_back(output.descriptor_id);
+      envelope.operands.push_back(
+          {"relational_output_v1", std::to_string(output.output_id),
+           std::to_string(output.relation_id) + "|" +
+               std::to_string(output.expression_id) + "|" +
+               std::to_string(output.descriptor_id) + "|1|" +
+               std::to_string(output.ordinal) + "|" +
+               EncodeCanonicalHex(output.output_name_utf8)});
+    }
+    envelope.operands.push_back(
+        {"relational_node_v1", std::to_string(relation.relation_id),
+         "1|0|-|" + JoinCanonicalHandleList(output_descriptor_ids) + "|-"});
+    envelope.operands.push_back(
+        {"relational_node_binding_v1", std::to_string(relation.relation_id),
+         EncodeCanonicalHex("SBLR_MODEL_SOURCE_V1") + "|" +
+             JoinCanonicalHandleList(relation.bound_expression_ids) + "|" +
+             vector_source->object_uuid + "|-|-"});
+    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
+    return envelope;
+  }
+
   const auto time_series_source = std::ranges::find_if(
       native.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kTimeSeries;
@@ -41023,6 +41343,16 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
         return expression.kind == 4 && !expression.function_uuid.has_value() &&
                expression.operator_name == "TIME_DOWNSAMPLE";
       });
+  const auto vector_nearest_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               expression.operator_name == "VECTOR_NEAREST";
+      });
+  const auto vector_filter_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               expression.operator_name == "VECTOR_FILTER";
+      });
   const bool time_series_graph =
       time_range_root != graph.expressions.end() &&
       ((document_source_node != nullptr &&
@@ -41034,14 +41364,19 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   const bool key_value_graph =
       document_source_node != nullptr &&
       key_value_root != graph.expressions.end();
-  const bool timestamp_model_graph = key_value_graph || time_series_graph;
+  const bool vector_graph =
+      document_source_node != nullptr &&
+      vector_nearest_root != graph.expressions.end();
+  const bool timestamp_model_graph =
+      key_value_graph || time_series_graph || vector_graph;
   if (timestamp_model_graph != !graph.statement_timestamp.empty() ||
       (timestamp_model_graph &&
        !IsCanonicalBoundStatementTimestamp(graph.statement_timestamp))) {
     return RefuseRelationalGraph(
         time_series_graph
             ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
-            : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1",
+            : (vector_graph ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
+                            : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1"),
         timestamp_model_graph
             ? "timestamp-carrying model graph requires one canonical statement timestamp"
             : "statement timestamp is admitted only for timestamp-carrying model graphs",
@@ -41053,7 +41388,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
       document_expand_node != nullptr && graph_expand_root != graph.expressions.end();
   const bool document_source_graph =
       document_source_node != nullptr && !graph_source_graph &&
-      !key_value_graph && !time_series_graph;
+      !key_value_graph && !time_series_graph && !vector_graph;
   const bool document_expand_graph =
       document_expand_node != nullptr && !graph_expand_graph;
   const auto document_expand_root_id =
@@ -41098,6 +41433,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   std::optional<std::uint32_t> document_source_predicate_root;
   std::optional<std::uint32_t> key_value_predicate_root;
   std::optional<std::uint32_t> time_series_predicate_root;
+  std::optional<std::uint32_t> vector_predicate_root;
   std::unordered_map<std::uint32_t, const ParsedRelationalDescriptor*>
       descriptors;
   std::unordered_set<std::string> descriptor_uuids;
@@ -41159,13 +41495,19 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
           &expression == &*time_bucket_root) ||
          (time_downsample_root != graph.expressions.end() &&
           &expression == &*time_downsample_root));
+    const bool vector_model_operation =
+        vector_graph &&
+        (&expression == &*vector_nearest_root ||
+         (vector_filter_root != graph.expressions.end() &&
+          &expression == &*vector_filter_root));
     if (literal != expression.literal_kind.has_value() ||
         (expression.literal_kind.has_value() &&
         (*expression.literal_kind < 1 || *expression.literal_kind > 12)) ||
         function_call !=
             (expression.function_uuid.has_value() || document_path_operation ||
              document_unnest_operation || graph_model_operation ||
-             key_value_model_operation || time_series_model_operation) ||
+             key_value_model_operation || time_series_model_operation ||
+             vector_model_operation) ||
         (expression.function_uuid.has_value() &&
          !IsCanonicalRelationalUuid(*expression.function_uuid)) ||
         identifier != expression.bound_name_uuid.has_value() ||
@@ -41173,7 +41515,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
          !IsCanonicalRelationalUuid(*expression.bound_name_uuid)) ||
         (unary || binary || document_path_operation ||
          document_unnest_operation || graph_model_operation ||
-         key_value_model_operation || time_series_model_operation) !=
+         key_value_model_operation || time_series_model_operation ||
+         vector_model_operation) !=
             expression.operator_name.has_value() ||
         (expression.operator_name.has_value() &&
          expression.operator_name->empty()) ||
@@ -41204,6 +41547,11 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
            expression.child_ids.size() != 2) ||
           (expression.operator_name == "TIME_DOWNSAMPLE" &&
            expression.child_ids.size() != 3))) ||
+        (vector_model_operation &&
+         ((expression.operator_name == "VECTOR_NEAREST" &&
+           expression.child_ids.size() != 4) ||
+          (expression.operator_name == "VECTOR_FILTER" &&
+           expression.child_ids.size() != 2))) ||
         (parenthesized && expression.child_ids.size() != 1)) {
       return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
                                    "relational expression typed fields or arity are invalid",
@@ -41561,6 +41909,138 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
           "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
           "key/value operation, typed children, or public output is invalid",
           "key_value_operation_root", node.id);
+    }
+  }
+  if (vector_graph) {
+    // QOW-SOURCE-RCP-077-VECTOR-SBLR-VERIFIER-V1
+    const auto& node = *document_source_node;
+    const auto& nearest = *vector_nearest_root;
+    const auto child = [&](const ParsedRelationalExpression& expression,
+                           const std::size_t ordinal)
+        -> const ParsedRelationalExpression* {
+      if (ordinal >= expression.child_ids.size()) return nullptr;
+      const auto found = expressions.find(expression.child_ids[ordinal]);
+      return found == expressions.end() ? nullptr : found->second;
+    };
+    const auto* alias = child(nearest, 0);
+    const auto* query = child(nearest, 1);
+    const auto* metric = child(nearest, 2);
+    const auto* top_k = child(nearest, 3);
+    const auto operation_count = std::ranges::count_if(
+        graph.expressions, [](const auto& expression) {
+          return expression.operator_name == "VECTOR_NEAREST";
+        });
+    const auto filter_count = std::ranges::count_if(
+        graph.expressions, [](const auto& expression) {
+          return expression.operator_name == "VECTOR_FILTER";
+        });
+    std::uint64_t top_k_value = 0;
+    bool exact_top_k = top_k != nullptr && top_k->kind == 1 &&
+                       top_k->literal_kind == 1 &&
+                       top_k->literal_or_parameter_ref.has_value();
+    if (exact_top_k) {
+      const auto& spelling = *top_k->literal_or_parameter_ref;
+      const auto parsed = std::from_chars(
+          spelling.data(), spelling.data() + spelling.size(), top_k_value);
+      exact_top_k = !spelling.empty() &&
+                    (spelling.size() == 1 || spelling.front() != '0') &&
+                    parsed.ec == std::errc{} &&
+                    parsed.ptr == spelling.data() + spelling.size() &&
+                    top_k_value > 0 && top_k_value <= 0xffffffffULL;
+    }
+    bool exact_operation =
+        operation_count == 1 && filter_count <= 1 &&
+        node.required_object_uuids.size() == 1 && node.input_ids.empty() &&
+        nearest.kind == 4 && !nearest.function_uuid.has_value() &&
+        nearest.child_ids.size() == 4 &&
+        std::unordered_set<std::uint32_t>(nearest.child_ids.begin(),
+                                          nearest.child_ids.end()).size() == 4 &&
+        alias != nullptr && alias->kind == 3 && alias->child_ids.empty() &&
+        alias->bound_name_uuid == node.required_object_uuids.front() &&
+        query != nullptr && (query->kind == 1 || query->kind == 2) &&
+        (query->kind != 1 || query->literal_kind == 10) &&
+        query->descriptor_id == alias->descriptor_id &&
+        descriptors.at(query->descriptor_id)->nullability == 1 &&
+        metric != nullptr && metric->kind == 1 && metric->literal_kind == 2 &&
+        metric->literal_or_parameter_ref.has_value() &&
+        (*metric->literal_or_parameter_ref == "L2_SQUARED" ||
+         *metric->literal_or_parameter_ref == "COSINE" ||
+         *metric->literal_or_parameter_ref == "INNER_PRODUCT") &&
+        descriptors.at(metric->descriptor_id)->nullability == 1 &&
+        exact_top_k && descriptors.at(top_k->descriptor_id)->nullability == 1;
+    const bool filtered = vector_filter_root != graph.expressions.end();
+    if (filtered) {
+      const auto& filter = *vector_filter_root;
+      const auto* filter_alias = child(filter, 0);
+      const auto* predicate = child(filter, 1);
+      const auto* metadata_column =
+          predicate == nullptr ? nullptr : child(*predicate, 0);
+      const auto* metadata_value =
+          predicate == nullptr ? nullptr : child(*predicate, 1);
+      const auto conjunction = std::ranges::find_if(
+          graph.expressions, [&](const auto& expression) {
+            return expression.kind == 6 && expression.operator_name == "AND" &&
+                   expression.child_ids ==
+                       std::vector<std::uint32_t>{nearest.id, filter.id};
+          });
+      exact_operation =
+          exact_operation && filter_count == 1 && filter.kind == 4 &&
+          !filter.function_uuid.has_value() && filter.child_ids.size() == 2 &&
+          filter_alias != nullptr && filter_alias->kind == 3 &&
+          filter_alias->bound_name_uuid == node.required_object_uuids.front() &&
+          predicate != nullptr && predicate->kind == 6 &&
+          predicate->operator_name == "=" && predicate->child_ids.size() == 2 &&
+          metadata_column != nullptr && metadata_column->kind == 3 &&
+          metadata_column->bound_name_uuid.has_value() &&
+          *metadata_column->bound_name_uuid != node.required_object_uuids.front() &&
+          metadata_value != nullptr &&
+          (metadata_value->kind == 1 || metadata_value->kind == 2) &&
+          (metadata_value->kind != 1 || metadata_value->literal_kind == 2) &&
+          metadata_value->descriptor_id == metadata_column->descriptor_id &&
+          descriptors.at(metadata_value->descriptor_id)->nullability == 1 &&
+          conjunction != graph.expressions.end();
+      if (conjunction != graph.expressions.end()) {
+        vector_predicate_root = conjunction->id;
+      }
+    } else {
+      vector_predicate_root = nearest.id;
+    }
+    std::vector<const ParsedRelationalOutput*> vector_outputs;
+    for (const auto& output : graph.outputs) {
+      if (output.node_id == node.id) vector_outputs.push_back(&output);
+    }
+    std::ranges::sort(vector_outputs, [](const auto* left, const auto* right) {
+      return left->ordinal < right->ordinal;
+    });
+    static constexpr std::array<std::string_view, 3> kNames{
+        "row_uuid", "distance", "score"};
+    exact_operation =
+        exact_operation && vector_outputs.size() == kNames.size() &&
+        node.output_descriptor_ids.size() == kNames.size();
+    for (std::size_t ordinal = 0;
+         exact_operation && ordinal < vector_outputs.size(); ++ordinal) {
+      const auto* output = vector_outputs[ordinal];
+      const auto output_expression = expressions.find(output->expression_id);
+      exact_operation =
+          output->ordinal == ordinal && output->visible &&
+          output->name_utf8 == kNames[ordinal] &&
+          output->descriptor_id == node.output_descriptor_ids[ordinal] &&
+          output_expression != expressions.end() &&
+          output_expression->second->kind == 3 &&
+          output_expression->second->descriptor_id == output->descriptor_id &&
+          descriptors.at(output->descriptor_id)->nullability == 1;
+    }
+    exact_operation =
+        exact_operation && vector_outputs.size() == 3 &&
+        vector_outputs[0]->descriptor_id != vector_outputs[1]->descriptor_id &&
+        vector_outputs[1]->descriptor_id != vector_outputs[2]->descriptor_id &&
+        descriptors.at(vector_outputs[1]->descriptor_id)->type_uuid ==
+            descriptors.at(vector_outputs[2]->descriptor_id)->type_uuid;
+    if (!exact_operation) {
+      return RefuseRelationalGraph(
+          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+          "vector operation, typed children, predicate, or public output is invalid",
+          "vector_operation_root", node.id);
     }
   }
   if (time_series_graph) {
@@ -42471,6 +42951,9 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   }
   if (time_series_predicate_root.has_value()) {
     expression_roots.insert(*time_series_predicate_root);
+  }
+  if (vector_predicate_root.has_value()) {
+    expression_roots.insert(*vector_predicate_root);
   }
   if (graph_source_graph) expression_roots.insert(graph_match_root->id);
   if (graph_expand_graph) expression_roots.insert(graph_expand_root->id);

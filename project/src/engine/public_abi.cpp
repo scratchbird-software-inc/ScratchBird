@@ -9,6 +9,7 @@
 #include "scratchbird/engine/engine.h"
 #include "scratchbird/engine/sblr_envelope.hpp"
 #include "canonical_aggregate_registry.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "executor_foundation.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "database_format.hpp"
@@ -2566,6 +2567,63 @@ sb_engine_status_t AcquireStatementContextReceipt(
       }
       view.descriptor_profiles.push_back(std::move(profile));
     }
+  }
+
+  // QOW-SOURCE-RCP-077-STATEMENT-REAL64-DESCRIPTORS-V8: the core catalog
+  // owns the REAL64 type identity; the statement-context issuer owns the two
+  // distinct result-slot descriptor identities. No parser-side pairing or
+  // descriptor reuse is permitted.
+  const auto core_manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto real64_count =
+      core_manifest.ok()
+          ? std::ranges::count_if(
+                core_manifest.manifest.descriptor_rows,
+                [](const auto& row) { return row.stable_name == "real64"; })
+          : 0;
+  const auto real64_row =
+      core_manifest.ok()
+          ? std::ranges::find_if(
+                core_manifest.manifest.descriptor_rows,
+                [](const auto& row) { return row.stable_name == "real64"; })
+          : core_manifest.manifest.descriptor_rows.end();
+  if (!core_manifest.ok() || real64_count != 1 ||
+      real64_row == core_manifest.manifest.descriptor_rows.end() ||
+      !real64_row->descriptor_uuid.valid()) {
+    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
+        snapshot.snapshot_uuid);
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4044,
+        "ENGINE.STATEMENT_CONTEXT.REAL64_DESCRIPTOR_UNAVAILABLE",
+        "engine.statement_context.real64_descriptor_unavailable");
+  }
+  const auto real64_type_uuid = scratchbird::core::uuid::UuidToString(
+      real64_row->descriptor_uuid.value);
+  std::array<std::string, 2> real64_descriptor_uuids;
+  if (real64_type_uuid.empty() ||
+      !issue_identity(&real64_descriptor_uuids[0]) ||
+      !issue_identity(&real64_descriptor_uuids[1]) ||
+      real64_descriptor_uuids[0] == real64_descriptor_uuids[1]) {
+    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
+        snapshot.snapshot_uuid);
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4044,
+        "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
+        "engine.statement_context.identity_unavailable",
+        "statement_real64_descriptor_identity");
+  }
+  for (std::uint16_t slot = 0; slot < real64_descriptor_uuids.size(); ++slot) {
+    StatementDescriptorProfile profile;
+    profile.profile_kind =
+        StatementDescriptorProfileKind::kReal64NonNull;
+    profile.slot = slot;
+    profile.descriptor_uuid = std::move(real64_descriptor_uuids[slot]);
+    profile.type_uuid = real64_type_uuid;
+    view.descriptor_profiles.push_back(std::move(profile));
   }
 
   view.statement_uuid = statement_uuid;

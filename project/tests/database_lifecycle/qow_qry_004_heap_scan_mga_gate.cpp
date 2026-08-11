@@ -2982,8 +2982,6 @@ void ValidateFullWidthHeapRefusals(Fixture& fixture) {
             mutated.relational_dag.expressions[1].bound_name_uuid);
   std::swap(mutated.relational_dag.descriptors[0].descriptor_uuid,
             mutated.relational_dag.descriptors[1].descriptor_uuid);
-  std::swap(mutated.relational_dag.descriptors[0].nullability,
-            mutated.relational_dag.descriptors[1].nullability);
   require_post_read_refusal(mutated,
                             "persisted ordinal binding drift was accepted");
   mutated = baseline;
@@ -4013,11 +4011,7 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
 
   mutated = baseline;
   mutated.relational_dag.descriptors.pop_back();
-  mutated.relational_dag.expressions.pop_back();
-  mutated.relational_dag.outputs.pop_back();
-  mutated.relational_dag.nodes.front().output_descriptor_ids.pop_back();
-  mutated.relational_dag.nodes.front().bound_expression_ids.pop_back();
-  expect_refusal(mutated, "partial persisted width was admitted");
+  expect_refusal(mutated, "dangling scan descriptor binding was admitted");
 
   mutated = baseline;
   mutated.relational_dag.root_node_id = 999;
@@ -4128,8 +4122,8 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
   expect_refusal(mutated, "stale timezone profile was admitted");
 
   mutated = baseline;
-  std::swap(mutated.relational_dag.outputs[0],
-            mutated.relational_dag.outputs[1]);
+  std::swap(mutated.relational_dag.outputs[0].ordinal,
+            mutated.relational_dag.outputs[1].ordinal);
   expect_refusal(mutated, "stale persisted output order was admitted");
 
   mutated = baseline;

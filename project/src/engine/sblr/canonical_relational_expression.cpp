@@ -378,6 +378,118 @@ bool SameDescriptor(const api::EngineDescriptor& left,
          left.encoded_descriptor == right.encoded_descriptor;
 }
 
+bool SamePersistedRowDescriptor(
+    const api::RelationalTypeDescriptor& bound,
+    const api::EngineDescriptor& actual) {
+  if (!api::QowCanonicalDescriptorIdentityV1(actual) ||
+      actual.descriptor_uuid.canonical != bound.descriptor_uuid ||
+      actual.descriptor_kind != "scalar") {
+    return false;
+  }
+
+  bool canonical_seen = false;
+  bool type_uuid_seen = false;
+  bool nullability_seen = false;
+  bool collation_seen = false;
+  bool timezone_seen = false;
+  bool width_seen = false;
+  bool precision_seen = false;
+  bool scale_seen = false;
+
+  const auto exact_string_optional = [](const std::string_view value,
+                                        const std::optional<std::string>& bound_value,
+                                        bool* seen) {
+    if (seen == nullptr || *seen || !bound_value.has_value() || value.empty() ||
+        value != *bound_value) {
+      return false;
+    }
+    *seen = true;
+    return true;
+  };
+  const auto exact_u32_optional = [](const std::string_view value,
+                                     const std::optional<std::uint32_t> bound_value,
+                                     bool* seen) {
+    if (seen == nullptr || *seen || !bound_value.has_value() ||
+        value != std::to_string(*bound_value)) {
+      return false;
+    }
+    *seen = true;
+    return true;
+  };
+
+  std::size_t start = 0;
+  while (start < actual.encoded_descriptor.size()) {
+    const auto end = actual.encoded_descriptor.find(';', start);
+    const auto field = std::string_view(actual.encoded_descriptor).substr(
+        start, end == std::string::npos ? std::string::npos : end - start);
+    const auto separator = field.find('=');
+    if (field.empty() || separator == std::string_view::npos || separator == 0 ||
+        field.find('=', separator + 1) != std::string_view::npos) {
+      return false;
+    }
+    const auto key = field.substr(0, separator);
+    const auto value = field.substr(separator + 1);
+
+    if (key == "canonical") {
+      if (canonical_seen || value.empty() ||
+          value != actual.canonical_type_name) {
+        return false;
+      }
+      canonical_seen = true;
+    } else if (key == "type_uuid") {
+      if (type_uuid_seen || value.empty() || value != bound.type_uuid) {
+        return false;
+      }
+      type_uuid_seen = true;
+    } else if (key == "nullability" || key == "nullable") {
+      if (nullability_seen) return false;
+      if (key == "nullability") {
+        if ((bound.nullability == api::RelationalNullability::kNullable &&
+             value != "nullable") ||
+            (bound.nullability == api::RelationalNullability::kNonNull &&
+             value != "non_null")) {
+          return false;
+        }
+      } else if ((bound.nullability == api::RelationalNullability::kNullable &&
+                  value != "true") ||
+                 (bound.nullability == api::RelationalNullability::kNonNull &&
+                  value != "false")) {
+        return false;
+      }
+      nullability_seen = true;
+    } else if (key == "collation_uuid") {
+      if (!exact_string_optional(value, bound.collation_uuid,
+                                 &collation_seen)) {
+        return false;
+      }
+    } else if (key == "timezone_profile_id") {
+      if (!exact_string_optional(value, bound.timezone_profile_id,
+                                 &timezone_seen)) {
+        return false;
+      }
+    } else if (key == "width") {
+      if (!exact_u32_optional(value, bound.width, &width_seen)) return false;
+    } else if (key == "precision") {
+      if (!exact_u32_optional(value, bound.precision, &precision_seen)) {
+        return false;
+      }
+    } else if (key == "scale") {
+      if (!exact_u32_optional(value, bound.scale, &scale_seen)) return false;
+    }
+
+    if (end == std::string::npos) break;
+    start = end + 1;
+    if (start == actual.encoded_descriptor.size()) return false;
+  }
+
+  return canonical_seen && type_uuid_seen && nullability_seen &&
+         collation_seen == bound.collation_uuid.has_value() &&
+         timezone_seen == bound.timezone_profile_id.has_value() &&
+         width_seen == bound.width.has_value() &&
+         precision_seen == bound.precision.has_value() &&
+         scale_seen == bound.scale.has_value();
+}
+
 }  // namespace
 
 CanonicalRelationalExpressionRuntime::CanonicalRelationalExpressionRuntime(
@@ -436,7 +548,9 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
     if (!BuildDescriptor(descriptor_id,
                          value.descriptor.canonical_type_name,
                          &expected_descriptor, &descriptor_detail) ||
-        !SameDescriptor(expected_descriptor, value.descriptor)) {
+        (!SameDescriptor(expected_descriptor, value.descriptor) &&
+         !SamePersistedRowDescriptor(*descriptor->second,
+                                     value.descriptor))) {
       *refusal_detail =
           "materialized row value lost its full canonical descriptor identity";
       return false;

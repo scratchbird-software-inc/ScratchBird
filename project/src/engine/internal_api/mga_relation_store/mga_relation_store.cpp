@@ -6516,6 +6516,7 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
     result.diagnostic = std::move(diagnostic);
     result.descriptor = {};
     result.visible_rows.clear();
+    result.current_relation_base_generation = 0;
     if (control != nullptr) {
       result.scanned_row_version_count = control->decoded_row_versions;
       result.decoded_byte_count = control->decoded_bytes;
@@ -6612,6 +6613,7 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
   if (table->temporary) {
     return invalid("temporary_relation_outside_local_heap_profile");
   }
+  std::uint64_t current_relation_base_generation = table->event_sequence;
 
   BoundedScopedRowReadControl control;
   control.maximum_row_versions = request.maximum_scanned_row_versions;
@@ -6652,6 +6654,8 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
       ++result.invisible_row_version_count;
       continue;
     }
+    current_relation_base_generation =
+        std::max(current_relation_base_generation, row.event_sequence);
     admitted_versions.push_back(std::move(row));
   }
   const auto chain_status =
@@ -6712,12 +6716,16 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
   result.diagnostic = OkDiagnostic();
   result.descriptor = descriptor;
   result.visible_rows = std::move(visible_rows);
+  result.current_relation_base_generation = current_relation_base_generation;
   result.evidence.push_back(
       {"mga_heap_read_relation_descriptor_uuid",
        descriptor.descriptor_uuid.canonical});
   result.evidence.push_back(
       {"mga_heap_read_relation_descriptor_generation",
        std::to_string(descriptor.descriptor_generation)});
+  result.evidence.push_back(
+      {"mga_heap_read_relation_base_generation",
+       std::to_string(result.current_relation_base_generation)});
   result.evidence.push_back(
       {"mga_heap_read_storage_route", "bounded_scoped_physical_segment"});
   result.evidence.push_back(
@@ -11144,36 +11152,8 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                      true);
     }
     projected_columns.push_back(&column);
-    api::EngineDescriptor output_descriptor;
-    output_descriptor.descriptor_uuid =
-        column.value_descriptor.descriptor_uuid;
+    auto output_descriptor = column.value_descriptor;
     output_descriptor.descriptor_kind = "scalar";
-    output_descriptor.canonical_type_name =
-        column.value_descriptor.canonical_type_name;
-    output_descriptor.encoded_descriptor =
-        "type_uuid=" + relational_descriptor.type_uuid +
-        ";nullability=" + (nullable ? "nullable" : "non_null");
-    if (relational_descriptor.collation_uuid.has_value()) {
-      output_descriptor.encoded_descriptor +=
-          ";collation_uuid=" + *relational_descriptor.collation_uuid;
-    }
-    if (relational_descriptor.timezone_profile_id.has_value()) {
-      output_descriptor.encoded_descriptor +=
-          ";timezone_profile_id=" +
-          *relational_descriptor.timezone_profile_id;
-    }
-    if (relational_descriptor.width.has_value()) {
-      output_descriptor.encoded_descriptor +=
-          ";width=" + std::to_string(*relational_descriptor.width);
-    }
-    if (relational_descriptor.precision.has_value()) {
-      output_descriptor.encoded_descriptor +=
-          ";precision=" + std::to_string(*relational_descriptor.precision);
-    }
-    if (relational_descriptor.scale.has_value()) {
-      output_descriptor.encoded_descriptor +=
-          ";scale=" + std::to_string(*relational_descriptor.scale);
-    }
     batch.columns.push_back({column.canonical_name_key,
                              output_descriptor,
                              column.nullable,

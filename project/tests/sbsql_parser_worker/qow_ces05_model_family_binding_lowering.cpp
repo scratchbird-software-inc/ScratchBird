@@ -572,6 +572,128 @@ sbsql::NativeRelationalBindingContext TimeSeriesContextFor(
   return context;
 }
 
+sbsql::NativeRelationalBindingContext VectorContextFor(
+    const sbsql::NativeRelationalAstDocument& ast) {
+  sbsql::NativeRelationalBindingContext context;
+  context.bound_ast_uuid = Uuid(1010);
+  context.catalog_epoch_uuid = Uuid(1011);
+  context.security_context_uuid = Uuid(1012);
+  context.statement_uuid = Uuid(1013);
+  context.statement_timestamp = "2026-08-11T12:00:00.123456789Z";
+  context.owning_transaction_uuid = Uuid(1014);
+  context.statement_snapshot_uuid = Uuid(1015);
+  context.statement_metadata_snapshot_uuid = Uuid(1016);
+  context.local_transaction_id = 77;
+  context.snapshot_visible_through_local_transaction_id = 76;
+  SetEngineAuthority(&context);
+
+  const auto descriptor = [](const std::uint32_t id,
+                             const std::uint64_t descriptor_uuid,
+                             const std::uint64_t type_uuid,
+                             const std::string& canonical_type,
+                             const std::string& element_profile = {},
+                             const std::optional<std::uint32_t> width =
+                                 std::nullopt) {
+    sbsql::NativeDescriptorBindingInput input;
+    input.descriptor_id = id;
+    input.descriptor_uuid = Uuid(descriptor_uuid);
+    input.type_uuid = Uuid(type_uuid);
+    input.nullability = sbsql::BoundNullability::kNonNull;
+    input.width_precision_scale.width = width;
+    input.canonical_type_name = canonical_type;
+    input.element_profile = element_profile;
+    return input;
+  };
+  context.descriptors = {
+      descriptor(1, 1021, 1031, "dense_vector", "real32", 3),
+      descriptor(2, 1022, 1032, "text"),
+      descriptor(3, 1023, 1033, "uuid"),
+      descriptor(4, 1024, 1034, "real64"),
+      descriptor(5, 1025, 1035, "uint64"),
+      descriptor(6, 1026, 1036, "boolean"),
+      descriptor(7, 1027, 1034, "real64"),
+  };
+
+  const auto& source_ast = ast.catalog_relation_sources.front();
+  sbsql::NativeCatalogRelationBindingInput source;
+  source.source_id = source_ast.source_id;
+  source.resolution_state =
+      sbsql::NativeCatalogRelationResolutionState::kBound;
+  source.object_uuid = Uuid(1040);
+  source.resolved_object_type = "vector";
+  source.resolved_schema_uuid = Uuid(1041);
+  source.catalog_generation_id = 77;
+  source.security_epoch = 78;
+  source.resource_epoch = 79;
+  source.columns = {{0, Uuid(1050), 1, "embedding"},
+                    {1, Uuid(1051), 2, "metadata"}};
+  context.catalog_relations.push_back(std::move(source));
+  context.relations.push_back(
+      {ast.relations.front().relation_id,
+       source_ast.model_operation_id == "VECTOR_FILTERED_SEARCH"
+           ? "sblr.model-source.vector-filtered-search.v1"
+           : "sblr.model-source.vector-exact-search.v1"});
+
+  const auto maximum_ast_expression = std::ranges::max_element(
+      ast.expressions, {}, &sbsql::NativeExpressionAstNode::expression_id);
+  std::uint32_t next_expression =
+      maximum_ast_expression->expression_id + 1;
+  static constexpr std::array<const char*, 3> kNames{
+      "row_uuid", "distance", "score"};
+  const std::array<std::uint32_t, 3> public_descriptors{3, 4, 7};
+  for (std::uint32_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
+    context.expressions.push_back(
+        {next_expression, public_descriptors[ordinal], std::nullopt,
+         Uuid(1060 + ordinal)});
+    context.outputs.push_back(
+        {ordinal + 1, next_expression, kNames[ordinal],
+         public_descriptors[ordinal], true, ordinal,
+         ast.relations.front().relation_id});
+    ++next_expression;
+  }
+  for (const auto& expression : ast.expressions) {
+    if (expression.expression_kind ==
+        sbsql::NativeExpressionAstKind::kWildcard) {
+      continue;
+    }
+    sbsql::NativeExpressionBindingInput input;
+    input.expression_id = expression.expression_id;
+    if (expression.expression_id ==
+            source_ast.model_vector_alias_expression_id.value_or(0) ||
+        (expression.expression_kind ==
+             sbsql::NativeExpressionAstKind::kIdentifier &&
+         expression.qualified_identifier.size() == 1 &&
+         source_ast.alias.has_value() &&
+         expression.qualified_identifier.front().spelling ==
+             source_ast.alias->spelling)) {
+      input.descriptor_id = 1;
+      input.bound_name_uuid = Uuid(1040);
+    } else if (expression.expression_id ==
+               source_ast.model_vector_query_expression_id.value_or(0)) {
+      input.descriptor_id = 1;
+    } else if (expression.expression_id ==
+               source_ast.model_vector_metric_expression_id.value_or(0)) {
+      input.descriptor_id = 2;
+    } else if (expression.expression_id ==
+               source_ast.model_vector_top_k_expression_id.value_or(0)) {
+      input.descriptor_id = 5;
+    } else if (expression.expression_id ==
+               source_ast.model_vector_metadata_column_expression_id.value_or(
+                   0)) {
+      input.descriptor_id = 2;
+      input.bound_name_uuid = Uuid(1051);
+    } else if (expression.expression_id ==
+               source_ast.model_vector_metadata_value_expression_id.value_or(
+                   0)) {
+      input.descriptor_id = 2;
+    } else {
+      input.descriptor_id = 6;
+    }
+    context.expressions.push_back(std::move(input));
+  }
+  return context;
+}
+
 sbsql::NativeRelationalBindingContext KeyValueContextFor(
     const sbsql::NativeRelationalAstDocument& ast) {
   sbsql::NativeRelationalBindingContext context;
@@ -1502,6 +1624,206 @@ bool TimeSeriesGrammarBindingLowering() {
   return passed;
 }
 
+bool VectorGrammarBindingLowering() {
+  struct Case {
+    const char* sql;
+    const char* operation;
+    const char* semantic;
+    bool filtered;
+  };
+  const std::array<Case, 2> cases{{
+      {"SELECT * FROM VECTOR_SOURCE(app.vector_fixture) AS v WHERE "
+       "VECTOR_NEAREST(v, VECTOR '[1,0,0]', L2_SQUARED, 2) AS nearest;",
+       "VECTOR_EXACT_SEARCH",
+       "sblr.model-source.vector-exact-search.v1", false},
+      {"SELECT * FROM VECTOR_SOURCE(app.vector_fixture) AS v WHERE "
+       "VECTOR_NEAREST(v, VECTOR '[1,0,0]', L2_SQUARED, 2) AND "
+       "VECTOR_FILTER(v, v.metadata = '{\"group\":\"a\"}');",
+       "VECTOR_FILTERED_SEARCH",
+       "sblr.model-source.vector-filtered-search.v1", true},
+  }};
+  bool passed = true;
+  std::optional<sbsql::BoundStatement> retained_bound;
+  std::optional<sbsql::CstDocument> retained_cst;
+  for (const auto& test : cases) {
+    const auto cst = sbsql::BuildCst(test.sql);
+    const auto ast = sbsql::BuildAst(cst);
+    passed &= Require(
+        ast.native_relational.accepted() && ast.requires_name_resolution &&
+            !ast.produces_sblr &&
+            ast.native_relational.catalog_relation_sources.size() == 1 &&
+            ast.native_relational.catalog_relation_sources.front().source_kind ==
+                sbsql::NativeRelationSourceAstKind::kVector &&
+            ast.native_relational.catalog_relation_sources.front()
+                    .model_family_id == "vector" &&
+            ast.native_relational.catalog_relation_sources.front()
+                    .model_operation_id == test.operation &&
+            ast.native_relational.catalog_relation_sources.front()
+                    .model_vector_metric_id == "L2_SQUARED" &&
+            ast.native_relational.catalog_relation_sources.front()
+                    .model_vector_top_k == 2 &&
+            ast.native_relational.model_object_resolution_requests.size() == 1 &&
+            ast.native_relational.model_object_resolution_requests.front()
+                    .object_class == "vector",
+        std::string("ordinary vector grammar/object extraction drifted: ") +
+            DiagnosticSummary(ast.native_relational.messages));
+    if (!ast.native_relational.accepted()) continue;
+    const auto& source = ast.native_relational.catalog_relation_sources.front();
+    passed &= Require(
+        source.model_vector_alias_expression_id.has_value() &&
+            source.model_vector_nearest_expression_id.has_value() &&
+            source.model_vector_query_expression_id.has_value() &&
+            source.model_vector_metric_expression_id.has_value() &&
+            source.model_vector_top_k_expression_id.has_value() &&
+            (test.filtered ==
+             source.model_vector_filter_expression_id.has_value()) &&
+            (!source.model_vector_result_alias.has_value() ||
+             source.model_vector_result_alias->spelling == "nearest"),
+        "vector typed-DAG or result-alias identity is incomplete");
+
+    auto context = VectorContextFor(ast.native_relational);
+    const auto bound =
+        sbsql::BindAst(ast, cst, Config(), Session(), {}, &context);
+    passed &= Require(
+        bound.bound && bound.native_relational.bound &&
+            bound.native_relational.catalog_relation_sources.size() == 1 &&
+            bound.native_relational.catalog_relation_sources.front()
+                    .object_uuid == Uuid(1040) &&
+            bound.native_relational.catalog_relation_sources.front()
+                    .columns.size() == 2 &&
+            bound.native_relational.outputs.size() == 3 &&
+            bound.native_relational.relations.front().semantic_variant_id ==
+                test.semantic,
+        std::string("vector engine-projected binding drifted: ") +
+            DiagnosticSummary(bound.messages));
+    if (!bound.bound) continue;
+    const auto lowered = sbsql::LowerToSblr(bound, cst, Session());
+    const auto verified = sbsql::VerifySblrEnvelope(lowered);
+    passed &= Require(
+        !lowered.messages.has_errors() && verified.admitted &&
+            HasOperand(lowered, "text", "relational_statement_timestamp",
+                       context.statement_timestamp) &&
+            std::ranges::any_of(lowered.operands, [](const auto& operand) {
+              return operand.type == "relational_node_binding_v1" &&
+                     operand.value.find(
+                         "53424c525f4d4f44454c5f534f555243455f5631") == 0;
+            }),
+        std::string("vector source did not lower through SBLR_MODEL_SOURCE_V1: ") +
+            DiagnosticSummary(lowered.messages) + "/" +
+            DiagnosticSummary(verified.messages));
+    if (!test.filtered) {
+      retained_bound = bound;
+      retained_cst = cst;
+    }
+
+    auto duplicate_expression = context;
+    duplicate_expression.expressions.back().expression_id =
+        duplicate_expression.expressions.front().expression_id;
+    const auto duplicate_refused = sbsql::BindAst(
+        ast, cst, Config(), Session(), {}, &duplicate_expression);
+    passed &= Require(
+        !duplicate_refused.bound &&
+            HasDiagnostic(duplicate_refused.messages,
+                          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1"),
+        "vector binding admitted a duplicated expression identity");
+
+    auto reordered_expression = context;
+    std::swap(reordered_expression.expressions[3],
+              reordered_expression.expressions[4]);
+    const auto reordered_refused = sbsql::BindAst(
+        ast, cst, Config(), Session(), {}, &reordered_expression);
+    passed &= Require(
+        !reordered_refused.bound &&
+            HasDiagnostic(reordered_refused.messages,
+                          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1"),
+        "vector binding admitted reordered expression evidence");
+
+    auto storage_type = context;
+    storage_type.descriptors[0].canonical_type_name = "text";
+    const auto storage_type_refused = sbsql::BindAst(
+        ast, cst, Config(), Session(), {}, &storage_type);
+    passed &= Require(
+        !storage_type_refused.bound &&
+            HasDiagnostic(storage_type_refused.messages,
+                          "SB_MODEL_VECTOR_VALUE_REFUSED_V1"),
+        "vector binding admitted a substituted storage descriptor type");
+
+    auto output_type = context;
+    output_type.descriptors[2].canonical_type_name = "real64";
+    const auto output_type_refused = sbsql::BindAst(
+        ast, cst, Config(), Session(), {}, &output_type);
+    passed &= Require(
+        !output_type_refused.bound &&
+            HasDiagnostic(output_type_refused.messages,
+                          "SB_MODEL_BINDING_INCOMPLETE_V1"),
+        "vector binding admitted a substituted row UUID output type");
+
+    auto top_k_type = context;
+    top_k_type.descriptors[4].canonical_type_name = "real64";
+    const auto top_k_type_refused = sbsql::BindAst(
+        ast, cst, Config(), Session(), {}, &top_k_type);
+    passed &= Require(
+        !top_k_type_refused.bound &&
+            HasDiagnostic(top_k_type_refused.messages,
+                          "SB_MODEL_VECTOR_VALUE_REFUSED_V1"),
+        "vector binding admitted a substituted top-k descriptor type");
+  }
+
+  const std::array<std::pair<const char*, const char*>, 8> refusals{{
+      {"SELECT * FROM VECTOR_SOURCE(app.vector_fixture) AS v;",
+       "SB_MODEL_VECTOR_NEAREST_REFUSED_V1"},
+      {"SELECT * FROM VECTOR_SOURCE(app.vector_fixture) AS v WHERE "
+       "VECTOR_NEAREST(v, VECTOR '[1,0,0]', MANHATTAN, 2);",
+       "SB_MODEL_VECTOR_METRIC_REFUSED_V1"},
+      {"SELECT * FROM VECTOR_SOURCE(app.vector_fixture) AS v WHERE "
+       "VECTOR_NEAREST(v, VECTOR '[1,0,0]', L2_SQUARED, 0);",
+       "SB_MODEL_VECTOR_TOP_K_REFUSED_V1"},
+      {"SELECT * FROM VECTOR_SOURCE(app.vector_fixture) AS v WHERE "
+       "VECTOR_NEAREST(v, VECTOR '[1,0,0]', L2_SQUARED, 02);",
+       "SB_MODEL_VECTOR_TOP_K_REFUSED_V1"},
+      {"SELECT * FROM VECTOR_SOURCE(app.vector_fixture) AS v WHERE "
+       "VECTOR_NEAREST(other, VECTOR '[1,0,0]', L2_SQUARED, 2);",
+       "SB_MODEL_VECTOR_VALUE_REFUSED_V1"},
+      {"SELECT * FROM VECTOR_SOURCE(app.vector_fixture) AS v WHERE "
+       "VECTOR_NEAREST(v, VECTOR '[1,0,0]', L2_SQUARED, 2) AND "
+       "VECTOR_FILTER(v, v.metadata <> '{}');",
+       "SB_MODEL_VECTOR_FILTER_REFUSED_V1"},
+      {"SELECT * FROM VECTOR_PROVIDER_REQUEST(app.vector_fixture);",
+       "SB_MODEL_GRAMMAR_DONOR_TEXT_REFUSED_V1"},
+      {"VECTOR_UPSERT app.vector_fixture;",
+       "SB_MODEL_QUERY_WRITE_REFUSED_V1"},
+  }};
+  for (const auto& [sql, diagnostic] : refusals) {
+    const auto ast = sbsql::BuildAst(sbsql::BuildCst(sql));
+    passed &= Require(
+        ast.native_relational.status ==
+                sbsql::NativeRelationalParseStatus::kRefused &&
+            HasDiagnostic(ast.native_relational.messages, diagnostic),
+        std::string("vector parser refusal identity drifted: ") + diagnostic +
+            ":" + DiagnosticSummary(ast.native_relational.messages));
+  }
+
+  if (retained_bound.has_value() && retained_cst.has_value()) {
+    auto reordered = *retained_bound;
+    auto nearest = std::ranges::find_if(
+        reordered.native_relational.expressions, [](const auto& expression) {
+          return expression.canonical_operator_name == "VECTOR_NEAREST";
+        });
+    if (nearest != reordered.native_relational.expressions.end() &&
+        nearest->child_expression_ids.size() == 4) {
+      std::swap(nearest->child_expression_ids[1],
+                nearest->child_expression_ids[2]);
+    }
+    const auto refused =
+        sbsql::LowerToSblr(reordered, *retained_cst, Session());
+    passed &= Require(
+        HasDiagnostic(refused.messages,
+                      "SB_MODEL_VECTOR_NEAREST_REFUSED_V1"),
+        "vector lowering admitted reordered nearest children");
+  }
+  return passed;
+}
+
 bool GraphGrammarBindingLowering() {
   const auto match_cst = sbsql::BuildCst(
       "SELECT * FROM GRAPH_SOURCE(app.graph_fixture) AS g "
@@ -1759,6 +2081,7 @@ int main() {
   passed &= ExactRefusals();
   passed &= KeyValueGrammarBindingLowering();
   passed &= TimeSeriesGrammarBindingLowering();
+  passed &= VectorGrammarBindingLowering();
   passed &= GraphGrammarBindingLowering();
   passed &= WireFrontdoorProjectionCohort();
   passed &= GraphWireFrontdoorProjectionCohort();

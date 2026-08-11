@@ -521,6 +521,41 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   set_tests_properties(qow_ces05_time_series_production_route_v1 PROPERTIES
     LABELS "qow_closure;RCP-076;CES05;time_series;production_query_execute;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
   )
+  # QOW-CMAKE-RCP-077-VECTOR-DIRECT-EXECUTION-V1
+  add_executable(qow_ces05_vector_execution_test_v1
+    qow_ces05_vector_execution.cpp)
+  target_compile_features(qow_ces05_vector_execution_test_v1 PRIVATE
+    cxx_std_23)
+  target_link_libraries(qow_ces05_vector_execution_test_v1 PRIVATE
+    sb_engine_sblr
+    sb_core_hash
+    sb_core_uuid
+    sb_storage_database
+    sbl_sbsql_parser_worker_core
+  )
+  add_test(NAME qow_ces05_vector_execution_v1
+    COMMAND qow_ces05_vector_execution_test_v1)
+  set_tests_properties(qow_ces05_vector_execution_v1 PROPERTIES
+    LABELS "qow_closure;RCP-077;CES05;vector;model_family;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
+  )
+  add_executable(qow_ces05_vector_production_route_test_v1
+    qow_ces05_vector_execution.cpp)
+  target_compile_features(qow_ces05_vector_production_route_test_v1 PRIVATE
+    cxx_std_23)
+  target_compile_definitions(qow_ces05_vector_production_route_test_v1 PRIVATE
+    SB_CES05_VECTOR_PRODUCTION_QUERY_ROUTE=1)
+  target_link_libraries(qow_ces05_vector_production_route_test_v1 PRIVATE
+    sb_engine_sblr
+    sb_core_hash
+    sb_core_uuid
+    sb_storage_database
+    sbl_sbsql_parser_worker_core
+  )
+  add_test(NAME qow_ces05_vector_production_route_v1
+    COMMAND qow_ces05_vector_production_route_test_v1)
+  set_tests_properties(qow_ces05_vector_production_route_v1 PROPERTIES
+    LABELS "qow_closure;RCP-077;CES05;vector;production_query_execute;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
+  )
   # Dependency-ordered QOW optimizer targets are added above this return by
   # their owning leaves. The broad optimizer suite remains disabled.
   set(SB_QOW_OPTIMIZER_TESTS_ENROLLED TRUE PARENT_SCOPE)
@@ -644,6 +679,44 @@ add_test(NAME qow_ces05_time_series_production_route_v1
   COMMAND qow_ces05_time_series_production_route_test_v1)
 set_tests_properties(qow_ces05_time_series_production_route_v1 PROPERTIES
   LABELS "qow_closure;RCP-076;CES05;time_series;production_query_execute;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
+)
+
+# QOW-CMAKE-RCP-077-VECTOR-DIRECT-EXECUTION-V1
+add_executable(qow_ces05_vector_execution_test_v1
+  qow_ces05_vector_execution.cpp)
+target_compile_features(qow_ces05_vector_execution_test_v1 PRIVATE
+  cxx_std_23)
+target_link_libraries(qow_ces05_vector_execution_test_v1 PRIVATE
+  sb_engine_sblr
+  sb_core_hash
+  sb_core_uuid
+  sb_storage_database
+  sbl_sbsql_parser_worker_core
+)
+add_test(NAME qow_ces05_vector_execution_v1
+  COMMAND qow_ces05_vector_execution_test_v1)
+set_tests_properties(qow_ces05_vector_execution_v1 PROPERTIES
+  LABELS "qow_closure;RCP-077;CES05;vector;model_family;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
+)
+
+# QOW-CMAKE-RCP-077-VECTOR-PRODUCTION-QUERY-ROUTE-V1
+add_executable(qow_ces05_vector_production_route_test_v1
+  qow_ces05_vector_execution.cpp)
+target_compile_features(qow_ces05_vector_production_route_test_v1 PRIVATE
+  cxx_std_23)
+target_compile_definitions(qow_ces05_vector_production_route_test_v1 PRIVATE
+  SB_CES05_VECTOR_PRODUCTION_QUERY_ROUTE=1)
+target_link_libraries(qow_ces05_vector_production_route_test_v1 PRIVATE
+  sb_engine_sblr
+  sb_core_hash
+  sb_core_uuid
+  sb_storage_database
+  sbl_sbsql_parser_worker_core
+)
+add_test(NAME qow_ces05_vector_production_route_v1
+  COMMAND qow_ces05_vector_production_route_test_v1)
+set_tests_properties(qow_ces05_vector_production_route_v1 PROPERTIES
+  LABELS "qow_closure;RCP-077;CES05;vector;production_query_execute;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
 )
 
 add_executable(
