@@ -7,7 +7,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::engine::executor {
@@ -40,6 +42,19 @@ struct ModelProviderRowIdentityV1 {
   std::string path_uuid;
   std::uint64_t graph_depth{0};
   std::string key;
+  std::string series_uuid;
+  std::string metric_uuid;
+  std::string tags;
+  std::int64_t point_timestamp_ns{0};
+  std::int64_t bucket_start_ns{0};
+  // Exact provider payload receipt for time-series exchange. The kind
+  // distinguishes raw REAL64, each downsample REAL64 aggregate, and COUNT
+  // INT64 so a valid-but-different typed cell cannot be substituted after
+  // the engine provider produced its result.
+  std::string time_series_payload_kind;
+  std::string time_series_raw_value;
+  std::string time_series_sample_count;
+  std::string time_series_aggregate_value;
 };
 
 struct ModelSourceInputDescriptorV1 {
@@ -138,6 +153,77 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
 
 ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     const ModelSourceInputDescriptorV1& input,
-    const ModelProviderBatchV1& provider_batch);
+    const ModelProviderBatchV1& provider_batch,
+    const std::function<bool()>& cancellation_requested = {});
+
+bool ValidateCanonicalTimeSeriesTagsV1(
+    std::string_view tags,
+    const std::function<bool()>& cancellation_requested = {},
+    bool* cancellation_observed = nullptr);
+
+bool ParseCanonicalTimeSeriesTimestampNsV1(std::string_view timestamp,
+                                           std::int64_t* timestamp_ns);
+
+// RCP-076 canonical typed-relational ASOF join. Both inputs are already
+// engine-owned descriptor batches; the temporal key carrier only binds the
+// exact metric/tag/timestamp semantics used by the selected two-input JOIN.
+struct CanonicalTimeSeriesAsofKeyV1 {
+  std::string metric_uuid;
+  std::string canonical_tags;
+  std::int64_t timestamp_ns{0};
+};
+
+struct CanonicalTimeSeriesAsofInputBindingV1 {
+  std::uint32_t metric_expression_id{0};
+  std::uint32_t tags_expression_id{0};
+  std::uint32_t timestamp_expression_id{0};
+  std::uint32_t row_uuid_expression_id{0};
+  std::uint32_t metric_descriptor_id{0};
+  std::uint32_t tags_descriptor_id{0};
+  std::uint32_t timestamp_descriptor_id{0};
+  std::uint32_t row_uuid_descriptor_id{0};
+  std::size_t metric_column_ordinal{0};
+  std::size_t tags_column_ordinal{0};
+  std::size_t timestamp_column_ordinal{0};
+  std::size_t row_uuid_column_ordinal{0};
+  bool raw_time_series{false};
+  bool downsample_time_series{false};
+};
+
+struct CanonicalTimeSeriesAsofJoinRequestV1 {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id{0};
+  DescriptorBatch left_batch;
+  DescriptorBatch right_batch;
+  std::vector<CanonicalTimeSeriesAsofKeyV1> left_keys;
+  std::vector<CanonicalTimeSeriesAsofKeyV1> right_keys;
+  std::vector<std::string> right_tie_break_row_uuids;
+  CanonicalTimeSeriesAsofInputBindingV1 left_binding;
+  CanonicalTimeSeriesAsofInputBindingV1 right_binding;
+  std::int64_t tolerance_ns{0};
+  bool left_outer{true};
+  bool right_is_time_series_raw{false};
+  std::size_t maximum_output_rows{0};
+  std::uint64_t maximum_comparisons{0};
+  std::uint64_t maximum_memory_bytes{0};
+  CanonicalExecutionMgaAuthority mga_authority;
+  std::function<bool()> cancellation_requested;
+};
+
+struct CanonicalTimeSeriesAsofJoinResultV1 {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::vector<std::int64_t> matched_right_ordinals;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id{0};
+  std::uint64_t causal_counter_id{0};
+  PhysicalMgaStatementContext mga_statement_context;
+};
+
+std::string CanonicalTimeSeriesAsofTransformationReceiptV1(
+    const CanonicalTimeSeriesAsofJoinRequestV1& request);
+
+CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
+    const CanonicalTimeSeriesAsofJoinRequestV1& request);
 
 }  // namespace scratchbird::engine::executor

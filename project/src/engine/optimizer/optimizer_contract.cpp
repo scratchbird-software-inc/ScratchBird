@@ -1226,7 +1226,8 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
         (candidate.model_family_id != "relational.local.v1" &&
          candidate.model_family_id != "document.local.v1" &&
          candidate.model_family_id != "graph.local.v1" &&
-         candidate.model_family_id != "key_value.local.v1") ||
+         candidate.model_family_id != "key_value.local.v1" &&
+         candidate.model_family_id != "time_series.local.v1") ||
         (model_family_id.has_value() &&
          candidate.model_family_id != *model_family_id) ||
         !candidate.derived_from_admitted_statistics ||
@@ -1852,7 +1853,8 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
       (search.model_family_id != "relational.local.v1" &&
        search.model_family_id != "document.local.v1" &&
        search.model_family_id != "graph.local.v1" &&
-       search.model_family_id != "key_value.local.v1") ||
+       search.model_family_id != "key_value.local.v1" &&
+       search.model_family_id != "time_series.local.v1") ||
       !canonical_uuid(search.calibration_profile_uuid) ||
       search.memo_group_count != admission_request.logical_graph.nodes.size() ||
       search.memo_groups.size() != admission_request.logical_graph.nodes.size() ||
@@ -2239,7 +2241,7 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     physical.physical_node_id = node.logical_node_id;
     physical.relational_node_id = node.logical_node_id;
     physical.node_kind = *expected_kind;
-    // Model-source logical identities are frozen uppercase SBLR semantic IDs.
+    // Model-family logical identities are frozen uppercase SBLR semantic IDs.
     // The physical ABI's implementation-style carrier is deliberately a
     // lowercase stable ID, so publish the explicit canonical boundary mapping
     // without weakening logical admission.
@@ -2248,7 +2250,10 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
             ? "sblr.model_source.v1"
             : (node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1"
                    ? "sblr.model_expand.v1"
-                   : node.semantic_variant_id);
+                   : (node.semantic_variant_id ==
+                              "SBLR_MODEL_AGGREGATE_V1"
+                          ? "sblr.model_aggregate.v1"
+                          : node.semantic_variant_id));
     physical.implementation_id = alternative.implementation_id;
     physical.input_physical_node_ids.assign(
         node.input_logical_node_ids.begin(),

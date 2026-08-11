@@ -11,13 +11,86 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cstdint>
 #include <functional>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
 namespace scratchbird::parser::sbsql {
 namespace {
+
+bool ParseFixedTimeSeriesIntervalNs(const std::string_view encoded,
+                                    std::int64_t* interval_ns) {
+  if (interval_ns == nullptr || encoded.empty()) return false;
+  if (std::ranges::all_of(encoded, [](const char ch) {
+        return ch >= '0' && ch <= '9';
+      })) {
+    const auto parsed = std::from_chars(
+        encoded.data(), encoded.data() + encoded.size(), *interval_ns);
+    return parsed.ec == std::errc{} &&
+           parsed.ptr == encoded.data() + encoded.size() && *interval_ns > 0;
+  }
+  if (!encoded.starts_with('P')) return false;
+  std::size_t position = 1;
+  bool in_time = false;
+  bool component_seen = false;
+  int last_order = -1;
+  __int128 total = 0;
+  while (position < encoded.size()) {
+    if (encoded[position] == 'T') {
+      if (in_time) return false;
+      in_time = true;
+      if (++position == encoded.size()) return false;
+      continue;
+    }
+    const auto whole_start = position;
+    while (position < encoded.size() && encoded[position] >= '0' &&
+           encoded[position] <= '9') ++position;
+    if (whole_start == position) return false;
+    std::uint64_t whole = 0;
+    const auto parsed = std::from_chars(
+        encoded.data() + whole_start, encoded.data() + position, whole);
+    if (parsed.ec != std::errc{} || parsed.ptr != encoded.data() + position) {
+      return false;
+    }
+    std::uint64_t fraction = 0;
+    bool fractional = false;
+    if (position < encoded.size() && encoded[position] == '.') {
+      fractional = true;
+      const auto fraction_start = ++position;
+      while (position < encoded.size() && encoded[position] >= '0' &&
+             encoded[position] <= '9') ++position;
+      const auto digits = position - fraction_start;
+      if (digits == 0 || digits > 9) return false;
+      const auto fraction_parse = std::from_chars(
+          encoded.data() + fraction_start, encoded.data() + position,
+          fraction);
+      if (fraction_parse.ec != std::errc{} ||
+          fraction_parse.ptr != encoded.data() + position) return false;
+      for (std::size_t index = digits; index < 9; ++index) fraction *= 10;
+    }
+    if (position == encoded.size()) return false;
+    const auto designator = encoded[position++];
+    int order = -1;
+    std::uint64_t multiplier = 0;
+    if (!in_time && designator == 'D') { order = 0; multiplier = 86'400; }
+    else if (in_time && designator == 'H') { order = 1; multiplier = 3'600; }
+    else if (in_time && designator == 'M') { order = 2; multiplier = 60; }
+    else if (in_time && designator == 'S') { order = 3; multiplier = 1; }
+    else return false;
+    if (order <= last_order || (fractional && designator != 'S')) return false;
+    last_order = order;
+    component_seen = true;
+    total += static_cast<__int128>(whole) * multiplier * 1'000'000'000;
+    if (designator == 'S') total += fraction;
+    if (total > std::numeric_limits<std::int64_t>::max()) return false;
+  }
+  if (!component_seen || total <= 0) return false;
+  *interval_ns = static_cast<std::int64_t>(total);
+  return true;
+}
 
 bool RequiresDescriptorAuthority(const AstDocument& ast) {
   return ast.statement_binding_contract_key == "binder.statement.public_authority_required" ||
@@ -414,6 +487,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       ast.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kKeyValue;
       });
+  const auto time_series_source_ast = std::ranges::find_if(
+      ast.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kTimeSeries;
+      });
   if (!LooksLikeUuidV7(context.bound_ast_uuid)) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-SCOPE",
                           "binding requires a non-null UUIDv7 BoundAST identity");
@@ -458,12 +535,18 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         "binding requires complete non-null engine MGA statement authority");
     return RefusedBoundAst(std::move(bound));
   }
-  if (key_value_source_ast != ast.catalog_relation_sources.end() &&
+  const bool timestamp_model_source =
+      key_value_source_ast != ast.catalog_relation_sources.end() ||
+      time_series_source_ast != ast.catalog_relation_sources.end();
+  if (timestamp_model_source &&
       (!IsCanonicalStatementTimestamp(context.statement_timestamp) ||
        context.statement_timestamp != authority.statement_timestamp)) {
     AddBoundAstDiagnostic(
-        &bound, "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1",
-        "key/value binding timestamp does not exactly match engine authority");
+        &bound,
+        time_series_source_ast != ast.catalog_relation_sources.end()
+            ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
+            : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1",
+        "model binding timestamp does not exactly match engine authority");
     return RefusedBoundAst(std::move(bound));
   }
   if (context.statement_uuid != authority.statement_uuid ||
@@ -525,6 +608,594 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kCatalogSource;
       });
+  if (time_series_source_ast != ast.catalog_relation_sources.end()) {
+    // QOW-SOURCE-RCP-076-TIME-SERIES-BINDING-V1
+    const auto refuse_time_series = [&](const char* diagnostic,
+                                        const char* detail) {
+      AddBoundAstDiagnostic(&bound, diagnostic, detail);
+      return RefusedBoundAst(std::move(bound));
+    };
+    const bool range_read =
+        time_series_source_ast->model_operation_id ==
+        "TIME_SERIES_RANGE_READ";
+    const bool downsample =
+        time_series_source_ast->model_operation_id ==
+        "TIME_SERIES_DOWNSAMPLE";
+    const bool bucket_projection =
+        time_series_source_ast->model_bucket_expression_id.has_value();
+    const std::string_view expected_semantic =
+        downsample ? "sblr.model-aggregate.time-series-downsample.v1"
+                   : "sblr.model-source.time-series-range-read.v1";
+    if (!IsCanonicalStatementTimestamp(context.statement_timestamp)) {
+      return refuse_time_series(
+          "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1",
+          "time-series binding requires the canonical engine statement timestamp");
+    }
+    if (ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
+        ast.root_relation_id != ast.relations.front().relation_id ||
+        ast.relations.front().relation_kind !=
+            NativeRelationAstKind::kCatalogSource ||
+        ast.relations.front().relation_source_ids !=
+            std::vector<std::uint32_t>{time_series_source_ast->source_id} ||
+        ast.relations.front().predicate_expression_ids !=
+            std::vector<std::uint32_t>{
+                time_series_source_ast->model_range_expression_id.value_or(0)} ||
+        time_series_source_ast->model_family_id != "time_series" ||
+        (!range_read && !downsample) ||
+        time_series_source_ast->qualified_name.empty() ||
+        !time_series_source_ast->alias.has_value() ||
+        !time_series_source_ast->model_time_series_alias_expression_id.has_value() ||
+        !time_series_source_ast->model_range_expression_id.has_value() ||
+        !time_series_source_ast->model_range_start_expression_id.has_value() ||
+        !time_series_source_ast->model_range_end_expression_id.has_value() ||
+        bucket_projection !=
+            time_series_source_ast->model_bucket_interval_expression_id.has_value() ||
+        bucket_projection !=
+            time_series_source_ast->model_bucket_time_input_expression_id.has_value() ||
+        (downsample &&
+         (!time_series_source_ast->model_downsample_expression_id.has_value() ||
+          !time_series_source_ast->model_interval_expression_id.has_value() ||
+          !time_series_source_ast->model_time_input_expression_id.has_value() ||
+          time_series_source_ast->model_time_series_aggregate_id.empty())) ||
+        ast.model_object_resolution_requests.size() != 1 ||
+        context.catalog_relations.size() != 1 || context.relations.size() != 1 ||
+        context.relations.front().relation_id !=
+            ast.relations.front().relation_id ||
+        context.relations.front().semantic_variant_id != expected_semantic) {
+      return refuse_time_series("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                                "time-series AST or binding authority is incomplete");
+    }
+    const auto& request = ast.model_object_resolution_requests.front();
+    if (request.source_id != time_series_source_ast->source_id ||
+        request.model_family_id != "time_series" ||
+        request.object_class != "time_series" ||
+        request.qualified_name.size() !=
+            time_series_source_ast->qualified_name.size() ||
+        !std::ranges::equal(
+            request.qualified_name, time_series_source_ast->qualified_name,
+            [](const auto& left, const auto& right) {
+              return left.spelling == right.spelling &&
+                     left.quoted == right.quoted;
+            })) {
+      return refuse_time_series("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                "time-series resolution request was substituted");
+    }
+    const auto& resolution = context.catalog_relations.front();
+    static constexpr std::string_view kRawNames[] = {
+        "row_uuid", "series_uuid", "metric_uuid", "point_timestamp",
+        "tags", "value"};
+    bool exact_projection = resolution.columns.size() == 6;
+    for (std::size_t ordinal = 0;
+         exact_projection && ordinal < resolution.columns.size(); ++ordinal) {
+      exact_projection = resolution.columns[ordinal].ordinal == ordinal &&
+                         resolution.columns[ordinal].canonical_name_key ==
+                             kRawNames[ordinal];
+    }
+    if (resolution.source_id != time_series_source_ast->source_id ||
+        resolution.resolution_state !=
+            NativeCatalogRelationResolutionState::kBound ||
+        !IsNonNullCanonicalUuid(resolution.object_uuid) ||
+        !IsNonNullCanonicalUuid(resolution.resolved_schema_uuid) ||
+        resolution.resolved_object_type != "time_series" ||
+        resolution.catalog_generation_id == 0 || resolution.security_epoch == 0 ||
+        resolution.resource_epoch == 0 || !exact_projection) {
+      return refuse_time_series("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                "time-series raw storage projection is incomplete");
+    }
+    const auto ast_expression_by_id = [&](const std::uint32_t expression_id)
+        -> const NativeExpressionAstNode* {
+      const auto found = std::ranges::find_if(
+          ast.expressions, [&](const auto& expression) {
+            return expression.expression_id == expression_id;
+          });
+      return found == ast.expressions.end() ? nullptr : &*found;
+    };
+    const auto* range_expression = ast_expression_by_id(
+        *time_series_source_ast->model_range_expression_id);
+    if (range_expression == nullptr ||
+        range_expression->expression_kind !=
+            NativeExpressionAstKind::kFunctionCall ||
+        range_expression->operator_name != "TIME_RANGE" ||
+        range_expression->child_expression_ids !=
+            std::vector<std::uint32_t>{
+                *time_series_source_ast->model_time_series_alias_expression_id,
+                *time_series_source_ast->model_range_start_expression_id,
+                *time_series_source_ast->model_range_end_expression_id}) {
+      return refuse_time_series("SB_MODEL_TIME_SERIES_RANGE_INVALID_V1",
+                                "TIME_RANGE child identity was substituted");
+    }
+    for (const auto& descriptor : context.descriptors) {
+      bound.descriptors.push_back(
+          {descriptor.descriptor_id, descriptor.descriptor_uuid,
+           descriptor.type_uuid, descriptor.nullability,
+           descriptor.collation_uuid, descriptor.timezone_profile_id,
+           descriptor.width_precision_scale});
+    }
+    std::ranges::sort(bound.descriptors, {},
+                      &BoundDescriptorAstRecord::descriptor_id);
+
+    const bool wildcard_projection = std::ranges::any_of(
+        ast.relations.front().output_expression_ids,
+        [&](const auto expression_id) {
+          const auto* expression = ast_expression_by_id(expression_id);
+          return expression != nullptr &&
+                 expression->expression_kind == NativeExpressionAstKind::kWildcard;
+        });
+    if (downsample && wildcard_projection) {
+      return refuse_time_series("SB_MODEL_TIME_SERIES_AGGREGATE_REFUSED_V1",
+                                "downsample requires its exact derived projection");
+    }
+    const std::size_t wildcard_count = wildcard_projection ? 6 : 0;
+    const std::size_t derived_downsample_count = downsample ? 7 : 0;
+    const std::size_t bucket_source_descriptor_count =
+        bucket_projection && !downsample ? 4 : 0;
+    const auto non_wildcard_ast_count =
+        ast.expressions.size() - static_cast<std::size_t>(wildcard_projection);
+    if (context.expressions.size() != wildcard_count + non_wildcard_ast_count +
+                                          derived_downsample_count +
+                                          bucket_source_descriptor_count ||
+        context.outputs.empty() ||
+        context.outputs.size() !=
+            (downsample
+                 ? derived_downsample_count
+                 : wildcard_projection
+                       ? wildcard_count
+                       : ast.relations.front().output_expression_ids.size())) {
+      return refuse_time_series("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                "time-series expression/output binding is incomplete");
+    }
+
+    BoundCatalogRelationSourceAstRecord bound_source;
+    bound_source.source_id = time_series_source_ast->source_id;
+    bound_source.source_kind = time_series_source_ast->source_kind;
+    bound_source.resolution_state =
+        NativeCatalogRelationResolutionState::kBound;
+    bound_source.qualified_name = time_series_source_ast->qualified_name;
+    bound_source.alias = time_series_source_ast->alias;
+    bound_source.alias_is_explicit = time_series_source_ast->alias_is_explicit;
+    bound_source.model_family_id = "time_series";
+    bound_source.model_operation_id =
+        time_series_source_ast->model_operation_id;
+    bound_source.model_time_series_aggregate_id =
+        time_series_source_ast->model_time_series_aggregate_id;
+    bound_source.qualified_name_range =
+        time_series_source_ast->qualified_name_range;
+    bound_source.range = time_series_source_ast->range;
+    bound_source.object_uuid = resolution.object_uuid;
+    bound_source.resolved_object_type = resolution.resolved_object_type;
+    bound_source.resolved_schema_uuid = resolution.resolved_schema_uuid;
+    bound_source.parent_object_uuid = resolution.parent_object_uuid;
+    bound_source.catalog_generation_id = resolution.catalog_generation_id;
+    bound_source.security_epoch = resolution.security_epoch;
+    bound_source.resource_epoch = resolution.resource_epoch;
+    for (const auto& column : resolution.columns) {
+      if (!IsNonNullCanonicalUuid(column.column_uuid) ||
+          !descriptor_by_id.contains(column.descriptor_id)) {
+        return refuse_time_series("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                  "time-series column binding is incomplete");
+      }
+      bound_source.columns.push_back(
+          {column.ordinal, column.column_uuid, column.descriptor_id,
+           column.canonical_name_key});
+    }
+
+    BoundRelationAstRecord bound_relation;
+    bound_relation.relation_id = ast.relations.front().relation_id;
+    bound_relation.relation_kind = downsample
+                                       ? NativeRelationAstKind::kAggregate
+                                       : NativeRelationAstKind::kCatalogSource;
+    bound_relation.semantic_variant_id = std::string(expected_semantic);
+    bound_relation.bound_object_uuid = resolution.object_uuid;
+    std::unordered_map<std::uint32_t, std::uint32_t> ast_to_bound;
+    std::size_t binding_index = 0;
+    if (wildcard_projection) {
+      for (std::size_t ordinal = 0; ordinal < wildcard_count; ++ordinal) {
+        const auto& expression = context.expressions[binding_index++];
+        const auto& column = resolution.columns[ordinal];
+        if (!descriptor_by_id.contains(expression.descriptor_id) ||
+            expression.descriptor_id != column.descriptor_id ||
+            expression.bound_name_uuid != column.column_uuid) {
+          return refuse_time_series("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                    "time-series wildcard projection is not exact");
+        }
+        BoundExpressionAstRecord record;
+        record.expression_id = expression.expression_id;
+        record.expression_kind = NativeExpressionAstKind::kIdentifier;
+        record.result_descriptor_id = expression.descriptor_id;
+        record.bound_name_uuid = expression.bound_name_uuid;
+        bound.expressions.push_back(std::move(record));
+        bound_relation.output_expression_ids.push_back(expression.expression_id);
+      }
+    }
+    for (const auto& ast_expression : ast.expressions) {
+      if (ast_expression.expression_kind == NativeExpressionAstKind::kWildcard) {
+        continue;
+      }
+      const auto& expression = context.expressions[binding_index++];
+      const bool functionless_time_series =
+          ast_expression.operator_name == "TIME_RANGE" ||
+          ast_expression.operator_name == "TIME_BUCKET" ||
+          ast_expression.operator_name == "TIME_DOWNSAMPLE";
+      if (!descriptor_by_id.contains(expression.descriptor_id) ||
+          (functionless_time_series && expression.function_uuid.has_value()) ||
+          (expression.function_uuid.has_value() &&
+           !IsNonNullCanonicalUuid(*expression.function_uuid)) ||
+          (expression.bound_name_uuid.has_value() &&
+           !IsNonNullCanonicalUuid(*expression.bound_name_uuid))) {
+        return refuse_time_series("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                                  "time-series typed expression was substituted");
+      }
+      ast_to_bound.emplace(ast_expression.expression_id,
+                           expression.expression_id);
+      BoundExpressionAstRecord record;
+      record.expression_id = expression.expression_id;
+      record.expression_kind = ast_expression.expression_kind;
+      record.literal_kind = ast_expression.literal_kind;
+      record.result_descriptor_id = expression.descriptor_id;
+      record.bound_function_uuid = expression.function_uuid;
+      record.bound_name_uuid = expression.bound_name_uuid;
+      if (!ast_expression.operator_name.empty()) {
+        record.canonical_operator_name = ast_expression.operator_name;
+      }
+      if (ast_expression.expression_kind == NativeExpressionAstKind::kLiteral ||
+          ast_expression.expression_kind == NativeExpressionAstKind::kParameter) {
+        record.literal_or_parameter_ref = ast_expression.spelling;
+      }
+      for (const auto child : ast_expression.child_expression_ids) {
+        const auto mapped = ast_to_bound.find(child);
+        if (mapped == ast_to_bound.end()) {
+          return refuse_time_series("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                                    "time-series expression child is unreachable");
+        }
+        record.child_expression_ids.push_back(mapped->second);
+      }
+      bound.expressions.push_back(std::move(record));
+    }
+    std::vector<std::uint32_t> bucket_source_expression_ids;
+    if (bucket_projection && !downsample) {
+      static constexpr std::array<std::size_t, 4> kColumnOrdinals{1, 2, 4, 5};
+      for (const auto ordinal : kColumnOrdinals) {
+        const auto& expression = context.expressions[binding_index++];
+        const auto& column = resolution.columns[ordinal];
+        if (expression.expression_id == 0 ||
+            expression.descriptor_id != column.descriptor_id ||
+            expression.function_uuid.has_value() ||
+            expression.bound_name_uuid != column.column_uuid) {
+          return refuse_time_series(
+              "SB_MODEL_BINDING_INCOMPLETE_V1",
+              "time-series bucket source descriptor was substituted");
+        }
+        BoundExpressionAstRecord record;
+        record.expression_id = expression.expression_id;
+        record.expression_kind = NativeExpressionAstKind::kIdentifier;
+        record.result_descriptor_id = expression.descriptor_id;
+        record.bound_name_uuid = expression.bound_name_uuid;
+        bound.expressions.push_back(std::move(record));
+        bucket_source_expression_ids.push_back(expression.expression_id);
+      }
+    }
+    std::vector<std::uint32_t> downsample_output_expression_ids;
+    if (downsample) {
+      static constexpr std::array<std::string_view, 7> kNames{
+          "series_uuid", "metric_uuid", "bucket_start", "bucket_end",
+          "tags", "sample_count", "aggregate_value"};
+      const std::array<std::uint32_t, 5> source_descriptor_ids{
+          resolution.columns[1].descriptor_id,
+          resolution.columns[2].descriptor_id,
+          resolution.columns[3].descriptor_id,
+          resolution.columns[4].descriptor_id,
+          resolution.columns[5].descriptor_id};
+      const auto sample_count_descriptor_id = context.outputs[5].descriptor_id;
+      const std::array<std::uint32_t, 7> expected_descriptor_ids{
+          source_descriptor_ids[0], source_descriptor_ids[1],
+          source_descriptor_ids[2], context.outputs[3].descriptor_id,
+          source_descriptor_ids[3], sample_count_descriptor_id,
+          context.outputs[6].descriptor_id};
+      const std::array<std::string, 7> expected_bound_names{
+          resolution.columns[1].column_uuid,
+          resolution.columns[2].column_uuid,
+          resolution.columns[3].column_uuid,
+          resolution.columns[3].column_uuid,
+          resolution.columns[4].column_uuid, resolution.object_uuid,
+          time_series_source_ast->model_time_series_aggregate_id == "COUNT"
+              ? resolution.object_uuid
+              : resolution.columns[5].column_uuid};
+      const auto count_descriptor = descriptor_by_id.find(
+          sample_count_descriptor_id);
+      const auto bucket_end_descriptor =
+          descriptor_by_id.find(context.outputs[3].descriptor_id);
+      const auto aggregate_descriptor =
+          descriptor_by_id.find(context.outputs[6].descriptor_id);
+      if (count_descriptor == descriptor_by_id.end() ||
+          bucket_end_descriptor == descriptor_by_id.end() ||
+          aggregate_descriptor == descriptor_by_id.end() ||
+          count_descriptor->second->nullability != BoundNullability::kNonNull ||
+          bucket_end_descriptor->second->nullability !=
+              BoundNullability::kNonNull ||
+          aggregate_descriptor->second->nullability !=
+              BoundNullability::kNonNull ||
+          bucket_end_descriptor->second->type_uuid !=
+              descriptor_by_id.at(source_descriptor_ids[2])->type_uuid ||
+          aggregate_descriptor->second->type_uuid !=
+              (time_series_source_ast->model_time_series_aggregate_id == "COUNT"
+                   ? count_descriptor->second->type_uuid
+                   : descriptor_by_id.at(source_descriptor_ids[4])->type_uuid) ||
+          context.outputs[3].descriptor_id == source_descriptor_ids[2] ||
+          (time_series_source_ast->model_time_series_aggregate_id == "COUNT" &&
+           context.outputs[6].descriptor_id == sample_count_descriptor_id) ||
+          count_descriptor->second->type_uuid ==
+              descriptor_by_id.at(source_descriptor_ids[0])->type_uuid ||
+          count_descriptor->second->type_uuid ==
+              descriptor_by_id.at(source_descriptor_ids[2])->type_uuid ||
+          count_descriptor->second->type_uuid ==
+              descriptor_by_id.at(source_descriptor_ids[3])->type_uuid ||
+          count_descriptor->second->type_uuid ==
+              descriptor_by_id.at(source_descriptor_ids[4])->type_uuid) {
+        return refuse_time_series("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                  "time-series sample-count descriptor is invalid");
+      }
+      for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
+        const auto& expression = context.expressions[binding_index++];
+        const auto& output = context.outputs[ordinal];
+        if (expression.expression_id == 0 ||
+            expression.descriptor_id != expected_descriptor_ids[ordinal] ||
+            expression.function_uuid.has_value() ||
+            expression.bound_name_uuid != expected_bound_names[ordinal] ||
+            output.output_name_utf8 != kNames[ordinal] ||
+            output.expression_id != expression.expression_id ||
+            output.descriptor_id != expression.descriptor_id) {
+          return refuse_time_series(
+              "SB_MODEL_BINDING_INCOMPLETE_V1",
+              "time-series derived downsample descriptor was substituted");
+        }
+        BoundExpressionAstRecord record;
+        record.expression_id = expression.expression_id;
+        record.expression_kind = NativeExpressionAstKind::kIdentifier;
+        record.result_descriptor_id = expression.descriptor_id;
+        record.bound_name_uuid = expression.bound_name_uuid;
+        bound.expressions.push_back(std::move(record));
+        downsample_output_expression_ids.push_back(expression.expression_id);
+      }
+    }
+    if (binding_index != context.expressions.size()) {
+      return refuse_time_series("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                "time-series expression cohort has extra bindings");
+    }
+    const auto mapped_id = [&](const std::optional<std::uint32_t> id)
+        -> std::optional<std::uint32_t> {
+      if (!id.has_value()) return std::nullopt;
+      const auto found = ast_to_bound.find(*id);
+      return found == ast_to_bound.end() ? std::nullopt
+                                        : std::optional(found->second);
+    };
+    bound_source.model_time_series_alias_expression_id =
+        mapped_id(time_series_source_ast->model_time_series_alias_expression_id);
+    bound_source.model_range_expression_id =
+        mapped_id(time_series_source_ast->model_range_expression_id);
+    bound_source.model_range_start_expression_id =
+        mapped_id(time_series_source_ast->model_range_start_expression_id);
+    bound_source.model_range_end_expression_id =
+        mapped_id(time_series_source_ast->model_range_end_expression_id);
+    bound_source.model_interval_expression_id =
+        mapped_id(time_series_source_ast->model_interval_expression_id);
+    bound_source.model_time_input_expression_id =
+        mapped_id(time_series_source_ast->model_time_input_expression_id);
+    bound_source.model_bucket_expression_id =
+        mapped_id(time_series_source_ast->model_bucket_expression_id);
+    bound_source.model_bucket_interval_expression_id =
+        mapped_id(time_series_source_ast->model_bucket_interval_expression_id);
+    bound_source.model_bucket_time_input_expression_id =
+        mapped_id(time_series_source_ast->model_bucket_time_input_expression_id);
+    bound_source.model_downsample_expression_id =
+        mapped_id(time_series_source_ast->model_downsample_expression_id);
+    if (!bound_source.model_time_series_alias_expression_id.has_value() ||
+        !bound_source.model_range_expression_id.has_value() ||
+        !bound_source.model_range_start_expression_id.has_value() ||
+        !bound_source.model_range_end_expression_id.has_value() ||
+        bucket_projection != bound_source.model_bucket_expression_id.has_value() ||
+        bucket_projection !=
+            bound_source.model_bucket_interval_expression_id.has_value() ||
+        bucket_projection !=
+            bound_source.model_bucket_time_input_expression_id.has_value() ||
+        (downsample &&
+         (!bound_source.model_interval_expression_id.has_value() ||
+          !bound_source.model_time_input_expression_id.has_value() ||
+          !bound_source.model_downsample_expression_id.has_value()))) {
+      return refuse_time_series("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                                "time-series operation mapping is incomplete");
+    }
+    const auto bound_expression_by_id = [&](const std::uint32_t id)
+        -> const BoundExpressionAstRecord* {
+      const auto found = std::ranges::find_if(
+          bound.expressions,
+          [&](const auto& expression) { return expression.expression_id == id; });
+      return found == bound.expressions.end() ? nullptr : &*found;
+    };
+    const auto* point_timestamp_descriptor =
+        descriptor_by_id.at(resolution.columns[3].descriptor_id);
+    const auto* value_descriptor =
+        descriptor_by_id.at(resolution.columns[5].descriptor_id);
+    for (const auto id : {*bound_source.model_range_start_expression_id,
+                          *bound_source.model_range_end_expression_id}) {
+      const auto* expression = bound_expression_by_id(id);
+      const auto* descriptor = expression == nullptr
+                                   ? nullptr
+                                   : descriptor_by_id.at(
+                                         expression->result_descriptor_id);
+      if (descriptor == nullptr ||
+          descriptor->type_uuid != point_timestamp_descriptor->type_uuid ||
+          descriptor->nullability != BoundNullability::kNonNull) {
+        return refuse_time_series("SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1",
+                                  "TIME_RANGE endpoint is not non-null TIMESTAMP_TZ");
+      }
+    }
+    if (bucket_projection) {
+      const auto* operation =
+          bound_expression_by_id(*bound_source.model_bucket_expression_id);
+      const auto* interval = bound_expression_by_id(
+          *bound_source.model_bucket_interval_expression_id);
+      const auto* input = bound_expression_by_id(
+          *bound_source.model_bucket_time_input_expression_id);
+      const auto* interval_descriptor =
+          interval == nullptr
+              ? nullptr
+              : descriptor_by_id.at(interval->result_descriptor_id);
+      const auto* input_descriptor =
+          input == nullptr ? nullptr
+                           : descriptor_by_id.at(input->result_descriptor_id);
+      if (operation == nullptr || interval == nullptr || input == nullptr ||
+          operation->expression_kind !=
+              NativeExpressionAstKind::kFunctionCall ||
+          operation->bound_function_uuid.has_value() ||
+          operation->canonical_operator_name != "TIME_BUCKET" ||
+          operation->child_expression_ids !=
+              std::vector<std::uint32_t>{
+                  *bound_source.model_bucket_interval_expression_id,
+                  *bound_source.model_bucket_time_input_expression_id} ||
+          interval_descriptor == nullptr ||
+          interval_descriptor->nullability != BoundNullability::kNonNull ||
+          interval_descriptor->type_uuid == point_timestamp_descriptor->type_uuid ||
+          interval_descriptor->type_uuid == value_descriptor->type_uuid ||
+          input_descriptor == nullptr ||
+          input_descriptor->type_uuid != point_timestamp_descriptor->type_uuid ||
+          input_descriptor->nullability != BoundNullability::kNonNull ||
+          input->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          input->bound_name_uuid != resolution.columns[3].column_uuid) {
+        return refuse_time_series(
+            "SB_MODEL_TIME_SERIES_INTERVAL_INVALID_V1",
+            "TIME_BUCKET interval or persistent point_timestamp binding is invalid");
+      }
+      if (downsample) {
+        const auto* downsample_interval = bound_expression_by_id(
+            *bound_source.model_interval_expression_id);
+        std::int64_t bucket_interval_ns = 0;
+        std::int64_t downsample_interval_ns = 0;
+        if (downsample_interval == nullptr ||
+            !interval->literal_or_parameter_ref.has_value() ||
+            !downsample_interval->literal_or_parameter_ref.has_value() ||
+            !ParseFixedTimeSeriesIntervalNs(
+                *interval->literal_or_parameter_ref, &bucket_interval_ns) ||
+            !ParseFixedTimeSeriesIntervalNs(
+                *downsample_interval->literal_or_parameter_ref,
+                &downsample_interval_ns) ||
+            bucket_interval_ns != downsample_interval_ns) {
+          return refuse_time_series(
+              "SB_MODEL_TIME_SERIES_INTERVAL_INVALID_V1",
+              "TIME_BUCKET and TIME_DOWNSAMPLE evaluated intervals differ");
+        }
+      }
+    }
+    if (bound_source.model_time_input_expression_id.has_value()) {
+      const auto* input =
+          bound_expression_by_id(*bound_source.model_time_input_expression_id);
+      const auto* descriptor = input == nullptr
+                                   ? nullptr
+                                   : descriptor_by_id.at(input->result_descriptor_id);
+      const auto* expected = downsample ? value_descriptor
+                                        : point_timestamp_descriptor;
+      if (descriptor == nullptr || descriptor->type_uuid != expected->type_uuid ||
+          descriptor->nullability != BoundNullability::kNonNull) {
+        return refuse_time_series(
+            downsample ? "SB_MODEL_TIME_SERIES_AGGREGATE_REFUSED_V1"
+                       : "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1",
+            "time-series operation input descriptor is invalid");
+      }
+    }
+    if (bound_source.model_interval_expression_id.has_value()) {
+      const auto* interval =
+          bound_expression_by_id(*bound_source.model_interval_expression_id);
+      const auto* descriptor = interval == nullptr
+                                   ? nullptr
+                                   : descriptor_by_id.at(interval->result_descriptor_id);
+      if (descriptor == nullptr ||
+          descriptor->nullability != BoundNullability::kNonNull ||
+          descriptor->type_uuid == point_timestamp_descriptor->type_uuid ||
+          descriptor->type_uuid == value_descriptor->type_uuid) {
+        return refuse_time_series("SB_MODEL_TIME_SERIES_INTERVAL_INVALID_V1",
+                                  "time-series interval descriptor is invalid");
+      }
+    }
+    const auto mapped_range =
+        *bound_source.model_range_expression_id;
+    bound_relation.predicate_expression_ids = {mapped_range};
+    if (downsample) {
+      bound_relation.output_expression_ids = downsample_output_expression_ids;
+    } else if (!wildcard_projection) {
+      for (const auto expression_id :
+           ast.relations.front().output_expression_ids) {
+        const auto mapped = ast_to_bound.find(expression_id);
+        if (mapped == ast_to_bound.end()) {
+          return refuse_time_series("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                    "time-series projection mapping is incomplete");
+        }
+        bound_relation.output_expression_ids.push_back(mapped->second);
+      }
+    }
+    bound_relation.bound_expression_ids = bound_relation.output_expression_ids;
+    bound_relation.bound_expression_ids.insert(
+        bound_relation.bound_expression_ids.end(),
+        bucket_source_expression_ids.begin(), bucket_source_expression_ids.end());
+    if (downsample && bucket_projection) {
+      bound_relation.bound_expression_ids.push_back(
+          *bound_source.model_bucket_expression_id);
+    }
+    if (downsample) {
+      bound_relation.bound_expression_ids.push_back(
+          *bound_source.model_downsample_expression_id);
+    }
+    bound_relation.bound_expression_ids.push_back(mapped_range);
+    for (std::size_t ordinal = 0; ordinal < context.outputs.size(); ++ordinal) {
+      const auto& output = context.outputs[ordinal];
+      if (output.output_id == 0 ||
+          !descriptor_by_id.contains(output.descriptor_id) ||
+          output.relation_id != bound_relation.relation_id ||
+          output.ordinal != ordinal ||
+          output.expression_id != bound_relation.output_expression_ids[ordinal]) {
+        return refuse_time_series("SB_MODEL_BINDING_INCOMPLETE_V1",
+                                  "time-series output binding is invalid");
+      }
+      bound.outputs.push_back(
+          {output.output_id, output.relation_id, output.expression_id,
+           output.output_name_utf8, output.descriptor_id, output.visible,
+           output.ordinal});
+    }
+    bound.catalog_relation_sources.push_back(std::move(bound_source));
+    bound.relations.push_back(std::move(bound_relation));
+    BoundScopeAstRecord scope;
+    scope.scope_id = 1;
+    scope.visible_relation_ids = {ast.root_relation_id};
+    for (const auto& output : bound.outputs) {
+      if (output.visible) scope.visible_projection_ids.push_back(output.output_id);
+    }
+    scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
+    bound.scopes.push_back(std::move(scope));
+    bound.bound_ast_uuid = context.bound_ast_uuid;
+    bound.security_context_uuid = context.security_context_uuid;
+    bound.root_relation_id = ast.root_relation_id;
+    bound.root_scope_id = 1;
+    bound.bound = true;
+    return bound;
+  }
   if (key_value_source_ast != ast.catalog_relation_sources.end()) {
     // QOW-SOURCE-RCP-075-KEY-VALUE-BINDING-V1
     const auto refuse_key_value = [&](const char* diagnostic,

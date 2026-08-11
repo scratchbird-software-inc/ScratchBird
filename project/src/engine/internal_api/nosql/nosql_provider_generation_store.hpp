@@ -43,6 +43,26 @@ struct EngineNoSqlProviderGenerationMetadata {
   std::string support_bundle_evidence_id;
   bool provider_claims_transaction_finality_authority = false;
   bool provider_claims_visibility_authority = false;
+  // QOW-RCP-076-TIME-SERIES-ROLLUP-CARRIER-V1.  These fields are persisted
+  // candidate-admission evidence only.  MGA visibility/finality remains
+  // owned by the engine transaction inventory.
+  bool time_series_rollup_candidate_present = false;
+  std::string time_series_rollup_capability_uuid;
+  std::uint64_t time_series_rollup_generation = 0;
+  std::uint64_t time_series_visible_late_arrival_generation = 0;
+  std::int64_t time_series_rollup_interval_ns = 0;
+  std::string time_series_rollup_exactness_attestation_state;
+  std::string time_series_rollup_statement_snapshot_uuid;
+  std::string time_series_rollup_statement_metadata_snapshot_uuid;
+  std::string time_series_rollup_owning_transaction_uuid;
+  std::uint64_t time_series_rollup_local_transaction_id = 0;
+  std::uint64_t
+      time_series_rollup_snapshot_visible_through_local_transaction_id = 0;
+  std::string time_series_rollup_security_context_uuid;
+  std::string time_series_rollup_catalog_epoch_uuid;
+  bool time_series_rollup_exact_residual_recheck_required = false;
+  bool time_series_rollup_base_row_mga_recheck_required = false;
+  bool time_series_rollup_security_recheck_required = false;
 };
 
 struct EngineNoSqlProviderGenerationResult {
@@ -60,6 +80,16 @@ struct EngineNoSqlProviderGenerationRepairRequest {
   std::vector<EngineNoSqlProviderGenerationMetadata>
       authoritative_source_generations;
 };
+
+// QOW-RCP-076-TIME-SERIES-ROLLUP-CAPABILITY-BINDING-V1. The existing
+// capability field is an integrity binding over the authoritative persisted
+// carrier. It remains candidate-admission evidence only; MGA
+// visibility/finality stays with the engine transaction inventory.
+std::string DeriveTimeSeriesRollupCapabilityUuidV1(
+    const EngineNoSqlProviderGenerationMetadata& metadata);
+
+bool ValidateTimeSeriesRollupCapabilityBindingV1(
+    const EngineNoSqlProviderGenerationMetadata& metadata);
 
 inline constexpr const char* kNoSqlProviderGenerationIdentityMismatch =
     "SB_NOSQL_PROVIDER_GENERATION.IDENTITY_MISMATCH";

@@ -6,8 +6,10 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <cmath>
 #include <limits>
 #include <optional>
+#include <tuple>
 #include <unordered_set>
 
 namespace scratchbird::engine::executor {
@@ -22,7 +24,9 @@ bool CanonicalUuid(const std::string_view value) {
   for (std::size_t index = 0; index < value.size(); ++index) {
     if (index == 8 || index == 13 || index == 18 || index == 23) continue;
     const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+      return false;
+    }
   }
   return true;
 }
@@ -74,6 +78,56 @@ bool CanonicalStatementTimestamp(const std::string_view value) {
   return day != 0 && day <= maximum_day;
 }
 
+constexpr std::int64_t DaysFromCivil(const int year,
+                                     const unsigned month,
+                                     const unsigned day) {
+  const int adjusted_year = year - (month <= 2 ? 1 : 0);
+  const int era = (adjusted_year >= 0 ? adjusted_year
+                                      : adjusted_year - 399) /
+                  400;
+  const unsigned year_of_era =
+      static_cast<unsigned>(adjusted_year - era * 400);
+  const unsigned adjusted_month = month > 2 ? month - 3 : month + 9;
+  const unsigned day_of_year =
+      (153 * adjusted_month + 2) / 5 + day - 1;
+  const unsigned day_of_era =
+      year_of_era * 365 + year_of_era / 4 - year_of_era / 100 +
+      day_of_year;
+  return static_cast<std::int64_t>(era) * 146097 +
+         static_cast<std::int64_t>(day_of_era) - 719468;
+}
+
+bool CanonicalTimestampNs(const std::string_view value, std::int64_t* out) {
+  if (out == nullptr || value.size() != 30 || value[19] != '.' ||
+      value.back() != 'Z' || !CanonicalStatementTimestamp(value)) {
+    return false;
+  }
+  const auto decimal = [&](const std::size_t begin,
+                           const std::size_t count) {
+    std::uint64_t parsed = 0;
+    for (std::size_t index = 0; index < count; ++index) {
+      parsed = parsed * 10 +
+               static_cast<std::uint64_t>(value[begin + index] - '0');
+    }
+    return parsed;
+  };
+  constexpr __int128 kNsPerSecond = 1'000'000'000;
+  const auto seconds =
+      static_cast<__int128>(DaysFromCivil(static_cast<int>(decimal(0, 4)),
+                                         static_cast<unsigned>(decimal(5, 2)),
+                                         static_cast<unsigned>(decimal(8, 2)))) *
+          86'400 +
+      static_cast<__int128>(decimal(11, 2)) * 3600 +
+      static_cast<__int128>(decimal(14, 2)) * 60 + decimal(17, 2);
+  const auto encoded = seconds * kNsPerSecond + decimal(20, 9);
+  if (encoded < std::numeric_limits<std::int64_t>::min() ||
+      encoded > std::numeric_limits<std::int64_t>::max()) {
+    return false;
+  }
+  *out = static_cast<std::int64_t>(encoded);
+  return true;
+}
+
 bool WellFormedUtf8(const std::string_view value) {
   std::size_t offset = 0;
   while (offset < value.size()) {
@@ -111,6 +165,164 @@ bool WellFormedUtf8(const std::string_view value) {
   return true;
 }
 
+bool UnsignedUtf8Less(const std::string_view left,
+                      const std::string_view right) {
+  return std::lexicographical_compare(
+      left.begin(), left.end(), right.begin(), right.end(),
+      [](const char l, const char r) {
+        return static_cast<unsigned char>(l) <
+               static_cast<unsigned char>(r);
+      });
+}
+
+bool ExchangeCancellationRequested(
+    const std::function<bool()>& cancellation_requested) {
+  try {
+    return cancellation_requested && cancellation_requested();
+  } catch (...) {
+    return true;
+  }
+}
+
+bool ParseCanonicalTagJsonString(
+    const std::string_view input,
+    std::size_t* offset,
+    const std::function<bool()>& cancellation_requested,
+    bool* cancellation_observed,
+    std::string* decoded) {
+  if (offset == nullptr || cancellation_observed == nullptr ||
+      decoded == nullptr || *offset >= input.size() ||
+      input[*offset] != '"') {
+    return false;
+  }
+  ++*offset;
+  decoded->clear();
+  while (*offset < input.size()) {
+    if (ExchangeCancellationRequested(cancellation_requested)) {
+      *cancellation_observed = true;
+      return false;
+    }
+    const auto byte = static_cast<unsigned char>(input[(*offset)++]);
+    if (byte == '"') return WellFormedUtf8(*decoded);
+    if (byte < 0x20) return false;
+    if (byte != '\\') {
+      decoded->push_back(static_cast<char>(byte));
+      continue;
+    }
+    if (*offset >= input.size()) return false;
+    const char escaped = input[(*offset)++];
+    switch (escaped) {
+      case '"': decoded->push_back('"'); break;
+      case '\\': decoded->push_back('\\'); break;
+      case 'b': decoded->push_back('\b'); break;
+      case 'f': decoded->push_back('\f'); break;
+      case 'n': decoded->push_back('\n'); break;
+      case 'r': decoded->push_back('\r'); break;
+      case 't': decoded->push_back('\t'); break;
+      case 'u': {
+        if (*offset + 4 > input.size() || input[*offset] != '0' ||
+            input[*offset + 1] != '0') {
+          return false;
+        }
+        const auto hex = [](const char value) -> int {
+          if (value >= '0' && value <= '9') return value - '0';
+          if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+          return -1;
+        };
+        const int high = hex(input[*offset + 2]);
+        const int low = hex(input[*offset + 3]);
+        if (high < 0 || low < 0) return false;
+        const auto control = static_cast<unsigned char>((high << 4) | low);
+        *offset += 4;
+        if (control >= 0x20 || control == '\b' || control == '\f' ||
+            control == '\n' || control == '\r' || control == '\t') {
+          return false;
+        }
+        decoded->push_back(static_cast<char>(control));
+        break;
+      }
+      default:
+        return false;
+    }
+  }
+  return false;
+}
+
+bool CanonicalTimeSeriesTags(
+    const std::string_view input,
+    const std::function<bool()>& cancellation_requested,
+    bool* cancellation_observed) {
+  if (cancellation_observed == nullptr || input.empty() ||
+      input.front() != '{') {
+    return false;
+  }
+  *cancellation_observed = false;
+  std::size_t offset = 1;
+  std::string previous_key;
+  bool first = true;
+  if (offset < input.size() && input[offset] == '}') {
+    return ++offset == input.size();
+  }
+  while (offset < input.size()) {
+    std::string key;
+    std::string value;
+    if (!ParseCanonicalTagJsonString(input, &offset,
+                                     cancellation_requested,
+                                     cancellation_observed, &key) ||
+        *cancellation_observed || key.empty() || offset >= input.size() ||
+        input[offset++] != ':' ||
+        !ParseCanonicalTagJsonString(input, &offset,
+                                     cancellation_requested,
+                                     cancellation_observed, &value) ||
+        *cancellation_observed ||
+        (!first && !UnsignedUtf8Less(previous_key, key))) {
+      return false;
+    }
+    previous_key = std::move(key);
+    first = false;
+    if (offset >= input.size()) return false;
+    if (input[offset] == '}') {
+      ++offset;
+      break;
+    }
+    if (input[offset++] != ',') return false;
+  }
+  return offset == input.size();
+}
+
+bool CanonicalFiniteReal64(const std::string_view encoded) {
+  if (encoded.empty()) return false;
+  double value = 0.0;
+  const auto parsed = std::from_chars(encoded.data(),
+                                      encoded.data() + encoded.size(), value,
+                                      std::chars_format::general);
+  if (parsed.ec != std::errc{} ||
+      parsed.ptr != encoded.data() + encoded.size() || !std::isfinite(value)) {
+    return false;
+  }
+  if (value == 0.0) value = 0.0;
+  char canonical[128]{};
+  const auto rendered = std::to_chars(
+      std::begin(canonical), std::end(canonical), value,
+      std::chars_format::general, std::numeric_limits<double>::max_digits10);
+  return rendered.ec == std::errc{} &&
+         encoded == std::string_view(canonical,
+                                     static_cast<std::size_t>(
+                                         rendered.ptr - canonical));
+}
+
+bool CanonicalInt64(const std::string_view encoded,
+                    const bool require_positive = false) {
+  if (encoded.empty()) return false;
+  std::int64_t value = 0;
+  const auto parsed = std::from_chars(encoded.data(),
+                                      encoded.data() + encoded.size(), value);
+  return parsed.ec == std::errc{} &&
+         parsed.ptr == encoded.data() + encoded.size() &&
+         (!require_positive || value > 0) &&
+         encoded == std::to_string(value);
+}
+
 ModelExchangeResultV1 Refuse(const char* diagnostic, std::string detail) {
   ModelExchangeResultV1 result;
   result.diagnostic_id = diagnostic;
@@ -120,12 +332,30 @@ ModelExchangeResultV1 Refuse(const char* diagnostic, std::string detail) {
 
 }  // namespace
 
+bool ValidateCanonicalTimeSeriesTagsV1(
+    const std::string_view tags,
+    const std::function<bool()>& cancellation_requested,
+    bool* cancellation_observed) {
+  bool local_cancellation = false;
+  auto* observed = cancellation_observed == nullptr
+                       ? &local_cancellation
+                       : cancellation_observed;
+  return CanonicalTimeSeriesTags(tags, cancellation_requested, observed);
+}
+
+bool ParseCanonicalTimeSeriesTimestampNsV1(
+    const std::string_view timestamp,
+    std::int64_t* timestamp_ns) {
+  return CanonicalTimestampNs(timestamp, timestamp_ns);
+}
+
 ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
     const ModelSourceInputDescriptorV1& input) {
   ModelInputValidationResultV1 result;
   const bool document_family = input.family_id == "document";
   const bool graph_family = input.family_id == "graph";
   const bool key_value_family = input.family_id == "key_value";
+  const bool time_series_family = input.family_id == "time_series";
   const bool valid_operation =
       (document_family &&
        (input.operation_id == "DOCUMENT_FIND" ||
@@ -137,20 +367,28 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
       (key_value_family &&
        (input.operation_id == "KEY_VALUE_GET" ||
         input.operation_id == "KEY_VALUE_MULTI_GET" ||
-        input.operation_id == "KEY_VALUE_PREFIX_RANGE"));
-  if (key_value_family !=
+        input.operation_id == "KEY_VALUE_PREFIX_RANGE")) ||
+      (time_series_family &&
+       (input.operation_id == "TIME_SERIES_RANGE_READ" ||
+        input.operation_id == "TIME_SERIES_BUCKET" ||
+        input.operation_id == "TIME_SERIES_DOWNSAMPLE"));
+  const bool timestamp_family = key_value_family || time_series_family;
+  if (timestamp_family !=
           !input.mga_statement_context.statement_timestamp.empty() ||
-      (key_value_family &&
+      (timestamp_family &&
        !CanonicalStatementTimestamp(
            input.mga_statement_context.statement_timestamp))) {
     result.diagnostic_id =
-        "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1";
-    result.detail = "key/value typed input statement timestamp is invalid";
+        time_series_family
+            ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
+            : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1";
+    result.detail = "timestamp-carrying typed input timestamp is invalid";
     return result;
   }
   if (input.abi_version != 1 ||
       input.input_descriptor_id != "SB_MODEL_SOURCE_INPUT_DESCRIPTOR_V1" ||
-      (!document_family && !graph_family && !key_value_family) ||
+      (!document_family && !graph_family && !key_value_family &&
+       !time_series_family) ||
       !valid_operation ||
       (input.operation_id == "DOCUMENT_UNNEST" && !input.object_uuid.empty()) ||
       (input.operation_id != "DOCUMENT_UNNEST" &&
@@ -182,14 +420,20 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
 
 ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     const ModelSourceInputDescriptorV1& input,
-    const ModelProviderBatchV1& provider_batch) {
+    const ModelProviderBatchV1& provider_batch,
+    const std::function<bool()>& cancellation_requested) {
   // QOW-SOURCE-CES05-MODEL-TYPED-EXCHANGE-V1
   const bool graph_family = input.family_id == "graph";
   const bool key_value_family = input.family_id == "key_value";
+  const bool time_series_family = input.family_id == "time_series";
   const auto input_validation = ValidateModelFamilySourceInputV1(input);
   if (!input_validation.accepted) {
     return Refuse(input_validation.diagnostic_id.c_str(),
                   input_validation.detail);
+  }
+  if (ExchangeCancellationRequested(cancellation_requested)) {
+    return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                  "model-family exchange was cancelled before validation");
   }
   if (provider_batch.abi_version != 1) {
     return Refuse(kModelTypedExchangeInvalid,
@@ -197,7 +441,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
   }
   if (provider_batch.provider_uuid != input.provider_uuid ||
       provider_batch.provider_generation != input.provider_generation ||
-      (key_value_family &&
+      ((key_value_family || time_series_family) &&
        (provider_batch.selected_alternative_uuid !=
             input.selected_alternative_uuid ||
         provider_batch.capability_uuid != input.capability_uuid ||
@@ -217,7 +461,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     return Refuse(kModelTypedExchangeInvalid,
                   "provider output descriptors differ from the bound input");
   }
-  if (graph_family || key_value_family) {
+  if (graph_family || key_value_family || time_series_family) {
     std::size_t preflight_cell_count = 0;
     // The provider batch is caller/provider-owned. The grant covers every
     // allocation copied into the engine-owned output descriptor at the same
@@ -278,19 +522,38 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                     "graph exchange output metadata exceeded its resource contract");
     }
-    for (const auto& identity : provider_batch.ordered_row_identities) {
+    for (std::size_t identity_ordinal = 0;
+         identity_ordinal < provider_batch.ordered_row_identities.size();
+         ++identity_ordinal) {
+      const auto& identity =
+          provider_batch.ordered_row_identities[identity_ordinal];
+      if (ExchangeCancellationRequested(cancellation_requested)) {
+        return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                      "model-family exchange identity preflight was cancelled");
+      }
       if (!preflight_account(sizeof(ModelProviderRowIdentityV1)) ||
           !preflight_string(identity.document_uuid) ||
           !preflight_string(identity.row_uuid) ||
           !preflight_string(identity.key) ||
           !preflight_string(identity.vertex_uuid) ||
           !preflight_string(identity.edge_uuid) ||
-          !preflight_string(identity.path_uuid)) {
+          !preflight_string(identity.path_uuid) ||
+          !preflight_string(identity.series_uuid) ||
+          !preflight_string(identity.metric_uuid) ||
+          !preflight_string(identity.tags) ||
+          !preflight_string(identity.time_series_payload_kind) ||
+          !preflight_string(identity.time_series_raw_value) ||
+          !preflight_string(identity.time_series_sample_count) ||
+          !preflight_string(identity.time_series_aggregate_value)) {
         return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                       "graph exchange identity preflight exceeded its resource contract");
       }
     }
     for (const auto& column : provider_batch.batch.columns) {
+      if (ExchangeCancellationRequested(cancellation_requested)) {
+        return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                      "model-family exchange descriptor preflight was cancelled");
+      }
       if (!preflight_account(sizeof(ExecutorColumnDescriptor)) ||
           !preflight_account(column.stable_name.size()) ||
           !preflight_account(
@@ -303,6 +566,10 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       }
     }
     for (const auto& row : provider_batch.batch.rows) {
+      if (ExchangeCancellationRequested(cancellation_requested)) {
+        return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                      "model-family exchange row preflight was cancelled");
+      }
       if (preflight_cell_count > input.maximum_cells ||
           row.values.size() > input.maximum_cells - preflight_cell_count ||
           !preflight_account(sizeof(DescriptorTuple))) {
@@ -334,26 +601,68 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     return Refuse(kModelTypedExchangeInvalid,
                   "model-family ordered row identity cardinality is incomplete");
   }
-  if (graph_family) {
+  std::uint64_t time_series_uniqueness_peak = 0;
+  if (graph_family || time_series_family) {
     std::uint64_t uniqueness_peak =
         3 * sizeof(std::unordered_set<std::string>);
-    for (const auto& identity : provider_batch.ordered_row_identities) {
+    for (std::size_t identity_ordinal = 0;
+         identity_ordinal < provider_batch.ordered_row_identities.size();
+         ++identity_ordinal) {
+      const auto& identity =
+          provider_batch.ordered_row_identities[identity_ordinal];
+      if (ExchangeCancellationRequested(cancellation_requested)) {
+        return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                      "model-family uniqueness preflight was cancelled");
+      }
       constexpr std::uint64_t kSetNodeOverhead =
           sizeof(std::string) + 4 * sizeof(void*) + 64;
       const auto dynamic = static_cast<std::uint64_t>(
-          identity.row_uuid.size() + identity.path_uuid.size());
-      if (2 * kSetNodeOverhead >
+          identity.row_uuid.size() +
+          (graph_family ? identity.path_uuid.size() : 0));
+      const std::uint64_t node_count =
+          graph_family
+              ? 2
+              : input.operation_id == "TIME_SERIES_DOWNSAMPLE" ? 0 : 1;
+      if (node_count * kSetNodeOverhead >
               std::numeric_limits<std::uint64_t>::max() - uniqueness_peak ||
           dynamic > std::numeric_limits<std::uint64_t>::max() -
-                        uniqueness_peak - 2 * kSetNodeOverhead) {
+                        uniqueness_peak - node_count * kSetNodeOverhead) {
         return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                       "graph uniqueness preflight overflowed");
       }
-      uniqueness_peak += 2 * kSetNodeOverhead + dynamic;
+      uniqueness_peak += node_count * kSetNodeOverhead + dynamic;
     }
     if (uniqueness_peak > input.maximum_memory_bytes) {
       return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                     "graph uniqueness validation exceeded its resource contract");
+    }
+    if (time_series_family) {
+      time_series_uniqueness_peak = uniqueness_peak;
+    }
+  }
+  if (time_series_family) {
+    std::uint64_t maximum_tag_temporary = 0;
+    for (const auto& identity : provider_batch.ordered_row_identities) {
+      const std::uint64_t fixed = 3 * sizeof(std::string);
+      const std::uint64_t tag_size =
+          static_cast<std::uint64_t>(identity.tags.size());
+      if (tag_size >
+          (std::numeric_limits<std::uint64_t>::max() - fixed) / 3 - 1) {
+        return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "time-series tag exchange validation preflight overflowed");
+      }
+      maximum_tag_temporary = std::max<std::uint64_t>(
+          maximum_tag_temporary,
+          3 * (tag_size + 1) + fixed);
+    }
+    if (maximum_tag_temporary >
+            std::numeric_limits<std::uint64_t>::max() -
+                time_series_uniqueness_peak ||
+        time_series_uniqueness_peak + maximum_tag_temporary >
+            input.maximum_memory_bytes) {
+      return Refuse(
+          "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+          "time-series tag exchange validation exceeded its resource contract");
     }
   }
   {
@@ -362,16 +671,41 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     std::unordered_set<std::string> document_uuids;
     std::unordered_set<std::string> row_uuids;
     std::unordered_set<std::string> path_uuids;
-    for (const auto& identity : provider_batch.ordered_row_identities) {
+    for (std::size_t identity_ordinal = 0;
+         identity_ordinal < provider_batch.ordered_row_identities.size();
+         ++identity_ordinal) {
+      const auto& identity =
+          provider_batch.ordered_row_identities[identity_ordinal];
+      if (ExchangeCancellationRequested(cancellation_requested)) {
+        return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                      "model-family row identity validation was cancelled");
+      }
+      bool tag_cancellation_observed = false;
+      const bool canonical_time_series_tags =
+          !time_series_family ||
+          CanonicalTimeSeriesTags(identity.tags, cancellation_requested,
+                                  &tag_cancellation_observed);
+      if (tag_cancellation_observed) {
+        return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                      "time-series tag exchange validation was cancelled");
+      }
+      const bool empty_time_series_payload =
+          identity.time_series_payload_kind.empty() &&
+          identity.time_series_raw_value.empty() &&
+          identity.time_series_sample_count.empty() &&
+          identity.time_series_aggregate_value.empty();
       const bool document_identity =
-          !graph_family && !key_value_family &&
+          !graph_family && !key_value_family && !time_series_family &&
           CanonicalUuid(identity.document_uuid) &&
           CanonicalUuid(identity.row_uuid) &&
           document_uuids.insert(identity.document_uuid).second &&
           row_uuids.insert(identity.row_uuid).second &&
           identity.key.empty() &&
           identity.vertex_uuid.empty() && identity.edge_uuid.empty() &&
-          identity.path_uuid.empty() && identity.graph_depth == 0;
+          identity.path_uuid.empty() && identity.graph_depth == 0 &&
+          identity.series_uuid.empty() && identity.metric_uuid.empty() &&
+          identity.tags.empty() && identity.point_timestamp_ns == 0 &&
+          identity.bucket_start_ns == 0 && empty_time_series_payload;
       const bool graph_edge_identity =
           (input.operation_id == "GRAPH_MATCH" && identity.graph_depth == 0 &&
            identity.edge_uuid.empty()) ||
@@ -384,6 +718,9 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           CanonicalUuid(identity.vertex_uuid) && graph_edge_identity &&
           CanonicalUuid(identity.path_uuid) &&
           identity.key.empty() &&
+          identity.series_uuid.empty() && identity.metric_uuid.empty() &&
+          identity.tags.empty() && identity.point_timestamp_ns == 0 &&
+          identity.bucket_start_ns == 0 && empty_time_series_payload &&
           row_uuids.insert(identity.row_uuid).second &&
           path_uuids.insert(identity.path_uuid).second;
       const bool key_value_identity =
@@ -391,12 +728,90 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           CanonicalUuid(identity.row_uuid) && WellFormedUtf8(identity.key) &&
           identity.vertex_uuid.empty() && identity.edge_uuid.empty() &&
           identity.path_uuid.empty() && identity.graph_depth == 0 &&
+          identity.series_uuid.empty() && identity.metric_uuid.empty() &&
+          identity.tags.empty() && identity.point_timestamp_ns == 0 &&
+          identity.bucket_start_ns == 0 && empty_time_series_payload &&
           row_uuids.insert(identity.row_uuid).second &&
           document_uuids.insert(identity.key).second;
-      if (!document_identity && !graph_identity && !key_value_identity) {
+      const bool time_series_raw =
+          time_series_family &&
+          input.operation_id == "TIME_SERIES_RANGE_READ" &&
+          identity.document_uuid.empty() && CanonicalUuid(identity.row_uuid) &&
+          identity.vertex_uuid.empty() && identity.edge_uuid.empty() &&
+          identity.path_uuid.empty() && identity.graph_depth == 0 &&
+          identity.key.empty() && identity.series_uuid == input.object_uuid &&
+          CanonicalUuid(identity.metric_uuid) && canonical_time_series_tags &&
+          identity.bucket_start_ns == 0 &&
+          identity.time_series_payload_kind == "raw.real64.v1" &&
+          !identity.time_series_raw_value.empty() &&
+          identity.time_series_sample_count.empty() &&
+          identity.time_series_aggregate_value.empty() &&
+          row_uuids.insert(identity.row_uuid).second;
+      const bool time_series_bucket =
+          time_series_family &&
+          input.operation_id == "TIME_SERIES_BUCKET" &&
+          identity.document_uuid.empty() && CanonicalUuid(identity.row_uuid) &&
+          identity.vertex_uuid.empty() && identity.edge_uuid.empty() &&
+          identity.path_uuid.empty() && identity.graph_depth == 0 &&
+          identity.key.empty() && identity.series_uuid == input.object_uuid &&
+          CanonicalUuid(identity.metric_uuid) && canonical_time_series_tags &&
+          empty_time_series_payload &&
+          row_uuids.insert(identity.row_uuid).second;
+      const bool time_series_downsample =
+          time_series_family &&
+          input.operation_id == "TIME_SERIES_DOWNSAMPLE" &&
+          identity.document_uuid.empty() && identity.row_uuid.empty() &&
+          identity.vertex_uuid.empty() && identity.edge_uuid.empty() &&
+          identity.path_uuid.empty() && identity.graph_depth == 0 &&
+          identity.key.empty() && identity.series_uuid == input.object_uuid &&
+          CanonicalUuid(identity.metric_uuid) && canonical_time_series_tags &&
+          identity.point_timestamp_ns == 0 &&
+          identity.time_series_raw_value.empty() &&
+          !identity.time_series_payload_kind.empty() &&
+          !identity.time_series_sample_count.empty() &&
+          !identity.time_series_aggregate_value.empty();
+      if (!document_identity && !graph_identity && !key_value_identity &&
+          !time_series_raw && !time_series_bucket &&
+          !time_series_downsample) {
         return Refuse(
             kModelTypedExchangeInvalid,
             "model-family row uniqueness or ordering identity is invalid");
+      }
+      if (time_series_family && identity_ordinal != 0) {
+        const auto& previous =
+            provider_batch.ordered_row_identities[identity_ordinal - 1];
+        const auto text_less = [](const std::string& left,
+                                  const std::string& right) {
+          return UnsignedUtf8Less(left, right);
+        };
+        const auto raw_less = [&](const auto& left, const auto& right) {
+          if (left.series_uuid != right.series_uuid)
+            return text_less(left.series_uuid, right.series_uuid);
+          if (left.metric_uuid != right.metric_uuid)
+            return text_less(left.metric_uuid, right.metric_uuid);
+          if (left.point_timestamp_ns != right.point_timestamp_ns)
+            return left.point_timestamp_ns < right.point_timestamp_ns;
+          if (left.tags != right.tags) return text_less(left.tags, right.tags);
+          return text_less(left.row_uuid, right.row_uuid);
+        };
+        const auto downsample_less = [&](const auto& left,
+                                         const auto& right) {
+          if (left.series_uuid != right.series_uuid)
+            return text_less(left.series_uuid, right.series_uuid);
+          if (left.metric_uuid != right.metric_uuid)
+            return text_less(left.metric_uuid, right.metric_uuid);
+          if (left.tags != right.tags) return text_less(left.tags, right.tags);
+          return left.bucket_start_ns < right.bucket_start_ns;
+        };
+        const bool exact_order =
+            input.operation_id == "TIME_SERIES_DOWNSAMPLE"
+                ? downsample_less(previous, identity)
+                : raw_less(previous, identity);
+        if (!exact_order) {
+          return Refuse(
+              kModelTypedExchangeInvalid,
+              "time-series ordered identities do not satisfy the exact receipt");
+        }
       }
     }
   }
@@ -409,9 +824,21 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           "single_local_partition" ||
       provider_batch.properties.uniqueness_id !=
           (graph_family ? "path_uuid"
-                        : key_value_family ? "key" : "document_uuid") ||
+                        : key_value_family
+                              ? "key"
+                              : time_series_family
+                                    ? (input.operation_id !=
+                                               "TIME_SERIES_DOWNSAMPLE"
+                                           ? "row_uuid"
+                                           : "series_metric_tags_bucket_v1")
+                                    : "document_uuid") ||
       provider_batch.properties.ordering_id !=
-          (input.operation_id == "KEY_VALUE_GET"
+          (input.operation_id == "TIME_SERIES_RANGE_READ" ||
+                   input.operation_id == "TIME_SERIES_BUCKET"
+               ? "series_metric_timestamp_tags_row_ascending_v1"
+               : input.operation_id == "TIME_SERIES_DOWNSAMPLE"
+                     ? "series_metric_tags_bucket_start_ascending_v1"
+                     : input.operation_id == "KEY_VALUE_GET"
                ? "key_value_unordered_v1"
                : input.operation_id == "KEY_VALUE_MULTI_GET"
                      ? "first_distinct_request_order_v1"
@@ -588,6 +1015,10 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     }
     for (std::size_t ordinal = 0;
          ordinal < provider_batch.batch.rows.size(); ++ordinal) {
+      if (ExchangeCancellationRequested(cancellation_requested)) {
+        return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                      "time-series exchange row validation was cancelled");
+      }
       const auto& row = provider_batch.batch.rows[ordinal];
       const auto& identity = provider_batch.ordered_row_identities[ordinal];
       if (row.values.size() != 3 ||
@@ -607,7 +1038,146 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     }
   }
 
-  DescriptorBatch normalized = provider_batch.batch;
+  if (time_series_family) {
+    const auto validation = ValidateCanonicalDescriptorBatch(
+        provider_batch.batch, input.output_descriptor_ids);
+    const bool raw = input.operation_id == "TIME_SERIES_RANGE_READ";
+    const bool bucket = input.operation_id == "TIME_SERIES_BUCKET";
+    const std::size_t expected_width = raw ? 6 : (bucket ? 1 : 7);
+    if (!validation.ok || provider_batch.batch.columns.size() != expected_width) {
+      return Refuse(kModelTypedExchangeInvalid,
+                    validation.ok
+                        ? "time-series public descriptor width is invalid"
+                        : validation.detail);
+    }
+    static constexpr std::string_view kRawNames[] = {
+        "row_uuid", "series_uuid", "metric_uuid", "point_timestamp",
+        "tags", "value"};
+    static constexpr std::string_view kRawTypes[] = {
+        "uuid", "uuid", "uuid", "timestamp_tz", "text", "real64"};
+    static constexpr std::string_view kDownsampleNames[] = {
+        "series_uuid", "metric_uuid", "bucket_start", "bucket_end", "tags",
+        "sample_count", "aggregate_value"};
+    static constexpr std::string_view kDownsampleTypes[] = {
+        "uuid", "uuid", "timestamp_tz", "timestamp_tz", "text", "int64",
+        "real64"};
+    for (std::size_t ordinal = 0; ordinal < expected_width; ++ordinal) {
+      const auto& column = provider_batch.batch.columns[ordinal];
+      const auto expected_name = raw ? kRawNames[ordinal]
+                                     : bucket
+                                           ? std::string_view("bucket_start")
+                                           : kDownsampleNames[ordinal];
+      const auto expected_type = raw ? kRawTypes[ordinal]
+                                     : bucket
+                                           ? std::string_view("timestamp_tz")
+                                           : kDownsampleTypes[ordinal];
+      const bool aggregate_count_type =
+          !raw && !bucket && ordinal == 6 &&
+          column.descriptor.canonical_type_name == "int64";
+      if (column.stable_name != expected_name || column.nullable ||
+          (column.descriptor.canonical_type_name != expected_type &&
+           !aggregate_count_type)) {
+        return Refuse(kModelTypedExchangeInvalid,
+                      "time-series public descriptor contract drifted");
+      }
+    }
+    for (std::size_t ordinal = 0;
+         ordinal < provider_batch.batch.rows.size(); ++ordinal) {
+      const auto& row = provider_batch.batch.rows[ordinal];
+      const auto& identity = provider_batch.ordered_row_identities[ordinal];
+      if (row.values.size() != expected_width ||
+          std::ranges::any_of(row.values, [](const auto& value) {
+            return value.state != internal_api::EngineValueState::value ||
+                   value.is_null || !value.binary_value.empty();
+          })) {
+        return Refuse(kModelTypedExchangeInvalid,
+                      "time-series returned a null, missing, or binary cell");
+      }
+      const auto exact_utf8 = [&](const std::size_t cell,
+                                  const std::string& expected) {
+        return row.values[cell].encoded_value == expected &&
+               WellFormedUtf8(row.values[cell].encoded_value);
+      };
+      if (raw) {
+        std::int64_t timestamp_ns = 0;
+        if (row.values[0].encoded_value != identity.row_uuid ||
+            row.values[1].encoded_value != identity.series_uuid ||
+            row.values[2].encoded_value != identity.metric_uuid ||
+            !CanonicalTimestampNs(row.values[3].encoded_value, &timestamp_ns) ||
+            timestamp_ns != identity.point_timestamp_ns ||
+            !exact_utf8(4, identity.tags) ||
+            !CanonicalFiniteReal64(row.values[5].encoded_value) ||
+            identity.time_series_payload_kind != "raw.real64.v1" ||
+            row.values[5].encoded_value !=
+                identity.time_series_raw_value ||
+            !identity.time_series_sample_count.empty() ||
+            !identity.time_series_aggregate_value.empty()) {
+          return Refuse(kModelTypedExchangeInvalid,
+                        "time-series raw row differs from ordered identity");
+        }
+      } else if (bucket) {
+        std::int64_t bucket_start_ns = 0;
+        if (!CanonicalTimestampNs(row.values[0].encoded_value,
+                                  &bucket_start_ns) ||
+            bucket_start_ns != identity.bucket_start_ns) {
+          return Refuse(
+              kModelTypedExchangeInvalid,
+              "time-series scalar bucket differs from ordered raw identity");
+        }
+      } else {
+        std::int64_t bucket_start_ns = 0;
+        std::int64_t bucket_end_ns = 0;
+        std::int64_t sample_count = 0;
+        const auto converted = std::from_chars(
+            row.values[5].encoded_value.data(),
+            row.values[5].encoded_value.data() +
+                row.values[5].encoded_value.size(),
+            sample_count);
+        const bool count_payload =
+            provider_batch.batch.columns[6].descriptor.canonical_type_name ==
+            "int64";
+        const bool exact_payload_kind =
+            count_payload
+                ? identity.time_series_payload_kind ==
+                      "downsample.count.int64.v1"
+                : identity.time_series_payload_kind ==
+                          "downsample.sum.real64.v1" ||
+                      identity.time_series_payload_kind ==
+                          "downsample.min.real64.v1" ||
+                      identity.time_series_payload_kind ==
+                          "downsample.max.real64.v1" ||
+                      identity.time_series_payload_kind ==
+                          "downsample.avg.real64.v1";
+        if (row.values[0].encoded_value != identity.series_uuid ||
+            row.values[1].encoded_value != identity.metric_uuid ||
+            !CanonicalTimestampNs(row.values[2].encoded_value,
+                                  &bucket_start_ns) ||
+            bucket_start_ns != identity.bucket_start_ns ||
+            !CanonicalTimestampNs(row.values[3].encoded_value,
+                                  &bucket_end_ns) ||
+            bucket_end_ns <= bucket_start_ns || !exact_utf8(4, identity.tags) ||
+            row.values[5].encoded_value.empty() ||
+            converted.ec != std::errc{} ||
+            converted.ptr != row.values[5].encoded_value.data() +
+                                 row.values[5].encoded_value.size() ||
+            sample_count <= 0 ||
+            !CanonicalInt64(row.values[5].encoded_value, true) ||
+            !identity.time_series_raw_value.empty() ||
+            row.values[5].encoded_value !=
+                identity.time_series_sample_count ||
+            row.values[6].encoded_value !=
+                identity.time_series_aggregate_value ||
+            !exact_payload_kind ||
+            (count_payload
+                 ? !CanonicalInt64(row.values[6].encoded_value)
+                 : !CanonicalFiniteReal64(row.values[6].encoded_value))) {
+          return Refuse(kModelTypedExchangeInvalid,
+                        "time-series downsample row differs from ordered identity");
+        }
+      }
+    }
+  }
+
   std::size_t cell_count = 0;
   std::uint64_t memory_bytes = sizeof(DescriptorBatch);
   const auto account_bytes = [&](const std::uint64_t bytes) {
@@ -618,18 +1188,33 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     return true;
   };
   for (const auto& identity : provider_batch.ordered_row_identities) {
+    if (ExchangeCancellationRequested(cancellation_requested)) {
+      return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                    "model-family exchange output accounting was cancelled");
+    }
     if (!account_bytes(sizeof(ModelProviderRowIdentityV1)) ||
         !account_bytes(identity.document_uuid.size()) ||
         !account_bytes(identity.row_uuid.size()) ||
         !account_bytes(identity.key.size()) ||
         !account_bytes(identity.vertex_uuid.size()) ||
         !account_bytes(identity.edge_uuid.size()) ||
-        !account_bytes(identity.path_uuid.size())) {
+        !account_bytes(identity.path_uuid.size()) ||
+        !account_bytes(identity.series_uuid.size()) ||
+        !account_bytes(identity.metric_uuid.size()) ||
+        !account_bytes(identity.tags.size()) ||
+        !account_bytes(identity.time_series_payload_kind.size()) ||
+        !account_bytes(identity.time_series_raw_value.size()) ||
+        !account_bytes(identity.time_series_sample_count.size()) ||
+        !account_bytes(identity.time_series_aggregate_value.size())) {
       return Refuse(kModelTypedExchangeInvalid,
                     "document exchange identity memory counter overflowed");
     }
   }
-  for (const auto& column : normalized.columns) {
+  for (const auto& column : provider_batch.batch.columns) {
+    if (ExchangeCancellationRequested(cancellation_requested)) {
+      return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                    "model-family descriptor output accounting was cancelled");
+    }
     if (!account_bytes(sizeof(ExecutorColumnDescriptor)) ||
         !account_bytes(column.stable_name.size()) ||
         !account_bytes(column.descriptor.descriptor_uuid.canonical.size()) ||
@@ -640,7 +1225,11 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
                     "document exchange descriptor memory counter overflowed");
     }
   }
-  for (auto& row : normalized.rows) {
+  for (const auto& row : provider_batch.batch.rows) {
+    if (ExchangeCancellationRequested(cancellation_requested)) {
+      return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                    "model-family row output accounting was cancelled");
+    }
     if (!account_bytes(sizeof(DescriptorTuple))) {
       return Refuse(kModelTypedExchangeInvalid,
                     "document exchange row memory counter overflowed");
@@ -652,19 +1241,17 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     }
     cell_count += row.values.size();
     for (std::size_t column = 0; column < row.values.size(); ++column) {
-      auto& value = row.values[column];
-      if (!graph_family && !key_value_family && value.state ==
-          scratchbird::engine::internal_api::EngineValueState::missing) {
-        if (column >= normalized.columns.size() ||
-            !normalized.columns[column].nullable) {
+      const auto& value = row.values[column];
+      if (!graph_family && !key_value_family && !time_series_family &&
+          value.state ==
+              scratchbird::engine::internal_api::EngineValueState::missing) {
+        if (column >= provider_batch.batch.columns.size() ||
+            !provider_batch.batch.columns[column].nullable) {
           return Refuse(kModelDocumentMissingBindingRefused,
                         "missing document path has no nullable bound output descriptor");
         }
-        value.encoded_value.clear();
-        value.binary_value.clear();
-        value.setState(
-            scratchbird::engine::internal_api::EngineValueState::sql_null);
-      } else if ((graph_family || key_value_family) && value.state ==
+      } else if ((graph_family || key_value_family || time_series_family) &&
+                 value.state ==
                      scratchbird::engine::internal_api::EngineValueState::missing) {
         return Refuse(kModelTypedExchangeInvalid,
                       "model-family provider returned an unbound missing value");
@@ -681,11 +1268,31 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       }
     }
   }
-  if (normalized.rows.size() > input.maximum_rows ||
+  if (provider_batch.batch.rows.size() > input.maximum_rows ||
       cell_count > input.maximum_cells ||
       memory_bytes > input.maximum_memory_bytes) {
     return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                   "document exchange exceeded its bound resource contract");
+  }
+  DescriptorBatch normalized;
+  try {
+    normalized = provider_batch.batch;
+  } catch (const std::bad_alloc&) {
+    return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "model-family exchange batch allocation was refused");
+  }
+  if (!graph_family && !key_value_family && !time_series_family) {
+    for (auto& row : normalized.rows) {
+      for (auto& value : row.values) {
+        if (value.state ==
+            scratchbird::engine::internal_api::EngineValueState::missing) {
+          value.encoded_value.clear();
+          value.binary_value.clear();
+          value.setState(
+              scratchbird::engine::internal_api::EngineValueState::sql_null);
+        }
+      }
+    }
   }
   const auto validation = ValidateCanonicalDescriptorBatch(
       normalized, input.output_descriptor_ids);

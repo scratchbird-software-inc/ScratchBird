@@ -194,6 +194,7 @@ enum class CanonicalLogicalModelFamilyIdentity : std::uint8_t {
   kDocument,
   kGraph,
   kKeyValue,
+  kTimeSeries,
 };
 
 struct CanonicalLogicalRelationalNode {
@@ -331,20 +332,25 @@ ValidateCanonicalLogicalRelationalGraph(
     return family == CanonicalLogicalModelFamilyIdentity::kUnspecified ||
            family == CanonicalLogicalModelFamilyIdentity::kDocument ||
            family == CanonicalLogicalModelFamilyIdentity::kGraph ||
-           family == CanonicalLogicalModelFamilyIdentity::kKeyValue;
+           family == CanonicalLogicalModelFamilyIdentity::kKeyValue ||
+           family == CanonicalLogicalModelFamilyIdentity::kTimeSeries;
   };
   constexpr std::string_view kModelSourceSemantic =
       "SBLR_MODEL_SOURCE_V1";
   constexpr std::string_view kModelExpandSemantic =
       "SBLR_MODEL_EXPAND_V1";
+  constexpr std::string_view kModelAggregateSemantic =
+      "SBLR_MODEL_AGGREGATE_V1";
   const auto valid_semantic_variant = [](const std::string_view value) {
-    if (value == kModelSourceSemantic || value == kModelExpandSemantic) {
+    if (value == kModelSourceSemantic || value == kModelExpandSemantic ||
+        value == kModelAggregateSemantic) {
       return true;
     }
     // The model identities above are bound SBLR identities, not a general
     // relaxation of the canonical lowercase semantic-variant grammar.
     if (value == "sblr_model_source_v1" ||
-        value == "sblr_model_expand_v1") {
+        value == "sblr_model_expand_v1" ||
+        value == "sblr_model_aggregate_v1") {
       return false;
     }
     if (value.empty() || value.size() > 128) return false;
@@ -425,23 +431,47 @@ ValidateCanonicalLogicalRelationalGraph(
         node.semantic_variant_id == kModelSourceSemantic;
     const bool model_expand =
         node.semantic_variant_id == kModelExpandSemantic;
-    const bool model_semantic = model_source || model_expand;
+    const bool model_aggregate =
+        node.semantic_variant_id == kModelAggregateSemantic;
+    const bool model_semantic =
+        model_source || model_expand || model_aggregate;
     const bool graph_family =
         node.model_family_identity ==
         CanonicalLogicalModelFamilyIdentity::kGraph;
+    const bool time_series_family =
+        node.model_family_identity ==
+        CanonicalLogicalModelFamilyIdentity::kTimeSeries;
+    const bool exact_time_series_attachment_width =
+        time_series_family &&
+        ((model_source &&
+          ((node.output_descriptor_ids.size() == 6 &&
+            node.bound_expression_ids.size() == 7) ||
+           (node.output_descriptor_ids.size() == 1 &&
+            node.bound_expression_ids.size() == 6))) ||
+         (model_aggregate && node.output_descriptor_ids.size() == 7 &&
+          (node.bound_expression_ids.size() == 9 ||
+           node.bound_expression_ids.size() == 10)));
     if (!known_model_family(node.model_family_identity) ||
         (!model_semantic &&
          node.model_family_identity !=
              CanonicalLogicalModelFamilyIdentity::kUnspecified) ||
         (model_semantic &&
-         (node.node_kind !=
-              CanonicalLogicalRelationalNodeKind::kRelationSource ||
+         (((model_source || model_expand) &&
+           node.node_kind !=
+               CanonicalLogicalRelationalNodeKind::kRelationSource) ||
+          (model_aggregate &&
+           node.node_kind != CanonicalLogicalRelationalNodeKind::kAggregate) ||
+          (model_aggregate && !time_series_family) ||
           !node.input_logical_node_ids.empty() ||
           node.bound_expression_ids.empty() ||
           node.output_descriptor_ids.empty() ||
-          node.bound_expression_ids.size() !=
-              node.output_descriptor_ids.size() ||
+          (!exact_time_series_attachment_width &&
+           node.bound_expression_ids.size() !=
+               node.output_descriptor_ids.size()) ||
           (model_source &&
+           (node.required_object_uuids.size() != 1 ||
+            !canonical_uuid(node.required_object_uuids.front()))) ||
+          (model_aggregate &&
            (node.required_object_uuids.size() != 1 ||
             !canonical_uuid(node.required_object_uuids.front()))) ||
           (model_expand && graph_family &&

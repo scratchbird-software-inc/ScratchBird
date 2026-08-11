@@ -21,6 +21,7 @@ namespace sbsql = scratchbird::parser::sbsql;
 namespace scratchbird::parser::sbsql {
 std::uint64_t Rcp073DocumentFrontdoorProofMaskForTest();
 std::uint64_t Rcp074GraphFrontdoorProofMaskForTest();
+std::uint64_t Rcp076TimeSeriesFrontdoorProofMaskForTest();
 }
 
 namespace {
@@ -367,6 +368,207 @@ sbsql::NativeRelationalBindingContext GraphContextFor(
         {ordinal, Uuid(750 + ordinal), ordinal + 1, kGraphColumns[ordinal]});
   }
   context.catalog_relations.push_back(std::move(source));
+  return context;
+}
+
+sbsql::NativeRelationalBindingContext TimeSeriesContextFor(
+    const sbsql::NativeRelationalAstDocument& ast) {
+  sbsql::NativeRelationalBindingContext context;
+  context.bound_ast_uuid = Uuid(910);
+  context.catalog_epoch_uuid = Uuid(911);
+  context.security_context_uuid = Uuid(912);
+  context.statement_uuid = Uuid(913);
+  context.statement_timestamp = "2026-08-10T12:00:00.123456789Z";
+  context.owning_transaction_uuid = Uuid(914);
+  context.statement_snapshot_uuid = Uuid(915);
+  context.statement_metadata_snapshot_uuid = Uuid(916);
+  context.local_transaction_id = 76;
+  context.snapshot_visible_through_local_transaction_id = 75;
+  SetEngineAuthority(&context);
+  const auto& source_ast = ast.catalog_relation_sources.front();
+  const bool downsample =
+      source_ast.model_operation_id == "TIME_SERIES_DOWNSAMPLE";
+  const bool bucket = source_ast.model_bucket_expression_id.has_value();
+  context.descriptors = {
+      {1, Uuid(921), Uuid(931), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {2, Uuid(922), Uuid(931), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {3, Uuid(923), Uuid(931), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {4, Uuid(924), Uuid(932), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::optional<std::string>("UTC"), {}},
+      {5, Uuid(925), Uuid(933), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {6, Uuid(926), Uuid(934), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+      {7, Uuid(927), Uuid(935), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}},
+  };
+  if (bucket || downsample) {
+    context.descriptors.push_back(
+        {8, Uuid(928), Uuid(936), sbsql::BoundNullability::kNonNull,
+         std::nullopt, std::nullopt, {}});
+  }
+  if (downsample) {
+    context.descriptors.push_back(
+        {9, Uuid(929), Uuid(937), sbsql::BoundNullability::kNonNull,
+         std::nullopt, std::nullopt, {}});
+    context.descriptors.push_back(
+        {10, Uuid(960), Uuid(932), sbsql::BoundNullability::kNonNull,
+         std::nullopt, std::optional<std::string>("UTC"), {}});
+    if (source_ast.model_time_series_aggregate_id == "COUNT") {
+      context.descriptors.push_back(
+          {11, Uuid(961), Uuid(937), sbsql::BoundNullability::kNonNull,
+           std::nullopt, std::nullopt, {}});
+    }
+  }
+  sbsql::NativeCatalogRelationBindingInput source;
+  source.source_id = source_ast.source_id;
+  source.resolution_state =
+      sbsql::NativeCatalogRelationResolutionState::kBound;
+  source.object_uuid = Uuid(940);
+  source.resolved_object_type = "time_series";
+  source.resolved_schema_uuid = Uuid(941);
+  source.parent_object_uuid = Uuid(942);
+  source.catalog_generation_id = 76;
+  source.security_epoch = 77;
+  source.resource_epoch = 78;
+  source.columns = {{0, Uuid(950), 1, "row_uuid"},
+                    {1, Uuid(951), 2, "series_uuid"},
+                    {2, Uuid(952), 3, "metric_uuid"},
+                    {3, Uuid(953), 4, "point_timestamp"},
+                    {4, Uuid(954), 5, "tags"},
+                    {5, Uuid(955), 6, "value"}};
+  context.catalog_relations.push_back(std::move(source));
+  context.relations.push_back(
+      {ast.relations.front().relation_id,
+       downsample ? "sblr.model-aggregate.time-series-downsample.v1"
+                  : "sblr.model-source.time-series-range-read.v1"});
+  const bool wildcard = std::ranges::any_of(ast.expressions, [](const auto& e) {
+    return e.expression_kind == sbsql::NativeExpressionAstKind::kWildcard;
+  });
+  std::uint32_t next_expression = 101;
+  if (wildcard) {
+    static constexpr std::array<const char*, 6> kNames{
+        "row_uuid", "series_uuid", "metric_uuid", "point_timestamp", "tags",
+        "value"};
+    for (std::uint32_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
+      context.expressions.push_back(
+          {next_expression++, ordinal + 1, std::nullopt, Uuid(950 + ordinal)});
+      context.outputs.push_back(
+          {ordinal + 1, context.expressions.back().expression_id,
+           kNames[ordinal], ordinal + 1, true, ordinal,
+           ast.relations.front().relation_id});
+    }
+  }
+  const std::unordered_map<std::string, std::pair<std::uint32_t, std::string>>
+      projected{{"row_uuid", {1, Uuid(950)}},
+                 {"series_uuid", {2, Uuid(951)}},
+                 {"metric_uuid", {3, Uuid(952)}},
+                 {"point_timestamp", {4, Uuid(953)}},
+                 {"tags", {5, Uuid(954)}},
+                 {"value", {6, Uuid(955)}}};
+  std::unordered_map<std::uint32_t, sbsql::NativeExpressionBindingInput>
+      binding_by_ast;
+  for (const auto& expression : ast.expressions) {
+    if (expression.expression_kind ==
+        sbsql::NativeExpressionAstKind::kWildcard) {
+      continue;
+    }
+    sbsql::NativeExpressionBindingInput binding;
+    binding.expression_id = next_expression++;
+    if (expression.expression_id ==
+            source_ast.model_time_series_alias_expression_id.value_or(0)) {
+      binding.descriptor_id = 1;
+      binding.bound_name_uuid = Uuid(940);
+    } else if (expression.expression_id ==
+                   source_ast.model_range_start_expression_id.value_or(0) ||
+               expression.expression_id ==
+                   source_ast.model_range_end_expression_id.value_or(0)) {
+      binding.descriptor_id = 4;
+    } else if (expression.expression_id ==
+                   source_ast.model_interval_expression_id.value_or(0) ||
+               (expression.expression_kind ==
+                    sbsql::NativeExpressionAstKind::kLiteral &&
+                expression.literal_kind ==
+                    sbsql::NativeLiteralAstKind::kTemporal)) {
+      binding.descriptor_id = 8;
+    } else if (expression.expression_kind ==
+                   sbsql::NativeExpressionAstKind::kIdentifier &&
+               !expression.qualified_identifier.empty()) {
+      const auto terminal = expression.qualified_identifier.back().spelling;
+      const auto found = projected.find(terminal);
+      if (found != projected.end()) {
+        binding.descriptor_id = found->second.first;
+        binding.bound_name_uuid = found->second.second;
+      }
+    } else if (expression.expression_kind ==
+                   sbsql::NativeExpressionAstKind::kLiteral &&
+               expression.literal_kind ==
+                   sbsql::NativeLiteralAstKind::kString) {
+      binding.descriptor_id = 5;
+    } else if (expression.operator_name == "TIME_RANGE") {
+      binding.descriptor_id = 7;
+    } else if (expression.operator_name == "TIME_BUCKET") {
+      binding.descriptor_id = 4;
+    } else if (expression.operator_name == "TIME_DOWNSAMPLE") {
+      binding.descriptor_id =
+          source_ast.model_time_series_aggregate_id == "COUNT" ? 11 : 6;
+    }
+    context.expressions.push_back(binding);
+    binding_by_ast.emplace(expression.expression_id, std::move(binding));
+  }
+  if (bucket && !downsample) {
+    const std::array<std::uint32_t, 4> descriptors{2, 3, 5, 6};
+    const std::array<std::string, 4> names{
+        Uuid(951), Uuid(952), Uuid(954), Uuid(955)};
+    for (std::size_t ordinal = 0; ordinal < descriptors.size(); ++ordinal) {
+      context.expressions.push_back(
+          {next_expression++, descriptors[ordinal], std::nullopt,
+           names[ordinal]});
+    }
+  }
+  if (downsample) {
+    static constexpr std::array<const char*, 7> kNames{
+        "series_uuid", "metric_uuid", "bucket_start", "bucket_end", "tags",
+        "sample_count", "aggregate_value"};
+    const std::array<std::uint32_t, 7> descriptors{
+        2, 3, 4, 10, 5, 9,
+        source_ast.model_time_series_aggregate_id == "COUNT" ? 11u : 6u};
+    const std::array<std::string, 7> names{
+        Uuid(951), Uuid(952), Uuid(953), Uuid(953), Uuid(954), Uuid(940),
+        source_ast.model_time_series_aggregate_id == "COUNT" ? Uuid(940)
+                                                               : Uuid(955)};
+    for (std::uint32_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
+      context.expressions.push_back(
+          {next_expression++, descriptors[ordinal], std::nullopt,
+           names[ordinal]});
+      context.outputs.push_back(
+          {ordinal + 1, context.expressions.back().expression_id,
+           kNames[ordinal], descriptors[ordinal], true, ordinal,
+           ast.relations.front().relation_id});
+    }
+  } else if (!wildcard) {
+    for (std::size_t ordinal = 0;
+         ordinal < ast.relations.front().output_expression_ids.size(); ++ordinal) {
+      const auto& binding =
+          binding_by_ast.at(ast.relations.front().output_expression_ids[ordinal]);
+      const auto expression = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id ==
+                   ast.relations.front().output_expression_ids[ordinal];
+          });
+      context.outputs.push_back(
+          {static_cast<std::uint32_t>(ordinal + 1), binding.expression_id,
+           expression != ast.expressions.end() &&
+                   expression->operator_name == "TIME_BUCKET"
+               ? "bucket_start"
+               : "time_series_value_" + std::to_string(ordinal + 1),
+           binding.descriptor_id, true, static_cast<std::uint32_t>(ordinal),
+           ast.relations.front().relation_id});
+    }
+  }
   return context;
 }
 
@@ -950,6 +1152,356 @@ bool KeyValueGrammarBindingLowering() {
   return passed;
 }
 
+bool TimeSeriesGrammarBindingLowering() {
+  struct Case {
+    std::string sql;
+    std::string operation;
+    std::string semantic;
+    std::size_t width;
+  };
+  const std::array<Case, 5> cases{{
+      {"SELECT * FROM TIME_SERIES_SOURCE(app.series_fixture) AS ts "
+       "WHERE TIME_RANGE(ts, TIMESTAMP '2026-08-10T12:00:00Z', "
+       "TIMESTAMP '2026-08-10T12:02:00Z');",
+       "TIME_SERIES_RANGE_READ",
+       "sblr.model-source.time-series-range-read.v1", 6},
+      {"SELECT TIME_BUCKET(INTERVAL 'PT60S', ts.point_timestamp) FROM "
+       "TIME_SERIES_SOURCE(app.series_fixture) AS ts "
+       "WHERE TIME_RANGE(ts, TIMESTAMP '2026-08-10T12:00:00Z', "
+       "TIMESTAMP '2026-08-10T12:02:00Z');",
+       "TIME_SERIES_RANGE_READ",
+       "sblr.model-source.time-series-range-read.v1", 1},
+      {"SELECT TIME_BUCKET(INTERVAL 'P1D', ts.point_timestamp) FROM "
+       "TIME_SERIES_SOURCE(app.series_fixture) AS ts "
+       "WHERE TIME_RANGE(ts, TIMESTAMP '2026-08-10T12:00:00Z', "
+       "TIMESTAMP '2026-08-10T12:02:00Z');",
+       "TIME_SERIES_RANGE_READ",
+       "sblr.model-source.time-series-range-read.v1", 1},
+      {"SELECT TIME_DOWNSAMPLE(SUM, INTERVAL 'PT60S', ts.value) FROM "
+       "TIME_SERIES_SOURCE(app.series_fixture) AS ts "
+       "WHERE TIME_RANGE(ts, TIMESTAMP '2026-08-10T12:00:00Z', "
+       "TIMESTAMP '2026-08-10T12:02:00Z');",
+       "TIME_SERIES_DOWNSAMPLE",
+       "sblr.model-aggregate.time-series-downsample.v1", 7},
+      {"SELECT TIME_BUCKET(INTERVAL 'PT1M', ts.point_timestamp), "
+       "TIME_DOWNSAMPLE(SUM, INTERVAL 'PT60S', ts.value) FROM "
+       "TIME_SERIES_SOURCE(app.series_fixture) AS ts "
+       "WHERE TIME_RANGE(ts, TIMESTAMP '2026-08-10T12:00:00Z', "
+       "TIMESTAMP '2026-08-10T12:02:00Z');",
+       "TIME_SERIES_DOWNSAMPLE",
+       "sblr.model-aggregate.time-series-downsample.v1", 7},
+  }};
+  bool passed = true;
+  std::optional<sbsql::BoundStatement> raw_bound;
+  std::optional<sbsql::CstDocument> raw_cst;
+  std::optional<sbsql::BoundStatement> downsample_bound;
+  std::optional<sbsql::CstDocument> downsample_cst;
+  for (const auto& test : cases) {
+    const auto cst = sbsql::BuildCst(test.sql);
+    const auto ast = sbsql::BuildAst(cst);
+    passed &= Require(
+        ast.native_relational.accepted() && ast.requires_name_resolution &&
+            !ast.produces_sblr &&
+            ast.native_relational.catalog_relation_sources.size() == 1 &&
+            ast.native_relational.catalog_relation_sources.front().source_kind ==
+                sbsql::NativeRelationSourceAstKind::kTimeSeries &&
+            ast.native_relational.catalog_relation_sources.front()
+                    .model_family_id == "time_series" &&
+            ast.native_relational.catalog_relation_sources.front()
+                    .model_operation_id == test.operation &&
+            ast.native_relational.model_object_resolution_requests.size() == 1 &&
+            ast.native_relational.model_object_resolution_requests.front()
+                    .object_class == "time_series",
+        "ordinary TIME_SERIES_SOURCE grammar/object extraction drifted: " +
+            test.operation + ":" +
+            DiagnosticSummary(ast.native_relational.messages));
+    if (!ast.native_relational.accepted()) continue;
+    auto context = TimeSeriesContextFor(ast.native_relational);
+    const auto bound =
+        sbsql::BindAst(ast, cst, Config(), Session(), {}, &context);
+    passed &= Require(
+        bound.bound && bound.native_relational.bound &&
+            bound.native_relational.statement_timestamp ==
+                context.statement_timestamp &&
+            bound.native_relational.catalog_relation_sources.front()
+                    .object_uuid == Uuid(940) &&
+            bound.native_relational.relations.front().semantic_variant_id ==
+                test.semantic &&
+            bound.native_relational.outputs.size() == test.width,
+        "TIME_SERIES_SOURCE projected binding drifted: " + test.operation +
+            ":" + DiagnosticSummary(bound.messages));
+    if (!bound.bound) continue;
+    const auto lowered = sbsql::LowerToSblr(bound, cst, Session());
+    const auto verified = sbsql::VerifySblrEnvelope(lowered);
+    passed &= Require(
+        !lowered.messages.has_errors() && verified.admitted &&
+            HasOperand(lowered, "text", "relational_statement_timestamp",
+                       context.statement_timestamp) &&
+            std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+              const auto semantic =
+                  test.operation == "TIME_SERIES_DOWNSAMPLE"
+                      ? "53424c525f4d4f44454c5f4147475245474154455f5631"
+                      : "53424c525f4d4f44454c5f534f555243455f5631";
+              return operand.type == "relational_node_binding_v1" &&
+                     operand.value.find(semantic) == 0;
+            }),
+        "TIME_SERIES_SOURCE did not lower through the exact model semantic: " +
+            test.operation + ":" + DiagnosticSummary(lowered.messages) + "/" +
+            DiagnosticSummary(verified.messages));
+    if (test.operation == "TIME_SERIES_DOWNSAMPLE") {
+      downsample_bound = bound;
+      downsample_cst = cst;
+    } else if (test.width == 6) {
+      raw_bound = bound;
+      raw_cst = cst;
+    }
+  }
+
+  const auto combined_carrier_cst = sbsql::BuildCst(
+      "SELECT TIME_BUCKET(INTERVAL 'PT1M', ts.point_timestamp), "
+      "TIME_DOWNSAMPLE(SUM, INTERVAL 'PT60S', ts.value) FROM "
+      "TIME_SERIES_SOURCE(app.series_fixture) AS ts WHERE "
+      "TIME_RANGE(ts, TIMESTAMP '2026-08-10T12:00:00Z', "
+      "TIMESTAMP '2026-08-10T12:02:00Z');");
+  auto missing_bucket_carrier_ast = sbsql::BuildAst(combined_carrier_cst);
+  if (missing_bucket_carrier_ast.native_relational.accepted()) {
+    missing_bucket_carrier_ast.native_relational.catalog_relation_sources
+        .front().model_bucket_interval_expression_id.reset();
+    auto missing_context =
+        TimeSeriesContextFor(missing_bucket_carrier_ast.native_relational);
+    const auto missing_bound = sbsql::BindAst(
+        missing_bucket_carrier_ast, combined_carrier_cst, Config(), Session(),
+        {}, &missing_context);
+    passed &= Require(
+        !missing_bound.bound &&
+            HasDiagnostic(missing_bound.messages,
+                          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1"),
+        "binder admitted a missing TIME_BUCKET interval carrier");
+  }
+  const auto raw_carrier_cst = sbsql::BuildCst(
+      "SELECT * FROM TIME_SERIES_SOURCE(app.series_fixture) AS ts WHERE "
+      "TIME_RANGE(ts, TIMESTAMP '2026-08-10T12:00:00Z', "
+      "TIMESTAMP '2026-08-10T12:02:00Z');");
+  auto stray_bucket_carrier_ast = sbsql::BuildAst(raw_carrier_cst);
+  if (stray_bucket_carrier_ast.native_relational.accepted()) {
+    auto& source = stray_bucket_carrier_ast.native_relational
+                       .catalog_relation_sources.front();
+    source.model_bucket_interval_expression_id =
+        source.model_range_start_expression_id;
+    source.model_bucket_time_input_expression_id =
+        source.model_range_end_expression_id;
+    auto stray_context =
+        TimeSeriesContextFor(stray_bucket_carrier_ast.native_relational);
+    const auto stray_bound = sbsql::BindAst(
+        stray_bucket_carrier_ast, raw_carrier_cst, Config(), Session(), {},
+        &stray_context);
+    passed &= Require(
+        !stray_bound.bound &&
+            HasDiagnostic(stray_bound.messages,
+                          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1"),
+        "binder admitted stray TIME_BUCKET child carriers");
+  }
+
+  const auto mismatched_interval_cst = sbsql::BuildCst(
+      "SELECT TIME_BUCKET(INTERVAL 'PT30S', ts.point_timestamp), "
+      "TIME_DOWNSAMPLE(SUM, INTERVAL 'PT60S', ts.value) FROM "
+      "TIME_SERIES_SOURCE(app.series_fixture) AS ts "
+      "WHERE TIME_RANGE(ts, TIMESTAMP '2026-08-10T12:00:00Z', "
+      "TIMESTAMP '2026-08-10T12:02:00Z');");
+  const auto mismatched_interval_ast =
+      sbsql::BuildAst(mismatched_interval_cst);
+  if (mismatched_interval_ast.native_relational.accepted()) {
+    auto mismatch_context =
+        TimeSeriesContextFor(mismatched_interval_ast.native_relational);
+    const auto mismatch_bound = sbsql::BindAst(
+        mismatched_interval_ast, mismatched_interval_cst, Config(), Session(),
+        {}, &mismatch_context);
+    const auto mismatch_lowered =
+        sbsql::LowerToSblr(mismatch_bound, mismatched_interval_cst, Session());
+    const auto mismatch_verified =
+        sbsql::VerifySblrEnvelope(mismatch_lowered);
+    passed &= Require(
+        (!mismatch_bound.bound &&
+         HasDiagnostic(mismatch_bound.messages,
+                       "SB_MODEL_TIME_SERIES_INTERVAL_INVALID_V1")) ||
+            (mismatch_bound.bound &&
+             HasDiagnostic(mismatch_verified.messages,
+                           "SB_MODEL_TIME_SERIES_INTERVAL_INVALID_V1")),
+        "unequal evaluated TIME_BUCKET/TIME_DOWNSAMPLE intervals did not "
+        "receive the exact refusal: " +
+            DiagnosticSummary(mismatch_bound.messages) + "/" +
+            DiagnosticSummary(mismatch_verified.messages));
+  } else {
+    passed &= Require(false,
+                      "combined TIME_BUCKET/TIME_DOWNSAMPLE grammar was "
+                      "refused before evaluated-interval validation");
+  }
+  for (const std::string_view invalid_interval :
+       {"0", "-1", "P1M", "PT0.0000000001S", "P106752D"}) {
+    const auto invalid_cst = sbsql::BuildCst(
+        "SELECT TIME_BUCKET(INTERVAL '" + std::string(invalid_interval) +
+        "', ts.point_timestamp) FROM "
+        "TIME_SERIES_SOURCE(app.series_fixture) AS ts "
+        "WHERE TIME_RANGE(ts, TIMESTAMP '2026-08-10T12:00:00Z', "
+        "TIMESTAMP '2026-08-10T12:02:00Z');");
+    const auto invalid_ast = sbsql::BuildAst(invalid_cst);
+    if (!invalid_ast.native_relational.accepted()) {
+      passed &= Require(
+          HasDiagnostic(invalid_ast.native_relational.messages,
+                        "SB_MODEL_TIME_SERIES_INTERVAL_INVALID_V1"),
+          "invalid fixed interval received the wrong parser refusal: " +
+              std::string(invalid_interval));
+      continue;
+    }
+    auto invalid_context = TimeSeriesContextFor(invalid_ast.native_relational);
+    const auto invalid_bound = sbsql::BindAst(
+        invalid_ast, invalid_cst, Config(), Session(), {}, &invalid_context);
+    const auto invalid_lowered =
+        sbsql::LowerToSblr(invalid_bound, invalid_cst, Session());
+    const auto invalid_verified = sbsql::VerifySblrEnvelope(invalid_lowered);
+    passed &= Require(
+        invalid_bound.bound &&
+            HasDiagnostic(invalid_verified.messages,
+                          "SB_MODEL_TIME_SERIES_INTERVAL_INVALID_V1"),
+        "invalid fixed interval reached SBLR admission or received the wrong "
+        "diagnostic: " +
+            std::string(invalid_interval) + ":" +
+            DiagnosticSummary(invalid_verified.messages));
+  }
+
+  const auto wrong_value_cst = sbsql::BuildCst(
+      "SELECT TIME_DOWNSAMPLE(SUM, INTERVAL 'PT60S', ts.tags) FROM "
+      "TIME_SERIES_SOURCE(app.series_fixture) AS ts "
+      "WHERE TIME_RANGE(ts, TIMESTAMP '2026-08-10T12:00:00Z', "
+      "TIMESTAMP '2026-08-10T12:02:00Z');");
+  const auto wrong_value_ast = sbsql::BuildAst(wrong_value_cst);
+  if (wrong_value_ast.native_relational.accepted()) {
+    auto wrong_value_context =
+        TimeSeriesContextFor(wrong_value_ast.native_relational);
+    const auto wrong_value_bound = sbsql::BindAst(
+        wrong_value_ast, wrong_value_cst, Config(), Session(), {},
+        &wrong_value_context);
+    passed &= Require(
+        !wrong_value_bound.bound &&
+            HasDiagnostic(wrong_value_bound.messages,
+                          "SB_MODEL_TIME_SERIES_AGGREGATE_REFUSED_V1"),
+        "TIME_DOWNSAMPLE admitted a non-value aggregate input: " +
+            DiagnosticSummary(wrong_value_bound.messages));
+  } else {
+    passed &= Require(
+        HasDiagnostic(wrong_value_ast.native_relational.messages,
+                      "SB_MODEL_TIME_SERIES_AGGREGATE_REFUSED_V1"),
+        "TIME_DOWNSAMPLE wrong-value input received the wrong parser refusal");
+  }
+
+  if (downsample_bound.has_value() && downsample_cst.has_value()) {
+    auto missing_bucket_carrier = *downsample_bound;
+    missing_bucket_carrier.native_relational.catalog_relation_sources.front()
+        .model_bucket_time_input_expression_id.reset();
+    const auto missing_bucket_carrier_refused = sbsql::LowerToSblr(
+        missing_bucket_carrier, *downsample_cst, Session());
+    passed &= Require(
+        HasDiagnostic(missing_bucket_carrier_refused.messages,
+                      "SB_MODEL_BINDING_INCOMPLETE_V1"),
+        "lowering admitted a missing TIME_BUCKET input carrier");
+    auto reordered = *downsample_bound;
+    const auto operation = std::ranges::find_if(
+        reordered.native_relational.expressions, [](const auto& expression) {
+          return expression.canonical_operator_name == "TIME_DOWNSAMPLE";
+        });
+    if (operation != reordered.native_relational.expressions.end()) {
+      std::swap(operation->child_expression_ids[1],
+                operation->child_expression_ids[2]);
+    }
+    const auto refused =
+        sbsql::LowerToSblr(reordered, *downsample_cst, Session());
+    passed &= Require(
+        HasDiagnostic(refused.messages,
+                      "SB_MODEL_TIME_SERIES_AGGREGATE_REFUSED_V1"),
+        "time-series lowering admitted reordered interval/value children");
+
+    auto duplicate_descriptor = *downsample_bound;
+    duplicate_descriptor.native_relational.descriptors[9].descriptor_uuid =
+        duplicate_descriptor.native_relational.descriptors[3].descriptor_uuid;
+    const auto duplicate_refused = sbsql::LowerToSblr(
+        duplicate_descriptor, *downsample_cst, Session());
+    passed &= Require(
+        HasDiagnostic(duplicate_refused.messages,
+                      "SB_MODEL_BINDING_INCOMPLETE_V1") ||
+            HasDiagnostic(duplicate_refused.messages,
+                          "SBLR.PLAN_TREE.INVALID_HANDLE"),
+        "time-series lowering admitted a duplicate derived descriptor UUID:" +
+            DiagnosticSummary(duplicate_refused.messages));
+
+    auto substituted_output = *downsample_bound;
+    substituted_output.native_relational.outputs[3].descriptor_id =
+        substituted_output.native_relational.outputs[2].descriptor_id;
+    const auto substitution_refused = sbsql::LowerToSblr(
+        substituted_output, *downsample_cst, Session());
+    passed &= Require(
+        HasDiagnostic(substitution_refused.messages,
+                      "SB_MODEL_TYPED_EXCHANGE_INVALID_V1") ||
+            HasDiagnostic(substitution_refused.messages,
+                          "SB_MODEL_BINDING_INCOMPLETE_V1"),
+        "time-series lowering admitted a substituted bucket-end descriptor");
+  }
+  if (raw_bound.has_value() && raw_cst.has_value()) {
+    auto stray_bucket_carrier = *raw_bound;
+    auto& source =
+        stray_bucket_carrier.native_relational.catalog_relation_sources.front();
+    source.model_bucket_interval_expression_id =
+        source.model_range_start_expression_id;
+    source.model_bucket_time_input_expression_id =
+        source.model_range_end_expression_id;
+    const auto stray_refused = sbsql::LowerToSblr(
+        stray_bucket_carrier, *raw_cst, Session());
+    passed &= Require(
+        HasDiagnostic(stray_refused.messages,
+                      "SB_MODEL_BINDING_INCOMPLETE_V1"),
+        "lowering admitted stray TIME_BUCKET child carriers");
+  }
+
+  const auto lowercase_aggregate = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT TIME_DOWNSAMPLE(count, INTERVAL 'PT60S', ts.value) FROM "
+      "TIME_SERIES_SOURCE(app.series_fixture) ts WHERE TIME_RANGE(ts, "
+      "TIMESTAMP '2026-08-10T12:00:00Z', TIMESTAMP "
+      "'2026-08-10T12:02:00Z');"));
+  passed &= Require(
+      lowercase_aggregate.native_relational.status ==
+              sbsql::NativeRelationalParseStatus::kRefused &&
+          !lowercase_aggregate.produces_sblr &&
+          HasDiagnostic(lowercase_aggregate.native_relational.messages,
+                        "SB_MODEL_TIME_SERIES_AGGREGATE_REFUSED_V1"),
+      "lowercase time-series aggregate alias survived parser admission");
+
+  const std::array<std::string, 7> refused_sql{{
+      "SELECT * FROM TIME_SERIES_SOURCE(app.series_fixture) ts;",
+      "SELECT * FROM TIME_SERIES_SOURCE(app.series_fixture) ts WHERE "
+      "TIME_RANGE(other, TIMESTAMP '2026-08-10T12:00:00Z', TIMESTAMP "
+      "'2026-08-10T12:02:00Z');",
+      "SELECT TIME_DOWNSAMPLE(MEDIAN, INTERVAL 'PT60S', ts.value) FROM "
+      "TIME_SERIES_SOURCE(app.series_fixture) ts WHERE TIME_RANGE(ts, "
+      "TIMESTAMP '2026-08-10T12:00:00Z', TIMESTAMP "
+      "'2026-08-10T12:02:00Z');",
+      "SELECT TIME_DOWNSAMPLE(count, INTERVAL 'PT60S', ts.value) FROM "
+      "TIME_SERIES_SOURCE(app.series_fixture) ts WHERE TIME_RANGE(ts, "
+      "TIMESTAMP '2026-08-10T12:00:00Z', TIMESTAMP "
+      "'2026-08-10T12:02:00Z');",
+      "SELECT * FROM INFLUX_LINE_PROTOCOL('m,t=v f=1 0');",
+      "SELECT * FROM TIME_SERIES_APPEND(app.series_fixture);",
+      "TIME_SERIES_APPEND app.series_fixture;",
+  }};
+  for (const auto& sql : refused_sql) {
+    const auto ast = sbsql::BuildAst(sbsql::BuildCst(sql));
+    passed &= Require(
+        ast.native_relational.status ==
+                sbsql::NativeRelationalParseStatus::kRefused &&
+            !ast.produces_sblr,
+        "time-series refused grammar reached binding: " + sql);
+  }
+  return passed;
+}
+
 bool GraphGrammarBindingLowering() {
   const auto match_cst = sbsql::BuildCst(
       "SELECT * FROM GRAPH_SOURCE(app.graph_fixture) AS g "
@@ -1190,6 +1742,14 @@ bool GraphWireFrontdoorProjectionCohort() {
                      std::to_string(mask));
 }
 
+bool TimeSeriesWireFrontdoorProjectionCohort() {
+  constexpr std::uint64_t kExpectedMask = (1ull << 4) - 1;
+  const auto mask = sbsql::Rcp076TimeSeriesFrontdoorProofMaskForTest();
+  return Require(mask == kExpectedMask,
+                 "time-series pre-resolution refusal mask was incomplete: " +
+                     std::to_string(mask));
+}
+
 }  // namespace
 
 int main() {
@@ -1198,8 +1758,10 @@ int main() {
   passed &= UnnestGrammarBindingLowering();
   passed &= ExactRefusals();
   passed &= KeyValueGrammarBindingLowering();
+  passed &= TimeSeriesGrammarBindingLowering();
   passed &= GraphGrammarBindingLowering();
   passed &= WireFrontdoorProjectionCohort();
   passed &= GraphWireFrontdoorProjectionCohort();
+  passed &= TimeSeriesWireFrontdoorProjectionCohort();
   return passed ? 0 : 1;
 }

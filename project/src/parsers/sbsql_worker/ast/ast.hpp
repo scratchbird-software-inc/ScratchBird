@@ -133,6 +133,7 @@ enum class NativeRelationSourceAstKind {
   kDocument,
   kGraph,
   kKeyValue,
+  kTimeSeries,
 };
 
 enum class NativeAggregateGroupingForm {
@@ -223,6 +224,17 @@ struct NativeCatalogRelationSourceAstNode {
   // Distinct nodes may evaluate to equal TEXT bytes; semantic normalization
   // occurs only after evaluation.
   std::vector<std::uint32_t> model_key_expression_ids;
+  std::optional<std::uint32_t> model_time_series_alias_expression_id;
+  std::optional<std::uint32_t> model_range_expression_id;
+  std::optional<std::uint32_t> model_range_start_expression_id;
+  std::optional<std::uint32_t> model_range_end_expression_id;
+  std::optional<std::uint32_t> model_interval_expression_id;
+  std::optional<std::uint32_t> model_time_input_expression_id;
+  std::optional<std::uint32_t> model_bucket_expression_id;
+  std::optional<std::uint32_t> model_bucket_interval_expression_id;
+  std::optional<std::uint32_t> model_bucket_time_input_expression_id;
+  std::optional<std::uint32_t> model_downsample_expression_id;
+  std::string model_time_series_aggregate_id;
   std::string model_graph_direction;
   std::optional<std::uint64_t> model_graph_minimum_depth;
   std::optional<std::uint64_t> model_graph_maximum_depth;

@@ -12,6 +12,9 @@
 #include "nosql/nosql_physical_provider_contract.hpp"
 
 #include <string>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -76,5 +79,108 @@ struct EngineTimeSeriesAppendRequest : EngineApiRequest {
 };
 struct EngineTimeSeriesAppendResult : EngineApiResult {};
 EngineTimeSeriesAppendResult EngineTimeSeriesAppend(const EngineTimeSeriesAppendRequest& request);
+
+// RCP-076 engine-bound, read-only time-series model-source contract. This
+// surface is intentionally distinct from EngineTimeSeriesAppend: query
+// operands and immutable authority cross this boundary, never stored rows.
+enum class EngineBoundTimeSeriesReadOperationV1 : std::uint8_t {
+  kRangeRead = 1,
+  kBucketDownsample = 2,
+};
+
+enum class EngineBoundTimeSeriesAggregateV1 : std::uint8_t {
+  kNone = 0,
+  kCount,
+  kSum,
+  kMin,
+  kMax,
+  kAvg,
+};
+
+struct EngineBoundTimeSeriesReadRequestV1 : EngineApiRequest {
+  std::uint16_t abi_version{1};
+  EngineBoundTimeSeriesReadOperationV1 operation{
+      EngineBoundTimeSeriesReadOperationV1::kRangeRead};
+  EngineBoundTimeSeriesAggregateV1 aggregate{
+      EngineBoundTimeSeriesAggregateV1::kNone};
+  std::string object_uuid;
+  EngineTypedValue range_start;
+  EngineTypedValue range_end;
+  EngineApiI64 bucket_interval_ns{0};
+  std::string expected_descriptor_uuid;
+  std::uint64_t expected_descriptor_generation{0};
+  std::string selected_alternative_uuid;
+  std::string capability_uuid;
+  std::string provider_uuid;
+  std::uint64_t provider_generation{0};
+  std::uint64_t rollup_generation{0};
+  std::uint64_t visible_late_arrival_generation{0};
+  std::uint64_t maximum_scanned_row_versions{0};
+  std::uint64_t maximum_decoded_bytes{0};
+  std::size_t maximum_output_rows{0};
+  std::size_t maximum_groups{0};
+  std::uint64_t maximum_tag_bytes{0};
+  std::uint64_t maximum_result_bytes{0};
+  std::uint64_t maximum_memory_bytes{0};
+  bool rollup_candidate_selected{false};
+  bool exact_fallback_selected{false};
+  std::function<bool()> cancellation_requested;
+};
+
+struct EngineBoundTimeSeriesPointRowV1 {
+  std::string row_uuid;
+  std::string series_uuid;
+  std::string metric_uuid;
+  EngineApiI64 point_timestamp_ns{0};
+  std::string point_timestamp;
+  std::string tags;
+  double value{0.0};
+};
+
+struct EngineBoundTimeSeriesDownsampleRowV1 {
+  std::string series_uuid;
+  std::string metric_uuid;
+  EngineApiI64 bucket_start_ns{0};
+  EngineApiI64 bucket_end_ns{0};
+  std::string bucket_start;
+  std::string bucket_end;
+  std::string tags;
+  EngineApiI64 sample_count{0};
+  EngineApiI64 aggregate_count{0};
+  double aggregate_value{0.0};
+};
+
+struct EngineBoundTimeSeriesReadResultV1 : EngineApiResult {
+  bool data_access_observed{false};
+  bool exact_fallback_observed{false};
+  bool rollup_observed{false};
+  bool rollup_equivalence_recheck_complete{false};
+  std::uint64_t preferred_access_invocation_count{0};
+  std::uint64_t exact_fallback_access_invocation_count{0};
+  std::string selected_access_path_id;
+  bool residual_recheck_complete{false};
+  bool base_row_mga_recheck_complete{false};
+  bool security_recheck_complete{false};
+  std::uint64_t scanned_row_version_count{0};
+  std::uint64_t selected_visible_row_count{0};
+  std::uint64_t result_byte_count{0};
+  std::string ordering_id;
+  std::string descriptor_uuid;
+  std::uint64_t descriptor_generation{0};
+  std::string selected_alternative_uuid;
+  std::string capability_uuid;
+  std::string provider_uuid;
+  std::uint64_t provider_generation{0};
+  std::vector<EngineBoundTimeSeriesPointRowV1> rows;
+  std::vector<EngineBoundTimeSeriesDownsampleRowV1> downsample_rows;
+};
+
+bool EngineExactTimeSeriesBucketStartV1(EngineApiI64 timestamp_ns,
+                                        EngineApiI64 interval_ns,
+                                        EngineApiI64* bucket_start_ns,
+                                        std::string* bucket_start);
+
+EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
+    const EngineBoundTimeSeriesReadRequestV1& request);
 
 }  // namespace scratchbird::engine::internal_api

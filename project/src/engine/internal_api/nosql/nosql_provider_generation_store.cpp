@@ -10,15 +10,19 @@
 
 #include "behavior_support/api_behavior_store.hpp"
 #include "crud_support/crud_store.hpp"
+#include "hash_digest.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
@@ -56,11 +60,190 @@ std::uint64_t ParseU64(const std::string& value) {
   }
 }
 
+std::int64_t ParseI64(const std::string& value) {
+  try {
+    return static_cast<std::int64_t>(std::stoll(value));
+  } catch (...) {
+    return 0;
+  }
+}
+
 bool ParseBool(const std::string& value) {
   return value == "1" || value == "true" || value == "TRUE";
 }
 
 std::string BoolText(bool value) { return value ? "true" : "false"; }
+
+bool IsCanonicalLowercaseNonzeroUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  bool nonzero = false;
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const char ch = value[index];
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+      return false;
+    }
+    nonzero = nonzero || ch != '0';
+  }
+  return nonzero;
+}
+
+bool HasExactTimeSeriesRollupBindingInput(
+    const EngineNoSqlProviderGenerationMetadata& metadata) {
+  return metadata.time_series_rollup_candidate_present &&
+         metadata.family == EngineNoSqlProviderFamily::kTimeSeries &&
+         IsCanonicalLowercaseNonzeroUuid(metadata.provider_id) &&
+         !metadata.database_identity.empty() &&
+         IsCanonicalLowercaseNonzeroUuid(metadata.database_uuid) &&
+         IsCanonicalLowercaseNonzeroUuid(metadata.collection_uuid) &&
+         IsCanonicalLowercaseNonzeroUuid(metadata.generation_uuid) &&
+         metadata.generation_id != 0 && metadata.descriptor_epoch != 0 &&
+         metadata.security_epoch != 0 && metadata.redaction_epoch != 0 &&
+         metadata.catalog_epoch != 0 &&
+         metadata.publish_state == "published" &&
+         metadata.validation_state == "validated" &&
+         !metadata.provider_claims_transaction_finality_authority &&
+         !metadata.provider_claims_visibility_authority &&
+         metadata.time_series_rollup_generation != 0 &&
+         metadata.time_series_visible_late_arrival_generation != 0 &&
+         metadata.time_series_rollup_generation <=
+             metadata.time_series_visible_late_arrival_generation &&
+         metadata.time_series_rollup_interval_ns > 0 &&
+         metadata.time_series_rollup_exactness_attestation_state ==
+             "TIME_SERIES_ROLLUP_SECTION_8_EXACT_V1" &&
+         IsCanonicalLowercaseNonzeroUuid(
+             metadata.time_series_rollup_statement_snapshot_uuid) &&
+         IsCanonicalLowercaseNonzeroUuid(
+             metadata.time_series_rollup_statement_metadata_snapshot_uuid) &&
+         IsCanonicalLowercaseNonzeroUuid(
+             metadata.time_series_rollup_owning_transaction_uuid) &&
+         metadata.time_series_rollup_local_transaction_id != 0 &&
+         metadata
+                 .time_series_rollup_snapshot_visible_through_local_transaction_id !=
+             0 &&
+         IsCanonicalLowercaseNonzeroUuid(
+             metadata.time_series_rollup_security_context_uuid) &&
+         IsCanonicalLowercaseNonzeroUuid(
+             metadata.time_series_rollup_catalog_epoch_uuid) &&
+         metadata.time_series_rollup_exact_residual_recheck_required &&
+         metadata.time_series_rollup_base_row_mga_recheck_required &&
+         metadata.time_series_rollup_security_recheck_required;
+}
+
+bool AppendLengthPrefixed(const std::string_view value, std::string* seed) {
+  if (seed == nullptr) return false;
+  const auto length = std::to_string(value.size());
+  if (seed->size() > std::numeric_limits<std::size_t>::max() -
+                         length.size() - 1 ||
+      seed->size() + length.size() + 1 >
+          std::numeric_limits<std::size_t>::max() - value.size()) {
+    return false;
+  }
+  seed->append(length);
+  seed->push_back(':');
+  seed->append(value);
+  return true;
+}
+
+std::string DeriveTimeSeriesRollupCapabilityUuidImpl(
+    const EngineNoSqlProviderGenerationMetadata& metadata) {
+  if (!HasExactTimeSeriesRollupBindingInput(metadata)) return {};
+  try {
+    std::string seed;
+    const auto append_field = [&](const std::string_view name,
+                                  const std::string& value) {
+      return AppendLengthPrefixed(name, &seed) &&
+             AppendLengthPrefixed(value, &seed);
+    };
+    if (!AppendLengthPrefixed(
+            "SCRATCHBIRD.TIME_SERIES_ROLLUP_CAPABILITY_BINDING.V1", &seed) ||
+        !append_field("family", EngineNoSqlProviderFamilyName(metadata.family)) ||
+        !append_field("provider_id", metadata.provider_id) ||
+        !append_field("database_identity", metadata.database_identity) ||
+        !append_field("database_uuid", metadata.database_uuid) ||
+        !append_field("collection_uuid", metadata.collection_uuid) ||
+        !append_field("generation_uuid", metadata.generation_uuid) ||
+        !append_field("generation_id", std::to_string(metadata.generation_id)) ||
+        !append_field("descriptor_epoch",
+                      std::to_string(metadata.descriptor_epoch)) ||
+        !append_field("security_epoch", std::to_string(metadata.security_epoch)) ||
+        !append_field("redaction_epoch",
+                      std::to_string(metadata.redaction_epoch)) ||
+        !append_field("catalog_epoch", std::to_string(metadata.catalog_epoch)) ||
+        !append_field("publish_state", metadata.publish_state) ||
+        !append_field("validation_state", metadata.validation_state) ||
+        !append_field("provider_claims_transaction_finality_authority",
+                      BoolText(metadata
+                                   .provider_claims_transaction_finality_authority)) ||
+        !append_field("provider_claims_visibility_authority",
+                      BoolText(metadata.provider_claims_visibility_authority)) ||
+        !append_field("time_series_rollup_candidate_present",
+                      BoolText(metadata.time_series_rollup_candidate_present)) ||
+        !append_field("time_series_rollup_generation",
+                      std::to_string(metadata.time_series_rollup_generation)) ||
+        !append_field(
+            "time_series_visible_late_arrival_generation",
+            std::to_string(
+                metadata.time_series_visible_late_arrival_generation)) ||
+        !append_field("time_series_rollup_interval_ns",
+                      std::to_string(metadata.time_series_rollup_interval_ns)) ||
+        !append_field("time_series_rollup_exactness_attestation_state",
+                      metadata.time_series_rollup_exactness_attestation_state) ||
+        !append_field("time_series_rollup_statement_snapshot_uuid",
+                      metadata.time_series_rollup_statement_snapshot_uuid) ||
+        !append_field(
+            "time_series_rollup_statement_metadata_snapshot_uuid",
+            metadata.time_series_rollup_statement_metadata_snapshot_uuid) ||
+        !append_field("time_series_rollup_owning_transaction_uuid",
+                      metadata.time_series_rollup_owning_transaction_uuid) ||
+        !append_field(
+            "time_series_rollup_local_transaction_id",
+            std::to_string(metadata.time_series_rollup_local_transaction_id)) ||
+        !append_field(
+            "time_series_rollup_snapshot_visible_through_local_transaction_id",
+            std::to_string(metadata
+                               .time_series_rollup_snapshot_visible_through_local_transaction_id)) ||
+        !append_field("time_series_rollup_security_context_uuid",
+                      metadata.time_series_rollup_security_context_uuid) ||
+        !append_field("time_series_rollup_catalog_epoch_uuid",
+                      metadata.time_series_rollup_catalog_epoch_uuid) ||
+        !append_field(
+            "time_series_rollup_exact_residual_recheck_required",
+            BoolText(
+                metadata.time_series_rollup_exact_residual_recheck_required)) ||
+        !append_field(
+            "time_series_rollup_base_row_mga_recheck_required",
+            BoolText(
+                metadata.time_series_rollup_base_row_mga_recheck_required)) ||
+        !append_field("time_series_rollup_security_recheck_required",
+                      BoolText(
+                          metadata.time_series_rollup_security_recheck_required))) {
+      return {};
+    }
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+        reinterpret_cast<const scratchbird::core::platform::byte*>(seed.data()),
+        seed.size());
+    if (!digest.ok() || digest.digest_bytes != 32) return {};
+    std::array<std::uint8_t, 16> uuid_bytes{};
+    std::copy_n(digest.digest.begin(), uuid_bytes.size(), uuid_bytes.begin());
+    uuid_bytes[6] =
+        static_cast<std::uint8_t>((uuid_bytes[6] & 0x0fU) | 0x80U);
+    uuid_bytes[8] =
+        static_cast<std::uint8_t>((uuid_bytes[8] & 0x3fU) | 0x80U);
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (std::size_t index = 0; index < uuid_bytes.size(); ++index) {
+      if (index == 4 || index == 6 || index == 8 || index == 10) out << '-';
+      out << std::setw(2) << static_cast<unsigned>(uuid_bytes[index]);
+    }
+    return out.str();
+  } catch (...) {
+    return {};
+  }
+}
 
 std::string GenerationPath(const EngineRequestContext& context) {
   if (context.database_path.empty()) {
@@ -146,6 +329,39 @@ std::vector<std::pair<std::string, std::string>> MetadataPairs(
        BoolText(metadata.provider_claims_transaction_finality_authority)},
       {"provider_claims_visibility_authority",
        BoolText(metadata.provider_claims_visibility_authority)},
+      {"time_series_rollup_candidate_present",
+       BoolText(metadata.time_series_rollup_candidate_present)},
+      {"time_series_rollup_capability_uuid",
+       metadata.time_series_rollup_capability_uuid},
+      {"time_series_rollup_generation",
+       std::to_string(metadata.time_series_rollup_generation)},
+      {"time_series_visible_late_arrival_generation",
+       std::to_string(metadata.time_series_visible_late_arrival_generation)},
+      {"time_series_rollup_interval_ns",
+       std::to_string(metadata.time_series_rollup_interval_ns)},
+      {"time_series_rollup_exactness_attestation_state",
+       metadata.time_series_rollup_exactness_attestation_state},
+      {"time_series_rollup_statement_snapshot_uuid",
+       metadata.time_series_rollup_statement_snapshot_uuid},
+      {"time_series_rollup_statement_metadata_snapshot_uuid",
+       metadata.time_series_rollup_statement_metadata_snapshot_uuid},
+      {"time_series_rollup_owning_transaction_uuid",
+       metadata.time_series_rollup_owning_transaction_uuid},
+      {"time_series_rollup_local_transaction_id",
+       std::to_string(metadata.time_series_rollup_local_transaction_id)},
+      {"time_series_rollup_snapshot_visible_through_local_transaction_id",
+       std::to_string(metadata
+                          .time_series_rollup_snapshot_visible_through_local_transaction_id)},
+      {"time_series_rollup_security_context_uuid",
+       metadata.time_series_rollup_security_context_uuid},
+      {"time_series_rollup_catalog_epoch_uuid",
+       metadata.time_series_rollup_catalog_epoch_uuid},
+      {"time_series_rollup_exact_residual_recheck_required",
+       BoolText(metadata.time_series_rollup_exact_residual_recheck_required)},
+      {"time_series_rollup_base_row_mga_recheck_required",
+       BoolText(metadata.time_series_rollup_base_row_mga_recheck_required)},
+      {"time_series_rollup_security_recheck_required",
+       BoolText(metadata.time_series_rollup_security_recheck_required)},
   };
 }
 
@@ -191,6 +407,41 @@ EngineNoSqlProviderGenerationMetadata MetadataFromPairs(
       ParseBool(ValueOr(values, "provider_claims_transaction_finality_authority"));
   metadata.provider_claims_visibility_authority =
       ParseBool(ValueOr(values, "provider_claims_visibility_authority"));
+  metadata.time_series_rollup_candidate_present =
+      ParseBool(ValueOr(values, "time_series_rollup_candidate_present"));
+  metadata.time_series_rollup_capability_uuid =
+      ValueOr(values, "time_series_rollup_capability_uuid");
+  metadata.time_series_rollup_generation =
+      ParseU64(ValueOr(values, "time_series_rollup_generation"));
+  metadata.time_series_visible_late_arrival_generation = ParseU64(
+      ValueOr(values, "time_series_visible_late_arrival_generation"));
+  metadata.time_series_rollup_interval_ns =
+      ParseI64(ValueOr(values, "time_series_rollup_interval_ns"));
+  metadata.time_series_rollup_exactness_attestation_state =
+      ValueOr(values, "time_series_rollup_exactness_attestation_state");
+  metadata.time_series_rollup_statement_snapshot_uuid =
+      ValueOr(values, "time_series_rollup_statement_snapshot_uuid");
+  metadata.time_series_rollup_statement_metadata_snapshot_uuid =
+      ValueOr(values,
+              "time_series_rollup_statement_metadata_snapshot_uuid");
+  metadata.time_series_rollup_owning_transaction_uuid =
+      ValueOr(values, "time_series_rollup_owning_transaction_uuid");
+  metadata.time_series_rollup_local_transaction_id =
+      ParseU64(ValueOr(values, "time_series_rollup_local_transaction_id"));
+  metadata.time_series_rollup_snapshot_visible_through_local_transaction_id =
+      ParseU64(ValueOr(
+          values,
+          "time_series_rollup_snapshot_visible_through_local_transaction_id"));
+  metadata.time_series_rollup_security_context_uuid =
+      ValueOr(values, "time_series_rollup_security_context_uuid");
+  metadata.time_series_rollup_catalog_epoch_uuid =
+      ValueOr(values, "time_series_rollup_catalog_epoch_uuid");
+  metadata.time_series_rollup_exact_residual_recheck_required = ParseBool(
+      ValueOr(values, "time_series_rollup_exact_residual_recheck_required"));
+  metadata.time_series_rollup_base_row_mga_recheck_required = ParseBool(
+      ValueOr(values, "time_series_rollup_base_row_mga_recheck_required"));
+  metadata.time_series_rollup_security_recheck_required = ParseBool(
+      ValueOr(values, "time_series_rollup_security_recheck_required"));
   return metadata;
 }
 
@@ -254,6 +505,56 @@ void AddCommonEvidence(EngineNoSqlProviderGenerationResult* result) {
   result->evidence.push_back("provider_generation_visibility_authority=false");
   result->evidence.push_back(
       "provider_generation_mga_authority=engine_transaction_inventory");
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_candidate_present=" +
+      BoolText(metadata.time_series_rollup_candidate_present));
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_capability_uuid=" +
+      metadata.time_series_rollup_capability_uuid);
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_generation=" +
+      std::to_string(metadata.time_series_rollup_generation));
+  result->evidence.push_back(
+      "provider_generation_time_series_visible_late_arrival_generation=" +
+      std::to_string(
+          metadata.time_series_visible_late_arrival_generation));
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_interval_ns=" +
+      std::to_string(metadata.time_series_rollup_interval_ns));
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_exactness_attestation_state=" +
+      metadata.time_series_rollup_exactness_attestation_state);
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_statement_snapshot_uuid=" +
+      metadata.time_series_rollup_statement_snapshot_uuid);
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_statement_metadata_snapshot_uuid=" +
+      metadata.time_series_rollup_statement_metadata_snapshot_uuid);
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_owning_transaction_uuid=" +
+      metadata.time_series_rollup_owning_transaction_uuid);
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_local_transaction_id=" +
+      std::to_string(metadata.time_series_rollup_local_transaction_id));
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_snapshot_visible_through_local_transaction_id=" +
+      std::to_string(metadata
+                         .time_series_rollup_snapshot_visible_through_local_transaction_id));
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_security_context_uuid=" +
+      metadata.time_series_rollup_security_context_uuid);
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_catalog_epoch_uuid=" +
+      metadata.time_series_rollup_catalog_epoch_uuid);
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_exact_residual_recheck_required=" +
+      BoolText(metadata.time_series_rollup_exact_residual_recheck_required));
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_base_row_mga_recheck_required=" +
+      BoolText(metadata.time_series_rollup_base_row_mga_recheck_required));
+  result->evidence.push_back(
+      "provider_generation_time_series_rollup_security_recheck_required=" +
+      BoolText(metadata.time_series_rollup_security_recheck_required));
 }
 
 bool Matches(const EngineNoSqlProviderGenerationMetadata& metadata,
@@ -281,6 +582,40 @@ bool BoundToContext(const EngineRequestContext& context,
   return metadata.database_identity.empty() || metadata.database_identity == identity;
 }
 
+bool HasDefaultTimeSeriesRollupCarrier(
+    const EngineNoSqlProviderGenerationMetadata& metadata) {
+  return !metadata.time_series_rollup_candidate_present &&
+         metadata.time_series_rollup_capability_uuid.empty() &&
+         metadata.time_series_rollup_generation == 0 &&
+         metadata.time_series_visible_late_arrival_generation == 0 &&
+         metadata.time_series_rollup_interval_ns == 0 &&
+         metadata.time_series_rollup_exactness_attestation_state.empty() &&
+         metadata.time_series_rollup_statement_snapshot_uuid.empty() &&
+         metadata.time_series_rollup_statement_metadata_snapshot_uuid.empty() &&
+         metadata.time_series_rollup_owning_transaction_uuid.empty() &&
+         metadata.time_series_rollup_local_transaction_id == 0 &&
+         metadata
+                 .time_series_rollup_snapshot_visible_through_local_transaction_id ==
+             0 &&
+         metadata.time_series_rollup_security_context_uuid.empty() &&
+         metadata.time_series_rollup_catalog_epoch_uuid.empty() &&
+         !metadata.time_series_rollup_exact_residual_recheck_required &&
+         !metadata.time_series_rollup_base_row_mga_recheck_required &&
+         !metadata.time_series_rollup_security_recheck_required;
+}
+
+bool HasValidTimeSeriesRollupCarrier(
+    const EngineNoSqlProviderGenerationMetadata& metadata) {
+  if (!metadata.time_series_rollup_candidate_present) {
+    return HasDefaultTimeSeriesRollupCarrier(metadata);
+  }
+  return HasExactTimeSeriesRollupBindingInput(metadata) &&
+         metadata.time_series_rollup_capability_uuid !=
+             metadata.generation_uuid &&
+         metadata.time_series_rollup_capability_uuid ==
+             DeriveTimeSeriesRollupCapabilityUuidImpl(metadata);
+}
+
 bool HasLifecycleMetadata(
     const EngineNoSqlProviderGenerationMetadata& metadata) {
   return metadata.family != EngineNoSqlProviderFamily::kUnknown &&
@@ -295,7 +630,8 @@ bool HasLifecycleMetadata(
          !metadata.backup_metadata_ref.empty() &&
          !metadata.restore_metadata_ref.empty() &&
          !metadata.repair_metadata_ref.empty() &&
-         !metadata.support_bundle_evidence_id.empty();
+         !metadata.support_bundle_evidence_id.empty() &&
+         HasValidTimeSeriesRollupCarrier(metadata);
 }
 
 bool MetadataRefMismatch(
@@ -367,17 +703,26 @@ std::vector<EngineNoSqlProviderGenerationMetadata> LoadLocked(
       if (parts.size() < 3 || parts[1] != std::string("GENERATION")) {
         if (parts.size() >= 3 && parts[1] == std::string("DROP")) {
           auto metadata = MetadataFromPairs(DecodeCrudPairs(parts[2]));
-          if (BoundToContext(context, metadata)) {
+          if (BoundToContext(context, metadata) ||
+              metadata.time_series_rollup_candidate_present) {
             latest.erase(GenerationKey(metadata));
           }
         }
         continue;
       }
       auto metadata = MetadataFromPairs(DecodeCrudPairs(parts[2]));
-      if (!BoundToContext(context, metadata)) {
+      if (!BoundToContext(context, metadata) &&
+          !metadata.time_series_rollup_candidate_present) {
         continue;
       }
-      metadata.database_identity = identity;
+      // Candidate rows retain their decoded identity so the capability binding
+      // remains an integrity check over the persisted bytes.  Normalizing a
+      // substituted identity here would silently repair the signed value before
+      // canonical admission sees it.  Legacy/default rows keep the historical
+      // context normalization behavior.
+      if (!metadata.time_series_rollup_candidate_present) {
+        metadata.database_identity = identity;
+      }
       latest[GenerationKey(metadata)] = std::move(metadata);
     }
   }
@@ -390,6 +735,19 @@ std::vector<EngineNoSqlProviderGenerationMetadata> LoadLocked(
 }
 
 }  // namespace
+
+std::string DeriveTimeSeriesRollupCapabilityUuidV1(
+    const EngineNoSqlProviderGenerationMetadata& metadata) {
+  return DeriveTimeSeriesRollupCapabilityUuidImpl(metadata);
+}
+
+bool ValidateTimeSeriesRollupCapabilityBindingV1(
+    const EngineNoSqlProviderGenerationMetadata& metadata) {
+  if (!metadata.time_series_rollup_candidate_present) return false;
+  const auto derived = DeriveTimeSeriesRollupCapabilityUuidImpl(metadata);
+  return !derived.empty() &&
+         metadata.time_series_rollup_capability_uuid == derived;
+}
 
 std::string EngineNoSqlProviderDatabaseIdentity(
     const EngineRequestContext& context) {
@@ -534,6 +892,12 @@ EngineNoSqlProviderGenerationResult LoadNoSqlProviderGeneration(
   EngineNoSqlProviderGenerationResult result;
   for (const auto& metadata : loaded) {
     if (Matches(metadata, family, provider_id, collection_uuid)) {
+      if (metadata.time_series_rollup_candidate_present &&
+          !ValidateTimeSeriesRollupCapabilityBindingV1(metadata)) {
+        return Failure(context,
+                       "nosql.provider_generation.load",
+                       kNoSqlProviderGenerationMetadataMissing);
+      }
       result.ok = true;
       result.diagnostic = OkDiagnostic();
       result.metadata = metadata;

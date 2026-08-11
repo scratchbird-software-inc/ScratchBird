@@ -136,10 +136,32 @@ class NativeRelationalParser final {
       });
     };
     if (contains_word("MONGO_PIPELINE") || contains_word("CYPHER_TEXT") ||
-        contains_word("REDIS_COMMAND")) {
+        contains_word("REDIS_COMMAND") ||
+        contains_word("INFLUX_LINE_PROTOCOL")) {
       RefuseExact("SB_MODEL_GRAMMAR_DONOR_TEXT_REFUSED_V1",
                   "opaque donor text is not an executable SBSQL model source");
       return FinishRefusal();
+    }
+    if (contains_word("TIME_SERIES_SOURCE") || contains_word("TIME_RANGE") ||
+        contains_word("TIME_BUCKET") || contains_word("TIME_DOWNSAMPLE") ||
+        contains_word("TIME_SERIES_APPEND")) {
+      if (tokens_.empty() || !IsWord(*tokens_.front(), "SELECT")) {
+        RefuseExact("SB_MODEL_TIME_SERIES_APPEND_NOT_QUERY_SOURCE_V1",
+                    "time-series append/write identity is not a query source");
+        return FinishRefusal();
+      }
+      if (contains_word("TIME_SERIES_APPEND")) {
+        RefuseExact("SB_MODEL_TIME_SERIES_APPEND_NOT_QUERY_SOURCE_V1",
+                    "time-series append opcode is not a query source");
+        return FinishRefusal();
+      }
+      if (contains_word("TIME_DOWNSAMPLE") &&
+          (contains_word("DISTINCT") || contains_word("FILTER"))) {
+        RefuseExact("SB_MODEL_TIME_SERIES_AGGREGATE_REFUSED_V1",
+                    "time-series downsample does not admit DISTINCT or FILTER");
+        return FinishRefusal();
+      }
+      return ParseTimeSeriesModelSelect();
     }
     if (contains_word("GRAPH_SOURCE") || contains_word("GRAPH_MATCH") ||
         contains_word("GRAPH_EXPAND")) {
@@ -256,6 +278,275 @@ class NativeRelationalParser final {
     document_.messages.diagnostics.push_back(MakeDiagnostic(
         std::string(diagnostic_id), "ERROR", std::string(message),
         "sbp_sbsql.document_model_parser"));
+  }
+
+  NativeRelationalAstDocument ParseTimeSeriesModelSelect() {
+    // QOW-SOURCE-RCP-076-TIME-SERIES-GRAMMAR-V1
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded", "time-series query token limit exceeded");
+      return FinishRefusal();
+    }
+
+    const Token& select = Consume();
+    std::vector<std::uint32_t> projection_expression_ids;
+    if (AtSymbol("*")) {
+      const Token& token = Consume();
+      NativeExpressionAstNode wildcard;
+      wildcard.expression_id = NextExpressionId();
+      wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+      wildcard.spelling = token.text;
+      wildcard.range = TokenSourceRange(token);
+      projection_expression_ids.push_back(wildcard.expression_id);
+      document_.expressions.push_back(std::move(wildcard));
+    } else {
+      while (!AtEnd()) {
+        const auto expression_id = ParseExpression(0, 0);
+        if (!expression_id.has_value()) return FinishRefusal();
+        projection_expression_ids.push_back(*expression_id);
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+    }
+    if (!RequireWord("FROM", "time_series_from_required",
+                     "time-series source requires FROM") ||
+        AtEnd() || !IsWord(Current(), "TIME_SERIES_SOURCE")) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "FROM requires exactly one TIME_SERIES_SOURCE");
+      return FinishRefusal();
+    }
+
+    const Token& source_operator = Consume();
+    if (!RequireSymbol("(", "time_series_source_open_required",
+                       "TIME_SERIES_SOURCE requires an opening parenthesis") ||
+        AtEnd() || !IsNameToken(Current())) {
+      RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                  "TIME_SERIES_SOURCE requires a qualified object name");
+      return FinishRefusal();
+    }
+    NativeCatalogRelationSourceAstNode source;
+    source.source_id = 1;
+    source.source_kind = NativeRelationSourceAstKind::kTimeSeries;
+    source.model_family_id = "time_series";
+    const Token& first_name = Consume();
+    const Token* last_name = &first_name;
+    source.qualified_name.push_back(
+        {first_name.text, first_name.quoted, TokenSourceRange(first_name)});
+    while (AtSymbol(".")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "qualified time-series object name is incomplete");
+        return FinishRefusal();
+      }
+      last_name = &Consume();
+      source.qualified_name.push_back(
+          {last_name->text, last_name->quoted, TokenSourceRange(*last_name)});
+    }
+    source.qualified_name_range = Span(first_name, *last_name);
+    if (!RequireSymbol(")", "time_series_source_close_required",
+                       "TIME_SERIES_SOURCE requires a closing parenthesis")) {
+      return FinishRefusal();
+    }
+    const Token* source_end = &Previous();
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "TIME_SERIES_SOURCE AS requires an alias");
+        return FinishRefusal();
+      }
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source.alias_is_explicit = true;
+      source_end = &alias;
+    } else if (!AtEnd() && Current().kind == TokenKind::kIdentifier &&
+               !IsWord(Current(), "WHERE")) {
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source_end = &alias;
+    } else {
+      source.alias = NativeIdentifierAstNode{
+          last_name->text, last_name->quoted, TokenSourceRange(*last_name)};
+    }
+
+    if (AtEnd() || !IsWord(Current(), "WHERE")) {
+      RefuseExact("SB_MODEL_TIME_SERIES_RANGE_INVALID_V1",
+                  "TIME_SERIES_SOURCE requires exactly one TIME_RANGE");
+      return FinishRefusal();
+    }
+    Consume();
+    const auto range_expression_id = ParseExpression(0, 0);
+    if (!range_expression_id.has_value()) return FinishRefusal();
+    auto* range_expression = &document_.expressions[*range_expression_id - 1];
+    if (range_expression->expression_kind !=
+            NativeExpressionAstKind::kFunctionCall ||
+        ToUpperAscii(range_expression->operator_name) != "TIME_RANGE" ||
+        range_expression->child_expression_ids.size() != 3) {
+      RefuseExact("SB_MODEL_TIME_SERIES_RANGE_INVALID_V1",
+                  "TIME_RANGE requires alias, start, and end in exact order");
+      return FinishRefusal();
+    }
+    range_expression->operator_name = "TIME_RANGE";
+    const auto expression_at = [&](const std::uint32_t id)
+        -> NativeExpressionAstNode* {
+      return id == 0 || id > document_.expressions.size()
+                 ? nullptr
+                 : &document_.expressions[id - 1];
+    };
+    auto* alias_expression =
+        expression_at(range_expression->child_expression_ids[0]);
+    auto* start_expression =
+        expression_at(range_expression->child_expression_ids[1]);
+    auto* end_expression =
+        expression_at(range_expression->child_expression_ids[2]);
+    if (alias_expression == nullptr || start_expression == nullptr ||
+        end_expression == nullptr || !source.alias.has_value() ||
+        alias_expression->expression_kind !=
+            NativeExpressionAstKind::kIdentifier ||
+        alias_expression->qualified_identifier.size() != 1 ||
+        !SameIdentifier(*source.alias,
+                        TokenForRangeStart(alias_expression->range)) ||
+        start_expression->expression_kind != NativeExpressionAstKind::kLiteral ||
+        start_expression->literal_kind != NativeLiteralAstKind::kTemporal ||
+        end_expression->expression_kind != NativeExpressionAstKind::kLiteral ||
+        end_expression->literal_kind != NativeLiteralAstKind::kTemporal) {
+      RefuseExact("SB_MODEL_TIME_SERIES_RANGE_INVALID_V1",
+                  "TIME_RANGE alias or typed endpoints are invalid");
+      return FinishRefusal();
+    }
+    source.model_time_series_alias_expression_id =
+        alias_expression->expression_id;
+    source.model_range_expression_id = range_expression->expression_id;
+    source.model_range_start_expression_id = start_expression->expression_id;
+    source.model_range_end_expression_id = end_expression->expression_id;
+    if (!AtEnd() && (IsWord(Current(), "AND") ||
+                     IsWord(Current(), "OR"))) {
+      RefuseExact("SB_MODEL_TIME_SERIES_RANGE_INVALID_V1",
+                  "TIME_SERIES_SOURCE admits exactly one TIME_RANGE predicate");
+      return FinishRefusal();
+    }
+
+    NativeExpressionAstNode* bucket = nullptr;
+    NativeExpressionAstNode* downsample = nullptr;
+    for (const auto projection_id : projection_expression_ids) {
+      auto* expression = expression_at(projection_id);
+      if (expression == nullptr ||
+          expression->expression_kind != NativeExpressionAstKind::kFunctionCall) {
+        continue;
+      }
+      const auto operation = ToUpperAscii(expression->operator_name);
+      if (operation == "TIME_BUCKET") {
+        if (bucket != nullptr || expression->child_expression_ids.size() != 2) {
+          RefuseExact("SB_MODEL_TIME_SERIES_INTERVAL_INVALID_V1",
+                      "TIME_BUCKET requires one interval and timestamp expression");
+          return FinishRefusal();
+        }
+        expression->operator_name = "TIME_BUCKET";
+        bucket = expression;
+      } else if (operation == "TIME_DOWNSAMPLE") {
+        if (downsample != nullptr || expression->child_expression_ids.size() != 3) {
+          RefuseExact("SB_MODEL_TIME_SERIES_AGGREGATE_REFUSED_V1",
+                      "TIME_DOWNSAMPLE requires aggregate, interval, and value");
+          return FinishRefusal();
+        }
+        expression->operator_name = "TIME_DOWNSAMPLE";
+        downsample = expression;
+      }
+    }
+    if (bucket != nullptr) {
+      auto* interval = expression_at(bucket->child_expression_ids[0]);
+      auto* timestamp = expression_at(bucket->child_expression_ids[1]);
+      if (interval == nullptr || timestamp == nullptr ||
+          interval->expression_kind != NativeExpressionAstKind::kLiteral ||
+          interval->literal_kind != NativeLiteralAstKind::kTemporal ||
+          timestamp->expression_kind != NativeExpressionAstKind::kIdentifier) {
+        RefuseExact("SB_MODEL_TIME_SERIES_INTERVAL_INVALID_V1",
+                    "TIME_BUCKET operands are not typed interval/timestamp expressions");
+        return FinishRefusal();
+      }
+      source.model_bucket_expression_id = bucket->expression_id;
+      source.model_bucket_interval_expression_id = interval->expression_id;
+      source.model_bucket_time_input_expression_id = timestamp->expression_id;
+      source.model_interval_expression_id = interval->expression_id;
+      source.model_time_input_expression_id = timestamp->expression_id;
+    }
+    if (downsample != nullptr) {
+      auto* aggregate = expression_at(downsample->child_expression_ids[0]);
+      auto* interval = expression_at(downsample->child_expression_ids[1]);
+      auto* value = expression_at(downsample->child_expression_ids[2]);
+      const auto aggregate_id = aggregate == nullptr
+                                    ? std::string{}
+                                    : aggregate->spelling;
+      const bool exact_value_input =
+          value != nullptr && source.alias.has_value() &&
+          value->qualified_identifier.size() == 2 &&
+          value->qualified_identifier[0].quoted == source.alias->quoted &&
+          (source.alias->quoted
+               ? value->qualified_identifier[0].spelling ==
+                     source.alias->spelling
+               : ToLowerAscii(value->qualified_identifier[0].spelling) ==
+                     ToLowerAscii(source.alias->spelling)) &&
+          (value->qualified_identifier[1].quoted
+               ? value->qualified_identifier[1].spelling == "value"
+               : ToLowerAscii(value->qualified_identifier[1].spelling) ==
+                     "value");
+      if (aggregate == nullptr || interval == nullptr || value == nullptr ||
+          aggregate->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          aggregate->qualified_identifier.size() != 1 ||
+          (aggregate_id != "COUNT" && aggregate_id != "SUM" &&
+           aggregate_id != "MIN" && aggregate_id != "MAX" &&
+           aggregate_id != "AVG") ||
+          interval->expression_kind != NativeExpressionAstKind::kLiteral ||
+          interval->literal_kind != NativeLiteralAstKind::kTemporal ||
+          value->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          !exact_value_input) {
+        RefuseExact("SB_MODEL_TIME_SERIES_AGGREGATE_REFUSED_V1",
+                    "TIME_DOWNSAMPLE aggregate or typed operands are invalid");
+        return FinishRefusal();
+      }
+      source.model_downsample_expression_id = downsample->expression_id;
+      source.model_interval_expression_id = interval->expression_id;
+      source.model_time_input_expression_id = value->expression_id;
+      source.model_time_series_aggregate_id = aggregate_id;
+      // The closed aggregate ID is syntax, not a catalog identifier. Carry it
+      // as an exact typed literal so no name-resolution UUID can become
+      // aggregate execution authority.
+      aggregate->expression_kind = NativeExpressionAstKind::kLiteral;
+      aggregate->literal_kind = NativeLiteralAstKind::kString;
+      aggregate->qualified_identifier.clear();
+      aggregate->spelling = aggregate_id;
+    }
+    source.model_operation_id = downsample != nullptr
+                                    ? "TIME_SERIES_DOWNSAMPLE"
+                                    : "TIME_SERIES_RANGE_READ";
+
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "unexpected input follows the bounded time-series query");
+      return FinishRefusal();
+    }
+    NativeRelationAstNode relation;
+    relation.relation_id = 1;
+    relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+    relation.relation_source_ids = {source.source_id};
+    relation.output_expression_ids = projection_expression_ids;
+    relation.predicate_expression_ids = {range_expression->expression_id};
+    relation.range = Span(source_operator, *source_end);
+    source.range = relation.range;
+    document_.catalog_relation_sources.push_back(std::move(source));
+    document_.relations.push_back(std::move(relation));
+    document_.root_relation_id = 1;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    (void)select;
+    return std::move(document_);
   }
 
   NativeRelationalAstDocument ParseKeyValueModelSelect() {

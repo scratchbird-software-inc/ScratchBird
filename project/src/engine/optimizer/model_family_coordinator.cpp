@@ -122,6 +122,7 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
   const bool document_family = request.family_id == "document";
   const bool graph_family = request.family_id == "graph";
   const bool key_value_family = request.family_id == "key_value";
+  const bool time_series_family = request.family_id == "time_series";
   const bool unnest = request.operation_id == "DOCUMENT_UNNEST";
   const bool valid_operation =
       (document_family &&
@@ -133,18 +134,25 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
       (key_value_family &&
        (request.operation_id == "KEY_VALUE_GET" ||
         request.operation_id == "KEY_VALUE_MULTI_GET" ||
-        request.operation_id == "KEY_VALUE_PREFIX_RANGE"));
+        request.operation_id == "KEY_VALUE_PREFIX_RANGE")) ||
+      (time_series_family &&
+       (request.operation_id == "TIME_SERIES_RANGE_READ" ||
+        request.operation_id == "TIME_SERIES_BUCKET" ||
+        request.operation_id == "TIME_SERIES_DOWNSAMPLE"));
   const std::string expected_logical_operator =
       graph_family ? "LOGICAL_GRAPH_SOURCE_V1"
                    : key_value_family ? "LOGICAL_KEY_VALUE_SOURCE_V1"
+                   : time_series_family ? "LOGICAL_TIME_SERIES_SOURCE_V1"
                                       : "LOGICAL_DOCUMENT_SOURCE_V1";
   const std::string expected_physical_operator =
       graph_family ? "PHYSICAL_GRAPH_ADJACENCY_SCAN_V1"
                    : key_value_family ? "PHYSICAL_KEY_VALUE_SCAN_V1"
+                   : time_series_family ? "PHYSICAL_TIME_SERIES_RANGE_SCAN_V1"
                                       : "PHYSICAL_DOCUMENT_PATH_SCAN_V1";
   const std::string expected_implementation =
       graph_family ? "physical_graph_adjacency_scan_v1"
                    : key_value_family ? "physical_key_value_scan_v1"
+                   : time_series_family ? "physical_time_series_range_scan_v1"
                                       : "physical_document_path_scan_v1";
   result.logical_operator_id = expected_logical_operator;
   result.physical_operator_id = expected_physical_operator;
@@ -154,16 +162,20 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     return result;
   };
 
-  if (key_value_family !=
+  const bool timestamp_family = key_value_family || time_series_family;
+  if (timestamp_family !=
           !request.mga_statement_context.statement_timestamp.empty() ||
-      (key_value_family &&
+      (timestamp_family &&
        !CanonicalStatementTimestamp(
            request.mga_statement_context.statement_timestamp))) {
-    return refuse("SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1",
-                  "key/value coordinator statement timestamp is invalid");
+    return refuse(time_series_family
+                      ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
+                      : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1",
+                  "model-family coordinator statement timestamp is invalid");
   }
   if (request.abi_version != 1 ||
-      (!document_family && !graph_family && !key_value_family) ||
+      (!document_family && !graph_family && !key_value_family &&
+       !time_series_family) ||
       !valid_operation ||
       request.logical_operator_id != expected_logical_operator ||
       request.logical_node_id == 0 || request.output_descriptor_ids.empty() ||
@@ -235,7 +247,9 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     }
   }
   if (selected == nullptr) {
-    if (key_value_family ? memory_refusal_observed : fallback_seen) {
+    if ((key_value_family || time_series_family)
+            ? memory_refusal_observed
+            : fallback_seen) {
       return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                     "no exact model-family candidate fits the memory grant");
     }
@@ -243,6 +257,8 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
                       ? "SB_MODEL_GRAPH_EXACT_FALLBACK_UNAVAILABLE_V1"
                       : key_value_family
                             ? "SB_MODEL_KEY_VALUE_EXACT_FALLBACK_UNAVAILABLE_V1"
+                            : time_series_family
+                                  ? "SB_MODEL_TIME_SERIES_EXACT_FALLBACK_UNAVAILABLE_V1"
                             : "SB_MODEL_DOCUMENT_EXACT_FALLBACK_UNAVAILABLE_V1",
                   "no exact model-family provider or fallback is available");
   }
@@ -288,6 +304,7 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
   node.logical_semantic_variant_id =
       graph_family ? "logical_graph_source_v1"
                    : key_value_family ? "logical_key_value_source_v1"
+                   : time_series_family ? "logical_time_series_source_v1"
                                       : "logical_document_source_v1";
   dag.nodes.push_back(std::move(node));
   dag.bound_sblr_tree_uuid = request.bound_sblr_tree_uuid;

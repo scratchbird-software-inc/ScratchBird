@@ -279,10 +279,52 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", 0,
                   "key_value_model_operation_identity");
   }
-  if (key_value_model_wire != !dag.statement_timestamp.empty() ||
-      (key_value_model_wire &&
+  // QOW-SOURCE-RCP-076-TYPED-DAG-FUNCTIONLESS-TIME-SERIES-V1
+  const auto time_range_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "TIME_RANGE";
+      });
+  const auto time_bucket_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "TIME_BUCKET";
+      });
+  const auto time_downsample_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "TIME_DOWNSAMPLE";
+      });
+  const auto time_series_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1" ||
+               node.semantic_variant_id == "SBLR_MODEL_AGGREGATE_V1";
+      });
+  const auto time_series_node_count = std::ranges::count_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1" ||
+               node.semantic_variant_id == "SBLR_MODEL_AGGREGATE_V1";
+      });
+  const bool time_series_model_wire =
+      planning_wire && time_range_count == 1 && time_bucket_count <= 1 &&
+      time_downsample_count <= 1 &&
+      time_series_node_count == 1 && time_series_node != dag.nodes.end() &&
+      ((time_downsample_count == 0 &&
+        time_series_node->semantic_variant_id == "SBLR_MODEL_SOURCE_V1") ||
+       (time_downsample_count == 1 &&
+        time_series_node->semantic_variant_id == "SBLR_MODEL_AGGREGATE_V1"));
+  if ((time_range_count != 0 || time_bucket_count != 0 ||
+       time_downsample_count != 0) &&
+      !time_series_model_wire) {
+    return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", 0,
+                  "time_series_model_operation_identity");
+  }
+  const bool timestamp_model_wire =
+      key_value_model_wire || time_series_model_wire;
+  if (timestamp_model_wire != !dag.statement_timestamp.empty() ||
+      (timestamp_model_wire &&
        !canonical_statement_timestamp(dag.statement_timestamp))) {
-    return refuse("SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1", 0,
+    return refuse(time_series_model_wire
+                      ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
+                      : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1",
+                  0,
                   "statement_timestamp");
   }
   std::size_t planning_reference_count = 0;
@@ -371,18 +413,25 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         !expression.function_uuid.has_value() &&
         expression.expression_id ==
             key_value_operation_expression->expression_id;
+    const bool functionless_time_series_operation =
+        time_series_model_wire && function_call &&
+        !expression.function_uuid.has_value() &&
+        (expression.operator_name == "TIME_RANGE" ||
+         expression.operator_name == "TIME_BUCKET" ||
+         expression.operator_name == "TIME_DOWNSAMPLE");
     const bool operator_expression =
         expression.expression_kind == RelationalExpressionKind::kUnary ||
         expression.expression_kind == RelationalExpressionKind::kBinary ||
         functionless_document_unnest || functionless_graph_operation ||
-        functionless_key_value_operation;
+        functionless_key_value_operation || functionless_time_series_operation;
     if (literal != expression.literal_kind.has_value() ||
         (expression.literal_kind.has_value() &&
          !known_literal_kind(*expression.literal_kind)) ||
         function_call != (expression.function_uuid.has_value() ||
                           functionless_document_unnest ||
                           functionless_graph_operation ||
-                          functionless_key_value_operation) ||
+                          functionless_key_value_operation ||
+                          functionless_time_series_operation) ||
         (expression.function_uuid.has_value() &&
          !canonical_uuid(*expression.function_uuid)) ||
         identifier != expression.bound_name_uuid.has_value() ||
@@ -402,7 +451,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         (function_call &&
          ((!functionless_document_unnest &&
            !functionless_graph_operation &&
-           !functionless_key_value_operation) ||
+           !functionless_key_value_operation &&
+           !functionless_time_series_operation) ||
           (functionless_document_unnest && child_count == 2) ||
           (functionless_graph_operation &&
            ((expression.operator_name == "GRAPH_MATCH" && child_count == 2) ||
@@ -410,7 +460,12 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
           (functionless_key_value_operation &&
            ((expression.operator_name == "KV_KEY" && child_count == 1) ||
             (expression.operator_name == "KV_MULTI_GET" && child_count >= 2) ||
-            (expression.operator_name == "KV_PREFIX" && child_count == 2))))) ||
+            (expression.operator_name == "KV_PREFIX" && child_count == 2))) ||
+          (functionless_time_series_operation &&
+           ((expression.operator_name == "TIME_RANGE" && child_count == 3) ||
+            (expression.operator_name == "TIME_BUCKET" && child_count == 2) ||
+            (expression.operator_name == "TIME_DOWNSAMPLE" &&
+             child_count == 3))))) ||
         (expression.expression_kind == RelationalExpressionKind::kUnary &&
          child_count == 1) ||
         (expression.expression_kind == RelationalExpressionKind::kBinary &&
@@ -428,6 +483,437 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       if (child_id == 0 || !expressions_by_id.contains(child_id)) {
         return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
                       "expression_child_ids");
+      }
+    }
+  }
+  if (time_series_model_wire) {
+    const auto expression_named = [&](const std::string_view name) {
+      return std::ranges::find_if(dag.expressions, [&](const auto& expression) {
+        return expression.operator_name == name;
+      });
+    };
+    const auto range = expression_named("TIME_RANGE");
+    const auto bucket = expression_named("TIME_BUCKET");
+    const auto downsample = expression_named("TIME_DOWNSAMPLE");
+    const bool is_downsample = time_downsample_count == 1;
+    const bool is_bucket = time_bucket_count == 1;
+    const auto expected_width = is_downsample ? 7u : (is_bucket ? 1u : 6u);
+    if (range == dag.expressions.end() ||
+        time_series_node->node_kind !=
+            (is_downsample ? RelationalDagNodeKind::kAggregate
+                           : RelationalDagNodeKind::kScan) ||
+        !time_series_node->input_node_ids.empty() ||
+        time_series_node->required_object_uuids.size() != 1 ||
+        !canonical_uuid(time_series_node->required_object_uuids.front()) ||
+        time_series_node->output_descriptor_ids.size() != expected_width ||
+        range->expression_kind != RelationalExpressionKind::kFunctionCall ||
+        range->function_uuid.has_value() || range->bound_name_uuid.has_value() ||
+        range->literal_kind.has_value() ||
+        range->literal_or_parameter_ref.has_value() ||
+        range->child_expression_ids.size() != 3) {
+      return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    time_series_node->node_id, "time_series_exact_shape");
+    }
+    std::vector<const RelationalOutputRecord*> time_outputs;
+    for (const auto& output : dag.outputs) {
+      if (output.relation_node_id == time_series_node->node_id) {
+        time_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(time_outputs, {}, [](const auto* output) {
+      return output->ordinal;
+    });
+    if (time_outputs.size() != expected_width) {
+      return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                    time_series_node->node_id,
+                    "time_series_output_descriptor_order");
+    }
+    const auto alias = expressions_by_id.at(range->child_expression_ids[0]);
+    const auto start = expressions_by_id.at(range->child_expression_ids[1]);
+    const auto end = expressions_by_id.at(range->child_expression_ids[2]);
+    const auto start_descriptor =
+        descriptors_by_id.at(start->result_descriptor_id);
+    const auto end_descriptor = descriptors_by_id.at(end->result_descriptor_id);
+    if (alias->expression_kind != RelationalExpressionKind::kIdentifier ||
+        alias->bound_name_uuid !=
+            time_series_node->required_object_uuids.front() ||
+        start_descriptor->type_uuid != end_descriptor->type_uuid ||
+        start_descriptor->nullability != RelationalNullability::kNonNull ||
+        end_descriptor->nullability != RelationalNullability::kNonNull ||
+        start->expression_kind != RelationalExpressionKind::kLiteral ||
+        end->expression_kind != RelationalExpressionKind::kLiteral ||
+        start->literal_kind != RelationalLiteralKind::kTemporal ||
+        end->literal_kind != RelationalLiteralKind::kTemporal) {
+      return refuse("SB_MODEL_TIME_SERIES_RANGE_INVALID_V1",
+                    time_series_node->node_id,
+                    "time_series_range_child_order_or_type");
+    }
+    std::vector<std::uint32_t> exact_bound_expression_ids;
+    exact_bound_expression_ids.reserve(expected_width + 6);
+    for (const auto* output : time_outputs) {
+      exact_bound_expression_ids.push_back(output->expression_id);
+    }
+    if (is_bucket && !is_downsample) {
+      if (time_series_node->bound_expression_ids.size() != 6 ||
+          time_series_node->bound_expression_ids.front() !=
+              exact_bound_expression_ids.front() ||
+          time_series_node->bound_expression_ids.back() !=
+              range->expression_id) {
+        return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                      time_series_node->node_id,
+                      "time_series_operation_attachment");
+      }
+      const auto timestamp_id = bucket->child_expression_ids[1];
+      std::unordered_set<std::uint32_t> hidden_source_ids;
+      for (std::size_t ordinal = 1; ordinal < 5; ++ordinal) {
+        const auto expression_id =
+            time_series_node->bound_expression_ids[ordinal];
+        const auto expression = expressions_by_id.at(expression_id);
+        if (expression->expression_kind !=
+                RelationalExpressionKind::kIdentifier ||
+            expression_id == alias->expression_id ||
+            expression_id == timestamp_id ||
+            !hidden_source_ids.insert(expression_id).second) {
+          return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                        time_series_node->node_id,
+                        "time_series_hidden_source_attachment");
+        }
+      }
+    } else {
+      if (is_bucket) {
+        exact_bound_expression_ids.push_back(bucket->expression_id);
+      }
+      if (is_downsample) {
+        exact_bound_expression_ids.push_back(downsample->expression_id);
+      }
+      exact_bound_expression_ids.push_back(range->expression_id);
+      if (time_series_node->bound_expression_ids !=
+          exact_bound_expression_ids) {
+        return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                      time_series_node->node_id,
+                      "time_series_operation_attachment");
+      }
+    }
+    const auto parse_fixed_interval = [](const std::string_view encoded,
+                                         std::int64_t* interval_ns) {
+      if (interval_ns == nullptr || encoded.empty()) return false;
+      if (std::ranges::all_of(encoded, [](const char ch) {
+            return ch >= '0' && ch <= '9';
+          })) {
+        const auto parsed = std::from_chars(
+            encoded.data(), encoded.data() + encoded.size(), *interval_ns);
+        return parsed.ec == std::errc{} &&
+               parsed.ptr == encoded.data() + encoded.size() &&
+               *interval_ns > 0;
+      }
+      if (!encoded.starts_with('P')) return false;
+      std::size_t position = 1;
+      bool in_time = false;
+      bool component_seen = false;
+      int last_order = -1;
+      __int128 total = 0;
+      while (position < encoded.size()) {
+        if (encoded[position] == 'T') {
+          if (in_time) return false;
+          in_time = true;
+          ++position;
+          if (position == encoded.size()) return false;
+          continue;
+        }
+        const auto whole_start = position;
+        while (position < encoded.size() && encoded[position] >= '0' &&
+               encoded[position] <= '9') {
+          ++position;
+        }
+        if (whole_start == position) return false;
+        std::uint64_t whole = 0;
+        const auto parsed = std::from_chars(
+            encoded.data() + whole_start, encoded.data() + position, whole);
+        if (parsed.ec != std::errc{} ||
+            parsed.ptr != encoded.data() + position) {
+          return false;
+        }
+        std::uint64_t fraction = 0;
+        bool fractional = false;
+        if (position < encoded.size() && encoded[position] == '.') {
+          fractional = true;
+          const auto fraction_start = ++position;
+          while (position < encoded.size() && encoded[position] >= '0' &&
+                 encoded[position] <= '9') {
+            ++position;
+          }
+          const auto digits = position - fraction_start;
+          if (digits == 0 || digits > 9) return false;
+          const auto fraction_parse = std::from_chars(
+              encoded.data() + fraction_start, encoded.data() + position,
+              fraction);
+          if (fraction_parse.ec != std::errc{} ||
+              fraction_parse.ptr != encoded.data() + position) {
+            return false;
+          }
+          for (std::size_t index = digits; index < 9; ++index) fraction *= 10;
+        }
+        if (position == encoded.size()) return false;
+        const auto designator = encoded[position++];
+        int order = -1;
+        std::uint64_t seconds_multiplier = 0;
+        if (!in_time && designator == 'D') {
+          order = 0;
+          seconds_multiplier = 86'400;
+        } else if (in_time && designator == 'H') {
+          order = 1;
+          seconds_multiplier = 3'600;
+        } else if (in_time && designator == 'M') {
+          order = 2;
+          seconds_multiplier = 60;
+        } else if (in_time && designator == 'S') {
+          order = 3;
+          seconds_multiplier = 1;
+        } else {
+          return false;
+        }
+        if (order <= last_order || (fractional && designator != 'S')) {
+          return false;
+        }
+        last_order = order;
+        component_seen = true;
+        total += static_cast<__int128>(whole) * seconds_multiplier *
+                 1'000'000'000;
+        if (designator == 'S') total += fraction;
+        if (total > std::numeric_limits<std::int64_t>::max()) return false;
+      }
+      if (!component_seen || total <= 0) return false;
+      *interval_ns = static_cast<std::int64_t>(total);
+      return true;
+    };
+    std::int64_t bucket_interval_ns = 0;
+    if (is_bucket) {
+      const auto interval =
+          expressions_by_id.at(bucket->child_expression_ids[0]);
+      const auto timestamp =
+          expressions_by_id.at(bucket->child_expression_ids[1]);
+      const auto interval_descriptor =
+          descriptors_by_id.at(interval->result_descriptor_id);
+      const auto timestamp_descriptor =
+          descriptors_by_id.at(timestamp->result_descriptor_id);
+      if (bucket->expression_kind !=
+              RelationalExpressionKind::kFunctionCall ||
+          bucket->function_uuid.has_value() ||
+          bucket->result_descriptor_id != timestamp->result_descriptor_id ||
+          timestamp_descriptor->type_uuid != start_descriptor->type_uuid ||
+          timestamp_descriptor->nullability !=
+              RelationalNullability::kNonNull ||
+          interval_descriptor->nullability !=
+              RelationalNullability::kNonNull ||
+          interval_descriptor->type_uuid == timestamp_descriptor->type_uuid ||
+          interval->expression_kind != RelationalExpressionKind::kLiteral ||
+          interval->literal_kind != RelationalLiteralKind::kTemporal ||
+          !interval->literal_or_parameter_ref.has_value() ||
+          !parse_fixed_interval(*interval->literal_or_parameter_ref,
+                                &bucket_interval_ns) ||
+          (!is_downsample &&
+           time_series_node->output_descriptor_ids.front() !=
+               bucket->result_descriptor_id)) {
+        return refuse("SB_MODEL_TIME_SERIES_INTERVAL_INVALID_V1",
+                      time_series_node->node_id,
+                      "time_series_bucket_child_order_or_type");
+      }
+    }
+    if (is_downsample) {
+      const auto aggregate =
+          expressions_by_id.at(downsample->child_expression_ids[0]);
+      const auto interval =
+          expressions_by_id.at(downsample->child_expression_ids[1]);
+      const auto value =
+          expressions_by_id.at(downsample->child_expression_ids[2]);
+      const auto interval_descriptor =
+          descriptors_by_id.at(interval->result_descriptor_id);
+      const auto value_descriptor =
+          descriptors_by_id.at(value->result_descriptor_id);
+      const auto aggregate_text = aggregate->literal_or_parameter_ref;
+      std::int64_t downsample_interval_ns = 0;
+      const bool closed_aggregate =
+          aggregate_text == "COUNT" || aggregate_text == "SUM" ||
+          aggregate_text == "MIN" || aggregate_text == "MAX" ||
+          aggregate_text == "AVG";
+      if (interval->expression_kind != RelationalExpressionKind::kLiteral ||
+          interval->literal_kind != RelationalLiteralKind::kTemporal ||
+          !interval->literal_or_parameter_ref.has_value() ||
+          !parse_fixed_interval(*interval->literal_or_parameter_ref,
+                                &downsample_interval_ns) ||
+          (is_bucket && downsample_interval_ns != bucket_interval_ns) ||
+          interval_descriptor->nullability !=
+              RelationalNullability::kNonNull ||
+          interval_descriptor->type_uuid == value_descriptor->type_uuid) {
+        return refuse("SB_MODEL_TIME_SERIES_INTERVAL_INVALID_V1",
+                      time_series_node->node_id,
+                      "time_series_intervals_invalid_or_not_equal");
+      }
+      if (downsample->expression_kind !=
+              RelationalExpressionKind::kFunctionCall ||
+          downsample->function_uuid.has_value() ||
+          aggregate->expression_kind != RelationalExpressionKind::kLiteral ||
+          aggregate->literal_kind != RelationalLiteralKind::kString ||
+          !closed_aggregate ||
+          value->expression_kind != RelationalExpressionKind::kIdentifier ||
+          value_descriptor->nullability != RelationalNullability::kNonNull ||
+          downsample->result_descriptor_id !=
+              time_series_node->output_descriptor_ids[6]) {
+        return refuse("SB_MODEL_TIME_SERIES_AGGREGATE_REFUSED_V1",
+                      time_series_node->node_id,
+                      "time_series_downsample_child_order_or_type");
+      }
+      for (std::size_t ordinal = 1;
+           ordinal < time_series_node->output_descriptor_ids.size(); ++ordinal) {
+        if (std::ranges::find(time_series_node->output_descriptor_ids.begin(),
+                              time_series_node->output_descriptor_ids.begin() +
+                                  static_cast<std::ptrdiff_t>(ordinal),
+                              time_series_node->output_descriptor_ids[ordinal]) !=
+            time_series_node->output_descriptor_ids.begin() +
+                static_cast<std::ptrdiff_t>(ordinal)) {
+          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        time_series_node->node_id,
+                        "time_series_output_descriptor_identity");
+        }
+      }
+    }
+    std::vector<std::uint32_t> time_series_expression_roots;
+    const auto add_expression_root = [&](const std::uint32_t expression_id) {
+      if (expression_id != 0) {
+        time_series_expression_roots.push_back(expression_id);
+      }
+    };
+    add_expression_root(range->expression_id);
+    if (is_bucket) add_expression_root(bucket->expression_id);
+    if (is_downsample) add_expression_root(downsample->expression_id);
+    for (const auto& output : dag.outputs) {
+      add_expression_root(output.expression_id);
+    }
+    for (const auto& node : dag.nodes) {
+      for (const auto expression_id : node.bound_expression_ids) {
+        add_expression_root(expression_id);
+      }
+    }
+    for (const auto& row : dag.values_rows) {
+      for (const auto expression_id : row.expression_ids) {
+        add_expression_root(expression_id);
+      }
+    }
+    for (const auto& grouping_set : dag.grouping_sets) {
+      for (const auto expression_id : grouping_set.expression_ids) {
+        add_expression_root(expression_id);
+      }
+    }
+    for (const auto& definition : dag.window_definitions) {
+      for (const auto expression_id : definition.partition_expression_ids) {
+        add_expression_root(expression_id);
+      }
+      for (const auto& term : definition.ordering_terms) {
+        add_expression_root(term.expression_id);
+      }
+      if (definition.frame_start.has_value() &&
+          definition.frame_start->offset_expression_id.has_value()) {
+        add_expression_root(*definition.frame_start->offset_expression_id);
+      }
+      if (definition.frame_end.has_value() &&
+          definition.frame_end->offset_expression_id.has_value()) {
+        add_expression_root(*definition.frame_end->offset_expression_id);
+      }
+    }
+    for (const auto& invocation : dag.window_invocations) {
+      add_expression_root(invocation.function_expression_id);
+      for (const auto expression_id : invocation.argument_expression_ids) {
+        add_expression_root(expression_id);
+      }
+    }
+    for (const auto& property : dag.properties) {
+      for (const auto expression_id : property.expression_ids) {
+        add_expression_root(expression_id);
+      }
+      for (const auto& term : property.ordering_terms) {
+        add_expression_root(term.expression_id);
+      }
+    }
+    std::unordered_set<std::uint32_t> reachable_time_series_expressions;
+    while (!time_series_expression_roots.empty()) {
+      const auto expression_id = time_series_expression_roots.back();
+      time_series_expression_roots.pop_back();
+      if (!reachable_time_series_expressions.insert(expression_id).second) {
+        continue;
+      }
+      const auto expression = expressions_by_id.find(expression_id);
+      if (expression == expressions_by_id.end()) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                      time_series_node->node_id,
+                      "time_series_expression_root");
+      }
+      for (const auto child_id : expression->second->child_expression_ids) {
+        time_series_expression_roots.push_back(child_id);
+      }
+    }
+    if (reachable_time_series_expressions.size() != dag.expressions.size()) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                    time_series_node->node_id,
+                    "time_series_orphan_expression");
+    }
+    std::unordered_set<std::uint32_t> referenced_time_series_descriptors;
+    for (const auto& expression : dag.expressions) {
+      referenced_time_series_descriptors.insert(
+          expression.result_descriptor_id);
+    }
+    for (const auto& node : dag.nodes) {
+      referenced_time_series_descriptors.insert(
+          node.output_descriptor_ids.begin(), node.output_descriptor_ids.end());
+    }
+    const auto expected_hidden_descriptor_count =
+        (is_bucket || is_downsample) ? 1u : 0u;
+    if (referenced_time_series_descriptors.size() +
+            expected_hidden_descriptor_count !=
+        dag.descriptors.size()) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                    time_series_node->node_id,
+                    "time_series_extra_descriptor");
+    }
+    bool exact_outputs = time_outputs.size() == expected_width;
+    for (std::size_t ordinal = 0;
+         exact_outputs && ordinal < time_outputs.size(); ++ordinal) {
+      exact_outputs = time_outputs[ordinal]->ordinal == ordinal &&
+                      time_outputs[ordinal]->visible &&
+                      time_outputs[ordinal]->descriptor_id ==
+                          time_series_node->output_descriptor_ids[ordinal];
+    }
+    if (!exact_outputs) {
+      return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                    time_series_node->node_id,
+                    "time_series_output_descriptor_order");
+    }
+    if (is_downsample) {
+      static constexpr std::array<std::string_view, 7> kNames{
+          "series_uuid", "metric_uuid", "bucket_start", "bucket_end",
+          "tags", "sample_count", "aggregate_value"};
+      for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
+        if (time_outputs[ordinal]->output_name_utf8 != kNames[ordinal]) {
+          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        time_series_node->node_id,
+                        "time_series_downsample_output_name");
+        }
+      }
+    } else if (is_bucket) {
+      if (time_outputs.front()->output_name_utf8 != "bucket_start") {
+        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                      time_series_node->node_id,
+                      "time_series_bucket_output_name");
+      }
+    } else {
+      static constexpr std::array<std::string_view, 6> kNames{
+          "row_uuid", "series_uuid", "metric_uuid", "point_timestamp",
+          "tags", "value"};
+      for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
+        if (time_outputs[ordinal]->output_name_utf8 != kNames[ordinal]) {
+          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        time_series_node->node_id,
+                        "time_series_raw_output_name");
+        }
       }
     }
   }
@@ -2107,15 +2593,37 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
                expression.operator_name == "KV_PREFIX";
       });
   const bool exact_key_value_family = key_value_operation_count == 1;
+  const auto time_range_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "TIME_RANGE";
+      });
+  const auto time_downsample_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "TIME_DOWNSAMPLE";
+      });
+  const auto time_series_node = std::ranges::find_if(
+      dag.nodes, [&](const auto& node) {
+        return time_downsample_count == 1
+                   ? node.semantic_variant_id == "SBLR_MODEL_AGGREGATE_V1"
+                   : node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
+      });
+  const bool exact_time_series_family =
+      time_range_count == 1 && time_downsample_count <= 1 &&
+      time_series_node != dag.nodes.end();
   if ((exact_graph_family && exact_document_expand) ||
       (graph_operation_count != 0 && !exact_graph_family)) {
     return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
                   "model_family_operation_identity");
   }
-  if (exact_key_value_family != !engine_scope.statement_timestamp.empty() ||
-      (exact_key_value_family &&
+  const bool exact_timestamp_family =
+      exact_key_value_family || exact_time_series_family;
+  if (exact_timestamp_family != !engine_scope.statement_timestamp.empty() ||
+      (exact_timestamp_family &&
        dag.statement_timestamp != engine_scope.statement_timestamp)) {
-    return refuse("SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1", 0,
+    return refuse(exact_time_series_family
+                      ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
+                      : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1",
+                  0,
                   "statement_timestamp");
   }
   if (dag.wire_version != 2 ||
@@ -2221,6 +2729,10 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
                node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1") {
       logical_node.model_family_identity =
           plan::CanonicalLogicalModelFamilyIdentity::kKeyValue;
+    } else if (exact_time_series_family &&
+               node.node_id == time_series_node->node_id) {
+      logical_node.model_family_identity =
+          plan::CanonicalLogicalModelFamilyIdentity::kTimeSeries;
     } else if (exact_document_expand &&
                node.node_id == document_expand_node->node_id) {
       logical_node.model_family_identity =

@@ -1456,6 +1456,8 @@ std::string NativeRelationSourceAstKindName(
       return "graph";
     case NativeRelationSourceAstKind::kKeyValue:
       return "key_value";
+    case NativeRelationSourceAstKind::kTimeSeries:
+      return "time_series";
   }
   return "unknown";
 }
@@ -1622,6 +1624,8 @@ AstDocument BuildAst(const CstDocument& cst) {
     std::size_t graph_source_count = 0;
     bool key_value_resolution_description_valid = true;
     std::size_t key_value_source_count = 0;
+    bool time_series_resolution_description_valid = true;
+    std::size_t time_series_source_count = 0;
     for (const auto& source :
          ast.native_relational.catalog_relation_sources) {
       if (source.source_kind == NativeRelationSourceAstKind::kKeyValue) {
@@ -1643,6 +1647,35 @@ AstDocument BuildAst(const CstDocument& cst) {
              (!exact_get && source.model_comparison_operator.empty()));
         ast.native_relational.model_object_resolution_requests.push_back(
             {source.source_id, "key_value", "key_value",
+             source.qualified_name, source.qualified_name_range});
+        continue;
+      }
+      if (source.source_kind == NativeRelationSourceAstKind::kTimeSeries) {
+        ++time_series_source_count;
+        const bool range_read =
+            source.model_operation_id == "TIME_SERIES_RANGE_READ";
+        const bool downsample =
+            source.model_operation_id == "TIME_SERIES_DOWNSAMPLE";
+        time_series_resolution_description_valid =
+            time_series_resolution_description_valid &&
+            source.model_family_id == "time_series" &&
+            (range_read || downsample) && !source.qualified_name.empty() &&
+            source.alias.has_value() &&
+            source.model_time_series_alias_expression_id.has_value() &&
+            source.model_range_expression_id.has_value() &&
+            source.model_range_start_expression_id.has_value() &&
+            source.model_range_end_expression_id.has_value() &&
+            source.model_bucket_expression_id.has_value() ==
+                source.model_bucket_interval_expression_id.has_value() &&
+            source.model_bucket_expression_id.has_value() ==
+                source.model_bucket_time_input_expression_id.has_value() &&
+            (range_read ||
+             (source.model_downsample_expression_id.has_value() &&
+              source.model_interval_expression_id.has_value() &&
+              source.model_time_input_expression_id.has_value() &&
+              !source.model_time_series_aggregate_id.empty()));
+        ast.native_relational.model_object_resolution_requests.push_back(
+            {source.source_id, "time_series", "time_series",
              source.qualified_name, source.qualified_name_range});
         continue;
       }
@@ -1702,15 +1735,17 @@ AstDocument BuildAst(const CstDocument& cst) {
     }
     const auto expected_model_resolution_count =
         document_collection_source_count + graph_source_count +
-        key_value_source_count;
+        key_value_source_count + time_series_source_count;
     if (document_source_count > 1 || graph_source_count > 1 ||
         key_value_source_count > 1 ||
+        time_series_source_count > 1 ||
         expected_model_resolution_count > 1 ||
         ast.native_relational.model_object_resolution_requests.size() !=
             expected_model_resolution_count ||
         !document_resolution_description_valid ||
         !graph_resolution_description_valid ||
-        !key_value_resolution_description_valid) {
+        !key_value_resolution_description_valid ||
+        !time_series_resolution_description_valid) {
       ast.native_relational.status =
           NativeRelationalParseStatus::kRefused;
       ast.native_relational.messages.diagnostics.push_back(MakeDiagnostic(
