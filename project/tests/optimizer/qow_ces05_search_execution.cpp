@@ -7,6 +7,7 @@
 #include "database_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "model_family_coordinator.hpp"
 #include "nosql/nosql_provider_generation_store.hpp"
 #include "nosql/search_api.hpp"
 #include "transaction/transaction_api.hpp"
@@ -34,6 +35,7 @@ namespace db = scratchbird::storage::database;
 namespace dt = scratchbird::core::datatypes;
 namespace exec = scratchbird::engine::executor;
 namespace hash = scratchbird::core::hash;
+namespace opt = scratchbird::engine::optimizer;
 namespace platform = scratchbird::core::platform;
 namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
@@ -2119,6 +2121,47 @@ api::TypedRelationalDag ProductionSearchMixedJoinDag(
   return dag;
 }
 
+std::vector<opt::MultilegDescriptorProfileV1>
+ProductionSearchMultilegProfilesV10(const api::TypedRelationalDag& dag) {
+  const std::array<std::string, 5> type_uuids{
+      CoreTypeUuid("uuid"), CoreTypeUuid("uint64"),
+      CoreTypeUuid("real64"), CoreTypeUuid("boolean"),
+      CoreTypeUuid("geometry")};
+  const auto descriptor_uuid = [&](const std::uint32_t descriptor_id) {
+    const auto descriptor = std::ranges::find_if(
+        dag.descriptors, [&](const auto& candidate) {
+          return candidate.descriptor_id == descriptor_id;
+        });
+    return descriptor == dag.descriptors.end() ? std::string{}
+                                                : descriptor->descriptor_uuid;
+  };
+  const auto bound_descriptor_uuid = [&](const std::uint8_t kind,
+                                         const std::uint16_t slot) {
+    if (kind == 14 && slot == 0) return descriptor_uuid(101);
+    if (kind == 14 && slot == 1) return descriptor_uuid(102);
+    if (kind == 16 && slot == 0) return descriptor_uuid(103);
+    if (kind == 16 && slot == 1) return descriptor_uuid(105);
+    if (kind == 18 && slot == 0) return descriptor_uuid(104);
+    return GeneratedUuid(platform::UuidKind::object,
+                         0xf000 + static_cast<std::uint64_t>(kind) * 32 +
+                             slot);
+  };
+  std::vector<opt::MultilegDescriptorProfileV1> profiles;
+  profiles.reserve(320);
+  for (std::uint16_t type_pair = 0; type_pair < type_uuids.size();
+       ++type_pair) {
+    for (std::uint16_t nullable = 0; nullable < 2; ++nullable) {
+      const auto kind =
+          static_cast<std::uint8_t>(14 + type_pair * 2 + nullable);
+      for (std::uint16_t slot = 0; slot < 32; ++slot) {
+        profiles.push_back({kind, slot, bound_descriptor_uuid(kind, slot),
+                            type_uuids[type_pair], nullable != 0});
+      }
+    }
+  }
+  return profiles;
+}
+
 std::string ApiResultBytes(const api::EngineApiResult& result) {
   std::string bytes;
   for (const auto& row : result.result_shape.rows) {
@@ -2172,15 +2215,37 @@ bool ProductionCanonicalRoute() {
       {fixture.reader, set_dag});
   const auto set_replay = sblr::ExecuteCanonicalCurrentHeapQuery(
       {fixture.reader, set_dag});
-  const auto joined = sblr::ExecuteCanonicalCurrentHeapQuery(
-      {fixture.reader, ProductionSearchMixedJoinDag(fixture)});
+  const auto joined_dag = ProductionSearchMixedJoinDag(fixture);
+  const auto direct_multileg_profiles =
+      ProductionSearchMultilegProfilesV10(joined_dag);
+  sblr::CanonicalObjectFreeValuesExecutionResult joined;
+  bool direct_multileg_scope_exact = direct_multileg_profiles.size() == 320;
+  {
+    opt::MultilegDescriptorDispatchScopeV1 descriptor_scope(
+        fixture.reader.statement_uuid.canonical, direct_multileg_profiles);
+    direct_multileg_scope_exact &= Require(
+        descriptor_scope.installed(),
+        "direct search mixed-join V10 descriptor scope was not installed");
+    if (descriptor_scope.installed()) {
+      joined = sblr::ExecuteCanonicalCurrentHeapQuery(
+          {fixture.reader, joined_dag});
+    }
+  }
+  const auto released_scope = opt::LookupMultilegDescriptorDispatchScopeV1(
+      fixture.reader.statement_uuid.canonical);
+  direct_multileg_scope_exact &= Require(
+      !released_scope.accepted && released_scope.profiles.empty() &&
+          released_scope.diagnostic_id ==
+              "SB_MODEL_RESULT_DESCRIPTOR_SCOPE_REQUIRED_V1",
+      "direct search mixed-join V10 descriptor scope was not released");
   const auto diagnostic = execution.api_result.diagnostics.empty()
                               ? std::string{}
                               : execution.api_result.diagnostics.front().code +
                                     ":" +
                                     execution.api_result.diagnostics.front().detail;
   const bool exact =
-      execution.profile_matched && execution.optimizer_admitted &&
+      direct_multileg_scope_exact && execution.profile_matched &&
+      execution.optimizer_admitted &&
       execution.optimizer_selected && execution.physical_dag_published &&
       execution.physical_dag_executed && execution.runtime_actuals_attached &&
       execution.canonical_result_published && execution.api_result.ok &&

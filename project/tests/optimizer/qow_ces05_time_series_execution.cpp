@@ -993,6 +993,29 @@ std::string CoreTypeUuid(const std::string_view stable_name) {
              : uuid::UuidToString(descriptor->descriptor_uuid.value);
 }
 
+std::vector<opt::MultilegDescriptorProfileV1>
+Rcp079DirectProofMultilegProfilesV10() {
+  const std::array<std::string, 5> type_uuids{
+      CoreTypeUuid("uuid"), CoreTypeUuid("uint64"),
+      CoreTypeUuid("real64"), CoreTypeUuid("boolean"),
+      CoreTypeUuid("geometry")};
+  std::vector<opt::MultilegDescriptorProfileV1> profiles;
+  profiles.reserve(320);
+  for (std::uint16_t type_pair = 0; type_pair < type_uuids.size();
+       ++type_pair) {
+    for (std::uint16_t nullable = 0; nullable < 2; ++nullable) {
+      const auto kind =
+          static_cast<std::uint8_t>(14 + type_pair * 2 + nullable);
+      for (std::uint16_t slot = 0; slot < 32; ++slot) {
+        profiles.push_back(
+            {kind, slot, NewUuidText(platform::UuidKind::object),
+             type_uuids[type_pair], nullable != 0});
+      }
+    }
+  }
+  return profiles;
+}
+
 std::string DescriptorField(const std::string& encoded,
                             const std::string_view key) {
   std::size_t offset = 0;
@@ -2717,7 +2740,8 @@ api::TypedRelationalDag TimeSeriesAsofJoinDag(
     const api::MgaRelationStorageDescriptor& storage,
     const api::MgaRelationStorageDescriptor& heap_storage,
     const api::EngineBoundTimeSeriesAggregateV1 aggregate,
-    const bool time_series_left, const bool left_outer) {
+    const bool time_series_left, const bool left_outer,
+    const bool heap_is_columnar_model = false) {
   const bool downsample =
       aggregate != api::EngineBoundTimeSeriesAggregateV1::kNone;
   auto dag = TimeSeriesDag(context, storage, aggregate);
@@ -2761,7 +2785,21 @@ api::TypedRelationalDag TimeSeriesAsofJoinDag(
   heap.output_descriptor_ids = {301, 302, 303, 304, 305};
   heap.bound_expression_ids = {50, 51, 52, 53, 54};
   heap.required_object_uuids = {heap_storage.relation_uuid.canonical};
-  heap.semantic_variant_id = "relation.source.v1";
+  if (heap_is_columnar_model) {
+    api::RelationalExpressionRecord source_expression;
+    source_expression.expression_id = 61;
+    source_expression.expression_kind =
+        api::RelationalExpressionKind::kFunctionCall;
+    source_expression.result_descriptor_id = 301;
+    source_expression.operator_name = "COLUMNAR_SOURCE";
+    source_expression.bound_name_uuid =
+        heap_storage.relation_uuid.canonical;
+    dag.expressions.push_back(std::move(source_expression));
+    heap.bound_expression_ids.push_back(61);
+    heap.semantic_variant_id = "SBLR_MODEL_SOURCE_V1";
+  } else {
+    heap.semantic_variant_id = "relation.source.v1";
+  }
   dag.nodes.push_back(std::move(heap));
 
   if (!downsample) {
@@ -3605,50 +3643,93 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       {context, set_dag});
   const auto& heap_storage =
       fixture.descriptors.at(std::string(kJoinObjectUuid));
-  const auto cross_join = sblr::ExecuteCanonicalCurrentHeapQuery(
-      {context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
-                                       "join.cross.v1")});
-  const auto inner_join = sblr::ExecuteCanonicalCurrentHeapQuery(
-      {context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
-                                       "join.inner.v1")});
-  const auto left_join = sblr::ExecuteCanonicalCurrentHeapQuery(
-      {context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
-                                       "join.left-outer.v1")});
-  const auto right_join = sblr::ExecuteCanonicalCurrentHeapQuery(
-      {context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
-                                       "join.right-outer.v1")});
-  const auto full_join = sblr::ExecuteCanonicalCurrentHeapQuery(
-      {context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
-                                       "join.full-outer.v1")});
-  const auto semi_join = sblr::ExecuteCanonicalCurrentHeapQuery(
-      {context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
-                                       "join.left-semi.v1")});
-  const auto anti_join = sblr::ExecuteCanonicalCurrentHeapQuery(
-      {context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
-                                       "join.left-anti.v1")});
+  const auto direct_multileg_profiles =
+      Rcp079DirectProofMultilegProfilesV10();
+  bool direct_multileg_scope_exact = direct_multileg_profiles.size() == 320;
+  const auto execute_multileg =
+      [&](const api::EngineRequestContext& request_context,
+          api::TypedRelationalDag dag) {
+        sblr::CanonicalObjectFreeValuesExecutionResult execution;
+        bool installed = false;
+        {
+          opt::MultilegDescriptorDispatchScopeV1 descriptor_scope(
+              request_context.statement_uuid.canonical,
+              direct_multileg_profiles);
+          installed = descriptor_scope.installed();
+          if (installed) {
+            execution = sblr::ExecuteCanonicalCurrentHeapQuery(
+                {request_context, std::move(dag)});
+          }
+        }
+        const auto released = opt::LookupMultilegDescriptorDispatchScopeV1(
+            request_context.statement_uuid.canonical);
+        direct_multileg_scope_exact &= Require(
+            installed && !released.accepted && released.profiles.empty() &&
+                released.diagnostic_id ==
+                    "SB_MODEL_RESULT_DESCRIPTOR_SCOPE_REQUIRED_V1",
+            "direct multileg V10 descriptor scope installation/release "
+            "drifted");
+        return execution;
+      };
+  const auto cross_join = execute_multileg(
+      context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
+                                      "join.cross.v1"));
+  const auto inner_join = execute_multileg(
+      context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
+                                      "join.inner.v1"));
+  const auto left_join = execute_multileg(
+      context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
+                                      "join.left-outer.v1"));
+  const auto right_join = execute_multileg(
+      context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
+                                      "join.right-outer.v1"));
+  const auto full_join = execute_multileg(
+      context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
+                                      "join.full-outer.v1"));
+  const auto semi_join = execute_multileg(
+      context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
+                                      "join.left-semi.v1"));
+  const auto anti_join = execute_multileg(
+      context, TimeSeriesMixedJoinDag(context, storage, heap_storage,
+                                      "join.left-anti.v1"));
   const auto execute_asof =
       [&](const api::EngineBoundTimeSeriesAggregateV1 aggregate,
           const bool time_series_left, const bool left_outer) {
         const auto& selected_heap = fixture.descriptors.at(std::string(
             time_series_left ? kAsofRightObjectUuid : kJoinObjectUuid));
-        return sblr::ExecuteCanonicalCurrentHeapQuery(
-            {context, TimeSeriesAsofJoinDag(context, storage, selected_heap,
-                                            aggregate, time_series_left,
-                                            left_outer)});
+        return execute_multileg(
+            context, TimeSeriesAsofJoinDag(context, storage, selected_heap,
+                                           aggregate, time_series_left,
+                                           left_outer));
       };
   const auto raw_series_left_outer = execute_asof(
       api::EngineBoundTimeSeriesAggregateV1::kNone, true, true);
   const auto raw_series_left_inner = execute_asof(
       api::EngineBoundTimeSeriesAggregateV1::kNone, true, false);
+  const auto raw_series_left_columnar =
+      execute_multileg(
+          context,
+          TimeSeriesAsofJoinDag(
+              context, storage,
+              fixture.descriptors.at(std::string(kAsofRightObjectUuid)),
+              api::EngineBoundTimeSeriesAggregateV1::kNone, true, true,
+              true));
   const auto raw_series_right_dag = TimeSeriesAsofJoinDag(
       context, storage, heap_storage,
       api::EngineBoundTimeSeriesAggregateV1::kNone, false, true);
   const auto raw_series_right_outer =
-      sblr::ExecuteCanonicalCurrentHeapQuery({context, raw_series_right_dag});
+      execute_multileg(context, raw_series_right_dag);
   const auto raw_series_right_inner = execute_asof(
       api::EngineBoundTimeSeriesAggregateV1::kNone, false, false);
+  const auto raw_series_right_columnar =
+      execute_multileg(
+          context,
+          TimeSeriesAsofJoinDag(
+              context, storage, heap_storage,
+              api::EngineBoundTimeSeriesAggregateV1::kNone, false, true,
+              true));
   const auto raw_series_right_replay =
-      sblr::ExecuteCanonicalCurrentHeapQuery({context, raw_series_right_dag});
+      execute_multileg(context, raw_series_right_dag);
   const auto downsample_series_left_outer = execute_asof(
       api::EngineBoundTimeSeriesAggregateV1::kSum, true, true);
   const auto downsample_series_left_inner = execute_asof(
@@ -3700,12 +3781,12 @@ bool ProductionRouteMatrix(const Fixture& fixture,
         65536ULL, 98304ULL, 131072ULL}) {
     auto low_memory_context = context;
     low_memory_context.optimizer_memory_budget_bytes = memory_budget;
-    const auto low_memory = sblr::ExecuteCanonicalCurrentHeapQuery(
-        {low_memory_context,
-         TimeSeriesAsofJoinDag(
-             low_memory_context, storage,
-             fixture.descriptors.at(std::string(kAsofRightObjectUuid)),
-             api::EngineBoundTimeSeriesAggregateV1::kNone, true, true)});
+    const auto low_memory = execute_multileg(
+        low_memory_context,
+        TimeSeriesAsofJoinDag(
+            low_memory_context, storage,
+            fixture.descriptors.at(std::string(kAsofRightObjectUuid)),
+            api::EngineBoundTimeSeriesAggregateV1::kNone, true, true));
     if (!low_memory.api_result.ok &&
         !low_memory.api_result.diagnostics.empty() &&
         low_memory.api_result.diagnostics.front().code ==
@@ -4106,7 +4187,8 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   std::set<std::string> observed_cancellation_checkpoints;
   const auto cancellation_at_checkpoint =
       [&](const auto& make_dag,
-          const std::string_view expected_checkpoint)
+          const std::string_view expected_checkpoint,
+          const bool multileg = false)
       -> std::optional<std::remove_cvref_t<decltype(raw)>> {
     std::size_t probe_count = 0;
     auto probe_context = context;
@@ -4114,8 +4196,11 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       ++probe_count;
       return false;
     };
-    const auto probe = sblr::ExecuteCanonicalCurrentHeapQuery(
-        {probe_context, make_dag(probe_context)});
+    const auto probe_dag = make_dag(probe_context);
+    const auto probe = multileg
+                           ? execute_multileg(probe_context, probe_dag)
+                           : sblr::ExecuteCanonicalCurrentHeapQuery(
+                                 {probe_context, probe_dag});
     observed_cancellation_checkpoints.insert(
         std::string(expected_checkpoint) + ":probe-count=" +
         std::to_string(probe_count));
@@ -4130,8 +4215,12 @@ bool ProductionRouteMatrix(const Fixture& fixture,
       auto injected_context = context;
       injected_context.query_cancellation_requested =
           [&observed, threshold] { return ++observed == threshold; };
-      auto injected = sblr::ExecuteCanonicalCurrentHeapQuery(
-          {injected_context, make_dag(injected_context)});
+      auto injected_dag = make_dag(injected_context);
+      auto injected = multileg
+                          ? execute_multileg(injected_context,
+                                             std::move(injected_dag))
+                          : sblr::ExecuteCanonicalCurrentHeapQuery(
+                                {injected_context, std::move(injected_dag)});
       for (const auto& evidence : injected.api_result.evidence) {
         if (evidence.evidence_kind ==
             "canonical.time_series_cancellation_checkpoint") {
@@ -4171,7 +4260,7 @@ bool ProductionRouteMatrix(const Fixture& fixture,
             fixture.descriptors.at(std::string(kAsofRightObjectUuid)),
             api::EngineBoundTimeSeriesAggregateV1::kNone, true, true);
       },
-      "time-series ASOF bridge was cancelled before execution");
+      "time-series ASOF bridge was cancelled before execution", true);
   const auto cancelled_before_publish = cancellation_at_checkpoint(
       [&](const auto& cancellation_context) {
         return TimeSeriesDag(
@@ -4253,8 +4342,40 @@ bool ProductionRouteMatrix(const Fixture& fixture,
   const bool asof_joins_complete =
       join_complete(raw_series_left_outer, 11, 7) &&
       join_complete(raw_series_left_inner, 11, 4) &&
+      join_complete(raw_series_left_columnar, 11, 7) &&
+      has_evidence(raw_series_left_columnar,
+                   "canonical.model_composition",
+                   "time_series_TO_columnar_ONE_ROOT_V1") &&
+      has_evidence(raw_series_left_columnar,
+                   "canonical.model_join_left_provider_route",
+                   "canonical.model-provider.time_series.v1") &&
+      has_evidence(raw_series_left_columnar,
+                   "canonical.model_join_right_provider_route",
+                   "canonical.model-provider.columnar.v1") &&
+      has_evidence(raw_series_left_columnar,
+                   "canonical.model_join_consumer_route",
+                   "canonical.relational.time-series-asof.v1") &&
+      has_evidence(raw_series_left_columnar,
+                   "canonical.model_join_condition_route",
+                   "canonical.relational.asof-key-binding.v1") &&
       join_complete(raw_series_right_outer, 11, 2) &&
       join_complete(raw_series_right_inner, 11, 2) &&
+      join_complete(raw_series_right_columnar, 11, 2) &&
+      has_evidence(raw_series_right_columnar,
+                   "canonical.model_composition",
+                   "columnar_TO_time_series_ONE_ROOT_V1") &&
+      has_evidence(raw_series_right_columnar,
+                   "canonical.model_join_left_provider_route",
+                   "canonical.model-provider.columnar.v1") &&
+      has_evidence(raw_series_right_columnar,
+                   "canonical.model_join_right_provider_route",
+                   "canonical.model-provider.time_series.v1") &&
+      has_evidence(raw_series_right_columnar,
+                   "canonical.model_join_consumer_route",
+                   "canonical.relational.time-series-asof.v1") &&
+      has_evidence(raw_series_right_columnar,
+                   "canonical.model_join_condition_route",
+                   "canonical.relational.asof-key-binding.v1") &&
       join_complete(downsample_series_left_outer, 12, 4) &&
       join_complete(downsample_series_left_inner, 12, 1) &&
       join_complete(downsample_series_right_outer, 12, 2) &&
@@ -4278,7 +4399,9 @@ bool ProductionRouteMatrix(const Fixture& fixture,
           "2026-08-10T12:00:00.000000000Z" &&
       ApiRowField(downsample_series_right_outer.api_result, 1,
                   "bucket_start").empty();
-  bool passed = Require(raw.profile_matched && raw.optimizer_admitted &&
+  bool passed = Require(direct_multileg_scope_exact,
+                        "direct multileg V10 descriptor scope proof failed") &&
+         Require(raw.profile_matched && raw.optimizer_admitted &&
                      raw.optimizer_selected && raw.physical_dag_published &&
                      raw.physical_dag_executed && raw.canonical_result_published &&
                      raw.canonical_result_column_count == 6 &&
@@ -4574,14 +4697,29 @@ bool ProductionRouteMatrix(const Fixture& fixture,
                      route_diagnostic(set_union)) &&
          Require(mixed_joins_complete,
                  "ordinary relational/time-series join matrix was not executed: " +
-                     route_diagnostic(inner_join)) &&
+                     std::string("cross=") + route_diagnostic(cross_join) +
+                     ":" + std::to_string(cross_join.canonical_result_row_count) +
+                     ";inner=" + route_diagnostic(inner_join) + ":" +
+                     std::to_string(inner_join.canonical_result_row_count) +
+                     ";left=" + route_diagnostic(left_join) + ":" +
+                     std::to_string(left_join.canonical_result_row_count) +
+                     ";right=" + route_diagnostic(right_join) + ":" +
+                     std::to_string(right_join.canonical_result_row_count) +
+                     ";full=" + route_diagnostic(full_join) + ":" +
+                     std::to_string(full_join.canonical_result_row_count) +
+                     ";semi=" + route_diagnostic(semi_join) + ":" +
+                     std::to_string(semi_join.canonical_result_row_count) +
+                     ";anti=" + route_diagnostic(anti_join) + ":" +
+                     std::to_string(anti_join.canonical_result_row_count)) &&
          Require(asof_joins_complete,
                  "ordinary raw/downsample bidirectional LEFT/INNER ASOF "
                  "matrix was not executed: " +
                      route_diagnostic(raw_series_left_outer) + "/" +
                      route_diagnostic(raw_series_left_inner) + "/" +
+                     route_diagnostic(raw_series_left_columnar) + "/" +
                      route_diagnostic(raw_series_right_outer) + "/" +
                      route_diagnostic(raw_series_right_inner) + "/" +
+                     route_diagnostic(raw_series_right_columnar) + "/" +
                      route_diagnostic(downsample_series_left_outer) + "/" +
                      route_diagnostic(downsample_series_left_inner) + "/" +
                      route_diagnostic(downsample_series_right_outer) + "/" +

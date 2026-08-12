@@ -139,10 +139,40 @@ class NativeRelationalParser final {
         contains_word("REDIS_COMMAND") ||
         contains_word("INFLUX_LINE_PROTOCOL") ||
         contains_word("VECTOR_PROVIDER_REQUEST") ||
-        contains_word("OPENSEARCH_DSL")) {
+        contains_word("OPENSEARCH_DSL") ||
+        contains_word("COLUMNAR_ENGINE_HINT")) {
       RefuseExact("SB_MODEL_GRAMMAR_DONOR_TEXT_REFUSED_V1",
                   "opaque donor text is not an executable SBSQL model source");
       return FinishRefusal();
+    }
+    if (contains_word("SPATIAL_SOURCE") && contains_word("COLUMNAR_SOURCE")) {
+      if (tokens_.empty() || !IsWord(*tokens_.front(), "SELECT") ||
+          !LooksLikeBoundedCatalogJoinSelect()) {
+        RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "mixed model sources require a bounded SELECT JOIN");
+        return FinishRefusal();
+      }
+      return ParseCatalogJoinSelect();
+    }
+    if (contains_word("SPATIAL_SOURCE") || contains_word("SPATIAL_MATCH") ||
+        contains_word("SPATIAL_NEAREST")) {
+      if (tokens_.empty() || !IsWord(*tokens_.front(), "SELECT")) {
+        RefuseExact("SB_MODEL_QUERY_WRITE_REFUSED_V1",
+                    "spatial model sources are read-only query inputs");
+        return FinishRefusal();
+      }
+      return ParseSpatialModelSelect();
+    }
+    if (contains_word("COLUMNAR_SOURCE") ||
+        contains_word("COLUMNAR_PROJECT") ||
+        contains_word("COLUMNAR_FILTER") ||
+        contains_word("COLUMNAR_ENGINE_HINT")) {
+      if (tokens_.empty() || !IsWord(*tokens_.front(), "SELECT")) {
+        RefuseExact("SB_MODEL_QUERY_WRITE_REFUSED_V1",
+                    "columnar model sources are read-only query inputs");
+        return FinishRefusal();
+      }
+      return ParseColumnarModelSelect();
     }
     if (contains_word("SEARCH_SOURCE") || contains_word("SEARCH_MATCH") ||
         contains_word("SEARCH_TERMS") || contains_word("SEARCH_PHRASE") ||
@@ -303,6 +333,679 @@ class NativeRelationalParser final {
     document_.messages.diagnostics.push_back(MakeDiagnostic(
         std::string(diagnostic_id), "ERROR", std::string(message),
         "sbp_sbsql.document_model_parser"));
+  }
+
+  NativeRelationalAstDocument ParseSpatialModelSelect() {
+    // QOW-SOURCE-RCP079-SPATIAL-GRAMMAR-V1
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded", "spatial query token limit exceeded");
+      return FinishRefusal();
+    }
+    Consume();  // SELECT
+    std::vector<std::uint32_t> projection_expression_ids;
+    if (AtSymbol("*")) {
+      const Token& token = Consume();
+      NativeExpressionAstNode wildcard;
+      wildcard.expression_id = NextExpressionId();
+      wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+      wildcard.spelling = token.text;
+      wildcard.range = TokenSourceRange(token);
+      projection_expression_ids.push_back(wildcard.expression_id);
+      document_.expressions.push_back(std::move(wildcard));
+    } else {
+      while (!AtEnd()) {
+        const auto expression_id = ParseExpression(0, 0);
+        if (!expression_id.has_value()) return FinishRefusal();
+        projection_expression_ids.push_back(*expression_id);
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+    }
+    if (!RequireWord("FROM", "spatial_from_required",
+                     "spatial source requires FROM") ||
+        AtEnd() || !IsWord(Current(), "SPATIAL_SOURCE")) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "FROM requires exactly one SPATIAL_SOURCE");
+      return FinishRefusal();
+    }
+    const Token& source_operator = Consume();
+    if (!RequireSymbol("(", "spatial_source_open_required",
+                       "SPATIAL_SOURCE requires an opening parenthesis") ||
+        AtEnd() || !IsNameToken(Current())) {
+      RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                  "SPATIAL_SOURCE requires a qualified collection name");
+      return FinishRefusal();
+    }
+    NativeCatalogRelationSourceAstNode source;
+    source.source_id = 1;
+    source.source_kind = NativeRelationSourceAstKind::kSpatial;
+    source.model_family_id = "spatial";
+    const Token& first_name = Consume();
+    const Token* last_name = &first_name;
+    source.qualified_name.push_back(
+        {first_name.text, first_name.quoted, TokenSourceRange(first_name)});
+    while (AtSymbol(".")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "qualified spatial collection name is incomplete");
+        return FinishRefusal();
+      }
+      last_name = &Consume();
+      source.qualified_name.push_back(
+          {last_name->text, last_name->quoted, TokenSourceRange(*last_name)});
+    }
+    source.qualified_name_range = Span(first_name, *last_name);
+    if (!RequireSymbol(")", "spatial_source_close_required",
+                       "SPATIAL_SOURCE requires a closing parenthesis")) {
+      return FinishRefusal();
+    }
+    const Token& source_close = Previous();
+    const Token* source_end = &source_close;
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "SPATIAL_SOURCE AS requires an alias");
+        return FinishRefusal();
+      }
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source.alias_is_explicit = true;
+      source_end = &alias;
+    } else {
+      source.alias = NativeIdentifierAstNode{
+          last_name->text, last_name->quoted, TokenSourceRange(*last_name)};
+    }
+
+    NativeExpressionAstNode source_root;
+    source_root.expression_id = NextExpressionId();
+    source_root.expression_kind = NativeExpressionAstKind::kFunctionCall;
+    source_root.operator_name = "SPATIAL_SOURCE";
+    source_root.spelling = SourceSpelling(source_operator, source_close);
+    source_root.range = Span(source_operator, source_close);
+    source.model_operation_ids.push_back(source_root.operator_name);
+    source.model_operation_expression_ids.push_back(source_root.expression_id);
+    document_.expressions.push_back(std::move(source_root));
+
+    const auto expression_at = [&](const std::uint32_t id)
+        -> NativeExpressionAstNode* {
+      return id == 0 || id > document_.expressions.size()
+                 ? nullptr
+                 : &document_.expressions[id - 1];
+    };
+    const auto same_alias = [&](const NativeExpressionAstNode* expression,
+                                const NativeIdentifierAstNode& expected) {
+      if (expression == nullptr ||
+          expression->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          expression->qualified_identifier.size() != 1) {
+        return false;
+      }
+      const auto& presented = expression->qualified_identifier.front();
+      return presented.quoted == expected.quoted &&
+             (presented.quoted
+                  ? presented.spelling == expected.spelling
+                  : ToLowerAscii(presented.spelling) ==
+                        ToLowerAscii(expected.spelling));
+    };
+    const auto valid_geometry = [&](const NativeExpressionAstNode* expression) {
+      return expression != nullptr &&
+             (expression->expression_kind ==
+                  NativeExpressionAstKind::kParameter ||
+              (expression->expression_kind ==
+                   NativeExpressionAstKind::kFunctionCall &&
+               ToUpperAscii(expression->operator_name) == "POINT"));
+    };
+    const auto valid_crs = [&](const NativeExpressionAstNode* expression) {
+      return expression != nullptr &&
+             expression->expression_kind ==
+                 NativeExpressionAstKind::kIdentifier &&
+             expression->qualified_identifier.size() >= 2;
+    };
+    const auto parse_top_k = [&](const NativeExpressionAstNode* expression,
+                                 std::uint64_t* value) {
+      if (expression == nullptr ||
+          expression->expression_kind != NativeExpressionAstKind::kLiteral ||
+          expression->literal_kind != NativeLiteralAstKind::kNumeric) {
+        return false;
+      }
+      const auto parsed = std::from_chars(
+          expression->spelling.data(),
+          expression->spelling.data() + expression->spelling.size(), *value);
+      return !expression->spelling.empty() &&
+             !(expression->spelling.size() > 1 &&
+               expression->spelling.front() == '0') &&
+             parsed.ec == std::errc{} &&
+             parsed.ptr == expression->spelling.data() +
+                               expression->spelling.size() &&
+             *value >= 1 && *value <= 4096;
+    };
+
+    const NativeIdentifierAstNode source_alias = *source.alias;
+    if (AtSymbol(",")) {
+      if (!source.alias_is_explicit) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "SPATIAL_NEAREST requires an explicit source alias");
+        return FinishRefusal();
+      }
+      Consume();
+      if (AtEnd() || !IsWord(Current(), "SPATIAL_NEAREST")) {
+        RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "spatial source attachment must be SPATIAL_NEAREST");
+        return FinishRefusal();
+      }
+      const auto nearest_id = ParseExpression(3, 0);
+      if (!nearest_id.has_value()) return FinishRefusal();
+      auto* nearest = expression_at(*nearest_id);
+      if (nearest == nullptr ||
+          nearest->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+          ToUpperAscii(nearest->operator_name) != "SPATIAL_NEAREST" ||
+          nearest->child_expression_ids.size() != 4 ||
+          !same_alias(expression_at(nearest->child_expression_ids[0]),
+                      source_alias) ||
+          !valid_geometry(expression_at(nearest->child_expression_ids[1])) ||
+          !valid_crs(expression_at(nearest->child_expression_ids[2]))) {
+        RefuseExact("SB_MODEL_SPATIAL_PROFILE_UNSUPPORTED_V1",
+                    "SPATIAL_NEAREST requires source alias, typed geometry, qualified CRS, and top-k");
+        return FinishRefusal();
+      }
+      std::uint64_t top_k = 0;
+      if (!parse_top_k(expression_at(nearest->child_expression_ids[3]),
+                       &top_k)) {
+        RefuseExact("SB_MODEL_SPATIAL_TOP_K_REFUSED_V1",
+                    "SPATIAL_NEAREST top-k is outside 1..4096");
+        return FinishRefusal();
+      }
+      nearest->operator_name = "SPATIAL_NEAREST";
+      source.model_source_alias = source.alias;
+      source.model_spatial_alias_expression_id =
+          nearest->child_expression_ids[0];
+      source.model_spatial_nearest_expression_id = nearest->expression_id;
+      source.model_spatial_query_expression_ids.push_back(
+          nearest->child_expression_ids[1]);
+      source.model_spatial_crs_expression_ids.push_back(
+          nearest->child_expression_ids[2]);
+      source.model_spatial_crs_names.push_back(
+          expression_at(nearest->child_expression_ids[2])
+              ->qualified_identifier);
+      source.model_spatial_top_k_expression_id =
+          nearest->child_expression_ids[3];
+      source.model_spatial_top_k = top_k;
+      source_end = &Previous();
+      if (!AtEnd() && IsWord(Current(), "AS")) {
+        Consume();
+        if (AtEnd() || !IsNameToken(Current())) {
+          RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "SPATIAL_NEAREST AS requires a result alias");
+          return FinishRefusal();
+        }
+        const Token& result_alias = Consume();
+        source.alias = NativeIdentifierAstNode{
+            result_alias.text, result_alias.quoted,
+            TokenSourceRange(result_alias)};
+        source.alias_is_explicit = true;
+        source_end = &result_alias;
+      }
+    }
+
+    std::vector<std::uint32_t> predicate_expression_ids;
+    if (!AtEnd() && IsWord(Current(), "WHERE")) {
+      Consume();
+      const auto match_id = ParseExpression(3, 0);
+      if (!match_id.has_value()) return FinishRefusal();
+      auto* match = expression_at(*match_id);
+      if (match == nullptr ||
+          match->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+          ToUpperAscii(match->operator_name) != "SPATIAL_MATCH") {
+        RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "spatial WHERE requires a positive top-level SPATIAL_MATCH conjunct");
+        return FinishRefusal();
+      }
+      if (match->child_expression_ids.size() != 4) {
+        RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "SPATIAL_MATCH requires exactly four operands");
+        return FinishRefusal();
+      }
+      auto* alias = expression_at(match->child_expression_ids[0]);
+      auto* predicate = expression_at(match->child_expression_ids[1]);
+      auto* query = expression_at(match->child_expression_ids[2]);
+      auto* crs = expression_at(match->child_expression_ids[3]);
+      if (!same_alias(alias, source_alias) || !valid_geometry(query) ||
+          !valid_crs(crs)) {
+        RefuseExact(crs != nullptr &&
+                            crs->expression_kind ==
+                                NativeExpressionAstKind::kIdentifier &&
+                            crs->qualified_identifier.size() < 2
+                        ? "SB_MODEL_SPATIAL_CRS_BINDING_REQUIRED_V1"
+                        : "SB_MODEL_SPATIAL_PROFILE_UNSUPPORTED_V1",
+                    "spatial operands are not alias, POINT/parameter, and qualified bound CRS");
+        return FinishRefusal();
+      }
+      source.model_spatial_alias_expression_id = alias->expression_id;
+      source.model_spatial_match_expression_id = match->expression_id;
+      source.model_spatial_query_expression_ids.insert(
+          source.model_spatial_query_expression_ids.begin(),
+          query->expression_id);
+      source.model_spatial_crs_expression_ids.insert(
+          source.model_spatial_crs_expression_ids.begin(), crs->expression_id);
+      source.model_spatial_crs_names.insert(
+          source.model_spatial_crs_names.begin(), crs->qualified_identifier);
+      match->operator_name = "SPATIAL_MATCH";
+      if (predicate == nullptr ||
+          predicate->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          predicate->qualified_identifier.size() != 1 ||
+          predicate->qualified_identifier.front().quoted) {
+        RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "SPATIAL_MATCH predicate identity is not canonical");
+        return FinishRefusal();
+      }
+      const auto predicate_id =
+          ToUpperAscii(predicate->qualified_identifier.front().spelling);
+      if (predicate_id != "INTERSECTS" && predicate_id != "CONTAINS") {
+        RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "spatial predicate is outside the closed point set");
+        return FinishRefusal();
+      }
+      predicate->expression_kind = NativeExpressionAstKind::kLiteral;
+      predicate->literal_kind = NativeLiteralAstKind::kString;
+      predicate->qualified_identifier.clear();
+      predicate->spelling = predicate_id;
+      source.model_spatial_predicate_expression_id = predicate->expression_id;
+      source.model_spatial_predicate_id = predicate_id;
+      predicate_expression_ids.push_back(*match_id);
+      if (!AtEnd() && IsWord(Current(), "AND")) {
+        Consume();
+        const auto residual_id = ParseExpression(0, 0);
+        if (!residual_id.has_value()) return FinishRefusal();
+        predicate_expression_ids.push_back(*residual_id);
+      }
+    }
+    if (source.model_spatial_match_expression_id.has_value()) {
+      source.model_operation_ids.insert(source.model_operation_ids.begin() + 1,
+                                        "SPATIAL_MATCH");
+      source.model_operation_expression_ids.insert(
+          source.model_operation_expression_ids.begin() + 1,
+          *source.model_spatial_match_expression_id);
+    }
+    if (source.model_spatial_nearest_expression_id.has_value()) {
+      source.model_operation_ids.push_back("SPATIAL_NEAREST");
+      source.model_operation_expression_ids.push_back(
+          *source.model_spatial_nearest_expression_id);
+    }
+    source.model_operation_id = source.model_operation_ids.size() == 1
+                                    ? source.model_operation_ids.front()
+                                    : std::string{};
+    source.model_spatial_operation_expression_id =
+        source.model_operation_expression_ids.size() == 2
+            ? std::optional<std::uint32_t>{
+                  source.model_operation_expression_ids.back()}
+            : std::nullopt;
+    if (source.model_spatial_query_expression_ids.size() == 1) {
+      source.model_spatial_query_expression_id =
+          source.model_spatial_query_expression_ids.front();
+      source.model_spatial_crs_expression_id =
+          source.model_spatial_crs_expression_ids.front();
+      source.model_spatial_crs_name = source.model_spatial_crs_names.front();
+    }
+    const auto spatial_match_count = std::ranges::count_if(
+        document_.expressions, [](const auto& expression) {
+          return expression.expression_kind ==
+                     NativeExpressionAstKind::kFunctionCall &&
+                 ToUpperAscii(expression.operator_name) == "SPATIAL_MATCH";
+        });
+    const auto spatial_nearest_count = std::ranges::count_if(
+        document_.expressions, [](const auto& expression) {
+          return expression.expression_kind ==
+                     NativeExpressionAstKind::kFunctionCall &&
+                 ToUpperAscii(expression.operator_name) == "SPATIAL_NEAREST";
+        });
+    if (spatial_match_count !=
+            static_cast<std::ptrdiff_t>(
+                source.model_spatial_match_expression_id.has_value()) ||
+        spatial_nearest_count !=
+            static_cast<std::ptrdiff_t>(
+                source.model_spatial_nearest_expression_id.has_value())) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "spatial model operations must appear exactly once in their admitted source positions");
+      return FinishRefusal();
+    }
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "unexpected input follows the bounded spatial query");
+      return FinishRefusal();
+    }
+    NativeRelationAstNode relation;
+    relation.relation_id = 1;
+    relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+    relation.relation_source_ids = {source.source_id};
+    relation.output_expression_ids = std::move(projection_expression_ids);
+    relation.predicate_expression_ids = std::move(predicate_expression_ids);
+    relation.range = Span(source_operator, *source_end);
+    source.range = relation.range;
+    document_.catalog_relation_sources.push_back(std::move(source));
+    document_.relations.push_back(std::move(relation));
+    document_.root_relation_id = 1;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    return std::move(document_);
+  }
+
+  NativeRelationalAstDocument ParseColumnarModelSelect() {
+    // QOW-SOURCE-RCP079-COLUMNAR-GRAMMAR-V1
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    Consume();  // SELECT
+    std::vector<std::uint32_t> projection_expression_ids;
+    if (AtSymbol("*")) {
+      const Token& token = Consume();
+      NativeExpressionAstNode wildcard;
+      wildcard.expression_id = NextExpressionId();
+      wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+      wildcard.spelling = token.text;
+      wildcard.range = TokenSourceRange(token);
+      projection_expression_ids.push_back(wildcard.expression_id);
+      document_.expressions.push_back(std::move(wildcard));
+    } else {
+      while (!AtEnd()) {
+        const auto expression_id = ParseExpression(0, 0);
+        if (!expression_id.has_value()) return FinishRefusal();
+        projection_expression_ids.push_back(*expression_id);
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+    }
+    if (!RequireWord("FROM", "columnar_from_required",
+                     "columnar source requires FROM") ||
+        AtEnd() || !IsWord(Current(), "COLUMNAR_SOURCE")) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "FROM requires exactly one COLUMNAR_SOURCE");
+      return FinishRefusal();
+    }
+    const Token& source_operator = Consume();
+    if (!RequireSymbol("(", "columnar_source_open_required",
+                       "COLUMNAR_SOURCE requires an opening parenthesis") ||
+        AtEnd() || !IsNameToken(Current())) {
+      RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                  "COLUMNAR_SOURCE requires a qualified relation name");
+      return FinishRefusal();
+    }
+    NativeCatalogRelationSourceAstNode source;
+    source.source_id = 1;
+    source.source_kind = NativeRelationSourceAstKind::kColumnar;
+    source.model_family_id = "columnar";
+    const Token& first_name = Consume();
+    const Token* last_name = &first_name;
+    source.qualified_name.push_back(
+        {first_name.text, first_name.quoted, TokenSourceRange(first_name)});
+    while (AtSymbol(".")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "qualified columnar relation name is incomplete");
+        return FinishRefusal();
+      }
+      last_name = &Consume();
+      source.qualified_name.push_back(
+          {last_name->text, last_name->quoted, TokenSourceRange(*last_name)});
+    }
+    source.qualified_name_range = Span(first_name, *last_name);
+    if (!RequireSymbol(")", "columnar_source_close_required",
+                       "COLUMNAR_SOURCE requires a closing parenthesis")) {
+      return FinishRefusal();
+    }
+    const Token& source_close = Previous();
+    const Token* source_end = &source_close;
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "COLUMNAR_SOURCE AS requires an alias");
+        return FinishRefusal();
+      }
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source.alias_is_explicit = true;
+      source_end = &alias;
+    } else {
+      source.alias = NativeIdentifierAstNode{
+          last_name->text, last_name->quoted, TokenSourceRange(*last_name)};
+    }
+
+    NativeExpressionAstNode source_root;
+    source_root.expression_id = NextExpressionId();
+    source_root.expression_kind = NativeExpressionAstKind::kFunctionCall;
+    source_root.operator_name = "COLUMNAR_SOURCE";
+    source_root.spelling = SourceSpelling(source_operator, source_close);
+    source_root.range = Span(source_operator, source_close);
+    source.model_operation_ids.push_back(source_root.operator_name);
+    source.model_operation_expression_ids.push_back(source_root.expression_id);
+    document_.expressions.push_back(std::move(source_root));
+    const auto expression_at = [&](const std::uint32_t id)
+        -> NativeExpressionAstNode* {
+      return id == 0 || id > document_.expressions.size()
+                 ? nullptr
+                 : &document_.expressions[id - 1];
+    };
+    const auto same_alias = [&](const NativeExpressionAstNode* expression,
+                                const NativeIdentifierAstNode& expected) {
+      if (expression == nullptr ||
+          expression->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          expression->qualified_identifier.size() != 1) return false;
+      const auto& presented = expression->qualified_identifier.front();
+      return presented.quoted == expected.quoted &&
+             (presented.quoted
+                  ? presented.spelling == expected.spelling
+                  : ToLowerAscii(presented.spelling) ==
+                        ToLowerAscii(expected.spelling));
+    };
+    NativeExpressionAstNode* select_project = nullptr;
+    for (const auto expression_id : projection_expression_ids) {
+      auto* candidate = expression_at(expression_id);
+      if (candidate != nullptr &&
+          candidate->expression_kind == NativeExpressionAstKind::kFunctionCall &&
+          ToUpperAscii(candidate->operator_name) == "COLUMNAR_PROJECT") {
+        if (select_project != nullptr) {
+          RefuseExact("SB_MODEL_COLUMNAR_PROJECT_DUPLICATE_REFUSED_V1",
+                      "COLUMNAR_PROJECT appears more than once");
+          return FinishRefusal();
+        }
+        select_project = candidate;
+      }
+    }
+    if (select_project != nullptr) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "COLUMNAR_PROJECT is a source attachment, not a SELECT expression");
+      return FinishRefusal();
+    }
+
+    const NativeIdentifierAstNode source_alias = *source.alias;
+    if (AtSymbol(",")) {
+      if (!source.alias_is_explicit) {
+        RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "COLUMNAR_PROJECT requires an explicit source alias");
+        return FinishRefusal();
+      }
+      Consume();
+      if (AtEnd() || !IsWord(Current(), "COLUMNAR_PROJECT")) {
+        RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "columnar source attachment must be COLUMNAR_PROJECT");
+        return FinishRefusal();
+      }
+      const auto project_id = ParseExpression(3, 0);
+      if (!project_id.has_value()) return FinishRefusal();
+      auto* project = expression_at(*project_id);
+      if (project == nullptr ||
+          project->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+          ToUpperAscii(project->operator_name) != "COLUMNAR_PROJECT" ||
+          project->child_expression_ids.size() < 2 ||
+          project->child_expression_ids.size() > 257 ||
+          !same_alias(expression_at(project->child_expression_ids.front()),
+                      source_alias)) {
+        RefuseExact("SB_MODEL_COLUMNAR_PROJECTION_INVALID_V1",
+                    "COLUMNAR_PROJECT requires alias and 1..256 columns");
+        return FinishRefusal();
+      }
+      std::unordered_set<std::string> names;
+      source.model_columnar_alias_expression_id =
+          project->child_expression_ids.front();
+      source.model_columnar_operation_expression_id = project->expression_id;
+      for (std::size_t index = 1; index < project->child_expression_ids.size();
+           ++index) {
+        auto* column = expression_at(project->child_expression_ids[index]);
+        if (column == nullptr ||
+            column->expression_kind != NativeExpressionAstKind::kIdentifier ||
+            column->qualified_identifier.size() < 2 ||
+            column->qualified_identifier.front().quoted !=
+                source_alias.quoted ||
+            (source_alias.quoted
+                 ? column->qualified_identifier.front().spelling !=
+                       source_alias.spelling
+                 : ToLowerAscii(
+                       column->qualified_identifier.front().spelling) !=
+                       ToLowerAscii(source_alias.spelling))) {
+          RefuseExact("SB_MODEL_COLUMNAR_PROJECTION_INVALID_V1",
+                      "COLUMNAR_PROJECT contains a non-qualified source column");
+          return FinishRefusal();
+        }
+        std::string key;
+        for (const auto& part : column->qualified_identifier) {
+          key += (part.quoted ? "Q:" + part.spelling
+                              : "U:" + ToLowerAscii(part.spelling));
+          key.push_back('/');
+        }
+        if (!names.insert(key).second) {
+          RefuseExact("SB_MODEL_COLUMNAR_PROJECT_DUPLICATE_REFUSED_V1",
+                      "COLUMNAR_PROJECT contains a duplicate column");
+          return FinishRefusal();
+        }
+        source.model_columnar_project_expression_ids.push_back(
+            column->expression_id);
+        source.model_columnar_project_names.push_back(
+            column->qualified_identifier);
+      }
+      project->operator_name = "COLUMNAR_PROJECT";
+      source.model_source_alias = source.alias;
+      source.model_columnar_project_expression_id = project->expression_id;
+      source_end = &Previous();
+      if (!AtEnd() && IsWord(Current(), "AS")) {
+        Consume();
+        if (AtEnd() || !IsNameToken(Current())) {
+          RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "COLUMNAR_PROJECT AS requires a result alias");
+          return FinishRefusal();
+        }
+        const Token& result_alias = Consume();
+        source.alias = NativeIdentifierAstNode{
+            result_alias.text, result_alias.quoted,
+            TokenSourceRange(result_alias)};
+        source.alias_is_explicit = true;
+        source_end = &result_alias;
+      }
+    }
+    std::vector<std::uint32_t> predicate_expression_ids;
+    if (!AtEnd() && IsWord(Current(), "WHERE")) {
+      Consume();
+      const auto filter_id = ParseExpression(3, 0);
+      if (!filter_id.has_value()) return FinishRefusal();
+      auto* filter = expression_at(*filter_id);
+      if (filter == nullptr ||
+          filter->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+          ToUpperAscii(filter->operator_name) != "COLUMNAR_FILTER" ||
+          filter->child_expression_ids.size() != 2 ||
+          !same_alias(expression_at(filter->child_expression_ids[0]),
+                      source_alias)) {
+        RefuseExact("SB_MODEL_COLUMNAR_FILTER_INVALID_V1",
+                    "COLUMNAR_FILTER requires a positive top-level source-alias predicate");
+        return FinishRefusal();
+      }
+      filter->operator_name = "COLUMNAR_FILTER";
+      source.model_columnar_alias_expression_id =
+          filter->child_expression_ids[0];
+      source.model_columnar_operation_expression_id = filter->expression_id;
+      source.model_columnar_filter_expression_id = filter->expression_id;
+      source.model_columnar_predicate_expression_id =
+          filter->child_expression_ids[1];
+      predicate_expression_ids.push_back(filter->expression_id);
+      if (!AtEnd() && IsWord(Current(), "AND")) {
+        Consume();
+        const auto residual_id = ParseExpression(0, 0);
+        if (!residual_id.has_value()) return FinishRefusal();
+        predicate_expression_ids.push_back(*residual_id);
+      }
+    }
+    if (source.model_columnar_filter_expression_id.has_value()) {
+      source.model_operation_ids.push_back("COLUMNAR_FILTER");
+      source.model_operation_expression_ids.push_back(
+          *source.model_columnar_filter_expression_id);
+    }
+    if (source.model_columnar_project_expression_id.has_value()) {
+      source.model_operation_ids.push_back("COLUMNAR_PROJECT");
+      source.model_operation_expression_ids.push_back(
+          *source.model_columnar_project_expression_id);
+    }
+    source.model_operation_id = source.model_operation_ids.size() == 1
+                                    ? source.model_operation_ids.front()
+                                    : std::string{};
+    source.model_columnar_operation_expression_id =
+        source.model_operation_expression_ids.size() == 2
+            ? std::optional<std::uint32_t>{
+                  source.model_operation_expression_ids.back()}
+            : std::nullopt;
+    const auto columnar_filter_count = std::ranges::count_if(
+        document_.expressions, [](const auto& expression) {
+          return expression.expression_kind ==
+                     NativeExpressionAstKind::kFunctionCall &&
+                 ToUpperAscii(expression.operator_name) == "COLUMNAR_FILTER";
+        });
+    const auto columnar_project_count = std::ranges::count_if(
+        document_.expressions, [](const auto& expression) {
+          return expression.expression_kind ==
+                     NativeExpressionAstKind::kFunctionCall &&
+                 ToUpperAscii(expression.operator_name) == "COLUMNAR_PROJECT";
+        });
+    if (columnar_filter_count !=
+            static_cast<std::ptrdiff_t>(
+                source.model_columnar_filter_expression_id.has_value())) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "COLUMNAR_FILTER must appear exactly once as a positive top-level conjunct");
+      return FinishRefusal();
+    }
+    if (columnar_project_count !=
+        static_cast<std::ptrdiff_t>(
+            source.model_columnar_project_expression_id.has_value())) {
+      RefuseExact("SB_MODEL_COLUMNAR_PROJECT_DUPLICATE_REFUSED_V1",
+                  "COLUMNAR_PROJECT must appear exactly once as a source attachment");
+      return FinishRefusal();
+    }
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "unexpected input follows the bounded columnar query");
+      return FinishRefusal();
+    }
+    NativeRelationAstNode relation;
+    relation.relation_id = 1;
+    relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+    relation.relation_source_ids = {source.source_id};
+    relation.output_expression_ids = std::move(projection_expression_ids);
+    relation.predicate_expression_ids = std::move(predicate_expression_ids);
+    relation.range = Span(source_operator, *source_end);
+    source.range = relation.range;
+    document_.catalog_relation_sources.push_back(std::move(source));
+    document_.relations.push_back(std::move(relation));
+    document_.root_relation_id = 1;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    return std::move(document_);
   }
 
   NativeRelationalAstDocument ParseSearchModelSelect() {
@@ -2840,7 +3543,24 @@ class NativeRelationalParser final {
       }
       NativeCatalogRelationSourceAstNode source;
       source.source_id = source_id;
-      source.source_kind = NativeRelationSourceAstKind::kCatalogRelation;
+      const bool spatial = IsWord(Current(), "SPATIAL_SOURCE");
+      const bool columnar = IsWord(Current(), "COLUMNAR_SOURCE");
+      const bool model_source = spatial || columnar;
+      source.source_kind =
+          spatial ? NativeRelationSourceAstKind::kSpatial
+                  : (columnar ? NativeRelationSourceAstKind::kColumnar
+                              : NativeRelationSourceAstKind::kCatalogRelation);
+      const Token* model_operator = nullptr;
+      if (model_source) {
+        model_operator = &Consume();
+        if (!RequireSymbol("(", "model_join_source_open_required",
+                           "model JOIN source requires an opening parenthesis") ||
+            AtEnd() || !IsNameToken(Current())) {
+          RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "model JOIN source requires a qualified object name");
+          return std::nullopt;
+        }
+      }
       const Token& first = Consume();
       const Token* last = &first;
       source.qualified_name.push_back(
@@ -2857,7 +3577,45 @@ class NativeRelationalParser final {
             {last->text, last->quoted, TokenSourceRange(*last)});
       }
       source.qualified_name_range = Span(first, *last);
-      source.range = source.qualified_name_range;
+      const Token* source_end = last;
+      if (model_source) {
+        if (!RequireSymbol(")", "model_join_source_close_required",
+                           "model JOIN source requires a closing parenthesis")) {
+          return std::nullopt;
+        }
+        source_end = &Previous();
+        if (!AtEnd() && IsWord(Current(), "AS")) {
+          Consume();
+          if (AtEnd() || !IsNameToken(Current())) {
+            RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                        "model JOIN source AS requires an alias");
+            return std::nullopt;
+          }
+          const Token& alias = Consume();
+          source.alias = NativeIdentifierAstNode{
+              alias.text, alias.quoted, TokenSourceRange(alias)};
+          source.alias_is_explicit = true;
+          source_end = &alias;
+        } else {
+          source.alias = NativeIdentifierAstNode{
+              last->text, last->quoted, TokenSourceRange(*last)};
+        }
+        source.model_family_id = spatial ? "spatial" : "columnar";
+        source.model_operation_id =
+            spatial ? "SPATIAL_SOURCE" : "COLUMNAR_SOURCE";
+        NativeExpressionAstNode operation;
+        operation.expression_id = NextExpressionId();
+        operation.expression_kind = NativeExpressionAstKind::kFunctionCall;
+        operation.operator_name = source.model_operation_id;
+        operation.spelling = SourceSpelling(*model_operator, Previous());
+        operation.range = Span(*model_operator, *source_end);
+        source.model_operation_ids.push_back(operation.operator_name);
+        source.model_operation_expression_ids.push_back(
+            operation.expression_id);
+        document_.expressions.push_back(std::move(operation));
+      }
+      source.range = model_source ? Span(*model_operator, *source_end)
+                                  : source.qualified_name_range;
       return source;
     };
 
@@ -2921,17 +3679,50 @@ class NativeRelationalParser final {
     };
     std::vector<ParsedJoinPredicateNode> predicate_nodes;
     std::optional<std::size_t> predicate_root;
-    const auto parse_join_comparison = [&]()
-        -> std::optional<std::size_t> {
+    const auto parse_join_key = [&](const auto& source,
+                                    const char* missing_detail)
+        -> std::optional<std::pair<const Token*, const Token*>> {
       if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
-        Refuse("catalog_inner_join_left_key_required",
-               "bounded catalog JOIN requires a left key identifier");
+        Refuse("catalog_inner_join_key_required", missing_detail);
         return std::nullopt;
       }
+      const Token* first = &Consume();
+      const Token* key = first;
+      if (AtSymbol(".")) {
+        Consume();
+        if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+          Refuse("catalog_inner_join_qualified_key_incomplete",
+                 "bounded catalog JOIN qualified key is incomplete");
+          return std::nullopt;
+        }
+        key = &Consume();
+        const auto expected_alias =
+            source.alias.has_value() ? &*source.alias
+                                     : &source.qualified_name.back();
+        const bool alias_matches =
+            first->quoted == expected_alias->quoted &&
+            (first->quoted
+                 ? first->text == expected_alias->spelling
+                 : ToLowerAscii(first->text) ==
+                       ToLowerAscii(expected_alias->spelling));
+        if (!alias_matches) {
+          Refuse("catalog_inner_join_qualifier_mismatch",
+                 "bounded catalog JOIN key qualifier does not match its leg");
+          return std::nullopt;
+        }
+      }
+      return std::pair<const Token*, const Token*>{first, key};
+    };
+    const auto parse_join_comparison = [&]()
+        -> std::optional<std::size_t> {
       ParsedJoinPredicateNode comparison;
       comparison.comparison = true;
-      comparison.left_key = &Consume();
-      comparison.first = comparison.left_key;
+      const auto left_key = parse_join_key(
+          *left_source,
+          "bounded catalog JOIN requires a left key identifier");
+      if (!left_key.has_value()) return std::nullopt;
+      comparison.first = left_key->first;
+      comparison.left_key = left_key->second;
       if (!AtEnd() && Current().kind == TokenKind::kOperator &&
           (Current().text == "=" || Current().text == "<>" ||
            Current().text == "!=" || Current().text == "<" ||
@@ -2957,12 +3748,11 @@ class NativeRelationalParser final {
                "bounded catalog JOIN requires a typed comparison predicate");
         return std::nullopt;
       }
-      if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
-        Refuse("catalog_inner_join_right_key_required",
-               "bounded catalog JOIN requires a right key identifier");
-        return std::nullopt;
-      }
-      comparison.right_key = &Consume();
+      const auto right_key = parse_join_key(
+          *right_source,
+          "bounded catalog JOIN requires a right key identifier");
+      if (!right_key.has_value()) return std::nullopt;
+      comparison.right_key = right_key->second;
       comparison.last = comparison.right_key;
       predicate_nodes.push_back(std::move(comparison));
       return predicate_nodes.size() - 1;

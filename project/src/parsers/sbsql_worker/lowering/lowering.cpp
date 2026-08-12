@@ -33073,6 +33073,324 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     return envelope;
   }
 
+  const auto spatial_columnar_source = std::ranges::find_if(
+      native.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kSpatial ||
+               source.source_kind == NativeRelationSourceAstKind::kColumnar;
+      });
+  if (spatial_columnar_source != native.catalog_relation_sources.end() &&
+      native.catalog_relation_sources.size() == 1) {
+    // QOW-SOURCE-RCP-079-SPATIAL-COLUMNAR-SBLR-V1
+    const auto& source = *spatial_columnar_source;
+    const bool spatial =
+        source.source_kind == NativeRelationSourceAstKind::kSpatial;
+    const auto expected_family =
+        spatial ? std::string_view{"spatial"} : std::string_view{"columnar"};
+    const auto expected_object =
+        spatial ? std::string_view{"spatial_collection"}
+                : std::string_view{"logical_relation"};
+    const auto expected_semantic =
+        spatial ? std::string_view{"sblr.model-source.spatial.v1"}
+                : std::string_view{"sblr.model-source.columnar.v1"};
+    const auto exact_operations = [&]() {
+      if (spatial) {
+        return source.model_operation_ids ==
+                   std::vector<std::string>{"SPATIAL_SOURCE"} ||
+               source.model_operation_ids ==
+                   std::vector<std::string>{"SPATIAL_SOURCE",
+                                            "SPATIAL_MATCH"} ||
+               source.model_operation_ids ==
+                   std::vector<std::string>{"SPATIAL_SOURCE",
+                                            "SPATIAL_NEAREST"} ||
+               source.model_operation_ids ==
+                   std::vector<std::string>{"SPATIAL_SOURCE", "SPATIAL_MATCH",
+                                            "SPATIAL_NEAREST"};
+      }
+      return source.model_operation_ids ==
+                 std::vector<std::string>{"COLUMNAR_SOURCE"} ||
+             source.model_operation_ids ==
+                 std::vector<std::string>{"COLUMNAR_SOURCE",
+                                          "COLUMNAR_FILTER"} ||
+             source.model_operation_ids ==
+                 std::vector<std::string>{"COLUMNAR_SOURCE",
+                                          "COLUMNAR_PROJECT"} ||
+             source.model_operation_ids ==
+                 std::vector<std::string>{"COLUMNAR_SOURCE",
+                                          "COLUMNAR_FILTER",
+                                          "COLUMNAR_PROJECT"};
+    }();
+    const bool has_match = std::ranges::find(source.model_operation_ids,
+                                             "SPATIAL_MATCH") !=
+                           source.model_operation_ids.end();
+    const bool has_nearest = std::ranges::find(source.model_operation_ids,
+                                               "SPATIAL_NEAREST") !=
+                             source.model_operation_ids.end();
+    const bool has_filter = std::ranges::find(source.model_operation_ids,
+                                              "COLUMNAR_FILTER") !=
+                            source.model_operation_ids.end();
+    const bool has_project = std::ranges::find(source.model_operation_ids,
+                                               "COLUMNAR_PROJECT") !=
+                             source.model_operation_ids.end();
+    if (!exact_operations || source.model_family_id != expected_family ||
+        source.model_operation_ids.size() !=
+            source.model_operation_expression_ids.size() ||
+        native.catalog_relation_sources.size() != 1 ||
+        native.relations.size() != 1 || native.scopes.size() != 1 ||
+        native.root_relation_id != native.relations.front().relation_id ||
+        native.scopes.front().scope_id != native.root_scope_id ||
+        native.scopes.front().visible_relation_ids !=
+            std::vector<std::uint32_t>{native.root_relation_id} ||
+        native.scopes.front().visible_projection_ids.size() !=
+            native.outputs.size() ||
+        source.resolution_state != NativeCatalogRelationResolutionState::kBound ||
+        source.resolved_object_type != expected_object ||
+        !IsCanonicalBoundSourceUuid(source.object_uuid) ||
+        !IsCanonicalBoundSourceUuid(source.resolved_schema_uuid) ||
+        source.catalog_generation_id == 0 || source.security_epoch == 0 ||
+        source.resource_epoch == 0 || source.columns.empty() ||
+        !IsCanonicalBoundSourceUuid(native.bound_ast_uuid) ||
+        !IsCanonicalBoundSourceUuid(native.security_context_uuid) ||
+        !IsCanonicalBoundSourceUuid(native.scopes.front().catalog_epoch_uuid) ||
+        !IsCanonicalBoundStatementTimestamp(native.statement_timestamp)) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+          "spatial/columnar model source is missing exact bound SBLR authority");
+      return envelope;
+    }
+    const auto& relation = native.relations.front();
+    if (relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
+        relation.semantic_variant_id != expected_semantic ||
+        relation.bound_object_uuid != source.object_uuid ||
+        !relation.input_relation_ids.empty() || !relation.values_row_ids.empty() ||
+        relation.output_expression_ids.size() != native.outputs.size() ||
+        relation.aggregate_grouping_form != NativeAggregateGroupingForm::kNone ||
+        relation.aggregate_projection_form !=
+            NativeAggregateProjectionForm::kNone ||
+        !relation.grouping_key_expression_ids.empty() ||
+        !relation.aggregate_expression_ids.empty() ||
+        !relation.limit_expression_ids.empty() || !relation.ordering_terms.empty()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+          "spatial/columnar relation operands are incomplete or ambiguous");
+      return envelope;
+    }
+    std::unordered_map<std::uint32_t, const BoundDescriptorAstRecord*>
+        descriptors_by_id;
+    for (const auto& descriptor : native.descriptors) {
+      if (descriptor.descriptor_id == 0 ||
+          !descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor).second ||
+          !IsCanonicalBoundSourceUuid(descriptor.descriptor_uuid) ||
+          !IsCanonicalBoundSourceUuid(descriptor.type_uuid) ||
+          descriptor.nullability == BoundNullability::kUnknown) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "spatial/columnar descriptor identity is incomplete");
+        return envelope;
+      }
+    }
+    std::unordered_map<std::uint32_t, const BoundExpressionAstRecord*>
+        expressions_by_id;
+    for (const auto& expression : native.expressions) {
+      if (expression.expression_id == 0 ||
+          !expressions_by_id.emplace(expression.expression_id, &expression).second ||
+          !descriptors_by_id.contains(expression.result_descriptor_id) ||
+          std::ranges::any_of(expression.child_expression_ids,
+                              [&](const auto child) {
+                                return !expressions_by_id.contains(child);
+                              })) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+            "spatial/columnar expression dependency is incomplete");
+        return envelope;
+      }
+    }
+    std::unordered_set<std::uint32_t> operation_roots;
+    for (std::size_t index = 0; index < source.model_operation_ids.size();
+         ++index) {
+      const auto root = expressions_by_id.find(
+          source.model_operation_expression_ids[index]);
+      if (root == expressions_by_id.end() ||
+          root->second->expression_kind !=
+              NativeExpressionAstKind::kFunctionCall ||
+          root->second->bound_function_uuid.has_value() ||
+          root->second->canonical_operator_name !=
+              source.model_operation_ids[index] ||
+          !operation_roots.insert(root->first).second ||
+          (index == 0 && !root->second->child_expression_ids.empty())) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+            "spatial/columnar functionless operation roots drifted");
+        return envelope;
+      }
+    }
+    if (spatial &&
+        (source.columns.size() != 3 ||
+         source.columns[0].canonical_name_key != "row_uuid" ||
+         source.columns[1].canonical_name_key != "spatial_value" ||
+         source.columns[2].canonical_name_key != "crs_uuid" ||
+         source.model_spatial_crs_uuids.size() !=
+             source.model_spatial_crs_names.size() ||
+         source.model_spatial_crs_generations.size() !=
+             source.model_spatial_crs_names.size() ||
+         std::ranges::any_of(source.model_spatial_crs_uuids,
+                             [](const auto& uuid) {
+                               return !IsCanonicalBoundSourceUuid(uuid);
+                             }) ||
+         std::ranges::any_of(source.model_spatial_crs_generations,
+                             [](const auto generation) {
+                               return generation == 0;
+                             }))) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_SPATIAL_CRS_MISMATCH_V1",
+          "spatial CRS bindings are incomplete");
+      return envelope;
+    }
+    if (!spatial && has_project &&
+        (source.model_columnar_project_column_uuids.empty() ||
+         source.model_columnar_project_column_uuids.size() !=
+             source.model_columnar_project_expression_ids.size() ||
+         std::ranges::any_of(source.model_columnar_project_column_uuids,
+                             [](const auto& uuid) {
+                               return !IsCanonicalBoundSourceUuid(uuid);
+                             }))) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_COLUMNAR_PROJECTION_INVALID_V1",
+          "columnar projection bindings are incomplete");
+      return envelope;
+    }
+    static constexpr std::array<std::string_view, 5> kSpatialNames{
+        "row_uuid", "spatial_value", "crs_uuid", "predicate_truth",
+        "distance"};
+    static constexpr std::array<std::string_view, 5> kSpatialTypes{
+        "uuid", "geometry", "uuid", "boolean", "real64"};
+    const auto expected_spatial_outputs =
+        std::size_t{3} + static_cast<std::size_t>(has_match) +
+        static_cast<std::size_t>(has_nearest);
+    if ((spatial && native.outputs.size() != expected_spatial_outputs) ||
+        (!spatial && (native.outputs.empty() || native.outputs.size() > 256))) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+          "spatial/columnar output width is invalid");
+      return envelope;
+    }
+
+    envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
+    envelope.operands.push_back(
+        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_catalog_epoch_uuid",
+         native.scopes.front().catalog_epoch_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_security_context_uuid",
+         native.security_context_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_uuid", native.statement_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_owning_transaction_uuid",
+         native.owning_transaction_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_snapshot_uuid",
+         native.statement_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uuid", "relational_statement_metadata_snapshot_uuid",
+         native.statement_metadata_snapshot_uuid});
+    envelope.operands.push_back(
+        {"uint64", "relational_local_transaction_id",
+         std::to_string(native.local_transaction_id)});
+    envelope.operands.push_back(
+        {"uint64", "relational_snapshot_visible_through_local_transaction_id",
+         std::to_string(native.snapshot_visible_through_local_transaction_id)});
+    envelope.operands.push_back(
+        {"text", "relational_statement_timestamp", native.statement_timestamp});
+    envelope.operands.push_back(
+        {"uint32", "relational_root_node_id",
+         std::to_string(native.root_relation_id)});
+    for (const auto& descriptor : native.descriptors) {
+      envelope.operands.push_back(
+          {"relational_descriptor_v1", std::to_string(descriptor.descriptor_id),
+           descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
+               std::to_string(static_cast<std::uint8_t>(descriptor.nullability) + 1) +
+               "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
+               "|" + EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.width) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.precision) +
+               "|" + EncodeOptionalCanonicalU32(
+                           descriptor.width_precision_scale.scale)});
+    }
+    for (const auto& expression : native.expressions) {
+      const auto literal_kind =
+          expression.literal_kind.has_value()
+              ? std::to_string(static_cast<std::uint8_t>(*expression.literal_kind) + 1)
+              : "-";
+      envelope.operands.push_back(
+          {"relational_expression_v1", std::to_string(expression.expression_id),
+           std::to_string(static_cast<std::uint8_t>(expression.expression_kind) + 1) +
+               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
+               "|" + std::to_string(expression.result_descriptor_id) + "|" +
+               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
+               "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
+               "|" + literal_kind + "|" +
+               EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
+               "|" + EncodeOptionalCanonicalHex(
+                           expression.literal_or_parameter_ref)});
+    }
+    // Every model stage is already one ordinary functionless
+    // relational_expression_v1 root attached, in semantic order, through the
+    // node's relational_node_binding_v1 bound-expression vector.  Do not add
+    // a parser-private transport record: the production query.execute decoder
+    // accepts only canonical relational operands and must see exactly the same
+    // typed DAG that the parser verifier admits.
+    std::vector<std::uint32_t> output_descriptor_ids;
+    for (std::size_t ordinal = 0; ordinal < native.outputs.size(); ++ordinal) {
+      const auto& output = native.outputs[ordinal];
+      const auto descriptor = descriptors_by_id.find(output.descriptor_id);
+      const auto spatial_shape_index =
+          !spatial || ordinal < 3
+              ? ordinal
+              : (has_match && ordinal == 3 ? std::size_t{3}
+                                           : std::size_t{4});
+      if (output.output_id == 0 || output.relation_id != relation.relation_id ||
+          output.expression_id != relation.output_expression_ids[ordinal] ||
+          !expressions_by_id.contains(output.expression_id) ||
+          descriptor == descriptors_by_id.end() || output.ordinal != ordinal ||
+          !output.visible ||
+          (spatial &&
+           (output.output_name_utf8 != kSpatialNames[spatial_shape_index] ||
+                       descriptor->second->canonical_type_name !=
+                           kSpatialTypes[spatial_shape_index])) ||
+          (spatial && descriptor->second->nullability !=
+                          BoundNullability::kNonNull) ||
+          native.scopes.front().visible_projection_ids[ordinal] !=
+              output.output_id) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+            "spatial/columnar output descriptor identity/type is incomplete");
+        envelope.operands.clear();
+        return envelope;
+      }
+      output_descriptor_ids.push_back(output.descriptor_id);
+      envelope.operands.push_back(
+          {"relational_output_v1", std::to_string(output.output_id),
+           std::to_string(output.relation_id) + "|" +
+               std::to_string(output.expression_id) + "|" +
+               std::to_string(output.descriptor_id) + "|1|" +
+               std::to_string(output.ordinal) + "|" +
+               EncodeCanonicalHex(output.output_name_utf8)});
+    }
+    envelope.operands.push_back(
+        {"relational_node_v1", std::to_string(relation.relation_id),
+         "1|0|-|" + JoinCanonicalHandleList(output_descriptor_ids) + "|-"});
+    envelope.operands.push_back(
+        {"relational_node_binding_v1", std::to_string(relation.relation_id),
+         EncodeCanonicalHex("SBLR_MODEL_SOURCE_V1") + "|" +
+             JoinCanonicalHandleList(relation.bound_expression_ids) + "|" +
+             source.object_uuid + "|-|-"});
+    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
+    return envelope;
+  }
+
   const auto search_source = std::ranges::find_if(
       native.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kSearch;
@@ -35563,6 +35881,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       catalog_sort_relation = &relation;
     } else if (relation.relation_kind ==
                NativeRelationAstKind::kCatalogSource) {
+      const bool accepted_source_semantic =
+          relation.semantic_variant_id == "catalog.relation-source.v1" ||
+          relation.semantic_variant_id == "sblr.model-source.spatial.v1" ||
+          relation.semantic_variant_id == "sblr.model-source.columnar.v1";
       if (catalog_relations.size() >= 2 || !relation.input_relation_ids.empty() ||
           !relation.values_row_ids.empty() ||
           relation.aggregate_grouping_form !=
@@ -35575,8 +35897,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           !relation.limit_expression_ids.empty() ||
           !relation.ordering_terms.empty() ||
           relation.output_expression_ids.empty() ||
-          relation.bound_expression_ids != relation.output_expression_ids ||
-          relation.semantic_variant_id != "catalog.relation-source.v1") {
+          !accepted_source_semantic) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
             "typed catalog relation fields do not form the accepted canonical leaf");
@@ -35849,6 +36170,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
 
   std::unordered_map<std::uint32_t, const BoundExpressionAstRecord*>
       expressions_by_id;
+  std::unordered_set<std::uint32_t> functionless_model_operation_roots;
+  for (const auto& source : native.catalog_relation_sources) {
+    functionless_model_operation_roots.insert(
+        source.model_operation_expression_ids.begin(),
+        source.model_operation_expression_ids.end());
+  }
   for (const auto& expression : native.expressions) {
     if (expression.expression_id == 0 ||
         !descriptor_ids.contains(expression.result_descriptor_id) ||
@@ -35869,10 +36196,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const bool operator_expression =
         expression.expression_kind == NativeExpressionAstKind::kUnary ||
         expression.expression_kind == NativeExpressionAstKind::kBinary;
+    const bool functionless_model_operation =
+        functionless_model_operation_roots.contains(expression.expression_id);
     if (literal != expression.literal_kind.has_value() ||
-        function_call != expression.bound_function_uuid.has_value() ||
-        identifier != expression.bound_name_uuid.has_value() ||
-        operator_expression != expression.canonical_operator_name.has_value() ||
+        (function_call && !functionless_model_operation) !=
+            expression.bound_function_uuid.has_value() ||
+        (identifier || functionless_model_operation) !=
+            expression.bound_name_uuid.has_value() ||
+        (operator_expression || functionless_model_operation) !=
+            expression.canonical_operator_name.has_value() ||
         (literal || parameter) !=
             expression.literal_or_parameter_ref.has_value()) {
       AddNativeRelationalLoweringError(
@@ -36387,6 +36719,21 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   }
 
   if (catalog_cross_join_graph_is_exact) {
+    const bool spatial_columnar_join =
+        std::ranges::all_of(native.catalog_relation_sources,
+                            [](const auto& source) {
+                              return source.source_kind ==
+                                         NativeRelationSourceAstKind::kSpatial ||
+                                     source.source_kind ==
+                                         NativeRelationSourceAstKind::kColumnar;
+                            }) &&
+        std::ranges::count_if(native.catalog_relation_sources,
+                              [](const auto& source) {
+                                return source.source_kind ==
+                                       NativeRelationSourceAstKind::kSpatial;
+                              }) == 1;
+    const auto model_operation_expression_count =
+        spatial_columnar_join ? std::size_t{2} : std::size_t{0};
     if (native.catalog_relation_sources.size() != 2 ||
         bound.resolved_object_uuids.size() != 2 ||
         native.scopes.front().visible_relation_ids !=
@@ -36396,7 +36743,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         !IsCanonicalBoundSourceUuid(native.security_context_uuid) ||
         !IsCanonicalBoundSourceUuid(
             native.scopes.front().catalog_epoch_uuid) ||
-        native.descriptors.size() != native.expressions.size() ||
+        native.expressions.size() !=
+            native.descriptors.size() + model_operation_expression_count ||
         bound.descriptor_refs.size() != native.descriptors.size()) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -36419,6 +36767,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const auto& source = native.catalog_relation_sources[source_ordinal];
       const auto* relation = catalog_relations[source_ordinal];
       const auto& relation_uuid = *relation->bound_object_uuid;
+      const bool spatial =
+          source.source_kind == NativeRelationSourceAstKind::kSpatial;
+      const bool columnar =
+          source.source_kind == NativeRelationSourceAstKind::kColumnar;
       const bool accepted_object_type =
           source.resolved_object_type == "relation" ||
           source.resolved_object_type == "table" ||
@@ -36428,8 +36780,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           source.resolved_object_type == "foreign_table";
       if (source.source_id == 0 ||
           !source_ids.insert(source.source_id).second ||
-          source.source_kind !=
-              NativeRelationSourceAstKind::kCatalogRelation ||
+          (!spatial_columnar_join &&
+           source.source_kind !=
+               NativeRelationSourceAstKind::kCatalogRelation) ||
+          (spatial_columnar_join && !spatial && !columnar) ||
           source.resolution_state !=
               NativeCatalogRelationResolutionState::kBound ||
           source.qualified_name.empty() ||
@@ -36443,7 +36797,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           !object_uuids.insert(relation_uuid).second ||
           source.object_uuid != relation_uuid ||
           bound.resolved_object_uuids[source_ordinal] != relation_uuid ||
-          !accepted_object_type ||
+          (!accepted_object_type &&
+           !(spatial && source.resolved_object_type == "spatial_collection") &&
+           !(columnar && source.resolved_object_type == "logical_relation")) ||
           !IsCanonicalBoundSourceUuid(source.resolved_schema_uuid) ||
           (source.parent_object_uuid.has_value() &&
            !IsCanonicalBoundSourceUuid(*source.parent_object_uuid)) ||
@@ -36456,14 +36812,61 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       }
 
       const auto& source_outputs = outputs_by_relation.at(relation->relation_id);
-      if (source_outputs.size() != source.columns.size() ||
+      const auto expected_source_semantic =
+          spatial ? std::string_view{"sblr.model-source.spatial.v1"}
+                  : (columnar
+                         ? std::string_view{"sblr.model-source.columnar.v1"}
+                         : std::string_view{"catalog.relation-source.v1"});
+      const auto expected_bound_expression_count =
+          source.columns.size() +
+          static_cast<std::size_t>(spatial_columnar_join);
+      if (relation->semantic_variant_id != expected_source_semantic ||
+          source_outputs.size() != source.columns.size() ||
           relation->output_expression_ids.size() != source.columns.size() ||
-          relation->bound_expression_ids !=
-              relation->output_expression_ids) {
+          relation->bound_expression_ids.size() !=
+              expected_bound_expression_count ||
+          !std::equal(relation->output_expression_ids.begin(),
+                      relation->output_expression_ids.end(),
+                      relation->bound_expression_ids.begin())) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
             "typed CROSS JOIN source width is incomplete");
         return envelope;
+      }
+      if (spatial_columnar_join) {
+        const auto expected_family =
+            spatial ? std::string_view{"spatial"}
+                    : std::string_view{"columnar"};
+        const auto expected_operation =
+            spatial ? std::string_view{"SPATIAL_SOURCE"}
+                    : std::string_view{"COLUMNAR_SOURCE"};
+        if (source.model_family_id != expected_family ||
+            source.model_operation_id != expected_operation ||
+            source.model_operation_ids !=
+                std::vector<std::string>{std::string(expected_operation)} ||
+            source.model_operation_expression_ids.size() != 1 ||
+            relation->bound_expression_ids.back() !=
+                source.model_operation_expression_ids.front()) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+              "model JOIN source operation identity is incomplete");
+          return envelope;
+        }
+        const auto operation = expressions_by_id.find(
+            source.model_operation_expression_ids.front());
+        if (operation == expressions_by_id.end() ||
+            operation->second->expression_kind !=
+                NativeExpressionAstKind::kFunctionCall ||
+            !operation->second->child_expression_ids.empty() ||
+            operation->second->canonical_operator_name != expected_operation ||
+            operation->second->bound_name_uuid != source.object_uuid ||
+            operation->second->result_descriptor_id !=
+                source.columns.front().descriptor_id) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+              "model JOIN source operation root is not attached to its leaf");
+          return envelope;
+        }
       }
       std::unordered_set<std::string> column_uuids;
       for (std::size_t ordinal = 0; ordinal < source.columns.size();
@@ -38554,6 +38957,14 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       {"uint64", "relational_snapshot_visible_through_local_transaction_id",
        std::to_string(
            native.snapshot_visible_through_local_transaction_id)});
+  if (std::ranges::any_of(native.catalog_relation_sources,
+                          [](const auto& source) {
+                            return source.source_kind !=
+                                   NativeRelationSourceAstKind::kCatalogRelation;
+                          })) {
+    envelope.operands.push_back(
+        {"text", "relational_statement_timestamp", native.statement_timestamp});
+  }
   envelope.operands.push_back(
       {"uint32", "relational_root_node_id",
        std::to_string(native.root_relation_id)});
@@ -38849,7 +39260,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         {"relational_node_binding_v1", std::to_string(relation.relation_id),
          EncodeCanonicalHex(
              relation.relation_kind == NativeRelationAstKind::kCatalogSource
-                 ? "relation.source.v1"
+                 ? (relation.semantic_variant_id.starts_with("sblr.model-source.")
+                        ? "SBLR_MODEL_SOURCE_V1"
+                        : "relation.source.v1")
                  : relation.semantic_variant_id) +
              "|" +
              JoinCanonicalHandleList(relation.bound_expression_ids) +
@@ -40546,6 +40959,24 @@ struct ParsedRelationalExpression {
   std::optional<std::string> literal_or_parameter_ref;
 };
 
+struct ParsedRelationalModelOperation {
+  std::uint32_t ordinal{0};
+  std::uint32_t source_id{0};
+  std::string family_id;
+  std::string operation_id;
+  std::uint32_t expression_id{0};
+  std::optional<std::string> crs_uuid;
+  std::optional<std::uint64_t> crs_generation;
+};
+
+struct ParsedRelationalModelColumn {
+  std::uint32_t source_id{0};
+  std::uint32_t ordinal{0};
+  std::string column_uuid;
+  std::uint32_t descriptor_id{0};
+  std::string canonical_name_key;
+};
+
 struct ParsedRelationalOutput {
   std::uint32_t id{0};
   std::uint32_t node_id{0};
@@ -40645,6 +41076,8 @@ struct ParsedRelationalGraph {
   std::uint32_t root_node_id{0};
   std::vector<ParsedRelationalDescriptor> descriptors;
   std::vector<ParsedRelationalExpression> expressions;
+  std::vector<ParsedRelationalModelOperation> model_operations;
+  std::vector<ParsedRelationalModelColumn> model_columns;
   std::vector<ParsedRelationalOutput> outputs;
   std::vector<ParsedRelationalValuesRow> values_rows;
   std::vector<ParsedRelationalGroupingSet> grouping_sets;
@@ -41293,6 +41726,104 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       graph->expressions.push_back(std::move(expression));
       continue;
     }
+    if (operand.type == "relational_model_operation_v1") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
+                              &record_count)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational record limit exceeded",
+                                     "record_count");
+      }
+      std::uint64_t ordinal = 0;
+      std::uint64_t source_id = 0;
+      std::uint64_t expression_id = 0;
+      std::array<std::string_view, 6> fields{};
+      ParsedRelationalModelOperation operation;
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &ordinal) ||
+          !SplitCanonicalRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[0], std::numeric_limits<std::uint32_t>::max(),
+              &source_id) ||
+          source_id == 0 ||
+          !DecodeCanonicalRelationalHex(fields[1], &operation.family_id) ||
+          !DecodeCanonicalRelationalHex(fields[2], &operation.operation_id) ||
+          operation.family_id.empty() || operation.operation_id.empty() ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[3], std::numeric_limits<std::uint32_t>::max(),
+              &expression_id) ||
+          expression_id == 0 ||
+          ((fields[4] == "-") != (fields[5] == "-"))) {
+        return RefuseRelationalGraph(
+            "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "relational model operation record is malformed",
+            "model_operation_record");
+      }
+      operation.ordinal = static_cast<std::uint32_t>(ordinal);
+      operation.source_id = static_cast<std::uint32_t>(source_id);
+      operation.expression_id = static_cast<std::uint32_t>(expression_id);
+      if (fields[4] != "-") {
+        std::uint64_t generation = 0;
+        if (!IsCanonicalRelationalUuid(fields[4]) ||
+            !ParseCanonicalRelationalUnsigned(
+                fields[5], std::numeric_limits<std::uint64_t>::max(),
+                &generation) ||
+            generation == 0) {
+          return RefuseRelationalGraph(
+              "SBLR.PLAN_TREE.INVALID_HANDLE",
+              "relational model CRS binding is malformed",
+              "model_operation_record");
+        }
+        operation.crs_uuid = std::string(fields[4]);
+        operation.crs_generation = generation;
+      }
+      graph->model_operations.push_back(std::move(operation));
+      continue;
+    }
+    if (operand.type == "relational_model_column_v1") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
+                              &record_count)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational record limit exceeded",
+                                     "record_count");
+      }
+      std::uint64_t presented_ordinal = 0;
+      std::uint64_t source_id = 0;
+      std::uint64_t ordinal = 0;
+      std::uint64_t descriptor_id = 0;
+      std::array<std::string_view, 5> fields{};
+      ParsedRelationalModelColumn column;
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &presented_ordinal) ||
+          !SplitCanonicalRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[0], std::numeric_limits<std::uint32_t>::max(),
+              &source_id) ||
+          source_id == 0 ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[1], std::numeric_limits<std::uint32_t>::max(),
+              &ordinal) ||
+          ordinal != presented_ordinal || !IsCanonicalRelationalUuid(fields[2]) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[3], std::numeric_limits<std::uint32_t>::max(),
+              &descriptor_id) ||
+          descriptor_id == 0 ||
+          !DecodeCanonicalRelationalHex(fields[4],
+                                        &column.canonical_name_key) ||
+          column.canonical_name_key.empty()) {
+        return RefuseRelationalGraph(
+            "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "relational model column record is malformed",
+            "model_column_record");
+      }
+      column.source_id = static_cast<std::uint32_t>(source_id);
+      column.ordinal = static_cast<std::uint32_t>(ordinal);
+      column.column_uuid = std::string(fields[2]);
+      column.descriptor_id = static_cast<std::uint32_t>(descriptor_id);
+      graph->model_columns.push_back(std::move(column));
+      continue;
+    }
     if (operand.type == "relational_output_v1") {
       if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
                               &record_count)) {
@@ -41657,6 +42188,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   const ParsedRelationalNode* document_source_node = nullptr;
   const ParsedRelationalNode* document_expand_node = nullptr;
   const ParsedRelationalNode* time_series_aggregate_node = nullptr;
+  std::vector<const ParsedRelationalNode*> model_source_nodes;
   bool duplicate_document_producer = false;
   for (const auto& node : graph.nodes) {
     if (node.kind == 5 && node.binding_present &&
@@ -41668,8 +42200,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
     }
     if (node.kind != 1 || !node.binding_present) continue;
     if (node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1") {
-      duplicate_document_producer =
-          duplicate_document_producer || document_source_node != nullptr;
+      model_source_nodes.push_back(&node);
       document_source_node = &node;
     } else if (node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1") {
       duplicate_document_producer =
@@ -41677,8 +42208,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
       document_expand_node = &node;
     }
   }
-  if (duplicate_document_producer ||
-      (document_source_node != nullptr && document_expand_node != nullptr)) {
+  if (duplicate_document_producer || model_source_nodes.size() > 2 ||
+      (!model_source_nodes.empty() && document_expand_node != nullptr)) {
     return RefuseRelationalGraph(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
         "query.execute requires exactly one canonical document producer",
@@ -41748,6 +42279,89 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
         return expression.kind == 4 && !expression.function_uuid.has_value() &&
                expression.operator_name == "SEARCH_ANALYZER_BINDING";
       });
+  const auto spatial_source_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               expression.operator_name == "SPATIAL_SOURCE";
+      });
+  const auto spatial_match_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               expression.operator_name == "SPATIAL_MATCH";
+      });
+  const auto spatial_nearest_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               expression.operator_name == "SPATIAL_NEAREST";
+      });
+  const auto columnar_source_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               expression.operator_name == "COLUMNAR_SOURCE";
+      });
+  const auto columnar_filter_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               expression.operator_name == "COLUMNAR_FILTER";
+      });
+  const auto columnar_project_root = std::ranges::find_if(
+      graph.expressions, [](const auto& expression) {
+        return expression.kind == 4 && !expression.function_uuid.has_value() &&
+               expression.operator_name == "COLUMNAR_PROJECT";
+      });
+  const auto model_source_for_root = [&](const auto root) {
+    if (root == graph.expressions.end()) {
+      return static_cast<const ParsedRelationalNode*>(nullptr);
+    }
+    const auto found = std::ranges::find_if(
+        model_source_nodes, [&](const auto* node) {
+          return std::ranges::find(node->bound_expression_ids, root->id) !=
+                 node->bound_expression_ids.end();
+        });
+    return found == model_source_nodes.end() ? nullptr : *found;
+  };
+  const auto* spatial_model_source_node =
+      model_source_for_root(spatial_source_root);
+  const auto* columnar_model_source_node =
+      model_source_for_root(columnar_source_root);
+  const auto root_node = std::ranges::find_if(
+      graph.nodes,
+      [&](const auto& node) { return node.id == graph.root_node_id; });
+  const auto distinct_model_leg_authority = [&] {
+    if (spatial_model_source_node == nullptr ||
+        columnar_model_source_node == nullptr ||
+        spatial_model_source_node->required_object_uuids.size() != 1 ||
+        columnar_model_source_node->required_object_uuids.size() != 1 ||
+        spatial_model_source_node->required_object_uuids.front() ==
+            columnar_model_source_node->required_object_uuids.front()) {
+      return false;
+    }
+    std::unordered_set<std::uint32_t> spatial_descriptors(
+        spatial_model_source_node->output_descriptor_ids.begin(),
+        spatial_model_source_node->output_descriptor_ids.end());
+    return !spatial_descriptors.empty() &&
+           !columnar_model_source_node->output_descriptor_ids.empty() &&
+           std::ranges::none_of(
+               columnar_model_source_node->output_descriptor_ids,
+               [&](const auto descriptor) {
+                 return spatial_descriptors.contains(descriptor);
+               });
+  }();
+  const bool spatial_columnar_join_graph =
+      model_source_nodes.size() == 2 && spatial_model_source_node != nullptr &&
+      columnar_model_source_node != nullptr &&
+      spatial_model_source_node != columnar_model_source_node &&
+      root_node != graph.nodes.end() && root_node->kind == 4 &&
+      distinct_model_leg_authority &&
+      root_node->input_ids ==
+          std::vector<std::uint32_t>{model_source_nodes[0]->id,
+                                     model_source_nodes[1]->id};
+  if (model_source_nodes.size() > 1 && !spatial_columnar_join_graph) {
+    return RefuseRelationalGraph(
+        "SBLR.PLAN_TREE.INVALID_HANDLE",
+        "multiple model producers require one spatial/columnar canonical JOIN",
+        "model_producer_nodes");
+  }
   const bool time_series_graph =
       time_range_root != graph.expressions.end() &&
       ((document_source_node != nullptr &&
@@ -41765,15 +42379,23 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   const bool search_graph =
       document_source_node != nullptr &&
       search_match_root != graph.expressions.end();
+  const bool spatial_graph =
+      spatial_model_source_node != nullptr &&
+      spatial_source_root != graph.expressions.end();
+  const bool columnar_graph =
+      columnar_model_source_node != nullptr &&
+      columnar_source_root != graph.expressions.end();
   const bool timestamp_model_graph =
-      key_value_graph || time_series_graph || vector_graph || search_graph;
+      key_value_graph || time_series_graph || vector_graph || search_graph ||
+      spatial_graph || columnar_graph;
   if (timestamp_model_graph != !graph.statement_timestamp.empty() ||
       (timestamp_model_graph &&
        !IsCanonicalBoundStatementTimestamp(graph.statement_timestamp))) {
     return RefuseRelationalGraph(
         time_series_graph
             ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
-            : ((vector_graph || search_graph) ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
+            : ((vector_graph || search_graph || spatial_graph || columnar_graph)
+                   ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
                             : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1"),
         timestamp_model_graph
             ? "timestamp-carrying model graph requires one canonical statement timestamp"
@@ -41786,7 +42408,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
       document_expand_node != nullptr && graph_expand_root != graph.expressions.end();
   const bool document_source_graph =
       document_source_node != nullptr && !graph_source_graph &&
-      !key_value_graph && !time_series_graph && !vector_graph && !search_graph;
+      !key_value_graph && !time_series_graph && !vector_graph && !search_graph &&
+      !spatial_graph && !columnar_graph;
   const bool document_expand_graph =
       document_expand_node != nullptr && !graph_expand_graph;
   const auto document_expand_root_id =
@@ -41908,6 +42531,24 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
           &expression == &*search_filter_root) ||
          (search_analyzer_binding_root != graph.expressions.end() &&
           &expression == &*search_analyzer_binding_root));
+    const bool spatial_model_operation =
+        spatial_graph &&
+        (&expression == &*spatial_source_root ||
+         (spatial_match_root != graph.expressions.end() &&
+          &expression == &*spatial_match_root) ||
+         (spatial_nearest_root != graph.expressions.end() &&
+          &expression == &*spatial_nearest_root));
+    const bool columnar_model_operation =
+        columnar_graph &&
+        (&expression == &*columnar_source_root ||
+         (columnar_filter_root != graph.expressions.end() &&
+          &expression == &*columnar_filter_root) ||
+         (columnar_project_root != graph.expressions.end() &&
+          &expression == &*columnar_project_root));
+    const bool spatial_point_constructor =
+        spatial_graph && function_call &&
+        !expression.function_uuid.has_value() &&
+        expression.operator_name == "POINT";
     if (literal != expression.literal_kind.has_value() ||
         (expression.literal_kind.has_value() &&
         (*expression.literal_kind < 1 || *expression.literal_kind > 12)) ||
@@ -41915,16 +42556,21 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
             (expression.function_uuid.has_value() || document_path_operation ||
              document_unnest_operation || graph_model_operation ||
              key_value_model_operation || time_series_model_operation ||
-             vector_model_operation || search_model_operation) ||
+             vector_model_operation || search_model_operation ||
+             spatial_model_operation || columnar_model_operation ||
+             spatial_point_constructor) ||
         (expression.function_uuid.has_value() &&
          !IsCanonicalRelationalUuid(*expression.function_uuid)) ||
-        identifier != expression.bound_name_uuid.has_value() ||
+        ((!spatial_model_operation && !columnar_model_operation) &&
+         identifier != expression.bound_name_uuid.has_value()) ||
         (expression.bound_name_uuid.has_value() &&
          !IsCanonicalRelationalUuid(*expression.bound_name_uuid)) ||
         (unary || binary || document_path_operation ||
          document_unnest_operation || graph_model_operation ||
          key_value_model_operation || time_series_model_operation ||
-         vector_model_operation || search_model_operation) !=
+         vector_model_operation || search_model_operation ||
+         spatial_model_operation || columnar_model_operation ||
+         spatial_point_constructor) !=
             expression.operator_name.has_value() ||
         (expression.operator_name.has_value() &&
          expression.operator_name->empty()) ||
@@ -41972,6 +42618,22 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
            expression.child_ids.size() != 2) ||
           (expression.operator_name == "SEARCH_ANALYZER_BINDING" &&
            expression.child_ids.size() != 3))) ||
+        (spatial_model_operation &&
+         ((expression.operator_name == "SPATIAL_SOURCE" &&
+           !expression.child_ids.empty()) ||
+          (expression.operator_name == "SPATIAL_MATCH" &&
+           expression.child_ids.size() != 4) ||
+          (expression.operator_name == "SPATIAL_NEAREST" &&
+           expression.child_ids.size() != 4))) ||
+        (spatial_point_constructor && expression.child_ids.size() != 2) ||
+        (columnar_model_operation &&
+         ((expression.operator_name == "COLUMNAR_SOURCE" &&
+           !expression.child_ids.empty()) ||
+          (expression.operator_name == "COLUMNAR_FILTER" &&
+           expression.child_ids.size() != 2) ||
+          (expression.operator_name == "COLUMNAR_PROJECT" &&
+           (expression.child_ids.size() < 2 ||
+            expression.child_ids.size() > 257)))) ||
         (parenthesized && expression.child_ids.size() != 1)) {
       return RefuseRelationalGraph(
           "SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -41989,6 +42651,13 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
                                      "expression_child_ids");
       }
     }
+  }
+
+  if (!graph.model_operations.empty() || !graph.model_columns.empty()) {
+    return RefuseRelationalGraph(
+          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+        "parser-private model records are not canonical query.execute operands",
+        "model_transport_record");
   }
 
   std::unordered_map<std::uint32_t, const ParsedRelationalValuesRow*> rows;
@@ -42089,6 +42758,64 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
       return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
                                    "relational output owner is dangling",
                                    "output_record", output.node_id);
+    }
+  }
+  const auto exact_attached_model_operations =
+      [&](const ParsedRelationalNode* node,
+          const std::vector<std::uint32_t>& expected_operation_roots,
+          const bool spatial) {
+    std::vector<std::uint32_t> attached_operation_roots;
+    for (const auto expression_id : node->bound_expression_ids) {
+      const auto expression = expressions.find(expression_id);
+      if (expression == expressions.end() ||
+          !expression->second->operator_name.has_value()) {
+        continue;
+      }
+      const auto& name = *expression->second->operator_name;
+      const bool same_family_operation =
+          spatial
+              ? (name == "SPATIAL_SOURCE" || name == "SPATIAL_MATCH" ||
+                 name == "SPATIAL_NEAREST")
+              : (name == "COLUMNAR_SOURCE" || name == "COLUMNAR_FILTER" ||
+                 name == "COLUMNAR_PROJECT");
+      if (same_family_operation) {
+        attached_operation_roots.push_back(expression_id);
+      }
+    }
+    return attached_operation_roots == expected_operation_roots;
+  };
+  if (spatial_graph) {
+    std::vector<std::uint32_t> expected_operation_roots{
+        spatial_source_root->id};
+    if (spatial_match_root != graph.expressions.end()) {
+      expected_operation_roots.push_back(spatial_match_root->id);
+    }
+    if (spatial_nearest_root != graph.expressions.end()) {
+      expected_operation_roots.push_back(spatial_nearest_root->id);
+    }
+    if (!exact_attached_model_operations(
+            spatial_model_source_node, expected_operation_roots, true)) {
+      return RefuseRelationalGraph(
+          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+          "spatial/columnar functionless roots are not attached in semantic order",
+          "bound_expression_ids", spatial_model_source_node->id);
+    }
+  }
+  if (columnar_graph) {
+    std::vector<std::uint32_t> expected_operation_roots{
+        columnar_source_root->id};
+    if (columnar_filter_root != graph.expressions.end()) {
+      expected_operation_roots.push_back(columnar_filter_root->id);
+    }
+    if (columnar_project_root != graph.expressions.end()) {
+      expected_operation_roots.push_back(columnar_project_root->id);
+    }
+    if (!exact_attached_model_operations(
+            columnar_model_source_node, expected_operation_roots, false)) {
+      return RefuseRelationalGraph(
+          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+          "spatial/columnar functionless roots are not attached in semantic order",
+          "bound_expression_ids", columnar_model_source_node->id);
     }
   }
   if (document_expand_graph) {
@@ -43338,6 +44065,9 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   std::unordered_set<std::uint32_t> referenced_descriptors;
   for (const auto& expression : graph.expressions) {
     referenced_descriptors.insert(expression.descriptor_id);
+  }
+  for (const auto& column : graph.model_columns) {
+    referenced_descriptors.insert(column.descriptor_id);
   }
   for (const auto& node : graph.nodes) {
     std::vector<const ParsedRelationalOutput*> node_outputs;

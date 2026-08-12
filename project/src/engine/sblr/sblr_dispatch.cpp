@@ -130,6 +130,7 @@
 #include <string_view>
 #include <system_error>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -1252,31 +1253,156 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
   }
   const auto& dag = decoded.request.relational_dag;
   const auto& context = dispatch_request.context;
-  const bool key_value_model_source = std::ranges::any_of(
-      dag.nodes, [](const auto& node) {
-        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
-      });
-  const bool key_value_operation = std::ranges::any_of(
-      dag.expressions, [](const auto& expression) {
-        return expression.expression_kind ==
-                   api::RelationalExpressionKind::kFunctionCall &&
-               !expression.function_uuid.has_value() &&
-               (expression.operator_name == "KV_KEY" ||
-                expression.operator_name == "KV_MULTI_GET" ||
-                expression.operator_name == "KV_PREFIX");
-      });
-  const bool key_value_graph = key_value_model_source && key_value_operation;
-  if (key_value_graph != statement_timestamp_present ||
-      (key_value_graph &&
+  std::unordered_map<std::uint32_t, const api::RelationalExpressionRecord*>
+      expressions_by_id;
+  expressions_by_id.reserve(dag.expressions.size());
+  for (const auto& expression : dag.expressions) {
+    expressions_by_id.emplace(expression.expression_id, &expression);
+  }
+  const auto expression_for = [&](const std::uint32_t expression_id) {
+    const auto found = expressions_by_id.find(expression_id);
+    return found == expressions_by_id.end() ? nullptr : found->second;
+  };
+  const auto attached_operation_count =
+      [&](const api::RelationalDagNode& node,
+          const std::string_view operation_name) {
+        return std::ranges::count_if(
+            node.bound_expression_ids, [&](const auto expression_id) {
+              const auto expression = expression_for(expression_id);
+              return expression != nullptr &&
+                     expression->expression_kind ==
+                         api::RelationalExpressionKind::kFunctionCall &&
+                     !expression->function_uuid.has_value() &&
+                     expression->operator_name == operation_name;
+            });
+      };
+  std::vector<const api::RelationalDagNode*> model_sources;
+  std::vector<const api::RelationalDagNode*> model_aggregates;
+  for (const auto& node : dag.nodes) {
+    if (node.node_kind == api::RelationalDagNodeKind::kScan &&
+        node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1") {
+      model_sources.push_back(&node);
+    } else if (node.node_kind == api::RelationalDagNodeKind::kAggregate &&
+               node.semantic_variant_id == "SBLR_MODEL_AGGREGATE_V1") {
+      model_aggregates.push_back(&node);
+    }
+  }
+  const auto family_roots = [&](const api::RelationalDagNode& node) {
+    std::array<bool, 6> roots{};
+    roots[0] = attached_operation_count(node, "KV_KEY") +
+                   attached_operation_count(node, "KV_MULTI_GET") +
+                   attached_operation_count(node, "KV_PREFIX") ==
+               1;
+    roots[1] = attached_operation_count(node, "TIME_RANGE") == 1;
+    roots[2] = attached_operation_count(node, "VECTOR_NEAREST") == 1;
+    roots[3] = attached_operation_count(node, "SEARCH_MATCH") == 1;
+    roots[4] = attached_operation_count(node, "SPATIAL_SOURCE") == 1;
+    roots[5] = attached_operation_count(node, "COLUMNAR_SOURCE") == 1;
+    return roots;
+  };
+  const auto exact_one_family_root = [](const auto& roots) {
+    return std::ranges::count(roots, true) == 1;
+  };
+
+  std::array<bool, 6> timestamp_families{};
+  const bool exact_single_model_source =
+      model_sources.size() == 1 && model_aggregates.empty();
+  if (exact_single_model_source) {
+    const auto roots = family_roots(*model_sources.front());
+    if (exact_one_family_root(roots) &&
+        (!roots[1] ||
+         attached_operation_count(*model_sources.front(),
+                                  "TIME_DOWNSAMPLE") == 0)) {
+      timestamp_families = roots;
+    }
+  }
+
+  const bool exact_time_series_aggregate =
+      model_sources.empty() && model_aggregates.size() == 1 &&
+      exact_one_family_root(family_roots(*model_aggregates.front())) &&
+      family_roots(*model_aggregates.front())[1] &&
+      attached_operation_count(*model_aggregates.front(), "TIME_DOWNSAMPLE") ==
+          1;
+  if (exact_time_series_aggregate) timestamp_families[1] = true;
+
+  const api::RelationalDagNode* spatial_source = nullptr;
+  const api::RelationalDagNode* columnar_source = nullptr;
+  bool exact_mixed_source_families = model_sources.size() == 2;
+  for (const auto* source : model_sources) {
+    const auto roots = family_roots(*source);
+    exact_mixed_source_families =
+        exact_mixed_source_families && exact_one_family_root(roots);
+    if (roots[4]) {
+      exact_mixed_source_families =
+          exact_mixed_source_families && spatial_source == nullptr;
+      spatial_source = source;
+    } else if (roots[5]) {
+      exact_mixed_source_families =
+          exact_mixed_source_families && columnar_source == nullptr;
+      columnar_source = source;
+    } else {
+      exact_mixed_source_families = false;
+    }
+  }
+  const auto root_node = std::ranges::find_if(dag.nodes, [&](const auto& node) {
+    return node.node_id == dag.root_node_id;
+  });
+  const auto distinct_mixed_leg_authority = [&] {
+    if (spatial_source == nullptr || columnar_source == nullptr ||
+        spatial_source->required_object_uuids.size() != 1 ||
+        columnar_source->required_object_uuids.size() != 1 ||
+        spatial_source->required_object_uuids.front() ==
+            columnar_source->required_object_uuids.front()) {
+      return false;
+    }
+    std::unordered_set<std::uint32_t> spatial_descriptors(
+        spatial_source->output_descriptor_ids.begin(),
+        spatial_source->output_descriptor_ids.end());
+    return !spatial_descriptors.empty() &&
+           !columnar_source->output_descriptor_ids.empty() &&
+           std::ranges::none_of(
+               columnar_source->output_descriptor_ids,
+               [&](const auto descriptor_id) {
+                 return spatial_descriptors.contains(descriptor_id);
+               });
+  }();
+  const bool exact_spatial_columnar_join =
+      exact_mixed_source_families && model_aggregates.empty() &&
+      distinct_mixed_leg_authority && root_node != dag.nodes.end() &&
+      root_node->node_kind == api::RelationalDagNodeKind::kJoin &&
+      root_node->input_node_ids ==
+          std::vector<std::uint32_t>{model_sources[0]->node_id,
+                                     model_sources[1]->node_id};
+  if (exact_spatial_columnar_join) {
+    timestamp_families[4] = true;
+    timestamp_families[5] = true;
+  }
+
+  const bool key_value_graph = timestamp_families[0];
+  const bool time_series_graph = timestamp_families[1];
+  const bool vector_graph = timestamp_families[2];
+  const bool search_graph = timestamp_families[3];
+  const bool spatial_graph = timestamp_families[4];
+  const bool columnar_graph = timestamp_families[5];
+  const bool timestamp_model_graph =
+      key_value_graph || time_series_graph || vector_graph || search_graph ||
+      spatial_graph || columnar_graph;
+  if (timestamp_model_graph != statement_timestamp_present ||
+      (timestamp_model_graph &&
        (!IsCanonicalStatementTimestamp(dag.statement_timestamp) ||
         dag.statement_timestamp != context.statement_timestamp))) {
-    decoded.diagnostic_id =
-        "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1";
-    decoded.detail = key_value_graph
-                         ? "carried key/value statement timestamp does not "
-                           "exactly match engine statement authority"
+    decoded.diagnostic_id = time_series_graph
+                                ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
+                                : ((vector_graph || search_graph ||
+                                    spatial_graph || columnar_graph)
+                                       ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
+                                       : "SB_MODEL_KEY_VALUE_STATEMENT_"
+                                         "TIMESTAMP_INVALID_V1");
+    decoded.detail = timestamp_model_graph
+                         ? "carried model statement timestamp does not exactly "
+                           "match engine statement authority"
                          : "statement timestamp is admitted only for "
-                           "key/value model-source input";
+                           "timestamp-carrying model-source input";
     return decoded;
   }
   if (dag.bound_catalog_epoch_uuid != context.catalog_epoch_uuid.canonical ||

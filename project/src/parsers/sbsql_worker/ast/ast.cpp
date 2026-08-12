@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <initializer_list>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -1462,6 +1463,10 @@ std::string NativeRelationSourceAstKindName(
       return "vector";
     case NativeRelationSourceAstKind::kSearch:
       return "search";
+    case NativeRelationSourceAstKind::kSpatial:
+      return "spatial";
+    case NativeRelationSourceAstKind::kColumnar:
+      return "columnar";
   }
   return "unknown";
 }
@@ -1634,6 +1639,39 @@ AstDocument BuildAst(const CstDocument& cst) {
     std::size_t vector_source_count = 0;
     bool search_resolution_description_valid = true;
     std::size_t search_source_count = 0;
+    bool spatial_resolution_description_valid = true;
+    std::size_t spatial_source_count = 0;
+    std::size_t spatial_crs_request_count = 0;
+    bool columnar_resolution_description_valid = true;
+    std::size_t columnar_source_count = 0;
+    const auto exact_model_operation_roots = [&](const auto& source) {
+      if (source.model_operation_ids.empty() ||
+          source.model_operation_ids.size() !=
+              source.model_operation_expression_ids.size()) {
+        return false;
+      }
+      std::unordered_set<std::uint32_t> seen;
+      for (std::size_t index = 0;
+           index < source.model_operation_expression_ids.size(); ++index) {
+        const auto expression_id =
+            source.model_operation_expression_ids[index];
+        if (!seen.insert(expression_id).second) return false;
+        const auto expression = std::ranges::find_if(
+            ast.native_relational.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == expression_id;
+            });
+        if (expression == ast.native_relational.expressions.end() ||
+            expression->expression_kind !=
+                NativeExpressionAstKind::kFunctionCall ||
+            expression->operator_name != source.model_operation_ids[index]) {
+          return false;
+        }
+      }
+      return source.model_operation_ids.size() == 1
+                 ? source.model_operation_id ==
+                       source.model_operation_ids.front()
+                 : source.model_operation_id.empty();
+    };
     for (const auto& source :
          ast.native_relational.catalog_relation_sources) {
       if (source.source_kind == NativeRelationSourceAstKind::kKeyValue) {
@@ -1772,6 +1810,104 @@ AstDocument BuildAst(const CstDocument& cst) {
              source.model_search_analyzer_name.front().range});
         continue;
       }
+      if (source.source_kind == NativeRelationSourceAstKind::kSpatial) {
+        ++spatial_source_count;
+        const bool source_only = source.model_operation_ids ==
+                                 std::vector<std::string>{"SPATIAL_SOURCE"};
+        const bool match_only = source.model_operation_ids ==
+                                std::vector<std::string>{"SPATIAL_SOURCE",
+                                                         "SPATIAL_MATCH"};
+        const bool nearest_only = source.model_operation_ids ==
+                                  std::vector<std::string>{"SPATIAL_SOURCE",
+                                                           "SPATIAL_NEAREST"};
+        const bool match_nearest = source.model_operation_ids ==
+                                   std::vector<std::string>{
+                                       "SPATIAL_SOURCE", "SPATIAL_MATCH",
+                                       "SPATIAL_NEAREST"};
+        const bool match = match_only || match_nearest;
+        const bool nearest = nearest_only || match_nearest;
+        const auto operation_count = static_cast<std::size_t>(match) +
+                                     static_cast<std::size_t>(nearest);
+        spatial_resolution_description_valid =
+            spatial_resolution_description_valid &&
+            source.model_family_id == "spatial" &&
+            (source_only || match_only || nearest_only || match_nearest) &&
+            exact_model_operation_roots(source) &&
+            !source.qualified_name.empty() && source.alias.has_value() &&
+            (operation_count > 0 ==
+             source.model_spatial_alias_expression_id.has_value()) &&
+            source.model_spatial_query_expression_ids.size() ==
+                operation_count &&
+            source.model_spatial_crs_expression_ids.size() ==
+                operation_count &&
+            source.model_spatial_crs_names.size() == operation_count &&
+            (match == source.model_spatial_match_expression_id.has_value()) &&
+            (nearest ==
+             source.model_spatial_nearest_expression_id.has_value()) &&
+            (!match || source.model_operation_expression_ids[1] ==
+                           *source.model_spatial_match_expression_id) &&
+            (!nearest || source.model_operation_expression_ids.back() ==
+                             *source.model_spatial_nearest_expression_id) &&
+            (nearest == source.model_spatial_top_k.has_value()) &&
+            (nearest ==
+             source.model_spatial_top_k_expression_id.has_value()) &&
+            (match ==
+             source.model_spatial_predicate_expression_id.has_value()) &&
+            (!match || source.model_spatial_predicate_id == "INTERSECTS" ||
+             source.model_spatial_predicate_id == "CONTAINS") &&
+            (nearest == source.model_source_alias.has_value());
+        ast.native_relational.model_object_resolution_requests.push_back(
+            {source.source_id, "spatial", "spatial_collection",
+             source.qualified_name, source.qualified_name_range});
+        for (const auto& crs_name : source.model_spatial_crs_names) {
+          ++spatial_crs_request_count;
+          ast.native_relational.model_object_resolution_requests.push_back(
+              {source.source_id, "spatial", "spatial_crs",
+               crs_name, crs_name.front().range});
+        }
+        continue;
+      }
+      if (source.source_kind == NativeRelationSourceAstKind::kColumnar) {
+        ++columnar_source_count;
+        const bool source_only = source.model_operation_ids ==
+                                 std::vector<std::string>{"COLUMNAR_SOURCE"};
+        const bool filter_only = source.model_operation_ids ==
+                                 std::vector<std::string>{"COLUMNAR_SOURCE",
+                                                          "COLUMNAR_FILTER"};
+        const bool project_only = source.model_operation_ids ==
+                                  std::vector<std::string>{"COLUMNAR_SOURCE",
+                                                           "COLUMNAR_PROJECT"};
+        const bool filter_project = source.model_operation_ids ==
+                                    std::vector<std::string>{
+                                        "COLUMNAR_SOURCE", "COLUMNAR_FILTER",
+                                        "COLUMNAR_PROJECT"};
+        const bool project = project_only || filter_project;
+        const bool filter = filter_only || filter_project;
+        columnar_resolution_description_valid =
+            columnar_resolution_description_valid &&
+            source.model_family_id == "columnar" &&
+            (source_only || filter_only || project_only || filter_project) &&
+            exact_model_operation_roots(source) &&
+            !source.qualified_name.empty() && source.alias.has_value() &&
+            (project ==
+             source.model_columnar_project_expression_id.has_value()) &&
+            (project == !source.model_columnar_project_expression_ids.empty()) &&
+            source.model_columnar_project_expression_ids.size() ==
+                source.model_columnar_project_names.size() &&
+            (filter ==
+             source.model_columnar_filter_expression_id.has_value()) &&
+            (filter ==
+             source.model_columnar_predicate_expression_id.has_value()) &&
+            (!filter || source.model_operation_expression_ids[1] ==
+                            *source.model_columnar_filter_expression_id) &&
+            (!project || source.model_operation_expression_ids.back() ==
+                             *source.model_columnar_project_expression_id) &&
+            (project == source.model_source_alias.has_value());
+        ast.native_relational.model_object_resolution_requests.push_back(
+            {source.source_id, "columnar", "logical_relation",
+             source.qualified_name, source.qualified_name_range});
+        continue;
+      }
       if (source.source_kind == NativeRelationSourceAstKind::kGraph) {
         ++graph_source_count;
         const bool graph_match =
@@ -1829,15 +1965,25 @@ AstDocument BuildAst(const CstDocument& cst) {
     const auto expected_model_resolution_count =
         document_collection_source_count + graph_source_count +
         key_value_source_count + time_series_source_count + vector_source_count +
-        (search_source_count * 2);
+        (search_source_count * 2) + spatial_source_count +
+        spatial_crs_request_count +
+        columnar_source_count;
     const auto model_source_count =
         document_collection_source_count + graph_source_count +
         key_value_source_count + time_series_source_count + vector_source_count +
-        search_source_count;
+        search_source_count + spatial_source_count + columnar_source_count;
+    const bool exact_spatial_columnar_pair =
+        model_source_count == 2 && spatial_source_count == 1 &&
+        columnar_source_count == 1 && document_collection_source_count == 0 &&
+        graph_source_count == 0 && key_value_source_count == 0 &&
+        time_series_source_count == 0 && vector_source_count == 0 &&
+        search_source_count == 0;
     if (document_source_count > 1 || graph_source_count > 1 ||
         key_value_source_count > 1 ||
         time_series_source_count > 1 || vector_source_count > 1 ||
-        search_source_count > 1 || model_source_count > 1 ||
+        search_source_count > 1 || spatial_source_count > 1 ||
+        columnar_source_count > 1 ||
+        (model_source_count > 1 && !exact_spatial_columnar_pair) ||
         ast.native_relational.model_object_resolution_requests.size() !=
             expected_model_resolution_count ||
         !document_resolution_description_valid ||
@@ -1845,7 +1991,9 @@ AstDocument BuildAst(const CstDocument& cst) {
         !key_value_resolution_description_valid ||
         !time_series_resolution_description_valid ||
         !vector_resolution_description_valid ||
-        !search_resolution_description_valid) {
+        !search_resolution_description_valid ||
+        !spatial_resolution_description_valid ||
+        !columnar_resolution_description_valid) {
       ast.native_relational.status =
           NativeRelationalParseStatus::kRefused;
       ast.native_relational.messages.diagnostics.push_back(MakeDiagnostic(

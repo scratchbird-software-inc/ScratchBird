@@ -79,6 +79,48 @@ bool CanonicalStatementTimestamp(const std::string_view value) {
   return day != 0 && day <= maximum_day;
 }
 
+bool ExactOrderedOperationChain(const std::string_view family_id,
+                                const std::vector<std::string>& operation_ids,
+                                const std::string_view operation_id) {
+  const auto exact_projection = [&](const std::string_view source) {
+    if (operation_ids.empty() || operation_ids.front() != source) return false;
+    if (operation_ids.size() == 1) return operation_id == source;
+    if (operation_ids.size() == 2) return operation_id == operation_ids.back();
+    return operation_ids.size() == 3 && operation_id.empty();
+  };
+  if (family_id == "spatial") {
+    const bool exact_chain =
+        operation_ids == std::vector<std::string>{"SPATIAL_SOURCE"} ||
+        operation_ids ==
+            std::vector<std::string>{"SPATIAL_SOURCE", "SPATIAL_MATCH"} ||
+        operation_ids ==
+            std::vector<std::string>{"SPATIAL_SOURCE", "SPATIAL_NEAREST"} ||
+        operation_ids == std::vector<std::string>{
+                             "SPATIAL_SOURCE", "SPATIAL_MATCH",
+                             "SPATIAL_NEAREST"};
+    return exact_chain && exact_projection("SPATIAL_SOURCE");
+  }
+  if (family_id == "columnar") {
+    const bool exact_chain =
+        operation_ids == std::vector<std::string>{"COLUMNAR_SOURCE"} ||
+        operation_ids ==
+            std::vector<std::string>{"COLUMNAR_SOURCE", "COLUMNAR_FILTER"} ||
+        operation_ids ==
+            std::vector<std::string>{"COLUMNAR_SOURCE", "COLUMNAR_PROJECT"} ||
+        operation_ids == std::vector<std::string>{
+                             "COLUMNAR_SOURCE", "COLUMNAR_FILTER",
+                             "COLUMNAR_PROJECT"};
+    return exact_chain && exact_projection("COLUMNAR_SOURCE");
+  }
+  return operation_ids.empty();
+}
+
+bool HasOperation(const ModelSourceInputDescriptorV1& input,
+                  const std::string_view operation_id) {
+  return std::ranges::find(input.operation_ids, operation_id) !=
+         input.operation_ids.end();
+}
+
 constexpr std::int64_t DaysFromCivil(const int year,
                                      const unsigned month,
                                      const unsigned day) {
@@ -371,6 +413,8 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
   const bool time_series_family = input.family_id == "time_series";
   const bool vector_family = input.family_id == "vector";
   const bool search_family = input.family_id == "search";
+  const bool spatial_family = input.family_id == "spatial";
+  const bool columnar_family = input.family_id == "columnar";
   const bool valid_operation =
       (document_family &&
        (input.operation_id == "DOCUMENT_FIND" ||
@@ -394,9 +438,13 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
       (search_family &&
        (input.operation_id == "SEARCH_RANKED_QUERY" ||
         input.operation_id == "SEARCH_PHRASE_QUERY" ||
-        input.operation_id == "SEARCH_FUZZY_QUERY"));
+        input.operation_id == "SEARCH_FUZZY_QUERY")) ||
+      ((spatial_family || columnar_family) &&
+       ExactOrderedOperationChain(input.family_id, input.operation_ids,
+                                  input.operation_id));
   const bool timestamp_family =
-      key_value_family || time_series_family || vector_family || search_family;
+      key_value_family || time_series_family || vector_family || search_family ||
+      spatial_family || columnar_family;
   if (timestamp_family !=
           !input.mga_statement_context.statement_timestamp.empty() ||
       (timestamp_family &&
@@ -405,7 +453,7 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
     result.diagnostic_id =
         time_series_family
             ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
-            : ((vector_family || search_family)
+            : ((vector_family || search_family || spatial_family || columnar_family)
                    ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
                    : "SB_MODEL_KEY_VALUE_STATEMENT_TIMESTAMP_INVALID_V1");
     result.detail = "timestamp-carrying typed input timestamp is invalid";
@@ -420,8 +468,11 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
   if (input.abi_version != 1 ||
       input.input_descriptor_id != "SB_MODEL_SOURCE_INPUT_DESCRIPTOR_V1" ||
       (!document_family && !graph_family && !key_value_family &&
-       !time_series_family && !vector_family && !search_family) ||
+       !time_series_family && !vector_family && !search_family &&
+       !spatial_family && !columnar_family) ||
       !valid_operation ||
+      !ExactOrderedOperationChain(input.family_id, input.operation_ids,
+                                  input.operation_id) ||
       (input.operation_id == "DOCUMENT_UNNEST" && !input.object_uuid.empty()) ||
       (input.operation_id != "DOCUMENT_UNNEST" &&
        !CanonicalUuid(input.object_uuid)) ||
@@ -433,6 +484,20 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
       !exact_output_descriptor_ids ||
       (vector_family && input.output_descriptor_ids.size() != 3) ||
       (search_family && input.output_descriptor_ids.size() != 5) ||
+      (spatial_family &&
+       input.output_descriptor_ids.size() !=
+           (input.operation_ids.size() == 1
+                ? 3
+                : input.operation_ids.size() == 3 ? 5 : 4)) ||
+      (spatial_family &&
+       (!CanonicalUuid(input.spatial_geometry_descriptor_uuid) ||
+        !CanonicalUuid(input.spatial_geometry_type_uuid) ||
+        !CanonicalUuid(input.spatial_crs_uuid) ||
+        input.spatial_crs_generation == 0)) ||
+      (!spatial_family &&
+       (!input.spatial_geometry_descriptor_uuid.empty() ||
+        !input.spatial_geometry_type_uuid.empty() ||
+        !input.spatial_crs_uuid.empty() || input.spatial_crs_generation != 0)) ||
       input.maximum_cells == 0 || input.maximum_memory_bytes == 0 ||
       !CanonicalUuid(input.selected_alternative_uuid) ||
       !CanonicalUuid(input.capability_uuid) ||
@@ -463,6 +528,8 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
   const bool time_series_family = input.family_id == "time_series";
   const bool vector_family = input.family_id == "vector";
   const bool search_family = input.family_id == "search";
+  const bool spatial_family = input.family_id == "spatial";
+  const bool columnar_family = input.family_id == "columnar";
   constexpr std::uint64_t kSearchIdentityInlineExtensionBytes =
       2 * sizeof(std::string) + 2 * sizeof(std::uint64_t);
   static_assert(sizeof(ModelProviderRowIdentityV1) >=
@@ -491,7 +558,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
   if (provider_batch.provider_uuid != input.provider_uuid ||
       provider_batch.provider_generation != input.provider_generation ||
       ((key_value_family || time_series_family || vector_family ||
-        search_family) &&
+        search_family || spatial_family || columnar_family) &&
        (provider_batch.selected_alternative_uuid !=
             input.selected_alternative_uuid ||
         provider_batch.capability_uuid != input.capability_uuid ||
@@ -512,7 +579,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
                   "provider output descriptors differ from the bound input");
   }
   if (graph_family || key_value_family || time_series_family || vector_family ||
-      search_family) {
+      search_family || spatial_family || columnar_family) {
     std::size_t preflight_cell_count = 0;
     // The provider batch is caller/provider-owned. The grant covers every
     // allocation copied into the engine-owned output descriptor at the same
@@ -543,6 +610,8 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
         !preflight_string("SB_MODEL_PROPERTY_DESCRIPTOR_V1") ||
         !preflight_string(input.input_descriptor_id) ||
         !preflight_string(input.family_id) ||
+        !std::ranges::all_of(input.operation_ids, preflight_string) ||
+        !preflight_account(input.operation_ids.size() * sizeof(std::string)) ||
         !preflight_string(input.operation_id) ||
         !preflight_string(input.object_uuid) ||
         !preflight_string(input.selected_alternative_uuid) ||
@@ -657,7 +726,8 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
                   "model-family ordered row identity cardinality is incomplete");
   }
   std::uint64_t time_series_uniqueness_peak = 0;
-  if (graph_family || time_series_family || vector_family || search_family) {
+  if (graph_family || time_series_family || vector_family || search_family ||
+      spatial_family || columnar_family) {
     std::uint64_t uniqueness_peak =
         3 * sizeof(std::unordered_set<std::string>);
     for (std::size_t identity_ordinal = 0;
@@ -759,7 +829,8 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           identity.search_score.empty() && identity.search_rank == 0;
       const bool document_identity =
           !graph_family && !key_value_family && !time_series_family &&
-          !vector_family && !search_family &&
+          !vector_family && !search_family && !spatial_family &&
+          !columnar_family &&
           CanonicalUuid(identity.document_uuid) &&
           CanonicalUuid(identity.row_uuid) &&
           document_uuids.insert(identity.document_uuid).second &&
@@ -875,9 +946,20 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           search_score > 0.0 &&
           identity.search_rank == identity_ordinal + 1 &&
           document_uuids.insert(identity.document_uuid).second;
+      const bool spatial_or_columnar_identity =
+          (spatial_family || columnar_family) &&
+          identity.document_uuid.empty() && CanonicalUuid(identity.row_uuid) &&
+          identity.vertex_uuid.empty() && identity.edge_uuid.empty() &&
+          identity.path_uuid.empty() && identity.graph_depth == 0 &&
+          identity.key.empty() && identity.series_uuid.empty() &&
+          identity.metric_uuid.empty() && identity.tags.empty() &&
+          identity.point_timestamp_ns == 0 && identity.bucket_start_ns == 0 &&
+          empty_time_series_payload && empty_vector_payload &&
+          empty_search_payload && row_uuids.insert(identity.row_uuid).second;
       if (!document_identity && !graph_identity && !key_value_identity &&
           !time_series_raw && !time_series_bucket &&
-          !time_series_downsample && !vector_identity && !search_identity) {
+          !time_series_downsample && !vector_identity && !search_identity &&
+          !spatial_or_columnar_identity) {
         return Refuse(
             kModelTypedExchangeInvalid,
             "model-family row uniqueness or ordering identity is invalid");
@@ -980,12 +1062,16 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
                                            : "series_metric_tags_bucket_v1")
                                     : vector_family ? "row_uuid"
                                     : search_family ? "document_uuid"
+                                    : (spatial_family || columnar_family)
+                                          ? "row_uuid"
                                     : "document_uuid") ||
       provider_batch.properties.ordering_id !=
           (search_family
                ? "search_score_desc_document_uuid_asc_v1"
                : vector_family
                ? "vector_distance_row_uuid_ascending_v1"
+               : spatial_family && HasOperation(input, "SPATIAL_NEAREST")
+               ? "spatial_distance_row_uuid_ascending_v1"
                : input.operation_id == "TIME_SERIES_RANGE_READ" ||
                    input.operation_id == "TIME_SERIES_BUCKET"
                ? "series_metric_timestamp_tags_row_ascending_v1"
@@ -1526,7 +1612,8 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     for (std::size_t column = 0; column < row.values.size(); ++column) {
       const auto& value = row.values[column];
       if (!graph_family && !key_value_family && !time_series_family &&
-          !vector_family && !search_family &&
+          !vector_family && !search_family && !spatial_family &&
+          !columnar_family &&
           value.state ==
               scratchbird::engine::internal_api::EngineValueState::missing) {
         if (column >= provider_batch.batch.columns.size() ||
@@ -1535,7 +1622,8 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
                         "missing document path has no nullable bound output descriptor");
         }
       } else if ((graph_family || key_value_family || time_series_family ||
-                  vector_family || search_family) &&
+                  vector_family || search_family || spatial_family ||
+                  columnar_family) &&
                  value.state ==
                      scratchbird::engine::internal_api::EngineValueState::missing) {
         return Refuse(kModelTypedExchangeInvalid,
@@ -1567,7 +1655,8 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
                   "model-family exchange batch allocation was refused");
   }
   if (!graph_family && !key_value_family && !time_series_family &&
-      !vector_family && !search_family) {
+      !vector_family && !search_family && !spatial_family &&
+      !columnar_family) {
     for (auto& row : normalized.rows) {
       for (auto& value : row.values) {
         if (value.state ==
@@ -1590,8 +1679,14 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
   result.accepted = true;
   result.root_publishable = true;
   result.output.family_id = input.family_id;
+  result.output.operation_ids = input.operation_ids;
   result.output.operation_id = input.operation_id;
   result.output.object_uuid = input.object_uuid;
+  result.output.spatial_geometry_descriptor_uuid =
+      input.spatial_geometry_descriptor_uuid;
+  result.output.spatial_geometry_type_uuid = input.spatial_geometry_type_uuid;
+  result.output.spatial_crs_uuid = input.spatial_crs_uuid;
+  result.output.spatial_crs_generation = input.spatial_crs_generation;
   result.output.physical_node_id = input.physical_node_id;
   result.output.selected_alternative_uuid = input.selected_alternative_uuid;
   result.output.capability_uuid = input.capability_uuid;

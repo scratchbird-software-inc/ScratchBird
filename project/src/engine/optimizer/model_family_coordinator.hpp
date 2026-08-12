@@ -6,6 +6,7 @@
 #include "../executor/model_family_executor.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -43,6 +44,10 @@ struct ModelFamilyCandidateV1 {
 struct ModelFamilyCoordinatorRequestV1 {
   std::uint16_t abi_version{1};
   std::string family_id;
+  // Ordered, distinct operation roots for a multi-stage model leg. The
+  // singular field below is only a compatibility projection when the leg
+  // has at most one effective operation after its source root.
+  std::vector<std::string> operation_ids;
   std::string operation_id;
   std::string logical_operator_id;
   std::uint32_t logical_node_id{0};
@@ -94,5 +99,151 @@ ModelFamilyCoordinatorResultV1 CoordinateKeyValueFamilySourceV1(
 
 ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     const ModelFamilyCoordinatorRequestV1& request);
+
+struct MultilegDescriptorProfileV1 {
+  std::uint8_t profile_kind{0};
+  std::uint16_t slot{0};
+  std::string descriptor_uuid;
+  std::string type_uuid;
+  bool nullable{false};
+};
+
+struct MultilegDescriptorDemandV1 {
+  std::uint16_t lexical_source_ordinal{0};
+  std::uint16_t field_ordinal{0};
+  std::string family_id;
+  std::string field_id;
+  std::string canonical_type_name;
+  bool nullable{false};
+  bool derived{true};
+  std::string persisted_descriptor_uuid;
+  std::string persisted_type_uuid;
+};
+
+struct MultilegDescriptorAllocationV1 {
+  MultilegDescriptorDemandV1 demand;
+  std::string descriptor_uuid;
+  std::string type_uuid;
+  std::uint8_t profile_kind{0};
+  std::uint16_t slot{0};
+};
+
+struct MultilegDescriptorAllocationResultV1 {
+  bool accepted{false};
+  bool preflight_complete{false};
+  std::vector<MultilegDescriptorAllocationV1> allocations;
+  std::string diagnostic_id;
+  std::string detail;
+};
+
+MultilegDescriptorAllocationResultV1 AllocateMultilegResultDescriptorsV1(
+    const std::vector<MultilegDescriptorProfileV1>& profiles,
+    const std::vector<MultilegDescriptorDemandV1>& demands);
+
+// Engine-owned, synchronous dispatch carrier for the exact statement V10
+// descriptor suffix. The scope is deliberately thread-local and single-depth:
+// a receipt may authorize only its own statement while its query.execute call
+// is on the stack, and no profile authority survives that call.
+class MultilegDescriptorDispatchScopeV1 {
+ public:
+  MultilegDescriptorDispatchScopeV1(
+      const std::string& statement_uuid,
+      const std::vector<MultilegDescriptorProfileV1>& profiles);
+  ~MultilegDescriptorDispatchScopeV1();
+
+  MultilegDescriptorDispatchScopeV1(
+      const MultilegDescriptorDispatchScopeV1&) = delete;
+  MultilegDescriptorDispatchScopeV1& operator=(
+      const MultilegDescriptorDispatchScopeV1&) = delete;
+  MultilegDescriptorDispatchScopeV1(
+      MultilegDescriptorDispatchScopeV1&&) = delete;
+  MultilegDescriptorDispatchScopeV1& operator=(
+      MultilegDescriptorDispatchScopeV1&&) = delete;
+
+  bool installed() const { return installed_; }
+  const std::string& diagnostic_id() const { return diagnostic_id_; }
+  const std::string& detail() const { return detail_; }
+
+ private:
+  bool installed_{false};
+  std::string statement_uuid_;
+  std::string diagnostic_id_;
+  std::string detail_;
+};
+
+struct MultilegDescriptorDispatchLookupV1 {
+  bool accepted{false};
+  std::vector<MultilegDescriptorProfileV1> profiles;
+  std::string diagnostic_id;
+  std::string detail;
+};
+
+MultilegDescriptorDispatchLookupV1 LookupMultilegDescriptorDispatchScopeV1(
+    const std::string& exact_statement_uuid);
+
+struct ModelFamilyCompositionLegV1 {
+  std::uint16_t lexical_source_ordinal{0};
+  std::string family_id;
+  std::string selected_plan_uuid;
+  std::uint64_t root_physical_node_id{0};
+  scratchbird::engine::executor::PhysicalMgaStatementContext
+      mga_statement_context;
+  bool selected{false};
+  bool exact_recheck_required{true};
+  bool security_recheck_required{true};
+  bool parser_planning_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+};
+
+struct ModelFamilyCompositionRequestV1 {
+  std::uint16_t abi_version{1};
+  std::string composition_profile_id;
+  std::vector<ModelFamilyCompositionLegV1> legs;
+  std::uint64_t memory_budget_bytes{0};
+};
+
+struct ModelFamilyCompositionResultV1 {
+  bool accepted{false};
+  bool deterministic{false};
+  bool descriptor_preflight_required{true};
+  bool root_publication_allowed{false};
+  bool no_partial_root{true};
+  bool empty_root_required{false};
+  std::vector<ModelFamilyCompositionLegV1> lexical_legs;
+  std::string composition_receipt_uuid;
+  std::string lifecycle_contract_id;
+  std::string diagnostic_id;
+  std::string detail;
+};
+
+ModelFamilyCompositionResultV1 CoordinateModelFamilyCompositionV1(
+    const ModelFamilyCompositionRequestV1& request);
+
+struct ModelFamilyJoinAdmissionRequestV1 {
+  std::uint16_t abi_version{1};
+  std::string left_family_id;
+  std::string right_family_id;
+  std::string join_form_id;
+  std::string condition_form_id;
+  std::string scenario_profile_id{"JOIN-SCENARIO-BASELINE-V1"};
+};
+
+struct ModelFamilyJoinAdmissionResultV1 {
+  bool accepted{false};
+  bool deterministic{false};
+  bool root_publication_allowed{false};
+  std::string left_provider_route_id;
+  std::string right_provider_route_id;
+  std::string relational_consumer_route_id;
+  std::string condition_lowering_route_id;
+  std::string diagnostic_id;
+  std::string detail;
+};
+
+// Resolves one cell of the signed 81-direction x 10-join x 5-condition x
+// 15-scenario finite model-family join matrix before either leg may access
+// data. A refusal never permits a partial canonical root publication.
+ModelFamilyJoinAdmissionResultV1 CoordinateModelFamilyJoinAdmissionV1(
+    const ModelFamilyJoinAdmissionRequestV1& request);
 
 }  // namespace scratchbird::engine::optimizer

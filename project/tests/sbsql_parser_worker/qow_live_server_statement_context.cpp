@@ -13,6 +13,7 @@
 #include "ipc_server.hpp"
 #include "lifecycle.hpp"
 #include "local_transaction_store.hpp"
+#include "nosql/spatial_api.hpp"
 #include "parser_server_client.hpp"
 #include "parsers/sbsql_worker/cache/sblr_template_cache.hpp"
 #include "parsers/sbsql_worker/metrics/parser_metrics.hpp"
@@ -39,6 +40,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -49,6 +51,7 @@ namespace bridge = scratchbird::server_engine_bridge;
 namespace db = scratchbird::storage::database;
 namespace dt = scratchbird::core::datatypes;
 namespace ipc = scratchbird::parser::ipc;
+namespace nosql = scratchbird::engine::internal_api::nosql;
 namespace platform = scratchbird::core::platform;
 namespace sbps = scratchbird::server::sbps;
 namespace server = scratchbird::server;
@@ -118,6 +121,9 @@ struct Fixture {
   platform::TypedUuid schema_uuid;
   platform::TypedUuid relation_uuid;
   platform::TypedUuid join_relation_uuid;
+  platform::TypedUuid spatial_relation_uuid;
+  platform::TypedUuid columnar_relation_uuid;
+  platform::TypedUuid spatial_crs_uuid;
   std::uint64_t resource_epoch = 1;
   std::uint64_t salt = 0;
 
@@ -134,6 +140,9 @@ struct Fixture {
         schema_uuid(other.schema_uuid),
         relation_uuid(other.relation_uuid),
         join_relation_uuid(other.join_relation_uuid),
+        spatial_relation_uuid(other.spatial_relation_uuid),
+        columnar_relation_uuid(other.columnar_relation_uuid),
+        spatial_crs_uuid(other.spatial_crs_uuid),
         resource_epoch(other.resource_epoch),
         salt(other.salt) {
     other.directory.clear();
@@ -193,6 +202,12 @@ Fixture CreateFixture(bool credentialed_full_route = false) {
       NewTypedUuid(platform::UuidKind::object, fixture.salt + 7);
   fixture.join_relation_uuid =
       NewTypedUuid(platform::UuidKind::object, fixture.salt + 8);
+  fixture.spatial_relation_uuid =
+      NewTypedUuid(platform::UuidKind::object, fixture.salt + 9);
+  fixture.columnar_relation_uuid =
+      NewTypedUuid(platform::UuidKind::object, fixture.salt + 10);
+  fixture.spatial_crs_uuid =
+      NewTypedUuid(platform::UuidKind::object, fixture.salt + 11);
   fixture.resource_epoch =
       created.state.resource_seed_catalog.resource_epoch == 0
           ? 1
@@ -368,6 +383,18 @@ api::EngineLocalizedName PrimaryName(std::string name) {
   return localized;
 }
 
+std::string CoreTypeUuid(const std::string_view stable_name) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "core datatype catalog manifest is unavailable");
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  Require(found != manifest.manifest.descriptor_rows.end() &&
+              found->descriptor_uuid.valid(),
+          "required core datatype descriptor is unavailable");
+  return uuid::UuidToString(found->descriptor_uuid.value);
+}
+
 void CreateObjectBackedRelation(Fixture* fixture) {
   Require(fixture != nullptr, "object-backed fixture is missing");
   api::EngineBeginTransactionRequest begin;
@@ -478,6 +505,74 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   RequireEngineOk(api::EngineCreateTable(join_table),
                   "object-backed join fixture table create failed");
 
+  const auto uuid_type_uuid = CoreTypeUuid("uuid");
+  const auto geometry_type_uuid = CoreTypeUuid("geometry");
+  const auto int64_type_uuid = CoreTypeUuid("int64");
+  const auto character_type_uuid = CoreTypeUuid("character");
+  const auto crs_uuid = uuid::UuidToString(fixture->spatial_crs_uuid.value);
+  const auto make_column = [](const std::uint32_t ordinal,
+                              std::string name,
+                              std::string canonical_type,
+                              std::string encoded_descriptor,
+                              const bool nullable) {
+    api::EngineColumnDefinition definition;
+    definition.ordinal = ordinal;
+    definition.names.push_back(PrimaryName(std::move(name)));
+    definition.descriptor.descriptor_kind = "scalar";
+    definition.descriptor.canonical_type_name = std::move(canonical_type);
+    definition.descriptor.encoded_descriptor =
+        std::move(encoded_descriptor);
+    definition.nullable = nullable;
+    return definition;
+  };
+
+  api::EngineCreateTableRequest spatial_table;
+  spatial_table.context = context;
+  spatial_table.target_schema = schema.target_object;
+  spatial_table.requested_table_uuid.canonical =
+      uuid::UuidToString(fixture->spatial_relation_uuid.value);
+  spatial_table.table_names.push_back(
+      PrimaryName("qow_packet7_spatial_relation"));
+  spatial_table.table_columns.push_back(make_column(
+      0, "row_uuid", "uuid",
+      "canonical=uuid;type_uuid=" + uuid_type_uuid + ";nullable=false",
+      false));
+  spatial_table.table_columns.push_back(make_column(
+      1, "spatial_value", "geometry",
+      "canonical=geometry;type_uuid=" + geometry_type_uuid +
+          ";nullable=false;subtype=POINT;axes=x,y;crs_uuid=" + crs_uuid +
+          ";crs_generation=1",
+      false));
+  spatial_table.table_columns.push_back(make_column(
+      2, "crs_uuid", "uuid",
+      "canonical=uuid;type_uuid=" + uuid_type_uuid + ";nullable=false",
+      false));
+  RequireEngineOk(api::EngineCreateTable(spatial_table),
+                  "object-backed spatial fixture table create failed");
+
+  api::EngineCreateTableRequest columnar_table;
+  columnar_table.context = context;
+  columnar_table.target_schema = schema.target_object;
+  columnar_table.requested_table_uuid.canonical =
+      uuid::UuidToString(fixture->columnar_relation_uuid.value);
+  columnar_table.table_names.push_back(
+      PrimaryName("qow_packet7_columnar_relation"));
+  columnar_table.table_columns.push_back(make_column(
+      0, "row_uuid", "uuid",
+      "canonical=uuid;type_uuid=" + uuid_type_uuid + ";nullable=false",
+      false));
+  columnar_table.table_columns.push_back(make_column(
+      1, "join_key", "int64",
+      "canonical=int64;type_uuid=" + int64_type_uuid + ";nullable=false",
+      false));
+  columnar_table.table_columns.push_back(make_column(
+      2, "payload", "character",
+      "canonical=character;type_uuid=" + character_type_uuid +
+          ";nullable=false",
+      false));
+  RequireEngineOk(api::EngineCreateTable(columnar_table),
+                  "object-backed columnar fixture table create failed");
+
   api::EngineInsertRowsRequest insert;
   insert.context = context;
   insert.target_table.uuid.canonical =
@@ -565,6 +660,93 @@ void CreateObjectBackedRelation(Fixture* fixture) {
                   "object-backed join fixture row insert failed");
   Require(join_inserted.inserted_count == 3,
           "object-backed join fixture did not insert three rows");
+
+  const auto make_typed_value = [](std::string canonical_type,
+                                   std::string encoded_descriptor,
+                                   std::string encoded_value) {
+    api::EngineTypedValue value;
+    value.descriptor.descriptor_kind = "scalar";
+    value.descriptor.canonical_type_name = std::move(canonical_type);
+    value.descriptor.encoded_descriptor = std::move(encoded_descriptor);
+    value.encoded_value = std::move(encoded_value);
+    return value;
+  };
+  const auto uuid_descriptor =
+      "canonical=uuid;type_uuid=" + uuid_type_uuid + ";nullable=false";
+  const auto geometry_descriptor =
+      "canonical=geometry;type_uuid=" + geometry_type_uuid +
+      ";nullable=false;subtype=POINT;axes=x,y;crs_uuid=" + crs_uuid +
+      ";crs_generation=1";
+  const auto int64_descriptor =
+      "canonical=int64;type_uuid=" + int64_type_uuid + ";nullable=false";
+  const auto character_descriptor =
+      "canonical=character;type_uuid=" + character_type_uuid +
+      ";nullable=false";
+  const auto shared_row_uuid =
+      NewUuidText(platform::UuidKind::row, fixture->salt + 100);
+  const auto spatial_only_row_uuid =
+      NewUuidText(platform::UuidKind::row, fixture->salt + 101);
+  const auto columnar_only_row_uuid =
+      NewUuidText(platform::UuidKind::row, fixture->salt + 102);
+
+  api::EngineInsertRowsRequest spatial_insert;
+  spatial_insert.context = context;
+  spatial_insert.target_table.uuid.canonical =
+      uuid::UuidToString(fixture->spatial_relation_uuid.value);
+  spatial_insert.target_table.object_kind = "table";
+  const std::array<std::pair<std::string, nosql::SpatialPoint2dV1>, 2>
+      spatial_seeds{{{shared_row_uuid, {0, 0}},
+                     {spatial_only_row_uuid, {3, 4}}}};
+  for (const auto& [row_uuid, point] : spatial_seeds) {
+    const auto encoded = nosql::EncodeSpatialPoint2dV1(point);
+    api::EngineRowValue row;
+    row.requested_row_uuid.canonical = row_uuid;
+    row.fields.push_back(
+        {"row_uuid", make_typed_value("uuid", uuid_descriptor, row_uuid)});
+    row.fields.push_back(
+        {"spatial_value",
+         make_typed_value(
+             "geometry", geometry_descriptor,
+             std::string(reinterpret_cast<const char*>(encoded.data()),
+                         encoded.size()))});
+    row.fields.push_back(
+        {"crs_uuid", make_typed_value("uuid", uuid_descriptor, crs_uuid)});
+    spatial_insert.input_rows.push_back(std::move(row));
+  }
+  spatial_insert.estimated_row_count = spatial_insert.input_rows.size();
+  const auto spatial_inserted = api::EngineInsertRows(spatial_insert);
+  RequireEngineOk(spatial_inserted,
+                  "object-backed spatial fixture row insert failed");
+  Require(spatial_inserted.inserted_count == 2,
+          "object-backed spatial fixture did not insert two rows");
+
+  api::EngineInsertRowsRequest columnar_insert;
+  columnar_insert.context = context;
+  columnar_insert.target_table.uuid.canonical =
+      uuid::UuidToString(fixture->columnar_relation_uuid.value);
+  columnar_insert.target_table.object_kind = "table";
+  const std::array<std::tuple<std::string, std::int64_t, std::string>, 2>
+      columnar_seeds{{{shared_row_uuid, 7, "matched"},
+                      {columnar_only_row_uuid, 9, "columnar-only"}}};
+  for (const auto& [row_uuid, join_key, payload] : columnar_seeds) {
+    api::EngineRowValue row;
+    row.requested_row_uuid.canonical = row_uuid;
+    row.fields.push_back(
+        {"row_uuid", make_typed_value("uuid", uuid_descriptor, row_uuid)});
+    row.fields.push_back(
+        {"join_key", make_typed_value("int64", int64_descriptor,
+                                      std::to_string(join_key))});
+    row.fields.push_back({"payload", make_typed_value(
+                                         "character", character_descriptor,
+                                         payload)});
+    columnar_insert.input_rows.push_back(std::move(row));
+  }
+  columnar_insert.estimated_row_count = columnar_insert.input_rows.size();
+  const auto columnar_inserted = api::EngineInsertRows(columnar_insert);
+  RequireEngineOk(columnar_inserted,
+                  "object-backed columnar fixture row insert failed");
+  Require(columnar_inserted.inserted_count == 2,
+          "object-backed columnar fixture did not insert two rows");
 
   api::EngineCommitTransactionRequest commit;
   commit.context = context;
@@ -837,6 +1019,38 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
     verify_outer_join("FULL OUTER JOIN", 4,
                       "object-backed FULL OUTER JOIN did not preserve both "
                       "unmatched sides");
+
+    auto mixed_model_join = parser.RunPipeline(
+        "SELECT * FROM "
+        "SPATIAL_SOURCE(qow_packet7.qow_packet7_spatial_relation) AS s "
+        "INNER JOIN "
+        "COLUMNAR_SOURCE(qow_packet7.qow_packet7_columnar_relation) AS c "
+        "ON s.row_uuid = c.row_uuid;",
+        true);
+    if (!mixed_model_join.accepted) {
+      PrintMessages(mixed_model_join.messages);
+      std::cerr << mixed_model_join.server_result_payload << '\n';
+    }
+    Require(
+        mixed_model_join.accepted &&
+            mixed_model_join.server_operation_id == "query.execute" &&
+            mixed_model_join.server_cursor_uuid.empty() &&
+            mixed_model_join.server_row_count == 1 &&
+            mixed_model_join.server_result_payload.find("payload=matched") !=
+                std::string::npos &&
+            mixed_model_join.server_result_payload.find(
+                "evidence=canonical.model_join_left_provider_route:"
+                "canonical.model-provider.spatial.v1") != std::string::npos &&
+            mixed_model_join.server_result_payload.find(
+                "evidence=canonical.model_join_right_provider_route:"
+                "canonical.model-provider.columnar.v1") !=
+                std::string::npos &&
+            mixed_model_join.server_result_payload.find(
+                "evidence=canonical.model_join_consumer_route:"
+                "canonical.relational.join-3vl-nested.v1") !=
+                std::string::npos,
+        "ordinary mixed spatial/columnar SBSQL did not complete the "
+        "authenticated V10 statement-receipt production route");
 
     const auto verify_left_only_join = [&](const std::string_view join_sql,
                                            const std::uint64_t expected_rows,
@@ -1858,7 +2072,10 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                                request_schema_id));
         ipc::ParserStatementContext projected_context;
         const bool decoded =
-            version == 9
+            version == 10
+                ? ipc::DecodeAcquireStatementContextResultPayloadV10ForTest(
+                      projected.payload, &projected_context)
+                : version == 9
                 ? ipc::DecodeAcquireStatementContextResultPayloadV9ForTest(
                       projected.payload, &projected_context)
                 : version == 8
@@ -1875,7 +2092,7 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                                     projected.payload, &projected_context)
                               : ipc::DecodeAcquireStatementContextResultPayloadV7ForTest(
                                     projected.payload, &projected_context)));
-        std::array<std::uint16_t, 14> profiles_by_kind{};
+        std::array<std::uint16_t, 24> profiles_by_kind{};
         for (const auto& profile : projected_context.descriptor_profiles) {
           if (profile.profile_kind < profiles_by_kind.size()) {
             ++profiles_by_kind[profile.profile_kind];
@@ -1885,7 +2102,9 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
         for (std::uint8_t kind = 1; kind <= expected_maximum_kind; ++kind) {
           exact_profile_families =
               exact_profile_families &&
-              profiles_by_kind[kind] == (kind >= 11 ? 2 : 32);
+              profiles_by_kind[kind] ==
+                  ((version == 10 && kind >= 14) ? 32
+                                                : (kind >= 11 ? 2 : 32));
         }
         Require(projected.accepted &&
                     projected.response_schema_id == response_schema_id &&
@@ -1897,7 +2116,9 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                     projected_context.descriptor_profiles.size() ==
                         expected_profile_count &&
                     exact_profile_families &&
-                    (version == 9
+                    (version == 10
+                         ? projected_context.native_v10_complete()
+                         : version == 9
                          ? projected_context.native_v9_complete()
                          : (version == 8
                                 ? projected_context.native_v8_complete()
@@ -1962,6 +2183,13 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       sbps::kSchemaAcquireStatementContextResultV9,
       326,
       13,
+      11);
+  verify_native_projection(
+      10,
+      sbps::kSchemaAcquireStatementContextRequestV10,
+      sbps::kSchemaAcquireStatementContextResultV10,
+      646,
+      23,
       11);
   Require(registry.statement_contexts_by_statement_uuid.size() == 1,
           "native projection compatibility receipts escaped test cleanup");
@@ -2461,6 +2689,208 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                   v9_statement->second.receipt) == SB_ENGINE_STATUS_OK,
           "native V9 mutation test receipt cleanup failed");
   registry.statement_contexts_by_statement_uuid.erase(v9_statement);
+
+  // QOW-SOURCE-RCP-079-LIVE-STATEMENT-CONTEXT-V10-PROOF
+  const auto v10_projection = server::HandleAcquireStatementContext(
+      &registry, engine_state,
+      AcquireNativeFrame(session_uuid,
+                         server_transaction.local_transaction_id,
+                         transaction_uuid.value.bytes, 10,
+                         sbps::kSchemaAcquireStatementContextRequestV10));
+  ipc::ParserStatementContext v10_context;
+  const auto v10_layout = LocateNativePayloadLayout(v10_projection.payload, 10);
+  const auto canonical_boolean_type_uuid = canonical_type_uuid("boolean");
+  const auto canonical_geometry_type_uuid = canonical_type_uuid("geometry");
+  const std::array<std::string, 5> expected_multileg_types = {
+      canonical_uuid_type_uuid, canonical_uint64_type_uuid,
+      canonical_real64_type_uuid, canonical_boolean_type_uuid,
+      canonical_geometry_type_uuid};
+  std::set<std::string> v10_descriptor_uuids;
+  bool v10_unique_descriptors = false;
+  if (ipc::DecodeAcquireStatementContextResultPayloadV10ForTest(
+          v10_projection.payload, &v10_context)) {
+    v10_unique_descriptors = std::ranges::all_of(
+        v10_context.descriptor_profiles, [&](const auto& profile) {
+          return v10_descriptor_uuids.insert(profile.descriptor_uuid).second;
+        });
+  }
+  bool exact_v10_suffix = v10_context.descriptor_profiles.size() == 646;
+  for (std::size_t suffix = 0; exact_v10_suffix && suffix < 320; ++suffix) {
+    const auto& profile = v10_context.descriptor_profiles[326 + suffix];
+    const auto expected_kind = static_cast<std::uint8_t>(14 + suffix / 32);
+    const auto expected_slot = static_cast<std::uint16_t>(suffix % 32);
+    const auto type_group = suffix / 64;
+    exact_v10_suffix =
+        profile.profile_kind == expected_kind &&
+        profile.slot == expected_slot &&
+        profile.type_uuid == expected_multileg_types[type_group] &&
+        profile.nullable == (expected_kind % 2 == 1) &&
+        profile.collation_uuid.empty() && profile.width == 0 &&
+        profile.precision == 0 && profile.scale == 0;
+  }
+  const bool dv001_exact =
+      v10_projection.accepted &&
+      v10_projection.response_schema_id ==
+          sbps::kSchemaAcquireStatementContextResultV10 &&
+      v10_layout.has_value() && v10_layout->profile_count == 646 &&
+      v10_context.native_v10_complete() && v10_unique_descriptors &&
+      v10_descriptor_uuids.size() == 646 && exact_v10_suffix &&
+      std::ranges::all_of(expected_multileg_types,
+                          [](const auto& value) { return !value.empty(); }) &&
+      std::set<std::string>(expected_multileg_types.begin(),
+                            expected_multileg_types.end()).size() == 5;
+  Require(dv001_exact,
+          "native V10 multileg descriptor projection drifted");
+  std::cout << "RCP-079 literal catalog case=RCP079-DV-001;"
+               "status=passed;skipped=0\n";
+
+  const auto v10_profile_offset = [&](const std::size_t ordinal) {
+    return v10_layout->profiles_offset + ordinal * kProfileBytes;
+  };
+  std::size_t v10_mutation_count = 0;
+  const auto expect_v10_refusal = [&](std::string_view mutation,
+                                      const std::vector<std::uint8_t>& payload) {
+    ++v10_mutation_count;
+    ipc::ParserStatementContext refused;
+    Require(!ipc::DecodeAcquireStatementContextResultPayloadV10ForTest(
+                payload, &refused),
+            mutation);
+  };
+  {
+    auto mutation = v10_projection.payload;
+    SetPayloadU16(&mutation, v10_layout->profile_count_offset, 645);
+    expect_v10_refusal("V10 admitted a wrong total profile count", mutation);
+  }
+  for (std::size_t ordinal = 326; ordinal < 646; ++ordinal) {
+    auto mutation = v10_projection.payload;
+    mutation.erase(
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v10_profile_offset(ordinal)),
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v10_profile_offset(ordinal + 1)));
+    SetPayloadU16(&mutation, v10_layout->profile_count_offset, 645);
+    expect_v10_refusal("V10 admitted a missing suffix profile", mutation);
+  }
+  {
+    auto mutation = v10_projection.payload;
+    mutation.insert(
+        mutation.end(),
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v10_profile_offset(645)),
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v10_profile_offset(646)));
+    SetPayloadU16(&mutation, v10_layout->profile_count_offset, 647);
+    expect_v10_refusal("V10 admitted an extra suffix profile", mutation);
+  }
+  for (std::size_t ordinal = 326; ordinal < 645; ++ordinal) {
+    auto mutation = v10_projection.payload;
+    std::swap_ranges(
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v10_profile_offset(ordinal)),
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v10_profile_offset(ordinal + 1)),
+        mutation.begin() +
+            static_cast<std::ptrdiff_t>(v10_profile_offset(ordinal + 1)));
+    expect_v10_refusal("V10 admitted adjacent suffix reorder", mutation);
+  }
+  for (std::size_t ordinal = 326; ordinal < 646; ++ordinal) {
+    auto mutation = v10_projection.payload;
+    mutation[v10_profile_offset(ordinal)] =
+        mutation[v10_profile_offset(ordinal)] == 23
+            ? static_cast<std::uint8_t>(22)
+            : static_cast<std::uint8_t>(23);
+    expect_v10_refusal("V10 admitted wrong suffix kind", mutation);
+  }
+  for (std::size_t ordinal = 326; ordinal < 646; ++ordinal) {
+    auto mutation = v10_projection.payload;
+    SetPayloadU16(&mutation, v10_profile_offset(ordinal) + 1, 32);
+    expect_v10_refusal("V10 admitted wrong suffix slot", mutation);
+  }
+  for (std::size_t ordinal = 326; ordinal < 646; ++ordinal) {
+    auto mutation = v10_projection.payload;
+    std::fill_n(mutation.begin() + static_cast<std::ptrdiff_t>(
+                    v10_profile_offset(ordinal) + 3),
+                16, 0);
+    expect_v10_refusal("V10 admitted invalid descriptor UUID", mutation);
+  }
+  for (std::size_t ordinal = 326; ordinal < 646; ++ordinal) {
+    auto mutation = v10_projection.payload;
+    const auto source_ordinal = ordinal == 326 ? 327 : 326;
+    std::copy_n(
+        mutation.begin() + static_cast<std::ptrdiff_t>(
+                               v10_profile_offset(source_ordinal) + 3),
+        16,
+        mutation.begin() + static_cast<std::ptrdiff_t>(
+                               v10_profile_offset(ordinal) + 3));
+    expect_v10_refusal("V10 admitted duplicate descriptor UUID", mutation);
+  }
+  for (std::size_t ordinal = 326; ordinal < 646; ++ordinal) {
+    auto mutation = v10_projection.payload;
+    const auto type_group = (ordinal - 326) / 64;
+    const auto source_ordinal = 326 + ((type_group + 1) % 5) * 64;
+    std::copy_n(
+        mutation.begin() + static_cast<std::ptrdiff_t>(
+                               v10_profile_offset(source_ordinal) + 19),
+        16,
+        mutation.begin() + static_cast<std::ptrdiff_t>(
+                               v10_profile_offset(ordinal) + 19));
+    expect_v10_refusal("V10 admitted wrong suffix type UUID", mutation);
+  }
+  for (std::size_t ordinal = 326; ordinal < 646; ++ordinal) {
+    auto mutation = v10_projection.payload;
+    mutation[v10_profile_offset(ordinal) + 51] ^= 1;
+    expect_v10_refusal("V10 admitted wrong suffix nullability", mutation);
+  }
+  for (std::size_t ordinal = 326; ordinal < 646; ++ordinal) {
+    auto mutation = v10_projection.payload;
+    std::copy_n(
+        mutation.begin() + static_cast<std::ptrdiff_t>(
+                               v10_profile_offset(ordinal) + 3),
+        16,
+        mutation.begin() + static_cast<std::ptrdiff_t>(
+                               v10_profile_offset(ordinal) + 35));
+    expect_v10_refusal("V10 admitted suffix collation UUID", mutation);
+  }
+  for (std::size_t ordinal = 326; ordinal < 646; ++ordinal) {
+    auto mutation = v10_projection.payload;
+    SetPayloadU32(&mutation, v10_profile_offset(ordinal) + 52, 1);
+    expect_v10_refusal("V10 admitted nonzero suffix width", mutation);
+  }
+  for (std::size_t ordinal = 326; ordinal < 646; ++ordinal) {
+    auto mutation = v10_projection.payload;
+    SetPayloadU32(&mutation, v10_profile_offset(ordinal) + 56, 1);
+    expect_v10_refusal("V10 admitted nonzero suffix precision", mutation);
+  }
+  for (std::size_t ordinal = 326; ordinal < 646; ++ordinal) {
+    auto mutation = v10_projection.payload;
+    SetPayloadU32(&mutation, v10_profile_offset(ordinal) + 60, 1);
+    expect_v10_refusal("V10 admitted nonzero suffix scale", mutation);
+  }
+  {
+    auto mutation = v10_projection.payload;
+    mutation.pop_back();
+    expect_v10_refusal("V10 admitted a truncated payload", mutation);
+  }
+  {
+    auto mutation = v10_projection.payload;
+    mutation.push_back(0);
+    expect_v10_refusal("V10 admitted a trailing payload byte", mutation);
+  }
+  const bool dv002_exact = v10_mutation_count == 3843;
+  Require(dv002_exact,
+          "native V10 mutation inventory did not execute exactly 3843 cases");
+  std::cout << "RCP-079 literal catalog case=RCP079-DV-002;"
+               "status=passed;skipped=0;mutations=3843/3843\n";
+  std::cout << "RCP-079 live descriptor catalog passed "
+               "(2/2;skipped=0)\n";
+
+  const auto v10_statement = registry.statement_contexts_by_statement_uuid.find(
+      v10_context.statement_uuid);
+  Require(v10_statement != registry.statement_contexts_by_statement_uuid.end() &&
+              bridge::ReleaseStatementContextReceipt(
+                  v10_statement->second.receipt) == SB_ENGINE_STATUS_OK,
+          "native V10 mutation test receipt cleanup failed");
+  registry.statement_contexts_by_statement_uuid.erase(v10_statement);
   }
 
   const auto v8_schema_v7_version = server::HandleAcquireStatementContext(
@@ -2506,6 +2936,28 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
               v8_schema_v9_version.diagnostics.front().code ==
                   "PARSER_SERVER_IPC.STATEMENT_CONTEXT_REQUEST_INVALID",
           "V8/V9 statement-context schema/version collision was admitted");
+
+  const auto v10_schema_v9_version = server::HandleAcquireStatementContext(
+      &registry, engine_state,
+      AcquireNativeFrame(session_uuid,
+                         server_transaction.local_transaction_id,
+                         transaction_uuid.value.bytes, 9,
+                         sbps::kSchemaAcquireStatementContextRequestV10));
+  const auto v9_schema_v10_version = server::HandleAcquireStatementContext(
+      &registry, engine_state,
+      AcquireNativeFrame(session_uuid,
+                         server_transaction.local_transaction_id,
+                         transaction_uuid.value.bytes, 10,
+                         sbps::kSchemaAcquireStatementContextRequestV9));
+  Require(!v10_schema_v9_version.accepted &&
+              !v9_schema_v10_version.accepted &&
+              !v10_schema_v9_version.diagnostics.empty() &&
+              !v9_schema_v10_version.diagnostics.empty() &&
+              v10_schema_v9_version.diagnostics.front().code ==
+                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_REQUEST_INVALID" &&
+              v9_schema_v10_version.diagnostics.front().code ==
+                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_REQUEST_INVALID",
+          "V9/V10 statement-context schema/version collision was admitted");
 
   const auto mismatched_version = server::HandleAcquireStatementContext(
       &registry, engine_state,

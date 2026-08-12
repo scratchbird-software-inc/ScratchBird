@@ -1176,6 +1176,7 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
   std::unordered_set<std::string> cost_vector_uuids;
   std::optional<std::string> calibration_profile_uuid;
   std::optional<std::string> model_family_id;
+  bool mixed_model_family_plan = false;
   for (const auto& candidate : candidates) {
     const auto alternative_it =
         alternatives_by_uuid.find(candidate.alternative_uuid);
@@ -1229,9 +1230,9 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
          candidate.model_family_id != "key_value.local.v1" &&
          candidate.model_family_id != "time_series.local.v1" &&
          candidate.model_family_id != "vector.local.v1" &&
-         candidate.model_family_id != "search.local.v1") ||
-        (model_family_id.has_value() &&
-         candidate.model_family_id != *model_family_id) ||
+         candidate.model_family_id != "search.local.v1" &&
+         candidate.model_family_id != "spatial.local.v1" &&
+         candidate.model_family_id != "columnar.local.v1") ||
         !candidate.derived_from_admitted_statistics ||
         !candidate.engine_coster_owned ||
         candidate.parser_or_reference_cost_authority_claimed ||
@@ -1263,6 +1264,8 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
     }
     if (!model_family_id.has_value()) {
       model_family_id = candidate.model_family_id;
+    } else if (candidate.model_family_id != *model_family_id) {
+      mixed_model_family_plan = true;
     }
     if ((node_it->node_kind ==
              planner::CanonicalLogicalRelationalNodeKind::kRelationSource &&
@@ -1676,7 +1679,13 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
   result.mga_statement_context = admission.mga_statement_context;
   result.statistics_snapshot_uuid = admission.statistics_snapshot_uuid;
   result.statistics_generation = admission.statistics_generation;
-  result.model_family_id = *model_family_id;
+  // A mixed-family physical plan remains one canonical relational DAG.  Each
+  // selected candidate retains its exact provider-family provenance above;
+  // the plan-level identity names the common relational consumer rather than
+  // incorrectly selecting one provider as authority for the whole plan.
+  result.model_family_id = mixed_model_family_plan
+                               ? "relational.local.v1"
+                               : *model_family_id;
   result.calibration_profile_uuid = *calibration_profile_uuid;
   result.selected_plan_signature = selected.signature;
   result.trace.push_back(
@@ -1858,7 +1867,9 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
        search.model_family_id != "key_value.local.v1" &&
        search.model_family_id != "time_series.local.v1" &&
        search.model_family_id != "vector.local.v1" &&
-       search.model_family_id != "search.local.v1") ||
+       search.model_family_id != "search.local.v1" &&
+       search.model_family_id != "spatial.local.v1" &&
+       search.model_family_id != "columnar.local.v1") ||
       !canonical_uuid(search.calibration_profile_uuid) ||
       search.memo_group_count != admission_request.logical_graph.nodes.size() ||
       search.memo_groups.size() != admission_request.logical_graph.nodes.size() ||

@@ -108,7 +108,10 @@ bool IsUuidType(const EngineDescriptor& descriptor) {
 bool IsOpaqueEncodedType(const EngineDescriptor& descriptor) {
   const std::string type = LowerAscii(descriptor.canonical_type_name);
   return IsBinaryType(descriptor) || IsUuidType(descriptor) ||
-         type == "vector" || type == "document" || type == "json" || type == "graph" || type == "search";
+         type == "vector" || type == "document" || type == "json" ||
+         type == "graph" || type == "search" || type == "geometry" ||
+         type == "geography" || type == "point" || type == "shape" ||
+         type == "raster" || type == "columnar_segment";
 }
 
 bool IsKnownScalarType(const EngineDescriptor& descriptor) {

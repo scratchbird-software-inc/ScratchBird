@@ -16,6 +16,7 @@
 #include "hash_digest.hpp"
 #include "extensibility/executable_object_lifecycle.hpp"
 #include "local_transaction_store.hpp"
+#include "optimizer/model_family_coordinator.hpp"
 #include "sblr_dispatch.hpp"
 #include "server_engine_bridge/diagnostic_fields.hpp"
 #include "server_engine_bridge/prepared_metadata_binding.hpp"
@@ -2695,6 +2696,105 @@ sb_engine_status_t AcquireStatementContextReceipt(
     view.descriptor_profiles.push_back(std::move(profile));
   }
 
+  // QOW-SOURCE-RCP-079-STATEMENT-MULTILEG-DESCRIPTORS-V10: append ten
+  // exact 32-slot pools to the immutable V9 prefix. Type identity remains
+  // core-catalog-owned; every result descriptor identity is issued here by
+  // the engine before any model-family provider or data access can begin.
+  const auto boolean_count = std::ranges::count_if(
+      core_manifest.manifest.descriptor_rows,
+      [](const auto& row) { return row.stable_name == "boolean"; });
+  const auto geometry_count = std::ranges::count_if(
+      core_manifest.manifest.descriptor_rows,
+      [](const auto& row) { return row.stable_name == "geometry"; });
+  const auto boolean_row = std::ranges::find_if(
+      core_manifest.manifest.descriptor_rows,
+      [](const auto& row) { return row.stable_name == "boolean"; });
+  const auto geometry_row = std::ranges::find_if(
+      core_manifest.manifest.descriptor_rows,
+      [](const auto& row) { return row.stable_name == "geometry"; });
+  if (boolean_count != 1 || geometry_count != 1 ||
+      boolean_row == core_manifest.manifest.descriptor_rows.end() ||
+      geometry_row == core_manifest.manifest.descriptor_rows.end() ||
+      !boolean_row->descriptor_uuid.valid() ||
+      !geometry_row->descriptor_uuid.valid()) {
+    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
+        snapshot.snapshot_uuid);
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4040,
+        "ENGINE.STATEMENT_CONTEXT.MATERIALIZED_CONTEXT_INCOMPLETE",
+        "engine.statement_context.materialized_context_incomplete",
+        "statement_v10_descriptor_type_cohort");
+  }
+  const auto boolean_catalog_type_uuid = scratchbird::core::uuid::UuidToString(
+      boolean_row->descriptor_uuid.value);
+  const auto geometry_type_uuid = scratchbird::core::uuid::UuidToString(
+      geometry_row->descriptor_uuid.value);
+  const std::array<std::string, 5> multileg_type_uuids = {
+      uuid_type_uuid, uint64_type_uuid, real64_type_uuid,
+      boolean_catalog_type_uuid, geometry_type_uuid};
+  if (std::ranges::any_of(multileg_type_uuids,
+                         [](const auto& value) { return value.empty(); }) ||
+      std::unordered_set<std::string>(multileg_type_uuids.begin(),
+                                      multileg_type_uuids.end()).size() != 5) {
+    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
+        snapshot.snapshot_uuid);
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4040,
+        "ENGINE.STATEMENT_CONTEXT.MATERIALIZED_CONTEXT_INCOMPLETE",
+        "engine.statement_context.materialized_context_incomplete",
+        "statement_v10_descriptor_type_identity");
+  }
+  struct MultilegProfilePair {
+    StatementDescriptorProfileKind non_null_kind;
+    StatementDescriptorProfileKind nullable_kind;
+    const std::string* type_uuid;
+  };
+  const std::array<MultilegProfilePair, 5> multileg_profile_pairs = {{
+      {StatementDescriptorProfileKind::kMultilegUuidNonNull,
+       StatementDescriptorProfileKind::kMultilegUuidNullable,
+       &multileg_type_uuids[0]},
+      {StatementDescriptorProfileKind::kMultilegUint64NonNull,
+       StatementDescriptorProfileKind::kMultilegUint64Nullable,
+       &multileg_type_uuids[1]},
+      {StatementDescriptorProfileKind::kMultilegReal64NonNull,
+       StatementDescriptorProfileKind::kMultilegReal64Nullable,
+       &multileg_type_uuids[2]},
+      {StatementDescriptorProfileKind::kMultilegBooleanNonNull,
+       StatementDescriptorProfileKind::kMultilegBooleanNullable,
+       &multileg_type_uuids[3]},
+      {StatementDescriptorProfileKind::kMultilegGeometryNonNull,
+       StatementDescriptorProfileKind::kMultilegGeometryNullable,
+       &multileg_type_uuids[4]},
+  }};
+  for (const auto& pair : multileg_profile_pairs) {
+    for (const auto kind : {pair.non_null_kind, pair.nullable_kind}) {
+      const bool nullable = kind == pair.nullable_kind;
+      for (std::uint16_t slot = 0; slot < 32; ++slot) {
+        StatementDescriptorProfile profile;
+        profile.profile_kind = kind;
+        profile.slot = slot;
+        profile.type_uuid = *pair.type_uuid;
+        profile.nullable = nullable;
+        if (!issue_identity(&profile.descriptor_uuid)) {
+          scratchbird::transaction::mga::RevokePublishedSnapshotVector(
+              snapshot.snapshot_uuid);
+          return fail_result(
+              SB_ENGINE_STATUS_INTERNAL_ERROR,
+              out_result,
+              4044,
+              "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
+              "engine.statement_context.identity_unavailable",
+              "statement_multileg_descriptor_identity");
+        }
+        view.descriptor_profiles.push_back(std::move(profile));
+      }
+    }
+  }
+
   view.statement_uuid = statement_uuid;
   view.statement_timestamp = engine_context.statement_timestamp;
   if (!canonical_statement_timestamp(view.statement_timestamp) ||
@@ -3108,6 +3208,53 @@ sb_engine_status_t DispatchStatementContextReceipt(
         4060,
         "ENGINE.STATEMENT_CONTEXT.SNAPSHOT_STALE",
         "engine.statement_context.snapshot_stale");
+  }
+
+  constexpr std::size_t kStatementDescriptorProfileCountV10 = 646;
+  constexpr std::size_t kMultilegDescriptorProfileCountV10 = 320;
+  if (view.descriptor_profiles.size() !=
+      kStatementDescriptorProfileCountV10) {
+    return fail_result(
+        SB_ENGINE_STATUS_CONFLICT,
+        out_result,
+        4061,
+        "ENGINE.STATEMENT_CONTEXT.MULTILEG_DESCRIPTOR_COHORT_INVALID",
+        "engine.statement_context.multileg_descriptor_cohort_invalid",
+        "live statement receipt is not the exact 646-profile V10 cohort");
+  }
+  std::vector<scratchbird::engine::optimizer::MultilegDescriptorProfileV1>
+      multileg_profiles;
+  multileg_profiles.reserve(kMultilegDescriptorProfileCountV10);
+  const auto suffix_begin = view.descriptor_profiles.end() -
+                            kMultilegDescriptorProfileCountV10;
+  for (auto profile = suffix_begin;
+       profile != view.descriptor_profiles.end(); ++profile) {
+    const auto kind = static_cast<std::uint8_t>(profile->profile_kind);
+    if (kind < 14 || kind > 23 || !profile->collation_uuid.empty() ||
+        profile->width != 0 || profile->precision != 0 ||
+        profile->scale != 0) {
+      return fail_result(
+          SB_ENGINE_STATUS_CONFLICT,
+          out_result,
+          4061,
+          "ENGINE.STATEMENT_CONTEXT.MULTILEG_DESCRIPTOR_COHORT_INVALID",
+          "engine.statement_context.multileg_descriptor_cohort_invalid",
+          "live statement receipt V10 suffix metadata changed");
+    }
+    multileg_profiles.push_back(
+        {kind, profile->slot, profile->descriptor_uuid,
+         profile->type_uuid, profile->nullable});
+  }
+  scratchbird::engine::optimizer::MultilegDescriptorDispatchScopeV1
+      descriptor_dispatch_scope(view.statement_uuid, multileg_profiles);
+  if (!descriptor_dispatch_scope.installed()) {
+    return fail_result(
+        SB_ENGINE_STATUS_CONFLICT,
+        out_result,
+        4061,
+        descriptor_dispatch_scope.diagnostic_id(),
+        "engine.statement_context.multileg_descriptor_scope_refused",
+        descriptor_dispatch_scope.detail());
   }
 
   scratchbird::engine::internal_api::EngineApiRequest api_request;

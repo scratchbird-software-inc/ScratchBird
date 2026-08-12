@@ -22,6 +22,7 @@ namespace scratchbird::parser::sbsql {
 std::uint64_t Rcp073DocumentFrontdoorProofMaskForTest();
 std::uint64_t Rcp074GraphFrontdoorProofMaskForTest();
 std::uint64_t Rcp076TimeSeriesFrontdoorProofMaskForTest();
+std::uint64_t Rcp079SpatialColumnarFrontdoorProofMaskForTest();
 }
 
 namespace {
@@ -388,6 +389,263 @@ sbsql::NativeRelationalBindingContext GraphContextFor(
   }
   context.catalog_relations.push_back(std::move(source));
   return context;
+}
+
+sbsql::NativeRelationalBindingContext SpatialColumnarContextFor(
+    const sbsql::NativeRelationalAstDocument& ast) {
+  sbsql::NativeRelationalBindingContext context;
+  context.bound_ast_uuid = Uuid(1900);
+  context.catalog_epoch_uuid = Uuid(1901);
+  context.security_context_uuid = Uuid(1902);
+  context.statement_uuid = Uuid(1903);
+  context.statement_timestamp = "2026-08-11T02:00:00.123456789Z";
+  context.owning_transaction_uuid = Uuid(1904);
+  context.statement_snapshot_uuid = Uuid(1905);
+  context.statement_metadata_snapshot_uuid = Uuid(1906);
+  context.local_transaction_id = 79;
+  context.snapshot_visible_through_local_transaction_id = 78;
+  SetEngineAuthority(&context);
+  context.descriptors = {
+      {1, Uuid(1911), Uuid(1921), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}, "uuid"},
+      {2, Uuid(1912), Uuid(1922), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}, "geometry"},
+      {3, Uuid(1913), Uuid(1921), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}, "uuid"},
+      {4, Uuid(1914), Uuid(1924), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}, "boolean"},
+      {5, Uuid(1915), Uuid(1925), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}, "real64"},
+      {6, Uuid(1916), Uuid(1926), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}, "uint64"},
+      {7, Uuid(1917), Uuid(1927), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}, "int64"},
+      {8, Uuid(1918), Uuid(1928), sbsql::BoundNullability::kNullable,
+       std::nullopt, std::nullopt, {}, "text"},
+      {9, Uuid(1919), Uuid(1927), sbsql::BoundNullability::kNonNull,
+       std::nullopt, std::nullopt, {}, "int64"},
+  };
+  const auto& source_ast = ast.catalog_relation_sources.front();
+  const bool spatial =
+      source_ast.source_kind == sbsql::NativeRelationSourceAstKind::kSpatial;
+  sbsql::NativeCatalogRelationBindingInput source;
+  source.source_id = source_ast.source_id;
+  source.resolution_state =
+      sbsql::NativeCatalogRelationResolutionState::kBound;
+  source.object_uuid = Uuid(1940);
+  source.resolved_object_type =
+      spatial ? "spatial_collection" : "logical_relation";
+  source.resolved_schema_uuid = Uuid(1941);
+  source.parent_object_uuid = Uuid(1942);
+  source.catalog_generation_id = 79;
+  source.security_epoch = 79;
+  source.resource_epoch = 79;
+  if (spatial) {
+    source.columns = {{0, Uuid(1950), 1, "row_uuid"},
+                      {1, Uuid(1951), 2, "spatial_value"},
+                      {2, Uuid(1952), 3, "crs_uuid"}};
+    if (source_ast.model_operation_ids.size() > 1) {
+      source.spatial_crs_uuid = Uuid(1970);
+      source.spatial_crs_generation = 79;
+    }
+    for (std::size_t index = 1;
+         index < source_ast.model_operation_ids.size(); ++index) {
+      context.spatial_crs_bindings.push_back(
+          {source_ast.model_operation_ids[index], Uuid(1970), 79});
+    }
+  } else {
+    source.columns = {{0, Uuid(1950), 1, "row_uuid"},
+                      {1, Uuid(1951), 7, "join_key"},
+                      {2, Uuid(1952), 8, "payload"},
+                      {3, Uuid(1953), 9, "hidden_join_key"}};
+  }
+  context.catalog_relations.push_back(source);
+  context.relations.push_back(
+      {ast.relations.front().relation_id,
+       spatial ? "sblr.model-source.spatial.v1"
+               : "sblr.model-source.columnar.v1"});
+
+  std::vector<const sbsql::NativeCatalogColumnBindingInput*> selected;
+  if (!spatial) {
+    if (!source_ast.model_columnar_project_names.empty()) {
+      for (const auto& name : source_ast.model_columnar_project_names) {
+        const auto found = std::ranges::find_if(
+            source.columns, [&](const auto& column) {
+              return column.canonical_name_key == name.back().spelling;
+            });
+        selected.push_back(&*found);
+      }
+    } else {
+      for (const auto& column : source.columns) selected.push_back(&column);
+    }
+  }
+  std::vector<std::string> output_names;
+  std::vector<std::uint32_t> output_descriptors;
+  std::vector<std::string> output_bindings;
+  if (spatial) {
+    output_names = {"row_uuid", "spatial_value", "crs_uuid"};
+    output_descriptors = {1, 2, 3};
+    output_bindings = {Uuid(1950), Uuid(1951), Uuid(1952)};
+    if (source_ast.model_spatial_match_expression_id.has_value()) {
+      output_names.push_back("predicate_truth");
+      output_descriptors.push_back(4);
+      output_bindings.push_back(Uuid(1940));
+    }
+    if (source_ast.model_spatial_nearest_expression_id.has_value()) {
+      output_names.push_back("distance");
+      output_descriptors.push_back(5);
+      output_bindings.push_back(Uuid(1940));
+    }
+  } else {
+    for (const auto* column : selected) {
+      output_names.push_back(column->canonical_name_key);
+      output_descriptors.push_back(column->descriptor_id);
+      output_bindings.push_back(column->column_uuid);
+    }
+  }
+  for (std::size_t ordinal = 0; ordinal < output_names.size(); ++ordinal) {
+    const auto expression_id = static_cast<std::uint32_t>(1001 + ordinal);
+    context.expressions.push_back(
+        {expression_id, output_descriptors[ordinal], std::nullopt,
+         output_bindings[ordinal]});
+    context.outputs.push_back(
+        {static_cast<std::uint32_t>(ordinal + 1), expression_id,
+         output_names[ordinal], output_descriptors[ordinal], true,
+         static_cast<std::uint32_t>(ordinal), ast.relations.front().relation_id});
+  }
+  const auto source_alias = source_ast.model_source_alias.has_value()
+                                ? source_ast.model_source_alias
+                                : source_ast.alias;
+  const auto descriptor_for_column = [&](const std::string& name) {
+    const auto found = std::ranges::find_if(
+        source.columns, [&](const auto& column) {
+          return column.canonical_name_key == name;
+        });
+    return found == source.columns.end() ? 7u : found->descriptor_id;
+  };
+  const auto binding_for_column = [&](const std::string& name) {
+    const auto found = std::ranges::find_if(
+        source.columns, [&](const auto& column) {
+          return column.canonical_name_key == name;
+        });
+    return found == source.columns.end() ? std::optional<std::string>{}
+                                         : std::optional<std::string>{
+                                               found->column_uuid};
+  };
+  std::uint32_t next_expression_id = 2001;
+  for (const auto& expression : ast.expressions) {
+    if (expression.expression_kind ==
+        sbsql::NativeExpressionAstKind::kWildcard) {
+      continue;
+    }
+    sbsql::NativeExpressionBindingInput input;
+    input.expression_id = next_expression_id++;
+    input.descriptor_id = 7;
+    if (expression.expression_kind ==
+            sbsql::NativeExpressionAstKind::kParameter ||
+        (expression.expression_kind ==
+             sbsql::NativeExpressionAstKind::kFunctionCall &&
+         expression.operator_name == "POINT")) {
+      input.descriptor_id = 2;
+    } else if (expression.operator_name == "SPATIAL_MATCH" ||
+               expression.operator_name == "COLUMNAR_FILTER" ||
+               expression.expression_kind ==
+                   sbsql::NativeExpressionAstKind::kBinary) {
+      input.descriptor_id = 4;
+    } else if (expression.operator_name == "SPATIAL_NEAREST") {
+      input.descriptor_id = 5;
+    } else if (source_ast.model_spatial_top_k_expression_id ==
+               expression.expression_id) {
+      input.descriptor_id = 6;
+    } else if (expression.literal_kind ==
+               sbsql::NativeLiteralAstKind::kString) {
+      input.descriptor_id = 8;
+    } else if (expression.operator_name == "SPATIAL_SOURCE") {
+      input.descriptor_id = 2;
+    } else if (expression.operator_name == "COLUMNAR_SOURCE") {
+      input.descriptor_id = source.columns.front().descriptor_id;
+    } else if (expression.operator_name == "COLUMNAR_PROJECT" &&
+               !selected.empty()) {
+      input.descriptor_id = selected.front()->descriptor_id;
+    }
+    if (expression.expression_kind ==
+        sbsql::NativeExpressionAstKind::kIdentifier) {
+      const bool alias = expression.qualified_identifier.size() == 1 &&
+                         source_alias.has_value() &&
+                         expression.qualified_identifier.front().spelling ==
+                             source_alias->spelling;
+      if (alias) {
+        input.descriptor_id = 1;
+        input.bound_name_uuid = Uuid(1940);
+      } else if (spatial &&
+                 std::ranges::find(
+                     source_ast.model_spatial_crs_expression_ids,
+                     expression.expression_id) !=
+                     source_ast.model_spatial_crs_expression_ids.end()) {
+        input.descriptor_id = 3;
+        input.bound_name_uuid = Uuid(1970);
+      } else if (!spatial && !expression.qualified_identifier.empty()) {
+        const auto& name = expression.qualified_identifier.back().spelling;
+        input.descriptor_id = descriptor_for_column(name);
+        input.bound_name_uuid = binding_for_column(name);
+      }
+    }
+    if (expression.expression_kind ==
+            sbsql::NativeExpressionAstKind::kFunctionCall &&
+        expression.operator_name == "POINT") {
+      input.function_uuid = Uuid(1980);
+    }
+    context.expressions.push_back(std::move(input));
+  }
+  return context;
+}
+
+bool SpatialColumnarBindingLowering(
+    const std::string_view sql,
+    const std::vector<std::string>& expected_operations) {
+  const auto cst = sbsql::BuildCst(sql);
+  const auto ast = sbsql::BuildAst(cst);
+  if (!ast.native_relational.accepted()) {
+    return Require(false, "spatial/columnar binding fixture did not parse: " +
+                              DiagnosticSummary(ast.messages));
+  }
+  auto context = SpatialColumnarContextFor(ast.native_relational);
+  const auto bound =
+      sbsql::BindAst(ast, cst, Config(), Session(), {}, &context);
+  const auto lowered = sbsql::LowerToSblr(bound, cst, Session());
+  const auto operation_count = std::ranges::count_if(
+      lowered.operands, [](const auto& operand) {
+        if (operand.type != "relational_expression_v1") return false;
+        const auto source = Hex("SPATIAL_SOURCE");
+        const auto match = Hex("SPATIAL_MATCH");
+        const auto nearest = Hex("SPATIAL_NEAREST");
+        const auto columnar_source = Hex("COLUMNAR_SOURCE");
+        const auto filter = Hex("COLUMNAR_FILTER");
+        const auto project = Hex("COLUMNAR_PROJECT");
+        return operand.value.find("|" + source + "|") != std::string::npos ||
+               operand.value.find("|" + match + "|") != std::string::npos ||
+               operand.value.find("|" + nearest + "|") != std::string::npos ||
+               operand.value.find("|" + columnar_source + "|") !=
+                   std::string::npos ||
+               operand.value.find("|" + filter + "|") != std::string::npos ||
+               operand.value.find("|" + project + "|") != std::string::npos;
+      });
+  const auto verified = sbsql::VerifySblrEnvelope(lowered);
+  return Require(
+      bound.bound && bound.native_relational.bound &&
+          bound.native_relational.catalog_relation_sources.size() == 1 &&
+          bound.native_relational.catalog_relation_sources.front()
+                  .model_operation_ids == expected_operations &&
+          bound.native_relational.catalog_relation_sources.front()
+                  .model_operation_expression_ids.size() ==
+              expected_operations.size() &&
+          !lowered.messages.has_errors() &&
+          operation_count == expected_operations.size() &&
+          verified.admitted,
+      "spatial/columnar binding/lowering carriage failed: " +
+          DiagnosticSummary(bound.messages) + ":" +
+          DiagnosticSummary(lowered.messages) + ":" +
+          DiagnosticSummary(verified.messages));
 }
 
 sbsql::NativeRelationalBindingContext TimeSeriesContextFor(
@@ -2357,11 +2615,269 @@ bool GraphWireFrontdoorProjectionCohort() {
                      std::to_string(mask));
 }
 
+bool SpatialGrammar() {
+  const auto source_ast = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture);"));
+  bool passed = Require(
+      source_ast.native_relational.accepted() &&
+          source_ast.native_relational.catalog_relation_sources.size() == 1 &&
+          source_ast.native_relational.catalog_relation_sources.front()
+                  .model_operation_ids ==
+              std::vector<std::string>{"SPATIAL_SOURCE"} &&
+          source_ast.native_relational.catalog_relation_sources.front()
+                  .model_operation_expression_ids.size() == 1 &&
+          source_ast.native_relational.model_object_resolution_requests.size() ==
+              1,
+      "SPATIAL_SOURCE grammar/root drifted: " +
+          DiagnosticSummary(source_ast.messages));
+  const auto match_cst = sbsql::BuildCst(
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s "
+      "WHERE SPATIAL_MATCH(s, INTERSECTS, POINT(0, 0), app.cartesian_crs);");
+  const auto match_ast = sbsql::BuildAst(match_cst);
+  passed &= Require(
+      match_ast.native_relational.accepted() &&
+          match_ast.native_relational.catalog_relation_sources.size() == 1,
+      "SPATIAL_MATCH grammar was not accepted: " +
+          DiagnosticSummary(match_ast.messages));
+  if (match_ast.native_relational.accepted()) {
+    const auto& match =
+        match_ast.native_relational.catalog_relation_sources.front();
+    passed &= Require(
+        match.source_kind == sbsql::NativeRelationSourceAstKind::kSpatial &&
+            match.model_family_id == "spatial" &&
+            match.model_operation_id.empty() &&
+            match.model_operation_ids ==
+                std::vector<std::string>{"SPATIAL_SOURCE", "SPATIAL_MATCH"} &&
+            match.model_operation_expression_ids.size() == 2 &&
+            match.model_spatial_predicate_id == "INTERSECTS" &&
+            match.model_spatial_crs_names.size() == 1 &&
+          match_ast.native_relational.model_object_resolution_requests.size() ==
+              2,
+        "SPATIAL_MATCH identities or object/CRS requests drifted");
+  }
+  const auto nearest_cst = sbsql::BuildCst(
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s, "
+      "SPATIAL_NEAREST(s, POINT(0, 0), app.cartesian_crs, 3) AS n;");
+  const auto nearest_ast = sbsql::BuildAst(nearest_cst);
+  passed &= Require(
+      nearest_ast.native_relational.accepted() &&
+          nearest_ast.native_relational.catalog_relation_sources.front()
+                  .model_operation_ids ==
+              std::vector<std::string>{"SPATIAL_SOURCE", "SPATIAL_NEAREST"} &&
+          nearest_ast.native_relational.catalog_relation_sources.front()
+                  .model_operation_expression_ids.size() == 2 &&
+          nearest_ast.native_relational.catalog_relation_sources.front()
+                  .model_spatial_top_k == 3 &&
+          nearest_ast.native_relational.catalog_relation_sources.front()
+                  .model_source_alias->spelling == "s" &&
+          nearest_ast.native_relational.catalog_relation_sources.front()
+                  .alias->spelling == "n",
+      "SPATIAL_NEAREST grammar/top-k drifted: " +
+          DiagnosticSummary(nearest_ast.messages));
+  const auto both_ast = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s, "
+      "SPATIAL_NEAREST(s, POINT(1, 1), app.cartesian_crs, 7) AS n "
+      "WHERE SPATIAL_MATCH(s, CONTAINS, POINT(0, 0), app.cartesian_crs);"));
+  passed &= Require(
+      both_ast.native_relational.accepted() &&
+          both_ast.native_relational.catalog_relation_sources.front()
+                  .model_operation_ids ==
+              std::vector<std::string>{"SPATIAL_SOURCE", "SPATIAL_MATCH",
+                                       "SPATIAL_NEAREST"} &&
+          both_ast.native_relational.catalog_relation_sources.front()
+                  .model_operation_expression_ids.size() == 3 &&
+          both_ast.native_relational.catalog_relation_sources.front()
+                  .model_spatial_query_expression_ids.size() == 2 &&
+          both_ast.native_relational.catalog_relation_sources.front()
+                  .model_spatial_crs_names.size() == 2 &&
+          both_ast.native_relational.model_object_resolution_requests.size() ==
+              3,
+      "SPATIAL_MATCH+NEAREST semantic order drifted: " +
+          DiagnosticSummary(both_ast.messages));
+  const auto inferred = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s "
+      "WHERE SPATIAL_MATCH(s, INTERSECTS, POINT(0, 0), inferred_crs);"));
+  passed &= Require(
+      inferred.native_relational.status ==
+              sbsql::NativeRelationalParseStatus::kRefused &&
+          HasDiagnostic(inferred.messages,
+                        "SB_MODEL_SPATIAL_CRS_BINDING_REQUIRED_V1"),
+      "unqualified/inferred CRS was not refused");
+  const auto top_k = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s, "
+      "SPATIAL_NEAREST(s, POINT(0, 0), app.cartesian_crs, 4097);"));
+  passed &= Require(
+      top_k.native_relational.status ==
+              sbsql::NativeRelationalParseStatus::kRefused &&
+          HasDiagnostic(top_k.messages, "SB_MODEL_SPATIAL_TOP_K_REFUSED_V1"),
+      "spatial top-k 4097 was not refused");
+  const auto nearest_in_where = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s "
+      "WHERE SPATIAL_NEAREST(s, POINT(0, 0), app.cartesian_crs, 3);"));
+  passed &= Require(
+      nearest_in_where.native_relational.status ==
+              sbsql::NativeRelationalParseStatus::kRefused &&
+          HasDiagnostic(nearest_in_where.messages,
+                        "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1"),
+      "SPATIAL_NEAREST in WHERE was not refused");
+  const auto missing_alias = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture), "
+      "SPATIAL_NEAREST(spatial_fixture, POINT(0, 0), app.cartesian_crs, 3);"));
+  passed &= Require(
+      missing_alias.native_relational.status ==
+              sbsql::NativeRelationalParseStatus::kRefused &&
+          HasDiagnostic(missing_alias.messages,
+                        "SB_MODEL_BINDING_INCOMPLETE_V1"),
+      "SPATIAL_NEAREST without explicit source alias was not refused");
+  passed &= SpatialColumnarBindingLowering(
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture);",
+      {"SPATIAL_SOURCE"});
+  passed &= SpatialColumnarBindingLowering(
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s WHERE "
+      "SPATIAL_MATCH(s, INTERSECTS, POINT(0, 0), app.cartesian_crs);",
+      {"SPATIAL_SOURCE", "SPATIAL_MATCH"});
+  passed &= SpatialColumnarBindingLowering(
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s, "
+      "SPATIAL_NEAREST(s, POINT(0, 0), app.cartesian_crs, 3) AS n;",
+      {"SPATIAL_SOURCE", "SPATIAL_NEAREST"});
+  passed &= SpatialColumnarBindingLowering(
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s, "
+      "SPATIAL_NEAREST(s, POINT(1, 1), app.cartesian_crs, 7) AS n WHERE "
+      "SPATIAL_MATCH(s, CONTAINS, POINT(0, 0), app.cartesian_crs);",
+      {"SPATIAL_SOURCE", "SPATIAL_MATCH", "SPATIAL_NEAREST"});
+  return passed;
+}
+
+bool ColumnarGrammar() {
+  const auto source = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture) AS c;"));
+  bool passed = Require(
+      source.native_relational.accepted() &&
+          source.native_relational.catalog_relation_sources.size() == 1 &&
+          source.native_relational.catalog_relation_sources.front()
+                  .source_kind ==
+              sbsql::NativeRelationSourceAstKind::kColumnar &&
+          source.native_relational.catalog_relation_sources.front()
+                  .model_operation_id == "COLUMNAR_SOURCE",
+      "COLUMNAR_SOURCE grammar was not accepted: " +
+          DiagnosticSummary(source.messages));
+  const auto project = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture) AS c, "
+      "COLUMNAR_PROJECT(c, c.payload, c.row_uuid) AS p;"));
+  passed &= Require(
+      project.native_relational.accepted() &&
+          project.native_relational.catalog_relation_sources.front()
+                  .model_operation_ids ==
+              std::vector<std::string>{"COLUMNAR_SOURCE",
+                                       "COLUMNAR_PROJECT"} &&
+          project.native_relational.catalog_relation_sources.front()
+                  .model_columnar_project_expression_ids.size() == 2 &&
+          project.native_relational.catalog_relation_sources.front()
+                  .model_source_alias->spelling == "c" &&
+          project.native_relational.catalog_relation_sources.front()
+                  .alias->spelling == "p",
+      "COLUMNAR_PROJECT grammar/order drifted: " +
+          DiagnosticSummary(project.messages));
+  const auto filter = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture) AS c "
+      "WHERE COLUMNAR_FILTER(c, c.join_key > 1);"));
+  passed &= Require(
+      filter.native_relational.accepted() &&
+          filter.native_relational.catalog_relation_sources.front()
+                  .model_operation_ids ==
+              std::vector<std::string>{"COLUMNAR_SOURCE",
+                                       "COLUMNAR_FILTER"} &&
+          filter.native_relational.catalog_relation_sources.front()
+                  .model_columnar_predicate_expression_id.has_value(),
+      "COLUMNAR_FILTER grammar/predicate drifted: " +
+          DiagnosticSummary(filter.messages));
+  const auto both = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture) AS c, "
+      "COLUMNAR_PROJECT(c, c.payload, c.row_uuid) AS p "
+      "WHERE COLUMNAR_FILTER(c, c.hidden_join_key > 1);"));
+  passed &= Require(
+      both.native_relational.accepted() &&
+          both.native_relational.catalog_relation_sources.front()
+                  .model_operation_ids ==
+              std::vector<std::string>{"COLUMNAR_SOURCE", "COLUMNAR_FILTER",
+                                       "COLUMNAR_PROJECT"} &&
+          both.native_relational.catalog_relation_sources.front()
+                  .model_operation_expression_ids.size() == 3 &&
+          both.native_relational.catalog_relation_sources.front()
+                  .model_columnar_project_expression_ids.size() == 2 &&
+          both.native_relational.catalog_relation_sources.front()
+                  .model_columnar_predicate_expression_id.has_value(),
+      "COLUMNAR_FILTER+PROJECT semantic order drifted: " +
+          DiagnosticSummary(both.messages));
+  const auto duplicate = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture) AS c, "
+      "COLUMNAR_PROJECT(c, c.payload, c.payload);"));
+  passed &= Require(
+      duplicate.native_relational.status ==
+              sbsql::NativeRelationalParseStatus::kRefused &&
+          HasDiagnostic(duplicate.messages,
+                        "SB_MODEL_COLUMNAR_PROJECT_DUPLICATE_REFUSED_V1"),
+      "duplicate columnar projection was not refused");
+  const auto select_project = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT COLUMNAR_PROJECT(c, c.payload) "
+      "FROM COLUMNAR_SOURCE(app.columnar_fixture) AS c;"));
+  passed &= Require(
+      select_project.native_relational.status ==
+              sbsql::NativeRelationalParseStatus::kRefused &&
+          HasDiagnostic(select_project.messages,
+                        "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1"),
+      "COLUMNAR_PROJECT in SELECT was not refused");
+  const auto hint = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM COLUMNAR_ENGINE_HINT('segment=1');"));
+  passed &= Require(
+      hint.native_relational.status ==
+              sbsql::NativeRelationalParseStatus::kRefused &&
+          HasDiagnostic(hint.messages, "SB_MODEL_GRAMMAR_DONOR_TEXT_REFUSED_V1"),
+      "opaque columnar engine hint was not refused");
+  passed &= SpatialColumnarBindingLowering(
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture);",
+      {"COLUMNAR_SOURCE"});
+  passed &= SpatialColumnarBindingLowering(
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture) AS c WHERE "
+      "COLUMNAR_FILTER(c, c.join_key > 1);",
+      {"COLUMNAR_SOURCE", "COLUMNAR_FILTER"});
+  passed &= SpatialColumnarBindingLowering(
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture) AS c, "
+      "COLUMNAR_PROJECT(c, c.payload, c.row_uuid) AS p;",
+      {"COLUMNAR_SOURCE", "COLUMNAR_PROJECT"});
+  passed &= SpatialColumnarBindingLowering(
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture) AS c, "
+      "COLUMNAR_PROJECT(c, c.payload, c.row_uuid) AS p WHERE "
+      "COLUMNAR_FILTER(c, c.hidden_join_key > 1);",
+      {"COLUMNAR_SOURCE", "COLUMNAR_FILTER", "COLUMNAR_PROJECT"});
+  return passed;
+}
+
 bool TimeSeriesWireFrontdoorProjectionCohort() {
   constexpr std::uint64_t kExpectedMask = (1ull << 4) - 1;
   const auto mask = sbsql::Rcp076TimeSeriesFrontdoorProofMaskForTest();
   return Require(mask == kExpectedMask,
                  "time-series pre-resolution refusal mask was incomplete: " +
+                     std::to_string(mask));
+}
+
+bool SpatialColumnarWireFrontdoorProjectionCohort() {
+  const auto sql =
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s INNER JOIN "
+      "COLUMNAR_SOURCE(app.columnar_fixture) AS c ON s.row_uuid = c.row_uuid;";
+  const auto cst = sbsql::BuildCst(sql);
+  const auto ast = sbsql::BuildAst(cst);
+  const bool ast_exact = Require(
+      ast.native_relational.accepted() &&
+          ast.native_relational.catalog_relation_sources.size() == 2 &&
+          ast.native_relational.relations.size() == 3 &&
+          ast.native_relational.model_object_resolution_requests.size() == 2,
+      "spatial/columnar JOIN did not reach the ordinary typed AST: " +
+          DiagnosticSummary(ast.messages));
+  constexpr std::uint64_t kExpectedMask = (1ull << 13) - 1;
+  const auto mask = sbsql::Rcp079SpatialColumnarFrontdoorProofMaskForTest();
+  return ast_exact && Require(mask == kExpectedMask,
+                 "spatial/columnar front-door projection mask was incomplete: " +
                      std::to_string(mask));
 }
 
@@ -2377,8 +2893,11 @@ int main() {
   passed &= VectorGrammarBindingLowering();
   passed &= SearchGrammarBindingLowering();
   passed &= GraphGrammarBindingLowering();
+  passed &= SpatialGrammar();
+  passed &= ColumnarGrammar();
   passed &= WireFrontdoorProjectionCohort();
   passed &= GraphWireFrontdoorProjectionCohort();
   passed &= TimeSeriesWireFrontdoorProjectionCohort();
+  passed &= SpatialColumnarWireFrontdoorProjectionCohort();
   return passed ? 0 : 1;
 }

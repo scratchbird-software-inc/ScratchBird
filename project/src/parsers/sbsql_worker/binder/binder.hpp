@@ -100,6 +100,11 @@ struct NativeCatalogRelationBindingInput {
   std::uint64_t security_epoch{0};
   std::uint64_t resource_epoch{0};
   std::vector<NativeCatalogColumnBindingInput> columns;
+  // Spatial profile identity is supplied by the authenticated catalog
+  // description. It is compared with every independently resolved operation
+  // CRS and never inferred by the parser or provider.
+  std::optional<std::string> spatial_crs_uuid;
+  std::uint64_t spatial_crs_generation{0};
 };
 
 // Exact, read-only statement authority copied from EngineRequestContext at the
@@ -114,6 +119,12 @@ struct NativeRelationalEngineStatementAuthority {
   std::string catalog_epoch_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
+};
+
+struct NativeSpatialCrsBindingInput {
+  std::string operation_id;
+  std::string crs_uuid;
+  std::uint64_t crs_generation{0};
 };
 
 struct NativeRelationalBindingContext {
@@ -136,6 +147,7 @@ struct NativeRelationalBindingContext {
   std::vector<NativeCatalogRelationBindingInput> catalog_relations;
   std::string search_analyzer_uuid;
   std::uint64_t search_analyzer_generation{0};
+  std::vector<NativeSpatialCrsBindingInput> spatial_crs_bindings;
 };
 
 struct BoundDescriptorAstRecord {
@@ -268,6 +280,8 @@ struct BoundCatalogRelationSourceAstRecord {
   bool alias_is_explicit{false};
   std::string model_family_id;
   std::string model_operation_id;
+  std::vector<std::string> model_operation_ids;
+  std::vector<std::uint32_t> model_operation_expression_ids;
   std::optional<NativeIdentifierAstNode> model_source_alias;
   std::optional<std::uint32_t> model_document_expression_id;
   std::optional<std::uint32_t> model_path_expression_id;
@@ -315,6 +329,29 @@ struct BoundCatalogRelationSourceAstRecord {
   std::optional<std::uint64_t> model_search_top_k;
   std::string model_search_analyzer_uuid;
   std::uint64_t model_search_analyzer_generation{0};
+  std::optional<std::uint32_t> model_spatial_alias_expression_id;
+  std::optional<std::uint32_t> model_spatial_operation_expression_id;
+  std::optional<std::uint32_t> model_spatial_match_expression_id;
+  std::optional<std::uint32_t> model_spatial_nearest_expression_id;
+  std::optional<std::uint32_t> model_spatial_query_expression_id;
+  std::vector<std::uint32_t> model_spatial_query_expression_ids;
+  std::optional<std::uint32_t> model_spatial_predicate_expression_id;
+  std::optional<std::uint32_t> model_spatial_crs_expression_id;
+  std::vector<std::uint32_t> model_spatial_crs_expression_ids;
+  std::vector<NativeIdentifierAstNode> model_spatial_crs_name;
+  std::vector<std::vector<NativeIdentifierAstNode>> model_spatial_crs_names;
+  std::string model_spatial_predicate_id;
+  std::optional<std::uint32_t> model_spatial_top_k_expression_id;
+  std::optional<std::uint64_t> model_spatial_top_k;
+  std::vector<std::string> model_spatial_crs_uuids;
+  std::vector<std::uint64_t> model_spatial_crs_generations;
+  std::optional<std::uint32_t> model_columnar_alias_expression_id;
+  std::optional<std::uint32_t> model_columnar_operation_expression_id;
+  std::optional<std::uint32_t> model_columnar_project_expression_id;
+  std::optional<std::uint32_t> model_columnar_filter_expression_id;
+  std::optional<std::uint32_t> model_columnar_predicate_expression_id;
+  std::vector<std::uint32_t> model_columnar_project_expression_ids;
+  std::vector<std::string> model_columnar_project_column_uuids;
   std::string model_graph_direction;
   std::optional<std::uint64_t> model_graph_minimum_depth;
   std::optional<std::uint64_t> model_graph_maximum_depth;

@@ -136,6 +136,8 @@ enum class NativeRelationSourceAstKind {
   kTimeSeries,
   kVector,
   kSearch,
+  kSpatial,
+  kColumnar,
 };
 
 enum class NativeAggregateGroupingForm {
@@ -214,8 +216,14 @@ struct NativeCatalogRelationSourceAstNode {
   bool alias_is_explicit{false};
   std::string model_family_id;
   std::string model_operation_id;
-  // For object-backed graph expansion this is the alias of the preceding
-  // GRAPH_SOURCE. `alias` remains the output alias of the model source.
+  // Ordered semantic-stage operation identity and the parallel parser-owned
+  // expression roots.  Multi-operation model legs must retain every entry;
+  // model_operation_id is only a single-operation compatibility projection.
+  std::vector<std::string> model_operation_ids;
+  std::vector<std::uint32_t> model_operation_expression_ids;
+  // For an attached model-source transform this is the alias of the
+  // preceding base source. `alias` remains the output alias of the complete
+  // model table primary.
   std::optional<NativeIdentifierAstNode> model_source_alias;
   std::optional<std::uint32_t> model_document_expression_id;
   std::optional<std::uint32_t> model_path_expression_id;
@@ -264,6 +272,28 @@ struct NativeCatalogRelationSourceAstNode {
   std::vector<NativeIdentifierAstNode> model_search_analyzer_name;
   std::string model_search_query_kind;
   std::optional<std::uint64_t> model_search_top_k;
+  std::optional<std::uint32_t> model_spatial_alias_expression_id;
+  std::optional<std::uint32_t> model_spatial_operation_expression_id;
+  std::optional<std::uint32_t> model_spatial_match_expression_id;
+  std::optional<std::uint32_t> model_spatial_nearest_expression_id;
+  std::optional<std::uint32_t> model_spatial_query_expression_id;
+  std::vector<std::uint32_t> model_spatial_query_expression_ids;
+  std::optional<std::uint32_t> model_spatial_predicate_expression_id;
+  std::optional<std::uint32_t> model_spatial_crs_expression_id;
+  std::vector<std::uint32_t> model_spatial_crs_expression_ids;
+  std::vector<NativeIdentifierAstNode> model_spatial_crs_name;
+  std::vector<std::vector<NativeIdentifierAstNode>> model_spatial_crs_names;
+  std::string model_spatial_predicate_id;
+  std::optional<std::uint32_t> model_spatial_top_k_expression_id;
+  std::optional<std::uint64_t> model_spatial_top_k;
+  std::optional<std::uint32_t> model_columnar_alias_expression_id;
+  std::optional<std::uint32_t> model_columnar_operation_expression_id;
+  std::optional<std::uint32_t> model_columnar_project_expression_id;
+  std::optional<std::uint32_t> model_columnar_filter_expression_id;
+  std::optional<std::uint32_t> model_columnar_predicate_expression_id;
+  std::vector<std::uint32_t> model_columnar_project_expression_ids;
+  std::vector<std::vector<NativeIdentifierAstNode>>
+      model_columnar_project_names;
   std::string model_graph_direction;
   std::optional<std::uint64_t> model_graph_minimum_depth;
   std::optional<std::uint64_t> model_graph_maximum_depth;

@@ -318,6 +318,8 @@ add_library(sb_engine_internal_api
   nosql/nosql_statistics_api.cpp
   nosql/nosql_provider_generation_store.cpp
   nosql/search_api.cpp
+  nosql/spatial_api.cpp
+  nosql/columnar_api.cpp
   nosql/time_series_api.cpp
   nosql/vector_api.cpp
   notification/notification_api.cpp

@@ -44,6 +44,16 @@ enum class StatementDescriptorProfileKind : std::uint8_t {
   kReal64NonNull = 11,
   kUuidNonNull = 12,
   kUint64NonNull = 13,
+  kMultilegUuidNonNull = 14,
+  kMultilegUuidNullable = 15,
+  kMultilegUint64NonNull = 16,
+  kMultilegUint64Nullable = 17,
+  kMultilegReal64NonNull = 18,
+  kMultilegReal64Nullable = 19,
+  kMultilegBooleanNonNull = 20,
+  kMultilegBooleanNullable = 21,
+  kMultilegGeometryNonNull = 22,
+  kMultilegGeometryNullable = 23,
 };
 
 struct StatementDescriptorProfile {

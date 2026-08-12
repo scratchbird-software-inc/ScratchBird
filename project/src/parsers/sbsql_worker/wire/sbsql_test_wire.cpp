@@ -34,6 +34,7 @@
 #include <iterator>
 #include <limits>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <sstream>
 #include <utility>
@@ -1020,6 +1021,456 @@ BuildEngineProjectedNativeBindingContext(
       context.catalog_epoch_uuid,
       context.local_transaction_id,
       context.snapshot_visible_through_local_transaction_id};
+
+  const auto spatial_columnar_source = std::ranges::find_if(
+      ast.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kSpatial ||
+               source.source_kind == NativeRelationSourceAstKind::kColumnar;
+      });
+  if (spatial_columnar_source != ast.catalog_relation_sources.end() &&
+      ast.catalog_relation_sources.size() == 1) {
+    // QOW-SOURCE-RCP-079-ENGINE-SPATIAL-COLUMNAR-BINDING-COHORT-V1
+    const auto& source = *spatial_columnar_source;
+    const bool spatial =
+        source.source_kind == NativeRelationSourceAstKind::kSpatial;
+    const auto refuse = [&](const char* diagnostic, std::string detail)
+        -> std::optional<NativeRelationalBindingContext> {
+      messages->diagnostics.push_back(MakeDiagnostic(
+          diagnostic, "ERROR", std::move(detail), "sbp_sbsql.wire"));
+      return std::nullopt;
+    };
+    const auto expected_object_class =
+        spatial ? std::string_view{"spatial_collection"}
+                : std::string_view{"logical_relation"};
+    const auto expected_request_count =
+        std::size_t{1} + (spatial ? source.model_spatial_crs_names.size() : 0);
+    if (!statement_context.native_v10_complete() ||
+        !IsCanonicalStatementTimestamp(context.statement_timestamp) ||
+        ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
+        ast.root_relation_id != ast.relations.front().relation_id ||
+        ast.relations.front().relation_kind !=
+            NativeRelationAstKind::kCatalogSource ||
+        ast.relations.front().relation_source_ids !=
+            std::vector<std::uint32_t>{source.source_id} ||
+        source.source_id == 0 || source.model_operation_ids.empty() ||
+        source.model_operation_ids.size() !=
+            source.model_operation_expression_ids.size() ||
+        source.qualified_name.empty() || !source.alias.has_value() ||
+        ast.model_object_resolution_requests.size() != expected_request_count ||
+        resolved_object_reference_seeds.size() != expected_request_count) {
+      return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "spatial/columnar AST or engine binding cohort shape is invalid");
+    }
+    for (std::size_t index = 0; index < expected_request_count; ++index) {
+      const auto& request = ast.model_object_resolution_requests[index];
+      const auto& seed = resolved_object_reference_seeds[index];
+      const auto expected_class =
+          index == 0 ? expected_object_class : std::string_view{"spatial_crs"};
+      const auto presented = EncodeQualifiedPresentedName(request.qualified_name);
+      if (request.source_id != source.source_id ||
+          request.model_family_id != source.model_family_id ||
+          request.object_class != expected_class || !presented.has_value() ||
+          seed.ref.object_class != expected_class ||
+          seed.ref.presented_name != *presented || seed.ref.quoted ||
+          seed.ref.create_reservation) {
+        return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "spatial/columnar object-resolution requests were substituted");
+      }
+    }
+    const auto& resolved = resolved_object_reference_seeds.front().resolved;
+    const auto& projection = resolved.relation_descriptor;
+    const bool relation_transport_class =
+        resolved.object_class == "relation" || resolved.object_class == "table";
+    if (!resolved.resolved || !relation_transport_class ||
+        !CanonicalUuidBytes(resolved.object_uuid).has_value() ||
+        resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
+        !projection.present ||
+        !CanonicalUuidBytes(projection.descriptor_uuid).has_value() ||
+        !CanonicalUuidBytes(projection.relation_uuid).has_value() ||
+        projection.relation_uuid != resolved.object_uuid ||
+        !CanonicalUuidBytes(projection.schema_uuid).has_value() ||
+        projection.descriptor_generation == 0 ||
+        projection.validated_resource_epoch == 0 || projection.columns.empty() ||
+        projection.columns.size() > 256) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "spatial/columnar relation projection is incomplete");
+    }
+    const auto manifest =
+        scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!manifest.ok()) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "canonical datatype catalog is unavailable");
+    }
+    const auto canonical_type_uuid = [&](const std::string& type)
+        -> std::optional<std::string> {
+      const auto row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+          manifest.manifest,
+          scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type));
+      if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
+          !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
+        return std::nullopt;
+      }
+      return scratchbird::core::uuid::UuidToString(
+          row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    };
+    const auto uuid_type = canonical_type_uuid("uuid");
+    const auto uint64_type = canonical_type_uuid("uint64");
+    const auto real64_type = canonical_type_uuid("real64");
+    const auto boolean_type = canonical_type_uuid("boolean");
+    const auto geometry_type = canonical_type_uuid("geometry");
+    const auto text_type = canonical_type_uuid("text");
+    const auto int64_type = canonical_type_uuid("int64");
+    if (!uuid_type.has_value() || !uint64_type.has_value() ||
+        !real64_type.has_value() || !boolean_type.has_value() ||
+        !geometry_type.has_value() || !text_type.has_value() ||
+        !int64_type.has_value()) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "spatial/columnar datatype identities are unavailable");
+    }
+    std::unordered_set<std::string> column_uuids;
+    std::unordered_set<std::string> descriptor_uuids;
+    std::unordered_set<std::string> column_names;
+    std::unordered_map<std::string, std::uint32_t> descriptor_by_name;
+    const auto add_descriptor = [&](const std::string& descriptor_uuid,
+                                    const std::string& type_uuid,
+                                    const std::string& canonical_type,
+                                    const BoundNullability nullability,
+                                    const std::optional<std::string>& collation,
+                                    const std::optional<std::string>& timezone,
+                                    const std::optional<std::uint32_t>& width,
+                                    const std::optional<std::uint32_t>& precision,
+                                    const std::optional<std::uint32_t>& scale)
+        -> std::optional<std::uint32_t> {
+      const auto existing = std::ranges::find_if(
+          context.descriptors, [&](const auto& descriptor) {
+            return descriptor.descriptor_uuid == descriptor_uuid;
+          });
+      if (existing != context.descriptors.end()) {
+        return existing->type_uuid == type_uuid &&
+                       existing->canonical_type_name == canonical_type
+                   ? std::optional<std::uint32_t>{existing->descriptor_id}
+                   : std::nullopt;
+      }
+      if (!CanonicalUuidBytes(descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(type_uuid).has_value() ||
+          !descriptor_uuids.insert(descriptor_uuid).second) {
+        return std::nullopt;
+      }
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      descriptor.descriptor_uuid = descriptor_uuid;
+      descriptor.type_uuid = type_uuid;
+      descriptor.nullability = nullability;
+      descriptor.collation_uuid = collation;
+      descriptor.timezone_profile_id = timezone;
+      descriptor.width_precision_scale = {width, precision, scale};
+      descriptor.canonical_type_name = canonical_type;
+      context.descriptors.push_back(std::move(descriptor));
+      return context.descriptors.back().descriptor_id;
+    };
+    for (std::size_t ordinal = 0; ordinal < projection.columns.size(); ++ordinal) {
+      const auto& column = projection.columns[ordinal];
+      const auto fields = ParseExactProjectedDescriptor(
+          column.encoded_type_descriptor, column.collation_uuid,
+          column.nullable);
+      if (column.ordinal != ordinal || column.canonical_name_key.empty() ||
+          column.canonical_type_name.empty() ||
+          !CanonicalUuidBytes(column.column_uuid).has_value() ||
+          !column_uuids.insert(column.column_uuid).second ||
+          !CanonicalUuidBytes(column.type_descriptor_uuid).has_value() ||
+          !column_names.insert(column.canonical_name_key).second ||
+          !fields.has_value() ||
+          !CanonicalUuidBytes(fields->type_uuid).has_value() ||
+          fields->nullable != column.nullable ||
+          column.generated || column.identity_column) {
+        return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "spatial/columnar projected column descriptor is invalid");
+      }
+      const auto descriptor_id = add_descriptor(
+          column.type_descriptor_uuid, fields->type_uuid,
+          column.canonical_type_name,
+          column.nullable ? BoundNullability::kNullable
+                          : BoundNullability::kNonNull,
+          fields->collation_uuid, fields->timezone_profile_id, fields->width,
+          fields->precision, fields->scale);
+      if (!descriptor_id.has_value()) {
+        return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "spatial/columnar descriptor identity is duplicated");
+      }
+      descriptor_by_name.emplace(column.canonical_name_key, *descriptor_id);
+    }
+    if (spatial &&
+        (projection.columns.size() != 3 ||
+         projection.columns[0].canonical_name_key != "row_uuid" ||
+         projection.columns[1].canonical_name_key != "spatial_value" ||
+         projection.columns[2].canonical_name_key != "crs_uuid" ||
+         projection.columns[0].canonical_type_name != "uuid" ||
+         projection.columns[1].canonical_type_name != "geometry" ||
+         projection.columns[2].canonical_type_name != "uuid" ||
+         projection.columns[0].nullable || projection.columns[1].nullable ||
+         projection.columns[2].nullable)) {
+      return refuse("SB_MODEL_SPATIAL_PROFILE_UNSUPPORTED_V1",
+                    "spatial source projection is not row_uuid/spatial_value/crs_uuid");
+    }
+    const auto profile_for = [&](const std::uint8_t kind,
+                                 const std::uint16_t slot,
+                                 const std::string& type_uuid) {
+      return std::ranges::find_if(
+          statement_context.descriptor_profiles, [&](const auto& profile) {
+            return profile.profile_kind == kind && profile.slot == slot &&
+                   profile.type_uuid == type_uuid && !profile.nullable &&
+                   profile.collation_uuid.empty() && profile.width == 0 &&
+                   profile.precision == 0 && profile.scale == 0 &&
+                   CanonicalUuidBytes(profile.descriptor_uuid).has_value();
+          });
+    };
+    const auto boolean_profile = profile_for(20, 0, *boolean_type);
+    const auto real64_profile = profile_for(18, 0, *real64_type);
+    const auto uint64_profile = profile_for(16, 0, *uint64_type);
+    const auto geometry_profile = profile_for(22, 0, *geometry_type);
+    if (boolean_profile == statement_context.descriptor_profiles.end() ||
+        real64_profile == statement_context.descriptor_profiles.end() ||
+        uint64_profile == statement_context.descriptor_profiles.end() ||
+        geometry_profile == statement_context.descriptor_profiles.end()) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "spatial/columnar V10 descriptor pools are unavailable");
+    }
+    const auto add_profile = [&](const auto& profile,
+                                 const std::string& type_name) {
+      return add_descriptor(profile.descriptor_uuid, profile.type_uuid,
+                            type_name, BoundNullability::kNonNull,
+                            std::nullopt, std::nullopt, std::nullopt,
+                            std::nullopt, std::nullopt);
+    };
+    const auto boolean_descriptor = add_profile(*boolean_profile, "boolean");
+    const auto real64_descriptor = add_profile(*real64_profile, "real64");
+    const auto uint64_descriptor = add_profile(*uint64_profile, "uint64");
+    const auto geometry_descriptor = add_profile(*geometry_profile, "geometry");
+    const auto text_descriptor = add_descriptor(
+        *text_type, *text_type, "text", BoundNullability::kNonNull,
+        std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+    const auto int64_descriptor = add_descriptor(
+        *int64_type, *int64_type, "int64", BoundNullability::kNonNull,
+        std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+    if (!boolean_descriptor.has_value() || !real64_descriptor.has_value() ||
+        !uint64_descriptor.has_value() || !geometry_descriptor.has_value() ||
+        !text_descriptor.has_value() || !int64_descriptor.has_value()) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "spatial/columnar scalar descriptors are unavailable");
+    }
+    NativeCatalogRelationBindingInput catalog_relation;
+    catalog_relation.source_id = source.source_id;
+    catalog_relation.resolution_state =
+        NativeCatalogRelationResolutionState::kBound;
+    catalog_relation.object_uuid = resolved.object_uuid;
+    catalog_relation.resolved_object_type = std::string(expected_object_class);
+    catalog_relation.resolved_schema_uuid = projection.schema_uuid;
+    catalog_relation.catalog_generation_id = resolved.catalog_epoch;
+    catalog_relation.security_epoch = resolved.security_epoch;
+    catalog_relation.resource_epoch = projection.validated_resource_epoch;
+    for (const auto& column : projection.columns) {
+      catalog_relation.columns.push_back(
+          {column.ordinal, column.column_uuid,
+           descriptor_by_name.at(column.canonical_name_key),
+           column.canonical_name_key});
+    }
+    if (spatial && source.model_operation_ids.size() > 1) {
+      if (resolved_object_reference_seeds.size() < 2) {
+        return refuse("SB_MODEL_SPATIAL_CRS_BINDING_REQUIRED_V1",
+                      "spatial operation CRS resolution is absent");
+      }
+      const auto& source_crs = resolved_object_reference_seeds[1].resolved;
+      if (!source_crs.resolved ||
+          !CanonicalUuidBytes(source_crs.object_uuid).has_value() ||
+          source_crs.catalog_epoch == 0 || source_crs.security_epoch == 0) {
+        return refuse("SB_MODEL_SPATIAL_CRS_BINDING_REQUIRED_V1",
+                      "spatial operation CRS resolution is incomplete");
+      }
+      catalog_relation.spatial_crs_uuid = source_crs.object_uuid;
+      catalog_relation.spatial_crs_generation = source_crs.catalog_epoch;
+      for (std::size_t index = 1; index < source.model_operation_ids.size();
+           ++index) {
+        const auto& crs = resolved_object_reference_seeds[index].resolved;
+        if (!crs.resolved || crs.object_uuid != source_crs.object_uuid ||
+            crs.catalog_epoch != source_crs.catalog_epoch ||
+            crs.security_epoch == 0) {
+          return refuse("SB_MODEL_SPATIAL_CRS_MISMATCH_V1",
+                        "spatial operation CRS resolutions do not match");
+        }
+        context.spatial_crs_bindings.push_back(
+            {source.model_operation_ids[index], crs.object_uuid,
+             crs.catalog_epoch});
+      }
+    }
+    context.catalog_relations.push_back(std::move(catalog_relation));
+
+    std::vector<const ipc::PublicRelationColumnDescriptor*> selected_columns;
+    if (!spatial && !source.model_columnar_project_names.empty()) {
+      for (const auto& presented : source.model_columnar_project_names) {
+        const auto found = std::ranges::find_if(
+            projection.columns, [&](const auto& column) {
+              return column.canonical_name_key == presented.back().spelling;
+            });
+        if (found == projection.columns.end()) {
+          return refuse("SB_MODEL_COLUMNAR_PROJECTION_INVALID_V1",
+                        "columnar projected field is absent");
+        }
+        selected_columns.push_back(&*found);
+      }
+    } else if (!spatial) {
+      for (const auto& column : projection.columns) {
+        selected_columns.push_back(&column);
+      }
+    }
+    const auto maximum_ast_expression_id = std::ranges::max_element(
+        ast.expressions, {}, &NativeExpressionAstNode::expression_id);
+    if (maximum_ast_expression_id == ast.expressions.end() ||
+        maximum_ast_expression_id->expression_id >
+            std::numeric_limits<std::uint32_t>::max() - 257) {
+      return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "spatial/columnar expression identity range is invalid");
+    }
+    std::vector<std::string> output_names;
+    std::vector<std::uint32_t> output_descriptors;
+    std::vector<std::string> output_bindings;
+    if (spatial) {
+      output_names = {"row_uuid", "spatial_value", "crs_uuid"};
+      for (std::size_t index = 0; index < 3; ++index) {
+        output_descriptors.push_back(descriptor_by_name.at(output_names[index]));
+        output_bindings.push_back(projection.columns[index].column_uuid);
+      }
+      if (source.model_spatial_match_expression_id.has_value()) {
+        output_names.push_back("predicate_truth");
+        output_descriptors.push_back(*boolean_descriptor);
+        output_bindings.push_back(resolved.object_uuid);
+      }
+      if (source.model_spatial_nearest_expression_id.has_value()) {
+        output_names.push_back("distance");
+        output_descriptors.push_back(*real64_descriptor);
+        output_bindings.push_back(resolved.object_uuid);
+      }
+    } else {
+      for (const auto* column : selected_columns) {
+        output_names.push_back(column->canonical_name_key);
+        output_descriptors.push_back(
+            descriptor_by_name.at(column->canonical_name_key));
+        output_bindings.push_back(column->column_uuid);
+      }
+    }
+    std::uint32_t next_expression_id =
+        maximum_ast_expression_id->expression_id + 1;
+    for (std::size_t ordinal = 0; ordinal < output_names.size(); ++ordinal) {
+      const auto expression_id = next_expression_id++;
+      context.expressions.push_back(
+          {expression_id, output_descriptors[ordinal], std::nullopt,
+           output_bindings[ordinal]});
+      context.outputs.push_back(
+          {static_cast<std::uint32_t>(ordinal + 1), expression_id,
+           output_names[ordinal], output_descriptors[ordinal], true,
+           static_cast<std::uint32_t>(ordinal),
+           ast.relations.front().relation_id});
+    }
+    const auto attachment_alias = source.model_source_alias.has_value()
+                                      ? source.model_source_alias
+                                      : source.alias;
+    std::unordered_map<std::uint32_t, std::uint32_t> ast_descriptor;
+    const auto is_spatial_crs_expression = [&](const std::uint32_t id) {
+      return std::ranges::find(source.model_spatial_crs_expression_ids, id) !=
+             source.model_spatial_crs_expression_ids.end();
+    };
+    const auto is_spatial_query_expression = [&](const std::uint32_t id) {
+      return std::ranges::find(source.model_spatial_query_expression_ids, id) !=
+             source.model_spatial_query_expression_ids.end();
+    };
+    for (const auto& expression : ast.expressions) {
+      if (expression.expression_kind == NativeExpressionAstKind::kWildcard) {
+        continue;
+      }
+      std::optional<std::uint32_t> descriptor_id;
+      std::optional<std::string> bound_name_uuid;
+      std::optional<std::string> function_uuid;
+      if (expression.operator_name == "SPATIAL_SOURCE" ||
+          expression.operator_name == "COLUMNAR_SOURCE") {
+        descriptor_id = context.catalog_relations.front().columns.front()
+                            .descriptor_id;
+      } else if (expression.operator_name == "SPATIAL_MATCH" ||
+                 expression.operator_name == "COLUMNAR_FILTER" ||
+                 expression.expression_kind == NativeExpressionAstKind::kBinary ||
+                 expression.expression_kind == NativeExpressionAstKind::kUnary) {
+        descriptor_id = *boolean_descriptor;
+      } else if (expression.operator_name == "SPATIAL_NEAREST") {
+        descriptor_id = *real64_descriptor;
+      } else if (expression.operator_name == "COLUMNAR_PROJECT") {
+        descriptor_id = selected_columns.empty()
+                            ? context.catalog_relations.front().columns.front()
+                                  .descriptor_id
+                            : descriptor_by_name.at(
+                                  selected_columns.front()->canonical_name_key);
+      } else if (expression.operator_name == "POINT" ||
+                 is_spatial_query_expression(expression.expression_id)) {
+        descriptor_id = *geometry_descriptor;
+      } else if (source.model_spatial_top_k_expression_id ==
+                 expression.expression_id) {
+        descriptor_id = *uint64_descriptor;
+      } else if (is_spatial_crs_expression(expression.expression_id)) {
+        descriptor_id = descriptor_by_name.at("crs_uuid");
+        const auto crs_index = static_cast<std::size_t>(std::distance(
+            source.model_spatial_crs_expression_ids.begin(),
+            std::ranges::find(source.model_spatial_crs_expression_ids,
+                              expression.expression_id)));
+        bound_name_uuid = context.spatial_crs_bindings[crs_index].crs_uuid;
+      } else if (expression.expression_kind ==
+                     NativeExpressionAstKind::kIdentifier &&
+                 expression.qualified_identifier.size() == 1 &&
+                 attachment_alias.has_value() &&
+                 expression.qualified_identifier.front().spelling ==
+                     attachment_alias->spelling &&
+                 expression.qualified_identifier.front().quoted ==
+                     attachment_alias->quoted) {
+        descriptor_id = context.catalog_relations.front().columns.front()
+                            .descriptor_id;
+        bound_name_uuid = resolved.object_uuid;
+      } else if (!spatial && expression.expression_kind ==
+                                   NativeExpressionAstKind::kIdentifier &&
+                 !expression.qualified_identifier.empty()) {
+        const auto& name = expression.qualified_identifier.back().spelling;
+        const auto column = std::ranges::find_if(
+            projection.columns, [&](const auto& candidate) {
+              return candidate.canonical_name_key == name;
+            });
+        if (column != projection.columns.end()) {
+          descriptor_id = descriptor_by_name.at(column->canonical_name_key);
+          bound_name_uuid = column->column_uuid;
+        }
+      } else if (expression.expression_kind ==
+                     NativeExpressionAstKind::kParenthesized &&
+                 expression.child_expression_ids.size() == 1 &&
+                 ast_descriptor.contains(expression.child_expression_ids[0])) {
+        descriptor_id = ast_descriptor.at(expression.child_expression_ids[0]);
+      } else if (expression.literal_kind == NativeLiteralAstKind::kString) {
+        descriptor_id = *text_descriptor;
+      } else if (expression.literal_kind == NativeLiteralAstKind::kNumeric) {
+        descriptor_id = spatial ? *real64_descriptor : *int64_descriptor;
+      } else if (expression.expression_kind ==
+                 NativeExpressionAstKind::kParameter) {
+        descriptor_id = spatial ? *geometry_descriptor : *int64_descriptor;
+      }
+      if (!descriptor_id.has_value()) {
+        return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                      "spatial/columnar expression profile is unsupported");
+      }
+      ast_descriptor.emplace(expression.expression_id, *descriptor_id);
+      context.expressions.push_back(
+          {expression.expression_id, *descriptor_id, std::move(function_uuid),
+           std::move(bound_name_uuid)});
+    }
+    context.relations.push_back(
+        {ast.relations.front().relation_id,
+         spatial ? "sblr.model-source.spatial.v1"
+                 : "sblr.model-source.columnar.v1"});
+    return context;
+  }
 
   const auto search_source = std::ranges::find_if(
       ast.catalog_relation_sources, [](const auto& source) {
@@ -3856,7 +4307,18 @@ BuildEngineProjectedNativeBindingContext(
                                        source_relations[1]->relation_id} ||
         catalog_join->predicate_expression_ids.size() > 1 ||
         resolved_object_reference_seeds.size() != 2) {
-      return fail("catalog_join_shape_invalid");
+      return fail("catalog_join_shape_invalid:sources=" +
+                  std::to_string(ast.catalog_relation_sources.size()) +
+                  ":source_relations=" + std::to_string(source_relations.size()) +
+                  ":relations=" + std::to_string(ast.relations.size()) +
+                  ":root=" + std::to_string(ast.root_relation_id) +
+                  ":join=" + std::to_string(catalog_join->relation_id) +
+                  ":inputs=" +
+                  std::to_string(catalog_join->input_relation_ids.size()) +
+                  ":predicates=" +
+                  std::to_string(catalog_join->predicate_expression_ids.size()) +
+                  ":seeds=" +
+                  std::to_string(resolved_object_reference_seeds.size()));
     }
 
     std::string join_semantic;
@@ -3965,6 +4427,7 @@ BuildEngineProjectedNativeBindingContext(
     }
 
     std::uint32_t binding_id = 1;
+    std::array<std::uint16_t, 24> multileg_source_slots{};
     for (std::size_t source_ordinal = 0; source_ordinal < 2;
          ++source_ordinal) {
       const auto& source = ast.catalog_relation_sources[source_ordinal];
@@ -3998,7 +4461,12 @@ BuildEngineProjectedNativeBindingContext(
       catalog_relation.resolution_state =
           NativeCatalogRelationResolutionState::kBound;
       catalog_relation.object_uuid = resolved.object_uuid;
-      catalog_relation.resolved_object_type = resolved.object_class;
+      catalog_relation.resolved_object_type =
+          source.source_kind == NativeRelationSourceAstKind::kSpatial
+              ? "spatial_collection"
+              : (source.source_kind == NativeRelationSourceAstKind::kColumnar
+                     ? "logical_relation"
+                     : resolved.object_class);
       catalog_relation.resolved_schema_uuid = projection.schema_uuid;
       catalog_relation.catalog_generation_id = resolved.catalog_epoch;
       catalog_relation.security_epoch = resolved.security_epoch;
@@ -4025,6 +4493,38 @@ BuildEngineProjectedNativeBindingContext(
         descriptor.collation_uuid = descriptor_fields->collation_uuid;
         descriptor.timezone_profile_id =
             descriptor_fields->timezone_profile_id;
+        if (source.source_kind == NativeRelationSourceAstKind::kSpatial) {
+          const auto profile_kind =
+              column.canonical_name_key == "row_uuid" ||
+                      column.canonical_name_key == "crs_uuid"
+                  ? std::uint8_t{14}
+                  : column.canonical_name_key == "spatial_value"
+                        ? std::uint8_t{22}
+                        : std::uint8_t{0};
+          const auto profile_slot =
+              profile_kind == 0 ? std::uint16_t{0}
+                                : multileg_source_slots[profile_kind]++;
+          const auto profile = std::ranges::find_if(
+              statement_context.descriptor_profiles,
+              [&](const auto& candidate) {
+                return candidate.profile_kind == profile_kind &&
+                       candidate.slot == profile_slot &&
+                       !candidate.nullable &&
+                       candidate.type_uuid == descriptor_fields->type_uuid &&
+                       candidate.collation_uuid.empty() &&
+                       candidate.width == 0 && candidate.precision == 0 &&
+                       candidate.scale == 0;
+              });
+          if (profile_kind == 0 ||
+              profile == statement_context.descriptor_profiles.end() ||
+              !CanonicalUuidBytes(profile->descriptor_uuid).has_value()) {
+            return fail("model_join_spatial_v10_source_descriptor_unavailable");
+          }
+          descriptor.descriptor_uuid = profile->descriptor_uuid;
+          descriptor.type_uuid = profile->type_uuid;
+          descriptor.collation_uuid.reset();
+          descriptor.timezone_profile_id.reset();
+        }
         if (column.character_length != 0) {
           descriptor.width_precision_scale.width = column.character_length;
         }
@@ -4042,6 +4542,68 @@ BuildEngineProjectedNativeBindingContext(
       context.catalog_relations.push_back(std::move(catalog_relation));
     }
     const auto source_descriptor_count = context.descriptors.size();
+    const bool spatial_columnar_join =
+        std::ranges::all_of(ast.catalog_relation_sources, [](const auto& source) {
+          return source.source_kind == NativeRelationSourceAstKind::kSpatial ||
+                 source.source_kind == NativeRelationSourceAstKind::kColumnar;
+        }) &&
+        std::ranges::count_if(ast.catalog_relation_sources,
+                              [](const auto& source) {
+                                return source.source_kind ==
+                                       NativeRelationSourceAstKind::kSpatial;
+                              }) == 1 &&
+        std::ranges::count_if(ast.catalog_relation_sources,
+                              [](const auto& source) {
+                                return source.source_kind ==
+                                       NativeRelationSourceAstKind::kColumnar;
+                              }) == 1;
+    if (spatial_columnar_join) {
+      // QOW-SOURCE-RCP-079-ENGINE-MULTILEG-BINDING-COHORT-V1
+      if (!statement_context.native_v10_complete() ||
+          ast.model_object_resolution_requests.size() != 2) {
+        return fail("model_join_v10_binding_cohort_incomplete");
+      }
+      for (std::size_t source_ordinal = 0; source_ordinal < 2;
+           ++source_ordinal) {
+        const auto& source = ast.catalog_relation_sources[source_ordinal];
+        const bool spatial =
+            source.source_kind == NativeRelationSourceAstKind::kSpatial;
+        const auto expected_family =
+            spatial ? std::string_view{"spatial"}
+                    : std::string_view{"columnar"};
+        const auto expected_operation =
+            spatial ? std::string_view{"SPATIAL_SOURCE"}
+                    : std::string_view{"COLUMNAR_SOURCE"};
+        const auto expected_object =
+            spatial ? std::string_view{"spatial_collection"}
+                    : std::string_view{"logical_relation"};
+        const auto& request = ast.model_object_resolution_requests[source_ordinal];
+        const auto presented = EncodeQualifiedPresentedName(source.qualified_name);
+        if (source.model_family_id != expected_family ||
+            source.model_operation_ids !=
+                std::vector<std::string>{std::string(expected_operation)} ||
+            source.model_operation_expression_ids.size() != 1 ||
+            !presented.has_value() || request.source_id != source.source_id ||
+            request.model_family_id != expected_family ||
+            request.object_class != expected_object ||
+            EncodeQualifiedPresentedName(request.qualified_name) != presented ||
+            resolved_object_reference_seeds[source_ordinal].ref.object_class !=
+                expected_object) {
+          return fail("model_join_source_binding_substituted");
+        }
+        const auto& leg = context.catalog_relations[source_ordinal];
+        if (leg.columns.empty() ||
+            leg.columns.front().descriptor_id == 0 ||
+            leg.object_uuid.empty()) {
+          return fail("model_join_leg_projection_binding_unavailable");
+        }
+        const auto expression_id =
+            static_cast<std::uint32_t>(context.expressions.size() + 1);
+        context.expressions.push_back(
+            {expression_id, leg.columns.front().descriptor_id, std::nullopt,
+             leg.object_uuid});
+      }
+    }
     if (predicate_join) {
       const auto find_expression = [&](const std::uint32_t expression_id) {
         const auto found = std::ranges::find_if(
@@ -6843,6 +7405,68 @@ std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocu
 std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst,
                                                      const AstDocument& ast) {
   std::vector<ObjectReference> refs;
+  const bool spatial_columnar_model_ast = std::ranges::any_of(
+      ast.native_relational.catalog_relation_sources, [](const auto& source) {
+        return source.source_kind == NativeRelationSourceAstKind::kSpatial ||
+               source.source_kind == NativeRelationSourceAstKind::kColumnar;
+      });
+  if (spatial_columnar_model_ast) {
+    // QOW-SOURCE-RCP-079-SPATIAL-COLUMNAR-OBJECT-REFERENCE-V1
+    if (!ast.native_relational.accepted() ||
+        ast.native_relational.model_object_resolution_requests.empty()) {
+      return refs;
+    }
+    const auto expected_request_count = std::accumulate(
+        ast.native_relational.catalog_relation_sources.begin(),
+        ast.native_relational.catalog_relation_sources.end(), std::size_t{0},
+        [](const auto count, const auto& source) {
+          return count + 1 +
+                 (source.source_kind == NativeRelationSourceAstKind::kSpatial
+                      ? source.model_spatial_crs_names.size()
+                      : 0);
+        });
+    if (ast.native_relational.model_object_resolution_requests.size() !=
+        expected_request_count) {
+      return refs;
+    }
+    for (std::size_t index = 0;
+         index < ast.native_relational.model_object_resolution_requests.size();
+         ++index) {
+      const auto& request =
+          ast.native_relational.model_object_resolution_requests[index];
+      const auto source = std::ranges::find_if(
+          ast.native_relational.catalog_relation_sources,
+          [&](const auto& candidate) {
+            return candidate.source_id == request.source_id;
+          });
+      if (source == ast.native_relational.catalog_relation_sources.end()) {
+        refs.clear();
+        return refs;
+      }
+      const auto expected_class =
+          request.object_class == "spatial_crs"
+              ? std::string_view{"spatial_crs"}
+              : (source->source_kind == NativeRelationSourceAstKind::kSpatial
+                     ? std::string_view{"spatial_collection"}
+                     : std::string_view{"logical_relation"});
+      if (request.source_id != source->source_id ||
+          request.model_family_id != source->model_family_id ||
+          request.object_class != expected_class ||
+          request.qualified_name.empty()) {
+        refs.clear();
+        return refs;
+      }
+      const auto presented_name =
+          EncodeQualifiedPresentedName(request.qualified_name);
+      if (!presented_name.has_value()) {
+        refs.clear();
+        return refs;
+      }
+      refs.push_back(
+          {*presented_name, std::string(expected_class), false, false});
+    }
+    return refs;
+  }
   const bool search_model_ast = std::ranges::any_of(
       ast.native_relational.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kSearch;
@@ -9436,6 +10060,62 @@ ParserStatementContext Rcp073ProofStatementContext() {
   return statement;
 }
 
+ParserStatementContext Rcp079ProofStatementContext() {
+  auto statement = Rcp073ProofStatementContext();
+  statement.statement_timestamp = "2026-08-11T03:00:00.123456789Z";
+  for (std::uint32_t ordinal = 0; ordinal < 11; ++ordinal) {
+    statement.window_function_profiles.push_back(
+        {1, "sb.window.rcp079." + std::to_string(ordinal),
+         Rcp073ProofUuid(5000 + ordinal), true});
+  }
+  const auto type_uuid = [](const std::string& type) {
+    const auto manifest =
+        scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!manifest.ok()) return std::string{};
+    const auto row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+        manifest.manifest,
+        scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type));
+    if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
+        !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
+      return std::string{};
+    }
+    return scratchbird::core::uuid::UuidToString(
+        row.manifest.descriptor_rows.front().descriptor_uuid.value);
+  };
+  const auto append_profile = [&](const std::uint8_t kind,
+                                  const std::uint16_t slot,
+                                  const std::string& type,
+                                  const bool nullable) {
+    ParserStatementContext::DescriptorProfile profile;
+    profile.profile_kind = kind;
+    profile.slot = slot;
+    profile.descriptor_uuid = Rcp073ProofUuid(
+        6000 + static_cast<std::uint32_t>(kind) * 100 + slot);
+    profile.type_uuid = type_uuid(type);
+    profile.nullable = nullable;
+    statement.descriptor_profiles.push_back(std::move(profile));
+  };
+  append_profile(11, 0, "real64", false);
+  append_profile(11, 1, "real64", false);
+  append_profile(12, 0, "uuid", false);
+  append_profile(12, 1, "uuid", false);
+  append_profile(13, 0, "uint64", false);
+  append_profile(13, 1, "uint64", false);
+  static constexpr std::array<std::string_view, 5> kTypes{
+      "uuid", "uint64", "real64", "boolean", "geometry"};
+  for (std::uint8_t pair = 0; pair < kTypes.size(); ++pair) {
+    const auto non_null_kind = static_cast<std::uint8_t>(14 + pair * 2);
+    const auto nullable_kind = static_cast<std::uint8_t>(non_null_kind + 1);
+    for (std::uint16_t slot = 0; slot < 32; ++slot) {
+      append_profile(non_null_kind, slot, std::string(kTypes[pair]), false);
+    }
+    for (std::uint16_t slot = 0; slot < 32; ++slot) {
+      append_profile(nullable_kind, slot, std::string(kTypes[pair]), true);
+    }
+  }
+  return statement;
+}
+
 ResolvedObjectReferenceSeed Rcp073ProofSeed(const ObjectReference& ref) {
   ResolvedObjectReferenceSeed seed;
   seed.ref = ref;
@@ -9525,6 +10205,141 @@ ResolvedObjectReferenceSeed Rcp074GraphProofSeed(const ObjectReference& ref) {
     projection.columns.push_back(std::move(column));
   }
   return seed;
+}
+
+ResolvedObjectReferenceSeed Rcp079ProofSeed(const ObjectReference& ref) {
+  ResolvedObjectReferenceSeed seed;
+  seed.ref = ref;
+  seed.resolved.resolved = true;
+  seed.resolved.catalog_epoch = 79;
+  seed.resolved.security_epoch = 79;
+  if (ref.object_class == "spatial_crs") {
+    seed.resolved.object_uuid = Rcp073ProofUuid(8790);
+    seed.resolved.canonical_name = "app.cartesian_crs";
+    seed.resolved.object_class = "spatial_crs";
+    return seed;
+  }
+  const auto identity_base =
+      ref.object_class == "spatial_collection" ? 8700u : 8750u;
+  seed.resolved.object_uuid = Rcp073ProofUuid(identity_base);
+  seed.resolved.canonical_name = ref.presented_name;
+  seed.resolved.object_class = "relation";
+  auto& projection = seed.resolved.relation_descriptor;
+  projection.present = true;
+  projection.descriptor_uuid = Rcp073ProofUuid(identity_base + 1);
+  projection.relation_uuid = seed.resolved.object_uuid;
+  projection.schema_uuid = Rcp073ProofUuid(identity_base + 2);
+  projection.descriptor_generation = 79;
+  projection.validated_resource_epoch = 79;
+  const auto type_uuid = [](const std::string& type) {
+    const auto manifest =
+        scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!manifest.ok()) return std::string{};
+    const auto row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+        manifest.manifest,
+        scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type));
+    if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
+        !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
+      return std::string{};
+    }
+    return scratchbird::core::uuid::UuidToString(
+        row.manifest.descriptor_rows.front().descriptor_uuid.value);
+  };
+  const auto add_column = [&](const std::uint32_t ordinal,
+                              const std::string& name,
+                              const std::string& type,
+                              const bool nullable) {
+    ipc::PublicRelationColumnDescriptor column;
+    column.column_uuid = Rcp073ProofUuid(identity_base + 10 + ordinal);
+    column.ordinal = ordinal;
+    column.canonical_name_key = name;
+    column.type_descriptor_uuid = Rcp073ProofUuid(identity_base + 20 + ordinal);
+    column.type_descriptor_kind = "canonical_type_descriptor";
+    column.canonical_type_name = type;
+    column.nullable = nullable;
+    column.encoded_type_descriptor =
+        "type_uuid=" + type_uuid(type) + ";nullability=" +
+        (nullable ? "nullable" : "non_null");
+    projection.columns.push_back(std::move(column));
+  };
+  if (ref.object_class == "spatial_collection") {
+    add_column(0, "row_uuid", "uuid", false);
+    add_column(1, "spatial_value", "geometry", false);
+    add_column(2, "crs_uuid", "uuid", false);
+  } else {
+    add_column(0, "row_uuid", "uuid", false);
+    add_column(1, "join_key", "int64", false);
+    add_column(2, "payload", "text", true);
+    add_column(3, "hidden_join_key", "int64", false);
+  }
+  return seed;
+}
+
+bool Rcp079BuildAndBind(const std::string_view sql) {
+  const auto cst = BuildCst(sql);
+  const auto ast = BuildAst(cst);
+  if (!ast.native_relational.accepted()) return false;
+  const auto refs = ExtractObjectReferences(cst, ast);
+  std::vector<ResolvedObjectReferenceSeed> seeds;
+  for (const auto& ref : refs) seeds.push_back(Rcp079ProofSeed(ref));
+  MessageVectorSet messages;
+  const auto context = BuildEngineProjectedNativeBindingContext(
+      ast.native_relational, Rcp079ProofStatementContext(), seeds, &messages);
+  if (!context.has_value() || messages.has_errors()) return false;
+  ParserConfig config;
+  config.parser_uuid = Rcp073ProofUuid(8800);
+  config.bundle_contract_id = "sbp_sbsql@rcp079-frontdoor-proof-v1";
+  config.build_id = "rcp079-frontdoor-proof-v1";
+  SessionContext session;
+  session.authenticated = true;
+  session.session_uuid = Rcp073ProofUuid(8801);
+  session.connection_uuid = Rcp073ProofUuid(8802);
+  session.database_uuid = Rcp073ProofUuid(8803);
+  session.dialect_profile_uuid = Rcp073ProofUuid(8804);
+  session.catalog_epoch = 79;
+  session.security_policy_epoch = 79;
+  session.descriptor_epoch = 79;
+  const auto bound = BindAst(ast, cst, config, session, {}, &*context);
+  if (!bound.bound || !bound.native_relational.bound ||
+      bound.messages.has_errors() ||
+      bound.native_relational.catalog_relation_sources.size() !=
+          ast.native_relational.catalog_relation_sources.size()) {
+    return false;
+  }
+  std::size_t expected_operation_count = 0;
+  for (std::size_t source_ordinal = 0;
+       source_ordinal < ast.native_relational.catalog_relation_sources.size();
+       ++source_ordinal) {
+    const auto& expected =
+        ast.native_relational.catalog_relation_sources[source_ordinal];
+    const auto& actual =
+        bound.native_relational.catalog_relation_sources[source_ordinal];
+    if (actual.source_kind != expected.source_kind ||
+        actual.model_family_id != expected.model_family_id ||
+        actual.model_operation_ids != expected.model_operation_ids ||
+        actual.model_operation_expression_ids.size() !=
+            expected.model_operation_ids.size()) {
+      return false;
+    }
+    expected_operation_count += expected.model_operation_ids.size();
+  }
+  const auto lowered = LowerToSblr(bound, cst, session);
+  const auto verified = VerifySblrEnvelope(lowered);
+  const auto lowered_operation_count =
+      std::ranges::count_if(lowered.operands, [](const auto& operand) {
+           if (operand.type != "relational_expression_v1") return false;
+           static constexpr std::array<std::string_view, 6> kOperations{
+               "SPATIAL_SOURCE", "SPATIAL_MATCH", "SPATIAL_NEAREST",
+               "COLUMNAR_SOURCE", "COLUMNAR_FILTER", "COLUMNAR_PROJECT"};
+           return std::ranges::any_of(kOperations, [&](const auto operation) {
+             return operand.value.find("|" + HexEncodeRouteText(operation) +
+                                       "|") != std::string::npos;
+           });
+         });
+  return !lowered.payload.empty() && !lowered.messages.has_errors() &&
+         verified.admitted && !verified.messages.has_errors() &&
+         lowered_operation_count ==
+             static_cast<std::ptrdiff_t>(expected_operation_count);
 }
 
 bool Rcp073BuildAndBind(const AstDocument& ast,
@@ -10001,6 +10816,42 @@ std::uint64_t Rcp076TimeSeriesFrontdoorProofMaskImpl() {
   return mask;
 }
 
+std::uint64_t Rcp079SpatialColumnarFrontdoorProofMaskImpl() {
+  // QOW-SOURCE-RCP-079-SPATIAL-COLUMNAR-FRONTDOOR-PROOF-V1
+  static constexpr std::array<std::string_view, 13> kSql{
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture);",
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s WHERE "
+      "SPATIAL_MATCH(s, INTERSECTS, POINT(0, 0), app.cartesian_crs);",
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s, "
+      "SPATIAL_NEAREST(s, POINT(0, 0), app.cartesian_crs, 3) AS n;",
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s, "
+      "SPATIAL_NEAREST(s, POINT(1, 1), app.cartesian_crs, 7) AS n WHERE "
+      "SPATIAL_MATCH(s, CONTAINS, POINT(0, 0), app.cartesian_crs);",
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture);",
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture) AS c WHERE "
+      "COLUMNAR_FILTER(c, c.join_key > 1);",
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture) AS c, "
+      "COLUMNAR_PROJECT(c, c.payload, c.row_uuid) AS p;",
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture) AS c, "
+      "COLUMNAR_PROJECT(c, c.payload, c.row_uuid) AS p WHERE "
+      "COLUMNAR_FILTER(c, c.hidden_join_key > 1);",
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s INNER JOIN "
+      "COLUMNAR_SOURCE(app.columnar_fixture) AS c ON s.row_uuid = c.row_uuid;",
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s LEFT JOIN "
+      "COLUMNAR_SOURCE(app.columnar_fixture) AS c ON s.row_uuid = c.row_uuid;",
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s RIGHT JOIN "
+      "COLUMNAR_SOURCE(app.columnar_fixture) AS c ON s.row_uuid = c.row_uuid;",
+      "SELECT * FROM SPATIAL_SOURCE(app.spatial_fixture) AS s FULL JOIN "
+      "COLUMNAR_SOURCE(app.columnar_fixture) AS c ON s.row_uuid = c.row_uuid;",
+      "SELECT * FROM COLUMNAR_SOURCE(app.columnar_fixture) AS c INNER JOIN "
+      "SPATIAL_SOURCE(app.spatial_fixture) AS s ON c.row_uuid = s.row_uuid;"};
+  std::uint64_t mask = 0;
+  for (std::size_t index = 0; index < kSql.size(); ++index) {
+    if (Rcp079BuildAndBind(kSql[index])) mask |= 1ull << index;
+  }
+  return mask;
+}
+
 } // namespace
 
 std::uint64_t Rcp073DocumentFrontdoorProofMaskForTest() {
@@ -10013,6 +10864,10 @@ std::uint64_t Rcp074GraphFrontdoorProofMaskForTest() {
 
 std::uint64_t Rcp076TimeSeriesFrontdoorProofMaskForTest() {
   return Rcp076TimeSeriesFrontdoorProofMaskImpl();
+}
+
+std::uint64_t Rcp079SpatialColumnarFrontdoorProofMaskForTest() {
+  return Rcp079SpatialColumnarFrontdoorProofMaskImpl();
 }
 
 SbsqlTestWireSession::SbsqlTestWireSession(ParserConfig config, ParserMetrics* metrics, SblrTemplateCache* cache)
@@ -10241,20 +11096,28 @@ PublicNameResolutionResult SbsqlTestWireSession::ResolveNameOnRouteUncached(
     bool quoted,
     std::string_view object_class) {
   PublicNameResolutionResult resolved;
+  const bool model_relation_lookup =
+      object_class == "spatial_collection" ||
+      object_class == "logical_relation";
+  const auto lookup_object_class =
+      model_relation_lookup ? std::string_view{"relation"} : object_class;
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
     resolved =
-        embedded_client_->ResolveNamePublic(session_, presented_name, quoted, object_class, config_);
+        embedded_client_->ResolveNamePublic(session_, presented_name, quoted,
+                                            lookup_object_class, config_);
   } else {
     ParserTransactionSelector transaction;
     transaction.local_transaction_id = session_.local_transaction_id;
     transaction.transaction_uuid = session_.transaction_uuid;
-    if ((object_class == "relation" || object_class == "table") &&
+    if ((lookup_object_class == "relation" ||
+         lookup_object_class == "table") &&
         transaction.present()) {
       resolved = server_client_->ResolveRelationDescriptorPublicOnTransaction(
-          session_, presented_name, quoted, object_class, config_, transaction);
+          session_, presented_name, quoted, lookup_object_class, config_,
+          transaction);
     } else {
       resolved = server_client_->ResolveNamePublicUncached(
-          session_, presented_name, quoted, object_class, config_);
+          session_, presented_name, quoted, lookup_object_class, config_);
     }
   }
   if (resolved.resolved) {
@@ -10735,24 +11598,23 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           break;
         }
       } else {
-        // DOCUMENT_SOURCE/PATH is semantically a document_collection in the
-        // typed AST, but persisted projection transport is intentionally the
-        // engine's relation V3 route.  The document binding branch below
-        // reclassifies only after the returned relation UUID and descriptor
-        // projection agree exactly.
-        const auto transport_object_class =
+        // Existing document/graph/search catalog projections use the engine's
+        // relation transport.  Spatial/columnar retain their model class here;
+        // ResolveNameOnRouteUncached maps only those two classes to the
+        // transaction-scoped relation descriptor transport.
+        const auto legacy_model_transport_class =
             ref.object_class == "document_collection" ||
                     ref.object_class == "graph" ||
                     ref.object_class == "search"
-                ? std::string_view("relation")
-                : std::string_view(ref.object_class);
+                ? std::string_view{"relation"}
+                : std::string_view{ref.object_class};
         resolved = native_catalog_projection_required
                        ? ResolveNameOnRouteUncached(
                              ref.presented_name, ref.quoted,
-                             transport_object_class)
+                             legacy_model_transport_class)
                        : ResolveNameOnRoute(
                              ref.presented_name, ref.quoted,
-                             transport_object_class);
+                             legacy_model_transport_class);
       }
       if (!resolved.resolved) {
         if (ref.object_class == "procedure") {

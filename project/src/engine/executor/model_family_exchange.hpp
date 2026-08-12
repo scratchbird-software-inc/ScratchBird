@@ -72,8 +72,15 @@ struct ModelSourceInputDescriptorV1 {
   std::uint16_t abi_version{1};
   std::string input_descriptor_id{"SB_MODEL_SOURCE_INPUT_DESCRIPTOR_V1"};
   std::string family_id;
+  std::vector<std::string> operation_ids;
   std::string operation_id;
   std::string object_uuid;
+  // RCP-079 spatial bindings are engine-resolved before provider access.
+  // These remain empty for every non-spatial family.
+  std::string spatial_geometry_descriptor_uuid;
+  std::string spatial_geometry_type_uuid;
+  std::string spatial_crs_uuid;
+  std::uint64_t spatial_crs_generation{0};
   std::uint64_t physical_node_id{0};
   std::string selected_alternative_uuid;
   std::string capability_uuid;
@@ -126,8 +133,13 @@ struct ModelSourceOutputDescriptorV1 {
   std::uint16_t abi_version{1};
   std::string output_descriptor_id{"SB_MODEL_SOURCE_OUTPUT_DESCRIPTOR_V1"};
   std::string family_id;
+  std::vector<std::string> operation_ids;
   std::string operation_id;
   std::string object_uuid;
+  std::string spatial_geometry_descriptor_uuid;
+  std::string spatial_geometry_type_uuid;
+  std::string spatial_crs_uuid;
+  std::uint64_t spatial_crs_generation{0};
   std::uint64_t physical_node_id{0};
   std::string selected_alternative_uuid;
   std::string capability_uuid;

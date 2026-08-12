@@ -13,8 +13,11 @@
 #include "query/expression_api.hpp"
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <charconv>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
@@ -69,6 +72,44 @@ bool IsTemporalType(const dt::CanonicalTypeId type_id) {
          type_id == dt::CanonicalTypeId::time ||
          type_id == dt::CanonicalTypeId::timestamp ||
          type_id == dt::CanonicalTypeId::interval;
+}
+
+bool ParseSpatialPointCoordinate(const std::string_view payload,
+                                 double* coordinate) {
+  if (coordinate == nullptr || payload.empty()) return false;
+  double parsed = 0.0;
+  const auto result = std::from_chars(
+      payload.data(), payload.data() + payload.size(), parsed,
+      std::chars_format::general);
+  if (result.ec != std::errc{} ||
+      result.ptr != payload.data() + payload.size() ||
+      !std::isfinite(parsed)) {
+    return false;
+  }
+  *coordinate = parsed == 0.0 ? 0.0 : parsed;
+  return true;
+}
+
+std::vector<std::uint8_t> EncodeSpatialPoint2d(const double x,
+                                               const double y) {
+  std::vector<std::uint8_t> encoded(24, 0);
+  encoded[0] = 'S';
+  encoded[1] = 'B';
+  encoded[2] = 'P';
+  encoded[3] = '1';
+  encoded[4] = 1;
+  encoded[5] = 2;
+  const auto encode_coordinate = [&](const double coordinate,
+                                     const std::size_t offset) {
+    const auto bits = std::bit_cast<std::uint64_t>(coordinate);
+    for (std::size_t index = 0; index < 8; ++index) {
+      encoded[offset + index] = static_cast<std::uint8_t>(
+          bits >> ((7 - index) * 8));
+    }
+  };
+  encode_coordinate(x, 8);
+  encode_coordinate(y, 16);
+  return encoded;
 }
 
 bool LiteralKindAdmitsType(const api::RelationalLiteralKind literal_kind,
@@ -1080,6 +1121,43 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
       *refusal_detail = "identifier expression requires an input row binding";
       return leave(false);
     case api::RelationalExpressionKind::kFunctionCall: {
+      const bool spatial_point =
+          !expression.function_uuid.has_value() &&
+          expression.operator_name == "POINT" &&
+          expression.child_expression_ids.size() == 2 &&
+          !expression.bound_name_uuid.has_value() &&
+          !expression.literal_kind.has_value() &&
+          !expression.literal_or_parameter_ref.has_value();
+      if (spatial_point) {
+        for (const auto child_expression_id :
+             expression.child_expression_ids) {
+          std::string child_type;
+          if (!InferTypeInternal(child_expression_id, std::nullopt,
+                                 &child_type, refusal_detail) ||
+              !IsNumericType(
+                  dt::CanonicalTypeIdFromStableName(child_type))) {
+            if (refusal_detail->empty()) {
+              *refusal_detail =
+                  "POINT coordinate is not a bound canonical numeric value";
+            }
+            return leave(false);
+          }
+        }
+        const auto descriptor =
+            descriptors_.find(expression.result_descriptor_id);
+        std::string result_type;
+        if (descriptor == descriptors_.end() ||
+            !ResolveDescriptorType(*descriptor->second, &result_type,
+                                   refusal_detail) ||
+            result_type != "geometry") {
+          if (refusal_detail->empty()) {
+            *refusal_detail =
+                "POINT result is not bound to the canonical geometry type";
+          }
+          return leave(false);
+        }
+        return finish_type(std::move(result_type));
+      }
       if (!expression.function_uuid.has_value() ||
           !IsCanonicalUuid(*expression.function_uuid) ||
           expression.bound_name_uuid.has_value() ||
@@ -1483,6 +1561,38 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
 
   if (expression.expression_kind ==
       api::RelationalExpressionKind::kFunctionCall) {
+    if (!expression.function_uuid.has_value() &&
+        expression.operator_name == "POINT" &&
+        expression.child_expression_ids.size() == 2) {
+      std::array<double, 2> coordinates{};
+      for (std::size_t index = 0; index < coordinates.size(); ++index) {
+        const auto child_expression_id =
+            expression.child_expression_ids[index];
+        std::string child_type;
+        api::EngineTypedValue child;
+        if (!InferTypeInternal(child_expression_id, std::nullopt,
+                               &child_type, refusal_detail) ||
+            !IsNumericType(
+                dt::CanonicalTypeIdFromStableName(child_type)) ||
+            !EvaluateInternal(child_expression_id, child_type, &child,
+                              refusal_detail) ||
+            child.isSqlNull() || !child.binary_value.empty() ||
+            !ParseSpatialPointCoordinate(child.encoded_value,
+                                         &coordinates[index])) {
+          if (refusal_detail->empty()) {
+            *refusal_detail =
+                "SB_MODEL_SPATIAL_COORDINATE_INVALID_V1:POINT coordinate "
+                "is not a finite canonical numeric value";
+          }
+          return false;
+        }
+      }
+      api::EngineTypedValue point;
+      point.descriptor = result_descriptor;
+      point.binary_value = EncodeSpatialPoint2d(coordinates[0], coordinates[1]);
+      point.setState(api::EngineValueState::value);
+      return finish(std::move(point));
+    }
     if (!services_.function_evaluator) {
       *refusal_detail =
           "QOW-DIAG-RCP024-FUNCTION-AUTHORITY-REFUSAL-V1:bound function "

@@ -2951,10 +2951,13 @@ SessionOperationResult HandleAcquireStatementContext(
   const bool native_projection_v9 =
       request.header.payload_schema_id ==
           sbps::kSchemaAcquireStatementContextRequestV9;
+  const bool native_projection_v10 =
+      request.header.payload_schema_id ==
+          sbps::kSchemaAcquireStatementContextRequestV10;
   const bool native_projection =
       native_projection_v2 || native_projection_v3 || native_projection_v4 ||
       native_projection_v5 || native_projection_v6 || native_projection_v7 ||
-      native_projection_v8 || native_projection_v9;
+      native_projection_v8 || native_projection_v9 || native_projection_v10;
   std::uint16_t projection_version = 1;
   result.response_schema_id = sbps::kSchemaAcquireStatementContextResultV1;
   if (native_projection_v2) {
@@ -2981,6 +2984,9 @@ SessionOperationResult HandleAcquireStatementContext(
   } else if (native_projection_v9) {
     projection_version = 9;
     result.response_schema_id = sbps::kSchemaAcquireStatementContextResultV9;
+  } else if (native_projection_v10) {
+    projection_version = 10;
+    result.response_schema_id = sbps::kSchemaAcquireStatementContextResultV10;
   }
   result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
   result.session_uuid = request.header.session_uuid;
@@ -3092,7 +3098,8 @@ SessionOperationResult HandleAcquireStatementContext(
                   std::string("engine_status=") +
                       sb_engine_status_name(status));
   }
-  if ((native_projection_v7 || native_projection_v8 || native_projection_v9) &&
+  if ((native_projection_v7 || native_projection_v8 || native_projection_v9 ||
+       native_projection_v10) &&
       !IsCanonicalStatementTimestamp(view.statement_timestamp)) {
     (void)engine_bridge::ReleaseStatementContextReceipt(receipt);
     return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_ENGINE_REFUSED",
@@ -3128,7 +3135,8 @@ SessionOperationResult HandleAcquireStatementContext(
   PutUuid(&result.payload, TextToUuid(view.catalog_epoch_uuid));
   PutUuid(&result.payload, TextToUuid(view.security_context_uuid));
   PutU64(&result.payload, view.visible_committed_high_watermark);
-  if (native_projection_v7 || native_projection_v8 || native_projection_v9) {
+  if (native_projection_v7 || native_projection_v8 || native_projection_v9 ||
+      native_projection_v10) {
     PutString(&result.payload, view.statement_timestamp);
   }
   if (native_projection) {
@@ -3138,14 +3146,15 @@ SessionOperationResult HandleAcquireStatementContext(
     if (native_projection_v3 || native_projection_v4 ||
         native_projection_v5 || native_projection_v6 ||
         native_projection_v7 || native_projection_v8 ||
-        native_projection_v9) {
+        native_projection_v9 || native_projection_v10) {
       PutUuid(&result.payload, TextToUuid(view.avg_function_uuid));
       PutUuid(&result.payload, TextToUuid(view.min_function_uuid));
       PutUuid(&result.payload, TextToUuid(view.max_function_uuid));
     }
     if (native_projection_v4 || native_projection_v5 ||
         native_projection_v6 || native_projection_v7 ||
-        native_projection_v8 || native_projection_v9) {
+        native_projection_v8 || native_projection_v9 ||
+        native_projection_v10) {
       PutU16(&result.payload, static_cast<std::uint16_t>(
                                   view.aggregate_function_profiles.size()));
       for (const auto& function : view.aggregate_function_profiles) {
@@ -3156,7 +3165,8 @@ SessionOperationResult HandleAcquireStatementContext(
       }
     }
     if (native_projection_v6 || native_projection_v7 ||
-        native_projection_v8 || native_projection_v9) {
+        native_projection_v8 || native_projection_v9 ||
+        native_projection_v10) {
       PutU16(&result.payload, static_cast<std::uint16_t>(
                                   view.window_function_profiles.size()));
       for (const auto& function : view.window_function_profiles) {
@@ -3167,7 +3177,9 @@ SessionOperationResult HandleAcquireStatementContext(
       }
     }
     const auto maximum_profile_kind =
-        native_projection_v9
+        native_projection_v10
+            ? static_cast<std::uint8_t>(23)
+            : native_projection_v9
             ? static_cast<std::uint8_t>(13)
             : native_projection_v8
             ? static_cast<std::uint8_t>(11)

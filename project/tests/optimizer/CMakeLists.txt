@@ -591,10 +591,77 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   set_tests_properties(qow_ces05_search_production_route_v1 PROPERTIES
     LABELS "qow_closure;RCP-078;CES05;search;production_query_execute;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
   )
+  # QOW-CMAKE-RCP-079-CROSS-FAMILY-TYPED-DAG-V1
+  add_executable(qow_ces05_cross_family_join_test_v1
+    qow_ces05_cross_family_join.cpp)
+  target_compile_features(qow_ces05_cross_family_join_test_v1 PRIVATE
+    cxx_std_23)
+  target_link_libraries(qow_ces05_cross_family_join_test_v1 PRIVATE
+    sb_qow_relational_dag_contract
+    sb_engine_optimizer_contract_only
+    sb_engine_executor
+    sb_qow_sblr_query_route_contract
+  )
+  add_test(NAME qow_ces05_cross_family_join_v1
+    COMMAND qow_ces05_cross_family_join_test_v1)
+  set_tests_properties(qow_ces05_cross_family_join_v1 PROPERTIES
+    LABELS "qow_closure;RCP-079;CES05;cross_family;typed_dag;descriptor_cohort;mga_transaction_regression;development_candidate"
+  )
+  add_executable(qow_ces05_spatial_columnar_test_v1
+    qow_ces05_spatial_columnar.cpp)
+  target_compile_features(qow_ces05_spatial_columnar_test_v1 PRIVATE
+    cxx_std_23)
+  target_link_libraries(qow_ces05_spatial_columnar_test_v1 PRIVATE
+    sb_engine_internal_api
+    sb_engine_executor
+  )
+  add_test(NAME qow_ces05_spatial_columnar_v1
+    COMMAND qow_ces05_spatial_columnar_test_v1)
+  set_tests_properties(qow_ces05_spatial_columnar_v1 PROPERTIES
+    LABELS "qow_closure;RCP-079;CES05;spatial;columnar;exact_fallback;mga_transaction_regression;development_candidate"
+  )
+  add_executable(qow_ces05_spatial_columnar_production_route_test_v1
+    qow_ces05_spatial_columnar.cpp)
+  target_compile_features(qow_ces05_spatial_columnar_production_route_test_v1
+    PRIVATE cxx_std_23)
+  target_compile_definitions(
+    qow_ces05_spatial_columnar_production_route_test_v1 PRIVATE
+    SB_CES05_SPATIAL_COLUMNAR_PRODUCTION_QUERY_ROUTE=1
+    SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
+  target_link_libraries(qow_ces05_spatial_columnar_production_route_test_v1 PRIVATE
+    sb_engine_sblr
+    sb_core_hash
+    sb_core_memory
+    sb_core_uuid
+    sb_storage_database
+    sbl_sbsql_parser_worker_core
+  )
+  add_test(NAME qow_ces05_spatial_columnar_production_route_v1
+    COMMAND qow_ces05_spatial_columnar_production_route_test_v1)
+  set_tests_properties(qow_ces05_spatial_columnar_production_route_v1 PROPERTIES
+    LABELS "qow_closure;RCP-079;CES05;spatial;columnar;production_query_execute;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
+  )
   # Dependency-ordered QOW optimizer targets are added above this return by
   # their owning leaves. The broad optimizer suite remains disabled.
   set(SB_QOW_OPTIMIZER_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
+endif()
+
+# Full-suite configurations do not enter the focused internal-API closure
+# branch that normally owns this contract target.  Keep the RCP-079 typed-DAG
+# proof linked to the same authority-free bridge implementation in both
+# configurations instead of resolving an accidental system -l name.
+if(NOT TARGET sb_qow_relational_dag_contract)
+  add_library(sb_qow_relational_dag_contract STATIC
+    "${PROJECT_SOURCE_DIR}/src/engine/internal_api/query/plan_api.cpp")
+  target_compile_features(sb_qow_relational_dag_contract PUBLIC cxx_std_20)
+  target_compile_definitions(sb_qow_relational_dag_contract PRIVATE
+    SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY=1)
+  target_include_directories(sb_qow_relational_dag_contract PUBLIC
+    "${PROJECT_SOURCE_DIR}/src/engine/internal_api"
+    "${PROJECT_SOURCE_DIR}/src/engine/planner")
+  target_link_libraries(sb_qow_relational_dag_contract PUBLIC
+    sb_engine_executor)
 endif()
 
 # QOW-CMAKE-CES05-DOCUMENT-PRODUCTION-QUERY-ROUTE-V1
@@ -787,6 +854,55 @@ add_test(NAME qow_ces05_search_production_route_v1
   COMMAND qow_ces05_search_production_route_test_v1)
 set_tests_properties(qow_ces05_search_production_route_v1 PROPERTIES
   LABELS "qow_closure;RCP-078;CES05;search;production_query_execute;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
+)
+
+# QOW-CMAKE-RCP-079-CROSS-FAMILY-TYPED-DAG-V1
+add_executable(qow_ces05_cross_family_join_test_v1
+  qow_ces05_cross_family_join.cpp)
+target_compile_features(qow_ces05_cross_family_join_test_v1 PRIVATE cxx_std_23)
+target_link_libraries(qow_ces05_cross_family_join_test_v1 PRIVATE
+  sb_qow_relational_dag_contract
+  sb_engine_optimizer_contract_only
+  sb_engine_executor
+  sb_engine_sblr
+)
+add_test(NAME qow_ces05_cross_family_join_v1
+  COMMAND qow_ces05_cross_family_join_test_v1)
+set_tests_properties(qow_ces05_cross_family_join_v1 PROPERTIES
+  LABELS "qow_closure;RCP-079;CES05;cross_family;typed_dag;descriptor_cohort;mga_transaction_regression;development_candidate"
+)
+add_executable(qow_ces05_spatial_columnar_test_v1
+  qow_ces05_spatial_columnar.cpp)
+target_compile_features(qow_ces05_spatial_columnar_test_v1 PRIVATE cxx_std_23)
+target_link_libraries(qow_ces05_spatial_columnar_test_v1 PRIVATE
+  sb_engine_internal_api
+  sb_engine_executor
+)
+add_test(NAME qow_ces05_spatial_columnar_v1
+  COMMAND qow_ces05_spatial_columnar_test_v1)
+set_tests_properties(qow_ces05_spatial_columnar_v1 PROPERTIES
+  LABELS "qow_closure;RCP-079;CES05;spatial;columnar;exact_fallback;mga_transaction_regression;development_candidate"
+)
+add_executable(qow_ces05_spatial_columnar_production_route_test_v1
+  qow_ces05_spatial_columnar.cpp)
+target_compile_features(qow_ces05_spatial_columnar_production_route_test_v1
+  PRIVATE cxx_std_23)
+target_compile_definitions(
+  qow_ces05_spatial_columnar_production_route_test_v1 PRIVATE
+  SB_CES05_SPATIAL_COLUMNAR_PRODUCTION_QUERY_ROUTE=1
+  SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
+target_link_libraries(qow_ces05_spatial_columnar_production_route_test_v1 PRIVATE
+  sb_engine_sblr
+  sb_core_hash
+  sb_core_memory
+  sb_core_uuid
+  sb_storage_database
+  sbl_sbsql_parser_worker_core
+)
+add_test(NAME qow_ces05_spatial_columnar_production_route_v1
+  COMMAND qow_ces05_spatial_columnar_production_route_test_v1)
+set_tests_properties(qow_ces05_spatial_columnar_production_route_v1 PROPERTIES
+  LABELS "qow_closure;RCP-079;CES05;spatial;columnar;production_query_execute;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
 )
 
 add_executable(

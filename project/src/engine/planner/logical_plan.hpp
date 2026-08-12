@@ -197,6 +197,8 @@ enum class CanonicalLogicalModelFamilyIdentity : std::uint8_t {
   kTimeSeries,
   kVector,
   kSearch,
+  kSpatial,
+  kColumnar,
 };
 
 struct CanonicalLogicalRelationalNode {
@@ -337,7 +339,9 @@ ValidateCanonicalLogicalRelationalGraph(
            family == CanonicalLogicalModelFamilyIdentity::kKeyValue ||
            family == CanonicalLogicalModelFamilyIdentity::kTimeSeries ||
            family == CanonicalLogicalModelFamilyIdentity::kVector ||
-           family == CanonicalLogicalModelFamilyIdentity::kSearch;
+           family == CanonicalLogicalModelFamilyIdentity::kSearch ||
+           family == CanonicalLogicalModelFamilyIdentity::kSpatial ||
+           family == CanonicalLogicalModelFamilyIdentity::kColumnar;
   };
   constexpr std::string_view kModelSourceSemantic =
       "SBLR_MODEL_SOURCE_V1";
@@ -451,6 +455,11 @@ ValidateCanonicalLogicalRelationalGraph(
     const bool search_family =
         node.model_family_identity ==
         CanonicalLogicalModelFamilyIdentity::kSearch;
+    const bool spatial_or_columnar_family =
+        node.model_family_identity ==
+            CanonicalLogicalModelFamilyIdentity::kSpatial ||
+        node.model_family_identity ==
+            CanonicalLogicalModelFamilyIdentity::kColumnar;
     const bool exact_time_series_attachment_width =
         time_series_family &&
         ((model_source &&
@@ -473,6 +482,17 @@ ValidateCanonicalLogicalRelationalGraph(
          node.bound_expression_ids.size() == 13 ||
          node.bound_expression_ids.size() == 17 ||
          node.bound_expression_ids.size() == 18);
+    // RCP-079 spatial/columnar relations carry the public output
+    // expressions first, followed by one to three functionless operation
+    // roots and their exact typed operands.  The admitted typed-DAG bridge
+    // has already validated root order, arity, attachment, and reachability;
+    // retain that complete vector here instead of applying the legacy
+    // one-expression-per-output fallback used by older model families.
+    const bool exact_spatial_columnar_attachment_width =
+        spatial_or_columnar_family && model_source &&
+        node.output_descriptor_ids.size() <= 256 &&
+        node.bound_expression_ids.size() > node.output_descriptor_ids.size() &&
+        node.bound_expression_ids.size() <= 1024;
     if (!known_model_family(node.model_family_identity) ||
         (!model_semantic &&
          node.model_family_identity !=
@@ -490,6 +510,7 @@ ValidateCanonicalLogicalRelationalGraph(
           (!exact_time_series_attachment_width &&
            !exact_vector_attachment_width &&
            !exact_search_attachment_width &&
+           !exact_spatial_columnar_attachment_width &&
            node.bound_expression_ids.size() !=
                node.output_descriptor_ids.size()) ||
           (model_source &&

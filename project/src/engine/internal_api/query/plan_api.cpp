@@ -32,6 +32,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cctype>
 #include <cstdlib>
@@ -196,6 +197,187 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0, "record_count");
   }
   const bool planning_wire = dag.wire_version == 2;
+  // QOW-SOURCE-RCP079-MULTILEG-TYPED-DAG-IDENTITY-V1
+  // The common SBLR model-source opcode deliberately does not identify a
+  // provider family.  On the multi-leg route, derive each family only from
+  // the functionless operation roots attached to that node.  This keeps
+  // parser text and object names out of planning and, unlike the legacy
+  // single-leg cardinality probes below, remains unambiguous when several
+  // model nodes share one canonical relational DAG.
+  const auto model_family_for_operator = [](
+      const std::optional<std::string>& operator_name) -> std::string_view {
+    if (!operator_name.has_value()) return {};
+    const auto& name = *operator_name;
+    if (name == "DOCUMENT_UNNEST" || name == "DOCUMENT_PATH" ||
+        name == "DOCUMENT_SOURCE") return "document";
+    if (name == "GRAPH_MATCH" || name == "GRAPH_EXPAND") return "graph";
+    if (name == "KV_KEY" || name == "KV_MULTI_GET" ||
+        name == "KV_PREFIX") return "key_value";
+    if (name == "TIME_RANGE" || name == "TIME_BUCKET" ||
+        name == "TIME_DOWNSAMPLE") return "time_series";
+    if (name == "VECTOR_NEAREST" || name == "VECTOR_FILTER") return "vector";
+    if (name == "SEARCH_MATCH" || name == "SEARCH_TERMS" ||
+        name == "SEARCH_PHRASE" || name == "SEARCH_FUZZY" ||
+        name == "SEARCH_FILTER" || name == "SEARCH_ANALYZER_BINDING") {
+      return "search";
+    }
+    if (name == "SPATIAL_SOURCE" || name == "SPATIAL_MATCH" ||
+        name == "SPATIAL_NEAREST") return "spatial";
+    if (name == "COLUMNAR_SOURCE" || name == "COLUMNAR_PROJECT" ||
+        name == "COLUMNAR_FILTER") return "columnar";
+    return {};
+  };
+  const auto model_operation_arity_valid = [](
+      const std::string_view name, const std::size_t child_count) {
+    if (name == "DOCUMENT_SOURCE") return child_count == 1;
+    if (name == "SPATIAL_SOURCE" || name == "COLUMNAR_SOURCE") {
+      return child_count == 0;
+    }
+    if (name == "DOCUMENT_UNNEST") return child_count == 2;
+    if (name == "DOCUMENT_PATH") return child_count == 2;
+    if (name == "GRAPH_MATCH") return child_count == 2;
+    if (name == "GRAPH_EXPAND") return child_count == 5;
+    if (name == "KV_KEY") return child_count == 1;
+    if (name == "KV_MULTI_GET") return child_count >= 2;
+    if (name == "KV_PREFIX") return child_count == 2;
+    if (name == "TIME_RANGE") return child_count == 3;
+    if (name == "TIME_BUCKET") return child_count == 2;
+    if (name == "TIME_DOWNSAMPLE") return child_count == 3;
+    if (name == "VECTOR_NEAREST") return child_count == 4;
+    if (name == "VECTOR_FILTER") return child_count == 2;
+    if (name == "SEARCH_MATCH") return child_count == 4;
+    if (name == "SEARCH_TERMS" || name == "SEARCH_PHRASE") {
+      return child_count == 1;
+    }
+    if (name == "SEARCH_FUZZY" || name == "SEARCH_FILTER") {
+      return child_count == 2;
+    }
+    if (name == "SEARCH_ANALYZER_BINDING") return child_count == 3;
+    if (name == "SPATIAL_MATCH") return child_count == 4;
+    if (name == "SPATIAL_NEAREST") return child_count == 4;
+    if (name == "COLUMNAR_PROJECT") {
+      return child_count >= 2 && child_count <= 257;
+    }
+    if (name == "COLUMNAR_FILTER") return child_count == 2;
+    return false;
+  };
+  std::unordered_map<std::uint32_t, const RelationalExpressionRecord*>
+      early_expressions_by_id;
+  for (const auto& expression : dag.expressions) {
+    early_expressions_by_id.emplace(expression.expression_id, &expression);
+  }
+  std::unordered_map<std::uint32_t, std::string_view>
+      multileg_model_family_by_node;
+  std::unordered_set<std::uint32_t> multileg_operation_expression_ids;
+  bool multileg_identity_invalid = false;
+  for (const auto& node : dag.nodes) {
+    std::string_view family;
+    for (const auto expression_id : node.bound_expression_ids) {
+      const auto found = early_expressions_by_id.find(expression_id);
+      if (found == early_expressions_by_id.end()) continue;
+      const auto operation_family =
+          model_family_for_operator(found->second->operator_name);
+      if (operation_family.empty()) continue;
+      if (!family.empty() && family != operation_family) {
+        multileg_identity_invalid = true;
+        break;
+      }
+      family = operation_family;
+      multileg_operation_expression_ids.insert(expression_id);
+    }
+    if (!family.empty()) multileg_model_family_by_node.emplace(node.node_id, family);
+  }
+  const bool has_spatial_or_columnar_leg = std::ranges::any_of(
+      multileg_model_family_by_node, [](const auto& item) {
+        return item.second == "spatial" || item.second == "columnar";
+      });
+  const bool multileg_model_wire =
+      planning_wire &&
+      (multileg_model_family_by_node.size() > 1 || has_spatial_or_columnar_leg);
+  if (multileg_model_wire) {
+    std::unordered_set<std::uint32_t> attached_operation_ids;
+    for (const auto& node : dag.nodes) {
+      const bool model_node =
+          node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1" ||
+          node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1" ||
+          node.semantic_variant_id == "SBLR_MODEL_AGGREGATE_V1";
+      const auto family = multileg_model_family_by_node.find(node.node_id);
+      if (model_node != (family != multileg_model_family_by_node.end())) {
+        multileg_identity_invalid = true;
+        break;
+      }
+      if (!model_node) continue;
+      std::vector<std::string_view> attached_operation_names;
+      for (const auto expression_id : node.bound_expression_ids) {
+        const auto found = early_expressions_by_id.find(expression_id);
+        if (found == early_expressions_by_id.end()) continue;
+        const auto operation_family =
+            model_family_for_operator(found->second->operator_name);
+        if (operation_family.empty()) continue;
+        const bool bound_source_operation =
+            found->second->operator_name == "SPATIAL_SOURCE" ||
+            found->second->operator_name == "COLUMNAR_SOURCE";
+        const bool exact_bound_name =
+            bound_source_operation
+                ? (node.required_object_uuids.size() == 1 &&
+                   found->second->bound_name_uuid ==
+                       node.required_object_uuids.front())
+                : !found->second->bound_name_uuid.has_value();
+        if (operation_family != family->second ||
+            found->second->expression_kind !=
+                RelationalExpressionKind::kFunctionCall ||
+            found->second->function_uuid.has_value() ||
+            !found->second->operator_name.has_value() ||
+            !exact_bound_name ||
+            !model_operation_arity_valid(*found->second->operator_name,
+                                         found->second->child_expression_ids.size()) ||
+            !attached_operation_ids.insert(expression_id).second) {
+          multileg_identity_invalid = true;
+          break;
+        }
+        attached_operation_names.push_back(*found->second->operator_name);
+      }
+      if (family->second == "spatial") {
+        const bool exact =
+            attached_operation_names ==
+                std::vector<std::string_view>{"SPATIAL_SOURCE"} ||
+            attached_operation_names ==
+                std::vector<std::string_view>{"SPATIAL_SOURCE",
+                                              "SPATIAL_MATCH"} ||
+            attached_operation_names ==
+                std::vector<std::string_view>{"SPATIAL_SOURCE",
+                                              "SPATIAL_NEAREST"} ||
+            attached_operation_names ==
+                std::vector<std::string_view>{"SPATIAL_SOURCE",
+                                              "SPATIAL_MATCH",
+                                              "SPATIAL_NEAREST"};
+        multileg_identity_invalid = multileg_identity_invalid || !exact;
+      } else if (family->second == "columnar") {
+        const bool exact =
+            attached_operation_names ==
+                std::vector<std::string_view>{"COLUMNAR_SOURCE"} ||
+            attached_operation_names ==
+                std::vector<std::string_view>{"COLUMNAR_SOURCE",
+                                              "COLUMNAR_FILTER"} ||
+            attached_operation_names ==
+                std::vector<std::string_view>{"COLUMNAR_SOURCE",
+                                              "COLUMNAR_PROJECT"} ||
+            attached_operation_names ==
+                std::vector<std::string_view>{"COLUMNAR_SOURCE",
+                                              "COLUMNAR_FILTER",
+                                              "COLUMNAR_PROJECT"};
+        multileg_identity_invalid = multileg_identity_invalid || !exact;
+      }
+      if (multileg_identity_invalid) break;
+    }
+    if (attached_operation_ids != multileg_operation_expression_ids) {
+      multileg_identity_invalid = true;
+    }
+  }
+  if (multileg_identity_invalid) {
+    return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", 0,
+                  "multileg_model_operation_identity");
+  }
   // QOW-SOURCE-RCP073-TYPED-DAG-FUNCTIONLESS-UNNEST-V1
   // DOCUMENT_UNNEST is a model-expand operation, not a catalog scalar
   // function.  Its exact root therefore has no function UUID.  This early
@@ -237,7 +419,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                node.semantic_variant_id == "SBLR_MODEL_EXPAND_V1";
       });
   const bool graph_model_wire =
-      planning_wire && graph_operation_count == 1 &&
+      planning_wire && !multileg_model_wire && graph_operation_count == 1 &&
       graph_model_node_count == 1 &&
       graph_operation_expression != dag.expressions.end() &&
       graph_node != dag.nodes.end() &&
@@ -245,7 +427,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         graph_node->semantic_variant_id == "SBLR_MODEL_SOURCE_V1") ||
        (graph_operation_expression->operator_name == "GRAPH_EXPAND" &&
         graph_node->semantic_variant_id == "SBLR_MODEL_EXPAND_V1"));
-  if (graph_operation_count != 0 && !graph_model_wire) {
+  if (!multileg_model_wire && graph_operation_count != 0 && !graph_model_wire) {
     return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
                   "graph_model_operation_identity");
   }
@@ -271,11 +453,12 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
       });
   const bool key_value_model_wire =
-      planning_wire && key_value_operation_count == 1 &&
+      planning_wire && !multileg_model_wire && key_value_operation_count == 1 &&
       key_value_model_node_count == 1 &&
       key_value_operation_expression != dag.expressions.end() &&
       key_value_node != dag.nodes.end();
-  if (key_value_operation_count != 0 && !key_value_model_wire) {
+  if (!multileg_model_wire && key_value_operation_count != 0 &&
+      !key_value_model_wire) {
     return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", 0,
                   "key_value_model_operation_identity");
   }
@@ -303,14 +486,16 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                node.semantic_variant_id == "SBLR_MODEL_AGGREGATE_V1";
       });
   const bool time_series_model_wire =
-      planning_wire && time_range_count == 1 && time_bucket_count <= 1 &&
+      planning_wire && !multileg_model_wire && time_range_count == 1 &&
+      time_bucket_count <= 1 &&
       time_downsample_count <= 1 &&
       time_series_node_count == 1 && time_series_node != dag.nodes.end() &&
       ((time_downsample_count == 0 &&
         time_series_node->semantic_variant_id == "SBLR_MODEL_SOURCE_V1") ||
        (time_downsample_count == 1 &&
         time_series_node->semantic_variant_id == "SBLR_MODEL_AGGREGATE_V1"));
-  if ((time_range_count != 0 || time_bucket_count != 0 ||
+  if (!multileg_model_wire &&
+      (time_range_count != 0 || time_bucket_count != 0 ||
        time_downsample_count != 0) &&
       !time_series_model_wire) {
     return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", 0,
@@ -333,13 +518,15 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                 node.bound_expression_ids.size() == 14);
       });
   const bool vector_model_wire =
-      planning_wire && vector_nearest_count == 1 && vector_filter_count <= 1 &&
+      planning_wire && !multileg_model_wire && vector_nearest_count == 1 &&
+      vector_filter_count <= 1 &&
       vector_node != dag.nodes.end() &&
       ((vector_filter_count == 0 &&
         vector_node->bound_expression_ids.size() == 8) ||
        (vector_filter_count == 1 &&
         vector_node->bound_expression_ids.size() == 14));
-  if ((vector_nearest_count != 0 || vector_filter_count != 0) &&
+  if (!multileg_model_wire &&
+      (vector_nearest_count != 0 || vector_filter_count != 0) &&
       !vector_model_wire) {
     return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", 0,
                   "vector_model_operation_identity");
@@ -373,10 +560,12 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                 node.bound_expression_ids.size() == 18);
       });
   const bool search_model_wire =
-      planning_wire && search_match_count == 1 && search_query_count == 1 &&
+      planning_wire && !multileg_model_wire && search_match_count == 1 &&
+      search_query_count == 1 &&
       search_filter_count <= 1 && search_analyzer_binding_count == 1 &&
       search_node != dag.nodes.end();
-  if ((search_match_count != 0 || search_query_count != 0 ||
+  if (!multileg_model_wire &&
+      (search_match_count != 0 || search_query_count != 0 ||
        search_filter_count != 0 || search_analyzer_binding_count != 0) &&
       !search_model_wire) {
     return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", 0,
@@ -384,7 +573,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   }
   const bool timestamp_model_wire =
       key_value_model_wire || time_series_model_wire || vector_model_wire ||
-      search_model_wire;
+      search_model_wire || multileg_model_wire;
   if (timestamp_model_wire != !dag.statement_timestamp.empty() ||
       (timestamp_model_wire &&
        !canonical_statement_timestamp(dag.statement_timestamp))) {
@@ -502,12 +691,30 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
          expression.operator_name == "SEARCH_FUZZY" ||
          expression.operator_name == "SEARCH_FILTER" ||
          expression.operator_name == "SEARCH_ANALYZER_BINDING");
+    const bool functionless_multileg_model_operation =
+        multileg_model_wire && function_call &&
+        !expression.function_uuid.has_value() &&
+        multileg_operation_expression_ids.contains(expression.expression_id);
+    const bool functionless_multileg_bound_source_operation =
+        functionless_multileg_model_operation &&
+        (expression.operator_name == "SPATIAL_SOURCE" ||
+         expression.operator_name == "COLUMNAR_SOURCE");
+    const bool functionless_spatial_point_constructor =
+        multileg_model_wire && function_call &&
+        !expression.function_uuid.has_value() &&
+        expression.operator_name == "POINT" &&
+        std::ranges::any_of(multileg_model_family_by_node,
+                            [](const auto& item) {
+                              return item.second == "spatial";
+                            });
     const bool operator_expression =
         expression.expression_kind == RelationalExpressionKind::kUnary ||
         expression.expression_kind == RelationalExpressionKind::kBinary ||
         functionless_document_unnest || functionless_graph_operation ||
         functionless_key_value_operation || functionless_time_series_operation ||
-        functionless_vector_operation || functionless_search_operation;
+        functionless_vector_operation || functionless_search_operation ||
+        functionless_multileg_model_operation ||
+        functionless_spatial_point_constructor;
     if (literal != expression.literal_kind.has_value() ||
         (expression.literal_kind.has_value() &&
          !known_literal_kind(*expression.literal_kind)) ||
@@ -517,10 +724,14 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                           functionless_key_value_operation ||
                           functionless_time_series_operation ||
                           functionless_vector_operation ||
-                          functionless_search_operation) ||
+                          functionless_search_operation ||
+                          functionless_multileg_model_operation ||
+                          functionless_spatial_point_constructor) ||
         (expression.function_uuid.has_value() &&
          !canonical_uuid(*expression.function_uuid)) ||
-        identifier != expression.bound_name_uuid.has_value() ||
+        (functionless_multileg_bound_source_operation
+             ? !expression.bound_name_uuid.has_value()
+             : identifier != expression.bound_name_uuid.has_value()) ||
         (expression.bound_name_uuid.has_value() &&
          !canonical_uuid(*expression.bound_name_uuid)) ||
         operator_expression != expression.operator_name.has_value() ||
@@ -540,7 +751,9 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
            !functionless_key_value_operation &&
            !functionless_time_series_operation &&
            !functionless_vector_operation &&
-           !functionless_search_operation) ||
+           !functionless_search_operation &&
+           !functionless_multileg_model_operation &&
+           !functionless_spatial_point_constructor) ||
           (functionless_document_unnest && child_count == 2) ||
           (functionless_graph_operation &&
            ((expression.operator_name == "GRAPH_MATCH" && child_count == 2) ||
@@ -570,7 +783,12 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
             (expression.operator_name == "SEARCH_FILTER" &&
              child_count == 2) ||
             (expression.operator_name == "SEARCH_ANALYZER_BINDING" &&
-             child_count == 3))))) ||
+             child_count == 3))) ||
+          (functionless_multileg_model_operation &&
+           expression.operator_name.has_value() &&
+           model_operation_arity_valid(*expression.operator_name,
+                                       child_count)) ||
+          (functionless_spatial_point_constructor && child_count == 2))) ||
         (expression.expression_kind == RelationalExpressionKind::kUnary &&
          child_count == 1) ||
         (expression.expression_kind == RelationalExpressionKind::kBinary &&
@@ -2625,6 +2843,58 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
     const auto& issue = validation.issues.front();
     return refuse(issue.diagnostic_id, issue.node_id, issue.field_id);
   }
+  // QOW-SOURCE-RCP079-MULTILEG-CANONICAL-FAMILY-POPULATION-V1
+  // Reconstruct the admitted per-node family map from bound operation roots.
+  // ValidateTypedRelationalDag has already proven uniqueness, attachment,
+  // functionless shape, and arity; population only carries that identity into
+  // the canonical graph and never reclassifies by object name or row width.
+  const auto multileg_family_for_operator = [](
+      const std::optional<std::string>& operator_name) -> std::string_view {
+    if (!operator_name.has_value()) return {};
+    const auto& name = *operator_name;
+    if (name == "DOCUMENT_UNNEST" || name == "DOCUMENT_PATH" ||
+        name == "DOCUMENT_SOURCE") return "document";
+    if (name == "GRAPH_MATCH" || name == "GRAPH_EXPAND") return "graph";
+    if (name == "KV_KEY" || name == "KV_MULTI_GET" ||
+        name == "KV_PREFIX") return "key_value";
+    if (name == "TIME_RANGE" || name == "TIME_BUCKET" ||
+        name == "TIME_DOWNSAMPLE") return "time_series";
+    if (name == "VECTOR_NEAREST" || name == "VECTOR_FILTER") return "vector";
+    if (name == "SEARCH_MATCH" || name == "SEARCH_TERMS" ||
+        name == "SEARCH_PHRASE" || name == "SEARCH_FUZZY" ||
+        name == "SEARCH_FILTER" || name == "SEARCH_ANALYZER_BINDING") {
+      return "search";
+    }
+    if (name == "SPATIAL_SOURCE" || name == "SPATIAL_MATCH" ||
+        name == "SPATIAL_NEAREST") return "spatial";
+    if (name == "COLUMNAR_SOURCE" || name == "COLUMNAR_PROJECT" ||
+        name == "COLUMNAR_FILTER") return "columnar";
+    return {};
+  };
+  std::unordered_map<std::uint32_t, const RelationalExpressionRecord*>
+      bridge_expressions_by_id;
+  for (const auto& expression : dag.expressions) {
+    bridge_expressions_by_id.emplace(expression.expression_id, &expression);
+  }
+  std::unordered_map<std::uint32_t, std::string_view>
+      multileg_family_by_node;
+  for (const auto& node : dag.nodes) {
+    for (const auto expression_id : node.bound_expression_ids) {
+      const auto found = bridge_expressions_by_id.find(expression_id);
+      if (found == bridge_expressions_by_id.end()) continue;
+      const auto family =
+          multileg_family_for_operator(found->second->operator_name);
+      if (!family.empty()) {
+        multileg_family_by_node.emplace(node.node_id, family);
+        break;
+      }
+    }
+  }
+  const bool exact_multileg_model =
+      multileg_family_by_node.size() > 1 ||
+      std::ranges::any_of(multileg_family_by_node, [](const auto& item) {
+        return item.second == "spatial" || item.second == "columnar";
+      });
   // QOW-SOURCE-RCP-074-CANONICAL-MODEL-FAMILY-POPULATION-V1
   // The family marker is derived only after complete typed-DAG admission.
   // Preserve the exact operator/semantic pairing used by the validator; an
@@ -2666,7 +2936,8 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
                            graph_operation->child_expression_ids.end());
   }
   const bool exact_graph_family =
-      dag.wire_version == 2 && graph_operation_count == 1 &&
+      !exact_multileg_model && dag.wire_version == 2 &&
+      graph_operation_count == 1 &&
       graph_model_node_count == 1 && graph_operation != dag.expressions.end() &&
       graph_node != dag.nodes.end() && graph_alias != dag.expressions.end() &&
       graph_operation->expression_kind ==
@@ -2697,7 +2968,8 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
                expression.operator_name == "KV_MULTI_GET" ||
                expression.operator_name == "KV_PREFIX";
       });
-  const bool exact_key_value_family = key_value_operation_count == 1;
+  const bool exact_key_value_family =
+      !exact_multileg_model && key_value_operation_count == 1;
   const auto time_range_count = std::ranges::count_if(
       dag.expressions, [](const auto& expression) {
         return expression.operator_name == "TIME_RANGE";
@@ -2713,7 +2985,8 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
                    : node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
       });
   const bool exact_time_series_family =
-      time_range_count == 1 && time_downsample_count <= 1 &&
+      !exact_multileg_model && time_range_count == 1 &&
+      time_downsample_count <= 1 &&
       time_series_node != dag.nodes.end();
   const auto vector_nearest_count = std::ranges::count_if(
       dag.expressions, [](const auto& expression) {
@@ -2731,7 +3004,8 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
                 node.bound_expression_ids.size() == 14);
       });
   const bool exact_vector_family =
-      vector_nearest_count == 1 && vector_filter_count <= 1 &&
+      !exact_multileg_model && vector_nearest_count == 1 &&
+      vector_filter_count <= 1 &&
       vector_node != dag.nodes.end() &&
       ((vector_filter_count == 0 &&
         vector_node->bound_expression_ids.size() == 8) ||
@@ -2765,22 +3039,24 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
                 node.bound_expression_ids.size() == 18);
       });
   const bool exact_search_family =
-      search_match_count == 1 && search_query_count == 1 &&
+      !exact_multileg_model && search_match_count == 1 &&
+      search_query_count == 1 &&
       search_filter_count <= 1 && search_analyzer_binding_count == 1 &&
       search_node != dag.nodes.end();
-  if ((exact_graph_family && exact_document_expand) ||
+  if (!exact_multileg_model &&
+      ((exact_graph_family && exact_document_expand) ||
       (graph_operation_count != 0 && !exact_graph_family) ||
       (vector_nearest_count != 0 && !exact_vector_family) ||
       (vector_filter_count != 0 && !exact_vector_family) ||
       ((search_match_count != 0 || search_query_count != 0 ||
         search_filter_count != 0 || search_analyzer_binding_count != 0) &&
-       !exact_search_family)) {
+       !exact_search_family))) {
     return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
                   "model_family_operation_identity");
   }
   const bool exact_timestamp_family =
       exact_key_value_family || exact_time_series_family ||
-      exact_vector_family || exact_search_family;
+      exact_vector_family || exact_search_family || exact_multileg_model;
   if (exact_timestamp_family != !engine_scope.statement_timestamp.empty() ||
       (exact_timestamp_family &&
        dag.statement_timestamp != engine_scope.statement_timestamp)) {
@@ -2888,7 +3164,35 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
     logical_node.origin_relational_node_ids = {node.node_id};
     logical_node.required_object_uuids = node.required_object_uuids;
     logical_node.semantic_variant_id = node.semantic_variant_id;
-    if (exact_graph_family && node.node_id == graph_node->node_id) {
+    const auto multileg_family = multileg_family_by_node.find(node.node_id);
+    if (exact_multileg_model &&
+        multileg_family != multileg_family_by_node.end()) {
+      if (multileg_family->second == "document") {
+        logical_node.model_family_identity =
+            plan::CanonicalLogicalModelFamilyIdentity::kDocument;
+      } else if (multileg_family->second == "graph") {
+        logical_node.model_family_identity =
+            plan::CanonicalLogicalModelFamilyIdentity::kGraph;
+      } else if (multileg_family->second == "key_value") {
+        logical_node.model_family_identity =
+            plan::CanonicalLogicalModelFamilyIdentity::kKeyValue;
+      } else if (multileg_family->second == "time_series") {
+        logical_node.model_family_identity =
+            plan::CanonicalLogicalModelFamilyIdentity::kTimeSeries;
+      } else if (multileg_family->second == "vector") {
+        logical_node.model_family_identity =
+            plan::CanonicalLogicalModelFamilyIdentity::kVector;
+      } else if (multileg_family->second == "search") {
+        logical_node.model_family_identity =
+            plan::CanonicalLogicalModelFamilyIdentity::kSearch;
+      } else if (multileg_family->second == "spatial") {
+        logical_node.model_family_identity =
+            plan::CanonicalLogicalModelFamilyIdentity::kSpatial;
+      } else if (multileg_family->second == "columnar") {
+        logical_node.model_family_identity =
+            plan::CanonicalLogicalModelFamilyIdentity::kColumnar;
+      }
+    } else if (exact_graph_family && node.node_id == graph_node->node_id) {
       logical_node.model_family_identity =
           plan::CanonicalLogicalModelFamilyIdentity::kGraph;
     } else if (exact_key_value_family &&
