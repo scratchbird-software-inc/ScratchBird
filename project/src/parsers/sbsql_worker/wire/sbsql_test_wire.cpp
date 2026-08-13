@@ -1476,7 +1476,8 @@ BuildEngineProjectedNativeBindingContext(
       ast.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kSearch;
       });
-  if (search_source != ast.catalog_relation_sources.end()) {
+  if (search_source != ast.catalog_relation_sources.end() &&
+      ast.catalog_relation_sources.size() == 1) {
     // QOW-SOURCE-RCP-078-ENGINE-SEARCH-BINDING-COHORT-V1
     const auto refuse = [&](const char* diagnostic, std::string detail)
         -> std::optional<NativeRelationalBindingContext> {
@@ -1827,7 +1828,8 @@ BuildEngineProjectedNativeBindingContext(
       ast.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kVector;
       });
-  if (vector_source != ast.catalog_relation_sources.end()) {
+  if (vector_source != ast.catalog_relation_sources.end() &&
+      ast.catalog_relation_sources.size() == 1) {
     // QOW-SOURCE-RCP-077-ENGINE-VECTOR-BINDING-COHORT-V1
     const auto refuse = [&](const char* diagnostic, std::string detail)
         -> std::optional<NativeRelationalBindingContext> {
@@ -2148,7 +2150,8 @@ BuildEngineProjectedNativeBindingContext(
       ast.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kTimeSeries;
       });
-  if (time_series_source != ast.catalog_relation_sources.end()) {
+  if (time_series_source != ast.catalog_relation_sources.end() &&
+      ast.catalog_relation_sources.size() == 1) {
     // QOW-SOURCE-RCP-076-ENGINE-TIME-SERIES-BINDING-COHORT-V1
     const auto refuse = [&](const char* diagnostic, std::string detail)
         -> std::optional<NativeRelationalBindingContext> {
@@ -2644,7 +2647,8 @@ BuildEngineProjectedNativeBindingContext(
       ast.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kKeyValue;
       });
-  if (key_value_source != ast.catalog_relation_sources.end()) {
+  if (key_value_source != ast.catalog_relation_sources.end() &&
+      ast.catalog_relation_sources.size() == 1) {
     // QOW-SOURCE-RCP-075-ENGINE-KEY-VALUE-BINDING-COHORT-V1
     const auto refuse = [&](const char* diagnostic, std::string detail)
         -> std::optional<NativeRelationalBindingContext> {
@@ -3064,7 +3068,8 @@ BuildEngineProjectedNativeBindingContext(
       ast.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kGraph;
       });
-  if (graph_source != ast.catalog_relation_sources.end()) {
+  if (graph_source != ast.catalog_relation_sources.end() &&
+      ast.catalog_relation_sources.size() == 1) {
     // QOW-SOURCE-RCP-074-ENGINE-GRAPH-BINDING-COHORT-V1
     const bool graph_match = graph_source->model_operation_id == "GRAPH_MATCH";
     const bool graph_expand =
@@ -3441,7 +3446,8 @@ BuildEngineProjectedNativeBindingContext(
       ast.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kDocument;
       });
-  if (document_source != ast.catalog_relation_sources.end()) {
+  if (document_source != ast.catalog_relation_sources.end() &&
+      ast.catalog_relation_sources.size() == 1) {
     // QOW-SOURCE-RCP-073-ENGINE-DOCUMENT-BINDING-COHORT-V1
     const bool expression_backed_unnest =
         document_source->model_operation_id == "DOCUMENT_UNNEST";
@@ -4294,19 +4300,49 @@ BuildEngineProjectedNativeBindingContext(
       });
   if (catalog_join != ast.relations.end()) {
     std::vector<const NativeRelationAstNode*> source_relations;
+    std::vector<const NativeRelationAstNode*> join_relations;
     for (const auto& relation : ast.relations) {
       if (relation.relation_kind == NativeRelationAstKind::kCatalogSource) {
         source_relations.push_back(&relation);
+      } else if (relation.relation_kind == NativeRelationAstKind::kJoin) {
+        join_relations.push_back(&relation);
       }
     }
-    if (ast.catalog_relation_sources.size() != 2 ||
-        source_relations.size() != 2 || ast.relations.size() != 3 ||
-        ast.root_relation_id != catalog_join->relation_id ||
-        catalog_join->input_relation_ids !=
-            std::vector<std::uint32_t>{source_relations[0]->relation_id,
-                                       source_relations[1]->relation_id} ||
-        catalog_join->predicate_expression_ids.size() > 1 ||
-        resolved_object_reference_seeds.size() != 2) {
+    std::ranges::sort(source_relations, {},
+                      [](const auto* relation) { return relation->relation_id; });
+    std::ranges::sort(join_relations, {},
+                      [](const auto* relation) { return relation->relation_id; });
+    const auto source_count = ast.catalog_relation_sources.size();
+    const bool bounded_multimodel_join = source_count >= 3 && source_count <= 9;
+    bool exact_join_graph =
+        source_relations.size() == source_count &&
+        join_relations.size() + 1 == source_count &&
+        ast.relations.size() == source_relations.size() + join_relations.size();
+    std::uint32_t expected_left_relation_id =
+        source_relations.empty() ? 0 : source_relations.front()->relation_id;
+    for (std::size_t ordinal = 1; exact_join_graph && ordinal < source_count;
+         ++ordinal) {
+      const auto* join = join_relations[ordinal - 1];
+      exact_join_graph =
+          join->relation_id == source_count + ordinal &&
+          join->input_relation_ids ==
+              std::vector<std::uint32_t>{
+                  expected_left_relation_id,
+                  source_relations[ordinal]->relation_id} &&
+          (!bounded_multimodel_join ||
+           (join->join_kind == NativeJoinAstKind::kCross &&
+            join->predicate_expression_ids.empty()));
+      expected_left_relation_id = join->relation_id;
+    }
+    const auto expected_resolution_count = source_count +
+        std::ranges::count_if(ast.catalog_relation_sources,
+                              [](const auto& source) {
+          return source.source_kind == NativeRelationSourceAstKind::kSearch;
+        });
+    if (source_count < 2 || !exact_join_graph ||
+        ast.root_relation_id != expected_left_relation_id ||
+        (!bounded_multimodel_join && source_count != 2) ||
+        resolved_object_reference_seeds.size() != expected_resolution_count) {
       return fail("catalog_join_shape_invalid:sources=" +
                   std::to_string(ast.catalog_relation_sources.size()) +
                   ":source_relations=" + std::to_string(source_relations.size()) +
@@ -4322,7 +4358,7 @@ BuildEngineProjectedNativeBindingContext(
     }
 
     std::string join_semantic;
-    switch (catalog_join->join_kind) {
+    switch (join_relations.back()->join_kind) {
       case NativeJoinAstKind::kCross:
         join_semantic = "join.cross.v1";
         break;
@@ -4348,7 +4384,7 @@ BuildEngineProjectedNativeBindingContext(
         return fail("catalog_join_kind_invalid");
     }
     const bool predicate_join =
-        catalog_join->join_kind != NativeJoinAstKind::kCross;
+        join_relations.back()->join_kind != NativeJoinAstKind::kCross;
     if (catalog_join->predicate_expression_ids.size() !=
         static_cast<std::size_t>(predicate_join)) {
       return fail("catalog_join_predicate_cardinality_invalid");
@@ -4428,12 +4464,17 @@ BuildEngineProjectedNativeBindingContext(
 
     std::uint32_t binding_id = 1;
     std::array<std::uint16_t, 24> multileg_source_slots{};
-    for (std::size_t source_ordinal = 0; source_ordinal < 2;
+    std::size_t resolution_ordinal = 0;
+    std::optional<std::string> bounded_search_analyzer_uuid;
+    std::uint64_t bounded_search_analyzer_generation = 0;
+    std::unordered_set<std::string> lexical_relation_descriptor_uuids;
+    for (std::size_t source_ordinal = 0; source_ordinal < source_count;
          ++source_ordinal) {
       const auto& source = ast.catalog_relation_sources[source_ordinal];
       const auto& relation = *source_relations[source_ordinal];
-      const auto& resolved =
-          resolved_object_reference_seeds[source_ordinal].resolved;
+      const auto& resolved_seed =
+          resolved_object_reference_seeds[resolution_ordinal];
+      const auto& resolved = resolved_seed.resolved;
       const auto& projection = resolved.relation_descriptor;
       const bool relation_object_class =
           resolved.object_class == "relation" ||
@@ -4442,13 +4483,45 @@ BuildEngineProjectedNativeBindingContext(
           resolved.object_class == "materialized_view" ||
           resolved.object_class == "external_table" ||
           resolved.object_class == "foreign_table";
+      const auto expected_object_class =
+          source.source_kind == NativeRelationSourceAstKind::kDocument
+              ? std::string_view{"document_collection"}
+          : source.source_kind == NativeRelationSourceAstKind::kGraph
+              ? std::string_view{"graph"}
+          : source.source_kind == NativeRelationSourceAstKind::kKeyValue
+              ? std::string_view{"key_value"}
+          : source.source_kind == NativeRelationSourceAstKind::kTimeSeries
+              ? std::string_view{"time_series"}
+          : source.source_kind == NativeRelationSourceAstKind::kVector
+              ? std::string_view{"vector"}
+          : source.source_kind == NativeRelationSourceAstKind::kSearch
+              ? std::string_view{"search"}
+          : source.source_kind == NativeRelationSourceAstKind::kSpatial
+              ? std::string_view{"spatial_collection"}
+          : source.source_kind == NativeRelationSourceAstKind::kColumnar
+              ? std::string_view{"logical_relation"}
+              : std::string_view{};
+      const bool exact_object_class =
+          expected_object_class.empty() ? relation_object_class
+                                        : resolved.object_class == expected_object_class;
+      const auto presented_name =
+          EncodeQualifiedPresentedName(source.qualified_name);
       if (relation.relation_source_ids !=
               std::vector<std::uint32_t>{source.source_id} ||
           relation.output_expression_ids.size() != 1 ||
           !resolved.resolved || !projection.present ||
-          !relation_object_class || resolved.object_uuid.empty() ||
+          !presented_name.has_value() ||
+          resolved_seed.ref.presented_name != *presented_name ||
+          resolved_seed.ref.object_class !=
+              (expected_object_class.empty()
+                   ? std::string_view{resolved.object_class}
+                   : expected_object_class) ||
+          !exact_object_class || resolved.object_uuid.empty() ||
           projection.relation_uuid != resolved.object_uuid ||
           projection.descriptor_uuid.empty() || projection.schema_uuid.empty() ||
+          !lexical_relation_descriptor_uuids
+               .insert(projection.descriptor_uuid)
+               .second ||
           projection.descriptor_generation == 0 ||
           projection.validated_resource_epoch == 0 ||
           resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
@@ -4462,11 +4535,8 @@ BuildEngineProjectedNativeBindingContext(
           NativeCatalogRelationResolutionState::kBound;
       catalog_relation.object_uuid = resolved.object_uuid;
       catalog_relation.resolved_object_type =
-          source.source_kind == NativeRelationSourceAstKind::kSpatial
-              ? "spatial_collection"
-              : (source.source_kind == NativeRelationSourceAstKind::kColumnar
-                     ? "logical_relation"
-                     : resolved.object_class);
+          expected_object_class.empty() ? resolved.object_class
+                                        : std::string(expected_object_class);
       catalog_relation.resolved_schema_uuid = projection.schema_uuid;
       catalog_relation.catalog_generation_id = resolved.catalog_epoch;
       catalog_relation.security_epoch = resolved.security_epoch;
@@ -4529,20 +4599,102 @@ BuildEngineProjectedNativeBindingContext(
           descriptor.width_precision_scale.width = column.character_length;
         }
         context.descriptors.push_back(std::move(descriptor));
-        context.expressions.push_back(
-            {binding_id, binding_id, std::nullopt, column.column_uuid});
-        context.outputs.push_back(
-            {static_cast<std::uint32_t>(context.outputs.size() + 1),
-             binding_id, column.canonical_name_key, binding_id, true,
-             static_cast<std::uint32_t>(ordinal), relation.relation_id});
         catalog_relation.columns.push_back(
             {static_cast<std::uint32_t>(ordinal), column.column_uuid,
              binding_id, column.canonical_name_key});
+        if (!bounded_multimodel_join ||
+            (source.source_kind != NativeRelationSourceAstKind::kVector &&
+             source.source_kind != NativeRelationSourceAstKind::kSearch)) {
+          const auto projection_expression_id =
+              static_cast<std::uint32_t>(context.expressions.size() + 1);
+          context.expressions.push_back(
+              {projection_expression_id, binding_id, std::nullopt,
+               column.column_uuid});
+          context.outputs.push_back(
+              {static_cast<std::uint32_t>(context.outputs.size() + 1),
+               projection_expression_id, column.canonical_name_key, binding_id,
+               true, static_cast<std::uint32_t>(ordinal),
+               relation.relation_id});
+        }
+      }
+      if (bounded_multimodel_join &&
+          (source.source_kind == NativeRelationSourceAstKind::kVector ||
+           source.source_kind == NativeRelationSourceAstKind::kSearch)) {
+        const std::vector<std::pair<std::string_view, std::uint8_t>> fields =
+            source.source_kind == NativeRelationSourceAstKind::kVector
+                ? std::vector<std::pair<std::string_view, std::uint8_t>>{
+                      {"row_uuid", 14}, {"distance", 18}, {"score", 18}}
+                : std::vector<std::pair<std::string_view, std::uint8_t>>{
+                      {"document_uuid", 14},
+                      {"analyzer_uuid", 14},
+                      {"analyzer_generation", 16},
+                      {"score", 18},
+                      {"rank", 16}};
+        for (std::size_t ordinal = 0; ordinal < fields.size(); ++ordinal) {
+          const auto [name, kind] = fields[ordinal];
+          const auto slot = multileg_source_slots[kind]++;
+          const auto profile = std::ranges::find_if(
+              statement_context.descriptor_profiles,
+              [&](const auto& candidate) {
+                return candidate.profile_kind == kind &&
+                       candidate.slot == slot && !candidate.nullable &&
+                       candidate.collation_uuid.empty() && candidate.width == 0 &&
+                       candidate.precision == 0 && candidate.scale == 0 &&
+                       CanonicalUuidBytes(candidate.descriptor_uuid).has_value() &&
+                       CanonicalUuidBytes(candidate.type_uuid).has_value();
+              });
+          if (profile == statement_context.descriptor_profiles.end()) {
+            return fail("model_join_v10_derived_descriptor_unavailable");
+          }
+          NativeDescriptorBindingInput descriptor;
+          descriptor.descriptor_id = binding_id++;
+          descriptor.descriptor_uuid = profile->descriptor_uuid;
+          descriptor.type_uuid = profile->type_uuid;
+          descriptor.nullability = BoundNullability::kNonNull;
+          descriptor.canonical_type_name =
+              kind == 14 ? "uuid" : kind == 16 ? "uint64" : "real64";
+          context.descriptors.push_back(std::move(descriptor));
+          const auto projection_expression_id =
+              static_cast<std::uint32_t>(context.expressions.size() + 1);
+          const auto projection_bound_name =
+              source.source_kind == NativeRelationSourceAstKind::kSearch &&
+                      (ordinal == 1 || ordinal == 2)
+                  ? std::optional<std::string>{
+                        resolved_object_reference_seeds[resolution_ordinal + 1]
+                            .resolved.object_uuid}
+                  : std::optional<std::string>{resolved.object_uuid};
+          context.expressions.push_back(
+              {projection_expression_id, context.descriptors.back().descriptor_id,
+               std::nullopt, projection_bound_name});
+          context.outputs.push_back(
+              {static_cast<std::uint32_t>(context.outputs.size() + 1),
+               projection_expression_id, std::string(name),
+               context.descriptors.back().descriptor_id, true,
+               static_cast<std::uint32_t>(ordinal), relation.relation_id});
+        }
       }
       context.catalog_relations.push_back(std::move(catalog_relation));
+      ++resolution_ordinal;
+      if (source.source_kind == NativeRelationSourceAstKind::kSearch) {
+        const auto& analyzer_seed =
+            resolved_object_reference_seeds[resolution_ordinal];
+        const auto& analyzer = analyzer_seed.resolved;
+        const auto analyzer_presented_name =
+            EncodeQualifiedPresentedName(source.model_search_analyzer_name);
+        if (analyzer_seed.ref.object_class != "search_analyzer" ||
+            !analyzer_presented_name.has_value() ||
+            analyzer_seed.ref.presented_name != *analyzer_presented_name ||
+            !analyzer.resolved || analyzer.object_class != "search_analyzer" ||
+            !CanonicalUuidBytes(analyzer.object_uuid).has_value() ||
+            analyzer.catalog_epoch == 0) {
+          return fail("model_join_search_analyzer_authority_incomplete");
+        }
+        bounded_search_analyzer_uuid = analyzer.object_uuid;
+        bounded_search_analyzer_generation = analyzer.catalog_epoch;
+        ++resolution_ordinal;
+      }
     }
-    const auto source_descriptor_count = context.descriptors.size();
-    const bool spatial_columnar_join =
+    const bool spatial_columnar_join = source_count == 2 &&
         std::ranges::all_of(ast.catalog_relation_sources, [](const auto& source) {
           return source.source_kind == NativeRelationSourceAstKind::kSpatial ||
                  source.source_kind == NativeRelationSourceAstKind::kColumnar;
@@ -4604,6 +4756,195 @@ BuildEngineProjectedNativeBindingContext(
              leg.object_uuid});
       }
     }
+    if (bounded_multimodel_join) {
+      // QOW-SOURCE-RCP-080-ENGINE-MULTILEG-BINDING-CLOSURE-V1
+      if (!statement_context.native_v10_complete() ||
+          resolution_ordinal != resolved_object_reference_seeds.size()) {
+        return fail("model_join_v10_binding_cohort_incomplete");
+      }
+      if (bounded_search_analyzer_uuid.has_value()) {
+        context.search_analyzer_uuid = *bounded_search_analyzer_uuid;
+        context.search_analyzer_generation =
+            bounded_search_analyzer_generation;
+      }
+      const auto expression_for = [&](const std::uint32_t expression_id)
+          -> const NativeExpressionAstNode* {
+        const auto found = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == expression_id;
+            });
+        return found == ast.expressions.end() ? nullptr : &*found;
+      };
+      std::unordered_map<std::uint32_t, const NativeExpressionAstNode*>
+          expressions_by_ast_id;
+      for (const auto& expression : ast.expressions) {
+        expressions_by_ast_id.emplace(expression.expression_id, &expression);
+      }
+      const auto descriptor_for_column =
+          [&](const std::size_t source_ordinal,
+              const std::string_view canonical_name)
+          -> std::optional<std::uint32_t> {
+        const auto& columns = context.catalog_relations[source_ordinal].columns;
+        const auto found = std::ranges::find_if(columns, [&](const auto& column) {
+          return column.canonical_name_key == canonical_name;
+        });
+        return found == columns.end()
+                   ? std::nullopt
+                   : std::optional<std::uint32_t>{found->descriptor_id};
+      };
+      const auto descriptor_with_kind = [&](const std::uint8_t kind,
+                                            const bool nullable)
+          -> std::optional<std::uint32_t> {
+        const auto profile = std::ranges::find_if(
+            statement_context.descriptor_profiles, [&](const auto& candidate) {
+              return candidate.profile_kind == kind && candidate.slot == 0 &&
+                     candidate.nullable == nullable &&
+                     CanonicalUuidBytes(candidate.descriptor_uuid).has_value() &&
+                     CanonicalUuidBytes(candidate.type_uuid).has_value();
+            });
+        if (profile == statement_context.descriptor_profiles.end()) {
+          return std::nullopt;
+        }
+        const auto existing = std::ranges::find_if(
+            context.descriptors, [&](const auto& descriptor) {
+              return descriptor.descriptor_uuid == profile->descriptor_uuid;
+            });
+        if (existing != context.descriptors.end()) {
+          return existing->descriptor_id;
+        }
+        NativeDescriptorBindingInput descriptor;
+        descriptor.descriptor_id =
+            static_cast<std::uint32_t>(context.descriptors.size() + 1);
+        descriptor.descriptor_uuid = profile->descriptor_uuid;
+        descriptor.type_uuid = profile->type_uuid;
+        descriptor.nullability = nullable ? BoundNullability::kNullable
+                                          : BoundNullability::kNonNull;
+        context.descriptors.push_back(descriptor);
+        return descriptor.descriptor_id;
+      };
+      std::unordered_map<std::uint32_t, std::uint32_t> ast_descriptor;
+      std::unordered_set<std::uint32_t> owned_ast_ids;
+      for (std::size_t source_ordinal = 0; source_ordinal < source_count;
+           ++source_ordinal) {
+        const auto& source = ast.catalog_relation_sources[source_ordinal];
+        if (source.source_kind == NativeRelationSourceAstKind::kCatalogRelation) {
+          if (!source_relations[source_ordinal]
+                   ->predicate_expression_ids.empty()) {
+            return fail("model_join_relational_predicate_refused");
+          }
+          continue;
+        }
+        if (source.model_operation_expression_ids.size() != 1) {
+          return fail("model_join_operation_root_cardinality_invalid");
+        }
+        std::unordered_set<std::uint32_t> closure;
+        std::vector<std::uint32_t> pending{
+            source.model_operation_expression_ids.front()};
+        pending.insert(pending.end(),
+                       source_relations[source_ordinal]
+                           ->predicate_expression_ids.begin(),
+                       source_relations[source_ordinal]
+                           ->predicate_expression_ids.end());
+        while (!pending.empty()) {
+          const auto expression_id = pending.back();
+          pending.pop_back();
+          if (!closure.insert(expression_id).second) continue;
+          const auto* expression = expression_for(expression_id);
+          if (expression == nullptr ||
+              expression->expression_kind == NativeExpressionAstKind::kWildcard) {
+            return fail("model_join_operation_closure_incomplete");
+          }
+          pending.insert(pending.end(), expression->child_expression_ids.begin(),
+                         expression->child_expression_ids.end());
+        }
+        std::vector<std::uint32_t> ordered_closure(closure.begin(), closure.end());
+        std::ranges::sort(ordered_closure);
+        for (const auto ast_id : ordered_closure) {
+          if (!owned_ast_ids.insert(ast_id).second) {
+            return fail("model_join_operation_cross_leg_expression");
+          }
+          const auto* expression = expression_for(ast_id);
+          std::optional<std::uint32_t> descriptor_id;
+          std::optional<std::string> bound_name_uuid;
+          if (expression->expression_kind ==
+                  NativeExpressionAstKind::kIdentifier &&
+              source.alias.has_value() &&
+              expression->qualified_identifier.size() == 1 &&
+              expression->qualified_identifier.front().spelling ==
+                  source.alias->spelling &&
+              expression->qualified_identifier.front().quoted ==
+                  source.alias->quoted) {
+            descriptor_id = context.catalog_relations[source_ordinal]
+                                .columns.front()
+                                .descriptor_id;
+            bound_name_uuid =
+                context.catalog_relations[source_ordinal].object_uuid;
+          } else if (source.model_search_analyzer_expression_id == ast_id) {
+            descriptor_id = descriptor_with_kind(14, false);
+            bound_name_uuid = context.search_analyzer_uuid;
+          } else if (source.model_time_series_alias_expression_id == ast_id) {
+            descriptor_id = context.catalog_relations[source_ordinal]
+                                .columns.front()
+                                .descriptor_id;
+            bound_name_uuid =
+                context.catalog_relations[source_ordinal].object_uuid;
+          } else if (source.model_range_start_expression_id == ast_id ||
+                     source.model_range_end_expression_id == ast_id) {
+            descriptor_id =
+                descriptor_for_column(source_ordinal, "point_timestamp");
+          } else if (source.model_vector_query_expression_id == ast_id) {
+            descriptor_id = descriptor_for_column(source_ordinal, "vector_value");
+          } else if (source.model_vector_metric_expression_id == ast_id ||
+                     source.model_search_text_expression_id == ast_id ||
+                     source.model_pattern_expression_id == ast_id ||
+                     std::ranges::find(source.model_key_expression_ids, ast_id) !=
+                         source.model_key_expression_ids.end()) {
+            descriptor_id = descriptor_with_kind(3, false);
+          } else if (source.model_vector_top_k_expression_id == ast_id ||
+                     source.model_search_top_k_expression_id == ast_id) {
+            descriptor_id = descriptor_with_kind(16, false);
+          } else if (source.model_search_query_expression_id == ast_id) {
+            descriptor_id = descriptor_with_kind(3, false);
+          } else if (expression->expression_kind ==
+                         NativeExpressionAstKind::kBinary ||
+                     expression->operator_name == "GRAPH_MATCH" ||
+                     expression->operator_name == "KV_KEY" ||
+                     expression->operator_name == "TIME_RANGE" ||
+                     expression->operator_name == "SEARCH_MATCH") {
+            descriptor_id = descriptor_with_kind(6, true);
+          } else if (expression->operator_name == "VECTOR_NEAREST") {
+            descriptor_id = descriptor_with_kind(18, false);
+          } else if (expression->operator_name == "DOCUMENT_SOURCE" ||
+                     expression->operator_name == "SPATIAL_SOURCE" ||
+                     expression->operator_name == "COLUMNAR_SOURCE") {
+            descriptor_id = context.catalog_relations[source_ordinal]
+                                .columns.front()
+                                .descriptor_id;
+            if (expression->operator_name == "SPATIAL_SOURCE" ||
+                expression->operator_name == "COLUMNAR_SOURCE") {
+              bound_name_uuid =
+                  context.catalog_relations[source_ordinal].object_uuid;
+            }
+          }
+          if (!descriptor_id.has_value()) {
+            return fail("model_join_operation_descriptor_unavailable");
+          }
+          const auto binding_expression_id =
+              static_cast<std::uint32_t>(context.expressions.size() + 1);
+          context.expressions.push_back(
+              {binding_expression_id, *descriptor_id, std::nullopt,
+               bound_name_uuid});
+          ast_descriptor.emplace(ast_id, *descriptor_id);
+        }
+      }
+      if (std::ranges::any_of(ast.expressions, [&](const auto& expression) {
+            return expression.expression_kind !=
+                       NativeExpressionAstKind::kWildcard &&
+                   !owned_ast_ids.contains(expression.expression_id);
+          })) {
+        return fail("model_join_orphan_expression_refused");
+      }
+    }
     if (predicate_join) {
       const auto find_expression = [&](const std::uint32_t expression_id) {
         const auto found = std::ranges::find_if(
@@ -4654,24 +4995,42 @@ BuildEngineProjectedNativeBindingContext(
         context.descriptors.push_back(std::move(descriptor));
       }
     }
-    const auto source_output_count = context.outputs.size();
     const bool left_only_join =
-        catalog_join->join_kind == NativeJoinAstKind::kLeftSemi ||
-        catalog_join->join_kind == NativeJoinAstKind::kLeftAnti;
-    const auto join_output_count =
-        left_only_join ? context.catalog_relations[0].columns.size()
-                       : source_descriptor_count;
-    for (std::size_t ordinal = 0; ordinal < join_output_count;
-         ++ordinal) {
-      const auto binding = static_cast<std::uint32_t>(ordinal + 1);
-      const auto source_output = context.outputs[ordinal];
-      context.outputs.push_back(
-          {static_cast<std::uint32_t>(source_output_count + ordinal + 1),
-           binding, source_output.output_name_utf8, binding, true,
-           static_cast<std::uint32_t>(ordinal), catalog_join->relation_id});
+        join_relations.back()->join_kind == NativeJoinAstKind::kLeftSemi ||
+        join_relations.back()->join_kind == NativeJoinAstKind::kLeftAnti;
+    std::vector<std::vector<NativeOutputBindingInput>> public_source_outputs(
+        source_count);
+    for (const auto& output : context.outputs) {
+      if (output.relation_id >= 1 && output.relation_id <= source_count) {
+        public_source_outputs[output.relation_id - 1].push_back(output);
+      }
     }
-    context.relations.push_back(
-        {catalog_join->relation_id, std::move(join_semantic)});
+    for (auto& outputs : public_source_outputs) {
+      std::ranges::sort(outputs, {}, &NativeOutputBindingInput::ordinal);
+    }
+    std::vector<NativeOutputBindingInput> accumulated_outputs =
+        public_source_outputs.front();
+    for (std::size_t join_ordinal = 0; join_ordinal < join_relations.size();
+         ++join_ordinal) {
+      accumulated_outputs.insert(
+          accumulated_outputs.end(),
+          public_source_outputs[join_ordinal + 1].begin(),
+          public_source_outputs[join_ordinal + 1].end());
+      const auto join_output_count =
+          left_only_join ? public_source_outputs.front().size()
+                         : accumulated_outputs.size();
+      for (std::size_t ordinal = 0; ordinal < join_output_count; ++ordinal) {
+        const auto& source_output = accumulated_outputs[ordinal];
+        context.outputs.push_back(
+            {static_cast<std::uint32_t>(context.outputs.size() + 1),
+             source_output.expression_id,
+             source_output.output_name_utf8, source_output.descriptor_id, true,
+             static_cast<std::uint32_t>(ordinal),
+             join_relations[join_ordinal]->relation_id});
+      }
+      context.relations.push_back(
+          {join_relations[join_ordinal]->relation_id, join_semantic});
+    }
     return context;
   }
 
@@ -7405,6 +7764,86 @@ std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocu
 std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst,
                                                      const AstDocument& ast) {
   std::vector<ObjectReference> refs;
+  if (ast.native_relational.catalog_relation_sources.size() >= 3 &&
+      ast.native_relational.catalog_relation_sources.size() <= 9) {
+    // QOW-SOURCE-RCP-080-BOUNDED-MULTIMODEL-OBJECT-REFERENCE-V1
+    if (!ast.native_relational.accepted()) return refs;
+    std::size_t request_ordinal = 0;
+    const auto object_class_for = [](const NativeRelationSourceAstKind kind) {
+      switch (kind) {
+        case NativeRelationSourceAstKind::kDocument:
+          return std::string_view{"document_collection"};
+        case NativeRelationSourceAstKind::kGraph:
+          return std::string_view{"graph"};
+        case NativeRelationSourceAstKind::kKeyValue:
+          return std::string_view{"key_value"};
+        case NativeRelationSourceAstKind::kTimeSeries:
+          return std::string_view{"time_series"};
+        case NativeRelationSourceAstKind::kVector:
+          return std::string_view{"vector"};
+        case NativeRelationSourceAstKind::kSearch:
+          return std::string_view{"search"};
+        case NativeRelationSourceAstKind::kSpatial:
+          return std::string_view{"spatial_collection"};
+        case NativeRelationSourceAstKind::kColumnar:
+          return std::string_view{"logical_relation"};
+        default: return std::string_view{"relation"};
+      }
+    };
+    for (const auto& source : ast.native_relational.catalog_relation_sources) {
+      const auto presented_name =
+          EncodeQualifiedPresentedName(source.qualified_name);
+      if (!presented_name.has_value()) {
+        refs.clear();
+        return refs;
+      }
+      const auto object_class = object_class_for(source.source_kind);
+      if (source.source_kind != NativeRelationSourceAstKind::kCatalogRelation) {
+        if (request_ordinal >=
+            ast.native_relational.model_object_resolution_requests.size()) {
+          refs.clear();
+          return refs;
+        }
+        const auto& request =
+            ast.native_relational.model_object_resolution_requests[request_ordinal++];
+        if (request.source_id != source.source_id ||
+            request.model_family_id != source.model_family_id ||
+            request.object_class != object_class ||
+            EncodeQualifiedPresentedName(request.qualified_name) !=
+                presented_name) {
+          refs.clear();
+          return refs;
+        }
+      }
+      refs.push_back(
+          {*presented_name, std::string(object_class), false, false});
+      if (source.source_kind == NativeRelationSourceAstKind::kSearch) {
+        if (request_ordinal >=
+            ast.native_relational.model_object_resolution_requests.size()) {
+          refs.clear();
+          return refs;
+        }
+        const auto& analyzer =
+            ast.native_relational.model_object_resolution_requests[request_ordinal++];
+        const auto analyzer_name =
+            EncodeQualifiedPresentedName(analyzer.qualified_name);
+        if (analyzer.source_id != source.source_id ||
+            analyzer.model_family_id != "search" ||
+            analyzer.object_class != "search_analyzer" ||
+            !analyzer_name.has_value()) {
+          refs.clear();
+          return refs;
+        }
+        refs.push_back(
+            {*analyzer_name, "search_analyzer", false, false});
+      }
+    }
+    if (request_ordinal !=
+        ast.native_relational.model_object_resolution_requests.size()) {
+      refs.clear();
+    }
+    return refs;
+  }
   const bool spatial_columnar_model_ast = std::ranges::any_of(
       ast.native_relational.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kSpatial ||
@@ -10207,7 +10646,8 @@ ResolvedObjectReferenceSeed Rcp074GraphProofSeed(const ObjectReference& ref) {
   return seed;
 }
 
-ResolvedObjectReferenceSeed Rcp079ProofSeed(const ObjectReference& ref) {
+ResolvedObjectReferenceSeed Rcp079ProofSeed(
+    const ObjectReference& ref, const bool exact_model_class) {
   ResolvedObjectReferenceSeed seed;
   seed.ref = ref;
   seed.resolved.resolved = true;
@@ -10223,7 +10663,7 @@ ResolvedObjectReferenceSeed Rcp079ProofSeed(const ObjectReference& ref) {
       ref.object_class == "spatial_collection" ? 8700u : 8750u;
   seed.resolved.object_uuid = Rcp073ProofUuid(identity_base);
   seed.resolved.canonical_name = ref.presented_name;
-  seed.resolved.object_class = "relation";
+  seed.resolved.object_class = exact_model_class ? ref.object_class : "relation";
   auto& projection = seed.resolved.relation_descriptor;
   projection.present = true;
   projection.descriptor_uuid = Rcp073ProofUuid(identity_base + 1);
@@ -10281,7 +10721,10 @@ bool Rcp079BuildAndBind(const std::string_view sql) {
   if (!ast.native_relational.accepted()) return false;
   const auto refs = ExtractObjectReferences(cst, ast);
   std::vector<ResolvedObjectReferenceSeed> seeds;
-  for (const auto& ref : refs) seeds.push_back(Rcp079ProofSeed(ref));
+  for (const auto& ref : refs) {
+    seeds.push_back(Rcp079ProofSeed(
+        ref, ast.native_relational.catalog_relation_sources.size() >= 2));
+  }
   MessageVectorSet messages;
   const auto context = BuildEngineProjectedNativeBindingContext(
       ast.native_relational, Rcp079ProofStatementContext(), seeds, &messages);
@@ -10340,6 +10783,254 @@ bool Rcp079BuildAndBind(const std::string_view sql) {
          verified.admitted && !verified.messages.has_errors() &&
          lowered_operation_count ==
              static_cast<std::ptrdiff_t>(expected_operation_count);
+}
+
+ResolvedObjectReferenceSeed Rcp080ProofSeed(
+    const ObjectReference& ref, const std::uint32_t ordinal) {
+  ResolvedObjectReferenceSeed seed;
+  seed.ref = ref;
+  seed.resolved.resolved = true;
+  seed.resolved.object_uuid = Rcp073ProofUuid(9000 + ordinal * 32);
+  seed.resolved.canonical_name = ref.presented_name;
+  seed.resolved.object_class = ref.object_class;
+  seed.resolved.catalog_epoch = 80;
+  seed.resolved.security_epoch = 80;
+  if (ref.object_class == "search_analyzer") return seed;
+  auto& projection = seed.resolved.relation_descriptor;
+  projection.present = true;
+  projection.descriptor_uuid = Rcp073ProofUuid(9001 + ordinal * 32);
+  projection.relation_uuid = seed.resolved.object_uuid;
+  projection.schema_uuid = Rcp073ProofUuid(9002 + ordinal * 32);
+  projection.descriptor_generation = 80;
+  projection.validated_resource_epoch = 80;
+  const auto type_uuid = [](const std::string_view type) {
+    const auto manifest =
+        scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!manifest.ok()) return std::string{};
+    const auto row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+        manifest.manifest,
+        scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+            std::string(type)));
+    if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
+        !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
+      return std::string{};
+    }
+    return scratchbird::core::uuid::UuidToString(
+        row.manifest.descriptor_rows.front().descriptor_uuid.value);
+  };
+  const auto add_column = [&](const std::string_view name,
+                              const std::string_view type,
+                              const std::string_view manifest_type = {}) {
+    const auto column_ordinal =
+        static_cast<std::uint32_t>(projection.columns.size());
+    ipc::PublicRelationColumnDescriptor column;
+    column.column_uuid =
+        Rcp073ProofUuid(9010 + ordinal * 32 + column_ordinal);
+    column.ordinal = column_ordinal;
+    column.canonical_name_key = std::string(name);
+    column.type_descriptor_uuid =
+        Rcp073ProofUuid(9020 + ordinal * 32 + column_ordinal);
+    column.type_descriptor_kind = "canonical_type_descriptor";
+    column.canonical_type_name = std::string(type);
+    column.nullable = false;
+    column.encoded_type_descriptor =
+        "type_uuid=" +
+        type_uuid(manifest_type.empty() ? type : manifest_type) +
+        ";nullability=non_null";
+    projection.columns.push_back(std::move(column));
+  };
+  if (ref.object_class == "time_series") {
+    add_column("point_timestamp", "timestamp_tz", "timestamp");
+  } else if (ref.object_class == "vector") {
+    add_column("vector_value", "uuid");
+  } else if (ref.object_class == "spatial_collection") {
+    add_column("row_uuid", "uuid");
+    add_column("spatial_value", "geometry");
+    add_column("crs_uuid", "uuid");
+  } else {
+    add_column("row_uuid", "uuid");
+  }
+  return seed;
+}
+
+bool Rcp080WireBuildBindLowerVerify(
+    const CstDocument& cst, const AstDocument& ast,
+    const ParserStatementContext& statement,
+    const std::vector<ResolvedObjectReferenceSeed>& seeds) {
+  if (!ast.native_relational.accepted()) return false;
+  MessageVectorSet messages;
+  const auto context = BuildEngineProjectedNativeBindingContext(
+      ast.native_relational, statement, seeds, &messages);
+  if (!context.has_value() || messages.has_errors()) return false;
+  ParserConfig config;
+  config.parser_uuid = Rcp073ProofUuid(9800);
+  config.bundle_contract_id = "sbp_sbsql@rcp080-wire-proof-v1";
+  config.build_id = "rcp080-wire-proof-v1";
+  SessionContext session;
+  session.authenticated = true;
+  session.session_uuid = Rcp073ProofUuid(9801);
+  session.connection_uuid = Rcp073ProofUuid(9802);
+  session.database_uuid = Rcp073ProofUuid(9803);
+  session.dialect_profile_uuid = Rcp073ProofUuid(9804);
+  session.catalog_epoch = 80;
+  session.security_policy_epoch = 80;
+  session.descriptor_epoch = 80;
+  const auto bound = BindAst(ast, cst, config, session, {}, &*context);
+  if (!bound.bound || !bound.native_relational.bound ||
+      bound.messages.has_errors()) {
+    return false;
+  }
+  const auto lowered = LowerToSblr(bound, cst, session);
+  const auto verified = VerifySblrEnvelope(lowered);
+  return !lowered.payload.empty() && !lowered.messages.has_errors() &&
+         verified.admitted && !verified.messages.has_errors();
+}
+
+std::uint64_t Rcp080MultimodelWireProofMaskImpl() {
+  // QOW-SOURCE-RCP-080-LIVE-ENGINE-PROJECTED-WIRE-PROOF-V1
+  static constexpr std::array<std::string_view, 3> kSql{
+      "SELECT * FROM app.heap CROSS JOIN DOCUMENT_SOURCE(app.docs) AS d "
+      "CROSS JOIN GRAPH_SOURCE(app.graph_fixture) AS g WHERE "
+      "GRAPH_MATCH(g, 'vertex(*)');",
+      "SELECT * FROM app.heap CROSS JOIN DOCUMENT_SOURCE(app.docs) AS d "
+      "CROSS JOIN SPATIAL_SOURCE(app.spatial) AS s CROSS JOIN "
+      "COLUMNAR_SOURCE(app.columnar) AS c;",
+      "SELECT * FROM app.heap CROSS JOIN DOCUMENT_SOURCE(app.docs) AS d "
+      "CROSS JOIN GRAPH_SOURCE(app.graph_fixture) AS g CROSS JOIN "
+      "KEY_VALUE_SOURCE(app.kv) AS kv CROSS JOIN "
+      "TIME_SERIES_SOURCE(app.series) AS ts CROSS JOIN "
+      "VECTOR_SOURCE(app.vectors) AS v CROSS JOIN "
+      "SEARCH_SOURCE(app.search_fixture) AS q CROSS JOIN "
+      "SPATIAL_SOURCE(app.spatial) AS s CROSS JOIN "
+      "COLUMNAR_SOURCE(app.columnar) AS c WHERE "
+      "GRAPH_MATCH(g, 'vertex(*)') AND KV_KEY(kv) = 'alpha' AND "
+      "TIME_RANGE(ts, TIMESTAMP '2026-08-10T12:00:00Z', "
+      "TIMESTAMP '2026-08-10T12:02:00Z') AND "
+      "VECTOR_NEAREST(v, VECTOR '[1,0,0]', L2_SQUARED, 2) AND "
+      "SEARCH_MATCH(q, SEARCH_TERMS('quick fox'), app.ascii_v1, 3);"};
+  std::uint64_t mask = 0;
+  std::array<CstDocument, 3> csts{
+      BuildCst(kSql[0]), BuildCst(kSql[1]), BuildCst(kSql[2])};
+  std::array<AstDocument, 3> asts{
+      BuildAst(csts[0]), BuildAst(csts[1]), BuildAst(csts[2])};
+  std::array<std::vector<ResolvedObjectReferenceSeed>, 3> seeds;
+  for (std::size_t profile = 0; profile < asts.size(); ++profile) {
+    if (!asts[profile].native_relational.accepted()) return mask;
+    const auto refs = ExtractObjectReferences(csts[profile], asts[profile]);
+    for (std::size_t ordinal = 0; ordinal < refs.size(); ++ordinal) {
+      seeds[profile].push_back(
+          Rcp080ProofSeed(refs[ordinal], static_cast<std::uint32_t>(ordinal)));
+    }
+    if (Rcp080WireBuildBindLowerVerify(
+            csts[profile], asts[profile], Rcp079ProofStatementContext(),
+            seeds[profile])) {
+      mask |= 1ull << profile;
+    }
+  }
+  const auto refused = [&](AstDocument ast,
+                           std::vector<ResolvedObjectReferenceSeed> cohort,
+                           ParserStatementContext statement) {
+    return !Rcp080WireBuildBindLowerVerify(csts[2], ast, statement, cohort);
+  };
+  const auto projected_refusal = [&] (
+      const AstDocument& ast,
+      const std::vector<ResolvedObjectReferenceSeed>& cohort,
+      const std::string_view expected_detail) {
+    MessageVectorSet messages;
+    const auto context = BuildEngineProjectedNativeBindingContext(
+        ast.native_relational, Rcp079ProofStatementContext(), cohort,
+        &messages);
+    if (context.has_value() || !messages.has_errors()) return false;
+    return std::ranges::any_of(messages.diagnostics, [&](const auto& diagnostic) {
+      return std::ranges::any_of(diagnostic.fields, [&](const auto& field) {
+        return field.name == "detail" && field.value == expected_detail;
+      });
+    });
+  };
+  auto missing_seed = seeds[2];
+  missing_seed.pop_back();
+  if (refused(asts[2], std::move(missing_seed),
+              Rcp079ProofStatementContext())) mask |= 1ull << 3;
+  auto extra_seed = seeds[2];
+  extra_seed.push_back(extra_seed.front());
+  if (refused(asts[2], std::move(extra_seed),
+              Rcp079ProofStatementContext())) mask |= 1ull << 4;
+  auto reordered_seed = seeds[2];
+  std::swap(reordered_seed[0], reordered_seed[1]);
+  if (refused(asts[2], std::move(reordered_seed),
+              Rcp079ProofStatementContext())) mask |= 1ull << 5;
+  auto descriptor_seed = seeds[2];
+  descriptor_seed[1].resolved.relation_descriptor.descriptor_uuid =
+      descriptor_seed[0].resolved.relation_descriptor.descriptor_uuid;
+  if (refused(asts[2], std::move(descriptor_seed),
+              Rcp079ProofStatementContext())) mask |= 1ull << 6;
+  auto missing_root = asts[2];
+  missing_root.native_relational.catalog_relation_sources[2]
+      .model_operation_expression_ids.clear();
+  if (refused(std::move(missing_root), seeds[2],
+              Rcp079ProofStatementContext())) mask |= 1ull << 7;
+  auto missing_operand = asts[2];
+  const auto primary_id = missing_operand.native_relational
+                              .catalog_relation_sources[2]
+                              .model_operation_expression_ids.front();
+  auto primary = std::ranges::find_if(
+      missing_operand.native_relational.expressions,
+      [&](const auto& expression) {
+        return expression.expression_id == primary_id;
+      });
+  primary->child_expression_ids.clear();
+  if (refused(std::move(missing_operand), seeds[2],
+              Rcp079ProofStatementContext())) mask |= 1ull << 8;
+  auto duplicate_root = asts[2];
+  duplicate_root.native_relational.catalog_relation_sources[2]
+      .model_operation_expression_ids =
+      duplicate_root.native_relational.catalog_relation_sources[1]
+          .model_operation_expression_ids;
+  if (refused(std::move(duplicate_root), seeds[2],
+              Rcp079ProofStatementContext())) mask |= 1ull << 9;
+  auto unattached = asts[2];
+  unattached.native_relational.catalog_relation_sources[2]
+      .model_operation_expression_ids.clear();
+  const auto kv_relation = std::ranges::find_if(
+      unattached.native_relational.relations, [](const auto& relation) {
+        return relation.relation_source_ids == std::vector<std::uint32_t>{4};
+      });
+  kv_relation->predicate_expression_ids.clear();
+  if (refused(std::move(unattached), seeds[2],
+              Rcp079ProofStatementContext())) mask |= 1ull << 10;
+  auto substituted_statement = Rcp079ProofStatementContext();
+  substituted_statement.transaction.transaction_uuid.clear();
+  if (refused(asts[2], seeds[2], std::move(substituted_statement))) {
+    mask |= 1ull << 11;
+  }
+  auto orphan = asts[2];
+  const auto semantic_operand = std::ranges::find_if(
+      orphan.native_relational.expressions, [](const auto& expression) {
+        return expression.expression_kind == NativeExpressionAstKind::kLiteral;
+      });
+  if (semantic_operand != orphan.native_relational.expressions.end()) {
+    auto unattached_operand = *semantic_operand;
+    unattached_operand.expression_id =
+        std::ranges::max(orphan.native_relational.expressions, {},
+                         &NativeExpressionAstNode::expression_id)
+            .expression_id +
+        1;
+    orphan.native_relational.expressions.push_back(
+        std::move(unattached_operand));
+  }
+  if (projected_refusal(orphan, seeds[2],
+                        "model_join_orphan_expression_refused")) {
+    mask |= 1ull << 12;
+  }
+  auto wrong_class = seeds[2];
+  wrong_class[1].resolved.object_class = "relation";
+  if (refused(asts[2], std::move(wrong_class),
+              Rcp079ProofStatementContext())) mask |= 1ull << 13;
+  auto wrong_name = seeds[2];
+  wrong_name[1].ref.presented_name = "app.substituted";
+  if (refused(asts[2], std::move(wrong_name),
+              Rcp079ProofStatementContext())) mask |= 1ull << 14;
+  return mask;
 }
 
 bool Rcp073BuildAndBind(const AstDocument& ast,
@@ -10868,6 +11559,10 @@ std::uint64_t Rcp076TimeSeriesFrontdoorProofMaskForTest() {
 
 std::uint64_t Rcp079SpatialColumnarFrontdoorProofMaskForTest() {
   return Rcp079SpatialColumnarFrontdoorProofMaskImpl();
+}
+
+std::uint64_t Rcp080MultimodelWireProofMaskForTest() {
+  return Rcp080MultimodelWireProofMaskImpl();
 }
 
 SbsqlTestWireSession::SbsqlTestWireSession(ParserConfig config, ParserMetrics* metrics, SblrTemplateCache* cache)

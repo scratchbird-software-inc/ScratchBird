@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -145,7 +146,19 @@ class NativeRelationalParser final {
                   "opaque donor text is not an executable SBSQL model source");
       return FinishRefusal();
     }
-    if (contains_word("SPATIAL_SOURCE") && contains_word("COLUMNAR_SOURCE")) {
+    const std::size_t model_source_token_count = std::ranges::count_if(
+        tokens_, [&](const auto* token) {
+          return IsWord(*token, "DOCUMENT_SOURCE") ||
+                 IsWord(*token, "GRAPH_SOURCE") ||
+                 IsWord(*token, "KEY_VALUE_SOURCE") ||
+                 IsWord(*token, "TIME_SERIES_SOURCE") ||
+                 IsWord(*token, "VECTOR_SOURCE") ||
+                 IsWord(*token, "SEARCH_SOURCE") ||
+                 IsWord(*token, "SPATIAL_SOURCE") ||
+                 IsWord(*token, "COLUMNAR_SOURCE");
+        });
+    if (model_source_token_count != 0 &&
+        LooksLikeBoundedCatalogJoinSelect()) {
       if (tokens_.empty() || !IsWord(*tokens_.front(), "SELECT") ||
           !LooksLikeBoundedCatalogJoinSelect()) {
         RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
@@ -3543,13 +3556,37 @@ class NativeRelationalParser final {
       }
       NativeCatalogRelationSourceAstNode source;
       source.source_id = source_id;
-      const bool spatial = IsWord(Current(), "SPATIAL_SOURCE");
-      const bool columnar = IsWord(Current(), "COLUMNAR_SOURCE");
-      const bool model_source = spatial || columnar;
+      const std::array<std::tuple<std::string_view,
+                                  NativeRelationSourceAstKind,
+                                  std::string_view,
+                                  std::string_view,
+                                  std::string_view>, 8>
+          model_sources = {{
+              {"DOCUMENT_SOURCE", NativeRelationSourceAstKind::kDocument,
+               "document", "DOCUMENT_FIND", "DOCUMENT_SOURCE"},
+              {"GRAPH_SOURCE", NativeRelationSourceAstKind::kGraph, "graph",
+               "GRAPH_MATCH", "GRAPH_MATCH"},
+              {"KEY_VALUE_SOURCE", NativeRelationSourceAstKind::kKeyValue,
+               "key_value", "KEY_VALUE_GET", "KV_KEY"},
+              {"TIME_SERIES_SOURCE", NativeRelationSourceAstKind::kTimeSeries,
+               "time_series", "TIME_SERIES_RANGE_READ", "TIME_RANGE"},
+              {"VECTOR_SOURCE", NativeRelationSourceAstKind::kVector, "vector",
+               "VECTOR_EXACT_SEARCH", "VECTOR_NEAREST"},
+              {"SEARCH_SOURCE", NativeRelationSourceAstKind::kSearch, "search",
+               "SEARCH_RANKED_QUERY", "SEARCH_MATCH"},
+              {"SPATIAL_SOURCE", NativeRelationSourceAstKind::kSpatial,
+               "spatial", "SPATIAL_SOURCE", "SPATIAL_SOURCE"},
+              {"COLUMNAR_SOURCE", NativeRelationSourceAstKind::kColumnar,
+               "columnar", "COLUMNAR_SOURCE", "COLUMNAR_SOURCE"},
+          }};
+      const auto model_profile = std::ranges::find_if(
+          model_sources, [&](const auto& candidate) {
+            return IsWord(Current(), std::get<0>(candidate));
+          });
+      const bool model_source = model_profile != model_sources.end();
       source.source_kind =
-          spatial ? NativeRelationSourceAstKind::kSpatial
-                  : (columnar ? NativeRelationSourceAstKind::kColumnar
-                              : NativeRelationSourceAstKind::kCatalogRelation);
+          model_source ? std::get<1>(*model_profile)
+                       : NativeRelationSourceAstKind::kCatalogRelation;
       const Token* model_operator = nullptr;
       if (model_source) {
         model_operator = &Consume();
@@ -3600,19 +3637,47 @@ class NativeRelationalParser final {
           source.alias = NativeIdentifierAstNode{
               last->text, last->quoted, TokenSourceRange(*last)};
         }
-        source.model_family_id = spatial ? "spatial" : "columnar";
-        source.model_operation_id =
-            spatial ? "SPATIAL_SOURCE" : "COLUMNAR_SOURCE";
-        NativeExpressionAstNode operation;
-        operation.expression_id = NextExpressionId();
-        operation.expression_kind = NativeExpressionAstKind::kFunctionCall;
-        operation.operator_name = source.model_operation_id;
-        operation.spelling = SourceSpelling(*model_operator, Previous());
-        operation.range = Span(*model_operator, *source_end);
-        source.model_operation_ids.push_back(operation.operator_name);
-        source.model_operation_expression_ids.push_back(
-            operation.expression_id);
-        document_.expressions.push_back(std::move(operation));
+        source.model_family_id = std::string(std::get<2>(*model_profile));
+        source.model_operation_id = std::string(std::get<3>(*model_profile));
+        // A bounded composition carries the same explicit operation closure as
+        // the established single-family grammar.  Only the source operations
+        // whose complete semantics are present in the table-primary itself are
+        // emitted here.  Graph/KV/time/vector/search roots are parsed from the
+        // final source-local WHERE inventory below; synthesizing them without
+        // their operands would create a different operation.
+        if (source.source_kind == NativeRelationSourceAstKind::kDocument) {
+          NativeExpressionAstNode alias;
+          alias.expression_id = NextExpressionId();
+          alias.expression_kind = NativeExpressionAstKind::kIdentifier;
+          alias.qualified_identifier.push_back(*source.alias);
+          alias.spelling = source.alias->spelling;
+          alias.range = source.alias->range;
+          const auto alias_id = alias.expression_id;
+          document_.expressions.push_back(std::move(alias));
+
+          NativeExpressionAstNode operation;
+          operation.expression_id = NextExpressionId();
+          operation.expression_kind = NativeExpressionAstKind::kFunctionCall;
+          operation.child_expression_ids = {alias_id};
+          operation.operator_name = "DOCUMENT_SOURCE";
+          operation.spelling = SourceSpelling(*model_operator, *source_end);
+          operation.range = Span(*model_operator, *source_end);
+          source.model_operation_ids = {operation.operator_name};
+          source.model_operation_expression_ids = {operation.expression_id};
+          source.model_document_expression_id = alias_id;
+          document_.expressions.push_back(std::move(operation));
+        } else if (source.source_kind == NativeRelationSourceAstKind::kSpatial ||
+                   source.source_kind == NativeRelationSourceAstKind::kColumnar) {
+          NativeExpressionAstNode operation;
+          operation.expression_id = NextExpressionId();
+          operation.expression_kind = NativeExpressionAstKind::kFunctionCall;
+          operation.operator_name = std::string(std::get<4>(*model_profile));
+          operation.spelling = SourceSpelling(*model_operator, *source_end);
+          operation.range = Span(*model_operator, *source_end);
+          source.model_operation_ids = {operation.operator_name};
+          source.model_operation_expression_ids = {operation.expression_id};
+          document_.expressions.push_back(std::move(operation));
+        }
       }
       source.range = model_source ? Span(*model_operator, *source_end)
                                   : source.qualified_name_range;
@@ -3817,9 +3882,274 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
     }
-    const Token& query_end = join_kind != NativeJoinAstKind::kCross
-                                 ? *predicate_nodes[*predicate_root].last
-                                 : TokenForRangeEnd(right_source->range);
+    std::vector<NativeCatalogRelationSourceAstNode> parsed_sources;
+    parsed_sources.push_back(std::move(*left_source));
+    parsed_sources.push_back(std::move(*right_source));
+    if (join_kind == NativeJoinAstKind::kCross) {
+      while (!AtEnd() && IsWord(Current(), "CROSS")) {
+        Consume();
+        if (!RequireWord("JOIN", "catalog_join_join_required",
+                         "bounded catalog JOIN requires JOIN") ||
+            parsed_sources.size() == 9) {
+          if (parsed_sources.size() == 9) {
+            RefuseExact("SB_MODEL_COMPOSITION_PROFILE_REFUSED_V1",
+                        "bounded multimodel JOIN admits at most nine sources");
+          }
+          return FinishRefusal();
+        }
+        auto next_source =
+            parse_source(static_cast<std::uint32_t>(parsed_sources.size() + 1));
+        if (!next_source.has_value()) return FinishRefusal();
+        parsed_sources.push_back(std::move(*next_source));
+      }
+    }
+    std::vector<std::uint32_t> source_predicate_ids(parsed_sources.size());
+    const Token* query_end =
+        join_kind != NativeJoinAstKind::kCross
+            ? predicate_nodes[*predicate_root].last
+            : &TokenForRangeEnd(parsed_sources.back().range);
+    if (join_kind == NativeJoinAstKind::kCross) {
+      const auto expression_at = [&](const std::uint32_t id)
+          -> NativeExpressionAstNode* {
+        return id == 0 || id > document_.expressions.size()
+                   ? nullptr
+                   : &document_.expressions[id - 1];
+      };
+      const auto same_source_alias = [&](const NativeExpressionAstNode* expression,
+                                         const auto& source) {
+        if (expression == nullptr || !source.alias.has_value() ||
+            expression->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            expression->qualified_identifier.size() != 1) {
+          return false;
+        }
+        const auto& presented = expression->qualified_identifier.front();
+        return presented.quoted == source.alias->quoted &&
+               (presented.quoted
+                    ? presented.spelling == source.alias->spelling
+                    : ToLowerAscii(presented.spelling) ==
+                          ToLowerAscii(source.alias->spelling));
+      };
+      const auto parse_explicit_model_root = [&](auto& source)
+          -> std::optional<std::uint32_t> {
+        const auto parsed_id = ParseExpression(3, 0);
+        if (!parsed_id.has_value()) return std::nullopt;
+        auto* parsed = expression_at(*parsed_id);
+        if (parsed == nullptr) return std::nullopt;
+        NativeExpressionAstNode* root = parsed;
+        if (source.source_kind == NativeRelationSourceAstKind::kKeyValue) {
+          if (parsed->expression_kind != NativeExpressionAstKind::kBinary ||
+              parsed->operator_name != "=" ||
+              parsed->child_expression_ids.size() != 2) {
+            RefuseExact("SB_MODEL_KEY_VALUE_OPERATOR_REFUSED_V1",
+                        "multimodel KV_KEY requires one exact equality");
+            return std::nullopt;
+          }
+          root = expression_at(parsed->child_expression_ids.front());
+          const auto* key = expression_at(parsed->child_expression_ids.back());
+          if (root == nullptr || key == nullptr ||
+              !((key->expression_kind == NativeExpressionAstKind::kLiteral &&
+                 key->literal_kind == NativeLiteralAstKind::kString) ||
+                key->expression_kind == NativeExpressionAstKind::kParameter)) {
+            RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                        "multimodel KV_KEY requires one typed TEXT key");
+            return std::nullopt;
+          }
+          source.model_key_expression_ids = {key->expression_id};
+          source.model_comparison_operator = "=";
+        }
+        if (root->expression_kind != NativeExpressionAstKind::kFunctionCall) {
+          RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                      "multimodel source operation is not a functionless root");
+          return std::nullopt;
+        }
+        const auto canonical_root = ToUpperAscii(root->operator_name);
+        root->operator_name = canonical_root;
+        const auto expected_root =
+            source.source_kind == NativeRelationSourceAstKind::kGraph
+                ? std::string_view{"GRAPH_MATCH"}
+            : source.source_kind == NativeRelationSourceAstKind::kKeyValue
+                ? std::string_view{"KV_KEY"}
+            : source.source_kind == NativeRelationSourceAstKind::kTimeSeries
+                ? std::string_view{"TIME_RANGE"}
+            : source.source_kind == NativeRelationSourceAstKind::kVector
+                ? std::string_view{"VECTOR_NEAREST"}
+            : source.source_kind == NativeRelationSourceAstKind::kSearch
+                ? std::string_view{"SEARCH_MATCH"}
+                : std::string_view{};
+        const auto expected_arity =
+            source.source_kind == NativeRelationSourceAstKind::kGraph ? 2U
+            : source.source_kind == NativeRelationSourceAstKind::kKeyValue ? 1U
+            : source.source_kind == NativeRelationSourceAstKind::kTimeSeries ? 3U
+                                                                           : 4U;
+        if (canonical_root != expected_root ||
+            root->child_expression_ids.size() != expected_arity ||
+            !same_source_alias(expression_at(root->child_expression_ids.front()),
+                               source)) {
+          RefuseExact("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                      "multimodel operation root alias, identity, or arity is invalid");
+          return std::nullopt;
+        }
+
+        if (source.source_kind == NativeRelationSourceAstKind::kGraph) {
+          auto* pattern = expression_at(root->child_expression_ids[1]);
+          if (pattern == nullptr ||
+              pattern->expression_kind != NativeExpressionAstKind::kLiteral ||
+              pattern->literal_kind != NativeLiteralAstKind::kString ||
+              !ExactBoundedGraphPatternV1(pattern->spelling)) {
+            RefuseExact("SB_MODEL_BINDING_INCOMPLETE_V1",
+                        "multimodel GRAPH_MATCH requires one bounded typed pattern");
+            return std::nullopt;
+          }
+          source.model_graph_alias_expression_id =
+              root->child_expression_ids.front();
+          source.model_pattern_expression_id = pattern->expression_id;
+          source.model_graph_cycle_policy = "visited_set";
+        } else if (source.source_kind ==
+                   NativeRelationSourceAstKind::kTimeSeries) {
+          auto* start = expression_at(root->child_expression_ids[1]);
+          auto* end = expression_at(root->child_expression_ids[2]);
+          if (start == nullptr || end == nullptr ||
+              start->expression_kind != NativeExpressionAstKind::kLiteral ||
+              start->literal_kind != NativeLiteralAstKind::kTemporal ||
+              end->expression_kind != NativeExpressionAstKind::kLiteral ||
+              end->literal_kind != NativeLiteralAstKind::kTemporal) {
+            RefuseExact("SB_MODEL_TIME_SERIES_RANGE_INVALID_V1",
+                        "multimodel TIME_RANGE requires typed temporal endpoints");
+            return std::nullopt;
+          }
+          source.model_time_series_alias_expression_id =
+              root->child_expression_ids.front();
+          source.model_range_expression_id = root->expression_id;
+          source.model_range_start_expression_id = start->expression_id;
+          source.model_range_end_expression_id = end->expression_id;
+        } else if (source.source_kind == NativeRelationSourceAstKind::kVector) {
+          auto* query = expression_at(root->child_expression_ids[1]);
+          auto* metric = expression_at(root->child_expression_ids[2]);
+          auto* top_k = expression_at(root->child_expression_ids[3]);
+          if (query == nullptr || metric == nullptr || top_k == nullptr ||
+              !((query->expression_kind == NativeExpressionAstKind::kLiteral &&
+                 query->literal_kind == NativeLiteralAstKind::kVector) ||
+                query->expression_kind == NativeExpressionAstKind::kParameter) ||
+              metric->expression_kind != NativeExpressionAstKind::kIdentifier ||
+              metric->qualified_identifier.size() != 1 ||
+              metric->qualified_identifier.front().quoted ||
+              top_k->expression_kind != NativeExpressionAstKind::kLiteral ||
+              top_k->literal_kind != NativeLiteralAstKind::kNumeric) {
+            RefuseExact("SB_MODEL_VECTOR_VALUE_REFUSED_V1",
+                        "multimodel VECTOR_NEAREST operands are not exact");
+            return std::nullopt;
+          }
+          const auto metric_id =
+              ToUpperAscii(metric->qualified_identifier.front().spelling);
+          std::uint64_t top_k_value = 0;
+          const auto converted = std::from_chars(
+              top_k->spelling.data(),
+              top_k->spelling.data() + top_k->spelling.size(), top_k_value);
+          if ((metric_id != "L2_SQUARED" && metric_id != "COSINE" &&
+               metric_id != "INNER_PRODUCT") ||
+              converted.ec != std::errc{} ||
+              converted.ptr != top_k->spelling.data() + top_k->spelling.size() ||
+              top_k_value == 0 || top_k_value > 0xffffffffULL) {
+            RefuseExact("SB_MODEL_VECTOR_METRIC_REFUSED_V1",
+                        "multimodel vector metric or top-k is invalid");
+            return std::nullopt;
+          }
+          metric->expression_kind = NativeExpressionAstKind::kLiteral;
+          metric->literal_kind = NativeLiteralAstKind::kString;
+          metric->qualified_identifier.clear();
+          metric->spelling = metric_id;
+          source.model_vector_alias_expression_id =
+              root->child_expression_ids.front();
+          source.model_vector_nearest_expression_id = root->expression_id;
+          source.model_vector_query_expression_id = query->expression_id;
+          source.model_vector_metric_expression_id = metric->expression_id;
+          source.model_vector_top_k_expression_id = top_k->expression_id;
+          source.model_vector_metric_id = metric_id;
+          source.model_vector_top_k = top_k_value;
+        } else if (source.source_kind == NativeRelationSourceAstKind::kSearch) {
+          auto* query = expression_at(root->child_expression_ids[1]);
+          auto* analyzer = expression_at(root->child_expression_ids[2]);
+          auto* top_k = expression_at(root->child_expression_ids[3]);
+          if (query == nullptr || analyzer == nullptr || top_k == nullptr ||
+              query->expression_kind != NativeExpressionAstKind::kFunctionCall ||
+              ToUpperAscii(query->operator_name) != "SEARCH_TERMS" ||
+              query->child_expression_ids.size() != 1 ||
+              analyzer->expression_kind != NativeExpressionAstKind::kIdentifier ||
+              analyzer->qualified_identifier.empty() ||
+              top_k->expression_kind != NativeExpressionAstKind::kLiteral ||
+              top_k->literal_kind != NativeLiteralAstKind::kNumeric) {
+            RefuseExact("SB_MODEL_SEARCH_QUERY_TYPE_REFUSED_V1",
+                        "multimodel SEARCH_MATCH operands are not exact");
+            return std::nullopt;
+          }
+          auto* text = expression_at(query->child_expression_ids.front());
+          std::uint64_t top_k_value = 0;
+          const auto converted = std::from_chars(
+              top_k->spelling.data(),
+              top_k->spelling.data() + top_k->spelling.size(), top_k_value);
+          if (text == nullptr ||
+              !((text->expression_kind == NativeExpressionAstKind::kLiteral &&
+                 text->literal_kind == NativeLiteralAstKind::kString) ||
+                text->expression_kind == NativeExpressionAstKind::kParameter) ||
+              converted.ec != std::errc{} ||
+              converted.ptr != top_k->spelling.data() + top_k->spelling.size() ||
+              top_k_value == 0 || top_k_value > 0xffffffffULL) {
+            RefuseExact("SB_MODEL_SEARCH_TOP_K_REFUSED_V1",
+                        "multimodel search query text or top-k is invalid");
+            return std::nullopt;
+          }
+          query->operator_name = "SEARCH_TERMS";
+          source.model_search_alias_expression_id =
+              root->child_expression_ids.front();
+          source.model_search_match_expression_id = root->expression_id;
+          source.model_search_query_expression_id = query->expression_id;
+          source.model_search_text_expression_id = text->expression_id;
+          source.model_search_analyzer_expression_id = analyzer->expression_id;
+          source.model_search_top_k_expression_id = top_k->expression_id;
+          source.model_search_analyzer_name = analyzer->qualified_identifier;
+          source.model_search_query_kind = "SEARCH_TERMS";
+          source.model_search_top_k = top_k_value;
+        }
+        source.model_operation_ids = {canonical_root};
+        source.model_operation_expression_ids = {root->expression_id};
+        return *parsed_id;
+      };
+
+      std::vector<std::size_t> explicit_source_ordinals;
+      for (std::size_t ordinal = 0; ordinal < parsed_sources.size(); ++ordinal) {
+        const auto kind = parsed_sources[ordinal].source_kind;
+        if (kind == NativeRelationSourceAstKind::kGraph ||
+            kind == NativeRelationSourceAstKind::kKeyValue ||
+            kind == NativeRelationSourceAstKind::kTimeSeries ||
+            kind == NativeRelationSourceAstKind::kVector ||
+            kind == NativeRelationSourceAstKind::kSearch) {
+          explicit_source_ordinals.push_back(ordinal);
+        }
+      }
+      if (!explicit_source_ordinals.empty()) {
+        if (!RequireWord("WHERE", "model_composition_where_required",
+                         "bounded multimodel composition requires explicit source operations")) {
+          return FinishRefusal();
+        }
+        for (std::size_t operation_ordinal = 0;
+             operation_ordinal < explicit_source_ordinals.size();
+             ++operation_ordinal) {
+          if (operation_ordinal != 0 &&
+              !RequireWord("AND", "model_composition_operation_separator_required",
+                           "multimodel source operations require lexical AND separation")) {
+            return FinishRefusal();
+          }
+          const auto source_ordinal = explicit_source_ordinals[operation_ordinal];
+          const auto predicate =
+              parse_explicit_model_root(parsed_sources[source_ordinal]);
+          if (!predicate.has_value()) return FinishRefusal();
+          source_predicate_ids[source_ordinal] = *predicate;
+          query_end = &TokenForRangeEnd(
+              document_.expressions[*predicate - 1].range);
+        }
+      }
+    }
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
       Refuse("catalog_cross_join_clause_unsupported",
@@ -3827,8 +4157,22 @@ class NativeRelationalParser final {
       return FinishRefusal();
     }
 
+    const auto parsed_model_source_count = std::ranges::count_if(
+        parsed_sources, [](const auto& source) {
+          return source.source_kind !=
+                 NativeRelationSourceAstKind::kCatalogRelation;
+        });
+    if (parsed_sources.size() > 2 &&
+        (parsed_sources.size() < 3 || parsed_sources.size() > 9 ||
+         parsed_model_source_count < 2)) {
+      RefuseExact("SB_MODEL_COMPOSITION_PROFILE_REFUSED_V1",
+                  "multimodel JOIN requires three to nine sources and at "
+                  "least two model-family legs");
+      return FinishRefusal();
+    }
     std::vector<std::uint32_t> source_wildcard_ids;
-    for (std::uint32_t source_id = 1; source_id <= 2; ++source_id) {
+    for (std::uint32_t source_id = 1;
+         source_id <= parsed_sources.size(); ++source_id) {
       NativeExpressionAstNode wildcard;
       wildcard.expression_id = NextExpressionId();
       wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
@@ -3843,72 +4187,86 @@ class NativeRelationalParser final {
       source_relation.relation_kind = NativeRelationAstKind::kCatalogSource;
       source_relation.relation_source_ids = {source_id};
       source_relation.output_expression_ids = {wildcard_id};
-      source_relation.range = source_id == 1 ? left_source->range
-                                             : right_source->range;
+      if (source_predicate_ids[source_id - 1] != 0) {
+        source_relation.predicate_expression_ids = {
+            source_predicate_ids[source_id - 1]};
+      }
+      source_relation.range = parsed_sources[source_id - 1].range;
       document_.relations.push_back(std::move(source_relation));
     }
-    NativeRelationAstNode join;
-    join.relation_id = 3;
-    join.relation_kind = NativeRelationAstKind::kJoin;
-    join.join_kind = join_kind;
-    join.input_relation_ids = {1, 2};
-    join.output_expression_ids =
-        join_kind == NativeJoinAstKind::kLeftSemi ||
-                join_kind == NativeJoinAstKind::kLeftAnti
-            ? std::vector<std::uint32_t>{source_wildcard_ids.front()}
-            : source_wildcard_ids;
-    if (join_kind != NativeJoinAstKind::kCross) {
-      std::vector<std::uint32_t> predicate_expression_ids(
-          predicate_nodes.size());
-      for (std::size_t node_ordinal = 0;
-           node_ordinal < predicate_nodes.size(); ++node_ordinal) {
-        const auto& parsed = predicate_nodes[node_ordinal];
-        if (parsed.comparison) {
-          NativeExpressionAstNode left_key;
-          left_key.expression_id = NextExpressionId();
-          left_key.expression_kind = NativeExpressionAstKind::kIdentifier;
-          left_key.spelling = parsed.left_key->text;
-          left_key.range = TokenSourceRange(*parsed.left_key);
-          const auto left_key_id = left_key.expression_id;
-          document_.expressions.push_back(std::move(left_key));
+    std::vector<std::uint32_t> joined_wildcard_ids;
+    joined_wildcard_ids.push_back(source_wildcard_ids.front());
+    std::uint32_t prior_relation_id = 1;
+    for (std::size_t source_ordinal = 1;
+         source_ordinal < parsed_sources.size(); ++source_ordinal) {
+      NativeRelationAstNode join;
+      join.relation_id = static_cast<std::uint32_t>(
+          parsed_sources.size() + source_ordinal);
+      join.relation_kind = NativeRelationAstKind::kJoin;
+      join.join_kind = join_kind;
+      join.input_relation_ids = {
+          prior_relation_id, static_cast<std::uint32_t>(source_ordinal + 1)};
+      if (join_kind == NativeJoinAstKind::kLeftSemi ||
+          join_kind == NativeJoinAstKind::kLeftAnti) {
+        join.output_expression_ids = joined_wildcard_ids;
+      } else {
+        joined_wildcard_ids.push_back(source_wildcard_ids[source_ordinal]);
+        join.output_expression_ids = joined_wildcard_ids;
+      }
+      join.range = Span(select_token, *query_end);
+      if (source_ordinal + 1 == parsed_sources.size() &&
+          join_kind != NativeJoinAstKind::kCross) {
+        std::vector<std::uint32_t> predicate_expression_ids(
+            predicate_nodes.size());
+        for (std::size_t node_ordinal = 0;
+             node_ordinal < predicate_nodes.size(); ++node_ordinal) {
+          const auto& parsed = predicate_nodes[node_ordinal];
+          if (parsed.comparison) {
+            NativeExpressionAstNode left_key;
+            left_key.expression_id = NextExpressionId();
+            left_key.expression_kind = NativeExpressionAstKind::kIdentifier;
+            left_key.spelling = parsed.left_key->text;
+            left_key.range = TokenSourceRange(*parsed.left_key);
+            const auto left_key_id = left_key.expression_id;
+            document_.expressions.push_back(std::move(left_key));
 
-          NativeExpressionAstNode right_key;
-          right_key.expression_id = NextExpressionId();
-          right_key.expression_kind = NativeExpressionAstKind::kIdentifier;
-          right_key.spelling = parsed.right_key->text;
-          right_key.range = TokenSourceRange(*parsed.right_key);
-          const auto right_key_id = right_key.expression_id;
-          document_.expressions.push_back(std::move(right_key));
+            NativeExpressionAstNode right_key;
+            right_key.expression_id = NextExpressionId();
+            right_key.expression_kind = NativeExpressionAstKind::kIdentifier;
+            right_key.spelling = parsed.right_key->text;
+            right_key.range = TokenSourceRange(*parsed.right_key);
+            const auto right_key_id = right_key.expression_id;
+            document_.expressions.push_back(std::move(right_key));
 
+            NativeExpressionAstNode predicate;
+            predicate.expression_id = NextExpressionId();
+            predicate.expression_kind = NativeExpressionAstKind::kBinary;
+            predicate.child_expression_ids = {left_key_id, right_key_id};
+            predicate.operator_name = parsed.operator_name;
+            predicate.range = Span(*parsed.first, *parsed.last);
+            predicate_expression_ids[node_ordinal] = predicate.expression_id;
+            document_.expressions.push_back(std::move(predicate));
+            continue;
+          }
           NativeExpressionAstNode predicate;
           predicate.expression_id = NextExpressionId();
           predicate.expression_kind = NativeExpressionAstKind::kBinary;
-          predicate.child_expression_ids = {left_key_id, right_key_id};
+          predicate.child_expression_ids = {
+              predicate_expression_ids[parsed.left_child],
+              predicate_expression_ids[parsed.right_child]};
           predicate.operator_name = parsed.operator_name;
           predicate.range = Span(*parsed.first, *parsed.last);
           predicate_expression_ids[node_ordinal] = predicate.expression_id;
           document_.expressions.push_back(std::move(predicate));
-          continue;
         }
-        NativeExpressionAstNode predicate;
-        predicate.expression_id = NextExpressionId();
-        predicate.expression_kind = NativeExpressionAstKind::kBinary;
-        predicate.child_expression_ids = {
-            predicate_expression_ids[parsed.left_child],
-            predicate_expression_ids[parsed.right_child]};
-        predicate.operator_name = parsed.operator_name;
-        predicate.range = Span(*parsed.first, *parsed.last);
-        predicate_expression_ids[node_ordinal] = predicate.expression_id;
-        document_.expressions.push_back(std::move(predicate));
+        join.predicate_expression_ids = {
+            predicate_expression_ids[*predicate_root]};
       }
-      join.predicate_expression_ids = {
-          predicate_expression_ids[*predicate_root]};
+      prior_relation_id = join.relation_id;
+      document_.relations.push_back(std::move(join));
     }
-    join.range = Span(select_token, query_end);
-    document_.relations.push_back(std::move(join));
-    document_.catalog_relation_sources.push_back(std::move(*left_source));
-    document_.catalog_relation_sources.push_back(std::move(*right_source));
-    document_.root_relation_id = 3;
+    document_.catalog_relation_sources = std::move(parsed_sources);
+    document_.root_relation_id = prior_relation_id;
     document_.status = NativeRelationalParseStatus::kAccepted;
     return std::move(document_);
   }

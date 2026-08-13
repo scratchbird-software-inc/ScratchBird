@@ -38426,11 +38426,6 @@ Rcp079PreflightMultilegResultDescriptorsV1(
     result.detail = std::move(detail);
     return result;
   };
-  const auto scoped = opt::LookupMultilegDescriptorDispatchScopeV1(
-      input.context.statement_uuid.canonical);
-  if (!scoped.accepted) {
-    return refuse(scoped.diagnostic_id, scoped.detail);
-  }
   const auto descriptor_for = [&](const std::uint32_t descriptor_id) {
     return std::ranges::find_if(
         input.relational_dag.descriptors, [&](const auto& descriptor) {
@@ -38566,8 +38561,36 @@ Rcp079PreflightMultilegResultDescriptorsV1(
       source_demands.push_back(std::move(demand));
     }
   }
-  const auto source_allocation = opt::AllocateMultilegResultDescriptorsV1(
-      scoped.profiles, source_demands);
+  const bool requires_derived_descriptor_pool =
+      std::ranges::any_of(source_demands, [](const auto& demand) {
+        return demand.derived || demand.family_id == "columnar";
+      });
+  opt::MultilegDescriptorDispatchLookupV1 scoped;
+  opt::MultilegDescriptorAllocationResultV1 source_allocation;
+  if (requires_derived_descriptor_pool) {
+    scoped = opt::LookupMultilegDescriptorDispatchScopeV1(
+        input.context.statement_uuid.canonical);
+    if (!scoped.accepted) {
+      return refuse(scoped.diagnostic_id, scoped.detail);
+    }
+    source_allocation = opt::AllocateMultilegResultDescriptorsV1(
+        scoped.profiles, source_demands);
+  } else {
+    // Persisted-only joins do not consume the statement V10 derived-result
+    // pools. Their catalog descriptor and type UUIDs are already the exact
+    // allocation authority, including when an outer carrier is nullable.
+    source_allocation.accepted = true;
+    source_allocation.preflight_complete = true;
+    source_allocation.diagnostic_id = "SB_EXECUTOR_OK";
+    source_allocation.allocations.reserve(source_demands.size());
+    for (const auto& demand : source_demands) {
+      opt::MultilegDescriptorAllocationV1 allocation;
+      allocation.demand = demand;
+      allocation.descriptor_uuid = demand.persisted_descriptor_uuid;
+      allocation.type_uuid = demand.persisted_type_uuid;
+      source_allocation.allocations.push_back(std::move(allocation));
+    }
+  }
   if (!source_allocation.accepted || !source_allocation.preflight_complete ||
       source_allocation.allocations.size() != source_demands.size()) {
     return refuse(source_allocation.diagnostic_id, source_allocation.detail);
@@ -38621,20 +38644,22 @@ Rcp079PreflightMultilegResultDescriptorsV1(
         nullable_derived_ordinals.push_back(ordinal);
       }
     }
-    const auto nullable_allocation =
-        opt::AllocateMultilegResultDescriptorsV1(scoped.profiles,
-                                                 nullable_derived_demands);
-    if (!nullable_allocation.accepted ||
-        !nullable_allocation.preflight_complete ||
-        nullable_allocation.allocations.size() !=
-            nullable_derived_demands.size()) {
-      return refuse(nullable_allocation.diagnostic_id,
-                    nullable_allocation.detail);
-    }
-    for (std::size_t ordinal = 0;
-         ordinal < nullable_derived_ordinals.size(); ++ordinal) {
-      publication_allocations[nullable_derived_ordinals[ordinal]] =
-          nullable_allocation.allocations[ordinal];
+    if (!nullable_derived_demands.empty()) {
+      const auto nullable_allocation =
+          opt::AllocateMultilegResultDescriptorsV1(scoped.profiles,
+                                                   nullable_derived_demands);
+      if (!nullable_allocation.accepted ||
+          !nullable_allocation.preflight_complete ||
+          nullable_allocation.allocations.size() !=
+              nullable_derived_demands.size()) {
+        return refuse(nullable_allocation.diagnostic_id,
+                      nullable_allocation.detail);
+      }
+      for (std::size_t ordinal = 0;
+           ordinal < nullable_derived_ordinals.size(); ++ordinal) {
+        publication_allocations[nullable_derived_ordinals[ordinal]] =
+            nullable_allocation.allocations[ordinal];
+      }
     }
   }
   result.accepted = true;
@@ -38648,12 +38673,553 @@ bool CaptureRcp079ModelSourceLeg(
     const CanonicalCurrentHeapExecutionRequest& input,
     const api::RelationalDagNode& source,
     Rcp079CapturedModelLegV1* capture,
-    CanonicalObjectFreeValuesExecutionResult* attempted) {
+  CanonicalObjectFreeValuesExecutionResult* attempted) {
   if (capture == nullptr || attempted == nullptr) return false;
   CanonicalCurrentHeapExecutionRequest local = input;
+  const auto family = Rcp079ModelFamilyForSource(input.relational_dag, source);
   local.relational_dag =
       Rcp079OperatorLocalModelSourceDag(input.relational_dag, source);
-  const auto family = Rcp079ModelFamilyForSource(input.relational_dag, source);
+  if (family == "time_series") {
+    // QOW-SOURCE-RCP080-OPERATOR-LOCAL-TIME-SERIES-ATTACHMENT-V1
+    // Full multileg admission owns alias/start/end/range at the source.  The
+    // standalone raw family route owns only the public output prefix and the
+    // range root; its three operands remain reachable children.  Derive that
+    // narrower top-level view only from the exact already-admitted six-field
+    // carrier.  A near shape is left unchanged for ordinary validation to
+    // refuse, and the original complete DAG is never mutated.
+    const auto complete = api::ValidateTypedRelationalDag(input.relational_dag);
+    auto local_source = std::ranges::find_if(
+        local.relational_dag.nodes, [&](const auto& candidate) {
+          return candidate.node_id == source.node_id;
+        });
+    std::vector<const api::RelationalOutputRecord*> outputs;
+    for (const auto& output : input.relational_dag.outputs) {
+      if (output.relation_node_id == source.node_id) outputs.push_back(&output);
+    }
+    std::ranges::sort(outputs, {},
+                      &api::RelationalOutputRecord::ordinal);
+    static constexpr std::array<std::string_view, 6> kExactNames{
+        "row_uuid", "series_uuid", "metric_uuid", "point_timestamp",
+        "tags", "value"};
+    bool exact = complete.accepted && complete.issues.empty() &&
+                 local_source != local.relational_dag.nodes.end() &&
+                 source.output_descriptor_ids.size() == kExactNames.size() &&
+                 outputs.size() == kExactNames.size() &&
+                 source.bound_expression_ids.size() ==
+                     kExactNames.size() + 4 &&
+                 source.required_object_uuids.size() == 1;
+    std::vector<std::uint32_t> standalone_bound_expression_ids;
+    standalone_bound_expression_ids.reserve(kExactNames.size() + 1);
+    std::unordered_set<std::uint32_t> output_expression_ids;
+    for (std::size_t ordinal = 0; exact && ordinal < outputs.size();
+         ++ordinal) {
+      const auto* output = outputs[ordinal];
+      exact = output->visible && output->ordinal == ordinal &&
+              output->output_name_utf8 == kExactNames[ordinal] &&
+              output->descriptor_id == source.output_descriptor_ids[ordinal] &&
+              source.bound_expression_ids[ordinal] == output->expression_id &&
+              output_expression_ids.insert(output->expression_id).second;
+      standalone_bound_expression_ids.push_back(output->expression_id);
+    }
+    const auto expression_for = [&](const std::uint32_t expression_id) {
+      return std::ranges::find_if(
+          input.relational_dag.expressions, [&](const auto& expression) {
+            return expression.expression_id == expression_id;
+          });
+    };
+    if (exact) {
+      const auto suffix = source.bound_expression_ids.begin() +
+                          static_cast<std::ptrdiff_t>(kExactNames.size());
+      const auto alias = expression_for(suffix[0]);
+      const auto start = expression_for(suffix[1]);
+      const auto end = expression_for(suffix[2]);
+      const auto range = expression_for(suffix[3]);
+      exact = alias != input.relational_dag.expressions.end() &&
+              start != input.relational_dag.expressions.end() &&
+              end != input.relational_dag.expressions.end() &&
+              range != input.relational_dag.expressions.end() &&
+              range->operator_name == "TIME_RANGE" &&
+              range->expression_kind ==
+                  api::RelationalExpressionKind::kFunctionCall &&
+              range->child_expression_ids ==
+                  std::vector<std::uint32_t>{alias->expression_id,
+                                             start->expression_id,
+                                             end->expression_id} &&
+              alias->expression_kind ==
+                  api::RelationalExpressionKind::kIdentifier &&
+              alias->bound_name_uuid == source.required_object_uuids.front() &&
+              start->expression_kind ==
+                  api::RelationalExpressionKind::kLiteral &&
+              end->expression_kind == api::RelationalExpressionKind::kLiteral &&
+              start->literal_kind == api::RelationalLiteralKind::kTemporal &&
+              end->literal_kind == api::RelationalLiteralKind::kTemporal &&
+              start->result_descriptor_id == end->result_descriptor_id &&
+              !output_expression_ids.contains(alias->expression_id) &&
+              !output_expression_ids.contains(start->expression_id) &&
+              !output_expression_ids.contains(end->expression_id) &&
+              !output_expression_ids.contains(range->expression_id) &&
+              std::unordered_set<std::uint32_t>{alias->expression_id,
+                                                start->expression_id,
+                                                end->expression_id,
+                                                range->expression_id}
+                      .size() == 4;
+      if (exact) standalone_bound_expression_ids.push_back(range->expression_id);
+    }
+    if (exact) {
+      local_source->bound_expression_ids =
+          std::move(standalone_bound_expression_ids);
+    }
+  }
+  if (family == "search") {
+    // QOW-SOURCE-RCP080-OPERATOR-LOCAL-SEARCH-AUTHORITY-ENRICHMENT-V1
+    // The exact full multileg carrier deliberately owns only alias, query
+    // text/query root, analyzer identity, top-k, and SEARCH_MATCH.  Standalone
+    // execution additionally requires the current analyzer generation,
+    // canonical analyzer digest, and current persisted category identity.
+    // Build those records only in a candidate local view, from the same
+    // immutable request/catalog authority.  The original DAG is untouched;
+    // any mismatch leaves the unenriched near shape for normal refusal.
+    const auto complete = api::ValidateTypedRelationalDag(input.relational_dag);
+    auto enriched = local.relational_dag;
+    auto local_source = std::ranges::find_if(
+        enriched.nodes, [&](const auto& candidate) {
+          return candidate.node_id == source.node_id;
+        });
+    std::vector<const api::RelationalOutputRecord*> outputs;
+    for (const auto& output : input.relational_dag.outputs) {
+      if (output.relation_node_id == source.node_id) outputs.push_back(&output);
+    }
+    std::ranges::sort(outputs, {}, &api::RelationalOutputRecord::ordinal);
+    static constexpr std::array<std::string_view, 5> kExactNames{
+        "document_uuid", "analyzer_uuid", "analyzer_generation", "score",
+        "rank"};
+    bool exact = complete.accepted && complete.issues.empty() &&
+                 local_source != enriched.nodes.end() &&
+                 source.node_kind == api::RelationalDagNodeKind::kScan &&
+                 source.semantic_variant_id == "SBLR_MODEL_SOURCE_V1" &&
+                 source.required_object_uuids.size() == 1 &&
+                 source.output_descriptor_ids.size() == kExactNames.size() &&
+                 source.bound_expression_ids.size() ==
+                     kExactNames.size() + 6 &&
+                 outputs.size() == kExactNames.size() &&
+                 input.context.catalog_generation_id != 0;
+    const auto expression_for = [&](const std::uint32_t expression_id) {
+      return std::ranges::find_if(
+          input.relational_dag.expressions, [&](const auto& expression) {
+            return expression.expression_id == expression_id;
+          });
+    };
+    const auto descriptor_for = [&](const std::uint32_t descriptor_id) {
+      return std::ranges::find_if(
+          input.relational_dag.descriptors, [&](const auto& descriptor) {
+            return descriptor.descriptor_id == descriptor_id;
+          });
+    };
+    std::vector<std::uint32_t> output_expression_ids;
+    std::unordered_set<std::uint32_t> distinct_output_expression_ids;
+    for (std::size_t ordinal = 0; exact && ordinal < outputs.size();
+         ++ordinal) {
+      const auto* output = outputs[ordinal];
+      const auto expression = expression_for(output->expression_id);
+      const auto descriptor = descriptor_for(output->descriptor_id);
+      exact = output->visible && output->ordinal == ordinal &&
+              output->output_name_utf8 == kExactNames[ordinal] &&
+              output->descriptor_id == source.output_descriptor_ids[ordinal] &&
+              source.bound_expression_ids[ordinal] == output->expression_id &&
+              expression != input.relational_dag.expressions.end() &&
+              descriptor != input.relational_dag.descriptors.end() &&
+              expression->result_descriptor_id == output->descriptor_id &&
+              descriptor->nullability ==
+                  api::RelationalNullability::kNonNull &&
+              !descriptor->collation_uuid.has_value() &&
+              !descriptor->timezone_profile_id.has_value() &&
+              distinct_output_expression_ids.insert(output->expression_id)
+                  .second;
+      output_expression_ids.push_back(output->expression_id);
+    }
+    if (exact) {
+      const auto document_descriptor = descriptor_for(outputs[0]->descriptor_id);
+      const auto analyzer_descriptor = descriptor_for(outputs[1]->descriptor_id);
+      const auto generation_descriptor =
+          descriptor_for(outputs[2]->descriptor_id);
+      const auto score_descriptor = descriptor_for(outputs[3]->descriptor_id);
+      const auto rank_descriptor = descriptor_for(outputs[4]->descriptor_id);
+      exact = document_descriptor->type_uuid == analyzer_descriptor->type_uuid &&
+              generation_descriptor->type_uuid == rank_descriptor->type_uuid &&
+              generation_descriptor->type_uuid != score_descriptor->type_uuid;
+    }
+    const auto match = std::ranges::find_if(
+        input.relational_dag.expressions, [](const auto& expression) {
+          return expression.operator_name == "SEARCH_MATCH";
+        });
+    const auto terms = std::ranges::find_if(
+        input.relational_dag.expressions, [](const auto& expression) {
+          return expression.operator_name == "SEARCH_TERMS";
+        });
+    exact = exact && match != input.relational_dag.expressions.end() &&
+            terms != input.relational_dag.expressions.end() &&
+            std::ranges::count_if(
+                input.relational_dag.expressions, [](const auto& expression) {
+                  return expression.operator_name == "SEARCH_MATCH";
+                }) == 1 &&
+            std::ranges::count_if(
+                input.relational_dag.expressions, [](const auto& expression) {
+                  return expression.operator_name == "SEARCH_TERMS";
+                }) == 1 &&
+            match->expression_kind ==
+                api::RelationalExpressionKind::kFunctionCall &&
+            match->child_expression_ids.size() == 4 &&
+            terms->expression_kind ==
+                api::RelationalExpressionKind::kFunctionCall &&
+            terms->child_expression_ids.size() == 1 &&
+            match->child_expression_ids[1] == terms->expression_id;
+    auto alias = input.relational_dag.expressions.end();
+    auto query_text = input.relational_dag.expressions.end();
+    auto owned_analyzer = input.relational_dag.expressions.end();
+    auto owned_top_k = input.relational_dag.expressions.end();
+    std::uint32_t top_k_value = 0;
+    if (exact) {
+      alias = expression_for(match->child_expression_ids[0]);
+      query_text = expression_for(terms->child_expression_ids[0]);
+      owned_analyzer = expression_for(match->child_expression_ids[2]);
+      owned_top_k = expression_for(match->child_expression_ids[3]);
+      exact = alias != input.relational_dag.expressions.end() &&
+              query_text != input.relational_dag.expressions.end() &&
+              owned_analyzer != input.relational_dag.expressions.end() &&
+              owned_top_k != input.relational_dag.expressions.end() &&
+              alias->expression_kind ==
+                  api::RelationalExpressionKind::kIdentifier &&
+              alias->bound_name_uuid == source.required_object_uuids.front() &&
+              query_text->expression_kind ==
+                  api::RelationalExpressionKind::kLiteral &&
+              query_text->literal_kind ==
+                  api::RelationalLiteralKind::kString &&
+              query_text->literal_or_parameter_ref.has_value() &&
+              !query_text->literal_or_parameter_ref->empty() &&
+              owned_analyzer->expression_kind ==
+                  api::RelationalExpressionKind::kIdentifier &&
+              owned_analyzer->bound_name_uuid.has_value() &&
+              owned_analyzer->bound_name_uuid !=
+                  source.required_object_uuids.front() &&
+              owned_top_k->expression_kind ==
+                  api::RelationalExpressionKind::kLiteral &&
+              owned_top_k->literal_kind ==
+                  api::RelationalLiteralKind::kNumeric &&
+              owned_top_k->literal_or_parameter_ref.has_value();
+    }
+    if (exact) {
+      const auto& spelling = *owned_top_k->literal_or_parameter_ref;
+      const auto parsed = std::from_chars(
+          spelling.data(), spelling.data() + spelling.size(), top_k_value);
+      exact = !spelling.empty() &&
+              (spelling.size() == 1 || spelling.front() != '0') &&
+              parsed.ec == std::errc{} &&
+              parsed.ptr == spelling.data() + spelling.size() &&
+              top_k_value != 0;
+    }
+    if (exact) {
+      const auto analyzer_output = expression_for(output_expression_ids[1]);
+      const auto generation_output = expression_for(output_expression_ids[2]);
+      const auto rank_output = expression_for(output_expression_ids[4]);
+      exact = analyzer_output != input.relational_dag.expressions.end() &&
+              generation_output != input.relational_dag.expressions.end() &&
+              rank_output != input.relational_dag.expressions.end() &&
+              analyzer_output->expression_kind ==
+                  api::RelationalExpressionKind::kIdentifier &&
+              analyzer_output->bound_name_uuid ==
+                  owned_analyzer->bound_name_uuid &&
+              generation_output->expression_kind ==
+                  api::RelationalExpressionKind::kIdentifier &&
+              generation_output->bound_name_uuid ==
+                  owned_analyzer->bound_name_uuid;
+    }
+    if (exact) {
+      const auto suffix_begin = source.bound_expression_ids.begin() +
+                                static_cast<std::ptrdiff_t>(kExactNames.size());
+      const std::unordered_set<std::uint32_t> suffix(
+          suffix_begin, source.bound_expression_ids.end());
+      const std::unordered_set<std::uint32_t> expected{
+          alias->expression_id, query_text->expression_id,
+          terms->expression_id, owned_analyzer->expression_id,
+          owned_top_k->expression_id, match->expression_id};
+      exact = suffix.size() == 6 && suffix == expected &&
+              std::ranges::all_of(expected, [&](const auto expression_id) {
+                return std::ranges::count_if(
+                           input.relational_dag.nodes,
+                           [&](const auto& candidate) {
+                             return std::ranges::find(
+                                        candidate.bound_expression_ids,
+                                        expression_id) !=
+                                    candidate.bound_expression_ids.end();
+                           }) == 1;
+              });
+    }
+    api::MgaRelationStorageDescriptorLoadResult loaded;
+    if (exact) {
+      loaded = api::LoadMgaRelationStorageDescriptor(
+          input.context, source.required_object_uuids.front());
+      exact = loaded.ok &&
+              loaded.descriptor.relation_uuid.canonical ==
+                  source.required_object_uuids.front() &&
+              loaded.descriptor.database_uuid.canonical ==
+                  input.context.database_uuid.canonical &&
+              loaded.descriptor.relation_kind == "table" &&
+              loaded.descriptor.storage_profile == "local_mga_rowstore_v1" &&
+              loaded.descriptor.descriptor_generation != 0 &&
+              loaded.descriptor.columns.size() == 2 &&
+              loaded.descriptor.columns[0].ordinal == 0 &&
+              loaded.descriptor.columns[0].canonical_name_key == "body" &&
+              !loaded.descriptor.columns[0].nullable &&
+              loaded.descriptor.columns[0]
+                      .value_descriptor.canonical_type_name == "text" &&
+              loaded.descriptor.columns[1].ordinal == 1 &&
+              loaded.descriptor.columns[1].canonical_name_key == "category" &&
+              !loaded.descriptor.columns[1].nullable &&
+              loaded.descriptor.columns[1].collation_uuid.empty() &&
+              !Rcp079DescriptorField(
+                   loaded.descriptor.columns[1]
+                       .value_descriptor.encoded_descriptor,
+                   "timezone_profile_id")
+                   .has_value() &&
+              loaded.descriptor.columns[1]
+                      .value_descriptor.canonical_type_name == "text";
+    }
+    auto body_descriptor = input.relational_dag.descriptors.end();
+    auto category_descriptor = input.relational_dag.descriptors.end();
+    std::uint32_t category_descriptor_id = 0;
+    std::optional<std::string> category_type_uuid;
+    std::optional<api::RelationalTypeDescriptor> local_category_descriptor;
+    if (exact) {
+      const auto descriptor_matches = [&](const auto& descriptor,
+                                          const auto& engine_descriptor) {
+        const auto type_uuid = Rcp079DescriptorField(
+            engine_descriptor.encoded_descriptor, "type_uuid");
+        return type_uuid.has_value() && CanonicalUuidText(*type_uuid) &&
+               CanonicalUuidText(engine_descriptor.descriptor_uuid.canonical) &&
+               descriptor.descriptor_uuid ==
+                   engine_descriptor.descriptor_uuid.canonical &&
+               descriptor.type_uuid == *type_uuid &&
+               descriptor.nullability ==
+                   api::RelationalNullability::kNonNull &&
+               !descriptor.collation_uuid.has_value() &&
+               !descriptor.timezone_profile_id.has_value();
+      };
+      body_descriptor = std::ranges::find_if(
+          input.relational_dag.descriptors, [&](const auto& descriptor) {
+            return descriptor_matches(
+                descriptor,
+                loaded.descriptor.columns[0].value_descriptor);
+          });
+      category_descriptor = std::ranges::find_if(
+          input.relational_dag.descriptors, [&](const auto& descriptor) {
+            return descriptor_matches(
+                descriptor,
+                loaded.descriptor.columns[1].value_descriptor);
+          });
+      category_type_uuid = Rcp079DescriptorField(
+          loaded.descriptor.columns[1].value_descriptor.encoded_descriptor,
+          "type_uuid");
+      exact = body_descriptor != input.relational_dag.descriptors.end() &&
+              body_descriptor->descriptor_id ==
+                  query_text->result_descriptor_id &&
+              CanonicalUuidText(
+                  loaded.descriptor.columns[1].column_uuid.canonical) &&
+              CanonicalUuidText(loaded.descriptor.columns[1]
+                                    .value_descriptor.descriptor_uuid.canonical) &&
+              category_type_uuid.has_value() &&
+              CanonicalUuidText(*category_type_uuid);
+      if (exact &&
+          category_descriptor != input.relational_dag.descriptors.end()) {
+        category_descriptor_id = category_descriptor->descriptor_id;
+      } else if (exact) {
+        // QOW-SOURCE-RCP080-OPERATOR-LOCAL-SEARCH-CATEGORY-DESCRIPTOR-V1
+        // Only the local numeric handle is new.  Descriptor/type identities
+        // and all semantics come from the same current relation metadata that
+        // authorized the search enrichment.  max+1 is deterministic and
+        // collision-free; the uint32 boundary fails closed.
+        std::uint32_t maximum_descriptor_id = 0;
+        for (const auto& descriptor : input.relational_dag.descriptors) {
+          maximum_descriptor_id =
+              std::max(maximum_descriptor_id, descriptor.descriptor_id);
+        }
+        exact = maximum_descriptor_id !=
+                std::numeric_limits<std::uint32_t>::max();
+        if (exact) {
+          category_descriptor_id = maximum_descriptor_id + 1;
+          exact = category_descriptor_id != 0 &&
+                  std::ranges::none_of(
+                      input.relational_dag.descriptors,
+                      [&](const auto& descriptor) {
+                        return descriptor.descriptor_id ==
+                               category_descriptor_id;
+                      });
+        }
+        if (exact) {
+          api::RelationalTypeDescriptor descriptor;
+          descriptor.descriptor_id = category_descriptor_id;
+          descriptor.descriptor_uuid = loaded.descriptor.columns[1]
+                                           .value_descriptor.descriptor_uuid
+                                           .canonical;
+          descriptor.type_uuid = *category_type_uuid;
+          descriptor.nullability = api::RelationalNullability::kNonNull;
+          local_category_descriptor = std::move(descriptor);
+        }
+      }
+    }
+    std::uint32_t maximum_expression_id = 0;
+    if (exact) {
+      for (const auto& expression : input.relational_dag.expressions) {
+        maximum_expression_id =
+            std::max(maximum_expression_id, expression.expression_id);
+      }
+      exact = maximum_expression_id <=
+              std::numeric_limits<std::uint32_t>::max() - 3;
+    }
+    if (exact) {
+      const auto digest_id = maximum_expression_id + 1;
+      const auto binding_id = maximum_expression_id + 2;
+      const auto category_id = maximum_expression_id + 3;
+      const auto local_expression_for = [&](const std::uint32_t expression_id) {
+        return std::ranges::find_if(
+            enriched.expressions, [&](const auto& expression) {
+              return expression.expression_id == expression_id;
+            });
+      };
+      auto local_generation = local_expression_for(output_expression_ids[2]);
+      auto local_rank = local_expression_for(output_expression_ids[4]);
+      auto local_match = local_expression_for(match->expression_id);
+      exact = local_generation != enriched.expressions.end() &&
+              local_rank != enriched.expressions.end() &&
+              local_match != enriched.expressions.end() &&
+              local_expression_for(digest_id) == enriched.expressions.end() &&
+              local_expression_for(binding_id) == enriched.expressions.end() &&
+              local_expression_for(category_id) == enriched.expressions.end();
+      if (exact) {
+        local_generation->expression_kind =
+            api::RelationalExpressionKind::kLiteral;
+        local_generation->function_uuid.reset();
+        local_generation->bound_name_uuid.reset();
+        local_generation->literal_kind =
+            api::RelationalLiteralKind::kNumeric;
+        local_generation->literal_or_parameter_ref =
+            std::to_string(input.context.catalog_generation_id);
+        local_generation->operator_name.reset();
+        local_generation->child_expression_ids.clear();
+        local_rank->expression_kind = api::RelationalExpressionKind::kLiteral;
+        local_rank->function_uuid.reset();
+        local_rank->bound_name_uuid.reset();
+        local_rank->literal_kind = api::RelationalLiteralKind::kNumeric;
+        local_rank->literal_or_parameter_ref = std::to_string(top_k_value);
+        local_rank->operator_name.reset();
+        local_rank->child_expression_ids.clear();
+
+        api::RelationalExpressionRecord digest;
+        digest.expression_id = digest_id;
+        digest.expression_kind = api::RelationalExpressionKind::kLiteral;
+        digest.result_descriptor_id = body_descriptor->descriptor_id;
+        digest.literal_kind = api::RelationalLiteralKind::kString;
+        digest.literal_or_parameter_ref =
+            "9033908d159ddd442f2042467fd49e0a12b47679f7514e9aa6e55488e151d316";
+        enriched.expressions.push_back(std::move(digest));
+        api::RelationalExpressionRecord binding;
+        binding.expression_id = binding_id;
+        binding.expression_kind =
+            api::RelationalExpressionKind::kFunctionCall;
+        binding.result_descriptor_id = outputs[1]->descriptor_id;
+        binding.operator_name = "SEARCH_ANALYZER_BINDING";
+        binding.child_expression_ids = {output_expression_ids[1],
+                                        output_expression_ids[2], digest_id};
+        enriched.expressions.push_back(std::move(binding));
+        const auto descriptor_count_before_category =
+            enriched.descriptors.size();
+        if (local_category_descriptor.has_value()) {
+          enriched.descriptors.push_back(*local_category_descriptor);
+        } else if (std::ranges::none_of(
+                       enriched.descriptors, [&](const auto& descriptor) {
+                         return descriptor.descriptor_id ==
+                                category_descriptor_id;
+                       })) {
+          enriched.descriptors.push_back(*category_descriptor);
+        }
+        const auto local_category_descriptor_record = std::ranges::find_if(
+            enriched.descriptors, [&](const auto& descriptor) {
+              return descriptor.descriptor_id == category_descriptor_id;
+            });
+        exact = local_category_descriptor_record != enriched.descriptors.end() &&
+                std::ranges::count_if(
+                    enriched.descriptors, [&](const auto& descriptor) {
+                      return descriptor.descriptor_id ==
+                             category_descriptor_id;
+                    }) == 1 &&
+                local_category_descriptor_record->descriptor_uuid ==
+                    loaded.descriptor.columns[1]
+                        .value_descriptor.descriptor_uuid.canonical &&
+                local_category_descriptor_record->type_uuid ==
+                    *category_type_uuid &&
+                local_category_descriptor_record->nullability ==
+                    api::RelationalNullability::kNonNull &&
+                !local_category_descriptor_record->collation_uuid.has_value() &&
+                !local_category_descriptor_record->timezone_profile_id
+                     .has_value() &&
+                std::ranges::none_of(
+                    enriched.outputs, [&](const auto& output) {
+                      return output.descriptor_id == category_descriptor_id;
+                    }) &&
+                enriched.descriptors.size() ==
+                    descriptor_count_before_category + 1;
+        if (exact) {
+          api::RelationalExpressionRecord category;
+          category.expression_id = category_id;
+          category.expression_kind =
+              api::RelationalExpressionKind::kIdentifier;
+          category.result_descriptor_id = category_descriptor_id;
+          category.bound_name_uuid =
+              loaded.descriptor.columns[1].column_uuid.canonical;
+          enriched.expressions.push_back(std::move(category));
+          local_match = local_expression_for(match->expression_id);
+          local_match->child_expression_ids[2] = binding_id;
+          local_match->child_expression_ids[3] = output_expression_ids[4];
+          std::erase_if(enriched.expressions, [&](const auto& expression) {
+            return expression.expression_id ==
+                       owned_analyzer->expression_id ||
+                   expression.expression_id == owned_top_k->expression_id;
+          });
+          local_source = std::ranges::find_if(
+              enriched.nodes, [&](const auto& candidate) {
+                return candidate.node_id == source.node_id;
+              });
+          local_source->bound_expression_ids = output_expression_ids;
+          local_source->bound_expression_ids.insert(
+              local_source->bound_expression_ids.end(),
+              {alias->expression_id, query_text->expression_id,
+               terms->expression_id, digest_id, binding_id,
+               match->expression_id, category_id});
+          exact = std::ranges::count_if(
+                      enriched.expressions, [&](const auto& expression) {
+                        return expression.result_descriptor_id ==
+                               category_descriptor_id;
+                      }) == 1 &&
+                  std::ranges::find_if(
+                      enriched.expressions, [&](const auto& expression) {
+                        return expression.result_descriptor_id ==
+                               category_descriptor_id;
+                      })->expression_id == category_id;
+          const auto local_validation =
+              api::ValidateTypedRelationalDag(enriched);
+          exact = exact && local_validation.accepted &&
+                  local_validation.issues.empty();
+        }
+      }
+    }
+    if (exact) local.relational_dag = std::move(enriched);
+  }
+  if (family == "document" || family == "graph") {
+    // QOW-SOURCE-RCP080-OPERATOR-LOCAL-NON-TIMESTAMP-VIEW-V1
+    // The original multileg DAG and immutable EngineRequestContext retain the
+    // one common statement timestamp.  Standalone document/graph typed-DAG
+    // forms classify no timestamp; this derived semantic view carries none.
+    local.relational_dag.statement_timestamp.clear();
+  }
   if (family == "spatial" || family == "columnar") {
     *attempted = ExecuteCanonicalSpatialColumnarFamilyQuery(local, capture);
   } else if (family == "search") {
@@ -38671,6 +39237,1927 @@ bool CaptureRcp079ModelSourceLeg(
   }
   return capture->captured && capture->family_id == family &&
          capture->logical_node_id == source.node_id;
+}
+
+struct Rcp080BoundedSourceV1 {
+  const api::RelationalDagNode* node{nullptr};
+  std::string family_id;
+  std::string operation_id;
+  std::vector<std::string> operation_ids;
+  api::MgaRelationStorageDescriptor persisted;
+  std::vector<exec::ExecutorColumnDescriptor> columns;
+  std::vector<std::string> output_descriptor_uuids;
+  std::string spatial_crs_uuid;
+  std::uint64_t spatial_crs_generation{0};
+};
+
+std::string Rcp080LogicalOperatorV1(const std::string_view family) {
+  if (family == "document") return "LOGICAL_DOCUMENT_SOURCE_V1";
+  if (family == "graph") return "LOGICAL_GRAPH_SOURCE_V1";
+  if (family == "key_value") return "LOGICAL_KEY_VALUE_SOURCE_V1";
+  if (family == "time_series") return "LOGICAL_TIME_SERIES_SOURCE_V1";
+  if (family == "vector") return "LOGICAL_VECTOR_SOURCE_V1";
+  if (family == "search") return "LOGICAL_SEARCH_SOURCE_V1";
+  if (family == "spatial") return "LOGICAL_SPATIAL_SOURCE_V1";
+  if (family == "columnar") return "LOGICAL_COLUMNAR_SOURCE_V1";
+  return {};
+}
+
+std::string Rcp080ImplementationV1(const std::string_view family) {
+  if (family == "relational") return "physical_relational_heap_scan_v1";
+  if (family == "document") return "physical_document_path_scan_v1";
+  if (family == "graph") return "physical_graph_adjacency_scan_v1";
+  if (family == "key_value") return "physical_key_value_scan_v1";
+  if (family == "time_series") return "physical_time_series_range_scan_v1";
+  if (family == "vector") return "physical_vector_search_v1";
+  if (family == "search") return "physical_search_rank_scan_v1";
+  if (family == "spatial") return "physical_spatial_index_scan_v1";
+  if (family == "columnar") return "physical_columnar_zone_scan_v1";
+  return {};
+}
+
+std::string Rcp080OperationV1(const std::string_view family) {
+  if (family == "relational") return "RELATIONAL_HEAP_SCAN";
+  if (family == "document") return "DOCUMENT_FIND";
+  if (family == "graph") return "GRAPH_MATCH";
+  if (family == "key_value") return "KEY_VALUE_GET";
+  if (family == "time_series") return "TIME_SERIES_RANGE_READ";
+  if (family == "vector") return "VECTOR_EXACT_SEARCH";
+  if (family == "search") return "SEARCH_RANKED_QUERY";
+  if (family == "spatial") return "SPATIAL_SOURCE";
+  if (family == "columnar") return "COLUMNAR_SOURCE";
+  return {};
+}
+
+CanonicalObjectFreeValuesExecutionResult
+ExecuteCanonicalBoundedModelFamilyCompositionQuery(
+    const CanonicalCurrentHeapExecutionRequest& input) {
+  CanonicalObjectFreeValuesExecutionResult result;
+  const auto& dag = input.relational_dag;
+  std::vector<const api::RelationalDagNode*> sources;
+  std::vector<const api::RelationalDagNode*> joins;
+  for (const auto& node : dag.nodes) {
+    const bool source =
+        node.node_kind == api::RelationalDagNodeKind::kScan &&
+        (node.semantic_variant_id == "relation.source.v1" ||
+         node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1");
+    if (source) {
+      sources.push_back(&node);
+    } else if (node.node_kind == api::RelationalDagNodeKind::kJoin) {
+      joins.push_back(&node);
+    } else {
+      return result;
+    }
+  }
+  if (sources.size() < 3 || sources.size() > 9 ||
+      joins.size() + 1 != sources.size()) {
+    return result;
+  }
+  std::ranges::sort(sources, {}, [](const auto* node) { return node->node_id; });
+  std::ranges::sort(joins, {}, [](const auto* node) { return node->node_id; });
+  std::uint32_t left_node_id = sources.front()->node_id;
+  std::vector<std::uint32_t> accumulated_descriptors =
+      sources.front()->output_descriptor_ids;
+  for (std::size_t ordinal = 1; ordinal < sources.size(); ++ordinal) {
+    const auto* join = joins[ordinal - 1];
+    if (join->semantic_variant_id != "join.cross.v1" ||
+        join->input_node_ids !=
+            std::vector<std::uint32_t>{left_node_id,
+                                       sources[ordinal]->node_id} ||
+        !join->bound_expression_ids.empty()) {
+      return result;
+    }
+    accumulated_descriptors.insert(
+        accumulated_descriptors.end(),
+        sources[ordinal]->output_descriptor_ids.begin(),
+        sources[ordinal]->output_descriptor_ids.end());
+    if (join->output_descriptor_ids != accumulated_descriptors) return result;
+    left_node_id = join->node_id;
+  }
+  if (left_node_id != dag.root_node_id) return result;
+
+  result.profile_matched = true;
+  CanonicalObjectFreeValuesExecutionRequest response_context;
+  response_context.context = input.context;
+  response_context.relational_dag = dag;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result = Failure(response_context, std::move(diagnostic_id),
+                                std::move(detail));
+    return result;
+  };
+
+  std::vector<std::string> families;
+  families.reserve(sources.size());
+  std::size_t model_count = 0;
+  std::unordered_set<std::uint32_t> attached_model_roots;
+  std::unordered_set<std::uint32_t> attached_model_expressions;
+  const auto exact_root_family = [](
+                                     const std::optional<std::string>& value) {
+    if (!value.has_value()) return std::string{};
+    const std::string_view operation = *value;
+    if (operation == "DOCUMENT_SOURCE") return std::string("document");
+    if (operation == "GRAPH_MATCH") return std::string("graph");
+    if (operation == "KV_KEY") return std::string("key_value");
+    if (operation == "TIME_RANGE") return std::string("time_series");
+    if (operation == "VECTOR_NEAREST") return std::string("vector");
+    if (operation == "SEARCH_MATCH") return std::string("search");
+    if (operation == "SPATIAL_SOURCE") return std::string("spatial");
+    if (operation == "COLUMNAR_SOURCE") return std::string("columnar");
+    return std::string{};
+  };
+  const auto dag_expression_for = [&](const std::uint32_t expression_id)
+      -> const api::RelationalExpressionRecord* {
+    const auto expression = std::ranges::find_if(
+        dag.expressions, [&](const auto& candidate) {
+          return candidate.expression_id == expression_id;
+        });
+    return expression == dag.expressions.end() ? nullptr : &*expression;
+  };
+  for (const auto* source : sources) {
+    const bool model_source =
+        source->semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
+    // QOW-SOURCE-RCP080-CANONICAL-EXECUTE-SEARCH-TERMS-AUXILIARY-V1
+    // SEARCH_TERMS is not a model-family root.  It is the one functionless
+    // query constructor attached as ordinal-1 child of this source's exact
+    // SEARCH_MATCH root; complete owned reachability below remains an
+    // independent mandatory proof.
+    const api::RelationalExpressionRecord* candidate_search_root = nullptr;
+    const api::RelationalExpressionRecord* attached_search_terms = nullptr;
+    for (const auto expression_id : source->bound_expression_ids) {
+      const auto* expression = dag_expression_for(expression_id);
+      if (expression == nullptr ||
+          expression->operator_name != "SEARCH_MATCH") {
+        continue;
+      }
+      if (candidate_search_root != nullptr) {
+        return refuse(
+            "SB_MODEL_BINDING_INCOMPLETE_V1",
+            "bounded composition model operation root is not exactly attached to its source");
+      }
+      candidate_search_root = expression;
+    }
+    if (candidate_search_root != nullptr &&
+        candidate_search_root->child_expression_ids.size() == 4) {
+      const auto* expression = dag_expression_for(
+          candidate_search_root->child_expression_ids[1]);
+      const bool attached_to_same_source =
+          expression != nullptr &&
+          std::ranges::find(source->bound_expression_ids,
+                            expression->expression_id) !=
+              source->bound_expression_ids.end();
+      if (attached_to_same_source &&
+          expression->expression_kind ==
+              api::RelationalExpressionKind::kFunctionCall &&
+          !expression->function_uuid.has_value() &&
+          !expression->bound_name_uuid.has_value() &&
+          !expression->literal_kind.has_value() &&
+          !expression->literal_or_parameter_ref.has_value() &&
+          expression->operator_name == "SEARCH_TERMS" &&
+          expression->child_expression_ids.size() == 1) {
+        attached_search_terms = expression;
+      }
+    }
+    std::vector<std::pair<std::uint32_t, std::string>> roots;
+    for (const auto expression_id : source->bound_expression_ids) {
+      const auto* expression = dag_expression_for(expression_id);
+      if (expression == nullptr) {
+        return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "bounded composition source expression is unresolved");
+      }
+      const auto root_family = exact_root_family(expression->operator_name);
+      const bool functionless_operation =
+          expression->expression_kind ==
+              api::RelationalExpressionKind::kFunctionCall &&
+          !expression->function_uuid.has_value();
+      if (root_family.empty()) {
+        if (functionless_operation && expression != attached_search_terms) {
+          return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                        "bounded composition contains an unregistered functionless operation root");
+        }
+        continue;
+      }
+      const auto expected_arity =
+          root_family == "document" ? 1U
+          : root_family == "graph" ? 2U
+          : root_family == "key_value" ? 1U
+          : root_family == "time_series" ? 3U
+          : root_family == "vector" || root_family == "search" ? 4U
+                                                                  : 0U;
+      const auto expected_root_bound_name =
+          root_family == "spatial" || root_family == "columnar"
+              ? std::optional<std::string>{
+                    source->required_object_uuids.empty()
+                        ? std::string{}
+                        : source->required_object_uuids.front()}
+              : std::optional<std::string>{};
+      if (!functionless_operation || expression->literal_kind.has_value() ||
+          expression->literal_or_parameter_ref.has_value() ||
+          expression->child_expression_ids.size() != expected_arity ||
+          source->required_object_uuids.size() != 1 ||
+          expression->bound_name_uuid != expected_root_bound_name ||
+          !attached_model_roots.insert(expression_id).second) {
+        return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "bounded composition model operation root is not exactly attached to its source");
+      }
+      roots.emplace_back(expression_id, root_family);
+    }
+    if (model_source != (roots.size() == 1)) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "bounded composition model source does not have exactly one recognized attached root");
+    }
+    const auto family = model_source ? roots.front().second : "relational";
+    if (model_source) {
+      const auto root_id = roots.front().first;
+      const auto* root = dag_expression_for(root_id);
+      std::unordered_set<std::uint32_t> output_expression_ids;
+      for (const auto& output : dag.outputs) {
+        if (output.relation_node_id == source->node_id) {
+          output_expression_ids.insert(output.expression_id);
+        }
+      }
+      std::unordered_set<std::uint32_t> owned;
+      for (const auto expression_id : source->bound_expression_ids) {
+        if (!output_expression_ids.contains(expression_id)) {
+          owned.insert(expression_id);
+        }
+      }
+      std::unordered_set<std::uint32_t> reachable;
+      std::vector<std::uint32_t> pending{root_id};
+      if (family == "key_value") {
+        const auto equality = std::ranges::find_if(
+            owned, [&](const auto expression_id) {
+              const auto* expression = dag_expression_for(expression_id);
+              return expression != nullptr &&
+                     expression->expression_kind ==
+                         api::RelationalExpressionKind::kBinary &&
+                     expression->operator_name == "=" &&
+                     expression->child_expression_ids.size() == 2 &&
+                     expression->child_expression_ids.front() == root_id;
+            });
+        if (equality == owned.end()) {
+          return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                        "bounded KV leg lacks its exact key equality");
+        }
+        pending.push_back(*equality);
+      }
+      while (!pending.empty()) {
+        const auto expression_id = pending.back();
+        pending.pop_back();
+        if (!reachable.insert(expression_id).second) continue;
+        const auto* expression = dag_expression_for(expression_id);
+        if (expression == nullptr || !owned.contains(expression_id)) {
+          return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                        "bounded model operation closure is detached");
+        }
+        pending.insert(pending.end(), expression->child_expression_ids.begin(),
+                       expression->child_expression_ids.end());
+      }
+      const auto* alias = root->child_expression_ids.empty()
+                              ? nullptr
+                              : dag_expression_for(
+                                    root->child_expression_ids.front());
+      const bool alias_exact =
+          root->child_expression_ids.empty() ||
+          (alias != nullptr &&
+           alias->expression_kind ==
+               api::RelationalExpressionKind::kIdentifier &&
+           alias->bound_name_uuid == source->required_object_uuids.front());
+      const bool search_auxiliary_exact =
+          family != "search" ||
+          (root->child_expression_ids.size() == 4 &&
+           [&] {
+             const auto* query =
+                 dag_expression_for(root->child_expression_ids[1]);
+             return query != nullptr &&
+                    query->expression_kind ==
+                        api::RelationalExpressionKind::kFunctionCall &&
+                    !query->function_uuid.has_value() &&
+                    !query->bound_name_uuid.has_value() &&
+                    query->operator_name == "SEARCH_TERMS" &&
+                    query->child_expression_ids.size() == 1;
+           }());
+      if (!alias_exact || !search_auxiliary_exact || reachable != owned ||
+          std::ranges::any_of(owned, [&](const auto expression_id) {
+            return !attached_model_expressions.insert(expression_id).second;
+          })) {
+        return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "bounded model operation closure is orphaned or crosses legs");
+      }
+    }
+    model_count += model_source ? 1 : 0;
+    families.push_back(family);
+  }
+  if (model_count < 2) return result;
+  const auto global_root_count = std::ranges::count_if(
+      dag.expressions, [&](const auto& expression) {
+        return !exact_root_family(expression.operator_name).empty();
+      });
+  if (global_root_count != model_count ||
+      attached_model_roots.size() != model_count ||
+      std::ranges::any_of(dag.expressions, [&](const auto& expression) {
+        const bool source_output = std::ranges::any_of(
+            dag.outputs, [&](const auto& output) {
+              return output.expression_id == expression.expression_id;
+            });
+        return !source_output &&
+               !attached_model_expressions.contains(expression.expression_id);
+      })) {
+    return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                  "bounded composition has an unattached or duplicated model operation root");
+  }
+
+  std::string composition_profile_id;
+  if (families.size() == 3) {
+    composition_profile_id = "COMP-3-LINEAR-V1";
+  } else if (families == std::vector<std::string>{
+                             "relational", "document", "graph", "vector"}) {
+    composition_profile_id = "COMP-4-MIXED-V1";
+  } else if (families == std::vector<std::string>{
+                             "relational", "document", "graph", "key_value",
+                             "time_series", "vector", "search", "spatial",
+                             "columnar"}) {
+    composition_profile_id = "COMP-9-FULL-UNIVERSE-V1";
+  } else {
+    return refuse("SB_MODEL_COMPOSITION_PROFILE_REFUSED_V1",
+                  "bounded source arity or lexical family order has no signed composition profile");
+  }
+
+  // The bounded composition route may only consume the exact engine-issued
+  // statement, authorization, and optimizer-admission cohort.  Refuse that
+  // cohort before resolving a snapshot, consulting authorization, capturing
+  // a provider, loading a relation descriptor, or entering either coordinator.
+  // In particular, zero values are absence of authority: they must never be
+  // repaired into a plausible generation or resource limit.
+  const auto refuse_pre_access = [&](std::string diagnostic_id,
+                                     std::string detail) {
+    auto refused = refuse(std::move(diagnostic_id), std::move(detail));
+    refused.api_result.evidence.push_back(
+        {"canonical.model_composition_provider_entry_count", "0"});
+    refused.api_result.evidence.push_back(
+        {"canonical.model_composition_real_mga_read_count", "0"});
+    refused.api_result.evidence.push_back(
+        {"canonical.model_composition_observed_data_access_count", "0"});
+    refused.api_result.evidence.push_back(
+        {"canonical.model_composition_root_publication_count", "0"});
+    return refused;
+  };
+  const auto complete_typed_dag = api::ValidateTypedRelationalDag(dag);
+  if (!complete_typed_dag.accepted) {
+    const auto& issue = complete_typed_dag.issues.front();
+    return refuse_pre_access(issue.diagnostic_id,
+                             "complete multileg typed DAG refused:" +
+                                 issue.field_id);
+  }
+  const auto& context = input.context;
+  const auto& authorization = context.authorization_context;
+  if (!CanonicalUuidText(context.database_uuid.canonical) ||
+      !CanonicalUuidText(context.transaction_uuid.canonical) ||
+      !CanonicalUuidText(context.statement_uuid.canonical) ||
+      !CanonicalUuidText(context.statement_snapshot_uuid.canonical) ||
+      !context.statement_metadata_snapshot_engine_owned ||
+      !CanonicalUuidText(
+          context.statement_metadata_snapshot_uuid.canonical) ||
+      context.local_transaction_id == 0 || context.statement_timestamp.empty() ||
+      dag.statement_uuid != context.statement_uuid.canonical ||
+      dag.statement_timestamp != context.statement_timestamp ||
+      dag.owning_transaction_uuid != context.transaction_uuid.canonical ||
+      dag.statement_snapshot_uuid !=
+          context.statement_snapshot_uuid.canonical ||
+      dag.statement_metadata_snapshot_uuid !=
+          context.statement_metadata_snapshot_uuid.canonical ||
+      dag.local_transaction_id != context.local_transaction_id ||
+      dag.snapshot_visible_through_local_transaction_id !=
+          context.snapshot_visible_through_local_transaction_id) {
+    return refuse_pre_access(
+        "SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
+        "bounded composition engine-issued statement/MGA cohort is absent or substituted");
+  }
+  if (!CanonicalUuidText(context.catalog_epoch_uuid.canonical) ||
+      context.catalog_generation_id == 0 ||
+      authorization.catalog_generation_id != context.catalog_generation_id ||
+      dag.bound_catalog_epoch_uuid != context.catalog_epoch_uuid.canonical) {
+    return refuse_pre_access(
+        "SB_MODEL_CATALOG_GENERATION_STALE_V1",
+        "bounded composition catalog epoch or generation cohort is absent or substituted");
+  }
+  if (!context.security_context_present || !authorization.present ||
+      !CanonicalUuidText(context.principal_uuid.canonical) ||
+      !CanonicalUuidText(authorization.authority_uuid.canonical) ||
+      authorization.principal_uuid.canonical !=
+          context.principal_uuid.canonical ||
+      context.security_epoch == 0 ||
+      authorization.security_epoch != context.security_epoch ||
+      authorization.policy_epoch == 0 ||
+      dag.bound_security_context_uuid !=
+          authorization.authority_uuid.canonical) {
+    return refuse_pre_access(
+        "SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+        "bounded composition security or policy authority cohort is absent or substituted");
+  }
+  std::uint64_t admitted_at_monotonic_ns = 0;
+  const auto monotonic_parse = std::from_chars(
+      context.current_monotonic_ns.data(),
+      context.current_monotonic_ns.data() + context.current_monotonic_ns.size(),
+      admitted_at_monotonic_ns);
+  if (context.resource_epoch == 0 ||
+      !CanonicalUuidText(
+          context.optimizer_capability_snapshot_uuid.canonical) ||
+      !CanonicalUuidText(
+          context.optimizer_resource_snapshot_uuid.canonical) ||
+      !CanonicalUuidText(context.optimizer_route_snapshot_uuid.canonical) ||
+      context.optimizer_route_epoch == 0 ||
+      context.optimizer_route_generation == 0 ||
+      context.optimizer_route_generation ==
+          std::numeric_limits<std::uint64_t>::max() ||
+      context.optimizer_memory_budget_bytes < 64 * 1024 ||
+      context.optimizer_maximum_candidate_count == 0 ||
+      context.optimizer_maximum_memo_groups == 0 ||
+      context.optimizer_maximum_search_steps == 0 ||
+      context.optimizer_maximum_planning_time_ns == 0 ||
+      context.current_monotonic_ns.empty() ||
+      monotonic_parse.ec != std::errc{} ||
+      monotonic_parse.ptr != context.current_monotonic_ns.data() +
+                                 context.current_monotonic_ns.size() ||
+      admitted_at_monotonic_ns == 0) {
+    return refuse_pre_access(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "bounded composition optimizer resource, route, or monotonic cohort is absent or substituted");
+  }
+
+  api::EngineResolveStatementSnapshotRequest snapshot_request;
+  snapshot_request.context = input.context;
+  const auto snapshot = api::EngineResolveStatementSnapshot(snapshot_request);
+  if (!snapshot.ok) {
+    return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
+                  "bounded composition statement snapshot is unavailable");
+  }
+  auto mga = PhysicalMgaContextFromResolvedSnapshot(
+      input.context, snapshot.snapshot_vector);
+  mga.statement_timestamp = dag.statement_timestamp;
+  if (!exec::PhysicalMgaStatementContextValid(mga)) {
+    return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
+                  "bounded composition MGA statement context is invalid");
+  }
+  const auto identity_scope =
+      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+  const auto generation = input.context.catalog_generation_id;
+  const auto security_generation = input.context.security_epoch;
+  const auto policy_generation =
+      input.context.authorization_context.policy_epoch;
+  const auto resource_generation = input.context.resource_epoch;
+  const auto selected_plan_generation =
+      input.context.optimizer_route_generation;
+  const auto maximum_rows = std::min<std::uint64_t>(
+      65'536, input.context.optimizer_maximum_candidate_count);
+  const auto statement_memory = input.context.optimizer_memory_budget_bytes;
+  const auto retained_grant_count = sources.size() * 3 - 1;
+  const auto retained_grant =
+      statement_memory / static_cast<std::uint64_t>(retained_grant_count);
+  if (retained_grant == 0) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "bounded composition retained grant cannot be represented");
+  }
+  const auto leg_memory = retained_grant;
+  const auto exchange_memory = retained_grant;
+
+  const auto descriptor_for = [&](const std::uint32_t descriptor_id) {
+    return std::ranges::find_if(dag.descriptors, [&](const auto& descriptor) {
+      return descriptor.descriptor_id == descriptor_id;
+    });
+  };
+  const auto expression_for = [&](const std::uint32_t expression_id) {
+    return std::ranges::find_if(dag.expressions, [&](const auto& expression) {
+      return expression.expression_id == expression_id;
+    });
+  };
+  std::unordered_set<std::string> object_uuids;
+  std::vector<Rcp080BoundedSourceV1> prepared_sources;
+  prepared_sources.reserve(sources.size());
+  for (std::size_t source_ordinal = 0; source_ordinal < sources.size();
+       ++source_ordinal) {
+    const auto* source = sources[source_ordinal];
+    if (!source->input_node_ids.empty() ||
+        source->required_object_uuids.size() != 1 ||
+        source->output_descriptor_ids.empty() ||
+        !object_uuids.insert(source->required_object_uuids.front()).second) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "bounded composition source object binding is missing or duplicated");
+    }
+    const auto authorization = api::EvaluateMaterializedAuthorization(
+        input.context, input.context.authorization_context, "SELECT",
+        source->required_object_uuids.front());
+    if (!authorization.authorized || authorization.denied ||
+        authorization.policy_recheck_required ||
+        !authorization.diagnostics.empty()) {
+      return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                    "bounded composition SELECT authorization was refused");
+    }
+    const auto loaded = api::LoadMgaRelationStorageDescriptor(
+        input.context, source->required_object_uuids.front());
+    if (!loaded.ok || loaded.descriptor.relation_uuid.canonical !=
+                          source->required_object_uuids.front() ||
+        loaded.descriptor.database_uuid.canonical !=
+            input.context.database_uuid.canonical ||
+        loaded.descriptor.storage_profile != "local_mga_rowstore_v1" ||
+        loaded.descriptor.descriptor_generation == 0) {
+      return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                    "bounded composition current relation descriptor is invalid");
+    }
+    std::vector<const api::RelationalOutputRecord*> outputs;
+    for (const auto& output : dag.outputs) {
+      if (output.relation_node_id == source->node_id) outputs.push_back(&output);
+    }
+    std::ranges::sort(outputs, {}, &api::RelationalOutputRecord::ordinal);
+    if (outputs.size() != source->output_descriptor_ids.size()) {
+      return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                    "bounded composition source output inventory is incomplete");
+    }
+    Rcp080BoundedSourceV1 prepared;
+    prepared.node = source;
+    prepared.family_id = families[source_ordinal];
+    prepared.operation_id = Rcp080OperationV1(prepared.family_id);
+    if (prepared.family_id == "spatial" ||
+        prepared.family_id == "columnar") {
+      prepared.operation_ids = {prepared.operation_id};
+    }
+    prepared.persisted = loaded.descriptor;
+    const bool derived_projection =
+        prepared.family_id == "key_value" ||
+        prepared.family_id == "time_series" ||
+        prepared.family_id == "vector" || prepared.family_id == "search";
+    const std::vector<std::string_view> derived_names =
+        prepared.family_id == "key_value"
+            ? std::vector<std::string_view>{"row_uuid", "key", "value"}
+        : prepared.family_id == "time_series"
+            ? std::vector<std::string_view>{
+                  "row_uuid", "series_uuid", "metric_uuid",
+                  "point_timestamp", "tags", "value"}
+        : prepared.family_id == "vector"
+            ? std::vector<std::string_view>{"row_uuid", "distance", "score"}
+        : prepared.family_id == "search"
+            ? std::vector<std::string_view>{
+                  "document_uuid", "analyzer_uuid", "analyzer_generation",
+                  "score", "rank"}
+            : std::vector<std::string_view>{};
+    const std::vector<std::string_view> derived_types =
+        prepared.family_id == "key_value"
+            ? std::vector<std::string_view>{"uuid", "text", "text"}
+        : prepared.family_id == "time_series"
+            ? std::vector<std::string_view>{
+                  "uuid", "uuid", "uuid", "timestamp_tz", "text",
+                  "real64"}
+        : prepared.family_id == "vector"
+            ? std::vector<std::string_view>{"uuid", "real64", "real64"}
+        : prepared.family_id == "search"
+            ? std::vector<std::string_view>{"uuid", "uuid", "uint64",
+                                            "real64", "uint64"}
+            : std::vector<std::string_view>{};
+    if ((derived_projection && outputs.size() != derived_names.size()) ||
+        (!derived_projection &&
+         outputs.size() != prepared.persisted.columns.size())) {
+      return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                    "bounded composition source storage/public width is invalid");
+    }
+    std::optional<std::string> search_analyzer_uuid;
+    for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
+      const auto descriptor = descriptor_for(outputs[ordinal]->descriptor_id);
+      const auto expression = expression_for(outputs[ordinal]->expression_id);
+      if (descriptor == dag.descriptors.end() ||
+          expression == dag.expressions.end() ||
+          outputs[ordinal]->ordinal != ordinal || !outputs[ordinal]->visible ||
+          outputs[ordinal]->descriptor_id !=
+              source->output_descriptor_ids[ordinal] ||
+          expression->result_descriptor_id != descriptor->descriptor_id) {
+        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                      "bounded composition source descriptor binding was substituted");
+      }
+      if (derived_projection) {
+        const auto expected_bound_name =
+            prepared.family_id == "search" &&
+                    (ordinal == 1 || ordinal == 2)
+                ? expression->bound_name_uuid
+            : prepared.family_id == "key_value"
+                ? expression->bound_name_uuid
+            : prepared.family_id == "time_series"
+                ? expression->bound_name_uuid
+                : std::optional<std::string>{
+                      source->required_object_uuids.front()};
+        const auto expected_timezone_profile =
+            prepared.family_id == "time_series" && ordinal == 3 &&
+                    outputs[ordinal]->output_name_utf8 == "point_timestamp"
+                ? std::optional<std::string>{"UTC"}
+                : std::nullopt;
+        if (outputs[ordinal]->output_name_utf8 != derived_names[ordinal] ||
+            descriptor->nullability !=
+                api::RelationalNullability::kNonNull ||
+            descriptor->collation_uuid.has_value() ||
+            descriptor->timezone_profile_id != expected_timezone_profile ||
+            !expected_bound_name.has_value() ||
+            expression->bound_name_uuid != expected_bound_name ||
+            (prepared.family_id == "search" &&
+             (ordinal == 1 || ordinal == 2) &&
+             expression->bound_name_uuid ==
+                 source->required_object_uuids.front())) {
+          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "bounded derived source public binding was substituted");
+        }
+        if (prepared.family_id == "search" && ordinal == 1) {
+          search_analyzer_uuid = expression->bound_name_uuid;
+        } else if (prepared.family_id == "search" && ordinal == 2 &&
+                   expression->bound_name_uuid != search_analyzer_uuid) {
+          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "bounded search analyzer public binding diverged");
+        }
+        api::EngineDescriptor engine_descriptor;
+        engine_descriptor.descriptor_uuid.canonical =
+            descriptor->descriptor_uuid;
+        engine_descriptor.descriptor_kind = "scalar";
+        engine_descriptor.canonical_type_name =
+            std::string(derived_types[ordinal]);
+        engine_descriptor.encoded_descriptor =
+            "type_uuid=" + descriptor->type_uuid + ";nullability=non_null";
+        prepared.columns.push_back(
+            {std::string(derived_names[ordinal]), std::move(engine_descriptor),
+             false, descriptor->descriptor_id});
+      } else {
+        const auto& column = prepared.persisted.columns[ordinal];
+        const auto type_uuid = Rcp079DescriptorField(
+            column.value_descriptor.encoded_descriptor, "type_uuid");
+        if (expression->bound_name_uuid !=
+                std::optional<std::string>(column.column_uuid.canonical) ||
+            outputs[ordinal]->output_name_utf8 != column.canonical_name_key ||
+            descriptor->descriptor_uuid !=
+                column.value_descriptor.descriptor_uuid.canonical ||
+            column.ordinal != ordinal ||
+            column.value_descriptor.descriptor_kind !=
+                "canonical_type_descriptor" ||
+            column.value_descriptor.canonical_type_name.empty() ||
+            column.value_descriptor.encoded_descriptor.empty() ||
+            !type_uuid.has_value() || *type_uuid != descriptor->type_uuid ||
+            descriptor->nullability !=
+                (column.nullable ? api::RelationalNullability::kNullable
+                                 : api::RelationalNullability::kNonNull)) {
+          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "bounded persisted source descriptor was substituted");
+        }
+        auto engine_descriptor = column.value_descriptor;
+        engine_descriptor.descriptor_kind = "scalar";
+        prepared.columns.push_back(
+            {column.canonical_name_key, std::move(engine_descriptor),
+             column.nullable, descriptor->descriptor_id});
+      }
+      prepared.output_descriptor_uuids.push_back(descriptor->descriptor_uuid);
+    }
+    if (prepared.family_id == "spatial") {
+      if (prepared.persisted.columns.size() != 3) {
+        return refuse("SB_MODEL_SPATIAL_CRS_BINDING_REQUIRED_V1",
+                      "bounded composition spatial descriptor lacks its exact column inventory");
+      }
+      const auto crs = Rcp079DescriptorField(
+          prepared.persisted.columns[1].value_descriptor.encoded_descriptor,
+          "crs_uuid");
+      const auto crs_generation = Rcp079DescriptorField(
+          prepared.persisted.columns[1].value_descriptor.encoded_descriptor,
+          "crs_generation");
+      if (!crs.has_value() || !crs_generation.has_value() ||
+          !CanonicalUuidText(*crs)) {
+        return refuse("SB_MODEL_SPATIAL_CRS_BINDING_REQUIRED_V1",
+                      "bounded composition spatial descriptor lacks CRS authority");
+      }
+      const auto parsed = std::from_chars(
+          crs_generation->data(),
+          crs_generation->data() + crs_generation->size(),
+          prepared.spatial_crs_generation);
+      if (parsed.ec != std::errc{} ||
+          parsed.ptr != crs_generation->data() + crs_generation->size() ||
+          prepared.spatial_crs_generation == 0) {
+        return refuse("SB_MODEL_SPATIAL_CRS_BINDING_REQUIRED_V1",
+                      "bounded composition spatial CRS generation is invalid");
+      }
+      prepared.spatial_crs_uuid = *crs;
+    }
+    prepared_sources.push_back(std::move(prepared));
+  }
+
+  const auto exact_names = [&](const std::size_t ordinal,
+                               const std::vector<std::string_view>& names) {
+    const auto& columns = prepared_sources[ordinal].columns;
+    if (columns.size() != names.size()) return false;
+    for (std::size_t index = 0; index < names.size(); ++index) {
+      if (columns[index].stable_name != names[index]) return false;
+    }
+    return true;
+  };
+  for (std::size_t ordinal = 0; ordinal < prepared_sources.size(); ++ordinal) {
+    const auto& family = prepared_sources[ordinal].family_id;
+    if ((family == "key_value" &&
+         !exact_names(ordinal, {"row_uuid", "key", "value"})) ||
+        (family == "time_series" &&
+         !exact_names(ordinal, {"row_uuid", "series_uuid", "metric_uuid",
+                                "point_timestamp", "tags", "value"})) ||
+        (family == "vector" &&
+         !exact_names(ordinal, {"row_uuid", "distance", "score"})) ||
+        (family == "search" &&
+         !exact_names(ordinal, {"document_uuid", "analyzer_uuid",
+                                "analyzer_generation", "score", "rank"})) ||
+        (family == "spatial" &&
+         !exact_names(ordinal,
+                      {"row_uuid", "spatial_value", "crs_uuid"}))) {
+      return refuse("SB_MODEL_RESULT_DESCRIPTOR_DEMAND_INVALID_V1",
+                    "signed composition model source public inventory is not exact");
+    }
+  }
+
+  std::vector<Rcp079CapturedModelLegV1> captured_sources(sources.size());
+  for (std::size_t ordinal = 0; ordinal < sources.size(); ++ordinal) {
+    if (families[ordinal] == "relational") continue;
+    CanonicalObjectFreeValuesExecutionResult attempted;
+    if (!CaptureRcp079ModelSourceLeg(input, *sources[ordinal],
+                                     &captured_sources[ordinal], &attempted)) {
+      return refuse(attempted.api_result.diagnostics.empty()
+                        ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                        : attempted.api_result.diagnostics.front().code,
+                    attempted.api_result.diagnostics.empty()
+                        ? "bounded composition family provider was not captured"
+                        : attempted.api_result.diagnostics.front().detail);
+    }
+    auto& captured = captured_sources[ordinal];
+    auto expected_captured_mga = mga;
+    if (families[ordinal] == "document" || families[ordinal] == "graph") {
+      expected_captured_mga.statement_timestamp.clear();
+    }
+    if (captured.family_id != families[ordinal] ||
+        captured.logical_node_id != sources[ordinal]->node_id ||
+        captured.execution_request.input.operation_id !=
+            Rcp080OperationV1(families[ordinal]) ||
+        captured.execution_request.input.output_descriptor_ids !=
+            sources[ordinal]->output_descriptor_ids ||
+        !exec::PhysicalMgaStatementContextEqual(
+            captured.execution_request.input.mga_statement_context,
+            expected_captured_mga) ||
+        !exec::PhysicalMgaStatementContextEqual(
+            captured.execution_request.current_mga_statement_context,
+            expected_captured_mga)) {
+      return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
+                    "bounded composition captured provider authority diverged");
+    }
+    // Rebind both provider-facing contexts to the exact one full-composition
+    // authority after equality has been proven.  This never derives MGA from
+    // the operator-local typed-DAG view.
+    captured.execution_request.input.mga_statement_context = mga;
+    captured.execution_request.current_mga_statement_context = mga;
+  }
+
+  opt::ModelFamilyDependencyCoordinatorRequestV1 coordination;
+  coordination.composition_profile_id = composition_profile_id;
+  coordination.bound_sblr_tree_uuid = dag.bound_sblr_tree_uuid;
+  coordination.selected_plan_generation = selected_plan_generation;
+  coordination.current_selected_plan_generation = selected_plan_generation;
+  coordination.statement_memory_budget_bytes = statement_memory;
+  coordination.backpressure_high_watermark_rows = 64;
+  coordination.backpressure_low_watermark_rows = 32;
+  coordination.signed_short_circuit_enabled = true;
+  coordination.feedback_observation_frozen = true;
+  coordination.feedback_target_is_later_plan = true;
+  coordination.feedback_observation_generation = selected_plan_generation;
+  coordination.feedback_target_plan_generation = selected_plan_generation + 1;
+
+  for (std::size_t ordinal = 0; ordinal < prepared_sources.size(); ++ordinal) {
+    auto& prepared = prepared_sources[ordinal];
+    const auto suffix = std::to_string(ordinal);
+    const auto& captured = captured_sources[ordinal];
+    const auto alternative_uuid =
+        prepared.family_id == "relational"
+            ? DerivedCanonicalUuid(identity_scope,
+                                   "rcp080.alternative." + suffix)
+            : captured.execution_request.input.selected_alternative_uuid;
+    const auto provider_uuid =
+        prepared.family_id == "relational"
+            ? DerivedCanonicalUuid(identity_scope, "rcp080.provider." + suffix)
+            : captured.execution_request.input.provider_uuid;
+    const auto capability_uuid =
+        prepared.family_id == "relational"
+            ? DerivedCanonicalUuid(identity_scope,
+                                   "rcp080.capability." + suffix)
+            : captured.capability_uuid;
+    const auto cost_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.cost." + suffix);
+    const auto provenance_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.cost-provenance." + suffix);
+    std::string selected_plan_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.leg-plan." + suffix);
+    bool exact_fallback_selected = true;
+    if (prepared.family_id != "relational") {
+      opt::ModelFamilyCoordinatorRequestV1 family_request;
+      family_request.family_id = prepared.family_id;
+      family_request.operation_ids = prepared.operation_ids;
+      family_request.operation_id = prepared.operation_id;
+      family_request.logical_operator_id =
+          Rcp080LogicalOperatorV1(prepared.family_id);
+      family_request.composition_profile_id = composition_profile_id;
+      family_request.composition_lexical_source_ordinal =
+          static_cast<std::uint16_t>(ordinal);
+      family_request.composition_arity =
+          static_cast<std::uint16_t>(sources.size());
+      family_request.logical_node_id = prepared.node->node_id;
+      family_request.object_uuid = prepared.persisted.relation_uuid.canonical;
+      family_request.output_descriptor_ids =
+          prepared.node->output_descriptor_ids;
+      family_request.mga_statement_context = mga;
+      family_request.bound_sblr_tree_uuid = dag.bound_sblr_tree_uuid;
+      family_request.catalog_epoch_uuid =
+          input.context.catalog_epoch_uuid.canonical;
+      family_request.security_context_uuid =
+          input.context.authorization_context.authority_uuid.canonical;
+      family_request.capability_snapshot_uuid =
+          input.context.optimizer_capability_snapshot_uuid.canonical;
+      family_request.resource_snapshot_uuid =
+          input.context.optimizer_resource_snapshot_uuid.canonical;
+      family_request.statistics_snapshot_uuid = DerivedCanonicalUuid(
+          identity_scope, "rcp080.statistics." + suffix);
+      family_request.route_snapshot_uuid =
+          input.context.optimizer_route_snapshot_uuid.canonical;
+      family_request.catalog_generation = generation;
+      family_request.current_catalog_generation = generation;
+      family_request.security_epoch = security_generation;
+      family_request.policy_epoch = policy_generation;
+      family_request.resource_epoch = resource_generation;
+      family_request.statistics_generation = generation;
+      family_request.route_epoch = input.context.optimizer_route_epoch;
+      family_request.route_generation =
+          input.context.optimizer_route_generation;
+      family_request.memory_budget_bytes = leg_memory;
+      family_request.security_admitted = true;
+      opt::ModelFamilyCandidateV1 candidate;
+      candidate.alternative_uuid = alternative_uuid;
+      candidate.provider_uuid = provider_uuid;
+      candidate.capability_uuid = capability_uuid;
+      candidate.implementation_id =
+          captured.implementation_id;
+      candidate.provider_generation =
+          captured.execution_request.input.provider_generation;
+      candidate.available = true;
+      candidate.exact = true;
+      candidate.exact_collection_fallback = true;
+      candidate.cost.cost_vector_uuid = cost_uuid;
+      candidate.cost.cpu_units = 1;
+      candidate.cost.sequential_read_units = 1;
+      candidate.cost.memory_bytes_required = leg_memory;
+      family_request.candidates.push_back(candidate);
+      const auto selected =
+          opt::CoordinateModelFamilySourceV1(family_request);
+      if (!selected.accepted || !selected.selected ||
+          !selected.data_access_allowed ||
+          selected.selected_candidate.alternative_uuid != alternative_uuid) {
+        return refuse(selected.diagnostic_id.empty()
+                          ? "SB_MODEL_CANDIDATE_SEMANTICS_MISSING_V1"
+                          : selected.diagnostic_id,
+                      selected.detail.empty()
+                          ? "family-local exact collection fallback was not selected"
+                          : selected.detail);
+      }
+      selected_plan_uuid = selected.physical_dag.selected_plan_uuid;
+      exact_fallback_selected = selected.exact_fallback_selected;
+    }
+
+    opt::ModelFamilyDependencyLegV1 leg;
+    leg.lexical_source_ordinal = static_cast<std::uint16_t>(ordinal);
+    leg.physical_node_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.physical-source." + suffix);
+    leg.family_id = prepared.family_id;
+    leg.operation_ids = prepared.operation_ids;
+    leg.operation_id = prepared.operation_id;
+    leg.selected_plan_uuid = selected_plan_uuid;
+    leg.selected_alternative_uuid = alternative_uuid;
+    leg.provider_uuid = provider_uuid;
+    leg.capability_uuid = capability_uuid;
+    leg.delivered_property_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.property." + suffix);
+    leg.bound_object_uuid = prepared.persisted.relation_uuid.canonical;
+    leg.catalog_snapshot_uuid = leg.current_catalog_snapshot_uuid =
+        input.context.catalog_epoch_uuid.canonical;
+    leg.descriptor_snapshot_uuid = leg.current_descriptor_snapshot_uuid =
+        prepared.persisted.descriptor_uuid.canonical;
+    leg.security_context_uuid = leg.current_security_context_uuid =
+        input.context.authorization_context.authority_uuid.canonical;
+    leg.policy_snapshot_uuid = leg.current_policy_snapshot_uuid =
+        DerivedCanonicalUuid(identity_scope, "rcp080.policy." + suffix);
+    leg.resource_contract_uuid = leg.current_resource_contract_uuid =
+        DerivedCanonicalUuid(identity_scope, "rcp080.resource." + suffix);
+    leg.operation_scope_receipt_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.operation-scope." + suffix);
+    leg.selected_alternative_receipt_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.selection." + suffix);
+    leg.root_physical_node_id = prepared.node->node_id;
+    leg.output_descriptor_ids = prepared.node->output_descriptor_ids;
+    leg.output_descriptor_uuids = prepared.output_descriptor_uuids;
+    leg.family_local_cost.cost_vector_uuid = cost_uuid;
+    leg.family_local_cost.provenance_uuid = provenance_uuid;
+    leg.family_local_cost.provenance_generation = generation;
+    leg.family_local_cost.confidence_basis_points = 10'000;
+    leg.family_local_cost.cpu_units = 1;
+    leg.family_local_cost.sequential_read_units = 1;
+    leg.family_local_cost.memory_bytes_required = leg_memory;
+    opt::ModelFamilyDependencyAlternativeV1 candidate;
+    candidate.alternative_uuid = alternative_uuid;
+    candidate.candidate_inventory_receipt_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.inventory." + suffix);
+    candidate.implementation_id =
+        prepared.family_id == "relational"
+            ? Rcp080ImplementationV1(prepared.family_id)
+            : captured.implementation_id;
+    candidate.operation_ids = prepared.operation_ids;
+    candidate.operation_id = prepared.operation_id;
+    candidate.operation_scope_receipt_uuid = leg.operation_scope_receipt_uuid;
+    candidate.selection_policy_receipt_uuid =
+        leg.selected_alternative_receipt_uuid;
+    candidate.authority_approved_comparison_rank = 1;
+    candidate.family_local_cost = leg.family_local_cost;
+    candidate.available = true;
+    candidate.exact = true;
+    candidate.exact_fallback = exact_fallback_selected;
+    candidate.admitted = true;
+    leg.candidate_alternatives = {candidate};
+    leg.mga_statement_context = mga;
+    leg.catalog_generation = leg.current_catalog_generation = generation;
+    leg.descriptor_generation = leg.current_descriptor_generation =
+        prepared.persisted.descriptor_generation;
+    leg.security_generation = leg.current_security_generation =
+        security_generation;
+    leg.policy_generation = leg.current_policy_generation = policy_generation;
+    leg.resource_generation = leg.current_resource_generation =
+        resource_generation;
+    leg.provider_generation = leg.current_provider_generation =
+        prepared.family_id == "relational"
+            ? prepared.persisted.descriptor_generation
+            : captured.execution_request.input.provider_generation;
+    leg.capability_generation = leg.current_capability_generation =
+        prepared.family_id == "relational"
+            ? prepared.persisted.descriptor_generation
+            // Standalone family providers currently version their engine-issued
+            // capability in the provider-generation cohort.  Freeze that exact
+            // captured cohort for the stricter composition capability gate.
+            : captured.execution_request.input.provider_generation;
+    leg.memory_grant_bytes = leg_memory;
+    leg.exchange_buffer_bytes = exchange_memory;
+    leg.maximum_rows = maximum_rows;
+    leg.maximum_columns = prepared.columns.size();
+    if (!CheckedMultiply(maximum_rows, prepared.columns.size(),
+                         &leg.maximum_cells)) {
+      return refuse("SB_MODEL_RESOURCE_ROW_LIMIT_V1",
+                    "bounded composition leg cell limit overflowed");
+    }
+    leg.selected = true;
+    leg.security_admitted = true;
+    leg.capability_admitted = true;
+    leg.capability_abi_version = 1;
+    leg.exact = true;
+    leg.exact_fallback_selected = exact_fallback_selected;
+    leg.exact_fallback_available = true;
+    leg.cleanup_supported = true;
+    leg.cancellation_supported = true;
+    leg.parallel_eligible = composition_profile_id == "COMP-4-MIXED-V1";
+    leg.spill_eligible = input.context.optimizer_spill_allowed;
+    coordination.legs.push_back(std::move(leg));
+  }
+
+  std::vector<std::pair<std::uint16_t, std::uint16_t>> dependency_pairs;
+  if (composition_profile_id == "COMP-4-MIXED-V1") {
+    dependency_pairs = {{0, 1}, {1, 2}, {0, 3}};
+  } else {
+    for (std::uint16_t ordinal = 0; ordinal + 1 < sources.size(); ++ordinal) {
+      dependency_pairs.emplace_back(ordinal, ordinal + 1);
+    }
+  }
+  for (std::size_t ordinal = 0; ordinal < dependency_pairs.size(); ++ordinal) {
+    const auto [producer, consumer] = dependency_pairs[ordinal];
+    opt::ModelFamilyDependencyEdgeV1 edge;
+    edge.edge_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.edge." + std::to_string(ordinal));
+    edge.producer_lexical_source_ordinal = producer;
+    edge.consumer_lexical_source_ordinal = consumer;
+    edge.required_property_uuid =
+        coordination.legs[producer].delivered_property_uuid;
+    edge.delivered_property_uuid = edge.required_property_uuid;
+    edge.descriptor_lineage_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.lineage." + std::to_string(ordinal));
+    edge.producer_output_descriptor_ids =
+        coordination.legs[producer].output_descriptor_ids;
+    edge.consumer_input_descriptor_ids = edge.producer_output_descriptor_ids;
+    edge.producer_output_descriptor_uuids =
+        coordination.legs[producer].output_descriptor_uuids;
+    edge.consumer_input_descriptor_uuids =
+        edge.producer_output_descriptor_uuids;
+    coordination.edges.push_back(std::move(edge));
+  }
+
+  std::vector<std::uint32_t> consumer_descriptors =
+      coordination.legs.front().output_descriptor_ids;
+  std::vector<std::string> consumer_descriptor_uuids =
+      coordination.legs.front().output_descriptor_uuids;
+  std::string consumer_left_uuid = coordination.legs.front().physical_node_uuid;
+  for (std::size_t ordinal = 1; ordinal < sources.size(); ++ordinal) {
+    consumer_descriptors.insert(
+        consumer_descriptors.end(),
+        coordination.legs[ordinal].output_descriptor_ids.begin(),
+        coordination.legs[ordinal].output_descriptor_ids.end());
+    consumer_descriptor_uuids.insert(
+        consumer_descriptor_uuids.end(),
+        coordination.legs[ordinal].output_descriptor_uuids.begin(),
+        coordination.legs[ordinal].output_descriptor_uuids.end());
+    opt::ModelFamilyRelationalConsumerV1 consumer;
+    consumer.physical_node_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.consumer." + std::to_string(ordinal));
+    consumer.physical_node_id = joins[ordinal - 1]->node_id;
+    consumer.causal_counter_id = sources.size() + ordinal;
+    consumer.selected_implementation_uuid = DerivedCanonicalUuid(
+        identity_scope,
+        "rcp080.consumer-implementation." + std::to_string(ordinal));
+    consumer.expected_security_receipt_uuid = DerivedCanonicalUuid(
+        identity_scope,
+        "rcp080.consumer-security." + std::to_string(ordinal));
+    consumer.join_form_id = "CROSS";
+    consumer.input_physical_node_uuids = {
+        consumer_left_uuid, coordination.legs[ordinal].physical_node_uuid};
+    consumer.input_descriptor_ids = consumer_descriptors;
+    consumer.output_descriptor_ids = consumer_descriptors;
+    consumer.input_descriptor_uuids = consumer_descriptor_uuids;
+    consumer.output_descriptor_uuids = consumer_descriptor_uuids;
+    consumer.mga_statement_context = mga;
+    consumer.maximum_rows = maximum_rows;
+    consumer.maximum_columns = consumer_descriptors.size();
+    if (!CheckedMultiply(maximum_rows, consumer_descriptors.size(),
+                         &consumer.maximum_cells)) {
+      return refuse("SB_MODEL_RESOURCE_ROW_LIMIT_V1",
+                    "bounded composition consumer cell limit overflowed");
+    }
+    consumer.memory_grant_bytes = retained_grant;
+    consumer.canonical_root = ordinal + 1 == sources.size();
+    consumer.exact = true;
+    consumer.cleanup_supported = true;
+    consumer.cancellation_supported = true;
+    consumer_left_uuid = consumer.physical_node_uuid;
+    coordination.relational_consumers.push_back(std::move(consumer));
+  }
+  coordination.canonical_root_physical_node_uuid = consumer_left_uuid;
+  coordination.canonical_root_physical_node_id = joins.back()->node_id;
+
+  const auto admitted =
+      opt::CoordinateModelFamilyDependencyDagV1(coordination);
+  if (!admitted.accepted || !admitted.data_access_allowed ||
+      !admitted.root_publication_candidate ||
+      admitted.stable_schedule.size() != sources.size() ||
+      admitted.relational_consumers.size() != joins.size()) {
+    return refuse(admitted.diagnostic_id.empty()
+                      ? "SB_MODEL_DEPENDENCY_DAG_INVALID_V1"
+                      : admitted.diagnostic_id,
+                  admitted.detail.empty()
+                      ? "bounded composition dependency coordinator refused the selected graph"
+                      : admitted.detail);
+  }
+  result.optimizer_admitted = true;
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = sources.size() + joins.size();
+  result.selected_plan_uuid = admitted.dependency_dag_receipt_uuid;
+
+  // Freeze the exact coordinator-selected graph before any provider access.
+  // This is the same ABI-v2 identity retained through execution evidence and
+  // final durable-MGA publication; it is not reconstructed from runtime data.
+  exec::TypedPhysicalNodeDag physical_dag;
+  physical_dag.abi_version = 2;
+  physical_dag.publication_contract_version = 1;
+  physical_dag.selected_plan_uuid = result.selected_plan_uuid;
+  physical_dag.root_physical_node_id = joins.back()->node_id;
+  physical_dag.local_transaction_id = mga.owning_local_transaction_id;
+  physical_dag.statement_snapshot_id = mga.visible_committed_high_watermark;
+  physical_dag.mga_statement_context = mga;
+  physical_dag.bound_sblr_tree_uuid = dag.bound_sblr_tree_uuid;
+  physical_dag.catalog_epoch_uuid = input.context.catalog_epoch_uuid.canonical;
+  physical_dag.security_context_uuid =
+      input.context.authorization_context.authority_uuid.canonical;
+  physical_dag.capability_snapshot_uuid =
+      input.context.optimizer_capability_snapshot_uuid.canonical;
+  physical_dag.resource_snapshot_uuid =
+      input.context.optimizer_resource_snapshot_uuid.canonical;
+  physical_dag.statistics_snapshot_uuid =
+      DerivedCanonicalUuid(identity_scope, "rcp080.statistics-snapshot");
+  physical_dag.route_snapshot_uuid =
+      input.context.optimizer_route_snapshot_uuid.canonical;
+  physical_dag.catalog_generation = generation;
+  physical_dag.security_epoch = security_generation;
+  physical_dag.policy_epoch = policy_generation;
+  physical_dag.resource_epoch = resource_generation;
+  physical_dag.statistics_generation = generation;
+  physical_dag.route_epoch = input.context.optimizer_route_epoch;
+  physical_dag.route_generation = selected_plan_generation;
+  physical_dag.memory_budget_bytes = statement_memory;
+  physical_dag.spill_allowed = input.context.optimizer_spill_allowed;
+  physical_dag.optimizer_published = true;
+  physical_dag.immutable_node_identity_validated = true;
+  physical_dag.capability_validated_before_access = true;
+  physical_dag.data_access_observed = false;
+  physical_dag.complete_cost_vectors_retained = true;
+  physical_dag.descriptor_contract_validated = true;
+  physical_dag.property_contract_validated = true;
+  physical_dag.dependency_contract_validated = true;
+  physical_dag.resource_contract_validated = true;
+  physical_dag.mga_contract_validated = true;
+  physical_dag.causal_identity_validated = true;
+  physical_dag.published_node_count = sources.size() + joins.size();
+  physical_dag.first_causal_counter_id = 1;
+  physical_dag.admission_evidence = {
+      {exec::PhysicalAdmissionStage::kBoundRequest,
+       physical_dag.bound_sblr_tree_uuid},
+      {exec::PhysicalAdmissionStage::kCatalogEpoch,
+       physical_dag.catalog_epoch_uuid},
+      {exec::PhysicalAdmissionStage::kSecurity,
+       physical_dag.security_context_uuid},
+      {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
+       mga.statement_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kPolicyCapability,
+       physical_dag.capability_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kResource,
+       physical_dag.resource_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kStatisticsProvenance,
+       physical_dag.statistics_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kCanonicalRoute,
+       physical_dag.route_snapshot_uuid},
+  };
+  const auto retained_cost = [&](exec::PhysicalNodeRecord* node,
+                                 const bool storage_read) {
+    node->retained_cost.cost_vector_uuid = node->cost_vector_uuid;
+    node->retained_cost.calibration_profile_uuid = DerivedCanonicalUuid(
+        identity_scope,
+        "rcp080.calibration." + std::to_string(node->relational_node_id));
+    node->retained_cost.cpu_units = 1;
+    node->retained_cost.memory_bytes_required = node->memory_bytes_required;
+    node->retained_cost.page_read_sequential_units = storage_read ? 1 : 0;
+    node->retained_cost.mga_visibility_checks_expected = storage_read ? 1 : 0;
+    node->retained_cost.confidence = 0;
+    node->retained_cost.scalar_score =
+        1 + node->memory_bytes_required + (storage_read ? 2 : 0);
+    return node->retained_cost.scalar_score;
+  };
+  for (std::size_t ordinal = 0; ordinal < sources.size(); ++ordinal) {
+    const auto scheduled = std::ranges::find_if(
+        admitted.stable_schedule, [&](const auto& candidate) {
+          return candidate.leg.lexical_source_ordinal == ordinal;
+        });
+    if (scheduled == admitted.stable_schedule.end()) {
+      return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                    "coordinator schedule lost a lexical source leg");
+    }
+    const auto& leg = scheduled->leg;
+    exec::PhysicalNodeRecord node;
+    node.physical_node_id = sources[ordinal]->node_id;
+    node.relational_node_id = sources[ordinal]->node_id;
+    node.node_kind = exec::PhysicalNodeKind::kScan;
+    node.logical_semantic_variant_id =
+        leg.family_id == "relational" ? "relation.source.v1"
+                                      : "sblr.model_source.v1";
+    node.implementation_id =
+        leg.family_id == "relational"
+            ? Rcp080ImplementationV1(leg.family_id)
+            : captured_sources[ordinal].implementation_id;
+    node.output_descriptor_ids = sources[ordinal]->output_descriptor_ids;
+    node.selected_alternative_uuid = leg.selected_alternative_uuid;
+    node.executor_capability_uuid = leg.capability_uuid;
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid = leg.family_local_cost.cost_vector_uuid;
+    node.delivered_property_uuids = {leg.delivered_property_uuid};
+    node.memory_bytes_required = leg.memory_grant_bytes;
+    node.engine_capability_validated = true;
+    node.mga_statement_context = mga;
+    node.publication_ordinal = physical_dag.nodes.size();
+    node.causal_counter_id =
+        physical_dag.first_causal_counter_id + node.publication_ordinal;
+    node.transformation_uuid = DerivedCanonicalUuid(
+        identity_scope,
+        "rcp080.transformation.source." + std::to_string(ordinal));
+    node.transformation_rule_id = "rcp080.model-source.v1";
+    const auto score = retained_cost(&node, true);
+    if (!CheckedAdd(physical_dag.selected_scalar_score, score,
+                    &physical_dag.selected_scalar_score)) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "selected physical source cost overflowed");
+    }
+    physical_dag.nodes.push_back(std::move(node));
+  }
+  for (std::size_t ordinal = 0; ordinal < joins.size(); ++ordinal) {
+    const auto& consumer = admitted.relational_consumers[ordinal];
+    exec::PhysicalNodeRecord node;
+    node.physical_node_id = joins[ordinal]->node_id;
+    node.relational_node_id = joins[ordinal]->node_id;
+    node.node_kind = exec::PhysicalNodeKind::kJoin;
+    node.logical_semantic_variant_id = "join.cross.v1";
+    node.implementation_id = "cross.nested-loop.bounded.v1";
+    node.input_physical_node_ids = {joins[ordinal]->input_node_ids[0],
+                                    joins[ordinal]->input_node_ids[1]};
+    node.output_descriptor_ids = joins[ordinal]->output_descriptor_ids;
+    node.selected_alternative_uuid = consumer.selected_implementation_uuid;
+    node.executor_capability_uuid = DerivedCanonicalUuid(
+        identity_scope,
+        "rcp080.consumer-capability." + std::to_string(ordinal));
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid = DerivedCanonicalUuid(
+        identity_scope,
+        "rcp080.consumer-cost." + std::to_string(ordinal));
+    node.memory_bytes_required = consumer.memory_grant_bytes;
+    node.engine_capability_validated = true;
+    node.mga_statement_context = mga;
+    node.publication_ordinal = physical_dag.nodes.size();
+    node.causal_counter_id =
+        physical_dag.first_causal_counter_id + node.publication_ordinal;
+    node.transformation_uuid = DerivedCanonicalUuid(
+        identity_scope,
+        "rcp080.transformation.consumer." + std::to_string(ordinal));
+    node.transformation_rule_id = "rcp080.cross-consumer.v1";
+    const auto score = retained_cost(&node, false);
+    if (!CheckedAdd(physical_dag.selected_scalar_score, score,
+                    &physical_dag.selected_scalar_score)) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "selected physical consumer cost overflowed");
+    }
+    physical_dag.nodes.push_back(std::move(node));
+  }
+  std::vector<const exec::PhysicalNodeRecord*> signature_nodes;
+  for (const auto& node : physical_dag.nodes) signature_nodes.push_back(&node);
+  std::ranges::sort(signature_nodes, {},
+                    &exec::PhysicalNodeRecord::relational_node_id);
+  for (const auto* node : signature_nodes) {
+    physical_dag.selected_plan_signature +=
+        std::to_string(node->relational_node_id) + "=" +
+        node->selected_alternative_uuid + ";";
+  }
+  const auto physical_validation = exec::ValidateTypedPhysicalNodeDag(
+      physical_dag, {physical_dag.nodes.size(), 32, 2});
+  if (!physical_validation.accepted) {
+    return refuse(physical_validation.issues.empty()
+                      ? "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION"
+                      : physical_validation.issues.front().diagnostic_id,
+                  "bounded composition selected physical DAG is invalid");
+  }
+
+  exec::ModelFamilyCompositionExecutionRequestV1 execution_request;
+  execution_request.admitted_plan = admitted;
+  execution_request.engine_mga_inventory_guard_owned_by_caller = true;
+  const auto cancellation_requested =
+      input.context.query_cancellation_requested
+          ? input.context.query_cancellation_requested
+          : std::function<bool()>([] { return false; });
+  for (std::size_t ordinal = 0; ordinal < prepared_sources.size(); ++ordinal) {
+    const auto& prepared = prepared_sources[ordinal];
+    const auto scheduled = std::ranges::find_if(
+        admitted.stable_schedule, [&](const auto& candidate) {
+          return candidate.leg.lexical_source_ordinal == ordinal;
+        });
+    if (scheduled == admitted.stable_schedule.end()) {
+      return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                    "execution schedule lost a lexical source leg");
+    }
+    const auto& leg = scheduled->leg;
+    exec::ModelFamilyCompositionExecutionLegV1 execution_leg;
+    execution_leg.lexical_source_ordinal =
+        static_cast<std::uint16_t>(ordinal);
+    auto& request = execution_leg.execution;
+    if (leg.family_id != "relational") {
+      request = captured_sources[ordinal].execution_request;
+    }
+    request.input.family_id = leg.family_id;
+    request.input.operation_ids = leg.operation_ids;
+    request.input.operation_id = leg.operation_id;
+    request.input.object_uuid = leg.bound_object_uuid;
+    request.input.physical_node_id = leg.root_physical_node_id;
+    request.input.selected_alternative_uuid = leg.selected_alternative_uuid;
+    request.input.capability_uuid = leg.capability_uuid;
+    request.input.provider_uuid = leg.provider_uuid;
+    request.input.provider_generation = leg.provider_generation;
+    request.input.result_handle_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.result-handle." + std::to_string(ordinal));
+    request.input.causal_counter_id = scheduled->causal_counter_id;
+    request.input.output_descriptor_ids = leg.output_descriptor_ids;
+    request.input.mga_statement_context = mga;
+    request.input.catalog_epoch_uuid = leg.catalog_snapshot_uuid;
+    request.input.security_context_uuid = leg.security_context_uuid;
+    request.input.policy_snapshot_uuid = leg.policy_snapshot_uuid;
+    request.input.resource_contract_uuid = leg.resource_contract_uuid;
+    request.input.catalog_generation = leg.catalog_generation;
+    request.input.descriptor_generation = leg.descriptor_generation;
+    request.input.security_generation = leg.security_generation;
+    request.input.policy_generation = leg.policy_generation;
+    request.input.resource_generation = leg.resource_generation;
+    request.input.maximum_rows = leg.maximum_rows;
+    request.input.maximum_cells = leg.maximum_cells;
+    request.input.maximum_memory_bytes = leg.memory_grant_bytes;
+    request.input.exact_fallback_selected = leg.exact_fallback_selected;
+    request.input.multimodel_composition_receipt_uuid =
+        admitted.composition_admission_receipt_uuid;
+    request.input.multimodel_lexical_source_ordinal =
+        static_cast<std::uint16_t>(ordinal);
+    request.input.multimodel_composition_arity =
+        static_cast<std::uint16_t>(sources.size());
+    request.input.multimodel_common_statement_context = true;
+    if (leg.family_id == "spatial") {
+      request.input.spatial_geometry_descriptor_uuid =
+          prepared.columns[1].descriptor.descriptor_uuid.canonical;
+      const auto spatial_descriptor = descriptor_for(
+          prepared.node->output_descriptor_ids[1]);
+      request.input.spatial_geometry_type_uuid =
+          spatial_descriptor->type_uuid;
+      request.input.spatial_crs_uuid = prepared.spatial_crs_uuid;
+      request.input.spatial_crs_generation = prepared.spatial_crs_generation;
+    }
+    request.capability.capability_uuid = leg.capability_uuid;
+    request.capability.family_id = leg.family_id;
+    request.capability.provider_uuid = leg.provider_uuid;
+    request.capability.provider_generation = leg.provider_generation;
+    request.capability.capability_generation = leg.capability_generation;
+    request.capability.available = true;
+    request.capability.exact = true;
+    request.capability.exact_collection_fallback_available = true;
+    request.capability.cancellation_supported = true;
+    request.capability.cleanup_supported = true;
+    request.capability.residual_recheck_supported = true;
+    request.capability.base_row_mga_recheck_supported = true;
+    request.capability.security_recheck_supported = true;
+    request.cancellation_requested = cancellation_requested;
+    request.cleanup_provider = [] {};
+    request.exact_fallback_selected = leg.exact_fallback_selected;
+    request.security_admitted = true;
+    request.current_catalog_generation = leg.current_catalog_generation;
+    request.current_descriptor_generation = leg.current_descriptor_generation;
+    request.current_security_generation = leg.current_security_generation;
+    request.current_policy_generation = leg.current_policy_generation;
+    request.current_resource_generation = leg.current_resource_generation;
+    request.current_provider_generation = leg.current_provider_generation;
+    request.current_capability_generation = leg.current_capability_generation;
+    request.current_mga_statement_context = mga;
+    const auto context = input.context;
+    const auto prepared_copy = prepared;
+    const auto delivered_property_uuid = leg.delivered_property_uuid;
+    const auto security_receipt_uuid = DerivedCanonicalUuid(
+        identity_scope, "rcp080.provider-security." + std::to_string(ordinal));
+    if (leg.family_id != "relational") {
+      const auto provider =
+          captured_sources[ordinal].execution_request.execute_provider;
+      const auto runtime_input = request.input;
+      request.execute_provider =
+          [provider, runtime_input, delivered_property_uuid](
+              const exec::ModelSourceInputDescriptorV1& input) mutable {
+            auto produced = provider(input);
+            if (produced.ok) {
+              auto& batch = produced.provider_batch;
+              batch.selected_alternative_uuid =
+                  runtime_input.selected_alternative_uuid;
+              batch.capability_uuid = runtime_input.capability_uuid;
+              batch.exact_fallback_selected =
+                  runtime_input.exact_fallback_selected;
+              batch.result_handle_uuid = runtime_input.result_handle_uuid;
+              batch.causal_counter_id = runtime_input.causal_counter_id;
+              batch.output_descriptor_ids =
+                  runtime_input.output_descriptor_ids;
+              batch.mga_statement_context =
+                  runtime_input.mga_statement_context;
+              batch.multimodel_composition_receipt_uuid =
+                  runtime_input.multimodel_composition_receipt_uuid;
+              batch.multimodel_lexical_source_ordinal =
+                  runtime_input.multimodel_lexical_source_ordinal;
+              batch.multimodel_composition_arity =
+                  runtime_input.multimodel_composition_arity;
+              batch.multimodel_common_statement_context =
+                  runtime_input.multimodel_common_statement_context;
+              batch.properties.property_uuid = delivered_property_uuid;
+            }
+            return produced;
+          };
+    } else {
+      request.execute_provider =
+        [context, prepared_copy, delivered_property_uuid,
+         security_receipt_uuid, cancellation_requested](
+            const exec::ModelSourceInputDescriptorV1& source_input) mutable {
+          exec::ModelProviderExecutionResultV1 provider;
+          const auto fail = [&](std::string diagnostic, std::string detail) {
+            provider.diagnostic_id = std::move(diagnostic);
+            provider.detail = std::move(detail);
+            return provider;
+          };
+          const auto authorization = api::EvaluateMaterializedAuthorization(
+              context, context.authorization_context, "SELECT",
+              source_input.object_uuid);
+          if (!authorization.authorized || authorization.denied ||
+              authorization.policy_recheck_required ||
+              !authorization.diagnostics.empty()) {
+            return fail("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                        "composition provider authorization changed");
+          }
+          const auto current = api::LoadMgaRelationStorageDescriptor(
+              context, source_input.object_uuid);
+          if (!current.ok ||
+              current.descriptor.descriptor_uuid.canonical !=
+                  prepared_copy.persisted.descriptor_uuid.canonical ||
+              current.descriptor.descriptor_generation !=
+                  prepared_copy.persisted.descriptor_generation) {
+            return fail("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                        "composition provider relation descriptor changed");
+          }
+          api::MgaVisibleHeapRelationReadRequest read_request;
+          read_request.relation_uuid = source_input.object_uuid;
+          read_request.maximum_scanned_row_versions =
+              context.optimizer_maximum_search_steps;
+          read_request.maximum_decoded_bytes =
+              source_input.maximum_memory_bytes / 2;
+          read_request.maximum_output_rows = source_input.maximum_rows;
+          read_request.cancellation_requested = cancellation_requested;
+          const auto read = api::ReadVisibleMgaHeapRelation(context,
+                                                            read_request);
+          provider.data_access_observed = true;
+          provider.rows_examined = read.scanned_row_version_count;
+          if (!read.ok) {
+            return fail(read.diagnostic.code.empty()
+                            ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
+                            : read.diagnostic.code,
+                        read.diagnostic.detail.empty()
+                            ? "composition MGA-visible relation read failed"
+                            : read.diagnostic.detail);
+          }
+          auto& output = provider.provider_batch;
+          output.provider_uuid = source_input.provider_uuid;
+          output.provider_generation = source_input.provider_generation;
+          output.selected_alternative_uuid =
+              source_input.selected_alternative_uuid;
+          output.capability_uuid = source_input.capability_uuid;
+          output.exact_fallback_selected =
+              source_input.exact_fallback_selected;
+          output.result_handle_uuid = source_input.result_handle_uuid;
+          output.causal_counter_id = source_input.causal_counter_id;
+          output.output_descriptor_ids = source_input.output_descriptor_ids;
+          output.batch.columns = prepared_copy.columns;
+          output.properties.property_uuid = delivered_property_uuid;
+          output.properties.partitioning_id = "single_local_partition";
+          output.properties.uniqueness_id =
+              source_input.family_id == "document" ? "document_uuid"
+              : source_input.family_id == "graph" ? "path_uuid"
+              : source_input.family_id == "key_value" ? "key"
+              : source_input.family_id == "search" ? "document_uuid"
+                                                    : "row_uuid";
+          output.properties.ordering_id =
+              source_input.family_id == "key_value"
+                  ? "key_value_unordered_v1"
+              : source_input.family_id == "time_series"
+                  ? "series_metric_timestamp_tags_row_ascending_v1"
+              : source_input.family_id == "vector"
+                  ? "vector_distance_row_uuid_ascending_v1"
+              : source_input.family_id == "search"
+                  ? "search_score_desc_document_uuid_asc_v1"
+                  : "fixture_order";
+          output.mga_statement_context = source_input.mga_statement_context;
+          output.security_receipt_uuid = security_receipt_uuid;
+          output.multimodel_composition_receipt_uuid =
+              source_input.multimodel_composition_receipt_uuid;
+          output.multimodel_lexical_source_ordinal =
+              source_input.multimodel_lexical_source_ordinal;
+          output.multimodel_composition_arity =
+              source_input.multimodel_composition_arity;
+          output.multimodel_common_statement_context = true;
+          output.properties.exact = true;
+          output.properties.residual_recheck_complete = true;
+          output.properties.base_row_mga_recheck_complete = true;
+          output.properties.security_recheck_complete = true;
+          output.residual_recheck_complete = true;
+          output.base_row_mga_recheck_complete = true;
+          output.security_recheck_complete = true;
+          const auto value_for = [](const api::CrudRowVersionRecord& row,
+                                    const std::string_view name)
+              -> const std::string* {
+            const std::string* value = nullptr;
+            for (const auto& [field, candidate] : row.values) {
+              if (field != name) continue;
+              if (value != nullptr) return nullptr;
+              value = &candidate;
+            }
+            return value;
+          };
+          for (std::size_t row_ordinal = 0;
+               row_ordinal < read.visible_rows.size(); ++row_ordinal) {
+            const auto& row = read.visible_rows[row_ordinal];
+            exec::DescriptorTuple tuple;
+            for (const auto& column : prepared_copy.columns) {
+              const auto* value = value_for(row, column.stable_name);
+              if (value == nullptr && !column.nullable) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "composition provider row lacks a non-null column");
+              }
+              tuple.values.push_back(exec::MakeExecutorValue(
+                  column.descriptor, value == nullptr ? std::string{} : *value,
+                  value == nullptr));
+            }
+            output.batch.rows.push_back(std::move(tuple));
+            exec::ModelProviderRowIdentityV1 identity;
+            if (source_input.family_id == "document") {
+              const auto* document_uuid = value_for(row, "document_uuid");
+              identity.document_uuid =
+                  document_uuid != nullptr ? *document_uuid : row.row_uuid;
+              identity.row_uuid = row.row_uuid;
+            } else if (source_input.family_id == "graph") {
+              const auto* vertex_uuid = value_for(row, "vertex_uuid");
+              const auto* path_uuid = value_for(row, "path_uuid");
+              identity.row_uuid = row.row_uuid;
+              identity.vertex_uuid =
+                  vertex_uuid != nullptr ? *vertex_uuid : row.row_uuid;
+              identity.path_uuid =
+                  path_uuid != nullptr ? *path_uuid : row.row_uuid;
+            } else if (source_input.family_id == "key_value") {
+              identity.row_uuid = row.row_uuid;
+              const auto* key = value_for(row, "key");
+              identity.key = key == nullptr ? std::string{} : *key;
+            } else if (source_input.family_id == "time_series") {
+              identity.row_uuid = row.row_uuid;
+              identity.series_uuid = source_input.object_uuid;
+              const auto* metric_uuid = value_for(row, "metric_uuid");
+              const auto* timestamp = value_for(row, "point_timestamp");
+              const auto* tags = value_for(row, "tags");
+              const auto* value = value_for(row, "value");
+              identity.metric_uuid =
+                  metric_uuid == nullptr ? std::string{} : *metric_uuid;
+              identity.tags = tags == nullptr ? std::string{} : *tags;
+              identity.time_series_payload_kind = "raw.real64.v1";
+              identity.time_series_raw_value =
+                  value == nullptr ? std::string{} : *value;
+              if (timestamp != nullptr) {
+                exec::ParseCanonicalTimeSeriesTimestampNsV1(
+                    *timestamp, &identity.point_timestamp_ns);
+              }
+            } else if (source_input.family_id == "vector") {
+              identity.row_uuid = row.row_uuid;
+              const auto* distance = value_for(row, "distance");
+              const auto* score = value_for(row, "score");
+              identity.vector_distance =
+                  distance == nullptr ? std::string{} : *distance;
+              identity.vector_score =
+                  score == nullptr ? std::string{} : *score;
+            } else if (source_input.family_id == "search") {
+              const auto* document_uuid = value_for(row, "document_uuid");
+              const auto* analyzer_uuid = value_for(row, "analyzer_uuid");
+              const auto* analyzer_generation =
+                  value_for(row, "analyzer_generation");
+              const auto* score = value_for(row, "score");
+              const auto* rank = value_for(row, "rank");
+              identity.document_uuid =
+                  document_uuid == nullptr ? std::string{} : *document_uuid;
+              identity.search_analyzer_uuid =
+                  analyzer_uuid == nullptr ? std::string{} : *analyzer_uuid;
+              if (analyzer_generation != nullptr) {
+                std::from_chars(analyzer_generation->data(),
+                                analyzer_generation->data() +
+                                    analyzer_generation->size(),
+                                identity.search_analyzer_generation);
+              }
+              identity.search_score = score == nullptr ? std::string{} : *score;
+              if (rank != nullptr) {
+                std::from_chars(rank->data(), rank->data() + rank->size(),
+                                identity.search_rank);
+              }
+            } else {
+              identity.row_uuid = row.row_uuid;
+            }
+            output.ordered_row_identities.push_back(std::move(identity));
+          }
+          provider.ok = true;
+          return provider;
+        };
+    }
+    execution_leg.pause_exchange = [] {};
+    execution_leg.resume_exchange = [] {};
+    execution_leg.cleanup_exchange = [] {};
+    execution_request.legs.push_back(std::move(execution_leg));
+  }
+
+  execution_request.execute_relational_consumer =
+      [cancellation_requested](
+          const opt::ModelFamilyRelationalConsumerV1& consumer,
+          const exec::DescriptorBatch& left,
+          const exec::DescriptorBatch& right) {
+        exec::ModelFamilyRelationalConsumerExecutionResultV1 consumed;
+        const auto fail = [&](std::string diagnostic, std::string detail) {
+          consumed.diagnostic_id = std::move(diagnostic);
+          consumed.detail = std::move(detail);
+          return consumed;
+        };
+        if (cancellation_requested()) {
+          return fail("SB_MODEL_EXECUTION_CANCELLED_V1",
+                      "bounded CROSS consumer was cancelled before materialization");
+        }
+        std::uint64_t output_rows = 0;
+        std::uint64_t output_columns = 0;
+        std::uint64_t output_cells = 0;
+        if (!CheckedMultiply(left.rows.size(), right.rows.size(),
+                             &output_rows) ||
+            !CheckedAdd(left.columns.size(), right.columns.size(),
+                        &output_columns) ||
+            !CheckedMultiply(output_rows, output_columns, &output_cells) ||
+            output_rows > consumer.maximum_rows ||
+            output_columns > consumer.maximum_columns ||
+            output_cells > consumer.maximum_cells) {
+          return fail("SB_MODEL_RESOURCE_ROW_LIMIT_V1",
+                      "bounded CROSS product exceeds its checked row, column, or cell grant");
+        }
+        std::uint64_t output_memory = sizeof(exec::DescriptorBatch);
+        const auto add_memory = [&](const std::uint64_t bytes) {
+          return CheckedAdd(output_memory, bytes, &output_memory) &&
+                 output_memory <= consumer.memory_grant_bytes;
+        };
+        const auto add_column = [&](const exec::ExecutorColumnDescriptor& col) {
+          return add_memory(sizeof(exec::ExecutorColumnDescriptor)) &&
+                 add_memory(col.stable_name.size()) &&
+                 add_memory(col.descriptor.descriptor_uuid.canonical.size()) &&
+                 add_memory(col.descriptor.descriptor_kind.size()) &&
+                 add_memory(col.descriptor.canonical_type_name.size()) &&
+                 add_memory(col.descriptor.encoded_descriptor.size());
+        };
+        const auto add_value = [&](const api::EngineTypedValue& value) {
+          return add_memory(sizeof(api::EngineTypedValue)) &&
+                 add_memory(value.descriptor.descriptor_uuid.canonical.size()) &&
+                 add_memory(value.descriptor.descriptor_kind.size()) &&
+                 add_memory(value.descriptor.canonical_type_name.size()) &&
+                 add_memory(value.descriptor.encoded_descriptor.size()) &&
+                 add_memory(value.encoded_value.size()) &&
+                 add_memory(value.binary_value.size());
+        };
+        for (const auto& column : left.columns) {
+          if (!add_column(column)) {
+            return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                        "bounded CROSS column inventory exceeds its memory grant");
+          }
+        }
+        for (const auto& column : right.columns) {
+          if (!add_column(column)) {
+            return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                        "bounded CROSS column inventory exceeds its memory grant");
+          }
+        }
+        for (const auto& left_row : left.rows) {
+          for (const auto& right_row : right.rows) {
+            if (!add_memory(sizeof(exec::DescriptorTuple))) {
+              return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                          "bounded CROSS rows exceed their memory grant");
+            }
+            for (const auto& value : left_row.values) {
+              if (!add_value(value)) {
+                return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                            "bounded CROSS cells exceed their memory grant");
+              }
+            }
+            for (const auto& value : right_row.values) {
+              if (!add_value(value)) {
+                return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                            "bounded CROSS cells exceed their memory grant");
+              }
+            }
+          }
+        }
+        consumed.executed_physical_node_id = consumer.physical_node_id;
+        consumed.causal_counter_id = consumer.causal_counter_id;
+        consumed.selected_implementation_uuid =
+            consumer.selected_implementation_uuid;
+        consumed.mga_statement_context = consumer.mga_statement_context;
+        consumed.security_receipt_uuid =
+            consumer.expected_security_receipt_uuid;
+        consumed.output_batch.columns = left.columns;
+        consumed.output_batch.columns.insert(consumed.output_batch.columns.end(),
+                                              right.columns.begin(),
+                                              right.columns.end());
+        for (const auto& left_row : left.rows) {
+          if (cancellation_requested()) {
+            return fail("SB_MODEL_EXECUTION_CANCELLED_V1",
+                        "bounded CROSS consumer was cancelled during materialization");
+          }
+          for (const auto& right_row : right.rows) {
+            exec::DescriptorTuple row;
+            row.values = left_row.values;
+            row.values.insert(row.values.end(), right_row.values.begin(),
+                              right_row.values.end());
+            consumed.output_batch.rows.push_back(std::move(row));
+          }
+        }
+        consumed.rows_examined = left.rows.size() + right.rows.size();
+        consumed.ok = true;
+        return consumed;
+      };
+  execution_request.cleanup_relational_consumer = [](const auto) {};
+  execution_request.cancellation_requested = cancellation_requested;
+  execution_request.revalidate_publication_state =
+      [admitted, mga, context = input.context, prepared_sources,
+       identity_scope]() {
+        exec::ModelFamilyCompositionPublicationStateV1 publication;
+        publication.current_selected_plan_generation =
+            context.optimizer_route_generation;
+        publication.security_admitted = true;
+        api::EngineResolveStatementSnapshotRequest snapshot_request;
+        snapshot_request.context = context;
+        const auto snapshot = api::EngineResolveStatementSnapshot(
+            snapshot_request);
+        if (snapshot.ok) {
+          publication.current_mga_statement_context =
+              PhysicalMgaContextFromResolvedSnapshot(
+                  context, snapshot.snapshot_vector);
+          publication.current_mga_statement_context.statement_timestamp =
+              mga.statement_timestamp;
+        }
+        for (std::size_t ordinal = 0; ordinal < prepared_sources.size();
+             ++ordinal) {
+          const auto scheduled = std::ranges::find_if(
+              admitted.stable_schedule, [&](const auto& candidate) {
+                return candidate.leg.lexical_source_ordinal == ordinal;
+              });
+          if (scheduled == admitted.stable_schedule.end()) {
+            publication.security_admitted = false;
+            break;
+          }
+          const auto& leg = scheduled->leg;
+          const auto& prepared = prepared_sources[ordinal];
+          const auto authorization = api::EvaluateMaterializedAuthorization(
+              context, context.authorization_context, "SELECT",
+              leg.bound_object_uuid);
+          const auto current = api::LoadMgaRelationStorageDescriptor(
+              context, leg.bound_object_uuid);
+          const bool current_authority =
+              authorization.authorized && !authorization.denied &&
+              !authorization.policy_recheck_required &&
+              authorization.diagnostics.empty() && current.ok &&
+              current.descriptor.relation_uuid.canonical ==
+                  leg.bound_object_uuid &&
+              current.descriptor.descriptor_uuid.canonical ==
+                  prepared.persisted.descriptor_uuid.canonical &&
+              current.descriptor.descriptor_generation ==
+                  prepared.persisted.descriptor_generation &&
+              current.descriptor.columns.size() ==
+                  prepared.persisted.columns.size();
+          publication.security_admitted =
+              publication.security_admitted && current_authority;
+          publication.current_catalog_generations.push_back(
+              context.catalog_generation_id);
+          publication.current_descriptor_generations.push_back(
+              current.ok ? current.descriptor.descriptor_generation : 0);
+          publication.current_security_generations.push_back(
+              context.security_epoch);
+          publication.current_policy_generations.push_back(
+              context.authorization_context.policy_epoch);
+          publication.current_resource_generations.push_back(
+              context.resource_epoch);
+          publication.current_provider_generations.push_back(
+              current.ok ? current.descriptor.descriptor_generation : 0);
+          publication.current_capability_generations.push_back(
+              current.ok ? current.descriptor.descriptor_generation : 0);
+          publication.current_catalog_snapshot_uuids.push_back(
+              context.catalog_epoch_uuid.canonical);
+          publication.current_descriptor_snapshot_uuids.push_back(
+              current.ok ? current.descriptor.descriptor_uuid.canonical
+                         : std::string{});
+          publication.current_security_context_uuids.push_back(
+              context.authorization_context.authority_uuid.canonical);
+          publication.current_policy_snapshot_uuids.push_back(
+              DerivedCanonicalUuid(
+                  identity_scope,
+                  "rcp080.policy." + std::to_string(ordinal)));
+          publication.current_resource_contract_uuids.push_back(
+              DerivedCanonicalUuid(
+                  identity_scope,
+                  "rcp080.resource." + std::to_string(ordinal)));
+          publication.current_provider_uuids.push_back(leg.provider_uuid);
+          publication.current_capability_uuids.push_back(leg.capability_uuid);
+        }
+        return publication;
+      };
+  execution_request.backpressure_high_watermark_rows = 64;
+  execution_request.backpressure_low_watermark_rows = 32;
+  execution_request.current_selected_plan_generation =
+      admitted.selected_plan_generation;
+  execution_request.current_mga_statement_context = mga;
+  const auto executed =
+      exec::ExecuteModelFamilyCompositionV1(execution_request);
+  if (!executed.accepted || !executed.execution_started ||
+      !executed.root_published || !executed.no_partial_root ||
+      !executed.cleanup_complete ||
+      executed.started_leg_ordinals.size() != sources.size() ||
+      executed.started_relational_consumer_ids.size() != joins.size()) {
+    return refuse(executed.diagnostic_id.empty()
+                      ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                      : executed.diagnostic_id,
+                  executed.detail.empty()
+                      ? "bounded composition executor did not publish one complete root"
+                      : executed.detail);
+  }
+
+  exec::CanonicalResultPublicationRequest publication;
+  publication.statement_uuid = input.context.statement_uuid.canonical;
+  publication.mga_authority =
+      BuildCanonicalExecutionMgaAuthority(input.context, physical_dag);
+  publication.selected_physical_dag = physical_dag;
+  publication.selected_catalog_epoch_uuid =
+      input.context.catalog_epoch_uuid.canonical;
+  publication.execution_attempt_uuid = DerivedCanonicalUuid(
+      identity_scope + ":" + input.context.current_monotonic_ns,
+      "rcp080.execution-attempt");
+  publication.physical_output_batch = executed.root_output_batch;
+  publication.transaction_effect_evidence_uuid = DerivedCanonicalUuid(
+      identity_scope + ":" +
+          std::to_string(input.context.local_transaction_id),
+      "rcp080.transaction-effect-unchanged");
+  publication.maximum_row_count = maximum_rows;
+  std::vector<const api::RelationalOutputRecord*> root_outputs;
+  for (const auto& output : dag.outputs) {
+    if (output.relation_node_id == dag.root_node_id) root_outputs.push_back(&output);
+  }
+  std::ranges::sort(root_outputs, {}, &api::RelationalOutputRecord::ordinal);
+  if (root_outputs.size() != executed.root_output_batch.columns.size()) {
+    return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                  "bounded composition root publication binding is incomplete");
+  }
+  for (std::size_t ordinal = 0; ordinal < root_outputs.size(); ++ordinal) {
+    const auto descriptor = descriptor_for(root_outputs[ordinal]->descriptor_id);
+    if (descriptor == dag.descriptors.end() ||
+        root_outputs[ordinal]->ordinal != ordinal) {
+      return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                    "bounded composition root descriptor is unresolved");
+    }
+    exec::CanonicalResultColumnDescriptor published;
+    published.ordinal = static_cast<std::uint32_t>(ordinal);
+    published.name_utf8 = root_outputs[ordinal]->output_name_utf8;
+    published.descriptor_uuid = descriptor->descriptor_uuid;
+    published.type_uuid = descriptor->type_uuid;
+    published.nullability = ResultNullability(descriptor->nullability);
+    published.collation_uuid = descriptor->collation_uuid;
+    published.timezone_profile_id = descriptor->timezone_profile_id;
+    publication.column_bindings.push_back({ordinal, true, std::move(published)});
+  }
+  const auto published = exec::PublishCanonicalResultEnvelope(publication);
+  if (!published.published || !published.diagnostic.ok) {
+    return refuse(published.diagnostic.diagnostic_code.empty()
+                      ? "SB_MODEL_ROOT_PUBLICATION_REFUSED_V1"
+                      : published.diagnostic.diagnostic_code,
+                  published.diagnostic.detail);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = true;
+  result.canonical_result_published = true;
+  result.canonical_result_column_count = published.envelope.column_descriptors.size();
+  result.canonical_result_row_count = published.row_stream.rows.size();
+  result.canonical_result_bytes = published.canonical_envelope_bytes;
+  result.api_result.ok = true;
+  result.api_result.operation_id = "query.execute";
+  result.api_result.result_shape.result_kind = "rows";
+  result.api_result.local_transaction_id = input.context.local_transaction_id;
+  result.api_result.transaction_uuid = input.context.transaction_uuid;
+  result.api_result.embedded_trust_mode_observed =
+      input.context.trust_mode == api::EngineTrustMode::embedded_in_process;
+  for (const auto& column : published.row_stream.columns) {
+    result.api_result.result_shape.columns.push_back(column.descriptor);
+  }
+  for (const auto& row : published.row_stream.rows) {
+    api::EngineRowValue api_row;
+    for (std::size_t column = 0; column < row.values.size(); ++column) {
+      api_row.fields.emplace_back(
+          published.envelope.column_descriptors[column].name_utf8,
+          row.values[column]);
+    }
+    result.api_result.result_shape.rows.push_back(std::move(api_row));
+  }
+  result.api_result.evidence.push_back(
+      {"canonical.model_composition_profile", composition_profile_id});
+  result.api_result.evidence.push_back(
+      {"canonical.model_composition_coordinator", "entered"});
+  result.api_result.evidence.push_back(
+      {"canonical.model_composition_executor", "entered"});
+  result.api_result.evidence.push_back(
+      {"canonical.model_composition_leg_count", std::to_string(sources.size())});
+  result.api_result.evidence.push_back(
+      {"canonical.model_composition_consumer_count", std::to_string(joins.size())});
+  result.api_result.evidence.push_back(
+      {"canonical.model_composition_provider_entry_count",
+       std::to_string(executed.provider_entry_count)});
+  result.api_result.evidence.push_back(
+      {"canonical.model_composition_observed_data_access_count",
+       std::to_string(executed.observed_data_access_count)});
+  result.api_result.evidence.push_back(
+      {"canonical.model_composition_real_mga_read_count",
+       std::to_string(executed.observed_data_access_count)});
+  result.api_result.evidence.push_back(
+      {"canonical.model_composition_root_publication_count", "1"});
+  result.api_result.evidence.push_back(
+      {"canonical.model_composition_cleanup_count",
+       std::to_string(executed.total_cleanup_count)});
+  return result;
 }
 
 CanonicalObjectFreeValuesExecutionResult
@@ -38697,6 +41184,49 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
     }
   }
   if (sources.size() != 2 || join == nullptr || dag.nodes.size() != 3) {
+    return result;
+  }
+  const auto has_attached_model_operation = [&](const auto* source) {
+    if (source->semantic_variant_id == "relation.source.v1") return true;
+    return std::ranges::any_of(
+        source->bound_expression_ids, [&](const std::uint32_t expression_id) {
+          const auto expression = std::ranges::find_if(
+              dag.expressions, [&](const auto& candidate) {
+                return candidate.expression_id == expression_id;
+              });
+          if (expression == dag.expressions.end() ||
+              !expression->operator_name.has_value()) {
+            return false;
+          }
+          const auto& operation = *expression->operator_name;
+          return operation == "DOCUMENT_SOURCE" ||
+                 operation == "DOCUMENT_UNNEST" ||
+                 operation == "DOCUMENT_PATH" ||
+                 operation == "GRAPH_MATCH" || operation == "GRAPH_EXPAND" ||
+                 operation == "KV_KEY" || operation == "KV_MULTI_GET" ||
+                 operation == "KV_PREFIX" || operation == "TIME_RANGE" ||
+                 operation == "TIME_BUCKET" ||
+                 operation == "TIME_DOWNSAMPLE" ||
+                 operation == "VECTOR_NEAREST" ||
+                 operation == "VECTOR_FILTER" ||
+                 operation == "SEARCH_MATCH" ||
+                 operation == "SEARCH_TERMS" ||
+                 operation == "SEARCH_PHRASE" ||
+                 operation == "SEARCH_FUZZY" ||
+                 operation == "SEARCH_FILTER" ||
+                 operation == "SEARCH_ANALYZER_BINDING" ||
+                 operation == "SPATIAL_SOURCE" ||
+                 operation == "SPATIAL_MATCH" ||
+                 operation == "SPATIAL_NEAREST" ||
+                 operation == "COLUMNAR_SOURCE" ||
+                 operation == "COLUMNAR_PROJECT" ||
+                 operation == "COLUMNAR_FILTER";
+        });
+  };
+  if (!std::ranges::all_of(sources, has_attached_model_operation)) {
+    // Adjacent legacy family routes may still carry an operation globally.
+    // They remain owned by their dedicated canonical executor; this captured
+    // pair route admits only explicitly source-attached operation closures.
     return result;
   }
   std::ranges::sort(sources, [&](const auto* left, const auto* right) {
@@ -41824,6 +44354,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         std::ranges::any_of(dag.nodes, [](const auto& node) {
           return node.semantic_variant_id == "relation.source.v1";
         });
+    if (composition_source_count >= 3 && composition_source_count <= 9 &&
+        model_composition_source_count >= 2) {
+      const auto composition =
+          ExecuteCanonicalBoundedModelFamilyCompositionQuery(input);
+      if (composition.profile_matched) return composition;
+    }
     if (composition_source_count == 2 &&
         model_composition_source_count >= 1 &&
         !time_series_relational_pair) {

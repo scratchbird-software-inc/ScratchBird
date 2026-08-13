@@ -407,6 +407,7 @@ bool ParseCanonicalTimeSeriesTimestampNsV1(
 ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
     const ModelSourceInputDescriptorV1& input) {
   ModelInputValidationResultV1 result;
+  const bool relational_family = input.family_id == "relational";
   const bool document_family = input.family_id == "document";
   const bool graph_family = input.family_id == "graph";
   const bool key_value_family = input.family_id == "key_value";
@@ -416,6 +417,7 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
   const bool spatial_family = input.family_id == "spatial";
   const bool columnar_family = input.family_id == "columnar";
   const bool valid_operation =
+      (relational_family && input.operation_id == "RELATIONAL_HEAP_SCAN") ||
       (document_family &&
        (input.operation_id == "DOCUMENT_FIND" ||
         input.operation_id == "DOCUMENT_PATH" ||
@@ -445,13 +447,41 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
   const bool timestamp_family =
       key_value_family || time_series_family || vector_family || search_family ||
       spatial_family || columnar_family;
-  if (timestamp_family !=
-          !input.mga_statement_context.statement_timestamp.empty() ||
-      (timestamp_family &&
+  const bool common_context = input.multimodel_common_statement_context;
+  const bool common_context_carrier_present =
+      !input.multimodel_composition_receipt_uuid.empty() ||
+      input.multimodel_lexical_source_ordinal != 0 ||
+      input.multimodel_composition_arity != 0;
+  const bool exact_common_context =
+      common_context &&
+      CanonicalUuid(input.multimodel_composition_receipt_uuid) &&
+      input.multimodel_composition_arity >= 3 &&
+      input.multimodel_composition_arity <= 9 &&
+      input.multimodel_lexical_source_ordinal <
+          input.multimodel_composition_arity;
+  const bool exact_single_context =
+      !common_context && input.multimodel_composition_receipt_uuid.empty() &&
+      input.multimodel_lexical_source_ordinal == 0 &&
+      input.multimodel_composition_arity == 0;
+  // QOW-SOURCE-RCP080-COMMON-MGA-OPTIONAL-TIMESTAMP-V1
+  // Composition makes the statement context common; it does not make a
+  // timestamp exist.  Timestamp-native legs still require one.  A document,
+  // graph, or relational leg may carry the shared timestamp when another leg
+  // requires it, while an ordinary single-family non-timestamp route may not
+  // invent one.
+  const bool timestamp_required = timestamp_family;
+  const bool timestamp_present =
+      !input.mga_statement_context.statement_timestamp.empty();
+  if ((!exact_common_context && !exact_single_context) ||
+      (timestamp_required && !timestamp_present) ||
+      (!timestamp_required && timestamp_present && !exact_common_context) ||
+      (timestamp_present &&
        !CanonicalStatementTimestamp(
            input.mga_statement_context.statement_timestamp))) {
     result.diagnostic_id =
-        time_series_family
+        (common_context || common_context_carrier_present)
+            ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
+            : time_series_family
             ? "SB_MODEL_TIME_SERIES_TIMESTAMP_INVALID_V1"
             : ((vector_family || search_family || spatial_family || columnar_family)
                    ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
@@ -467,7 +497,7 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
       });
   if (input.abi_version != 1 ||
       input.input_descriptor_id != "SB_MODEL_SOURCE_INPUT_DESCRIPTOR_V1" ||
-      (!document_family && !graph_family && !key_value_family &&
+      (!relational_family && !document_family && !graph_family && !key_value_family &&
        !time_series_family && !vector_family && !search_family &&
        !spatial_family && !columnar_family) ||
       !valid_operation ||
@@ -523,6 +553,8 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     const ModelProviderBatchV1& provider_batch,
     const std::function<bool()>& cancellation_requested) {
   // QOW-SOURCE-CES05-MODEL-TYPED-EXCHANGE-V1
+  const bool relational_family = input.family_id == "relational";
+  const bool document_family = input.family_id == "document";
   const bool graph_family = input.family_id == "graph";
   const bool key_value_family = input.family_id == "key_value";
   const bool time_series_family = input.family_id == "time_series";
@@ -566,6 +598,14 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
             input.exact_fallback_selected)) ||
       provider_batch.result_handle_uuid != input.result_handle_uuid ||
       provider_batch.causal_counter_id != input.causal_counter_id ||
+      provider_batch.multimodel_common_statement_context !=
+          input.multimodel_common_statement_context ||
+      provider_batch.multimodel_composition_receipt_uuid !=
+          input.multimodel_composition_receipt_uuid ||
+      provider_batch.multimodel_lexical_source_ordinal !=
+          input.multimodel_lexical_source_ordinal ||
+      provider_batch.multimodel_composition_arity !=
+          input.multimodel_composition_arity ||
       !PhysicalMgaStatementContextEqual(provider_batch.mga_statement_context,
                                         input.mga_statement_context) ||
       !CanonicalUuid(provider_batch.security_receipt_uuid) ||
@@ -578,7 +618,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     return Refuse(kModelTypedExchangeInvalid,
                   "provider output descriptors differ from the bound input");
   }
-  if (graph_family || key_value_family || time_series_family || vector_family ||
+  if (relational_family || graph_family || key_value_family || time_series_family || vector_family ||
       search_family || spatial_family || columnar_family) {
     std::size_t preflight_cell_count = 0;
     // The provider batch is caller/provider-owned. The grant covers every
@@ -618,6 +658,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
         !preflight_string(input.capability_uuid) ||
         !preflight_string(input.provider_uuid) ||
         !preflight_string(input.result_handle_uuid) ||
+        !preflight_string(input.multimodel_composition_receipt_uuid) ||
         !preflight_account(input.output_descriptor_ids.size() *
                            sizeof(std::uint32_t)) ||
         !preflight_string(provider_batch.properties.property_descriptor_id) ||
@@ -726,7 +767,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
                   "model-family ordered row identity cardinality is incomplete");
   }
   std::uint64_t time_series_uniqueness_peak = 0;
-  if (graph_family || time_series_family || vector_family || search_family ||
+  if (relational_family || graph_family || time_series_family || vector_family || search_family ||
       spatial_family || columnar_family) {
     std::uint64_t uniqueness_peak =
         3 * sizeof(std::unordered_set<std::string>);
@@ -827,10 +868,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           identity.search_analyzer_uuid.empty() &&
           identity.search_analyzer_generation == 0 &&
           identity.search_score.empty() && identity.search_rank == 0;
-      const bool document_identity =
-          !graph_family && !key_value_family && !time_series_family &&
-          !vector_family && !search_family && !spatial_family &&
-          !columnar_family &&
+      const bool document_identity = document_family &&
           CanonicalUuid(identity.document_uuid) &&
           CanonicalUuid(identity.row_uuid) &&
           document_uuids.insert(identity.document_uuid).second &&
@@ -842,6 +880,16 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           identity.tags.empty() && identity.point_timestamp_ns == 0 &&
           identity.bucket_start_ns == 0 && empty_time_series_payload &&
           empty_vector_payload && empty_search_payload;
+      const bool relational_identity =
+          relational_family && identity.document_uuid.empty() &&
+          CanonicalUuid(identity.row_uuid) && identity.key.empty() &&
+          identity.vertex_uuid.empty() && identity.edge_uuid.empty() &&
+          identity.path_uuid.empty() && identity.graph_depth == 0 &&
+          identity.series_uuid.empty() && identity.metric_uuid.empty() &&
+          identity.tags.empty() && identity.point_timestamp_ns == 0 &&
+          identity.bucket_start_ns == 0 && empty_time_series_payload &&
+          empty_vector_payload && empty_search_payload &&
+          row_uuids.insert(identity.row_uuid).second;
       const bool graph_edge_identity =
           (input.operation_id == "GRAPH_MATCH" && identity.graph_depth == 0 &&
            identity.edge_uuid.empty()) ||
@@ -956,7 +1004,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           identity.point_timestamp_ns == 0 && identity.bucket_start_ns == 0 &&
           empty_time_series_payload && empty_vector_payload &&
           empty_search_payload && row_uuids.insert(identity.row_uuid).second;
-      if (!document_identity && !graph_identity && !key_value_identity &&
+      if (!document_identity && !relational_identity && !graph_identity && !key_value_identity &&
           !time_series_raw && !time_series_bucket &&
           !time_series_downsample && !vector_identity && !search_identity &&
           !spatial_or_columnar_identity) {
@@ -1044,6 +1092,20 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       }
     }
   }
+  const bool exact_rechecks_complete =
+      provider_batch.residual_recheck_complete &&
+      provider_batch.base_row_mga_recheck_complete &&
+      provider_batch.security_recheck_complete &&
+      provider_batch.properties.residual_recheck_complete ==
+          provider_batch.residual_recheck_complete &&
+      provider_batch.properties.base_row_mga_recheck_complete ==
+          provider_batch.base_row_mga_recheck_complete &&
+      provider_batch.properties.security_recheck_complete ==
+          provider_batch.security_recheck_complete;
+  if (!exact_rechecks_complete) {
+    return Refuse("SB_MODEL_EXACT_RECHECK_FAILED_V1",
+                  "model-family exact, MGA, or security recheck receipt is incomplete");
+  }
   if (provider_batch.properties.abi_version != 1 ||
       provider_batch.properties.property_descriptor_id !=
           "SB_MODEL_PROPERTY_DESCRIPTOR_V1" ||
@@ -1062,7 +1124,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
                                            : "series_metric_tags_bucket_v1")
                                     : vector_family ? "row_uuid"
                                     : search_family ? "document_uuid"
-                                    : (spatial_family || columnar_family)
+                                    : (relational_family || spatial_family || columnar_family)
                                           ? "row_uuid"
                                     : "document_uuid") ||
       provider_batch.properties.ordering_id !=
@@ -1083,16 +1145,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
                      ? "first_distinct_request_order_v1"
                      : input.operation_id == "KEY_VALUE_PREFIX_RANGE"
                            ? "key_utf8_byte_ascending_v1"
-                           : "fixture_order") ||
-      !provider_batch.residual_recheck_complete ||
-      !provider_batch.base_row_mga_recheck_complete ||
-      !provider_batch.security_recheck_complete ||
-      provider_batch.properties.residual_recheck_complete !=
-          provider_batch.residual_recheck_complete ||
-      provider_batch.properties.base_row_mga_recheck_complete !=
-          provider_batch.base_row_mga_recheck_complete ||
-      provider_batch.properties.security_recheck_complete !=
-          provider_batch.security_recheck_complete) {
+                           : "fixture_order")) {
     return Refuse(kModelTypedExchangeInvalid,
                   "model-family exactness or recheck receipt is incomplete");
   }
@@ -1611,9 +1664,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     cell_count += row.values.size();
     for (std::size_t column = 0; column < row.values.size(); ++column) {
       const auto& value = row.values[column];
-      if (!graph_family && !key_value_family && !time_series_family &&
-          !vector_family && !search_family && !spatial_family &&
-          !columnar_family &&
+      if (document_family &&
           value.state ==
               scratchbird::engine::internal_api::EngineValueState::missing) {
         if (column >= provider_batch.batch.columns.size() ||
@@ -1621,7 +1672,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           return Refuse(kModelDocumentMissingBindingRefused,
                         "missing document path has no nullable bound output descriptor");
         }
-      } else if ((graph_family || key_value_family || time_series_family ||
+      } else if ((relational_family || graph_family || key_value_family || time_series_family ||
                   vector_family || search_family || spatial_family ||
                   columnar_family) &&
                  value.state ==
@@ -1654,9 +1705,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                   "model-family exchange batch allocation was refused");
   }
-  if (!graph_family && !key_value_family && !time_series_family &&
-      !vector_family && !search_family && !spatial_family &&
-      !columnar_family) {
+  if (document_family) {
     for (auto& row : normalized.rows) {
       for (auto& value : row.values) {
         if (value.state ==
@@ -1701,6 +1750,14 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
   result.output.properties = provider_batch.properties;
   result.output.mga_statement_context = input.mga_statement_context;
   result.output.security_receipt_uuid = provider_batch.security_receipt_uuid;
+  result.output.multimodel_composition_receipt_uuid =
+      provider_batch.multimodel_composition_receipt_uuid;
+  result.output.multimodel_lexical_source_ordinal =
+      provider_batch.multimodel_lexical_source_ordinal;
+  result.output.multimodel_composition_arity =
+      provider_batch.multimodel_composition_arity;
+  result.output.multimodel_common_statement_context =
+      provider_batch.multimodel_common_statement_context;
   result.output.exact_exchange_validated = true;
   result.output.exact_fallback_selected = input.exact_fallback_selected;
   return result;

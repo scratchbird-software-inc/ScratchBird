@@ -149,6 +149,367 @@ struct TypedPlanOperationDecodeResult {
   std::string detail;
 };
 
+enum class BoundedModelFamilyV1 : std::uint8_t {
+  kNone = 0,
+  kDocument,
+  kGraph,
+  kKeyValue,
+  kTimeSeries,
+  kVector,
+  kSearch,
+  kSpatial,
+  kColumnar,
+};
+
+struct BoundedModelCompositionShapeV1 {
+  bool exact{false};
+  bool carries_statement_timestamp{false};
+  std::vector<std::pair<std::uint32_t, BoundedModelFamilyV1>> model_legs;
+};
+
+BoundedModelFamilyV1 BoundedModelFamilyForRootV1(
+    const std::optional<std::string>& operator_name) {
+  if (!operator_name.has_value()) return BoundedModelFamilyV1::kNone;
+  if (*operator_name == "DOCUMENT_SOURCE") {
+    return BoundedModelFamilyV1::kDocument;
+  }
+  if (*operator_name == "GRAPH_MATCH") return BoundedModelFamilyV1::kGraph;
+  if (*operator_name == "KV_KEY") return BoundedModelFamilyV1::kKeyValue;
+  if (*operator_name == "TIME_RANGE") {
+    return BoundedModelFamilyV1::kTimeSeries;
+  }
+  if (*operator_name == "VECTOR_NEAREST") {
+    return BoundedModelFamilyV1::kVector;
+  }
+  if (*operator_name == "SEARCH_MATCH") {
+    return BoundedModelFamilyV1::kSearch;
+  }
+  if (*operator_name == "SPATIAL_SOURCE") {
+    return BoundedModelFamilyV1::kSpatial;
+  }
+  if (*operator_name == "COLUMNAR_SOURCE") {
+    return BoundedModelFamilyV1::kColumnar;
+  }
+  return BoundedModelFamilyV1::kNone;
+}
+
+bool BoundedModelFamilyCarriesTimestampV1(
+    const BoundedModelFamilyV1 family) {
+  return family == BoundedModelFamilyV1::kKeyValue ||
+         family == BoundedModelFamilyV1::kTimeSeries ||
+         family == BoundedModelFamilyV1::kVector ||
+         family == BoundedModelFamilyV1::kSearch ||
+         family == BoundedModelFamilyV1::kSpatial ||
+         family == BoundedModelFamilyV1::kColumnar;
+}
+
+// QOW-SOURCE-RCP080-SBLR-BOUNDED-COMPOSITION-IDENTITY-V1
+// This is the exact transport shape emitted by the ordinary SBSQL
+// translation boundary.  It is intentionally independent of the signed
+// runtime-profile catalog: decoder admission proves the bounded left-deep
+// graph, while canonical execution is responsible for selecting (or
+// refusing) one of the signed 3/4/9-leg profiles.
+BoundedModelCompositionShapeV1 ClassifyBoundedModelCompositionV1(
+    const api::TypedRelationalDag& dag) {
+  BoundedModelCompositionShapeV1 shape;
+  if (dag.wire_version != 2) return shape;
+
+  std::unordered_map<std::uint32_t, const api::RelationalExpressionRecord*>
+      expressions_by_id;
+  expressions_by_id.reserve(dag.expressions.size());
+  for (const auto& expression : dag.expressions) {
+    if (expression.expression_id == 0 ||
+        !expressions_by_id.emplace(expression.expression_id, &expression)
+             .second) {
+      return shape;
+    }
+  }
+
+  std::vector<const api::RelationalDagNode*> sources;
+  std::vector<const api::RelationalDagNode*> joins;
+  for (const auto& node : dag.nodes) {
+    const bool relational_source =
+        node.node_kind == api::RelationalDagNodeKind::kScan &&
+        node.semantic_variant_id == "relation.source.v1";
+    const bool model_source =
+        node.node_kind == api::RelationalDagNodeKind::kScan &&
+        node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
+    if (relational_source || model_source) {
+      sources.push_back(&node);
+    } else if (node.node_kind == api::RelationalDagNodeKind::kJoin) {
+      joins.push_back(&node);
+    } else {
+      return shape;
+    }
+  }
+  if (sources.size() < 3 || sources.size() > 9 ||
+      joins.size() + 1 != sources.size()) {
+    return shape;
+  }
+  std::ranges::sort(sources, {},
+                    [](const auto* node) { return node->node_id; });
+  std::ranges::sort(joins, {},
+                    [](const auto* node) { return node->node_id; });
+
+  std::unordered_set<std::uint32_t> source_descriptors;
+  std::unordered_set<std::uint32_t> attached_model_roots;
+  std::unordered_set<std::uint32_t> attached_model_expressions;
+  for (const auto* source : sources) {
+    if (!source->input_node_ids.empty() ||
+        source->required_object_uuids.size() != 1 ||
+        source->output_descriptor_ids.empty()) {
+      return shape;
+    }
+    for (const auto descriptor_id : source->output_descriptor_ids) {
+      if (descriptor_id == 0 || !source_descriptors.insert(descriptor_id).second) {
+        return shape;
+      }
+    }
+
+    std::unordered_set<std::uint32_t> unique_source_expression_ids;
+    unique_source_expression_ids.reserve(source->bound_expression_ids.size());
+    for (const auto expression_id : source->bound_expression_ids) {
+      if (expression_id == 0 ||
+          !unique_source_expression_ids.insert(expression_id).second) {
+        return shape;
+      }
+    }
+
+    // QOW-SOURCE-RCP080-EXACT-SEARCH-TERMS-ATTACHED-AUXILIARY-V1
+    // SEARCH_TERMS is never a family root.  Admit at most the one exact
+    // functionless query constructor attached as ordinal-1 child of this
+    // source's one SEARCH_MATCH root; complete owned reachability below
+    // remains an independent mandatory proof.
+    const api::RelationalExpressionRecord* candidate_search_root = nullptr;
+    const api::RelationalExpressionRecord* attached_search_terms = nullptr;
+    for (const auto expression_id : source->bound_expression_ids) {
+      const auto found = expressions_by_id.find(expression_id);
+      if (found == expressions_by_id.end() ||
+          found->second->operator_name != "SEARCH_MATCH") {
+        continue;
+      }
+      if (candidate_search_root != nullptr) return shape;
+      candidate_search_root = found->second;
+    }
+    if (candidate_search_root != nullptr &&
+        candidate_search_root->child_expression_ids.size() == 4) {
+      const auto query = expressions_by_id.find(
+          candidate_search_root->child_expression_ids[1]);
+      if (query != expressions_by_id.end()) {
+        const auto* expression = query->second;
+        const bool attached_to_same_source = std::ranges::find(
+            source->bound_expression_ids, expression->expression_id) !=
+            source->bound_expression_ids.end();
+        if (attached_to_same_source &&
+            expression->expression_kind ==
+                api::RelationalExpressionKind::kFunctionCall &&
+            !expression->function_uuid.has_value() &&
+            !expression->bound_name_uuid.has_value() &&
+            !expression->literal_kind.has_value() &&
+            !expression->literal_or_parameter_ref.has_value() &&
+            expression->operator_name == "SEARCH_TERMS" &&
+            expression->child_expression_ids.size() == 1) {
+          attached_search_terms = expression;
+        }
+      }
+    }
+
+    std::vector<std::pair<std::uint32_t, BoundedModelFamilyV1>> roots;
+    for (const auto expression_id : source->bound_expression_ids) {
+      const auto expression = expressions_by_id.find(expression_id);
+      if (expression == expressions_by_id.end()) return shape;
+      const auto family =
+          BoundedModelFamilyForRootV1(expression->second->operator_name);
+      const auto* root = expression->second;
+      const bool unregistered_functionless_operation =
+          family == BoundedModelFamilyV1::kNone &&
+          root->expression_kind ==
+              api::RelationalExpressionKind::kFunctionCall &&
+          !root->function_uuid.has_value() &&
+          root != attached_search_terms;
+      if (unregistered_functionless_operation) return shape;
+      if (family == BoundedModelFamilyV1::kNone) continue;
+      const auto expected_arity =
+          family == BoundedModelFamilyV1::kDocument ? 1U
+          : family == BoundedModelFamilyV1::kGraph ? 2U
+          : family == BoundedModelFamilyV1::kKeyValue ? 1U
+          : family == BoundedModelFamilyV1::kTimeSeries ? 3U
+          : family == BoundedModelFamilyV1::kVector ||
+                    family == BoundedModelFamilyV1::kSearch
+              ? 4U
+              : 0U;
+      const auto expected_bound_name =
+          family == BoundedModelFamilyV1::kSpatial ||
+                  family == BoundedModelFamilyV1::kColumnar
+              ? std::optional<std::string>{
+                    source->required_object_uuids.front()}
+              : std::optional<std::string>{};
+      if (root->expression_kind !=
+              api::RelationalExpressionKind::kFunctionCall ||
+          root->function_uuid.has_value() ||
+          root->bound_name_uuid != expected_bound_name ||
+          root->literal_kind.has_value() ||
+          root->literal_or_parameter_ref.has_value() ||
+          root->child_expression_ids.size() != expected_arity ||
+          !attached_model_roots.insert(expression_id).second) {
+        return shape;
+      }
+      roots.emplace_back(expression_id, family);
+    }
+    const bool model_source =
+        source->semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
+    if (model_source != (roots.size() == 1)) return shape;
+    if (model_source) {
+      const auto root_id = roots.front().first;
+      const auto family = roots.front().second;
+      const auto* root = expressions_by_id.at(root_id);
+      std::unordered_set<std::uint32_t> output_expression_ids;
+      for (const auto& output : dag.outputs) {
+        if (output.relation_node_id == source->node_id) {
+          output_expression_ids.insert(output.expression_id);
+        }
+      }
+      std::unordered_set<std::uint32_t> owned;
+      for (const auto expression_id : source->bound_expression_ids) {
+        if (!output_expression_ids.contains(expression_id)) {
+          owned.insert(expression_id);
+        }
+      }
+      std::unordered_set<std::uint32_t> reachable;
+      std::vector<std::uint32_t> pending{root_id};
+      if (family == BoundedModelFamilyV1::kKeyValue) {
+        const auto equality = std::ranges::find_if(
+            owned, [&](const auto expression_id) {
+              const auto found = expressions_by_id.find(expression_id);
+              if (found == expressions_by_id.end()) return false;
+              const auto* expression = found->second;
+              return expression->expression_kind ==
+                         api::RelationalExpressionKind::kBinary &&
+                     expression->operator_name == "=" &&
+                     expression->child_expression_ids.size() == 2 &&
+                     expression->child_expression_ids.front() == root_id;
+            });
+        if (equality == owned.end()) return shape;
+        pending.push_back(*equality);
+      }
+      while (!pending.empty()) {
+        const auto expression_id = pending.back();
+        pending.pop_back();
+        if (!reachable.insert(expression_id).second) continue;
+        const auto found = expressions_by_id.find(expression_id);
+        if (found == expressions_by_id.end() ||
+            !owned.contains(expression_id)) {
+          return shape;
+        }
+        pending.insert(pending.end(),
+                       found->second->child_expression_ids.begin(),
+                       found->second->child_expression_ids.end());
+      }
+      const api::RelationalExpressionRecord* alias = nullptr;
+      if (!root->child_expression_ids.empty()) {
+        const auto found =
+            expressions_by_id.find(root->child_expression_ids.front());
+        if (found != expressions_by_id.end()) alias = found->second;
+      }
+      const bool alias_exact =
+          root->child_expression_ids.empty() ||
+          (alias != nullptr &&
+           alias->expression_kind ==
+               api::RelationalExpressionKind::kIdentifier &&
+           alias->bound_name_uuid == source->required_object_uuids.front());
+      const bool search_auxiliary_exact =
+          family != BoundedModelFamilyV1::kSearch ||
+          (root->child_expression_ids.size() == 4 &&
+           [&] {
+             const auto found =
+                 expressions_by_id.find(root->child_expression_ids[1]);
+             if (found == expressions_by_id.end()) return false;
+             const auto* query = found->second;
+             return query->expression_kind ==
+                        api::RelationalExpressionKind::kFunctionCall &&
+                    !query->function_uuid.has_value() &&
+                    !query->bound_name_uuid.has_value() &&
+                    query->operator_name == "SEARCH_TERMS" &&
+                    query->child_expression_ids.size() == 1;
+           }());
+      if (!alias_exact || !search_auxiliary_exact || reachable != owned ||
+          std::ranges::any_of(owned, [&](const auto expression_id) {
+            return !attached_model_expressions.insert(expression_id).second;
+          })) {
+        return shape;
+      }
+      shape.model_legs.emplace_back(source->node_id, family);
+      shape.carries_statement_timestamp =
+          shape.carries_statement_timestamp ||
+          BoundedModelFamilyCarriesTimestampV1(family);
+    }
+  }
+  if (shape.model_legs.size() < 2 || shape.model_legs.size() > 8) {
+    return {};
+  }
+
+  std::uint32_t left_id = sources.front()->node_id;
+  std::vector<std::uint32_t> accumulated_descriptors =
+      sources.front()->output_descriptor_ids;
+  for (std::size_t ordinal = 1; ordinal < sources.size(); ++ordinal) {
+    const auto* join = joins[ordinal - 1];
+    const auto* right = sources[ordinal];
+    if (join->semantic_variant_id != "join.cross.v1" ||
+        join->input_node_ids !=
+            std::vector<std::uint32_t>{left_id, right->node_id} ||
+        !join->bound_expression_ids.empty() ||
+        !join->required_object_uuids.empty()) {
+      return {};
+    }
+    accumulated_descriptors.insert(accumulated_descriptors.end(),
+                                   right->output_descriptor_ids.begin(),
+                                   right->output_descriptor_ids.end());
+    if (join->output_descriptor_ids != accumulated_descriptors) return {};
+    left_id = join->node_id;
+  }
+  if (left_id != dag.root_node_id) return {};
+
+  const auto global_model_root_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return BoundedModelFamilyForRootV1(expression.operator_name) !=
+               BoundedModelFamilyV1::kNone;
+      });
+  if (global_model_root_count != shape.model_legs.size() ||
+      attached_model_roots.size() != shape.model_legs.size() ||
+      std::ranges::any_of(dag.expressions, [&](const auto& expression) {
+        const bool source_output = std::ranges::any_of(
+            dag.outputs, [&](const auto& output) {
+              return output.expression_id == expression.expression_id;
+            });
+        return !source_output &&
+               !attached_model_expressions.contains(expression.expression_id);
+      })) {
+    return {};
+  }
+  shape.exact = true;
+  return shape;
+}
+
+bool IsBoundedModelCompositionCandidateV1(
+    const api::TypedRelationalDag& dag) {
+  std::size_t source_count = 0;
+  std::size_t model_source_count = 0;
+  for (const auto& node : dag.nodes) {
+    const bool relational_source =
+        node.node_kind == api::RelationalDagNodeKind::kScan &&
+        node.semantic_variant_id == "relation.source.v1";
+    const bool model_source =
+        node.node_kind == api::RelationalDagNodeKind::kScan &&
+        node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
+    if (relational_source || model_source) {
+      ++source_count;
+      model_source_count += model_source ? 1 : 0;
+    }
+  }
+  return source_count >= 3 && source_count <= 9 &&
+         model_source_count >= 2;
+}
+
 struct CanonicalQueryRouteResult {
   bool graph_validated{false};
   bool logical_graph_populated{false};
@@ -1253,6 +1614,15 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
   }
   const auto& dag = decoded.request.relational_dag;
   const auto& context = dispatch_request.context;
+  const auto bounded_model_composition =
+      ClassifyBoundedModelCompositionV1(dag);
+  if (IsBoundedModelCompositionCandidateV1(dag) &&
+      !bounded_model_composition.exact) {
+    decoded.diagnostic_id = "SB_MODEL_BINDING_INCOMPLETE_V1";
+    decoded.detail =
+        "bounded model composition is not the exact attached-root, descriptor-lineage, left-deep CROSS graph";
+    return decoded;
+  }
   std::unordered_map<std::uint32_t, const api::RelationalExpressionRecord*>
       expressions_by_id;
   expressions_by_id.reserve(dag.expressions.size());
@@ -1377,6 +1747,23 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
     timestamp_families[4] = true;
     timestamp_families[5] = true;
   }
+  if (bounded_model_composition.exact) {
+    for (const auto& [node_id, family] :
+         bounded_model_composition.model_legs) {
+      static_cast<void>(node_id);
+      switch (family) {
+        case BoundedModelFamilyV1::kKeyValue: timestamp_families[0] = true; break;
+        case BoundedModelFamilyV1::kTimeSeries: timestamp_families[1] = true; break;
+        case BoundedModelFamilyV1::kVector: timestamp_families[2] = true; break;
+        case BoundedModelFamilyV1::kSearch: timestamp_families[3] = true; break;
+        case BoundedModelFamilyV1::kSpatial: timestamp_families[4] = true; break;
+        case BoundedModelFamilyV1::kColumnar: timestamp_families[5] = true; break;
+        case BoundedModelFamilyV1::kNone:
+        case BoundedModelFamilyV1::kDocument:
+        case BoundedModelFamilyV1::kGraph: break;
+      }
+    }
+  }
 
   const bool key_value_graph = timestamp_families[0];
   const bool time_series_graph = timestamp_families[1];
@@ -1385,8 +1772,10 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
   const bool spatial_graph = timestamp_families[4];
   const bool columnar_graph = timestamp_families[5];
   const bool timestamp_model_graph =
-      key_value_graph || time_series_graph || vector_graph || search_graph ||
-      spatial_graph || columnar_graph;
+      bounded_model_composition.exact
+          ? bounded_model_composition.carries_statement_timestamp
+          : (key_value_graph || time_series_graph || vector_graph ||
+             search_graph || spatial_graph || columnar_graph);
   if (timestamp_model_graph != statement_timestamp_present ||
       (timestamp_model_graph &&
        (!IsCanonicalStatementTimestamp(dag.statement_timestamp) ||
@@ -1602,8 +1991,7 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
     routed.optimizer_selected = heap_execution.optimizer_selected;
     routed.physical_dag_published = heap_execution.physical_dag_published;
     routed.physical_dag_executed = heap_execution.physical_dag_executed;
-    routed.runtime_actuals_attached =
-        heap_execution.runtime_actuals_attached;
+    routed.runtime_actuals_attached = heap_execution.runtime_actuals_attached;
     routed.canonical_result_published =
         heap_execution.canonical_result_published;
     routed.physical_node_count = heap_execution.physical_node_count;

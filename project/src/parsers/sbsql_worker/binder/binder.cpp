@@ -641,6 +641,707 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kCatalogSource;
       });
+  if (ast.catalog_relation_sources.size() >= 3 &&
+      ast.catalog_relation_sources.size() <= 9) {
+    // QOW-SOURCE-RCP-080-BOUNDED-MULTIMODEL-JOIN-BINDING-V1
+    const auto source_count = ast.catalog_relation_sources.size();
+    std::vector<const NativeRelationAstNode*> source_relations(source_count,
+                                                               nullptr);
+    std::vector<const NativeRelationAstNode*> join_relations;
+    for (const auto& relation : ast.relations) {
+      if (relation.relation_kind == NativeRelationAstKind::kCatalogSource &&
+          relation.relation_source_ids.size() == 1 &&
+          relation.relation_source_ids.front() >= 1 &&
+          relation.relation_source_ids.front() <= source_count) {
+        auto*& slot = source_relations[relation.relation_source_ids.front() - 1];
+        if (slot != nullptr) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                                "multimodel source relation is duplicated");
+          return RefusedBoundAst(std::move(bound));
+        }
+        slot = &relation;
+      } else if (relation.relation_kind == NativeRelationAstKind::kJoin) {
+        join_relations.push_back(&relation);
+      }
+    }
+    std::ranges::sort(join_relations, {},
+                      [](const auto* relation) { return relation->relation_id; });
+    bool exact_graph =
+        std::ranges::none_of(source_relations,
+                            [](const auto* relation) { return relation == nullptr; }) &&
+        join_relations.size() + 1 == source_count &&
+        ast.relations.size() == source_count + join_relations.size() &&
+        context.catalog_relations.size() == source_count &&
+        context.relations.size() == join_relations.size();
+    std::uint32_t left_relation_id = 0;
+    if (exact_graph) {
+      left_relation_id = source_relations.front()->relation_id;
+    }
+    for (std::size_t ordinal = 1;
+         exact_graph && ordinal < source_count; ++ordinal) {
+      const auto* join = join_relations[ordinal - 1];
+      const auto& relation_binding = context.relations[ordinal - 1];
+      exact_graph =
+          join->relation_id == source_count + ordinal &&
+          join->input_relation_ids ==
+              std::vector<std::uint32_t>{
+                  left_relation_id, source_relations[ordinal]->relation_id} &&
+          join->predicate_expression_ids.empty() &&
+          relation_binding.relation_id == join->relation_id &&
+          relation_binding.semantic_variant_id == "join.cross.v1";
+      left_relation_id = join->relation_id;
+    }
+    exact_graph = exact_graph && ast.root_relation_id == left_relation_id;
+    const auto model_source_count = std::ranges::count_if(
+        ast.catalog_relation_sources, [](const auto& source) {
+          return source.source_kind !=
+                 NativeRelationSourceAstKind::kCatalogRelation;
+        });
+    if (!exact_graph || model_source_count < 2) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "bounded multimodel JOIN graph is incomplete");
+      return RefusedBoundAst(std::move(bound));
+    }
+
+    std::unordered_map<std::uint32_t, const NativeExpressionAstNode*>
+        ast_expression_by_id;
+    for (const auto& expression : ast.expressions) {
+      if (expression.expression_id == 0 ||
+          !ast_expression_by_id.emplace(expression.expression_id, &expression)
+               .second) {
+        AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                              "multimodel AST expression identity is invalid");
+        return RefusedBoundAst(std::move(bound));
+      }
+    }
+    std::vector<std::vector<std::uint32_t>> source_closure_ids(source_count);
+    std::unordered_map<std::uint32_t, std::size_t> expression_owner;
+    for (std::size_t source_ordinal = 0; source_ordinal < source_count;
+         ++source_ordinal) {
+      const auto& source = ast.catalog_relation_sources[source_ordinal];
+      if (source.source_kind == NativeRelationSourceAstKind::kCatalogRelation) {
+        if (!source_relations[source_ordinal]->predicate_expression_ids.empty()) {
+          AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                                "bounded relational leg cannot own a predicate");
+          return RefusedBoundAst(std::move(bound));
+        }
+        continue;
+      }
+      if (source.model_operation_expression_ids.size() != 1) {
+        AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                              "multimodel leg requires one operation root");
+        return RefusedBoundAst(std::move(bound));
+      }
+      std::vector<std::uint32_t> pending{
+          source.model_operation_expression_ids.front()};
+      pending.insert(pending.end(),
+                     source_relations[source_ordinal]
+                         ->predicate_expression_ids.begin(),
+                     source_relations[source_ordinal]
+                         ->predicate_expression_ids.end());
+      std::unordered_set<std::uint32_t> local;
+      while (!pending.empty()) {
+        const auto expression_id = pending.back();
+        pending.pop_back();
+        if (!local.insert(expression_id).second) continue;
+        const auto expression = ast_expression_by_id.find(expression_id);
+        if (expression == ast_expression_by_id.end() ||
+            expression->second->expression_kind ==
+                NativeExpressionAstKind::kWildcard) {
+          AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                                "multimodel operation closure is incomplete");
+          return RefusedBoundAst(std::move(bound));
+        }
+        for (const auto child_id : expression->second->child_expression_ids) {
+          if (child_id >= expression_id) {
+            AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                                  "multimodel operation closure is not acyclic");
+            return RefusedBoundAst(std::move(bound));
+          }
+          pending.push_back(child_id);
+        }
+      }
+      for (const auto expression_id : local) {
+        const auto [owner, inserted] =
+            expression_owner.emplace(expression_id, source_ordinal);
+        if (!inserted && owner->second != source_ordinal) {
+          AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                                "multimodel operation closure crosses legs");
+          return RefusedBoundAst(std::move(bound));
+        }
+        source_closure_ids[source_ordinal].push_back(expression_id);
+      }
+      std::ranges::sort(source_closure_ids[source_ordinal]);
+    }
+    if (std::ranges::any_of(ast.expressions, [&](const auto& expression) {
+          return expression.expression_kind !=
+                     NativeExpressionAstKind::kWildcard &&
+                 !expression_owner.contains(expression.expression_id);
+        })) {
+      AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                            "multimodel AST contains an orphan expression");
+      return RefusedBoundAst(std::move(bound));
+    }
+    const auto operation_closure_count = std::accumulate(
+        source_closure_ids.begin(), source_closure_ids.end(), std::size_t{0},
+        [](const auto count, const auto& ids) { return count + ids.size(); });
+    std::vector<std::vector<const NativeOutputBindingInput*>>
+        source_projection_bindings(source_count);
+    for (const auto& output : context.outputs) {
+      if (output.relation_id >= 1 && output.relation_id <= source_count) {
+        source_projection_bindings[output.relation_id - 1].push_back(&output);
+      }
+    }
+    for (auto& outputs : source_projection_bindings) {
+      std::ranges::sort(outputs, {},
+                        [](const auto* output) { return output->ordinal; });
+    }
+    const auto source_projection_count = std::accumulate(
+        source_projection_bindings.begin(), source_projection_bindings.end(),
+        std::size_t{0}, [](const auto count, const auto& outputs) {
+          return count + outputs.size();
+        });
+    std::size_t expected_output_count = source_projection_count;
+    std::size_t accumulated_width = source_projection_bindings.front().size();
+    for (std::size_t source_ordinal = 1; source_ordinal < source_count;
+         ++source_ordinal) {
+      accumulated_width += source_projection_bindings[source_ordinal].size();
+      expected_output_count += accumulated_width;
+    }
+    if (context.expressions.size() !=
+            source_projection_count + operation_closure_count ||
+        context.outputs.size() != expected_output_count) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "multimodel typed binding cardinality is incomplete");
+      return RefusedBoundAst(std::move(bound));
+    }
+
+    const auto model_profile = [](const NativeRelationSourceAstKind kind)
+        -> std::tuple<std::string_view, std::string_view,
+                      std::string_view, std::string_view> {
+      switch (kind) {
+        case NativeRelationSourceAstKind::kDocument:
+          return {"document", "DOCUMENT_FIND", "DOCUMENT_SOURCE",
+                  "document_collection"};
+        case NativeRelationSourceAstKind::kGraph:
+          return {"graph", "GRAPH_MATCH", "GRAPH_MATCH", "graph"};
+        case NativeRelationSourceAstKind::kKeyValue:
+          return {"key_value", "KEY_VALUE_GET", "KV_KEY", "key_value"};
+        case NativeRelationSourceAstKind::kTimeSeries:
+          return {"time_series", "TIME_SERIES_RANGE_READ", "TIME_RANGE",
+                  "time_series"};
+        case NativeRelationSourceAstKind::kVector:
+          return {"vector", "VECTOR_EXACT_SEARCH", "VECTOR_NEAREST",
+                  "vector"};
+        case NativeRelationSourceAstKind::kSearch:
+          return {"search", "SEARCH_RANKED_QUERY", "SEARCH_MATCH", "search"};
+        case NativeRelationSourceAstKind::kSpatial:
+          return {"spatial", "SPATIAL_SOURCE", "SPATIAL_SOURCE",
+                  "spatial_collection"};
+        case NativeRelationSourceAstKind::kColumnar:
+          return {"columnar", "COLUMNAR_SOURCE", "COLUMNAR_SOURCE",
+                  "logical_relation"};
+        default: return {"", "", "", ""};
+      }
+    };
+    const auto semantic_for = [](const NativeRelationSourceAstKind kind) {
+      switch (kind) {
+        case NativeRelationSourceAstKind::kDocument:
+          return std::string{"sblr.model-source.document.v1"};
+        case NativeRelationSourceAstKind::kGraph:
+          return std::string{"sblr.model-source.graph.v1"};
+        case NativeRelationSourceAstKind::kKeyValue:
+          return std::string{"sblr.model-source.key-value.v1"};
+        case NativeRelationSourceAstKind::kTimeSeries:
+          return std::string{"sblr.model-source.time-series.v1"};
+        case NativeRelationSourceAstKind::kVector:
+          return std::string{"sblr.model-source.vector.v1"};
+        case NativeRelationSourceAstKind::kSearch:
+          return std::string{"sblr.model-source.search.v1"};
+        case NativeRelationSourceAstKind::kSpatial:
+          return std::string{"sblr.model-source.spatial.v1"};
+        case NativeRelationSourceAstKind::kColumnar:
+          return std::string{"sblr.model-source.columnar.v1"};
+        default: return std::string{"catalog.relation-source.v1"};
+      }
+    };
+
+    std::size_t binding_offset = 0;
+    std::vector<std::vector<std::uint32_t>> source_projection_ids;
+    for (std::size_t source_ordinal = 0; source_ordinal < source_count;
+         ++source_ordinal) {
+      const auto& ast_source = ast.catalog_relation_sources[source_ordinal];
+      const auto& relation_binding = context.catalog_relations[source_ordinal];
+      const auto* ast_relation = source_relations[source_ordinal];
+      const auto [family, logical_operation, attached_root, object_type] =
+          model_profile(ast_source.source_kind);
+      const bool model = ast_source.source_kind !=
+                         NativeRelationSourceAstKind::kCatalogRelation;
+      const bool accepted_relational_type =
+          relation_binding.resolved_object_type == "relation" ||
+          relation_binding.resolved_object_type == "table" ||
+          relation_binding.resolved_object_type == "view" ||
+          relation_binding.resolved_object_type == "materialized_view" ||
+          relation_binding.resolved_object_type == "external_table" ||
+          relation_binding.resolved_object_type == "foreign_table";
+      if (ast_source.source_id != source_ordinal + 1 ||
+          relation_binding.source_id != ast_source.source_id ||
+          relation_binding.resolution_state !=
+              NativeCatalogRelationResolutionState::kBound ||
+          !IsNonNullCanonicalUuid(relation_binding.object_uuid) ||
+          !IsNonNullCanonicalUuid(relation_binding.resolved_schema_uuid) ||
+          relation_binding.catalog_generation_id == 0 ||
+          relation_binding.security_epoch == 0 ||
+          relation_binding.resource_epoch == 0 ||
+          relation_binding.columns.empty() ||
+          (model &&
+           (ast_source.model_family_id != family ||
+            ast_source.model_operation_id != logical_operation ||
+            ast_source.model_operation_ids !=
+                std::vector<std::string>{std::string(attached_root)} ||
+            ast_source.model_operation_expression_ids.size() != 1 ||
+            relation_binding.resolved_object_type != object_type ||
+            (ast_source.source_kind == NativeRelationSourceAstKind::kSearch &&
+             (!IsNonNullCanonicalUuid(context.search_analyzer_uuid) ||
+              context.search_analyzer_generation == 0)))) ||
+          (!model && !accepted_relational_type)) {
+        AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                              "multimodel source authority is incomplete");
+        return RefusedBoundAst(std::move(bound));
+      }
+
+      BoundCatalogRelationSourceAstRecord bound_source;
+      bound_source.source_id = ast_source.source_id;
+      bound_source.source_kind = ast_source.source_kind;
+      bound_source.resolution_state = relation_binding.resolution_state;
+      bound_source.qualified_name = ast_source.qualified_name;
+      bound_source.alias = ast_source.alias;
+      bound_source.alias_is_explicit = ast_source.alias_is_explicit;
+      bound_source.model_family_id = ast_source.model_family_id;
+      bound_source.model_operation_id = ast_source.model_operation_id;
+      bound_source.model_operation_ids = ast_source.model_operation_ids;
+      bound_source.model_source_alias = ast_source.model_source_alias;
+      bound_source.model_time_series_aggregate_id =
+          ast_source.model_time_series_aggregate_id;
+      bound_source.model_vector_result_alias =
+          ast_source.model_vector_result_alias;
+      bound_source.model_vector_metric_id = ast_source.model_vector_metric_id;
+      bound_source.model_vector_top_k = ast_source.model_vector_top_k;
+      bound_source.model_search_result_alias =
+          ast_source.model_search_result_alias;
+      bound_source.model_search_analyzer_name =
+          ast_source.model_search_analyzer_name;
+      bound_source.model_search_query_kind =
+          ast_source.model_search_query_kind;
+      bound_source.model_search_top_k = ast_source.model_search_top_k;
+      if (ast_source.source_kind == NativeRelationSourceAstKind::kSearch) {
+        bound_source.model_search_analyzer_uuid =
+            context.search_analyzer_uuid;
+        bound_source.model_search_analyzer_generation =
+            context.search_analyzer_generation;
+      }
+      bound_source.model_spatial_predicate_id =
+          ast_source.model_spatial_predicate_id;
+      bound_source.model_spatial_top_k = ast_source.model_spatial_top_k;
+      bound_source.model_graph_direction = ast_source.model_graph_direction;
+      bound_source.model_graph_minimum_depth =
+          ast_source.model_graph_minimum_depth;
+      bound_source.model_graph_maximum_depth =
+          ast_source.model_graph_maximum_depth;
+      bound_source.model_graph_cycle_policy =
+          ast_source.model_graph_cycle_policy;
+      bound_source.model_comparison_operator =
+          ast_source.model_comparison_operator;
+      bound_source.model_wildcard_path = ast_source.model_wildcard_path;
+      bound_source.qualified_name_range = ast_source.qualified_name_range;
+      bound_source.range = ast_source.range;
+      bound_source.object_uuid = relation_binding.object_uuid;
+      bound_source.resolved_object_type = relation_binding.resolved_object_type;
+      bound_source.resolved_schema_uuid = relation_binding.resolved_schema_uuid;
+      bound_source.parent_object_uuid = relation_binding.parent_object_uuid;
+      bound_source.catalog_generation_id = relation_binding.catalog_generation_id;
+      bound_source.security_epoch = relation_binding.security_epoch;
+      bound_source.resource_epoch = relation_binding.resource_epoch;
+
+      BoundRelationAstRecord bound_source_relation;
+      bound_source_relation.relation_id = ast_relation->relation_id;
+      bound_source_relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+      bound_source_relation.semantic_variant_id = semantic_for(ast_source.source_kind);
+      bound_source_relation.bound_object_uuid = relation_binding.object_uuid;
+      std::vector<std::uint32_t> projection_ids;
+      for (std::size_t column_ordinal = 0;
+           column_ordinal < relation_binding.columns.size(); ++column_ordinal) {
+        const auto& column = relation_binding.columns[column_ordinal];
+        if (column.ordinal != column_ordinal || column.column_uuid.empty() ||
+            !descriptor_by_id.contains(column.descriptor_id)) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                                "multimodel persisted source descriptor is incomplete");
+          return RefusedBoundAst(std::move(bound));
+        }
+        bound_source.columns.push_back(
+            {column.ordinal, column.column_uuid, column.descriptor_id,
+             column.canonical_name_key});
+      }
+      const auto& projection_bindings =
+          source_projection_bindings[source_ordinal];
+      const bool derived_projection =
+          ast_source.source_kind == NativeRelationSourceAstKind::kVector ||
+          ast_source.source_kind == NativeRelationSourceAstKind::kSearch;
+      const std::vector<std::string_view> expected_derived_names =
+          ast_source.source_kind == NativeRelationSourceAstKind::kVector
+              ? std::vector<std::string_view>{"row_uuid", "distance", "score"}
+          : ast_source.source_kind == NativeRelationSourceAstKind::kSearch
+              ? std::vector<std::string_view>{
+                    "document_uuid", "analyzer_uuid", "analyzer_generation",
+                    "score", "rank"}
+              : std::vector<std::string_view>{};
+      if ((!derived_projection &&
+           projection_bindings.size() != relation_binding.columns.size()) ||
+          (derived_projection &&
+           projection_bindings.size() != expected_derived_names.size())) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                              "multimodel public source inventory is incomplete");
+        return RefusedBoundAst(std::move(bound));
+      }
+      for (std::size_t column_ordinal = 0;
+           column_ordinal < projection_bindings.size(); ++column_ordinal) {
+        const auto& output = *projection_bindings[column_ordinal];
+        const auto& expression = context.expressions[binding_offset];
+        const auto expected_bound_name =
+            derived_projection
+                ? std::optional<std::string>{
+                      ast_source.source_kind ==
+                                  NativeRelationSourceAstKind::kSearch &&
+                              (column_ordinal == 1 || column_ordinal == 2)
+                          ? context.search_analyzer_uuid
+                          : relation_binding.object_uuid}
+                : std::optional<std::string>{
+                      relation_binding.columns[column_ordinal].column_uuid};
+        if (expression.expression_id != binding_offset + 1 ||
+            !descriptor_by_id.contains(expression.descriptor_id) ||
+            expression.function_uuid.has_value() ||
+            expression.bound_name_uuid != expected_bound_name ||
+            output.output_id != binding_offset + 1 ||
+            output.expression_id != expression.expression_id ||
+            output.descriptor_id != expression.descriptor_id || !output.visible ||
+            output.ordinal != column_ordinal ||
+            output.relation_id != ast_relation->relation_id ||
+            (derived_projection &&
+             output.output_name_utf8 != expected_derived_names[column_ordinal]) ||
+            (!derived_projection &&
+             (expression.descriptor_id !=
+                  relation_binding.columns[column_ordinal].descriptor_id ||
+              output.output_name_utf8 !=
+                  relation_binding.columns[column_ordinal].canonical_name_key))) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                                "multimodel source projection is incomplete");
+          return RefusedBoundAst(std::move(bound));
+        }
+        bound.expressions.push_back(
+            {expression.expression_id, NativeExpressionAstKind::kIdentifier,
+             std::nullopt, {}, expression.descriptor_id, std::nullopt,
+             expression.bound_name_uuid, std::nullopt, std::nullopt});
+        bound.outputs.push_back(
+            {output.output_id, output.relation_id, output.expression_id,
+             output.output_name_utf8, output.descriptor_id, output.visible,
+             output.ordinal});
+        projection_ids.push_back(expression.expression_id);
+        bound_source_relation.output_expression_ids.push_back(
+            expression.expression_id);
+        bound_source_relation.bound_expression_ids.push_back(
+            expression.expression_id);
+        ++binding_offset;
+      }
+      source_projection_ids.push_back(projection_ids);
+      bound.catalog_relation_sources.push_back(std::move(bound_source));
+      bound.relations.push_back(std::move(bound_source_relation));
+    }
+
+    std::unordered_map<std::uint32_t, std::uint32_t> ast_to_bound_expression;
+    for (std::size_t source_ordinal = 0; source_ordinal < source_count;
+         ++source_ordinal) {
+      const auto& ast_source = ast.catalog_relation_sources[source_ordinal];
+      if (ast_source.source_kind ==
+          NativeRelationSourceAstKind::kCatalogRelation) {
+        continue;
+      }
+      const auto [family, logical_operation, attached_root, object_type] =
+          model_profile(ast_source.source_kind);
+      const auto expected_arity =
+          attached_root == "DOCUMENT_SOURCE" ? 1U
+          : attached_root == "GRAPH_MATCH"   ? 2U
+          : attached_root == "KV_KEY"        ? 1U
+          : attached_root == "TIME_RANGE"    ? 3U
+          : attached_root == "VECTOR_NEAREST" ||
+                    attached_root == "SEARCH_MATCH"
+              ? 4U
+              : 0U;
+      const auto primary_ast_id =
+          ast_source.model_operation_expression_ids.front();
+      const auto primary = ast_expression_by_id.find(primary_ast_id);
+      if (primary == ast_expression_by_id.end() ||
+          primary->second->expression_kind !=
+              NativeExpressionAstKind::kFunctionCall ||
+          primary->second->operator_name != attached_root ||
+          primary->second->child_expression_ids.size() != expected_arity) {
+        AddBoundAstDiagnostic(&bound, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                              "multimodel operation identity or arity is invalid");
+        return RefusedBoundAst(std::move(bound));
+      }
+
+      std::unordered_set<std::uint32_t> alias_expression_ids;
+      if (expected_arity != 0) {
+        alias_expression_ids.insert(
+            primary->second->child_expression_ids.front());
+      }
+      for (const auto ast_expression_id : source_closure_ids[source_ordinal]) {
+        const auto ast_expression = ast_expression_by_id.find(ast_expression_id);
+        const auto& expression = context.expressions[binding_offset];
+        if (ast_expression == ast_expression_by_id.end() ||
+            expression.expression_id != binding_offset + 1 ||
+            !descriptor_by_id.contains(expression.descriptor_id) ||
+            expression.function_uuid.has_value()) {
+          AddBoundAstDiagnostic(&bound, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                                "multimodel operation binding is incomplete");
+          return RefusedBoundAst(std::move(bound));
+        }
+        std::optional<std::string> expected_bound_name;
+        if (alias_expression_ids.contains(ast_expression_id)) {
+          expected_bound_name =
+              context.catalog_relations[source_ordinal].object_uuid;
+        } else if (ast_source.model_search_analyzer_expression_id ==
+                   ast_expression_id) {
+          expected_bound_name = context.search_analyzer_uuid;
+        } else if (ast_expression_id == primary_ast_id &&
+                   (ast_source.source_kind ==
+                        NativeRelationSourceAstKind::kSpatial ||
+                    ast_source.source_kind ==
+                        NativeRelationSourceAstKind::kColumnar)) {
+          expected_bound_name =
+              context.catalog_relations[source_ordinal].object_uuid;
+        }
+        if (expression.bound_name_uuid != expected_bound_name) {
+          AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                                "multimodel operation bound-name is invalid");
+          return RefusedBoundAst(std::move(bound));
+        }
+        BoundExpressionAstRecord operation;
+        operation.expression_id = expression.expression_id;
+        operation.expression_kind = ast_expression->second->expression_kind;
+        operation.literal_kind = ast_expression->second->literal_kind;
+        operation.result_descriptor_id = expression.descriptor_id;
+        operation.bound_name_uuid = expression.bound_name_uuid;
+        for (const auto child_ast_id :
+             ast_expression->second->child_expression_ids) {
+          const auto child = ast_to_bound_expression.find(child_ast_id);
+          if (child == ast_to_bound_expression.end()) {
+            AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                                  "multimodel child binding is missing");
+            return RefusedBoundAst(std::move(bound));
+          }
+          operation.child_expression_ids.push_back(child->second);
+        }
+        if (operation.expression_kind ==
+                NativeExpressionAstKind::kFunctionCall ||
+            operation.expression_kind == NativeExpressionAstKind::kBinary) {
+          operation.canonical_operator_name =
+              ast_expression->second->operator_name;
+        } else if (operation.expression_kind ==
+                       NativeExpressionAstKind::kLiteral ||
+                   operation.expression_kind ==
+                       NativeExpressionAstKind::kParameter) {
+          operation.literal_or_parameter_ref = ast_expression->second->spelling;
+        }
+        if (operation.expression_kind ==
+                NativeExpressionAstKind::kFunctionCall &&
+            ast_expression_id != primary_ast_id &&
+            !(ast_source.source_kind == NativeRelationSourceAstKind::kSearch &&
+              operation.canonical_operator_name == "SEARCH_TERMS" &&
+              operation.child_expression_ids.size() == 1)) {
+          AddBoundAstDiagnostic(&bound, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                                "multimodel auxiliary operation is invalid");
+          return RefusedBoundAst(std::move(bound));
+        }
+        ast_to_bound_expression.emplace(ast_expression_id,
+                                        expression.expression_id);
+        bound.expressions.push_back(std::move(operation));
+        bound.relations[source_ordinal].bound_expression_ids.push_back(
+            expression.expression_id);
+        ++binding_offset;
+      }
+
+      auto& bound_source = bound.catalog_relation_sources[source_ordinal];
+      const auto map_required = [&](const std::uint32_t id)
+          -> std::optional<std::uint32_t> {
+        const auto mapped = ast_to_bound_expression.find(id);
+        return mapped == ast_to_bound_expression.end()
+                   ? std::nullopt
+                   : std::optional<std::uint32_t>{mapped->second};
+      };
+      const auto map_optional = [&](const std::optional<std::uint32_t>& id) {
+        return id.has_value() ? map_required(*id) : std::optional<std::uint32_t>{};
+      };
+      const auto map_vector = [&](const std::vector<std::uint32_t>& ids) {
+        std::vector<std::uint32_t> mapped;
+        for (const auto id : ids) {
+          const auto value = map_required(id);
+          if (!value.has_value()) return std::vector<std::uint32_t>{};
+          mapped.push_back(*value);
+        }
+        return mapped;
+      };
+      const auto mapped_primary = map_required(primary_ast_id);
+      if (!mapped_primary.has_value()) {
+        AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                              "multimodel primary operation is unbound");
+        return RefusedBoundAst(std::move(bound));
+      }
+      bound_source.model_operation_expression_ids = {*mapped_primary};
+      bound_source.model_document_expression_id =
+          map_optional(ast_source.model_document_expression_id);
+      bound_source.model_path_expression_id =
+          map_optional(ast_source.model_path_expression_id);
+      bound_source.model_value_expression_id =
+          map_optional(ast_source.model_value_expression_id);
+      bound_source.model_pattern_expression_id =
+          map_optional(ast_source.model_pattern_expression_id);
+      bound_source.model_graph_alias_expression_id =
+          map_optional(ast_source.model_graph_alias_expression_id);
+      bound_source.model_key_expression_ids =
+          map_vector(ast_source.model_key_expression_ids);
+      bound_source.model_time_series_alias_expression_id =
+          map_optional(ast_source.model_time_series_alias_expression_id);
+      bound_source.model_range_expression_id =
+          map_optional(ast_source.model_range_expression_id);
+      bound_source.model_range_start_expression_id =
+          map_optional(ast_source.model_range_start_expression_id);
+      bound_source.model_range_end_expression_id =
+          map_optional(ast_source.model_range_end_expression_id);
+      bound_source.model_vector_alias_expression_id =
+          map_optional(ast_source.model_vector_alias_expression_id);
+      bound_source.model_vector_nearest_expression_id =
+          map_optional(ast_source.model_vector_nearest_expression_id);
+      bound_source.model_vector_query_expression_id =
+          map_optional(ast_source.model_vector_query_expression_id);
+      bound_source.model_vector_metric_expression_id =
+          map_optional(ast_source.model_vector_metric_expression_id);
+      bound_source.model_vector_top_k_expression_id =
+          map_optional(ast_source.model_vector_top_k_expression_id);
+      bound_source.model_search_alias_expression_id =
+          map_optional(ast_source.model_search_alias_expression_id);
+      bound_source.model_search_match_expression_id =
+          map_optional(ast_source.model_search_match_expression_id);
+      bound_source.model_search_query_expression_id =
+          map_optional(ast_source.model_search_query_expression_id);
+      bound_source.model_search_text_expression_id =
+          map_optional(ast_source.model_search_text_expression_id);
+      bound_source.model_search_analyzer_expression_id =
+          map_optional(ast_source.model_search_analyzer_expression_id);
+      bound_source.model_search_top_k_expression_id =
+          map_optional(ast_source.model_search_top_k_expression_id);
+      bound_source.model_spatial_operation_expression_id =
+          map_optional(ast_source.model_spatial_operation_expression_id);
+      bound_source.model_columnar_operation_expression_id =
+          map_optional(ast_source.model_columnar_operation_expression_id);
+      if (ast_source.source_kind == NativeRelationSourceAstKind::kKeyValue) {
+        const auto& predicates =
+            source_relations[source_ordinal]->predicate_expression_ids;
+        if (predicates.size() != 1) {
+          AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                                "multimodel KV predicate is missing");
+          return RefusedBoundAst(std::move(bound));
+        }
+        const auto mapped = map_required(predicates.front());
+        if (!mapped.has_value()) return RefusedBoundAst(std::move(bound));
+        bound.relations[source_ordinal].predicate_expression_ids = {*mapped};
+      } else if (source_relations[source_ordinal]
+                     ->predicate_expression_ids.size() == 1) {
+        const auto mapped = map_required(
+            source_relations[source_ordinal]->predicate_expression_ids.front());
+        if (!mapped.has_value() || *mapped_primary != *mapped) {
+          AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                                "multimodel source predicate is invalid");
+          return RefusedBoundAst(std::move(bound));
+        }
+        bound.relations[source_ordinal].predicate_expression_ids = {*mapped};
+      } else if (!source_relations[source_ordinal]
+                      ->predicate_expression_ids.empty()) {
+        AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                              "multimodel source predicate is ambiguous");
+        return RefusedBoundAst(std::move(bound));
+      }
+    }
+
+    std::vector<std::uint32_t> accumulated_projection_ids;
+    std::size_t output_offset = source_projection_count;
+    std::vector<std::uint32_t> root_output_ids;
+    for (std::size_t source_ordinal = 0; source_ordinal < source_count;
+         ++source_ordinal) {
+      accumulated_projection_ids.insert(
+          accumulated_projection_ids.end(),
+          source_projection_ids[source_ordinal].begin(),
+          source_projection_ids[source_ordinal].end());
+      if (source_ordinal == 0) continue;
+      const auto* ast_join = join_relations[source_ordinal - 1];
+      BoundRelationAstRecord bound_join;
+      bound_join.relation_id = ast_join->relation_id;
+      bound_join.relation_kind = NativeRelationAstKind::kJoin;
+      bound_join.input_relation_ids = ast_join->input_relation_ids;
+      bound_join.output_expression_ids = accumulated_projection_ids;
+      bound_join.semantic_variant_id = "join.cross.v1";
+      root_output_ids.clear();
+      for (std::size_t ordinal = 0;
+           ordinal < accumulated_projection_ids.size(); ++ordinal) {
+        const auto& output = context.outputs[output_offset++];
+        const auto expression_id = accumulated_projection_ids[ordinal];
+        const auto expression = std::ranges::find_if(
+            bound.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == expression_id;
+            });
+        if (expression == bound.expressions.end() ||
+            output.output_id != output_offset ||
+            output.relation_id != ast_join->relation_id ||
+            output.expression_id != expression_id ||
+            output.descriptor_id != expression->result_descriptor_id ||
+            !output.visible || output.ordinal != ordinal) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                                "multimodel JOIN projection is incomplete");
+          return RefusedBoundAst(std::move(bound));
+        }
+        bound.outputs.push_back(
+            {output.output_id, output.relation_id, output.expression_id,
+             output.output_name_utf8, output.descriptor_id, output.visible,
+             output.ordinal});
+        root_output_ids.push_back(output.output_id);
+      }
+      bound.relations.push_back(std::move(bound_join));
+    }
+    if (binding_offset != context.expressions.size() ||
+        output_offset != context.outputs.size()) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "multimodel binding left unconsumed typed records");
+      return RefusedBoundAst(std::move(bound));
+    }
+    for (const auto& descriptor : context.descriptors) {
+      bound.descriptors.push_back(
+          {descriptor.descriptor_id, descriptor.descriptor_uuid,
+           descriptor.type_uuid, descriptor.nullability,
+           descriptor.collation_uuid, descriptor.timezone_profile_id,
+           descriptor.width_precision_scale, descriptor.canonical_type_name,
+           descriptor.element_profile});
+    }
+    std::ranges::sort(bound.descriptors, {},
+                      &BoundDescriptorAstRecord::descriptor_id);
+    bound.scopes.push_back({1, std::nullopt, {ast.root_relation_id},
+                            std::move(root_output_ids),
+                            context.catalog_epoch_uuid});
+    bound.bound_ast_uuid = context.bound_ast_uuid;
+    bound.security_context_uuid = context.security_context_uuid;
+    bound.root_relation_id = ast.root_relation_id;
+    bound.root_scope_id = 1;
+    bound.bound = true;
+    return bound;
+  }
   if ((spatial_source_ast != ast.catalog_relation_sources.end() ||
        columnar_source_ast != ast.catalog_relation_sources.end()) &&
       ast.catalog_relation_sources.size() == 1) {

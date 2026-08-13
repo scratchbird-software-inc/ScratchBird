@@ -24,6 +24,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -33395,7 +33396,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       native.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kSearch;
       });
-  if (search_source != native.catalog_relation_sources.end()) {
+  if (search_source != native.catalog_relation_sources.end() &&
+      native.catalog_relation_sources.size() == 1) {
     // QOW-SOURCE-RCP-078-SEARCH-SBLR-V1
     const bool ranked =
         search_source->model_operation_id == "SEARCH_RANKED_QUERY";
@@ -33768,7 +33770,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       native.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kVector;
       });
-  if (vector_source != native.catalog_relation_sources.end()) {
+  if (vector_source != native.catalog_relation_sources.end() &&
+      native.catalog_relation_sources.size() == 1) {
     // QOW-SOURCE-RCP-077-VECTOR-SBLR-V1
     const bool filtered =
         vector_source->model_operation_id == "VECTOR_FILTERED_SEARCH";
@@ -34088,7 +34091,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       native.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kTimeSeries;
       });
-  if (time_series_source != native.catalog_relation_sources.end()) {
+  if (time_series_source != native.catalog_relation_sources.end() &&
+      native.catalog_relation_sources.size() == 1) {
     // QOW-SOURCE-RCP-076-TIME-SERIES-SBLR-V1
     const bool range_read =
         time_series_source->model_operation_id == "TIME_SERIES_RANGE_READ";
@@ -34581,7 +34585,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       native.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kKeyValue;
       });
-  if (key_value_source != native.catalog_relation_sources.end()) {
+  if (key_value_source != native.catalog_relation_sources.end() &&
+      native.catalog_relation_sources.size() == 1) {
     // QOW-SOURCE-RCP-075-KEY-VALUE-SBLR-V1
     if (!IsCanonicalBoundStatementTimestamp(native.statement_timestamp)) {
       AddNativeRelationalLoweringError(
@@ -34885,7 +34890,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       native.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kGraph;
       });
-  if (graph_source != native.catalog_relation_sources.end()) {
+  if (graph_source != native.catalog_relation_sources.end() &&
+      native.catalog_relation_sources.size() == 1) {
     // QOW-SOURCE-RCP-074-GRAPH-SBLR-V1
     const bool graph_match = graph_source->model_operation_id == "GRAPH_MATCH";
     const bool graph_expand =
@@ -35201,7 +35207,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       native.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kDocument;
       });
-  if (document_source != native.catalog_relation_sources.end()) {
+  if (document_source != native.catalog_relation_sources.end() &&
+      native.catalog_relation_sources.size() == 1) {
     // QOW-SOURCE-CES05-DOCUMENT-SBLR-V1
     const bool unnest =
         document_source->model_operation_id == "DOCUMENT_UNNEST";
@@ -35504,14 +35511,19 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     return envelope;
   }
 
+  const bool bounded_multimodel_preflight =
+      native.catalog_relation_sources.size() >= 3 &&
+      native.catalog_relation_sources.size() <= 9 &&
+      native.relations.size() ==
+          (2 * native.catalog_relation_sources.size()) - 1;
   const bool catalog_source_candidate =
-      native.relations.size() <= 5 &&
+      (native.relations.size() <= 5 || bounded_multimodel_preflight) &&
       std::ranges::any_of(native.relations, [](const auto& relation) {
         return relation.relation_kind ==
                NativeRelationAstKind::kCatalogSource;
       });
   if (native.root_relation_id == 0 || native.relations.empty() ||
-      native.relations.size() > 5 ||
+      (native.relations.size() > 5 && !bounded_multimodel_preflight) ||
       native.descriptors.empty() || native.expressions.empty() ||
       native.outputs.empty() ||
       (!catalog_source_candidate && native.values_rows.empty()) ||
@@ -35534,6 +35546,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const BoundRelationAstRecord* catalog_relation = nullptr;
   std::vector<const BoundRelationAstRecord*> catalog_relations;
   const BoundRelationAstRecord* catalog_join_relation = nullptr;
+  std::vector<const BoundRelationAstRecord*> catalog_join_relations;
+  const bool bounded_multimodel_join_candidate =
+      native.catalog_relation_sources.size() >= 3 &&
+      native.catalog_relation_sources.size() <= 9;
   const BoundRelationAstRecord* catalog_project_relation = nullptr;
   const BoundRelationAstRecord* catalog_sort_relation = nullptr;
   const BoundRelationAstRecord* limit_relation = nullptr;
@@ -35883,9 +35899,18 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                NativeRelationAstKind::kCatalogSource) {
       const bool accepted_source_semantic =
           relation.semantic_variant_id == "catalog.relation-source.v1" ||
+          relation.semantic_variant_id == "sblr.model-source.document.v1" ||
+          relation.semantic_variant_id == "sblr.model-source.graph.v1" ||
+          relation.semantic_variant_id == "sblr.model-source.key-value.v1" ||
+          relation.semantic_variant_id == "sblr.model-source.time-series.v1" ||
+          relation.semantic_variant_id == "sblr.model-source.vector.v1" ||
+          relation.semantic_variant_id == "sblr.model-source.search.v1" ||
           relation.semantic_variant_id == "sblr.model-source.spatial.v1" ||
           relation.semantic_variant_id == "sblr.model-source.columnar.v1";
-      if (catalog_relations.size() >= 2 || !relation.input_relation_ids.empty() ||
+      if (catalog_relations.size() >=
+              (bounded_multimodel_join_candidate ? std::size_t{9}
+                                                 : std::size_t{2}) ||
+          !relation.input_relation_ids.empty() ||
           !relation.values_row_ids.empty() ||
           relation.aggregate_grouping_form !=
               NativeAggregateGroupingForm::kNone ||
@@ -35893,7 +35918,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               NativeAggregateProjectionForm::kNone ||
           !relation.grouping_key_expression_ids.empty() ||
           !relation.aggregate_expression_ids.empty() ||
-          !relation.predicate_expression_ids.empty() ||
+          ((!bounded_multimodel_join_candidate &&
+            !relation.predicate_expression_ids.empty()) ||
+           (bounded_multimodel_join_candidate &&
+            relation.predicate_expression_ids.size() > 1)) ||
           !relation.limit_expression_ids.empty() ||
           !relation.ordering_terms.empty() ||
           relation.output_expression_ids.empty() ||
@@ -35919,10 +35947,30 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const bool left_only_join =
           relation.semantic_variant_id == "join.left-semi.v1" ||
           relation.semantic_variant_id == "join.left-anti.v1";
-      if (catalog_join_relation != nullptr || catalog_relations.size() != 2 ||
-          relation.input_relation_ids !=
+      const auto multimodel_join_ordinal = catalog_join_relations.size() + 1;
+      const auto* expected_multimodel_left =
+          multimodel_join_ordinal == 1
+              ? (catalog_relations.empty() ? nullptr : catalog_relations.front())
+              : catalog_join_relations.back();
+      const auto* expected_multimodel_right =
+          multimodel_join_ordinal < catalog_relations.size()
+              ? catalog_relations[multimodel_join_ordinal]
+              : nullptr;
+      const bool multimodel_join_shape =
+          bounded_multimodel_join_candidate &&
+          expected_multimodel_left != nullptr &&
+          expected_multimodel_right != nullptr &&
+          relation.semantic_variant_id == "join.cross.v1" &&
+          relation.input_relation_ids ==
+              std::vector<std::uint32_t>{expected_multimodel_left->relation_id,
+                                         expected_multimodel_right->relation_id};
+      const bool legacy_join_shape =
+          !bounded_multimodel_join_candidate &&
+          catalog_join_relation == nullptr && catalog_relations.size() == 2 &&
+          relation.input_relation_ids ==
               std::vector<std::uint32_t>{catalog_relations[0]->relation_id,
-                                         catalog_relations[1]->relation_id} ||
+                                         catalog_relations[1]->relation_id};
+      if ((!multimodel_join_shape && !legacy_join_shape) ||
           !relation.values_row_ids.empty() ||
           relation.aggregate_grouping_form !=
               NativeAggregateGroupingForm::kNone ||
@@ -35944,12 +35992,20 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       std::vector<std::uint32_t> expected_outputs;
-      expected_outputs = catalog_relations.front()->output_expression_ids;
+      expected_outputs = bounded_multimodel_join_candidate
+                             ? expected_multimodel_left->output_expression_ids
+                             : catalog_relations.front()->output_expression_ids;
       if (!left_only_join) {
         expected_outputs.insert(
             expected_outputs.end(),
-            catalog_relations.back()->output_expression_ids.begin(),
-            catalog_relations.back()->output_expression_ids.end());
+            (bounded_multimodel_join_candidate
+                 ? expected_multimodel_right
+                 : catalog_relations.back())
+                ->output_expression_ids.begin(),
+            (bounded_multimodel_join_candidate
+                 ? expected_multimodel_right
+                 : catalog_relations.back())
+                ->output_expression_ids.end());
       }
       if (relation.output_expression_ids != expected_outputs) {
         AddNativeRelationalLoweringError(
@@ -35958,6 +36014,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       catalog_join_relation = &relation;
+      catalog_join_relations.push_back(&relation);
     } else if (relation.relation_kind == NativeRelationAstKind::kLimit) {
       if (catalog_relation == nullptr) {
         AddNativeRelationalLoweringError(
@@ -36101,11 +36158,17 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                     : catalog_relation->relation_id))))) &&
       native.values_rows.empty() && native.grouping_sets.empty();
   const bool catalog_cross_join_graph_is_exact =
-      catalog_relations.size() == 2 && catalog_join_relation != nullptr &&
+      ((catalog_relations.size() == 2 &&
+        catalog_join_relations.size() == 1) ||
+       (bounded_multimodel_join_candidate &&
+        catalog_join_relations.size() + 1 == catalog_relations.size())) &&
+      catalog_join_relation != nullptr &&
       values_relation == nullptr && aggregate_relation == nullptr &&
       filter_relation == nullptr && catalog_filter_relation == nullptr &&
       catalog_project_relation == nullptr && catalog_sort_relation == nullptr &&
-      limit_relation == nullptr && native.relations.size() == 3 &&
+      limit_relation == nullptr &&
+      native.relations.size() ==
+          catalog_relations.size() + catalog_join_relations.size() &&
       native.root_relation_id == catalog_join_relation->relation_id &&
       native.values_rows.empty() && native.grouping_sets.empty();
   const bool catalog_window_graph_is_exact =
@@ -36171,10 +36234,21 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   std::unordered_map<std::uint32_t, const BoundExpressionAstRecord*>
       expressions_by_id;
   std::unordered_set<std::uint32_t> functionless_model_operation_roots;
+  std::unordered_set<std::uint32_t> object_bound_model_operation_roots;
   for (const auto& source : native.catalog_relation_sources) {
     functionless_model_operation_roots.insert(
         source.model_operation_expression_ids.begin(),
         source.model_operation_expression_ids.end());
+    if (source.model_search_query_expression_id.has_value()) {
+      functionless_model_operation_roots.insert(
+          *source.model_search_query_expression_id);
+    }
+    if (source.source_kind == NativeRelationSourceAstKind::kSpatial ||
+        source.source_kind == NativeRelationSourceAstKind::kColumnar) {
+      object_bound_model_operation_roots.insert(
+          source.model_operation_expression_ids.begin(),
+          source.model_operation_expression_ids.end());
+    }
   }
   for (const auto& expression : native.expressions) {
     if (expression.expression_id == 0 ||
@@ -36201,7 +36275,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     if (literal != expression.literal_kind.has_value() ||
         (function_call && !functionless_model_operation) !=
             expression.bound_function_uuid.has_value() ||
-        (identifier || functionless_model_operation) !=
+        (identifier || object_bound_model_operation_roots.contains(
+                           expression.expression_id)) !=
             expression.bound_name_uuid.has_value() ||
         (operator_expression || functionless_model_operation) !=
             expression.canonical_operator_name.has_value() ||
@@ -36719,7 +36794,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   }
 
   if (catalog_cross_join_graph_is_exact) {
+    const bool bounded_multimodel_join =
+        native.catalog_relation_sources.size() >= 3 &&
+        native.catalog_relation_sources.size() <= 9;
     const bool spatial_columnar_join =
+        native.catalog_relation_sources.size() == 2 &&
         std::ranges::all_of(native.catalog_relation_sources,
                             [](const auto& source) {
                               return source.source_kind ==
@@ -36732,10 +36811,18 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                 return source.source_kind ==
                                        NativeRelationSourceAstKind::kSpatial;
                               }) == 1;
-    const auto model_operation_expression_count =
-        spatial_columnar_join ? std::size_t{2} : std::size_t{0};
-    if (native.catalog_relation_sources.size() != 2 ||
-        bound.resolved_object_uuids.size() != 2 ||
+    const auto model_operation_expression_count = std::ranges::count_if(
+        native.catalog_relation_sources, [](const auto& source) {
+          return source.source_kind !=
+                 NativeRelationSourceAstKind::kCatalogRelation;
+        });
+    if ((!bounded_multimodel_join &&
+         native.catalog_relation_sources.size() != 2) ||
+        model_operation_expression_count <
+            (bounded_multimodel_join ? std::size_t{2} :
+             spatial_columnar_join ? std::size_t{2} : std::size_t{0}) ||
+        bound.resolved_object_uuids.size() !=
+            native.catalog_relation_sources.size() ||
         native.scopes.front().visible_relation_ids !=
             std::vector<std::uint32_t>{native.root_relation_id} ||
         native.scopes.front().parent_scope_id.has_value() ||
@@ -36743,8 +36830,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         !IsCanonicalBoundSourceUuid(native.security_context_uuid) ||
         !IsCanonicalBoundSourceUuid(
             native.scopes.front().catalog_epoch_uuid) ||
-        native.expressions.size() !=
-            native.descriptors.size() + model_operation_expression_count ||
         bound.descriptor_refs.size() != native.descriptors.size()) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -36762,7 +36847,36 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     std::vector<std::uint32_t> expected_join_projection_ids;
     std::unordered_set<std::string> object_uuids;
     std::unordered_set<std::uint32_t> source_ids;
-    for (std::size_t source_ordinal = 0; source_ordinal < 2;
+    std::unordered_set<std::uint32_t> owned_model_expression_ids;
+    const auto model_profile = [](const NativeRelationSourceAstKind kind)
+        -> std::tuple<std::string_view, std::string_view,
+                      std::string_view, std::string_view> {
+      switch (kind) {
+        case NativeRelationSourceAstKind::kDocument:
+          return {"document", "DOCUMENT_FIND", "DOCUMENT_SOURCE",
+                  "document_collection"};
+        case NativeRelationSourceAstKind::kGraph:
+          return {"graph", "GRAPH_MATCH", "GRAPH_MATCH", "graph"};
+        case NativeRelationSourceAstKind::kKeyValue:
+          return {"key_value", "KEY_VALUE_GET", "KV_KEY", "key_value"};
+        case NativeRelationSourceAstKind::kTimeSeries:
+          return {"time_series", "TIME_SERIES_RANGE_READ", "TIME_RANGE",
+                  "time_series"};
+        case NativeRelationSourceAstKind::kVector:
+          return {"vector", "VECTOR_EXACT_SEARCH", "VECTOR_NEAREST", "vector"};
+        case NativeRelationSourceAstKind::kSearch:
+          return {"search", "SEARCH_RANKED_QUERY", "SEARCH_MATCH", "search"};
+        case NativeRelationSourceAstKind::kSpatial:
+          return {"spatial", "SPATIAL_SOURCE", "SPATIAL_SOURCE",
+                  "spatial_collection"};
+        case NativeRelationSourceAstKind::kColumnar:
+          return {"columnar", "COLUMNAR_SOURCE", "COLUMNAR_SOURCE",
+                  "logical_relation"};
+        default: return {"", "", "", ""};
+      }
+    };
+    for (std::size_t source_ordinal = 0;
+         source_ordinal < native.catalog_relation_sources.size();
          ++source_ordinal) {
       const auto& source = native.catalog_relation_sources[source_ordinal];
       const auto* relation = catalog_relations[source_ordinal];
@@ -36771,6 +36885,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           source.source_kind == NativeRelationSourceAstKind::kSpatial;
       const bool columnar =
           source.source_kind == NativeRelationSourceAstKind::kColumnar;
+      const bool model = source.source_kind !=
+                         NativeRelationSourceAstKind::kCatalogRelation;
+      const auto [expected_family, expected_logical_operation,
+                  expected_attached_root, expected_model_object_type] =
+          model_profile(source.source_kind);
       const bool accepted_object_type =
           source.resolved_object_type == "relation" ||
           source.resolved_object_type == "table" ||
@@ -36780,7 +36899,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           source.resolved_object_type == "foreign_table";
       if (source.source_id == 0 ||
           !source_ids.insert(source.source_id).second ||
-          (!spatial_columnar_join &&
+          (!spatial_columnar_join && !bounded_multimodel_join &&
            source.source_kind !=
                NativeRelationSourceAstKind::kCatalogRelation) ||
           (spatial_columnar_join && !spatial && !columnar) ||
@@ -36798,8 +36917,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           source.object_uuid != relation_uuid ||
           bound.resolved_object_uuids[source_ordinal] != relation_uuid ||
           (!accepted_object_type &&
-           !(spatial && source.resolved_object_type == "spatial_collection") &&
-           !(columnar && source.resolved_object_type == "logical_relation")) ||
+           !(model && source.resolved_object_type ==
+                          expected_model_object_type)) ||
           !IsCanonicalBoundSourceUuid(source.resolved_schema_uuid) ||
           (source.parent_object_uuid.has_value() &&
            !IsCanonicalBoundSourceUuid(*source.parent_object_uuid)) ||
@@ -36812,41 +36931,70 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       }
 
       const auto& source_outputs = outputs_by_relation.at(relation->relation_id);
+      const bool derived_projection =
+          bounded_multimodel_join &&
+          (source.source_kind == NativeRelationSourceAstKind::kVector ||
+           source.source_kind == NativeRelationSourceAstKind::kSearch);
+      const std::vector<std::string_view> expected_derived_names =
+          source.source_kind == NativeRelationSourceAstKind::kVector
+              ? std::vector<std::string_view>{"row_uuid", "distance", "score"}
+          : source.source_kind == NativeRelationSourceAstKind::kSearch
+              ? std::vector<std::string_view>{
+                    "document_uuid", "analyzer_uuid", "analyzer_generation",
+                    "score", "rank"}
+              : std::vector<std::string_view>{};
       const auto expected_source_semantic =
-          spatial ? std::string_view{"sblr.model-source.spatial.v1"}
-                  : (columnar
-                         ? std::string_view{"sblr.model-source.columnar.v1"}
-                         : std::string_view{"catalog.relation-source.v1"});
+          source.source_kind == NativeRelationSourceAstKind::kDocument
+              ? std::string_view{"sblr.model-source.document.v1"}
+          : source.source_kind == NativeRelationSourceAstKind::kGraph
+              ? std::string_view{"sblr.model-source.graph.v1"}
+          : source.source_kind == NativeRelationSourceAstKind::kKeyValue
+              ? std::string_view{"sblr.model-source.key-value.v1"}
+          : source.source_kind == NativeRelationSourceAstKind::kTimeSeries
+              ? std::string_view{"sblr.model-source.time-series.v1"}
+          : source.source_kind == NativeRelationSourceAstKind::kVector
+              ? std::string_view{"sblr.model-source.vector.v1"}
+          : source.source_kind == NativeRelationSourceAstKind::kSearch
+              ? std::string_view{"sblr.model-source.search.v1"}
+          : spatial ? std::string_view{"sblr.model-source.spatial.v1"}
+          : columnar ? std::string_view{"sblr.model-source.columnar.v1"}
+                     : std::string_view{"catalog.relation-source.v1"};
+      const auto operation_expression_count =
+          relation->bound_expression_ids.size() >= source_outputs.size()
+              ? relation->bound_expression_ids.size() - source_outputs.size()
+              : 0;
       const auto expected_bound_expression_count =
-          source.columns.size() +
-          static_cast<std::size_t>(spatial_columnar_join);
+          source_outputs.size() + operation_expression_count;
       if (relation->semantic_variant_id != expected_source_semantic ||
-          source_outputs.size() != source.columns.size() ||
-          relation->output_expression_ids.size() != source.columns.size() ||
-          relation->bound_expression_ids.size() !=
-              expected_bound_expression_count ||
+          ((!derived_projection && source_outputs.size() != source.columns.size()) ||
+           (derived_projection &&
+            source_outputs.size() != expected_derived_names.size())) ||
+          relation->output_expression_ids.size() != source_outputs.size() ||
+          relation->bound_expression_ids.size() != expected_bound_expression_count ||
           !std::equal(relation->output_expression_ids.begin(),
                       relation->output_expression_ids.end(),
-                      relation->bound_expression_ids.begin())) {
+                      relation->bound_expression_ids.begin()) ||
+          (model != (operation_expression_count != 0))) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
             "typed CROSS JOIN source width is incomplete");
         return envelope;
       }
-      if (spatial_columnar_join) {
-        const auto expected_family =
-            spatial ? std::string_view{"spatial"}
-                    : std::string_view{"columnar"};
-        const auto expected_operation =
-            spatial ? std::string_view{"SPATIAL_SOURCE"}
-                    : std::string_view{"COLUMNAR_SOURCE"};
+      if (model) {
+        const auto expected_arity =
+            expected_attached_root == "DOCUMENT_SOURCE" ? 1U
+            : expected_attached_root == "GRAPH_MATCH"   ? 2U
+            : expected_attached_root == "KV_KEY"        ? 1U
+            : expected_attached_root == "TIME_RANGE"    ? 3U
+            : expected_attached_root == "VECTOR_NEAREST" ||
+                      expected_attached_root == "SEARCH_MATCH"
+                ? 4U
+                : 0U;
         if (source.model_family_id != expected_family ||
-            source.model_operation_id != expected_operation ||
+            source.model_operation_id != expected_logical_operation ||
             source.model_operation_ids !=
-                std::vector<std::string>{std::string(expected_operation)} ||
-            source.model_operation_expression_ids.size() != 1 ||
-            relation->bound_expression_ids.back() !=
-                source.model_operation_expression_ids.front()) {
+                std::vector<std::string>{std::string(expected_attached_root)} ||
+            source.model_operation_expression_ids.size() != 1) {
           AddNativeRelationalLoweringError(
               &envelope, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
               "model JOIN source operation identity is incomplete");
@@ -36854,66 +37002,261 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         }
         const auto operation = expressions_by_id.find(
             source.model_operation_expression_ids.front());
+        const auto primary_id = source.model_operation_expression_ids.front();
         if (operation == expressions_by_id.end() ||
             operation->second->expression_kind !=
                 NativeExpressionAstKind::kFunctionCall ||
-            !operation->second->child_expression_ids.empty() ||
-            operation->second->canonical_operator_name != expected_operation ||
-            operation->second->bound_name_uuid != source.object_uuid ||
-            operation->second->result_descriptor_id !=
-                source.columns.front().descriptor_id) {
+            operation->second->child_expression_ids.size() != expected_arity ||
+            operation->second->canonical_operator_name !=
+                expected_attached_root ||
+            operation->second->bound_name_uuid !=
+                ((spatial || columnar)
+                     ? std::optional<std::string>{source.object_uuid}
+                     : std::optional<std::string>{})) {
           AddNativeRelationalLoweringError(
               &envelope, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
               "model JOIN source operation root is not attached to its leaf");
           return envelope;
         }
-      }
-      std::unordered_set<std::string> column_uuids;
-      for (std::size_t ordinal = 0; ordinal < source.columns.size();
-           ++ordinal, ++descriptor_offset) {
-        const auto& column = source.columns[ordinal];
-        const auto& descriptor = native.descriptors[descriptor_offset];
-        const auto& expression = native.expressions[descriptor_offset];
-        const auto& output = *source_outputs[ordinal];
-        if (column.ordinal != ordinal ||
-            !IsCanonicalBoundSourceUuid(column.column_uuid) ||
-            !column_uuids.insert(column.column_uuid).second ||
-            descriptor.descriptor_id != column.descriptor_id ||
-            !IsCanonicalBoundSourceUuid(descriptor.descriptor_uuid) ||
-            !IsCanonicalBoundSourceUuid(descriptor.type_uuid) ||
-            descriptor.nullability == BoundNullability::kUnknown ||
-            (descriptor.collation_uuid.has_value() &&
-             !IsCanonicalBoundSourceUuid(*descriptor.collation_uuid)) ||
-            expression.expression_kind !=
-                NativeExpressionAstKind::kIdentifier ||
-            !expression.child_expression_ids.empty() ||
-            expression.result_descriptor_id != descriptor.descriptor_id ||
-            expression.bound_name_uuid != column.column_uuid ||
-            expression.literal_kind.has_value() ||
-            expression.bound_function_uuid.has_value() ||
-            expression.canonical_operator_name.has_value() ||
-            expression.literal_or_parameter_ref.has_value() ||
-            relation->output_expression_ids[ordinal] !=
-                expression.expression_id ||
-            output.expression_id != expression.expression_id ||
-            output.descriptor_id != descriptor.descriptor_id ||
-            !output.visible || output.ordinal != ordinal ||
-            output.output_name_utf8 != column.canonical_name_key ||
-            bound.descriptor_refs[descriptor_offset] !=
-                descriptor.descriptor_uuid) {
+        std::unordered_set<std::uint32_t> declared_closure(
+            relation->bound_expression_ids.begin() + source_outputs.size(),
+            relation->bound_expression_ids.end());
+        std::unordered_set<std::uint32_t> reachable_closure;
+        std::vector<std::uint32_t> pending{primary_id};
+        pending.insert(pending.end(), relation->predicate_expression_ids.begin(),
+                       relation->predicate_expression_ids.end());
+        while (!pending.empty()) {
+          const auto expression_id = pending.back();
+          pending.pop_back();
+          if (!reachable_closure.insert(expression_id).second) continue;
+          const auto candidate = expressions_by_id.find(expression_id);
+          if (candidate == expressions_by_id.end() ||
+              !declared_closure.contains(expression_id)) {
+            AddNativeRelationalLoweringError(
+                &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                "model JOIN operation closure is detached from its leaf");
+            return envelope;
+          }
+          pending.insert(pending.end(),
+                         candidate->second->child_expression_ids.begin(),
+                         candidate->second->child_expression_ids.end());
+        }
+        if (reachable_closure != declared_closure ||
+            std::ranges::any_of(declared_closure, [&](const auto expression_id) {
+              return !owned_model_expression_ids.insert(expression_id).second;
+            })) {
           AddNativeRelationalLoweringError(
-              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-              "typed CROSS JOIN column lineage is incomplete");
+              &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+              "model JOIN operation closure is orphaned or crosses legs");
+          return envelope;
+        }
+        const auto expression_for = [&](const std::uint32_t id)
+            -> const BoundExpressionAstRecord* {
+          const auto found = expressions_by_id.find(id);
+          return found == expressions_by_id.end() ? nullptr : found->second;
+        };
+        if (expected_arity != 0) {
+          const auto* alias =
+              expression_for(operation->second->child_expression_ids.front());
+          if (alias == nullptr ||
+              alias->expression_kind != NativeExpressionAstKind::kIdentifier ||
+              alias->bound_name_uuid != source.object_uuid) {
+            AddNativeRelationalLoweringError(
+                &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+                "model JOIN source alias is not object-bound");
+            return envelope;
+          }
+        }
+        bool family_fields_exact = true;
+        if (source.source_kind == NativeRelationSourceAstKind::kDocument) {
+          family_fields_exact =
+              source.model_document_expression_id ==
+                  operation->second->child_expression_ids.front() &&
+              relation->predicate_expression_ids.empty();
+        } else if (source.source_kind ==
+                   NativeRelationSourceAstKind::kGraph) {
+          family_fields_exact =
+              source.model_graph_alias_expression_id ==
+                  operation->second->child_expression_ids.front() &&
+              source.model_pattern_expression_id ==
+                  operation->second->child_expression_ids[1] &&
+              source.model_graph_cycle_policy == "visited_set" &&
+              relation->predicate_expression_ids ==
+                  std::vector<std::uint32_t>{primary_id};
+        } else if (source.source_kind ==
+                   NativeRelationSourceAstKind::kKeyValue) {
+          const auto* predicate =
+              relation->predicate_expression_ids.size() == 1
+                  ? expression_for(relation->predicate_expression_ids.front())
+                  : nullptr;
+          family_fields_exact =
+              predicate != nullptr &&
+              predicate->expression_kind == NativeExpressionAstKind::kBinary &&
+              predicate->canonical_operator_name == "=" &&
+              predicate->child_expression_ids.size() == 2 &&
+              predicate->child_expression_ids.front() == primary_id &&
+              source.model_key_expression_ids ==
+                  std::vector<std::uint32_t>{
+                      predicate->child_expression_ids.back()} &&
+              source.model_comparison_operator == "=";
+        } else if (source.source_kind ==
+                   NativeRelationSourceAstKind::kTimeSeries) {
+          family_fields_exact =
+              source.model_time_series_alias_expression_id ==
+                  operation->second->child_expression_ids.front() &&
+              source.model_range_expression_id == primary_id &&
+              source.model_range_start_expression_id ==
+                  operation->second->child_expression_ids[1] &&
+              source.model_range_end_expression_id ==
+                  operation->second->child_expression_ids[2] &&
+              relation->predicate_expression_ids ==
+                  std::vector<std::uint32_t>{primary_id};
+        } else if (source.source_kind ==
+                   NativeRelationSourceAstKind::kVector) {
+          family_fields_exact =
+              source.model_vector_alias_expression_id ==
+                  operation->second->child_expression_ids.front() &&
+              source.model_vector_nearest_expression_id == primary_id &&
+              source.model_vector_query_expression_id ==
+                  operation->second->child_expression_ids[1] &&
+              source.model_vector_metric_expression_id ==
+                  operation->second->child_expression_ids[2] &&
+              source.model_vector_top_k_expression_id ==
+                  operation->second->child_expression_ids[3] &&
+              !source.model_vector_metric_id.empty() &&
+              source.model_vector_top_k.has_value() &&
+              relation->predicate_expression_ids ==
+                  std::vector<std::uint32_t>{primary_id};
+        } else if (source.source_kind ==
+                   NativeRelationSourceAstKind::kSearch) {
+          const auto* query = source.model_search_query_expression_id.has_value()
+                                  ? expression_for(
+                                        *source.model_search_query_expression_id)
+                                  : nullptr;
+          const auto* analyzer =
+              source.model_search_analyzer_expression_id.has_value()
+                  ? expression_for(*source.model_search_analyzer_expression_id)
+                  : nullptr;
+          family_fields_exact =
+              query != nullptr && analyzer != nullptr &&
+              query->expression_kind ==
+                  NativeExpressionAstKind::kFunctionCall &&
+              query->canonical_operator_name == "SEARCH_TERMS" &&
+              query->child_expression_ids.size() == 1 &&
+              source.model_search_alias_expression_id ==
+                  operation->second->child_expression_ids.front() &&
+              source.model_search_match_expression_id == primary_id &&
+              source.model_search_query_expression_id ==
+                  operation->second->child_expression_ids[1] &&
+              source.model_search_text_expression_id ==
+                  query->child_expression_ids.front() &&
+              source.model_search_analyzer_expression_id ==
+                  operation->second->child_expression_ids[2] &&
+              source.model_search_top_k_expression_id ==
+                  operation->second->child_expression_ids[3] &&
+              source.model_search_query_kind == "SEARCH_TERMS" &&
+              source.model_search_top_k.has_value() &&
+              IsCanonicalBoundSourceUuid(source.model_search_analyzer_uuid) &&
+              source.model_search_analyzer_generation != 0 &&
+              analyzer->bound_name_uuid ==
+                  source.model_search_analyzer_uuid &&
+              relation->predicate_expression_ids ==
+                  std::vector<std::uint32_t>{primary_id};
+        } else {
+          family_fields_exact = relation->predicate_expression_ids.empty();
+        }
+        if (!family_fields_exact) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+              "model JOIN operation operands are not exact");
           return envelope;
         }
       }
-      if (!left_only_join || source_ordinal == 0) {
-        expected_join_projection_ids.insert(
-            expected_join_projection_ids.end(),
-            relation->output_expression_ids.begin(),
-            relation->output_expression_ids.end());
+      std::unordered_set<std::string> column_uuids;
+      for (std::size_t ordinal = 0; ordinal < source.columns.size();
+           ++ordinal) {
+        const auto& column = source.columns[ordinal];
+        const auto descriptor = std::ranges::find_if(
+            native.descriptors, [&](const auto& candidate) {
+              return candidate.descriptor_id == column.descriptor_id;
+            });
+        if (column.ordinal != ordinal ||
+            !IsCanonicalBoundSourceUuid(column.column_uuid) ||
+            !column_uuids.insert(column.column_uuid).second ||
+            descriptor == native.descriptors.end() ||
+            !IsCanonicalBoundSourceUuid(descriptor->descriptor_uuid) ||
+            !IsCanonicalBoundSourceUuid(descriptor->type_uuid) ||
+            descriptor->nullability == BoundNullability::kUnknown ||
+            (descriptor->collation_uuid.has_value() &&
+             !IsCanonicalBoundSourceUuid(*descriptor->collation_uuid))) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+              "typed CROSS JOIN persisted column authority is incomplete");
+          return envelope;
+        }
       }
+      for (std::size_t ordinal = 0; ordinal < source_outputs.size(); ++ordinal) {
+        const auto& output = *source_outputs[ordinal];
+        const auto expression = expressions_by_id.find(output.expression_id);
+        const auto descriptor = std::ranges::find_if(
+            native.descriptors, [&](const auto& candidate) {
+              return candidate.descriptor_id == output.descriptor_id;
+            });
+        const auto expected_name =
+            derived_projection ? expected_derived_names[ordinal]
+                               : std::string_view{
+                                     source.columns[ordinal].canonical_name_key};
+        const auto expected_bound_name =
+            derived_projection
+                ? std::optional<std::string>{
+                      source.source_kind == NativeRelationSourceAstKind::kSearch &&
+                              (ordinal == 1 || ordinal == 2)
+                          ? source.model_search_analyzer_uuid
+                          : source.object_uuid}
+                : std::optional<std::string>{source.columns[ordinal].column_uuid};
+        if (expression == expressions_by_id.end() ||
+            descriptor == native.descriptors.end() ||
+            output.ordinal != ordinal || !output.visible ||
+            output.output_name_utf8 != expected_name ||
+            output.descriptor_id != descriptor->descriptor_id ||
+            relation->output_expression_ids[ordinal] != output.expression_id ||
+            expression->second->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            !expression->second->child_expression_ids.empty() ||
+            expression->second->result_descriptor_id != output.descriptor_id ||
+            expression->second->bound_name_uuid != expected_bound_name ||
+            expression->second->literal_kind.has_value() ||
+            expression->second->bound_function_uuid.has_value() ||
+            expression->second->canonical_operator_name.has_value() ||
+            expression->second->literal_or_parameter_ref.has_value() ||
+            (derived_projection &&
+             (descriptor->nullability != BoundNullability::kNonNull ||
+              descriptor->collation_uuid.has_value() ||
+              descriptor->timezone_profile_id.has_value()))) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+              "typed CROSS JOIN public column lineage is incomplete");
+          return envelope;
+        }
+      }
+      if (!bounded_multimodel_join) descriptor_offset += source.columns.size();
+      expected_join_projection_ids.insert(
+          expected_join_projection_ids.end(),
+          relation->output_expression_ids.begin(),
+          relation->output_expression_ids.end());
       source_projection_count += relation->output_expression_ids.size();
+    }
+    if (bounded_multimodel_join &&
+        std::ranges::any_of(native.expressions, [&](const auto& expression) {
+          return !owned_model_expression_ids.contains(expression.expression_id) &&
+                 std::ranges::find(expected_join_projection_ids,
+                                   expression.expression_id) ==
+                     expected_join_projection_ids.end();
+        })) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SB_MODEL_BINDING_INCOMPLETE_V1",
+          "model JOIN expression inventory contains an orphan");
+      return envelope;
     }
     if (predicate_join) {
       const auto predicate = expressions_by_id.find(
@@ -37009,31 +37352,46 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
     }
-    const auto& join_outputs =
-        outputs_by_relation.at(catalog_join_relation->relation_id);
-    if (join_outputs.size() != expected_join_projection_ids.size()) {
-      AddNativeRelationalLoweringError(
-          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-          "typed JOIN result projection width is not canonical");
-      return envelope;
-    }
+    std::vector<std::uint32_t> accumulated_join_projection_ids;
     std::vector<std::uint32_t> join_output_ids;
-    for (std::size_t ordinal = 0; ordinal < join_outputs.size(); ++ordinal) {
-      const auto* output = join_outputs[ordinal];
-      if (output->expression_id != expected_join_projection_ids[ordinal] ||
-          output->ordinal != ordinal || !output->visible) {
+    std::size_t expected_join_output_count = 0;
+    for (std::size_t source_ordinal = 0;
+         source_ordinal < catalog_relations.size(); ++source_ordinal) {
+      accumulated_join_projection_ids.insert(
+          accumulated_join_projection_ids.end(),
+          catalog_relations[source_ordinal]->output_expression_ids.begin(),
+          catalog_relations[source_ordinal]->output_expression_ids.end());
+      if (source_ordinal == 0) continue;
+      const auto* join_relation = catalog_join_relations[source_ordinal - 1];
+      const auto& join_outputs = outputs_by_relation.at(join_relation->relation_id);
+      expected_join_output_count += accumulated_join_projection_ids.size();
+      if (join_relation->output_expression_ids !=
+              accumulated_join_projection_ids ||
+          join_outputs.size() != accumulated_join_projection_ids.size()) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "typed CROSS JOIN result projection is not canonical");
+            "typed JOIN result projection width is not canonical");
         return envelope;
       }
-      join_output_ids.push_back(output->output_id);
+      join_output_ids.clear();
+      for (std::size_t ordinal = 0; ordinal < join_outputs.size(); ++ordinal) {
+        const auto* output = join_outputs[ordinal];
+        if (output->expression_id != accumulated_join_projection_ids[ordinal] ||
+            output->ordinal != ordinal || !output->visible) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+              "typed CROSS JOIN result projection is not canonical");
+          return envelope;
+        }
+        join_output_ids.push_back(output->output_id);
+      }
     }
-    if (descriptor_offset != native.descriptors.size() ||
+    if ((!bounded_multimodel_join &&
+         descriptor_offset != native.descriptors.size()) ||
         catalog_join_relation->output_expression_ids !=
             expected_join_projection_ids ||
         native.outputs.size() !=
-            source_projection_count + expected_join_projection_ids.size() ||
+            source_projection_count + expected_join_output_count ||
         native.scopes.front().visible_projection_ids != join_output_ids) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -38959,8 +39317,18 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            native.snapshot_visible_through_local_transaction_id)});
   if (std::ranges::any_of(native.catalog_relation_sources,
                           [](const auto& source) {
-                            return source.source_kind !=
-                                   NativeRelationSourceAstKind::kCatalogRelation;
+                            return source.source_kind ==
+                                       NativeRelationSourceAstKind::kKeyValue ||
+                                   source.source_kind ==
+                                       NativeRelationSourceAstKind::kTimeSeries ||
+                                   source.source_kind ==
+                                       NativeRelationSourceAstKind::kVector ||
+                                   source.source_kind ==
+                                       NativeRelationSourceAstKind::kSearch ||
+                                   source.source_kind ==
+                                       NativeRelationSourceAstKind::kSpatial ||
+                                   source.source_kind ==
+                                       NativeRelationSourceAstKind::kColumnar;
                           })) {
     envelope.operands.push_back(
         {"text", "relational_statement_timestamp", native.statement_timestamp});
@@ -42208,7 +42576,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
       document_expand_node = &node;
     }
   }
-  if (duplicate_document_producer || model_source_nodes.size() > 2 ||
+  if (duplicate_document_producer || model_source_nodes.size() > 8 ||
       (!model_source_nodes.empty() && document_expand_node != nullptr)) {
     return RefuseRelationalGraph(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -42356,7 +42724,125 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
       root_node->input_ids ==
           std::vector<std::uint32_t>{model_source_nodes[0]->id,
                                      model_source_nodes[1]->id};
-  if (model_source_nodes.size() > 1 && !spatial_columnar_join_graph) {
+  const bool bounded_multimodel_join_graph = [&] {
+    if (model_source_nodes.size() < 2 || model_source_nodes.size() > 8 ||
+        root_node == graph.nodes.end() || root_node->kind != 4) {
+      return false;
+    }
+    std::vector<const ParsedRelationalNode*> source_nodes;
+    std::vector<const ParsedRelationalNode*> join_nodes;
+    for (const auto& node : graph.nodes) {
+      if (node.kind == 1) {
+        source_nodes.push_back(&node);
+      } else if (node.kind == 4) {
+        join_nodes.push_back(&node);
+      } else {
+        return false;
+      }
+    }
+    if (source_nodes.size() < 3 || source_nodes.size() > 9 ||
+        join_nodes.size() + 1 != source_nodes.size()) {
+      return false;
+    }
+    std::ranges::sort(source_nodes, {},
+                      [](const auto* node) { return node->id; });
+    std::ranges::sort(join_nodes, {},
+                      [](const auto* node) { return node->id; });
+    std::uint32_t left_id = source_nodes.front()->id;
+    std::vector<std::uint32_t> accumulated_descriptors =
+        source_nodes.front()->output_descriptor_ids;
+    for (std::size_t ordinal = 1; ordinal < source_nodes.size(); ++ordinal) {
+      const auto* join = join_nodes[ordinal - 1];
+      const auto* right = source_nodes[ordinal];
+      if (join->semantic_variant_id != "join.cross.v1" ||
+          join->input_ids != std::vector<std::uint32_t>{left_id, right->id}) {
+        return false;
+      }
+      accumulated_descriptors.insert(accumulated_descriptors.end(),
+                                     right->output_descriptor_ids.begin(),
+                                     right->output_descriptor_ids.end());
+      if (join->output_descriptor_ids != accumulated_descriptors) return false;
+      left_id = join->id;
+    }
+    return left_id == graph.root_node_id;
+  }();
+  const auto bounded_attached_model_operation =
+      [&](const ParsedRelationalExpression& expression) {
+        if (!bounded_multimodel_join_graph || expression.kind != 4 ||
+            expression.function_uuid.has_value() ||
+            !expression.operator_name.has_value()) {
+          return false;
+        }
+        static constexpr std::array<std::string_view, 8> kRoots = {
+            "DOCUMENT_SOURCE", "GRAPH_MATCH", "KV_KEY", "TIME_RANGE",
+            "VECTOR_NEAREST", "SEARCH_MATCH", "SPATIAL_SOURCE",
+            "COLUMNAR_SOURCE"};
+        if (std::ranges::find(kRoots, *expression.operator_name) ==
+            kRoots.end()) {
+          return false;
+        }
+        const auto expected_arity =
+            expression.operator_name == "DOCUMENT_SOURCE" ? 1U
+            : expression.operator_name == "GRAPH_MATCH"   ? 2U
+            : expression.operator_name == "KV_KEY"        ? 1U
+            : expression.operator_name == "TIME_RANGE"    ? 3U
+            : expression.operator_name == "VECTOR_NEAREST" ||
+                      expression.operator_name == "SEARCH_MATCH"
+                ? 4U
+                : 0U;
+        const auto owner = std::ranges::find_if(
+            model_source_nodes, [&](const auto* node) {
+              return std::ranges::find(node->bound_expression_ids,
+                                       expression.id) !=
+                     node->bound_expression_ids.end();
+            });
+        if (expression.child_ids.size() != expected_arity ||
+            owner == model_source_nodes.end() ||
+            std::ranges::count_if(
+                model_source_nodes, [&](const auto* node) {
+                  return std::ranges::find(node->bound_expression_ids,
+                                           expression.id) !=
+                         node->bound_expression_ids.end();
+                }) != 1) {
+          return false;
+        }
+        const bool object_bound_root =
+            expression.operator_name == "SPATIAL_SOURCE" ||
+            expression.operator_name == "COLUMNAR_SOURCE";
+        if (object_bound_root) {
+          return (*owner)->required_object_uuids.size() == 1 &&
+                 expression.bound_name_uuid ==
+                     (*owner)->required_object_uuids.front();
+        }
+        if (expression.bound_name_uuid.has_value()) return false;
+        if (expected_arity == 0 ||
+            (*owner)->required_object_uuids.size() != 1) {
+          return expected_arity == 0;
+        }
+        const auto alias = std::ranges::find_if(
+            graph.expressions, [&](const auto& candidate) {
+              return candidate.id == expression.child_ids.front();
+            });
+        return alias != graph.expressions.end() && alias->kind == 3 &&
+               alias->bound_name_uuid ==
+                   (*owner)->required_object_uuids.front();
+      };
+  const bool bounded_model_roots_are_exact =
+      !bounded_multimodel_join_graph ||
+      (std::ranges::count_if(
+           graph.expressions, bounded_attached_model_operation) ==
+           model_source_nodes.size() &&
+       std::ranges::all_of(model_source_nodes, [&](const auto* node) {
+         return std::ranges::count_if(
+                    graph.expressions, [&](const auto& expression) {
+                      return bounded_attached_model_operation(expression) &&
+                             std::ranges::find(node->bound_expression_ids,
+                                               expression.id) !=
+                                 node->bound_expression_ids.end();
+                    }) == 1;
+       }));
+  if (model_source_nodes.size() > 1 && !spatial_columnar_join_graph &&
+      (!bounded_multimodel_join_graph || !bounded_model_roots_are_exact)) {
     return RefuseRelationalGraph(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
         "multiple model producers require one spatial/columnar canonical JOIN",
@@ -42385,9 +42871,22 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   const bool columnar_graph =
       columnar_model_source_node != nullptr &&
       columnar_source_root != graph.expressions.end();
+  const bool bounded_timestamp_model_graph =
+      bounded_multimodel_join_graph &&
+      std::ranges::any_of(graph.expressions, [&](const auto& expression) {
+        if (!bounded_attached_model_operation(expression)) return false;
+        return expression.operator_name == "KV_KEY" ||
+               expression.operator_name == "TIME_RANGE" ||
+               expression.operator_name == "VECTOR_NEAREST" ||
+               expression.operator_name == "SEARCH_MATCH" ||
+               expression.operator_name == "SPATIAL_SOURCE" ||
+               expression.operator_name == "COLUMNAR_SOURCE";
+      });
   const bool timestamp_model_graph =
-      key_value_graph || time_series_graph || vector_graph || search_graph ||
-      spatial_graph || columnar_graph;
+      bounded_multimodel_join_graph
+          ? bounded_timestamp_model_graph
+          : key_value_graph || time_series_graph || vector_graph ||
+                search_graph || spatial_graph || columnar_graph;
   if (timestamp_model_graph != !graph.statement_timestamp.empty() ||
       (timestamp_model_graph &&
        !IsCanonicalBoundStatementTimestamp(graph.statement_timestamp))) {
@@ -42418,7 +42917,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
                 document_expand_node->bound_expression_ids.front())
           : std::nullopt;
   std::unordered_set<std::uint32_t> allowed_document_path_expression_ids;
-  if (document_source_graph) {
+  if (!bounded_multimodel_join_graph && document_source_graph) {
     allowed_document_path_expression_ids.insert(
         document_source_node->bound_expression_ids.begin(),
         document_source_node->bound_expression_ids.end());
@@ -42496,34 +42995,36 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
     const bool binary = expression.kind == 6;
     const bool parenthesized = expression.kind == 7;
     const bool document_path_operation =
-        document_source_graph && function_call &&
+        !bounded_multimodel_join_graph && document_source_graph && function_call &&
         allowed_document_path_expression_ids.contains(expression.id) &&
         !expression.function_uuid.has_value() &&
         expression.operator_name == "DOCUMENT_PATH";
     const bool document_unnest_operation =
-        document_expand_graph && function_call &&
+        !bounded_multimodel_join_graph && document_expand_graph && function_call &&
         document_expand_root_id == expression.id &&
         !expression.function_uuid.has_value() &&
         expression.operator_name == "DOCUMENT_UNNEST";
     const bool graph_model_operation =
-        (graph_source_graph && &expression == &*graph_match_root) ||
-        (graph_expand_graph && &expression == &*graph_expand_root);
+        !bounded_multimodel_join_graph &&
+        ((graph_source_graph && &expression == &*graph_match_root) ||
+         (graph_expand_graph && &expression == &*graph_expand_root));
     const bool key_value_model_operation =
-        key_value_graph && &expression == &*key_value_root;
+        !bounded_multimodel_join_graph && key_value_graph &&
+        &expression == &*key_value_root;
     const bool time_series_model_operation =
-        time_series_graph &&
+        !bounded_multimodel_join_graph && time_series_graph &&
         (&expression == &*time_range_root ||
          (time_bucket_root != graph.expressions.end() &&
           &expression == &*time_bucket_root) ||
          (time_downsample_root != graph.expressions.end() &&
           &expression == &*time_downsample_root));
     const bool vector_model_operation =
-        vector_graph &&
+        !bounded_multimodel_join_graph && vector_graph &&
         (&expression == &*vector_nearest_root ||
          (vector_filter_root != graph.expressions.end() &&
           &expression == &*vector_filter_root));
     const bool search_model_operation =
-        search_graph &&
+        !bounded_multimodel_join_graph && search_graph &&
         (&expression == &*search_match_root ||
          (search_query_root != graph.expressions.end() &&
           &expression == &*search_query_root) ||
@@ -42532,23 +43033,35 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
          (search_analyzer_binding_root != graph.expressions.end() &&
           &expression == &*search_analyzer_binding_root));
     const bool spatial_model_operation =
-        spatial_graph &&
+        !bounded_multimodel_join_graph && spatial_graph &&
         (&expression == &*spatial_source_root ||
          (spatial_match_root != graph.expressions.end() &&
           &expression == &*spatial_match_root) ||
          (spatial_nearest_root != graph.expressions.end() &&
           &expression == &*spatial_nearest_root));
     const bool columnar_model_operation =
-        columnar_graph &&
+        !bounded_multimodel_join_graph && columnar_graph &&
         (&expression == &*columnar_source_root ||
          (columnar_filter_root != graph.expressions.end() &&
           &expression == &*columnar_filter_root) ||
          (columnar_project_root != graph.expressions.end() &&
           &expression == &*columnar_project_root));
     const bool spatial_point_constructor =
-        spatial_graph && function_call &&
+        !bounded_multimodel_join_graph && spatial_graph && function_call &&
         !expression.function_uuid.has_value() &&
         expression.operator_name == "POINT";
+    const bool bounded_model_operation =
+        bounded_attached_model_operation(expression);
+    const bool bounded_model_auxiliary =
+        bounded_multimodel_join_graph && function_call &&
+        !expression.function_uuid.has_value() &&
+        !expression.bound_name_uuid.has_value() &&
+        expression.operator_name == "SEARCH_TERMS" &&
+        expression.child_ids.size() == 1 &&
+        std::ranges::count_if(model_source_nodes, [&](const auto* node) {
+          return std::ranges::find(node->bound_expression_ids, expression.id) !=
+                 node->bound_expression_ids.end();
+        }) == 1;
     if (literal != expression.literal_kind.has_value() ||
         (expression.literal_kind.has_value() &&
         (*expression.literal_kind < 1 || *expression.literal_kind > 12)) ||
@@ -42558,10 +43071,12 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
              key_value_model_operation || time_series_model_operation ||
              vector_model_operation || search_model_operation ||
              spatial_model_operation || columnar_model_operation ||
-             spatial_point_constructor) ||
+             spatial_point_constructor || bounded_model_operation ||
+             bounded_model_auxiliary) ||
         (expression.function_uuid.has_value() &&
          !IsCanonicalRelationalUuid(*expression.function_uuid)) ||
-        ((!spatial_model_operation && !columnar_model_operation) &&
+        ((!spatial_model_operation && !columnar_model_operation &&
+          !bounded_model_operation && !bounded_model_auxiliary) &&
          identifier != expression.bound_name_uuid.has_value()) ||
         (expression.bound_name_uuid.has_value() &&
          !IsCanonicalRelationalUuid(*expression.bound_name_uuid)) ||
@@ -42570,7 +43085,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
          key_value_model_operation || time_series_model_operation ||
          vector_model_operation || search_model_operation ||
          spatial_model_operation || columnar_model_operation ||
-         spatial_point_constructor) !=
+         spatial_point_constructor || bounded_model_operation ||
+         bounded_model_auxiliary) !=
             expression.operator_name.has_value() ||
         (expression.operator_name.has_value() &&
          expression.operator_name->empty()) ||
@@ -42690,6 +43206,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   }
 
   std::unordered_map<std::uint32_t, const ParsedRelationalNode*> nodes;
+  std::unordered_set<std::string> bounded_model_object_uuids;
   for (const auto& node : graph.nodes) {
     if (node.kind < 1 || node.kind > 17 || !node.binding_present ||
         node.semantic_variant_id.empty() ||
@@ -42727,7 +43244,10 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
     std::unordered_set<std::string> required_objects;
     for (const auto& uuid : node.required_object_uuids) {
       if (!IsCanonicalRelationalUuid(uuid) ||
-          !required_objects.insert(uuid).second) {
+          !required_objects.insert(uuid).second ||
+          (bounded_multimodel_join_graph && node.kind == 1 &&
+           node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1" &&
+           !bounded_model_object_uuids.insert(uuid).second)) {
         return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
                                      "relational node object binding is invalid",
                                      "required_object_uuids", node.id);
@@ -42962,7 +43482,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
           "document_path_predicate_root", node.id);
     }
   }
-  if (key_value_graph) {
+  if (!bounded_multimodel_join_graph && key_value_graph) {
     // QOW-SOURCE-RCP-075-KEY-VALUE-SBLR-VERIFIER-V1
     const auto& node = *document_source_node;
     const auto& operation = *key_value_root;
@@ -43061,7 +43581,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
           "key_value_operation_root", node.id);
     }
   }
-  if (search_graph) {
+  if (!bounded_multimodel_join_graph && search_graph) {
     // QOW-SOURCE-RCP-078-SEARCH-SBLR-VERIFIER-V1
     const auto& node = *document_source_node;
     const auto& match = *search_match_root;
@@ -43294,7 +43814,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
           "search_operation_root", node.id);
     }
   }
-  if (vector_graph) {
+  if (!bounded_multimodel_join_graph && vector_graph) {
     // QOW-SOURCE-RCP-077-VECTOR-SBLR-VERIFIER-V1
     const auto& node = *document_source_node;
     const auto& nearest = *vector_nearest_root;
@@ -43426,7 +43946,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
           "vector_operation_root", node.id);
     }
   }
-  if (time_series_graph) {
+  if (!bounded_multimodel_join_graph && time_series_graph) {
     // QOW-SOURCE-RCP-076-TIME-SERIES-SBLR-VERIFIER-V1
     const auto& node = time_series_aggregate_node != nullptr
                            ? *time_series_aggregate_node
@@ -43659,7 +44179,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
     }
     time_series_predicate_root = time_range_root->id;
   }
-  if (graph_source_graph || graph_expand_graph) {
+  if (!bounded_multimodel_join_graph &&
+      (graph_source_graph || graph_expand_graph)) {
     // QOW-SOURCE-RCP-074-GRAPH-SBLR-VERIFIER-V1
     const auto& node = graph_source_graph ? *document_source_node
                                           : *document_expand_node;

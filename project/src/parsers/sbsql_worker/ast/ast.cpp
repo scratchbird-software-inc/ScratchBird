@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <initializer_list>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -1626,6 +1627,54 @@ AstDocument BuildAst(const CstDocument& cst) {
           return source.source_kind ==
                  NativeRelationSourceAstKind::kCatalogRelation;
         });
+    const auto multimodel_source_count = std::ranges::count_if(
+        ast.native_relational.catalog_relation_sources,
+        [](const auto& source) {
+          return source.source_kind !=
+                 NativeRelationSourceAstKind::kCatalogRelation;
+        });
+    const auto catalog_relation_node_count = std::ranges::count_if(
+        ast.native_relational.relations, [](const auto& relation) {
+          return relation.relation_kind ==
+                 NativeRelationAstKind::kCatalogSource;
+        });
+    const auto join_node_count = std::ranges::count_if(
+        ast.native_relational.relations, [](const auto& relation) {
+          return relation.relation_kind == NativeRelationAstKind::kJoin;
+        });
+    bool bounded_multimodel_join =
+        ast.native_relational.catalog_relation_sources.size() >= 3 &&
+        ast.native_relational.catalog_relation_sources.size() <= 9 &&
+        multimodel_source_count >= 2 &&
+        catalog_relation_node_count ==
+            ast.native_relational.catalog_relation_sources.size() &&
+        join_node_count + 1 == catalog_relation_node_count &&
+        ast.native_relational.relations.size() ==
+            catalog_relation_node_count + join_node_count;
+    std::uint32_t expected_left_relation_id = 1;
+    for (std::size_t ordinal = 1;
+         bounded_multimodel_join && ordinal < catalog_relation_node_count;
+         ++ordinal) {
+      const auto expected_join_id = static_cast<std::uint32_t>(
+          catalog_relation_node_count + ordinal);
+      const auto join = std::ranges::find_if(
+          ast.native_relational.relations, [&](const auto& relation) {
+            return relation.relation_id == expected_join_id;
+          });
+      bounded_multimodel_join =
+          join != ast.native_relational.relations.end() &&
+          join->relation_kind == NativeRelationAstKind::kJoin &&
+          join->join_kind == NativeJoinAstKind::kCross &&
+          join->predicate_expression_ids.empty() &&
+          join->input_relation_ids ==
+              std::vector<std::uint32_t>{
+                  expected_left_relation_id,
+                  static_cast<std::uint32_t>(ordinal + 1)};
+      expected_left_relation_id = expected_join_id;
+    }
+    bounded_multimodel_join =
+        bounded_multimodel_join &&
+        ast.native_relational.root_relation_id == expected_left_relation_id;
     bool document_resolution_description_valid = true;
     std::size_t document_source_count = 0;
     std::size_t document_collection_source_count = 0;
@@ -1672,10 +1721,209 @@ AstDocument BuildAst(const CstDocument& cst) {
                        source.model_operation_ids.front()
                  : source.model_operation_id.empty();
     };
+    std::unordered_map<std::uint32_t, std::uint32_t>
+        bounded_expression_source_owners;
+    const auto bounded_expression = [&](const std::uint32_t expression_id)
+        -> const NativeExpressionAstNode* {
+      const auto expression = std::ranges::find_if(
+          ast.native_relational.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == expression_id;
+          });
+      return expression == ast.native_relational.expressions.end()
+                 ? nullptr
+                 : &*expression;
+    };
+    const auto bounded_model_source_valid =
+        [&](const auto& source, const std::string_view family,
+            const std::string_view logical_operation,
+            const std::string_view attached_root) {
+          if (!bounded_multimodel_join ||
+              source.model_family_id != family ||
+              source.model_operation_id != logical_operation ||
+              source.model_operation_ids !=
+                  std::vector<std::string>{std::string(attached_root)} ||
+              source.qualified_name.empty() || !source.alias.has_value()) {
+            return false;
+          }
+          if (source.model_operation_expression_ids.size() != 1) return false;
+          const auto expression_id =
+              source.model_operation_expression_ids.front();
+          const auto* expression = bounded_expression(expression_id);
+          const auto expected_arity =
+              attached_root == "DOCUMENT_SOURCE" ? 1U
+              : attached_root == "GRAPH_MATCH"   ? 2U
+              : attached_root == "KV_KEY"        ? 1U
+              : attached_root == "TIME_RANGE"    ? 3U
+              : attached_root == "VECTOR_NEAREST" ||
+                        attached_root == "SEARCH_MATCH"
+                  ? 4U
+                  : 0U;
+          if (expression == nullptr ||
+              expression->expression_kind !=
+                  NativeExpressionAstKind::kFunctionCall ||
+              expression->operator_name != attached_root ||
+              expression->child_expression_ids.size() != expected_arity) {
+            return false;
+          }
+
+          std::unordered_set<std::uint32_t> closure;
+          std::vector<std::uint32_t> pending{expression_id};
+          while (!pending.empty()) {
+            const auto id = pending.back();
+            pending.pop_back();
+            if (!closure.insert(id).second) continue;
+            const auto* node = bounded_expression(id);
+            if (node == nullptr ||
+                (node->expression_kind ==
+                     NativeExpressionAstKind::kWildcard)) {
+              return false;
+            }
+            for (const auto child_id : node->child_expression_ids) {
+              if (child_id >= id) return false;
+              pending.push_back(child_id);
+            }
+          }
+
+          const auto source_relation = std::ranges::find_if(
+              ast.native_relational.relations, [&](const auto& relation) {
+                return relation.relation_kind ==
+                           NativeRelationAstKind::kCatalogSource &&
+                       relation.relation_source_ids ==
+                           std::vector<std::uint32_t>{source.source_id};
+              });
+          if (source_relation == ast.native_relational.relations.end()) {
+            return false;
+          }
+          std::optional<std::uint32_t> predicate_root;
+          if (attached_root == "KV_KEY") {
+            if (source_relation->predicate_expression_ids.size() != 1) {
+              return false;
+            }
+            predicate_root = source_relation->predicate_expression_ids.front();
+            const auto* equality = bounded_expression(*predicate_root);
+            if (equality == nullptr ||
+                equality->expression_kind != NativeExpressionAstKind::kBinary ||
+                equality->operator_name != "=" ||
+                equality->child_expression_ids.size() != 2 ||
+                equality->child_expression_ids.front() != expression_id ||
+                source.model_key_expression_ids !=
+                    std::vector<std::uint32_t>{
+                        equality->child_expression_ids.back()} ||
+                source.model_comparison_operator != "=") {
+              return false;
+            }
+            pending.push_back(*predicate_root);
+          } else if (attached_root == "GRAPH_MATCH" ||
+                     attached_root == "TIME_RANGE" ||
+                     attached_root == "VECTOR_NEAREST" ||
+                     attached_root == "SEARCH_MATCH") {
+            if (source_relation->predicate_expression_ids !=
+                std::vector<std::uint32_t>{expression_id}) {
+              return false;
+            }
+          } else if (!source_relation->predicate_expression_ids.empty()) {
+            return false;
+          }
+          while (!pending.empty()) {
+            const auto id = pending.back();
+            pending.pop_back();
+            if (!closure.insert(id).second) continue;
+            const auto* node = bounded_expression(id);
+            if (node == nullptr) return false;
+            pending.insert(pending.end(), node->child_expression_ids.begin(),
+                           node->child_expression_ids.end());
+          }
+          for (const auto id : closure) {
+            const auto [owner, inserted] = bounded_expression_source_owners.emplace(
+                id, source.source_id);
+            if (!inserted && owner->second != source.source_id) return false;
+          }
+
+          if (expected_arity != 0) {
+            const auto* alias = bounded_expression(
+                expression->child_expression_ids.front());
+            if (alias == nullptr || !source.alias.has_value() ||
+                alias->expression_kind != NativeExpressionAstKind::kIdentifier ||
+                alias->qualified_identifier.size() != 1 ||
+                alias->qualified_identifier.front().quoted !=
+                    source.alias->quoted ||
+                alias->qualified_identifier.front().spelling !=
+                    source.alias->spelling) {
+              return false;
+            }
+          }
+          if (attached_root == "DOCUMENT_SOURCE") {
+            return source.model_document_expression_id ==
+                   expression->child_expression_ids.front();
+          }
+          if (attached_root == "GRAPH_MATCH") {
+            return source.model_graph_alias_expression_id ==
+                       expression->child_expression_ids.front() &&
+                   source.model_pattern_expression_id ==
+                       expression->child_expression_ids[1] &&
+                   source.model_graph_cycle_policy == "visited_set";
+          }
+          if (attached_root == "TIME_RANGE") {
+            return source.model_time_series_alias_expression_id ==
+                       expression->child_expression_ids.front() &&
+                   source.model_range_expression_id == expression_id &&
+                   source.model_range_start_expression_id ==
+                       expression->child_expression_ids[1] &&
+                   source.model_range_end_expression_id ==
+                       expression->child_expression_ids[2];
+          }
+          if (attached_root == "VECTOR_NEAREST") {
+            return source.model_vector_alias_expression_id ==
+                       expression->child_expression_ids.front() &&
+                   source.model_vector_nearest_expression_id == expression_id &&
+                   source.model_vector_query_expression_id ==
+                       expression->child_expression_ids[1] &&
+                   source.model_vector_metric_expression_id ==
+                       expression->child_expression_ids[2] &&
+                   source.model_vector_top_k_expression_id ==
+                       expression->child_expression_ids[3] &&
+                   !source.model_vector_metric_id.empty() &&
+                   source.model_vector_top_k.has_value();
+          }
+          if (attached_root == "SEARCH_MATCH") {
+            const auto* query = bounded_expression(
+                expression->child_expression_ids[1]);
+            return query != nullptr &&
+                   query->expression_kind ==
+                       NativeExpressionAstKind::kFunctionCall &&
+                   query->operator_name == "SEARCH_TERMS" &&
+                   query->child_expression_ids.size() == 1 &&
+                   source.model_search_alias_expression_id ==
+                       expression->child_expression_ids.front() &&
+                   source.model_search_match_expression_id == expression_id &&
+                   source.model_search_query_expression_id ==
+                       expression->child_expression_ids[1] &&
+                   source.model_search_text_expression_id ==
+                       query->child_expression_ids.front() &&
+                   source.model_search_analyzer_expression_id ==
+                       expression->child_expression_ids[2] &&
+                   source.model_search_top_k_expression_id ==
+                       expression->child_expression_ids[3] &&
+                   !source.model_search_analyzer_name.empty() &&
+                   source.model_search_query_kind == "SEARCH_TERMS" &&
+                   source.model_search_top_k.has_value();
+          }
+          return true;
+        };
     for (const auto& source :
          ast.native_relational.catalog_relation_sources) {
       if (source.source_kind == NativeRelationSourceAstKind::kKeyValue) {
         ++key_value_source_count;
+        if (bounded_multimodel_join) {
+          key_value_resolution_description_valid =
+              key_value_resolution_description_valid &&
+              bounded_model_source_valid(source, "key_value",
+                                         "KEY_VALUE_GET", "KV_KEY");
+          ast.native_relational.model_object_resolution_requests.push_back(
+              {source.source_id, "key_value", "key_value",
+               source.qualified_name, source.qualified_name_range});
+          continue;
+        }
         const bool exact_get =
             source.model_operation_id == "KEY_VALUE_GET";
         const bool multi_get =
@@ -1698,6 +1946,17 @@ AstDocument BuildAst(const CstDocument& cst) {
       }
       if (source.source_kind == NativeRelationSourceAstKind::kTimeSeries) {
         ++time_series_source_count;
+        if (bounded_multimodel_join) {
+          time_series_resolution_description_valid =
+              time_series_resolution_description_valid &&
+              bounded_model_source_valid(source, "time_series",
+                                         "TIME_SERIES_RANGE_READ",
+                                         "TIME_RANGE");
+          ast.native_relational.model_object_resolution_requests.push_back(
+              {source.source_id, "time_series", "time_series",
+               source.qualified_name, source.qualified_name_range});
+          continue;
+        }
         const bool range_read =
             source.model_operation_id == "TIME_SERIES_RANGE_READ";
         const bool downsample =
@@ -1727,6 +1986,17 @@ AstDocument BuildAst(const CstDocument& cst) {
       }
       if (source.source_kind == NativeRelationSourceAstKind::kVector) {
         ++vector_source_count;
+        if (bounded_multimodel_join) {
+          vector_resolution_description_valid =
+              vector_resolution_description_valid &&
+              bounded_model_source_valid(source, "vector",
+                                         "VECTOR_EXACT_SEARCH",
+                                         "VECTOR_NEAREST");
+          ast.native_relational.model_object_resolution_requests.push_back(
+              {source.source_id, "vector", "vector", source.qualified_name,
+               source.qualified_name_range});
+          continue;
+        }
         const bool exact_search =
             source.model_operation_id == "VECTOR_EXACT_SEARCH";
         const bool filtered_search =
@@ -1768,6 +2038,23 @@ AstDocument BuildAst(const CstDocument& cst) {
       }
       if (source.source_kind == NativeRelationSourceAstKind::kSearch) {
         ++search_source_count;
+        if (bounded_multimodel_join) {
+          search_resolution_description_valid =
+              search_resolution_description_valid &&
+              bounded_model_source_valid(source, "search",
+                                         "SEARCH_RANKED_QUERY",
+                                         "SEARCH_MATCH");
+          ast.native_relational.model_object_resolution_requests.push_back(
+              {source.source_id, "search", "search", source.qualified_name,
+               source.qualified_name_range});
+          if (!source.model_search_analyzer_name.empty()) {
+            ast.native_relational.model_object_resolution_requests.push_back(
+                {source.source_id, "search", "search_analyzer",
+                 source.model_search_analyzer_name,
+                 source.model_search_analyzer_name.front().range});
+          }
+          continue;
+        }
         const bool ranked =
             source.model_operation_id == "SEARCH_RANKED_QUERY";
         const bool phrase =
@@ -1812,6 +2099,16 @@ AstDocument BuildAst(const CstDocument& cst) {
       }
       if (source.source_kind == NativeRelationSourceAstKind::kSpatial) {
         ++spatial_source_count;
+        if (bounded_multimodel_join) {
+          spatial_resolution_description_valid =
+              spatial_resolution_description_valid &&
+              bounded_model_source_valid(source, "spatial", "SPATIAL_SOURCE",
+                                         "SPATIAL_SOURCE");
+          ast.native_relational.model_object_resolution_requests.push_back(
+              {source.source_id, "spatial", "spatial_collection",
+               source.qualified_name, source.qualified_name_range});
+          continue;
+        }
         const bool source_only = source.model_operation_ids ==
                                  std::vector<std::string>{"SPATIAL_SOURCE"};
         const bool match_only = source.model_operation_ids ==
@@ -1869,6 +2166,17 @@ AstDocument BuildAst(const CstDocument& cst) {
       }
       if (source.source_kind == NativeRelationSourceAstKind::kColumnar) {
         ++columnar_source_count;
+        if (bounded_multimodel_join) {
+          columnar_resolution_description_valid =
+              columnar_resolution_description_valid &&
+              bounded_model_source_valid(source, "columnar",
+                                         "COLUMNAR_SOURCE",
+                                         "COLUMNAR_SOURCE");
+          ast.native_relational.model_object_resolution_requests.push_back(
+              {source.source_id, "columnar", "logical_relation",
+               source.qualified_name, source.qualified_name_range});
+          continue;
+        }
         const bool source_only = source.model_operation_ids ==
                                  std::vector<std::string>{"COLUMNAR_SOURCE"};
         const bool filter_only = source.model_operation_ids ==
@@ -1910,6 +2218,16 @@ AstDocument BuildAst(const CstDocument& cst) {
       }
       if (source.source_kind == NativeRelationSourceAstKind::kGraph) {
         ++graph_source_count;
+        if (bounded_multimodel_join) {
+          graph_resolution_description_valid =
+              graph_resolution_description_valid &&
+              bounded_model_source_valid(source, "graph", "GRAPH_MATCH",
+                                         "GRAPH_MATCH");
+          ast.native_relational.model_object_resolution_requests.push_back(
+              {source.source_id, "graph", "graph", source.qualified_name,
+               source.qualified_name_range});
+          continue;
+        }
         const bool graph_match =
             source.model_operation_id == "GRAPH_MATCH";
         const bool graph_expand =
@@ -1940,6 +2258,17 @@ AstDocument BuildAst(const CstDocument& cst) {
         continue;
       }
       ++document_source_count;
+      if (bounded_multimodel_join) {
+        document_resolution_description_valid =
+            document_resolution_description_valid &&
+            bounded_model_source_valid(source, "document", "DOCUMENT_FIND",
+                                       "DOCUMENT_SOURCE");
+        ++document_collection_source_count;
+        ast.native_relational.model_object_resolution_requests.push_back(
+            {source.source_id, "document", "document_collection",
+             source.qualified_name, source.qualified_name_range});
+        continue;
+      }
       const bool expression_backed_unnest =
           source.model_operation_id == "DOCUMENT_UNNEST";
       const bool collection_backed =
@@ -1962,12 +2291,22 @@ AstDocument BuildAst(const CstDocument& cst) {
           {source.source_id, "document", "document_collection",
            source.qualified_name, source.qualified_name_range});
     }
+    const bool bounded_expression_inventory_valid =
+        !bounded_multimodel_join || std::ranges::all_of(
+            ast.native_relational.expressions, [&](const auto& expression) {
+              return expression.expression_kind ==
+                         NativeExpressionAstKind::kWildcard ||
+                     bounded_expression_source_owners.contains(
+                         expression.expression_id);
+            });
     const auto expected_model_resolution_count =
-        document_collection_source_count + graph_source_count +
-        key_value_source_count + time_series_source_count + vector_source_count +
-        (search_source_count * 2) + spatial_source_count +
-        spatial_crs_request_count +
-        columnar_source_count;
+        bounded_multimodel_join
+            ? multimodel_source_count + search_source_count
+            : document_collection_source_count + graph_source_count +
+                  key_value_source_count + time_series_source_count +
+                  vector_source_count + (search_source_count * 2) +
+                  spatial_source_count + spatial_crs_request_count +
+                  columnar_source_count;
     const auto model_source_count =
         document_collection_source_count + graph_source_count +
         key_value_source_count + time_series_source_count + vector_source_count +
@@ -1983,7 +2322,8 @@ AstDocument BuildAst(const CstDocument& cst) {
         time_series_source_count > 1 || vector_source_count > 1 ||
         search_source_count > 1 || spatial_source_count > 1 ||
         columnar_source_count > 1 ||
-        (model_source_count > 1 && !exact_spatial_columnar_pair) ||
+        (model_source_count > 1 && !exact_spatial_columnar_pair &&
+         !bounded_multimodel_join) ||
         ast.native_relational.model_object_resolution_requests.size() !=
             expected_model_resolution_count ||
         !document_resolution_description_valid ||
@@ -1993,7 +2333,8 @@ AstDocument BuildAst(const CstDocument& cst) {
         !vector_resolution_description_valid ||
         !search_resolution_description_valid ||
         !spatial_resolution_description_valid ||
-        !columnar_resolution_description_valid) {
+        !columnar_resolution_description_valid ||
+        !bounded_expression_inventory_valid) {
       ast.native_relational.status =
           NativeRelationalParseStatus::kRefused;
       ast.native_relational.messages.diagnostics.push_back(MakeDiagnostic(

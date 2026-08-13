@@ -641,11 +641,216 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   set_tests_properties(qow_ces05_spatial_columnar_production_route_v1 PROPERTIES
     LABELS "qow_closure;RCP-079;CES05;spatial;columnar;production_query_execute;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
   )
+  # QOW-CMAKE-RCP-080-OPT-007-COORDINATOR-V1
+  add_executable(qow_opt_007_leg_test_v1 qow_opt_007_leg.cpp)
+  target_compile_features(qow_opt_007_leg_test_v1 PRIVATE cxx_std_23)
+  target_link_libraries(qow_opt_007_leg_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_opt_007_leg_v1 COMMAND qow_opt_007_leg_test_v1)
+  set_tests_properties(qow_opt_007_leg_v1 PROPERTIES
+    LABELS "qow_closure;RCP-080;QOW-307;OPT-007;leg;mga_transaction_regression;development_candidate")
+  add_executable(qow_opt_007_dependency_test_v1 qow_opt_007_dependency.cpp)
+  target_compile_features(qow_opt_007_dependency_test_v1 PRIVATE cxx_std_23)
+  target_link_libraries(qow_opt_007_dependency_test_v1 PRIVATE
+    sb_qow_canonical_candidate_legality sb_engine_executor)
+  add_test(NAME qow_opt_007_dependency_v1
+    COMMAND qow_opt_007_dependency_test_v1)
+  set_tests_properties(qow_opt_007_dependency_v1 PROPERTIES
+    LABELS "qow_closure;RCP-080;QOW-307;OPT-007;dependency;spill;backpressure;mga_transaction_regression;development_candidate")
+  add_executable(qow_opt_007_coordinator_test_v1
+    qow_opt_007_coordinator.cpp)
+  target_compile_features(qow_opt_007_coordinator_test_v1 PRIVATE cxx_std_23)
+  target_link_libraries(qow_opt_007_coordinator_test_v1 PRIVATE
+    sb_qow_canonical_candidate_legality)
+  add_test(NAME qow_opt_007_coordinator_v1
+    COMMAND qow_opt_007_coordinator_test_v1)
+  set_tests_properties(qow_opt_007_coordinator_v1 PROPERTIES
+    LABELS "qow_closure;RCP-080;QOW-307;OPT-007;coordinator;mga_transaction_regression;development_candidate"
+  )
+  foreach(rcp080_opt007_leaf IN ITEMS metrics backpressure failure)
+    add_executable(qow_opt_007_${rcp080_opt007_leaf}_test_v1
+      qow_opt_007_${rcp080_opt007_leaf}.cpp)
+    target_compile_features(qow_opt_007_${rcp080_opt007_leaf}_test_v1 PRIVATE
+      cxx_std_23)
+    target_link_libraries(qow_opt_007_${rcp080_opt007_leaf}_test_v1 PRIVATE
+      sb_qow_canonical_candidate_legality sb_engine_executor)
+    add_test(NAME qow_opt_007_${rcp080_opt007_leaf}_v1
+      COMMAND qow_opt_007_${rcp080_opt007_leaf}_test_v1)
+    set_tests_properties(qow_opt_007_${rcp080_opt007_leaf}_v1 PROPERTIES
+      LABELS "qow_closure;RCP-080;QOW-307;OPT-007;${rcp080_opt007_leaf};mga_transaction_regression;development_candidate")
+  endforeach()
+  add_executable(qow_opt_018_failure_test_v1 qow_opt_018_failure.cpp)
+  target_compile_features(qow_opt_018_failure_test_v1 PRIVATE cxx_std_23)
+  target_link_libraries(qow_opt_018_failure_test_v1 PRIVATE
+    sb_qow_canonical_candidate_legality sb_engine_executor)
+  add_test(NAME qow_opt_018_failure_v1
+    COMMAND qow_opt_018_failure_test_v1)
+  set_tests_properties(qow_opt_018_failure_v1 PROPERTIES
+    LABELS "qow_closure;RCP-080;QOW-307;OPT-018;failure;cancellation;cleanup;mga_transaction_regression;development_candidate"
+  )
+  foreach(rcp080_opt018_leaf IN ITEMS parallel backpressure cancellation cleanup cluster_refusal)
+    add_executable(qow_opt_018_${rcp080_opt018_leaf}_test_v1
+      qow_opt_018_${rcp080_opt018_leaf}.cpp)
+    target_compile_features(qow_opt_018_${rcp080_opt018_leaf}_test_v1 PRIVATE
+      cxx_std_23)
+    target_link_libraries(qow_opt_018_${rcp080_opt018_leaf}_test_v1 PRIVATE
+      sb_qow_canonical_candidate_legality sb_engine_executor)
+    add_test(NAME qow_opt_018_${rcp080_opt018_leaf}_v1
+      COMMAND qow_opt_018_${rcp080_opt018_leaf}_test_v1)
+    set_tests_properties(qow_opt_018_${rcp080_opt018_leaf}_v1 PROPERTIES
+      LABELS "qow_closure;RCP-080;QOW-307;OPT-018;${rcp080_opt018_leaf};mga_transaction_regression;development_candidate")
+  endforeach()
+  foreach(rcp080_leaf IN ITEMS opt_012 ias_007 ias_008)
+    add_executable(qow_${rcp080_leaf}_test_v1 qow_${rcp080_leaf}.cpp)
+    target_compile_features(qow_${rcp080_leaf}_test_v1 PRIVATE cxx_std_23)
+    target_link_libraries(qow_${rcp080_leaf}_test_v1 PRIVATE
+      sb_qow_canonical_candidate_legality sb_engine_executor)
+    add_test(NAME qow_${rcp080_leaf}_v1 COMMAND qow_${rcp080_leaf}_test_v1)
+    set_tests_properties(qow_${rcp080_leaf}_v1 PROPERTIES
+      LABELS "qow_closure;RCP-080;QOW-307;${rcp080_leaf};mga_transaction_regression;development_candidate")
+  endforeach()
+  add_executable(qow_ces05_multimodel_closure_test_v1
+    qow_ces05_multimodel_closure.cpp)
+  target_compile_features(qow_ces05_multimodel_closure_test_v1 PRIVATE
+    cxx_std_23)
+  target_link_libraries(qow_ces05_multimodel_closure_test_v1 PRIVATE
+    sb_qow_canonical_candidate_legality sb_engine_executor)
+  add_test(NAME qow_ces05_multimodel_closure_v1
+    COMMAND qow_ces05_multimodel_closure_test_v1)
+  set_tests_properties(qow_ces05_multimodel_closure_v1 PROPERTIES
+    LABELS "qow_closure;RCP-080;QOW-307;CES05;multimodel;full_nine;mga_transaction_regression;development_candidate")
+  add_executable(qow_ces05_multimodel_production_route_test_v1
+    qow_ces05_multimodel_closure.cpp)
+  target_compile_features(qow_ces05_multimodel_production_route_test_v1
+    PRIVATE cxx_std_23)
+  target_include_directories(
+    qow_ces05_multimodel_production_route_test_v1 PRIVATE
+    "${PROJECT_SOURCE_DIR}/src")
+  if(TARGET sb_cluster_provider)
+    target_link_libraries(sb_engine PRIVATE sb_cluster_provider)
+  endif()
+  target_compile_definitions(
+    qow_ces05_multimodel_production_route_test_v1 PRIVATE
+    SB_RCP080_PRODUCTION_QUERY_ROUTE=1
+    SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
+  target_link_libraries(qow_ces05_multimodel_production_route_test_v1 PRIVATE
+    sb_engine
+    sb_engine_sblr
+    sb_core_hash
+    sb_core_memory
+    sb_core_uuid
+    sb_storage_database
+    sbl_sbsql_parser_worker_core)
+  add_test(NAME qow_ces05_multimodel_production_route_v1
+    COMMAND qow_ces05_multimodel_production_route_test_v1)
+  set_tests_properties(qow_ces05_multimodel_production_route_v1 PROPERTIES
+    LABELS "qow_closure;RCP-080;QOW-307;CES05;multimodel;production_query_execute;SBSQL_frontdoor;SBLR_dispatch;mga_transaction_regression;development_candidate")
   # Dependency-ordered QOW optimizer targets are added above this return by
   # their owning leaves. The broad optimizer suite remains disabled.
   set(SB_QOW_OPTIMIZER_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
 endif()
+
+# QOW-CMAKE-RCP-080-OPT-007-COORDINATOR-FULL-V1
+add_executable(qow_opt_007_leg_test_v1 qow_opt_007_leg.cpp)
+target_compile_features(qow_opt_007_leg_test_v1 PRIVATE cxx_std_23)
+target_link_libraries(qow_opt_007_leg_test_v1 PRIVATE sb_engine_executor)
+add_test(NAME qow_opt_007_leg_v1 COMMAND qow_opt_007_leg_test_v1)
+set_tests_properties(qow_opt_007_leg_v1 PROPERTIES
+  LABELS "qow_closure;RCP-080;QOW-307;OPT-007;leg;mga_transaction_regression;development_candidate")
+add_executable(qow_opt_007_dependency_test_v1 qow_opt_007_dependency.cpp)
+target_compile_features(qow_opt_007_dependency_test_v1 PRIVATE cxx_std_23)
+target_link_libraries(qow_opt_007_dependency_test_v1 PRIVATE
+  sb_engine_optimizer_contract_only sb_engine_executor)
+add_test(NAME qow_opt_007_dependency_v1
+  COMMAND qow_opt_007_dependency_test_v1)
+set_tests_properties(qow_opt_007_dependency_v1 PROPERTIES
+  LABELS "qow_closure;RCP-080;QOW-307;OPT-007;dependency;spill;backpressure;mga_transaction_regression;development_candidate")
+add_executable(qow_opt_007_coordinator_test_v1 qow_opt_007_coordinator.cpp)
+target_compile_features(qow_opt_007_coordinator_test_v1 PRIVATE cxx_std_23)
+target_link_libraries(qow_opt_007_coordinator_test_v1 PRIVATE
+  sb_engine_optimizer_contract_only)
+add_test(NAME qow_opt_007_coordinator_v1
+  COMMAND qow_opt_007_coordinator_test_v1)
+set_tests_properties(qow_opt_007_coordinator_v1 PROPERTIES
+  LABELS "qow_closure;RCP-080;QOW-307;OPT-007;coordinator;mga_transaction_regression;development_candidate"
+)
+foreach(rcp080_opt007_leaf IN ITEMS metrics backpressure failure)
+  add_executable(qow_opt_007_${rcp080_opt007_leaf}_test_v1
+    qow_opt_007_${rcp080_opt007_leaf}.cpp)
+  target_compile_features(qow_opt_007_${rcp080_opt007_leaf}_test_v1 PRIVATE
+    cxx_std_23)
+  target_link_libraries(qow_opt_007_${rcp080_opt007_leaf}_test_v1 PRIVATE
+    sb_engine_optimizer_contract_only sb_engine_executor)
+  add_test(NAME qow_opt_007_${rcp080_opt007_leaf}_v1
+    COMMAND qow_opt_007_${rcp080_opt007_leaf}_test_v1)
+  set_tests_properties(qow_opt_007_${rcp080_opt007_leaf}_v1 PROPERTIES
+    LABELS "qow_closure;RCP-080;QOW-307;OPT-007;${rcp080_opt007_leaf};mga_transaction_regression;development_candidate")
+endforeach()
+add_executable(qow_opt_018_failure_test_v1 qow_opt_018_failure.cpp)
+target_compile_features(qow_opt_018_failure_test_v1 PRIVATE cxx_std_23)
+target_link_libraries(qow_opt_018_failure_test_v1 PRIVATE
+  sb_engine_optimizer_contract_only sb_engine_executor)
+add_test(NAME qow_opt_018_failure_v1 COMMAND qow_opt_018_failure_test_v1)
+set_tests_properties(qow_opt_018_failure_v1 PROPERTIES
+  LABELS "qow_closure;RCP-080;QOW-307;OPT-018;failure;cancellation;cleanup;mga_transaction_regression;development_candidate"
+)
+foreach(rcp080_opt018_leaf IN ITEMS parallel backpressure cancellation cleanup cluster_refusal)
+  add_executable(qow_opt_018_${rcp080_opt018_leaf}_test_v1
+    qow_opt_018_${rcp080_opt018_leaf}.cpp)
+  target_compile_features(qow_opt_018_${rcp080_opt018_leaf}_test_v1 PRIVATE
+    cxx_std_23)
+  target_link_libraries(qow_opt_018_${rcp080_opt018_leaf}_test_v1 PRIVATE
+    sb_engine_optimizer_contract_only sb_engine_executor)
+  add_test(NAME qow_opt_018_${rcp080_opt018_leaf}_v1
+    COMMAND qow_opt_018_${rcp080_opt018_leaf}_test_v1)
+  set_tests_properties(qow_opt_018_${rcp080_opt018_leaf}_v1 PROPERTIES
+    LABELS "qow_closure;RCP-080;QOW-307;OPT-018;${rcp080_opt018_leaf};mga_transaction_regression;development_candidate")
+endforeach()
+foreach(rcp080_leaf IN ITEMS opt_012 ias_007 ias_008)
+  add_executable(qow_${rcp080_leaf}_test_v1 qow_${rcp080_leaf}.cpp)
+  target_compile_features(qow_${rcp080_leaf}_test_v1 PRIVATE cxx_std_23)
+  target_link_libraries(qow_${rcp080_leaf}_test_v1 PRIVATE
+    sb_engine_optimizer_contract_only sb_engine_executor)
+  add_test(NAME qow_${rcp080_leaf}_v1 COMMAND qow_${rcp080_leaf}_test_v1)
+  set_tests_properties(qow_${rcp080_leaf}_v1 PROPERTIES
+    LABELS "qow_closure;RCP-080;QOW-307;${rcp080_leaf};mga_transaction_regression;development_candidate")
+endforeach()
+add_executable(qow_ces05_multimodel_closure_test_v1
+  qow_ces05_multimodel_closure.cpp)
+target_compile_features(qow_ces05_multimodel_closure_test_v1 PRIVATE
+  cxx_std_23)
+target_link_libraries(qow_ces05_multimodel_closure_test_v1 PRIVATE
+  sb_engine_optimizer_contract_only sb_engine_executor)
+add_test(NAME qow_ces05_multimodel_closure_v1
+  COMMAND qow_ces05_multimodel_closure_test_v1)
+set_tests_properties(qow_ces05_multimodel_closure_v1 PROPERTIES
+  LABELS "qow_closure;RCP-080;QOW-307;CES05;multimodel;full_nine;mga_transaction_regression;development_candidate")
+add_executable(qow_ces05_multimodel_production_route_test_v1
+  qow_ces05_multimodel_closure.cpp)
+target_compile_features(qow_ces05_multimodel_production_route_test_v1
+  PRIVATE cxx_std_23)
+target_include_directories(
+  qow_ces05_multimodel_production_route_test_v1 PRIVATE
+  "${PROJECT_SOURCE_DIR}/src")
+if(TARGET sb_cluster_provider)
+  target_link_libraries(sb_engine PRIVATE sb_cluster_provider)
+endif()
+target_compile_definitions(
+  qow_ces05_multimodel_production_route_test_v1 PRIVATE
+  SB_RCP080_PRODUCTION_QUERY_ROUTE=1
+  SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
+target_link_libraries(qow_ces05_multimodel_production_route_test_v1 PRIVATE
+  sb_engine
+  sb_engine_sblr
+  sb_core_hash
+  sb_core_memory
+  sb_core_uuid
+  sb_storage_database
+  sbl_sbsql_parser_worker_core)
+add_test(NAME qow_ces05_multimodel_production_route_v1
+  COMMAND qow_ces05_multimodel_production_route_test_v1)
+set_tests_properties(qow_ces05_multimodel_production_route_v1 PROPERTIES
+  LABELS "qow_closure;RCP-080;QOW-307;CES05;multimodel;production_query_execute;SBSQL_frontdoor;SBLR_dispatch;mga_transaction_regression;development_candidate")
 
 # Full-suite configurations do not enter the focused internal-API closure
 # branch that normally owns this contract target.  Keep the RCP-079 typed-DAG

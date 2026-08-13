@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "../executor/model_family_executor.hpp"
+#include "../executor/model_family_exchange.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -14,6 +14,9 @@ namespace scratchbird::engine::optimizer {
 
 struct ModelFamilyCostVectorV1 {
   std::string cost_vector_uuid;
+  std::string provenance_uuid;
+  std::uint64_t provenance_generation{0};
+  std::uint32_t confidence_basis_points{0};
   std::uint64_t cpu_units{0};
   std::uint64_t sequential_read_units{0};
   std::uint64_t random_read_units{0};
@@ -50,6 +53,11 @@ struct ModelFamilyCoordinatorRequestV1 {
   std::vector<std::string> operation_ids;
   std::string operation_id;
   std::string logical_operator_id;
+  // Exact pre-admission identity for one leg of a signed RCP-080 common
+  // composition. Empty/zero retains the standalone coordinator contract.
+  std::string composition_profile_id;
+  std::uint16_t composition_lexical_source_ordinal{0};
+  std::uint16_t composition_arity{0};
   std::uint32_t logical_node_id{0};
   std::string object_uuid;
   std::vector<std::uint32_t> output_descriptor_ids;
@@ -218,6 +226,215 @@ struct ModelFamilyCompositionResultV1 {
 
 ModelFamilyCompositionResultV1 CoordinateModelFamilyCompositionV1(
     const ModelFamilyCompositionRequestV1& request);
+
+// RCP-080 complete coordinator ABI. The earlier composition carrier above is
+// retained as the admission surface proven by RCP-079. This carrier is the
+// execution-ready contract: every dependency is explicit, every selected leg
+// retains its family-local decision dimensions, and the coordinator publishes
+// a stable schedule without recomputing a cross-family scalar cost.
+struct ModelFamilyDependencyEdgeV1 {
+  std::uint16_t abi_version{1};
+  std::string edge_uuid;
+  std::uint16_t producer_lexical_source_ordinal{0};
+  std::uint16_t consumer_lexical_source_ordinal{0};
+  std::string edge_kind{"data_binding"};
+  std::string required_property_uuid;
+  std::string delivered_property_uuid;
+  std::string descriptor_lineage_uuid;
+  std::vector<std::uint32_t> producer_output_descriptor_ids;
+  std::vector<std::uint32_t> consumer_input_descriptor_ids;
+  std::vector<std::string> producer_output_descriptor_uuids;
+  std::vector<std::string> consumer_input_descriptor_uuids;
+  bool descriptor_compatible{true};
+  bool semantics_authorized{true};
+  bool parser_execution_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+};
+
+struct ModelFamilyDependencyAlternativeV1 {
+  std::string alternative_uuid;
+  std::string candidate_inventory_receipt_uuid;
+  std::string implementation_id;
+  std::vector<std::string> operation_ids;
+  std::string operation_id;
+  std::string operation_scope_receipt_uuid;
+  std::string selection_policy_receipt_uuid;
+  std::uint64_t authority_approved_comparison_rank{0};
+  ModelFamilyCostVectorV1 family_local_cost;
+  bool available{false};
+  bool exact{false};
+  bool exact_fallback{false};
+  bool admitted{false};
+};
+
+struct ModelFamilyDependencyLegV1 {
+  std::uint16_t abi_version{1};
+  std::uint16_t lexical_source_ordinal{0};
+  std::string physical_node_uuid;
+  std::string family_id;
+  std::vector<std::string> operation_ids;
+  std::string operation_id;
+  std::string selected_plan_uuid;
+  std::string selected_alternative_uuid;
+  std::string provider_uuid;
+  std::string capability_uuid;
+  std::string delivered_property_uuid;
+  std::string bound_object_uuid;
+  std::string catalog_snapshot_uuid;
+  std::string current_catalog_snapshot_uuid;
+  std::string descriptor_snapshot_uuid;
+  std::string current_descriptor_snapshot_uuid;
+  std::string security_context_uuid;
+  std::string current_security_context_uuid;
+  std::string policy_snapshot_uuid;
+  std::string current_policy_snapshot_uuid;
+  std::string resource_contract_uuid;
+  std::string current_resource_contract_uuid;
+  std::string operation_scope_receipt_uuid;
+  std::string selected_alternative_receipt_uuid;
+  std::uint64_t root_physical_node_id{0};
+  std::vector<std::uint32_t> output_descriptor_ids;
+  std::vector<std::string> output_descriptor_uuids;
+  ModelFamilyCostVectorV1 family_local_cost;
+  std::vector<ModelFamilyDependencyAlternativeV1> candidate_alternatives;
+  scratchbird::engine::executor::PhysicalMgaStatementContext
+      mga_statement_context;
+  std::uint64_t catalog_generation{0};
+  std::uint64_t current_catalog_generation{0};
+  std::uint64_t descriptor_generation{0};
+  std::uint64_t current_descriptor_generation{0};
+  std::uint64_t security_generation{0};
+  std::uint64_t current_security_generation{0};
+  std::uint64_t policy_generation{0};
+  std::uint64_t current_policy_generation{0};
+  std::uint64_t resource_generation{0};
+  std::uint64_t current_resource_generation{0};
+  std::uint64_t provider_generation{0};
+  std::uint64_t current_provider_generation{0};
+  std::uint16_t capability_abi_version{1};
+  std::uint64_t capability_generation{0};
+  std::uint64_t current_capability_generation{0};
+  std::uint64_t memory_grant_bytes{0};
+  std::uint64_t exchange_buffer_bytes{0};
+  std::uint64_t maximum_rows{0};
+  std::uint64_t maximum_columns{0};
+  std::uint64_t maximum_cells{0};
+  bool selected{false};
+  bool security_admitted{false};
+  bool capability_admitted{false};
+  bool exact{false};
+  bool exact_fallback_selected{false};
+  bool exact_fallback_available{false};
+  bool exact_recheck_required{true};
+  bool base_row_mga_recheck_required{true};
+  bool security_recheck_required{true};
+  bool cleanup_supported{false};
+  bool cancellation_supported{false};
+  bool parallel_eligible{false};
+  bool spill_eligible{false};
+  bool local_scope{true};
+  bool cluster_scope_required{false};
+  bool parser_planning_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+};
+
+struct ModelFamilyRelationalConsumerV1 {
+  std::uint16_t abi_version{1};
+  std::string physical_node_uuid;
+  std::uint64_t physical_node_id{0};
+  std::uint64_t causal_counter_id{0};
+  std::string selected_implementation_uuid;
+  std::string expected_security_receipt_uuid;
+  std::string join_form_id;
+  std::vector<std::string> input_physical_node_uuids;
+  std::vector<std::uint32_t> input_descriptor_ids;
+  std::vector<std::uint32_t> output_descriptor_ids;
+  std::vector<std::string> input_descriptor_uuids;
+  std::vector<std::string> output_descriptor_uuids;
+  scratchbird::engine::executor::PhysicalMgaStatementContext
+      mga_statement_context;
+  std::uint64_t maximum_rows{0};
+  std::uint64_t maximum_columns{0};
+  std::uint64_t maximum_cells{0};
+  std::uint64_t memory_grant_bytes{0};
+  bool canonical_root{false};
+  bool exact{false};
+  bool cleanup_supported{false};
+  bool cancellation_supported{false};
+  bool parser_execution_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+};
+
+struct ModelFamilyCoordinatorRuleReceiptV1 {
+  std::string rule_id;
+  std::string evidence_id;
+  std::string receipt_uuid;
+  std::uint64_t causal_counter_id{0};
+  bool complete{false};
+};
+
+struct ModelFamilyScheduledLegV1 {
+  ModelFamilyDependencyLegV1 leg;
+  std::string composition_admission_receipt_uuid;
+  std::uint16_t composition_arity{0};
+  std::vector<std::uint16_t> dependency_ordinals;
+  std::uint32_t schedule_wave{0};
+  std::uint32_t stable_start_ordinal{0};
+  std::uint64_t causal_counter_id{0};
+};
+
+struct ModelFamilyDependencyCoordinatorRequestV1 {
+  std::uint16_t abi_version{1};
+  std::string composition_profile_id;
+  std::string bound_sblr_tree_uuid;
+  std::uint64_t selected_plan_generation{0};
+  std::uint64_t current_selected_plan_generation{0};
+  std::string canonical_root_physical_node_uuid;
+  std::uint64_t canonical_root_physical_node_id{0};
+  std::vector<ModelFamilyDependencyLegV1> legs;
+  std::vector<ModelFamilyDependencyEdgeV1> edges;
+  std::vector<ModelFamilyRelationalConsumerV1> relational_consumers;
+  std::uint64_t statement_memory_budget_bytes{0};
+  std::uint64_t maximum_spill_bytes{0};
+  std::uint64_t backpressure_high_watermark_rows{0};
+  std::uint64_t backpressure_low_watermark_rows{0};
+  bool spill_required{false};
+  bool engine_temporary_storage_available{false};
+  bool spill_cleanup_path_available{false};
+  bool cluster_capability_available{false};
+  bool signed_short_circuit_enabled{false};
+  bool feedback_observation_frozen{false};
+  bool feedback_target_is_later_plan{false};
+  bool current_plan_mutation_requested{false};
+  std::uint64_t feedback_observation_generation{0};
+  std::uint64_t feedback_target_plan_generation{0};
+};
+
+struct ModelFamilyDependencyCoordinatorResultV1 {
+  bool accepted{false};
+  bool deterministic{false};
+  bool data_access_allowed{false};
+  bool root_publication_candidate{false};
+  bool no_partial_root{true};
+  bool spill_reservation_required{false};
+  std::uint64_t admitted_peak_memory_bytes{0};
+  std::uint64_t admitted_spill_bytes{0};
+  std::uint64_t selected_plan_generation{0};
+  std::uint64_t expected_cleanup_component_count{0};
+  std::vector<ModelFamilyScheduledLegV1> stable_schedule;
+  std::vector<std::vector<std::uint16_t>> parallel_waves;
+  std::vector<ModelFamilyDependencyEdgeV1> dependency_edges;
+  std::vector<ModelFamilyRelationalConsumerV1> relational_consumers;
+  std::vector<ModelFamilyCoordinatorRuleReceiptV1> rule_receipts;
+  std::string dependency_dag_receipt_uuid;
+  std::string composition_admission_receipt_uuid;
+  std::string diagnostic_id;
+  std::string detail;
+};
+
+ModelFamilyDependencyCoordinatorResultV1
+CoordinateModelFamilyDependencyDagV1(
+    const ModelFamilyDependencyCoordinatorRequestV1& request);
 
 struct ModelFamilyJoinAdmissionRequestV1 {
   std::uint16_t abi_version{1};

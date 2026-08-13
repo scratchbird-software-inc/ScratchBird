@@ -78,6 +78,131 @@ bool CandidateScore(const ModelFamilyCandidateV1& candidate,
          Add(candidate.cost.risk_penalty, score);
 }
 
+bool DependencyCostValid(const ModelFamilyCostVectorV1& cost) {
+  return CanonicalUuid(cost.cost_vector_uuid) &&
+         CanonicalUuid(cost.provenance_uuid) &&
+         cost.provenance_generation != 0 &&
+         cost.confidence_basis_points != 0 &&
+         cost.confidence_basis_points <= 10'000;
+}
+
+bool DependencyCostEqual(const ModelFamilyCostVectorV1& left,
+                         const ModelFamilyCostVectorV1& right) {
+  return left.cost_vector_uuid == right.cost_vector_uuid &&
+         left.provenance_uuid == right.provenance_uuid &&
+         left.provenance_generation == right.provenance_generation &&
+         left.confidence_basis_points == right.confidence_basis_points &&
+         left.cpu_units == right.cpu_units &&
+         left.sequential_read_units == right.sequential_read_units &&
+         left.random_read_units == right.random_read_units &&
+         left.memory_bytes_required == right.memory_bytes_required &&
+         left.uncertainty_penalty == right.uncertainty_penalty &&
+         left.risk_penalty == right.risk_penalty;
+}
+
+bool DependencyAlternativeLess(
+    const ModelFamilyDependencyAlternativeV1& left,
+    const ModelFamilyDependencyAlternativeV1& right) {
+  return left.authority_approved_comparison_rank <
+             right.authority_approved_comparison_rank ||
+         (left.authority_approved_comparison_rank ==
+              right.authority_approved_comparison_rank &&
+          left.alternative_uuid < right.alternative_uuid);
+}
+
+bool DependencyOperationValid(const std::string_view family_id,
+                              const std::vector<std::string>& operation_ids,
+                              const std::string_view operation_id) {
+  if (family_id == "relational") {
+    return operation_ids.empty() && operation_id == "RELATIONAL_HEAP_SCAN";
+  }
+  if (family_id == "document") {
+    return operation_ids.empty() &&
+           (operation_id == "DOCUMENT_FIND" ||
+            operation_id == "DOCUMENT_PATH" ||
+            operation_id == "DOCUMENT_UNNEST");
+  }
+  if (family_id == "graph") {
+    return operation_ids.empty() &&
+           (operation_id == "GRAPH_MATCH" || operation_id == "GRAPH_EXPAND");
+  }
+  if (family_id == "key_value") {
+    return operation_ids.empty() &&
+           (operation_id == "KEY_VALUE_GET" ||
+            operation_id == "KEY_VALUE_MULTI_GET" ||
+            operation_id == "KEY_VALUE_PREFIX_RANGE");
+  }
+  if (family_id == "time_series") {
+    return operation_ids.empty() &&
+           (operation_id == "TIME_SERIES_RANGE_READ" ||
+            operation_id == "TIME_SERIES_BUCKET" ||
+            operation_id == "TIME_SERIES_DOWNSAMPLE");
+  }
+  if (family_id == "vector") {
+    return operation_ids.empty() &&
+           (operation_id == "VECTOR_EXACT_SEARCH" ||
+            operation_id == "VECTOR_ANN_SEARCH" ||
+            operation_id == "VECTOR_FILTERED_SEARCH");
+  }
+  if (family_id == "search") {
+    return operation_ids.empty() &&
+           (operation_id == "SEARCH_RANKED_QUERY" ||
+            operation_id == "SEARCH_PHRASE_QUERY" ||
+            operation_id == "SEARCH_FUZZY_QUERY");
+  }
+  const auto exact_projection = [&](const std::string_view source) {
+    if (operation_ids.empty() || operation_ids.front() != source) return false;
+    if (operation_ids.size() == 1) return operation_id == source;
+    if (operation_ids.size() == 2) return operation_id == operation_ids.back();
+    return operation_ids.size() == 3 && operation_id.empty();
+  };
+  if (family_id == "spatial") {
+    return exact_projection("SPATIAL_SOURCE") &&
+           (operation_ids == std::vector<std::string>{"SPATIAL_SOURCE"} ||
+            operation_ids == std::vector<std::string>{"SPATIAL_SOURCE", "SPATIAL_MATCH"} ||
+            operation_ids == std::vector<std::string>{"SPATIAL_SOURCE", "SPATIAL_NEAREST"} ||
+            operation_ids == std::vector<std::string>{"SPATIAL_SOURCE", "SPATIAL_MATCH", "SPATIAL_NEAREST"});
+  }
+  if (family_id == "columnar") {
+    return exact_projection("COLUMNAR_SOURCE") &&
+           (operation_ids == std::vector<std::string>{"COLUMNAR_SOURCE"} ||
+            operation_ids == std::vector<std::string>{"COLUMNAR_SOURCE", "COLUMNAR_FILTER"} ||
+            operation_ids == std::vector<std::string>{"COLUMNAR_SOURCE", "COLUMNAR_PROJECT"} ||
+            operation_ids == std::vector<std::string>{"COLUMNAR_SOURCE", "COLUMNAR_FILTER", "COLUMNAR_PROJECT"});
+  }
+  return false;
+}
+
+bool CheckedMultiply(const std::uint64_t left,
+                     const std::uint64_t right,
+                     std::uint64_t* product) {
+  if (product == nullptr ||
+      (right != 0 &&
+       left > std::numeric_limits<std::uint64_t>::max() / right)) {
+    return false;
+  }
+  *product = left * right;
+  return true;
+}
+
+bool CanonicalDescriptorLineage(
+    const std::vector<std::uint32_t>& descriptor_ids,
+    const std::vector<std::string>& descriptor_uuids) {
+  if (descriptor_ids.empty() || descriptor_ids.size() != descriptor_uuids.size()) {
+    return false;
+  }
+  std::set<std::uint32_t> ids;
+  std::set<std::string> uuids;
+  for (std::size_t index = 0; index < descriptor_ids.size(); ++index) {
+    if (descriptor_ids[index] == 0 || !ids.insert(descriptor_ids[index]).second ||
+        !CanonicalUuid(descriptor_uuids[index]) ||
+        !uuids.insert(descriptor_uuids[index]).second) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool CanonicalStatementTimestamp(const std::string_view value) {
   if (value.size() != 20 && (value.size() < 22 || value.size() > 30)) {
     return false;
@@ -240,9 +365,38 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
   const bool timestamp_family =
       key_value_family || time_series_family || vector_family || search_family ||
       spatial_family || columnar_family;
-  if (timestamp_family !=
-          !request.mga_statement_context.statement_timestamp.empty() ||
-      (timestamp_family &&
+  const auto exact_common_composition = [&] {
+    if (request.composition_profile_id == "COMP-3-LINEAR-V1") {
+      return request.composition_arity == 3 &&
+             request.composition_lexical_source_ordinal < 3;
+    }
+    if (request.composition_profile_id == "COMP-4-MIXED-V1") {
+      constexpr std::array<std::string_view, 4> families = {
+          "relational", "document", "graph", "vector"};
+      return request.composition_arity == families.size() &&
+             request.composition_lexical_source_ordinal < families.size() &&
+             request.family_id ==
+                 families[request.composition_lexical_source_ordinal];
+    }
+    if (request.composition_profile_id == "COMP-9-FULL-UNIVERSE-V1") {
+      constexpr std::array<std::string_view, 9> families = {
+          "relational", "document", "graph", "key_value", "time_series",
+          "vector", "search", "spatial", "columnar"};
+      return request.composition_arity == families.size() &&
+             request.composition_lexical_source_ordinal < families.size() &&
+             request.family_id ==
+                 families[request.composition_lexical_source_ordinal];
+    }
+    return false;
+  }();
+  const bool has_composition_carrier =
+      !request.composition_profile_id.empty() || request.composition_arity != 0;
+  const bool timestamp_present =
+      !request.mga_statement_context.statement_timestamp.empty();
+  if ((has_composition_carrier && !exact_common_composition) ||
+      (timestamp_family && !timestamp_present) ||
+      (!timestamp_family && timestamp_present && !exact_common_composition) ||
+      (timestamp_present &&
        !CanonicalStatementTimestamp(
            request.mga_statement_context.statement_timestamp))) {
     return refuse(time_series_family
@@ -754,6 +908,994 @@ ModelFamilyCompositionResultV1 CoordinateModelFamilyCompositionV1(
   result.composition_receipt_uuid = DerivedUuid(receipt_seed);
   result.diagnostic_id = "SB_EXECUTOR_OK";
   return result;
+}
+
+static ModelFamilyDependencyCoordinatorResultV1
+CoordinateModelFamilyDependencyDagValidatedV1(
+    const ModelFamilyDependencyCoordinatorRequestV1& request) {
+  // QOW-SOURCE-RCP-080-COMPLETE-DEPENDENCY-COORDINATOR-V1
+  ModelFamilyDependencyCoordinatorResultV1 result;
+  const auto refuse = [&](std::string diagnostic, std::string detail) {
+    result.accepted = false;
+    result.deterministic = true;
+    result.data_access_allowed = false;
+    result.root_publication_candidate = false;
+    result.no_partial_root = true;
+    result.stable_schedule.clear();
+    result.parallel_waves.clear();
+    result.dependency_edges.clear();
+    result.relational_consumers.clear();
+    result.rule_receipts.clear();
+    result.dependency_dag_receipt_uuid.clear();
+    result.composition_admission_receipt_uuid.clear();
+    result.diagnostic_id = std::move(diagnostic);
+    result.detail = std::move(detail);
+    return result;
+  };
+  const std::map<std::string, std::size_t> profile_arities = {
+      {"COMP-3-LINEAR-V1", 3},
+      {"COMP-3-FANIN-V1", 3},
+      {"COMP-3-INDEPENDENT-V1", 3},
+      {"COMP-4-MIXED-V1", 4},
+      {"COMP-3-LATERAL-V1", 3},
+      {"COMP-3-SHARED-LEG-V1", 3},
+      {"COMP-3-SHORT-CIRCUIT-V1", 3},
+      {"COMP-3-CANCEL-FANOUT-V1", 3},
+      {"COMP-3-FAILURE-CLEANUP-V1", 3},
+      {"COMP-9-FULL-UNIVERSE-V1", 9},
+  };
+  const std::set<std::string> family_ids = {
+      "relational", "document", "graph", "key_value", "time_series",
+      "vector", "search", "spatial", "columnar"};
+  const auto profile = profile_arities.find(request.composition_profile_id);
+  if (request.abi_version != 1 || profile == profile_arities.end() ||
+      request.legs.size() != profile->second ||
+      !CanonicalUuid(request.bound_sblr_tree_uuid) ||
+      request.selected_plan_generation == 0 ||
+      !CanonicalUuid(request.canonical_root_physical_node_uuid) ||
+      request.canonical_root_physical_node_id == 0) {
+    return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                  "dependency coordinator profile, arity, or bound plan identity is invalid");
+  }
+  if (request.selected_plan_generation !=
+      request.current_selected_plan_generation) {
+    return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                  "selected dependency plan generation is stale");
+  }
+
+  using EdgePair = std::pair<std::uint16_t, std::uint16_t>;
+  std::vector<EdgePair> expected_edges;
+  if (request.composition_profile_id == "COMP-3-LINEAR-V1" ||
+      request.composition_profile_id == "COMP-3-LATERAL-V1" ||
+      request.composition_profile_id == "COMP-3-SHORT-CIRCUIT-V1") {
+    expected_edges = {{0, 1}, {1, 2}};
+  } else if (request.composition_profile_id == "COMP-3-FANIN-V1" ||
+             request.composition_profile_id ==
+                 "COMP-3-FAILURE-CLEANUP-V1") {
+    expected_edges = {{0, 2}, {1, 2}};
+  } else if (request.composition_profile_id == "COMP-4-MIXED-V1") {
+    expected_edges = {{0, 1}, {1, 2}, {0, 3}};
+  } else if (request.composition_profile_id == "COMP-3-SHARED-LEG-V1") {
+    expected_edges = {{0, 1}, {0, 2}};
+  } else if (request.composition_profile_id ==
+             "COMP-9-FULL-UNIVERSE-V1") {
+    for (std::uint16_t ordinal = 0; ordinal < 8; ++ordinal) {
+      expected_edges.emplace_back(ordinal, ordinal + 1);
+    }
+  }
+
+  const auto require_exact_family_order = [&](const auto& expected) {
+    if (request.legs.size() != expected.size()) return false;
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+      if (request.legs[index].family_id != expected[index]) return false;
+    }
+    return true;
+  };
+  if (request.composition_profile_id == "COMP-4-MIXED-V1" &&
+      !require_exact_family_order(std::array<std::string_view, 4>{
+          "relational", "document", "graph", "vector"})) {
+    return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                  "COMP-4-MIXED dependency family order drifted");
+  }
+  if (request.composition_profile_id == "COMP-3-LATERAL-V1" &&
+      request.legs.front().family_id != "relational") {
+    return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                  "COMP-3-LATERAL dependency outer leg is not relational");
+  }
+  if (request.composition_profile_id == "COMP-9-FULL-UNIVERSE-V1" &&
+      !require_exact_family_order(std::array<std::string_view, 9>{
+          "relational", "document", "graph", "key_value", "time_series",
+          "vector", "search", "spatial", "columnar"})) {
+    return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                  "COMP-9-FULL-UNIVERSE dependency family order drifted");
+  }
+
+  std::set<std::string> node_uuids;
+  std::set<std::uint64_t> root_node_ids;
+  std::set<std::uint32_t> result_descriptor_ids;
+  const auto& statement_context = request.legs.front().mga_statement_context;
+  for (std::size_t index = 0; index < request.legs.size(); ++index) {
+    const auto& leg = request.legs[index];
+    if (leg.abi_version != 1 || leg.lexical_source_ordinal != index ||
+        !family_ids.contains(leg.family_id) ||
+        !DependencyOperationValid(leg.family_id, leg.operation_ids,
+                                  leg.operation_id) ||
+        !CanonicalUuid(leg.physical_node_uuid) ||
+        !node_uuids.insert(leg.physical_node_uuid).second ||
+        !CanonicalUuid(leg.selected_plan_uuid) ||
+        !CanonicalUuid(leg.selected_alternative_uuid) ||
+        !CanonicalUuid(leg.provider_uuid) ||
+        !CanonicalUuid(leg.capability_uuid) ||
+        !CanonicalUuid(leg.delivered_property_uuid) ||
+        !CanonicalUuid(leg.bound_object_uuid) ||
+        !CanonicalUuid(leg.catalog_snapshot_uuid) ||
+        !CanonicalUuid(leg.descriptor_snapshot_uuid) ||
+        !CanonicalUuid(leg.security_context_uuid) ||
+        !CanonicalUuid(leg.policy_snapshot_uuid) ||
+        !CanonicalUuid(leg.resource_contract_uuid) ||
+        !CanonicalUuid(leg.family_local_cost.cost_vector_uuid) ||
+        !CanonicalUuid(leg.family_local_cost.provenance_uuid) ||
+        leg.family_local_cost.provenance_generation == 0 ||
+        leg.family_local_cost.confidence_basis_points == 0 ||
+        leg.family_local_cost.confidence_basis_points > 10'000 ||
+        leg.root_physical_node_id == 0 ||
+        !root_node_ids.insert(leg.root_physical_node_id).second ||
+        leg.output_descriptor_ids.empty() || !leg.selected ||
+        leg.parser_planning_authority_claimed ||
+        leg.transaction_finality_authority_claimed) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "a dependency leg lacks exact bound UUID, descriptor, or selected-plan identity");
+    }
+    for (const auto descriptor_id : leg.output_descriptor_ids) {
+      if (descriptor_id == 0 ||
+          !result_descriptor_ids.insert(descriptor_id).second) {
+        return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "dependency output descriptors are absent or aliased across legs");
+      }
+    }
+    if (leg.catalog_generation == 0 ||
+        leg.catalog_generation != leg.current_catalog_generation ||
+        leg.descriptor_generation == 0 ||
+        leg.descriptor_generation != leg.current_descriptor_generation) {
+      return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                    "a dependency leg catalog or descriptor generation is stale");
+    }
+    if (leg.security_generation == 0 ||
+        leg.security_generation != leg.current_security_generation ||
+        leg.policy_generation == 0 ||
+        leg.policy_generation != leg.current_policy_generation) {
+      return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                    "a dependency leg security or policy generation is stale");
+    }
+    if (!scratchbird::engine::executor::PhysicalMgaStatementContextValid(
+            leg.mga_statement_context) ||
+        !scratchbird::engine::executor::PhysicalMgaStatementContextEqual(
+            statement_context, leg.mga_statement_context)) {
+      return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
+                    "dependency legs do not retain one immutable engine statement context");
+    }
+    if (!leg.capability_admitted || !leg.cancellation_supported ||
+        !leg.cleanup_supported || leg.provider_generation == 0 ||
+        leg.provider_generation != leg.current_provider_generation) {
+      return refuse("SB_MODEL_CAPABILITY_UNAVAILABLE_V1",
+                    "a dependency leg capability, generation, cancellation, or cleanup contract is unavailable");
+    }
+    if (!leg.exact ||
+        (leg.exact_fallback_selected && !leg.exact_fallback_available)) {
+      return refuse("SB_MODEL_CANDIDATE_SEMANTICS_MISSING_V1",
+                    "a dependency leg has no selected exact family-local alternative");
+    }
+    if (!leg.exact_recheck_required ||
+        !leg.base_row_mga_recheck_required ||
+        !leg.security_recheck_required) {
+      return refuse("SB_MODEL_PROPERTY_UNSATISFIED_V1",
+                    "a dependency leg omits exact, MGA, or security recheck properties");
+    }
+    if (leg.resource_generation == 0 ||
+        leg.resource_generation != leg.current_resource_generation ||
+        leg.memory_grant_bytes == 0 || leg.exchange_buffer_bytes == 0) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "a dependency leg lacks a current bounded memory or exchange grant");
+    }
+    if (leg.maximum_rows == 0 || leg.maximum_columns == 0 ||
+        leg.maximum_cells == 0 ||
+        leg.output_descriptor_ids.size() > leg.maximum_columns) {
+      return refuse("SB_MODEL_RESOURCE_ROW_LIMIT_V1",
+                    "a dependency leg lacks nonzero row, column, or cell bounds");
+    }
+    if (leg.cluster_scope_required && !request.cluster_capability_available) {
+      return refuse("SB_MODEL_CLUSTER_CAPABILITY_UNAVAILABLE_V1",
+                    "a selected dependency leg requires unavailable cluster scope");
+    }
+    if (!leg.local_scope && !leg.cluster_scope_required) {
+      return refuse("SB_MODEL_CLUSTER_CAPABILITY_UNAVAILABLE_V1",
+                    "a non-local dependency leg has no explicit admitted cluster scope");
+    }
+  }
+
+  const std::size_t expected_consumer_count =
+      request.composition_profile_id == "COMP-3-SHARED-LEG-V1"
+          ? request.legs.size()
+          : request.legs.size() - 1;
+  if (request.relational_consumers.size() != expected_consumer_count) {
+    return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                  "typed relational consumer cardinality differs from the signed composition profile");
+  }
+  std::map<std::string, std::vector<std::uint32_t>> node_descriptors;
+  std::map<std::string, std::uint64_t> node_parent_counts;
+  for (const auto& leg : request.legs) {
+    node_descriptors.emplace(leg.physical_node_uuid,
+                             leg.output_descriptor_ids);
+    node_parent_counts.emplace(leg.physical_node_uuid, 0);
+  }
+  const std::set<std::string> join_forms = {
+      "INNER", "LEFT", "RIGHT", "FULL", "SEMI", "ANTI", "CROSS",
+      "LATERAL_INNER", "LATERAL_LEFT", "ASOF"};
+  std::size_t canonical_root_count = 0;
+  for (const auto& consumer : request.relational_consumers) {
+    if (consumer.abi_version != 1 ||
+        !CanonicalUuid(consumer.physical_node_uuid) ||
+        !node_uuids.insert(consumer.physical_node_uuid).second ||
+        consumer.physical_node_id == 0 ||
+        consumer.causal_counter_id == 0 ||
+        !root_node_ids.insert(consumer.physical_node_id).second ||
+        !CanonicalUuid(consumer.selected_implementation_uuid) ||
+        !CanonicalUuid(consumer.expected_security_receipt_uuid) ||
+        !join_forms.contains(consumer.join_form_id) ||
+        consumer.input_physical_node_uuids.size() != 2 ||
+        consumer.input_physical_node_uuids[0] ==
+            consumer.input_physical_node_uuids[1] ||
+        consumer.input_descriptor_ids.empty() ||
+        consumer.output_descriptor_ids.empty() ||
+        consumer.maximum_rows == 0 || consumer.maximum_columns == 0 ||
+        consumer.maximum_cells == 0 || consumer.memory_grant_bytes == 0 ||
+        consumer.output_descriptor_ids.size() > consumer.maximum_columns ||
+        !consumer.exact || !consumer.cleanup_supported ||
+        !consumer.cancellation_supported ||
+        consumer.parser_execution_authority_claimed ||
+        consumer.transaction_finality_authority_claimed ||
+        !scratchbird::engine::executor::PhysicalMgaStatementContextValid(
+            consumer.mga_statement_context) ||
+        !scratchbird::engine::executor::PhysicalMgaStatementContextEqual(
+            statement_context, consumer.mga_statement_context)) {
+      return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                    "a typed relational consumer is incomplete or authority-overclaiming");
+    }
+    node_parent_counts.emplace(consumer.physical_node_uuid, 0);
+    canonical_root_count += consumer.canonical_root ? 1 : 0;
+    if (consumer.canonical_root &&
+        (consumer.physical_node_uuid !=
+             request.canonical_root_physical_node_uuid ||
+         consumer.physical_node_id !=
+             request.canonical_root_physical_node_id)) {
+      return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                    "typed relational root identity differs from the selected canonical root");
+    }
+  }
+  if (canonical_root_count != 1) {
+    return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                  "typed relational DAG does not have exactly one canonical root");
+  }
+  std::vector<bool> consumer_scheduled(request.relational_consumers.size(),
+                                       false);
+  for (std::size_t completed = 0;
+       completed < request.relational_consumers.size();) {
+    std::vector<std::size_t> ready_consumers;
+    for (std::size_t index = 0;
+         index < request.relational_consumers.size(); ++index) {
+      if (consumer_scheduled[index]) continue;
+      const auto& consumer = request.relational_consumers[index];
+      if (node_descriptors.contains(consumer.input_physical_node_uuids[0]) &&
+          node_descriptors.contains(consumer.input_physical_node_uuids[1])) {
+        ready_consumers.push_back(index);
+      }
+    }
+    if (ready_consumers.empty()) {
+      return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                    "typed relational consumer graph is cyclic or has an unresolved input");
+    }
+    std::sort(ready_consumers.begin(), ready_consumers.end(),
+              [&](const auto left, const auto right) {
+                return request.relational_consumers[left].physical_node_uuid <
+                       request.relational_consumers[right].physical_node_uuid;
+              });
+    for (const auto index : ready_consumers) {
+      const auto& consumer = request.relational_consumers[index];
+      std::vector<std::uint32_t> expected_input_descriptors;
+      for (const auto& input_uuid : consumer.input_physical_node_uuids) {
+        const auto& descriptors = node_descriptors.at(input_uuid);
+        expected_input_descriptors.insert(expected_input_descriptors.end(),
+                                          descriptors.begin(),
+                                          descriptors.end());
+        ++node_parent_counts[input_uuid];
+      }
+      auto expected_output_descriptors = expected_input_descriptors;
+      if (request.composition_profile_id == "COMP-3-SHARED-LEG-V1" &&
+          consumer.canonical_root) {
+        std::set<std::uint32_t> seen;
+        std::erase_if(expected_output_descriptors,
+                      [&](const auto descriptor_id) {
+                        return !seen.insert(descriptor_id).second;
+                      });
+      }
+      if (consumer.input_descriptor_ids != expected_input_descriptors ||
+          consumer.output_descriptor_ids != expected_output_descriptors) {
+        return refuse("SB_MODEL_PROPERTY_UNSATISFIED_V1",
+                      "typed relational consumer descriptor lineage was substituted");
+      }
+      node_descriptors.emplace(consumer.physical_node_uuid,
+                               consumer.output_descriptor_ids);
+      result.relational_consumers.push_back(consumer);
+      consumer_scheduled[index] = true;
+      ++completed;
+    }
+  }
+  for (const auto& [node_uuid, parent_count] : node_parent_counts) {
+    const bool canonical_root =
+        node_uuid == request.canonical_root_physical_node_uuid;
+    if ((canonical_root && parent_count != 0) ||
+        (!canonical_root && parent_count == 0)) {
+      return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                    "typed relational DAG has an orphan or more than one physical root");
+    }
+  }
+
+  if (request.statement_memory_budget_bytes == 0) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "statement memory bound is invalid");
+  }
+  if (request.backpressure_low_watermark_rows == 0 ||
+      request.backpressure_high_watermark_rows <=
+          request.backpressure_low_watermark_rows) {
+    return refuse("SB_MODEL_BACKPRESSURE_PROTOCOL_FAILED_V1",
+                  "high/low backpressure bounds are invalid");
+  }
+  if (!request.signed_short_circuit_enabled) {
+    return refuse("SB_MODEL_SHORT_CIRCUIT_STATE_INVALID_V1",
+                  "the signed composition short-circuit rule is unavailable");
+  }
+  if (request.spill_required &&
+      (request.maximum_spill_bytes == 0 ||
+       !request.engine_temporary_storage_available ||
+       !request.spill_cleanup_path_available ||
+       std::ranges::none_of(request.legs,
+                            [](const auto& leg) { return leg.spill_eligible; }))) {
+    return refuse("SB_MODEL_RESOURCE_SPILL_REFUSED_V1",
+                  "bounded engine temporary storage or its cleanup path is unavailable");
+  }
+  if (!request.spill_required && request.maximum_spill_bytes != 0) {
+    return refuse("SB_MODEL_RESOURCE_SPILL_REFUSED_V1",
+                  "a spill byte grant exists without a selected spill route");
+  }
+  const bool feedback_absent =
+      !request.feedback_observation_frozen &&
+      !request.feedback_target_is_later_plan &&
+      request.feedback_observation_generation == 0 &&
+      request.feedback_target_plan_generation == 0;
+  const bool feedback_later =
+      request.feedback_observation_frozen &&
+      request.feedback_target_is_later_plan &&
+      request.feedback_observation_generation ==
+          request.selected_plan_generation &&
+      request.feedback_target_plan_generation >
+          request.feedback_observation_generation;
+  if (request.current_plan_mutation_requested ||
+      (!feedback_absent && !feedback_later)) {
+    return refuse("SB_MODEL_FEEDBACK_CURRENT_PLAN_MUTATION_REFUSED_V1",
+                  "runtime feedback attempted to mutate the current plan or cross a generation boundary");
+  }
+
+  std::set<std::string> edge_uuids;
+  std::set<EdgePair> actual_edge_pairs;
+  std::vector<std::vector<std::uint16_t>> outgoing(request.legs.size());
+  std::vector<std::vector<std::uint16_t>> incoming(request.legs.size());
+  std::vector<std::uint16_t> indegree(request.legs.size(), 0);
+  if (request.edges.size() != expected_edges.size()) {
+    return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                  "dependency edge cardinality differs from the signed composition profile");
+  }
+  for (const auto& edge : request.edges) {
+    const EdgePair endpoints = {edge.producer_lexical_source_ordinal,
+                                edge.consumer_lexical_source_ordinal};
+    const bool lateral_correlation =
+        request.composition_profile_id == "COMP-3-LATERAL-V1" &&
+        endpoints == EdgePair{0, 1};
+    if (edge.abi_version != 1 || !CanonicalUuid(edge.edge_uuid) ||
+        !edge_uuids.insert(edge.edge_uuid).second ||
+        endpoints.first >= request.legs.size() ||
+        endpoints.second >= request.legs.size() ||
+        endpoints.first == endpoints.second ||
+        !actual_edge_pairs.insert(endpoints).second ||
+        (edge.edge_kind != "data_binding" &&
+         edge.edge_kind != "ordering" && edge.edge_kind != "correlation") ||
+        (lateral_correlation ? edge.edge_kind != "correlation"
+                             : edge.edge_kind == "correlation") ||
+        !CanonicalUuid(edge.required_property_uuid) ||
+        !CanonicalUuid(edge.delivered_property_uuid) ||
+        !CanonicalUuid(edge.descriptor_lineage_uuid) ||
+        edge.required_property_uuid != edge.delivered_property_uuid ||
+        edge.delivered_property_uuid !=
+            request.legs[endpoints.first].delivered_property_uuid ||
+        edge.producer_output_descriptor_ids !=
+            request.legs[endpoints.first].output_descriptor_ids ||
+        edge.consumer_input_descriptor_ids !=
+            edge.producer_output_descriptor_ids ||
+        !edge.descriptor_compatible || !edge.semantics_authorized ||
+        edge.parser_execution_authority_claimed ||
+        edge.transaction_finality_authority_claimed) {
+      return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                    "a dependency edge is missing, duplicated, incompatible, or authority-overclaiming");
+    }
+    outgoing[endpoints.first].push_back(endpoints.second);
+    incoming[endpoints.second].push_back(endpoints.first);
+    ++indegree[endpoints.second];
+  }
+  if (actual_edge_pairs !=
+      std::set<EdgePair>(expected_edges.begin(), expected_edges.end())) {
+    return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                  "dependency endpoints differ from the signed composition profile");
+  }
+
+  std::vector<bool> scheduled(request.legs.size(), false);
+  std::uint32_t stable_start_ordinal = 0;
+  std::uint64_t causal_counter = 0;
+  std::uint64_t peak_memory = 0;
+  std::string dag_seed = request.composition_profile_id + "|" +
+                         request.bound_sblr_tree_uuid + "|" +
+                         std::to_string(request.selected_plan_generation);
+  const auto composition_admission_receipt_uuid = DerivedUuid(
+      dag_seed + "|composition-admission.v1");
+  while (result.stable_schedule.size() < request.legs.size()) {
+    std::vector<std::uint16_t> ready;
+    for (std::uint16_t ordinal = 0; ordinal < request.legs.size(); ++ordinal) {
+      if (!scheduled[ordinal] && indegree[ordinal] == 0) ready.push_back(ordinal);
+    }
+    if (ready.empty()) {
+      return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                    "dependency graph is cyclic");
+    }
+    std::sort(ready.begin(), ready.end(), [&](const auto left,
+                                               const auto right) {
+      return request.legs[left].physical_node_uuid <
+             request.legs[right].physical_node_uuid;
+    });
+    if (ready.size() > 1 &&
+        std::ranges::any_of(ready, [&](const auto ordinal) {
+          return !request.legs[ordinal].parallel_eligible;
+        })) {
+      return refuse("SB_MODEL_PARALLEL_ADMISSION_REFUSED_V1",
+                    "an independent schedule wave lacks explicit parallel eligibility");
+    }
+    std::uint64_t wave_memory = 0;
+    for (const auto ordinal : ready) {
+      const auto& leg = request.legs[ordinal];
+      if (!Add(leg.memory_grant_bytes, &wave_memory) ||
+          !Add(leg.exchange_buffer_bytes, &wave_memory)) {
+        return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "parallel wave memory accounting overflowed");
+      }
+    }
+    peak_memory = std::max(peak_memory, wave_memory);
+    if (peak_memory > request.statement_memory_budget_bytes) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "aggregate admitted wave peak exceeds the statement memory budget");
+    }
+    result.parallel_waves.push_back(ready);
+    const auto wave = static_cast<std::uint32_t>(
+        result.parallel_waves.size() - 1);
+    for (const auto ordinal : ready) {
+      scheduled[ordinal] = true;
+      ModelFamilyScheduledLegV1 scheduled_leg;
+      scheduled_leg.leg = request.legs[ordinal];
+      scheduled_leg.composition_admission_receipt_uuid =
+          composition_admission_receipt_uuid;
+      scheduled_leg.composition_arity = request.legs.size();
+      scheduled_leg.dependency_ordinals = incoming[ordinal];
+      std::sort(scheduled_leg.dependency_ordinals.begin(),
+                scheduled_leg.dependency_ordinals.end());
+      scheduled_leg.schedule_wave = wave;
+      scheduled_leg.stable_start_ordinal = stable_start_ordinal++;
+      scheduled_leg.causal_counter_id = ++causal_counter;
+      dag_seed += "|" + scheduled_leg.leg.physical_node_uuid + ":" +
+                  std::to_string(scheduled_leg.causal_counter_id);
+      result.stable_schedule.push_back(std::move(scheduled_leg));
+    }
+    for (const auto ordinal : ready) {
+      for (const auto consumer : outgoing[ordinal]) --indegree[consumer];
+    }
+  }
+  for (const auto& consumer : result.relational_consumers) {
+    peak_memory = std::max(peak_memory, consumer.memory_grant_bytes);
+    if (peak_memory > request.statement_memory_budget_bytes) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "typed relational consumer exceeds the statement memory budget");
+    }
+  }
+  std::uint64_t retained_peak_memory = 0;
+  for (const auto& leg : request.legs) {
+    if (!Add(leg.memory_grant_bytes, &retained_peak_memory) ||
+        !Add(leg.exchange_buffer_bytes, &retained_peak_memory)) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "retained leg and exchange memory accounting overflowed");
+    }
+  }
+  for (const auto& consumer : result.relational_consumers) {
+    if (!Add(consumer.memory_grant_bytes, &retained_peak_memory)) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "retained relational consumer memory accounting overflowed");
+    }
+  }
+  if (retained_peak_memory > request.statement_memory_budget_bytes) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "retained dependency DAG peak exceeds the statement memory budget");
+  }
+  peak_memory = retained_peak_memory;
+
+  const auto add_receipt = [&](const std::string_view rule_id,
+                               const std::string_view evidence_id,
+                               const bool complete) {
+    ModelFamilyCoordinatorRuleReceiptV1 receipt;
+    receipt.rule_id = rule_id;
+    receipt.evidence_id = evidence_id;
+    receipt.causal_counter_id = ++causal_counter;
+    receipt.complete = complete;
+    receipt.receipt_uuid = DerivedUuid(
+        dag_seed + "|" + receipt.rule_id + "|" + receipt.evidence_id + "|" +
+        std::to_string(receipt.causal_counter_id));
+    result.rule_receipts.push_back(std::move(receipt));
+  };
+  static constexpr std::array<std::string_view, 24> kEvidence = {
+      "bound_object_uuid_receipt",
+      "catalog_generation_receipts",
+      "security_admission_receipts",
+      "mga_context_identity_receipt",
+      "capability_receipts",
+      "candidate_inventory_receipt",
+      "family_cost_vector_receipt",
+      "dependency_dag_receipt",
+      "property_receipts",
+      "selected_alternative_receipt",
+      "resource_admission_receipt",
+      "spill_reservation_receipt",
+      "row_cell_counter_receipt",
+      "parallel_admission_receipt",
+      "backpressure_transition_receipt",
+      "typed_exchange_receipt",
+      "recheck_counter_receipt",
+      "short_circuit_receipt",
+      "cancellation_fanout_receipt",
+      "failure_propagation_receipt",
+      "cleanup_cardinality_receipt",
+      "root_publication_receipt",
+      "scope_refusal_receipt",
+      "later_feedback_consumption_receipt",
+  };
+  for (std::size_t index = 0; index < kEvidence.size(); ++index) {
+    const auto rule = "COORD-" +
+                      (index + 1 < 10 ? std::string("00")
+                                      : std::string("0")) +
+                      std::to_string(index + 1) + "-V1";
+    const bool admission_complete =
+        index <= 10 || index == 13 || index == 22 ||
+        (index == 23 && feedback_later);
+    add_receipt(rule, kEvidence[index], admission_complete);
+  }
+
+  result.accepted = true;
+  result.deterministic = true;
+  result.data_access_allowed = true;
+  result.root_publication_candidate = true;
+  result.no_partial_root = true;
+  result.spill_reservation_required = request.spill_required;
+  result.admitted_peak_memory_bytes = peak_memory;
+  result.admitted_spill_bytes = request.maximum_spill_bytes;
+  result.selected_plan_generation = request.selected_plan_generation;
+  result.expected_cleanup_component_count =
+      static_cast<std::uint64_t>(request.legs.size()) * 2 +
+      static_cast<std::uint64_t>(request.relational_consumers.size()) +
+      (request.spill_required ? 2 : 0);
+  result.dependency_edges = request.edges;
+  result.dependency_dag_receipt_uuid = DerivedUuid(dag_seed);
+  result.composition_admission_receipt_uuid =
+      composition_admission_receipt_uuid;
+  result.diagnostic_id = "SB_EXECUTOR_OK";
+  return result;
+}
+
+ModelFamilyDependencyCoordinatorResultV1
+CoordinateModelFamilyDependencyDagV1(
+    const ModelFamilyDependencyCoordinatorRequestV1& request) {
+  const auto refuse = [](std::string diagnostic, std::string detail) {
+    ModelFamilyDependencyCoordinatorResultV1 result;
+    result.deterministic = true;
+    result.no_partial_root = true;
+    result.diagnostic_id = std::move(diagnostic);
+    result.detail = std::move(detail);
+    return result;
+  };
+  const std::map<std::string, std::size_t> profile_arities = {
+      {"COMP-3-LINEAR-V1", 3},
+      {"COMP-3-FANIN-V1", 3},
+      {"COMP-3-INDEPENDENT-V1", 3},
+      {"COMP-4-MIXED-V1", 4},
+      {"COMP-3-LATERAL-V1", 3},
+      {"COMP-3-SHARED-LEG-V1", 3},
+      {"COMP-3-SHORT-CIRCUIT-V1", 3},
+      {"COMP-3-CANCEL-FANOUT-V1", 3},
+      {"COMP-3-FAILURE-CLEANUP-V1", 3},
+      {"COMP-9-FULL-UNIVERSE-V1", 9},
+  };
+  const std::set<std::string> family_ids = {
+      "relational", "document", "graph", "key_value", "time_series",
+      "vector", "search", "spatial", "columnar"};
+  const auto profile = profile_arities.find(request.composition_profile_id);
+  if (request.abi_version != 1 || profile == profile_arities.end() ||
+      request.legs.size() != profile->second ||
+      !CanonicalUuid(request.bound_sblr_tree_uuid) ||
+      !CanonicalUuid(request.canonical_root_physical_node_uuid) ||
+      request.canonical_root_physical_node_id == 0) {
+    return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                  "dependency coordinator request is structurally invalid");
+  }
+
+  std::set<std::string> bound_node_uuids;
+  std::set<std::uint64_t> bound_node_ids;
+  std::set<std::string> bound_descriptor_uuids;
+  std::set<std::uint32_t> bound_descriptor_ids;
+  for (std::size_t index = 0; index < request.legs.size(); ++index) {
+    const auto& leg = request.legs[index];
+    if (leg.abi_version != 1 || leg.lexical_source_ordinal != index ||
+        !family_ids.contains(leg.family_id) ||
+        !CanonicalUuid(leg.physical_node_uuid) ||
+        !bound_node_uuids.insert(leg.physical_node_uuid).second ||
+        leg.root_physical_node_id == 0 ||
+        !bound_node_ids.insert(leg.root_physical_node_id).second ||
+        !CanonicalUuid(leg.selected_plan_uuid) ||
+        !CanonicalUuid(leg.bound_object_uuid) ||
+        !CanonicalDescriptorLineage(leg.output_descriptor_ids,
+                                    leg.output_descriptor_uuids) ||
+        leg.parser_planning_authority_claimed ||
+        leg.transaction_finality_authority_claimed) {
+      return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                    "COORD-001 leg UUID or output descriptor binding is incomplete");
+    }
+    for (std::size_t ordinal = 0;
+         ordinal < leg.output_descriptor_ids.size(); ++ordinal) {
+      if (!bound_descriptor_ids.insert(leg.output_descriptor_ids[ordinal]).second ||
+          !bound_descriptor_uuids
+               .insert(leg.output_descriptor_uuids[ordinal])
+               .second) {
+        return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
+                      "COORD-001 output descriptor identity is aliased across legs");
+      }
+    }
+  }
+
+  if (request.selected_plan_generation == 0 ||
+      request.selected_plan_generation !=
+          request.current_selected_plan_generation) {
+    return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                  "COORD-002 selected plan generation is stale");
+  }
+  for (const auto& leg : request.legs) {
+    if (!CanonicalUuid(leg.catalog_snapshot_uuid) ||
+        leg.catalog_snapshot_uuid != leg.current_catalog_snapshot_uuid ||
+        !CanonicalUuid(leg.descriptor_snapshot_uuid) ||
+        leg.descriptor_snapshot_uuid !=
+            leg.current_descriptor_snapshot_uuid ||
+        leg.catalog_generation == 0 ||
+        leg.catalog_generation != leg.current_catalog_generation ||
+        leg.descriptor_generation == 0 ||
+        leg.descriptor_generation != leg.current_descriptor_generation) {
+      return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                    "COORD-002 catalog or descriptor snapshot identity is stale");
+    }
+  }
+
+  for (const auto& leg : request.legs) {
+    if (!leg.security_admitted ||
+        !CanonicalUuid(leg.security_context_uuid) ||
+        leg.security_context_uuid != leg.current_security_context_uuid ||
+        !CanonicalUuid(leg.policy_snapshot_uuid) ||
+        leg.policy_snapshot_uuid != leg.current_policy_snapshot_uuid ||
+        leg.security_generation == 0 ||
+        leg.security_generation != leg.current_security_generation ||
+        leg.policy_generation == 0 ||
+        leg.policy_generation != leg.current_policy_generation) {
+      return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                    "COORD-003 security or policy admission identity is stale");
+    }
+  }
+
+  const auto& statement_context = request.legs.front().mga_statement_context;
+  for (const auto& leg : request.legs) {
+    if (!scratchbird::engine::executor::PhysicalMgaStatementContextValid(
+            leg.mga_statement_context) ||
+        !scratchbird::engine::executor::PhysicalMgaStatementContextEqual(
+            statement_context, leg.mga_statement_context)) {
+      return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
+                    "COORD-004 legs do not share one immutable MGA statement context");
+    }
+  }
+
+  for (const auto& leg : request.legs) {
+    if (!CanonicalUuid(leg.capability_uuid) ||
+        !CanonicalUuid(leg.provider_uuid) ||
+        !CanonicalUuid(leg.operation_scope_receipt_uuid) ||
+        leg.capability_abi_version != 1 ||
+        leg.capability_generation == 0 ||
+        leg.capability_generation != leg.current_capability_generation ||
+        leg.provider_generation == 0 ||
+        leg.provider_generation != leg.current_provider_generation ||
+        !leg.capability_admitted || !leg.cancellation_supported ||
+        !leg.cleanup_supported) {
+      return refuse("SB_MODEL_CAPABILITY_UNAVAILABLE_V1",
+                    "COORD-005 provider capability, operation scope, or generation is unavailable");
+    }
+  }
+
+  for (const auto& leg : request.legs) {
+    if (leg.candidate_alternatives.empty()) {
+      return refuse("SB_MODEL_CANDIDATE_SEMANTICS_MISSING_V1",
+                    "COORD-006 family-local candidate inventory is absent");
+    }
+    std::set<std::string> alternatives;
+    for (const auto& candidate : leg.candidate_alternatives) {
+      if (!CanonicalUuid(candidate.alternative_uuid) ||
+          !alternatives.insert(candidate.alternative_uuid).second ||
+          !CanonicalUuid(candidate.candidate_inventory_receipt_uuid) ||
+          candidate.implementation_id.empty() ||
+          !DependencyOperationValid(leg.family_id, candidate.operation_ids,
+                                    candidate.operation_id) ||
+          !CanonicalUuid(candidate.operation_scope_receipt_uuid) ||
+          !CanonicalUuid(candidate.selection_policy_receipt_uuid) ||
+          candidate.authority_approved_comparison_rank == 0 ||
+          (!candidate.exact && candidate.admitted) ||
+          (candidate.exact_fallback && !candidate.exact)) {
+        return refuse("SB_MODEL_CANDIDATE_SEMANTICS_MISSING_V1",
+                      "COORD-006 family-local candidate semantics are missing or duplicated");
+      }
+    }
+  }
+
+  for (const auto& leg : request.legs) {
+    if (!DependencyCostValid(leg.family_local_cost)) {
+      return refuse("SB_MODEL_COST_VECTOR_INVALID_V1",
+                    "COORD-007 selected family cost confidence or provenance is invalid");
+    }
+    for (const auto& candidate : leg.candidate_alternatives) {
+      if (!DependencyCostValid(candidate.family_local_cost)) {
+        return refuse("SB_MODEL_COST_VECTOR_INVALID_V1",
+                      "COORD-007 candidate cost confidence or provenance is invalid");
+      }
+    }
+  }
+
+  for (const auto& leg : request.legs) {
+    if (!CanonicalUuid(leg.delivered_property_uuid) ||
+        !leg.exact_recheck_required ||
+        !leg.base_row_mga_recheck_required ||
+        !leg.security_recheck_required) {
+      return refuse("SB_MODEL_PROPERTY_UNSATISFIED_V1",
+                    "COORD-009 selected leg properties or rechecks are incomplete");
+    }
+  }
+
+  for (const auto& leg : request.legs) {
+    const ModelFamilyDependencyAlternativeV1* best = nullptr;
+    for (const auto& candidate : leg.candidate_alternatives) {
+      if (!candidate.available || !candidate.exact || !candidate.admitted) {
+        continue;
+      }
+      if (best == nullptr || DependencyAlternativeLess(candidate, *best)) {
+        best = &candidate;
+      }
+    }
+    if (!leg.selected || !CanonicalUuid(leg.selected_alternative_uuid) ||
+        !CanonicalUuid(leg.selected_alternative_receipt_uuid) ||
+        best == nullptr || best->alternative_uuid != leg.selected_alternative_uuid ||
+        best->operation_ids != leg.operation_ids ||
+        best->operation_id != leg.operation_id ||
+        best->operation_scope_receipt_uuid !=
+            leg.operation_scope_receipt_uuid ||
+        best->selection_policy_receipt_uuid !=
+            leg.selected_alternative_receipt_uuid ||
+        !DependencyCostEqual(best->family_local_cost,
+                             leg.family_local_cost) ||
+        !leg.exact ||
+        (leg.exact_fallback_selected &&
+         (!leg.exact_fallback_available || !best->exact_fallback))) {
+      return refuse("SB_MODEL_NO_ADMITTED_ALTERNATIVE_V1",
+                    "COORD-010 family-local deterministic selection or tie-break receipt is invalid");
+    }
+  }
+
+  std::uint64_t retained_peak_memory = 0;
+  for (const auto& leg : request.legs) {
+    if (!CanonicalUuid(leg.resource_contract_uuid) ||
+        leg.resource_contract_uuid != leg.current_resource_contract_uuid ||
+        leg.resource_generation == 0 ||
+        leg.resource_generation != leg.current_resource_generation ||
+        leg.memory_grant_bytes == 0 || leg.exchange_buffer_bytes == 0 ||
+        !Add(leg.memory_grant_bytes, &retained_peak_memory) ||
+        !Add(leg.exchange_buffer_bytes, &retained_peak_memory)) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "COORD-011 resource contract or retained memory accounting is invalid");
+    }
+  }
+  for (const auto& consumer : request.relational_consumers) {
+    if (consumer.memory_grant_bytes == 0 ||
+        !Add(consumer.memory_grant_bytes, &retained_peak_memory)) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "COORD-011 relational consumer memory accounting is invalid");
+    }
+  }
+  if (request.statement_memory_budget_bytes == 0 ||
+      retained_peak_memory > request.statement_memory_budget_bytes) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "COORD-011 retained DAG peak exceeds its statement budget");
+  }
+
+  for (const auto& leg : request.legs) {
+    std::uint64_t maximum_cells = 0;
+    if (leg.maximum_rows == 0 || leg.maximum_columns == 0 ||
+        !CheckedMultiply(leg.maximum_rows, leg.maximum_columns,
+                         &maximum_cells) ||
+        maximum_cells != leg.maximum_cells ||
+        leg.output_descriptor_ids.size() > leg.maximum_columns) {
+      return refuse("SB_MODEL_RESOURCE_ROW_LIMIT_V1",
+                    "COORD-013 leg row-column-cell bound is incoherent");
+    }
+  }
+  for (const auto& consumer : request.relational_consumers) {
+    std::uint64_t maximum_cells = 0;
+    if (consumer.maximum_rows == 0 || consumer.maximum_columns == 0 ||
+        !CheckedMultiply(consumer.maximum_rows, consumer.maximum_columns,
+                         &maximum_cells) ||
+        maximum_cells != consumer.maximum_cells ||
+        consumer.output_descriptor_ids.size() > consumer.maximum_columns) {
+      return refuse("SB_MODEL_RESOURCE_ROW_LIMIT_V1",
+                    "COORD-013 relational consumer row-column-cell bound is incoherent");
+    }
+  }
+
+  std::set<std::string> edge_uuids;
+  for (const auto& edge : request.edges) {
+    if (edge.abi_version != 1 || !CanonicalUuid(edge.edge_uuid) ||
+        !edge_uuids.insert(edge.edge_uuid).second ||
+        edge.producer_lexical_source_ordinal >= request.legs.size() ||
+        edge.consumer_lexical_source_ordinal >= request.legs.size() ||
+        edge.producer_lexical_source_ordinal ==
+            edge.consumer_lexical_source_ordinal ||
+        !CanonicalUuid(edge.descriptor_lineage_uuid) ||
+        !edge.semantics_authorized ||
+        edge.parser_execution_authority_claimed ||
+        edge.transaction_finality_authority_claimed) {
+      return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                    "COORD-008 dependency edge identity or endpoint is invalid");
+    }
+    const auto& producer =
+        request.legs[edge.producer_lexical_source_ordinal];
+    if (!CanonicalUuid(edge.required_property_uuid) ||
+        !CanonicalUuid(edge.delivered_property_uuid) ||
+        edge.required_property_uuid != edge.delivered_property_uuid ||
+        edge.delivered_property_uuid != producer.delivered_property_uuid ||
+        !edge.descriptor_compatible ||
+        edge.producer_output_descriptor_ids != producer.output_descriptor_ids ||
+        edge.consumer_input_descriptor_ids !=
+            edge.producer_output_descriptor_ids ||
+        edge.producer_output_descriptor_uuids !=
+            producer.output_descriptor_uuids ||
+        edge.consumer_input_descriptor_uuids !=
+            edge.producer_output_descriptor_uuids) {
+      return refuse("SB_MODEL_PROPERTY_UNSATISFIED_V1",
+                    "COORD-009 dependency property or descriptor UUID lineage was substituted");
+    }
+  }
+
+  std::set<std::string> consumer_uuids;
+  std::set<std::uint64_t> consumer_causal_counters;
+  std::map<std::string, std::uint64_t> consumer_causal_by_node;
+  std::size_t canonical_root_count = 0;
+  for (const auto& consumer : request.relational_consumers) {
+    const bool shared_root_projection =
+        request.composition_profile_id == "COMP-3-SHARED-LEG-V1" &&
+        consumer.canonical_root;
+    const auto canonical_shared_input = [&]() {
+      if (!shared_root_projection || consumer.input_descriptor_ids.empty() ||
+          consumer.input_descriptor_ids.size() !=
+              consumer.input_descriptor_uuids.size()) {
+        return false;
+      }
+      std::map<std::uint32_t, std::string> lineage;
+      for (std::size_t index = 0;
+           index < consumer.input_descriptor_ids.size(); ++index) {
+        if (consumer.input_descriptor_ids[index] == 0 ||
+            !CanonicalUuid(consumer.input_descriptor_uuids[index])) {
+          return false;
+        }
+        const auto [found, inserted] = lineage.emplace(
+            consumer.input_descriptor_ids[index],
+            consumer.input_descriptor_uuids[index]);
+        if (!inserted && found->second != consumer.input_descriptor_uuids[index])
+          return false;
+      }
+      return true;
+    }();
+    if (consumer.abi_version != 1 ||
+        !CanonicalUuid(consumer.physical_node_uuid) ||
+        !consumer_uuids.insert(consumer.physical_node_uuid).second ||
+        consumer.physical_node_id == 0 ||
+        consumer.causal_counter_id == 0 ||
+        !consumer_causal_counters.insert(consumer.causal_counter_id).second ||
+        !CanonicalUuid(consumer.selected_implementation_uuid) ||
+        !CanonicalUuid(consumer.expected_security_receipt_uuid) ||
+        consumer.input_physical_node_uuids.size() != 2 ||
+        (!CanonicalDescriptorLineage(consumer.input_descriptor_ids,
+                                     consumer.input_descriptor_uuids) &&
+         !canonical_shared_input) ||
+        !CanonicalDescriptorLineage(consumer.output_descriptor_ids,
+                                    consumer.output_descriptor_uuids) ||
+        consumer.parser_execution_authority_claimed ||
+        consumer.transaction_finality_authority_claimed) {
+      return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                    "COORD-008 typed relational consumer identity is invalid");
+    }
+    std::vector<std::uint32_t> projected_input_ids;
+    std::vector<std::string> projected_input_uuids;
+    if (shared_root_projection) {
+      std::set<std::uint32_t> seen;
+      for (std::size_t index = 0;
+           index < consumer.input_descriptor_ids.size(); ++index) {
+        if (seen.insert(consumer.input_descriptor_ids[index]).second) {
+          projected_input_ids.push_back(consumer.input_descriptor_ids[index]);
+          projected_input_uuids.push_back(
+              consumer.input_descriptor_uuids[index]);
+        }
+      }
+    }
+    if ((!shared_root_projection &&
+         (consumer.input_descriptor_ids != consumer.output_descriptor_ids ||
+          consumer.input_descriptor_uuids !=
+              consumer.output_descriptor_uuids)) ||
+        (shared_root_projection &&
+         (projected_input_ids != consumer.output_descriptor_ids ||
+          projected_input_uuids != consumer.output_descriptor_uuids))) {
+      return refuse("SB_MODEL_PROPERTY_UNSATISFIED_V1",
+                    "COORD-009 typed relational descriptor UUID lineage was substituted");
+    }
+    if (!scratchbird::engine::executor::PhysicalMgaStatementContextValid(
+            consumer.mga_statement_context) ||
+        !scratchbird::engine::executor::PhysicalMgaStatementContextEqual(
+            statement_context, consumer.mga_statement_context)) {
+      return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
+                    "COORD-004 typed relational consumer MGA context drifted");
+    }
+    if (!consumer.exact || !consumer.cleanup_supported ||
+        !consumer.cancellation_supported) {
+      return refuse("SB_MODEL_CAPABILITY_UNAVAILABLE_V1",
+                    "COORD-005 typed relational consumer capability is unavailable");
+    }
+    consumer_causal_by_node.emplace(consumer.physical_node_uuid,
+                                    consumer.causal_counter_id);
+    canonical_root_count += consumer.canonical_root ? 1 : 0;
+  }
+  if (canonical_root_count != 1) {
+    return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                  "COORD-008 typed relational DAG lacks one canonical root");
+  }
+  for (const auto& consumer : request.relational_consumers) {
+    for (const auto& input_uuid : consumer.input_physical_node_uuids) {
+      const auto producer = consumer_causal_by_node.find(input_uuid);
+      if (producer != consumer_causal_by_node.end() &&
+          producer->second >= consumer.causal_counter_id) {
+        return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                      "COORD-008 relational consumer causal counters are not topologically increasing");
+      }
+    }
+  }
+
+  return CoordinateModelFamilyDependencyDagValidatedV1(request);
 }
 
 ModelFamilyJoinAdmissionResultV1 CoordinateModelFamilyJoinAdmissionV1(

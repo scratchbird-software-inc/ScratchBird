@@ -446,6 +446,12 @@ ValidateCanonicalLogicalRelationalGraph(
     const bool graph_family =
         node.model_family_identity ==
         CanonicalLogicalModelFamilyIdentity::kGraph;
+    const bool document_family =
+        node.model_family_identity ==
+        CanonicalLogicalModelFamilyIdentity::kDocument;
+    const bool key_value_family =
+        node.model_family_identity ==
+        CanonicalLogicalModelFamilyIdentity::kKeyValue;
     const bool time_series_family =
         node.model_family_identity ==
         CanonicalLogicalModelFamilyIdentity::kTimeSeries;
@@ -466,7 +472,12 @@ ValidateCanonicalLogicalRelationalGraph(
           ((node.output_descriptor_ids.size() == 6 &&
             node.bound_expression_ids.size() == 7) ||
            (node.output_descriptor_ids.size() == 1 &&
-            node.bound_expression_ids.size() == 6))) ||
+            node.bound_expression_ids.size() == 6) ||
+           // RCP-080 bounded multileg range: the admitted bridge has proved
+           // the exact ordered output prefix plus TIME_RANGE, object alias,
+           // and the ordered non-null temporal start/end operands.
+           (node.bound_expression_ids.size() ==
+            node.output_descriptor_ids.size() + 4))) ||
            (model_aggregate && node.output_descriptor_ids.size() == 7 &&
           (node.bound_expression_ids.size() == 9 ||
            node.bound_expression_ids.size() == 10)));
@@ -481,7 +492,13 @@ ValidateCanonicalLogicalRelationalGraph(
         (node.bound_expression_ids.size() == 12 ||
          node.bound_expression_ids.size() == 13 ||
          node.bound_expression_ids.size() == 17 ||
-         node.bound_expression_ids.size() == 18);
+         node.bound_expression_ids.size() == 18 ||
+         // RCP-080 bounded multileg term search: the admitted typed-DAG
+         // bridge has proved the exact ordered five-output prefix plus the
+         // six-record SEARCH_MATCH-owned closure.  This is not a generic
+         // output-plus-six exception.
+         node.bound_expression_ids.size() ==
+             node.output_descriptor_ids.size() + 6);
     // RCP-079 spatial/columnar relations carry the public output
     // expressions first, followed by one to three functionless operation
     // roots and their exact typed operands.  The admitted typed-DAG bridge
@@ -493,6 +510,28 @@ ValidateCanonicalLogicalRelationalGraph(
         node.output_descriptor_ids.size() <= 256 &&
         node.bound_expression_ids.size() > node.output_descriptor_ids.size() &&
         node.bound_expression_ids.size() <= 1024;
+    // RCP-080 bounded multileg source nodes retain their complete admitted
+    // typed-operation closure after the public output expressions.  The
+    // earlier typed-DAG validator has already proved the exact ordered output
+    // prefix and owned suffix membership in addition to functionless roots,
+    // operands, identity, descriptors, reachability, and single-leg
+    // ownership.  Admit only the closed family-specific widths here; never
+    // narrow, strip, or replace that semantic closure.
+    const bool exact_document_graph_key_value_attachment_width =
+        model_source &&
+        node.bound_expression_ids.size() > node.output_descriptor_ids.size() &&
+        ((document_family &&
+          node.bound_expression_ids.size() -
+                  node.output_descriptor_ids.size() ==
+              2) ||
+         (graph_family &&
+          node.bound_expression_ids.size() -
+                  node.output_descriptor_ids.size() ==
+              3) ||
+         (key_value_family &&
+          node.bound_expression_ids.size() -
+                  node.output_descriptor_ids.size() ==
+              4));
     if (!known_model_family(node.model_family_identity) ||
         (!model_semantic &&
          node.model_family_identity !=
@@ -511,6 +550,7 @@ ValidateCanonicalLogicalRelationalGraph(
            !exact_vector_attachment_width &&
            !exact_search_attachment_width &&
            !exact_spatial_columnar_attachment_width &&
+           !exact_document_graph_key_value_attachment_width &&
            node.bound_expression_ids.size() !=
                node.output_descriptor_ids.size()) ||
           (model_source &&

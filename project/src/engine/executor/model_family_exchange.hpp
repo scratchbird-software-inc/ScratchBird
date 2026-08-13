@@ -102,6 +102,14 @@ struct ModelSourceInputDescriptorV1 {
   std::size_t maximum_rows{0};
   std::size_t maximum_cells{0};
   std::uint64_t maximum_memory_bytes{0};
+  // RCP-080 common-context authority. A non-timestamp family may retain the
+  // immutable timestamp required by a timestamp-carrying sibling only inside
+  // an admitted 3--9-leg composition. Single-family validation remains
+  // unchanged and cannot mint or remove the timestamp.
+  std::string multimodel_composition_receipt_uuid;
+  std::uint16_t multimodel_lexical_source_ordinal{0};
+  std::uint16_t multimodel_composition_arity{0};
+  bool multimodel_common_statement_context{false};
   bool parser_execution_authority_claimed{false};
   bool transaction_finality_authority_claimed{false};
   bool exact_fallback_selected{false};
@@ -122,6 +130,10 @@ struct ModelProviderBatchV1 {
   ModelPropertyDescriptorV1 properties;
   PhysicalMgaStatementContext mga_statement_context;
   std::string security_receipt_uuid;
+  std::string multimodel_composition_receipt_uuid;
+  std::uint16_t multimodel_lexical_source_ordinal{0};
+  std::uint16_t multimodel_composition_arity{0};
+  bool multimodel_common_statement_context{false};
   bool residual_recheck_complete{false};
   bool base_row_mga_recheck_complete{false};
   bool security_recheck_complete{false};
@@ -153,6 +165,10 @@ struct ModelSourceOutputDescriptorV1 {
   ModelPropertyDescriptorV1 properties;
   PhysicalMgaStatementContext mga_statement_context;
   std::string security_receipt_uuid;
+  std::string multimodel_composition_receipt_uuid;
+  std::uint16_t multimodel_lexical_source_ordinal{0};
+  std::uint16_t multimodel_composition_arity{0};
+  bool multimodel_common_statement_context{false};
   bool exact_exchange_validated{false};
   bool exact_fallback_selected{false};
 };

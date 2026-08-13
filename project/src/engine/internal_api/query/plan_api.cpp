@@ -43,6 +43,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <sstream>
 #include <string_view>
 #include <system_error>
@@ -52,6 +53,1112 @@
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
+
+// QOW-SOURCE-RCP080-EXACT-KEY-VALUE-OWNED-CLOSURE-V1
+// The key/value predicate is part of the model source's owned semantics, not
+// a disposable filter.  Prove the ordered public-output prefix and the exact
+// four-record owned closure before carrying key/value family identity into
+// the canonical logical graph.
+bool ExactKeyValueOwnedClosureV1(const TypedRelationalDag& dag,
+                                 const RelationalDagNode& node) {
+  if (node.node_kind != RelationalDagNodeKind::kScan ||
+      node.semantic_variant_id != "SBLR_MODEL_SOURCE_V1" ||
+      !node.input_node_ids.empty() ||
+      node.required_object_uuids.size() != 1 ||
+      node.output_descriptor_ids.empty() ||
+      node.bound_expression_ids.size() !=
+          node.output_descriptor_ids.size() + 4) {
+    return false;
+  }
+
+  std::unordered_map<std::uint32_t, const RelationalExpressionRecord*>
+      expressions_by_id;
+  expressions_by_id.reserve(dag.expressions.size());
+  for (const auto& expression : dag.expressions) {
+    if (expression.expression_id == 0 ||
+        !expressions_by_id.emplace(expression.expression_id, &expression)
+             .second) {
+      return false;
+    }
+  }
+
+  std::vector<const RelationalOutputRecord*> outputs;
+  for (const auto& output : dag.outputs) {
+    if (output.relation_node_id == node.node_id) outputs.push_back(&output);
+  }
+  std::ranges::sort(outputs, {},
+                    [](const auto* output) { return output->ordinal; });
+  if (outputs.size() != node.output_descriptor_ids.size()) return false;
+
+  std::unordered_set<std::uint32_t> output_expression_ids;
+  for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
+    const auto* output = outputs[ordinal];
+    const auto expression = expressions_by_id.find(output->expression_id);
+    if (output->ordinal != ordinal || !output->visible ||
+        output->descriptor_id != node.output_descriptor_ids[ordinal] ||
+        node.bound_expression_ids[ordinal] != output->expression_id ||
+        expression == expressions_by_id.end() ||
+        expression->second->result_descriptor_id != output->descriptor_id ||
+        !output_expression_ids.insert(output->expression_id).second) {
+      return false;
+    }
+  }
+
+  const auto suffix_begin =
+      node.bound_expression_ids.begin() +
+      static_cast<std::ptrdiff_t>(node.output_descriptor_ids.size());
+  const std::unordered_set<std::uint32_t> suffix_ids(
+      suffix_begin, node.bound_expression_ids.end());
+  if (suffix_ids.size() != 4 ||
+      std::ranges::any_of(suffix_ids, [&](const auto expression_id) {
+        return output_expression_ids.contains(expression_id) ||
+               !expressions_by_id.contains(expression_id);
+      })) {
+    return false;
+  }
+
+  const RelationalExpressionRecord* equality = nullptr;
+  for (const auto expression_id : suffix_ids) {
+    const auto* candidate = expressions_by_id.at(expression_id);
+    if (candidate->expression_kind != RelationalExpressionKind::kBinary ||
+        candidate->operator_name != "=") {
+      continue;
+    }
+    if (equality != nullptr) return false;
+    equality = candidate;
+  }
+  if (equality == nullptr || equality->function_uuid.has_value() ||
+      equality->bound_name_uuid.has_value() ||
+      equality->literal_kind.has_value() ||
+      equality->literal_or_parameter_ref.has_value() ||
+      equality->child_expression_ids.size() != 2) {
+    return false;
+  }
+
+  const auto key_root =
+      expressions_by_id.find(equality->child_expression_ids[0]);
+  const auto key_literal =
+      expressions_by_id.find(equality->child_expression_ids[1]);
+  if (key_root == expressions_by_id.end() ||
+      key_literal == expressions_by_id.end()) {
+    return false;
+  }
+  const auto* root = key_root->second;
+  const auto* literal = key_literal->second;
+  if (root->expression_kind != RelationalExpressionKind::kFunctionCall ||
+      root->operator_name != "KV_KEY" || root->function_uuid.has_value() ||
+      root->bound_name_uuid.has_value() || root->literal_kind.has_value() ||
+      root->literal_or_parameter_ref.has_value() ||
+      root->child_expression_ids.size() != 1 ||
+      literal->expression_kind != RelationalExpressionKind::kLiteral ||
+      literal->literal_kind != RelationalLiteralKind::kString ||
+      !literal->literal_or_parameter_ref.has_value() ||
+      literal->literal_or_parameter_ref->empty() ||
+      literal->function_uuid.has_value() || literal->bound_name_uuid.has_value() ||
+      literal->operator_name.has_value() ||
+      !literal->child_expression_ids.empty() ||
+      root->result_descriptor_id != literal->result_descriptor_id) {
+    return false;
+  }
+
+  const auto alias = expressions_by_id.find(root->child_expression_ids[0]);
+  if (alias == expressions_by_id.end() ||
+      alias->second->expression_kind !=
+          RelationalExpressionKind::kIdentifier ||
+      alias->second->bound_name_uuid != node.required_object_uuids.front() ||
+      alias->second->function_uuid.has_value() ||
+      alias->second->literal_kind.has_value() ||
+      alias->second->literal_or_parameter_ref.has_value() ||
+      alias->second->operator_name.has_value() ||
+      !alias->second->child_expression_ids.empty() ||
+      alias->second->result_descriptor_id != root->result_descriptor_id) {
+    return false;
+  }
+
+  const std::unordered_set<std::uint32_t> exact_closure_ids{
+      equality->expression_id, root->expression_id,
+      alias->second->expression_id, literal->expression_id};
+  return exact_closure_ids.size() == 4 && suffix_ids == exact_closure_ids &&
+         std::ranges::all_of(exact_closure_ids, [&](const auto expression_id) {
+           return std::ranges::count_if(
+                      dag.nodes, [&](const auto& candidate) {
+                        return std::ranges::find(
+                                   candidate.bound_expression_ids,
+                                   expression_id) !=
+                               candidate.bound_expression_ids.end();
+                      }) == 1;
+         });
+}
+
+// QOW-SOURCE-RCP080-EXACT-TIME-SERIES-OWNED-CLOSURE-V1
+// A bounded time-series range leg retains its range operands as source-owned
+// semantics.  Prove the ordered output prefix and exact alias/start/end/root
+// closure before carrying time-series identity into the logical graph.
+bool ExactTimeSeriesOwnedClosureV1(const TypedRelationalDag& dag,
+                                   const RelationalDagNode& node) {
+  if (node.node_kind != RelationalDagNodeKind::kScan ||
+      node.semantic_variant_id != "SBLR_MODEL_SOURCE_V1" ||
+      !node.input_node_ids.empty() ||
+      node.required_object_uuids.size() != 1 ||
+      node.output_descriptor_ids.empty() ||
+      node.bound_expression_ids.size() !=
+          node.output_descriptor_ids.size() + 4 ||
+      std::ranges::count_if(dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "TIME_RANGE";
+      }) != 1) {
+    return false;
+  }
+
+  std::unordered_map<std::uint32_t, const RelationalTypeDescriptor*>
+      descriptors_by_id;
+  descriptors_by_id.reserve(dag.descriptors.size());
+  for (const auto& descriptor : dag.descriptors) {
+    if (descriptor.descriptor_id == 0 ||
+        !descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor)
+             .second) {
+      return false;
+    }
+  }
+  std::unordered_map<std::uint32_t, const RelationalExpressionRecord*>
+      expressions_by_id;
+  expressions_by_id.reserve(dag.expressions.size());
+  for (const auto& expression : dag.expressions) {
+    if (expression.expression_id == 0 ||
+        !expressions_by_id.emplace(expression.expression_id, &expression)
+             .second) {
+      return false;
+    }
+  }
+
+  std::vector<const RelationalOutputRecord*> outputs;
+  for (const auto& output : dag.outputs) {
+    if (output.relation_node_id == node.node_id) outputs.push_back(&output);
+  }
+  std::ranges::sort(outputs, {},
+                    [](const auto* output) { return output->ordinal; });
+  if (outputs.size() != node.output_descriptor_ids.size()) return false;
+
+  std::unordered_set<std::uint32_t> output_expression_ids;
+  for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
+    const auto* output = outputs[ordinal];
+    const auto expression = expressions_by_id.find(output->expression_id);
+    if (output->ordinal != ordinal || !output->visible ||
+        output->descriptor_id != node.output_descriptor_ids[ordinal] ||
+        node.bound_expression_ids[ordinal] != output->expression_id ||
+        expression == expressions_by_id.end() ||
+        expression->second->result_descriptor_id != output->descriptor_id ||
+        !output_expression_ids.insert(output->expression_id).second) {
+      return false;
+    }
+  }
+
+  const auto suffix_begin =
+      node.bound_expression_ids.begin() +
+      static_cast<std::ptrdiff_t>(node.output_descriptor_ids.size());
+  const std::unordered_set<std::uint32_t> suffix_ids(
+      suffix_begin, node.bound_expression_ids.end());
+  if (suffix_ids.size() != 4 ||
+      std::ranges::any_of(suffix_ids, [&](const auto expression_id) {
+        return output_expression_ids.contains(expression_id) ||
+               !expressions_by_id.contains(expression_id);
+      })) {
+    return false;
+  }
+
+  const auto range = std::ranges::find_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "TIME_RANGE";
+      });
+  if (range == dag.expressions.end() ||
+      !suffix_ids.contains(range->expression_id) ||
+      range->expression_kind != RelationalExpressionKind::kFunctionCall ||
+      range->function_uuid.has_value() || range->bound_name_uuid.has_value() ||
+      range->literal_kind.has_value() ||
+      range->literal_or_parameter_ref.has_value() ||
+      range->child_expression_ids.size() != 3 ||
+      std::unordered_set<std::uint32_t>(range->child_expression_ids.begin(),
+                                        range->child_expression_ids.end())
+              .size() != 3) {
+    return false;
+  }
+
+  const auto alias = expressions_by_id.find(range->child_expression_ids[0]);
+  const auto start = expressions_by_id.find(range->child_expression_ids[1]);
+  const auto end = expressions_by_id.find(range->child_expression_ids[2]);
+  if (alias == expressions_by_id.end() || start == expressions_by_id.end() ||
+      end == expressions_by_id.end() ||
+      alias->second->expression_kind !=
+          RelationalExpressionKind::kIdentifier ||
+      alias->second->bound_name_uuid != node.required_object_uuids.front() ||
+      alias->second->function_uuid.has_value() ||
+      alias->second->literal_kind.has_value() ||
+      alias->second->literal_or_parameter_ref.has_value() ||
+      alias->second->operator_name.has_value() ||
+      !alias->second->child_expression_ids.empty()) {
+    return false;
+  }
+
+  const auto exact_timestamp_literal = [&](const auto* expression) {
+    if (expression->expression_kind != RelationalExpressionKind::kLiteral ||
+        expression->literal_kind != RelationalLiteralKind::kTemporal ||
+        !expression->literal_or_parameter_ref.has_value() ||
+        expression->literal_or_parameter_ref->empty() ||
+        expression->function_uuid.has_value() ||
+        expression->bound_name_uuid.has_value() ||
+        expression->operator_name.has_value() ||
+        !expression->child_expression_ids.empty()) {
+      return false;
+    }
+    const auto descriptor =
+        descriptors_by_id.find(expression->result_descriptor_id);
+    if (descriptor == descriptors_by_id.end() ||
+        descriptor->second->nullability !=
+            RelationalNullability::kNonNull) {
+      return false;
+    }
+    const auto value = std::string_view(*expression->literal_or_parameter_ref);
+    if (value.size() < 20 || value[4] != '-' || value[7] != '-' ||
+        value[10] != 'T' || value[13] != ':' || value[16] != ':') {
+      return false;
+    }
+    const auto decimal = [&](const std::size_t offset,
+                             const std::size_t count,
+                             unsigned* parsed) {
+      if (offset + count > value.size()) return false;
+      *parsed = 0;
+      for (std::size_t index = 0; index < count; ++index) {
+        const auto ch = value[offset + index];
+        if (ch < '0' || ch > '9') return false;
+        *parsed = *parsed * 10 + static_cast<unsigned>(ch - '0');
+      }
+      return true;
+    };
+    unsigned year = 0;
+    unsigned month = 0;
+    unsigned day = 0;
+    unsigned hour = 0;
+    unsigned minute = 0;
+    unsigned second = 0;
+    if (!decimal(0, 4, &year) || !decimal(5, 2, &month) ||
+        !decimal(8, 2, &day) || !decimal(11, 2, &hour) ||
+        !decimal(14, 2, &minute) || !decimal(17, 2, &second) || year == 0 ||
+        month == 0 || month > 12 || hour > 23 || minute > 59 ||
+        second > 59) {
+      return false;
+    }
+    constexpr std::array<unsigned, 12> kMonthDays{
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    auto maximum_day = kMonthDays[month - 1];
+    const bool leap =
+        (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    if (month == 2 && leap) ++maximum_day;
+    if (day == 0 || day > maximum_day) return false;
+
+    std::size_t offset = 19;
+    if (offset < value.size() && value[offset] == '.') {
+      const auto fraction_begin = ++offset;
+      while (offset < value.size() && value[offset] >= '0' &&
+             value[offset] <= '9') {
+        if (offset - fraction_begin >= 9) return false;
+        ++offset;
+      }
+      if (offset == fraction_begin) return false;
+    }
+    if (offset < value.size() && value[offset] == 'Z') {
+      ++offset;
+    } else if (offset + 6 == value.size() &&
+               (value[offset] == '+' || value[offset] == '-') &&
+               value[offset + 3] == ':') {
+      unsigned offset_hour = 0;
+      unsigned offset_minute = 0;
+      if (!decimal(offset + 1, 2, &offset_hour) ||
+          !decimal(offset + 4, 2, &offset_minute) || offset_hour > 14 ||
+          offset_minute > 59 ||
+          (offset_hour == 14 && offset_minute != 0)) {
+        return false;
+      }
+      offset += 6;
+    } else {
+      return false;
+    }
+    return offset == value.size();
+  };
+  if (!exact_timestamp_literal(start->second) ||
+      !exact_timestamp_literal(end->second) ||
+      start->second->result_descriptor_id !=
+          end->second->result_descriptor_id) {
+    return false;
+  }
+
+  const std::unordered_set<std::uint32_t> exact_closure_ids{
+      range->expression_id, alias->second->expression_id,
+      start->second->expression_id, end->second->expression_id};
+  return exact_closure_ids.size() == 4 && suffix_ids == exact_closure_ids &&
+         std::ranges::all_of(exact_closure_ids, [&](const auto expression_id) {
+           return std::ranges::count_if(
+                      dag.nodes, [&](const auto& candidate) {
+                        return std::ranges::find(
+                                   candidate.bound_expression_ids,
+                                   expression_id) !=
+                               candidate.bound_expression_ids.end();
+                      }) == 1;
+         });
+}
+
+// QOW-SOURCE-RCP080-EXACT-SEARCH-OWNED-CLOSURE-V1
+// A bounded search leg owns its source alias, term literal, SEARCH_TERMS
+// auxiliary, analyzer identity, positive top-k, and SEARCH_MATCH root.  The
+// logical plus-six carrier is safe only after this complete typed closure has
+// been proved against the exact ordered five-output prefix.
+bool ExactSearchOwnedClosureV1(const TypedRelationalDag& dag,
+                               const RelationalDagNode& node) {
+  if (node.node_kind != RelationalDagNodeKind::kScan ||
+      node.semantic_variant_id != "SBLR_MODEL_SOURCE_V1" ||
+      !node.input_node_ids.empty() ||
+      node.required_object_uuids.size() != 1 ||
+      node.output_descriptor_ids.size() != 5 ||
+      node.bound_expression_ids.size() != 11 ||
+      std::ranges::count_if(dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "SEARCH_MATCH";
+      }) != 1 ||
+      std::ranges::count_if(dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "SEARCH_TERMS";
+      }) != 1) {
+    return false;
+  }
+
+  std::unordered_map<std::uint32_t, const RelationalTypeDescriptor*>
+      descriptors_by_id;
+  descriptors_by_id.reserve(dag.descriptors.size());
+  for (const auto& descriptor : dag.descriptors) {
+    if (descriptor.descriptor_id == 0 ||
+        !descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor)
+             .second) {
+      return false;
+    }
+  }
+  std::unordered_map<std::uint32_t, const RelationalExpressionRecord*>
+      expressions_by_id;
+  expressions_by_id.reserve(dag.expressions.size());
+  for (const auto& expression : dag.expressions) {
+    if (expression.expression_id == 0 ||
+        !expressions_by_id.emplace(expression.expression_id, &expression)
+             .second) {
+      return false;
+    }
+  }
+
+  std::vector<const RelationalOutputRecord*> outputs;
+  for (const auto& output : dag.outputs) {
+    if (output.relation_node_id == node.node_id) outputs.push_back(&output);
+  }
+  std::ranges::sort(outputs, {},
+                    [](const auto* output) { return output->ordinal; });
+  if (outputs.size() != 5) return false;
+
+  std::unordered_set<std::uint32_t> output_expression_ids;
+  for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
+    const auto* output = outputs[ordinal];
+    const auto expression = expressions_by_id.find(output->expression_id);
+    if (output->ordinal != ordinal || !output->visible ||
+        output->output_name_utf8.empty() ||
+        output->descriptor_id != node.output_descriptor_ids[ordinal] ||
+        node.bound_expression_ids[ordinal] != output->expression_id ||
+        expression == expressions_by_id.end() ||
+        expression->second->result_descriptor_id != output->descriptor_id ||
+        !output_expression_ids.insert(output->expression_id).second) {
+      return false;
+    }
+  }
+
+  const auto suffix_begin = node.bound_expression_ids.begin() + 5;
+  const std::unordered_set<std::uint32_t> suffix_ids(
+      suffix_begin, node.bound_expression_ids.end());
+  if (suffix_ids.size() != 6 ||
+      std::ranges::any_of(suffix_ids, [&](const auto expression_id) {
+        return output_expression_ids.contains(expression_id) ||
+               !expressions_by_id.contains(expression_id);
+      })) {
+    return false;
+  }
+
+  const auto match = std::ranges::find_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "SEARCH_MATCH";
+      });
+  const auto terms = std::ranges::find_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "SEARCH_TERMS";
+      });
+  if (match == dag.expressions.end() || terms == dag.expressions.end() ||
+      !suffix_ids.contains(match->expression_id) ||
+      !suffix_ids.contains(terms->expression_id) ||
+      match->expression_kind != RelationalExpressionKind::kFunctionCall ||
+      match->function_uuid.has_value() || match->bound_name_uuid.has_value() ||
+      match->literal_kind.has_value() ||
+      match->literal_or_parameter_ref.has_value() ||
+      match->child_expression_ids.size() != 4 ||
+      std::unordered_set<std::uint32_t>(match->child_expression_ids.begin(),
+                                        match->child_expression_ids.end())
+              .size() != 4 ||
+      terms->expression_kind != RelationalExpressionKind::kFunctionCall ||
+      terms->function_uuid.has_value() || terms->bound_name_uuid.has_value() ||
+      terms->literal_kind.has_value() ||
+      terms->literal_or_parameter_ref.has_value() ||
+      terms->child_expression_ids.size() != 1 ||
+      match->child_expression_ids[1] != terms->expression_id) {
+    return false;
+  }
+
+  const auto alias = expressions_by_id.find(match->child_expression_ids[0]);
+  const auto term = expressions_by_id.find(terms->child_expression_ids[0]);
+  const auto analyzer =
+      expressions_by_id.find(match->child_expression_ids[2]);
+  const auto limit = expressions_by_id.find(match->child_expression_ids[3]);
+  if (alias == expressions_by_id.end() || term == expressions_by_id.end() ||
+      analyzer == expressions_by_id.end() ||
+      limit == expressions_by_id.end()) {
+    return false;
+  }
+  const auto* alias_expression = alias->second;
+  const auto* term_expression = term->second;
+  const auto* analyzer_expression = analyzer->second;
+  const auto* limit_expression = limit->second;
+  if (alias_expression->expression_kind !=
+          RelationalExpressionKind::kIdentifier ||
+      alias_expression->bound_name_uuid !=
+          node.required_object_uuids.front() ||
+      alias_expression->function_uuid.has_value() ||
+      alias_expression->literal_kind.has_value() ||
+      alias_expression->literal_or_parameter_ref.has_value() ||
+      alias_expression->operator_name.has_value() ||
+      !alias_expression->child_expression_ids.empty() ||
+      term_expression->expression_kind != RelationalExpressionKind::kLiteral ||
+      term_expression->literal_kind != RelationalLiteralKind::kString ||
+      !term_expression->literal_or_parameter_ref.has_value() ||
+      term_expression->literal_or_parameter_ref->empty() ||
+      term_expression->function_uuid.has_value() ||
+      term_expression->bound_name_uuid.has_value() ||
+      term_expression->operator_name.has_value() ||
+      !term_expression->child_expression_ids.empty() ||
+      analyzer_expression->expression_kind !=
+          RelationalExpressionKind::kIdentifier ||
+      !analyzer_expression->bound_name_uuid.has_value() ||
+      analyzer_expression->bound_name_uuid ==
+          node.required_object_uuids.front() ||
+      analyzer_expression->function_uuid.has_value() ||
+      analyzer_expression->literal_kind.has_value() ||
+      analyzer_expression->literal_or_parameter_ref.has_value() ||
+      analyzer_expression->operator_name.has_value() ||
+      !analyzer_expression->child_expression_ids.empty() ||
+      limit_expression->expression_kind != RelationalExpressionKind::kLiteral ||
+      limit_expression->literal_kind != RelationalLiteralKind::kNumeric ||
+      !limit_expression->literal_or_parameter_ref.has_value() ||
+      limit_expression->function_uuid.has_value() ||
+      limit_expression->bound_name_uuid.has_value() ||
+      limit_expression->operator_name.has_value() ||
+      !limit_expression->child_expression_ids.empty()) {
+    return false;
+  }
+
+  const auto exact_non_null_descriptor = [&](const std::uint32_t id) {
+    const auto descriptor = descriptors_by_id.find(id);
+    return descriptor != descriptors_by_id.end() &&
+           descriptor->second->nullability ==
+               RelationalNullability::kNonNull;
+  };
+  if (!exact_non_null_descriptor(alias_expression->result_descriptor_id) ||
+      !exact_non_null_descriptor(term_expression->result_descriptor_id) ||
+      !exact_non_null_descriptor(terms->result_descriptor_id) ||
+      !exact_non_null_descriptor(analyzer_expression->result_descriptor_id) ||
+      !exact_non_null_descriptor(limit_expression->result_descriptor_id) ||
+      !exact_non_null_descriptor(match->result_descriptor_id) ||
+      alias_expression->result_descriptor_id !=
+          term_expression->result_descriptor_id ||
+      term_expression->result_descriptor_id != terms->result_descriptor_id) {
+    return false;
+  }
+
+  const auto& limit_spelling =
+      *limit_expression->literal_or_parameter_ref;
+  std::uint64_t limit_value = 0;
+  const auto parsed = std::from_chars(
+      limit_spelling.data(), limit_spelling.data() + limit_spelling.size(),
+      limit_value);
+  if (limit_spelling.empty() ||
+      (limit_spelling.size() != 1 && limit_spelling.front() == '0') ||
+      parsed.ec != std::errc{} ||
+      parsed.ptr != limit_spelling.data() + limit_spelling.size() ||
+      limit_value == 0 || limit_value > 0xffffffffULL) {
+    return false;
+  }
+
+  const std::unordered_set<std::uint32_t> exact_closure_ids{
+      alias_expression->expression_id, term_expression->expression_id,
+      terms->expression_id, analyzer_expression->expression_id,
+      limit_expression->expression_id, match->expression_id};
+  return exact_closure_ids.size() == 6 && suffix_ids == exact_closure_ids &&
+         std::ranges::all_of(exact_closure_ids, [&](const auto expression_id) {
+           return std::ranges::count_if(
+                      dag.nodes, [&](const auto& candidate) {
+                        return std::ranges::find(
+                                   candidate.bound_expression_ids,
+                                   expression_id) !=
+                               candidate.bound_expression_ids.end();
+                      }) == 1;
+         });
+}
+
+// QOW-SOURCE-RCP080-RCP079-PAIR-COHORT-COMPATIBILITY-V1
+// RCP-080's document-plus-family carriers own a different operation closure
+// from two already-signed RCP-079 pair routes.  Recognize those legacy routes
+// only by their complete immutable DAG shape.  This is deliberately not a
+// source-count, width, family-label, or join-name exception: admission and
+// canonical population consume the same positive classification, and every
+// mismatch remains on the strict RCP-080 exact-owned-closure path.
+enum class Rcp079PairCohortCompatibilityV1 : std::uint8_t {
+  kNone = 0,
+  kTimeSeriesColumnarAsof,
+  kSpatialSearchOuter,
+};
+
+Rcp079PairCohortCompatibilityV1
+ExactRcp079PairCohortCompatibilityV1(const TypedRelationalDag& dag) {
+  using Compatibility = Rcp079PairCohortCompatibilityV1;
+  if (dag.wire_version != 2 ||
+      dag.package_root != RelationalPackageRoot::kQueryExecute ||
+      dag.nodes.size() != 3 || dag.root_node_id == 0 ||
+      dag.bound_sblr_tree_uuid.empty() || dag.bound_catalog_epoch_uuid.empty() ||
+      dag.bound_security_context_uuid.empty() || dag.statement_uuid.empty() ||
+      dag.statement_timestamp.empty() || dag.owning_transaction_uuid.empty() ||
+      dag.statement_snapshot_uuid.empty() ||
+      dag.statement_metadata_snapshot_uuid.empty() ||
+      dag.local_transaction_id == 0 ||
+      dag.snapshot_visible_through_local_transaction_id == 0 ||
+      !dag.values_rows.empty() || !dag.grouping_sets.empty() ||
+      !dag.window_definitions.empty() || !dag.window_invocations.empty() ||
+      !dag.properties.empty()) {
+    return Compatibility::kNone;
+  }
+
+  std::unordered_map<std::uint32_t, const RelationalTypeDescriptor*>
+      descriptors_by_id;
+  descriptors_by_id.reserve(dag.descriptors.size());
+  for (const auto& descriptor : dag.descriptors) {
+    if (descriptor.descriptor_id == 0 || descriptor.descriptor_uuid.empty() ||
+        descriptor.type_uuid.empty() ||
+        !descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor)
+             .second) {
+      return Compatibility::kNone;
+    }
+  }
+  std::unordered_map<std::uint32_t, const RelationalExpressionRecord*>
+      expressions_by_id;
+  expressions_by_id.reserve(dag.expressions.size());
+  for (const auto& expression : dag.expressions) {
+    if (expression.expression_id == 0 || expression.result_descriptor_id == 0 ||
+        !descriptors_by_id.contains(expression.result_descriptor_id) ||
+        !expressions_by_id.emplace(expression.expression_id, &expression)
+             .second) {
+      return Compatibility::kNone;
+    }
+  }
+  std::unordered_map<std::uint32_t, const RelationalDagNode*> nodes_by_id;
+  for (const auto& node : dag.nodes) {
+    if (node.node_id == 0 ||
+        !nodes_by_id.emplace(node.node_id, &node).second) {
+      return Compatibility::kNone;
+    }
+  }
+  const auto root_found = nodes_by_id.find(dag.root_node_id);
+  if (root_found == nodes_by_id.end()) return Compatibility::kNone;
+  const auto& root = *root_found->second;
+  if (root.node_kind != RelationalDagNodeKind::kJoin ||
+      root.input_node_ids.size() != 2 || !root.required_object_uuids.empty() ||
+      !root.required_property_uuids.empty() ||
+      !root.delivered_property_uuids.empty() ||
+      !root.values_row_ids.empty()) {
+    return Compatibility::kNone;
+  }
+  const auto left_found = nodes_by_id.find(root.input_node_ids[0]);
+  const auto right_found = nodes_by_id.find(root.input_node_ids[1]);
+  if (left_found == nodes_by_id.end() || right_found == nodes_by_id.end() ||
+      left_found == right_found || left_found->second == &root ||
+      right_found->second == &root) {
+    return Compatibility::kNone;
+  }
+  const auto& left = *left_found->second;
+  const auto& right = *right_found->second;
+  const auto exact_source_envelope = [](const RelationalDagNode& node) {
+    return (node.node_kind == RelationalDagNodeKind::kScan ||
+            node.node_kind == RelationalDagNodeKind::kAggregate) &&
+           (node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1" ||
+            node.semantic_variant_id == "SBLR_MODEL_AGGREGATE_V1") &&
+           node.input_node_ids.empty() && node.values_row_ids.empty() &&
+           node.required_object_uuids.size() == 1 &&
+           !node.required_object_uuids.front().empty() &&
+           node.required_property_uuids.empty() &&
+           node.delivered_property_uuids.empty() &&
+           !node.output_descriptor_ids.empty() &&
+           !node.bound_expression_ids.empty();
+  };
+  if (!exact_source_envelope(left) || !exact_source_envelope(right)) {
+    return Compatibility::kNone;
+  }
+
+  std::unordered_map<std::uint32_t, std::vector<const RelationalOutputRecord*>>
+      outputs_by_node;
+  std::unordered_set<std::uint32_t> output_ids;
+  for (const auto& output : dag.outputs) {
+    if (output.output_id == 0 || output.relation_node_id == 0 ||
+        output.descriptor_id == 0 ||
+        !output_ids.insert(output.output_id).second ||
+        !nodes_by_id.contains(output.relation_node_id) ||
+        !descriptors_by_id.contains(output.descriptor_id) ||
+        !expressions_by_id.contains(output.expression_id) ||
+        expressions_by_id.at(output.expression_id)->result_descriptor_id !=
+            output.descriptor_id) {
+      return Compatibility::kNone;
+    }
+    outputs_by_node[output.relation_node_id].push_back(&output);
+  }
+  for (auto& [node_id, outputs] : outputs_by_node) {
+    (void)node_id;
+    std::ranges::sort(outputs, {}, [](const auto* output) {
+      return output->ordinal;
+    });
+  }
+  const auto exact_outputs = [&](const RelationalDagNode& node,
+                                 const std::span<const std::string_view> names,
+                                 const bool identifiers_only) {
+    const auto found = outputs_by_node.find(node.node_id);
+    if (found == outputs_by_node.end() ||
+        found->second.size() != node.output_descriptor_ids.size() ||
+        (!names.empty() && names.size() != found->second.size()) ||
+        node.bound_expression_ids.size() < found->second.size()) {
+      return false;
+    }
+    std::unordered_set<std::uint32_t> expressions;
+    for (std::size_t ordinal = 0; ordinal < found->second.size(); ++ordinal) {
+      const auto* output = found->second[ordinal];
+      const auto* expression = expressions_by_id.at(output->expression_id);
+      if (output->ordinal != ordinal || !output->visible ||
+          output->output_name_utf8.empty() ||
+          (!names.empty() && output->output_name_utf8 != names[ordinal]) ||
+          output->descriptor_id != node.output_descriptor_ids[ordinal] ||
+          node.bound_expression_ids[ordinal] != output->expression_id ||
+          !expressions.insert(output->expression_id).second ||
+          (identifiers_only &&
+           (expression->expression_kind !=
+                RelationalExpressionKind::kIdentifier ||
+            !expression->child_expression_ids.empty() ||
+            expression->function_uuid.has_value() ||
+            !expression->bound_name_uuid.has_value() ||
+            expression->literal_kind.has_value() ||
+            expression->literal_or_parameter_ref.has_value() ||
+            expression->operator_name.has_value()))) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const auto output_named = [&](const RelationalDagNode& node,
+                                const std::string_view name)
+      -> const RelationalOutputRecord* {
+    const auto found = outputs_by_node.find(node.node_id);
+    if (found == outputs_by_node.end()) return nullptr;
+    const auto output = std::ranges::find_if(
+        found->second, [&](const auto* candidate) {
+          return candidate->output_name_utf8 == name;
+        });
+    return output == found->second.end() ? nullptr : *output;
+  };
+  const auto exact_root_outputs = [&]() {
+    const auto root_outputs = outputs_by_node.find(root.node_id);
+    const auto left_outputs = outputs_by_node.find(left.node_id);
+    const auto right_outputs = outputs_by_node.find(right.node_id);
+    if (root_outputs == outputs_by_node.end() ||
+        left_outputs == outputs_by_node.end() ||
+        right_outputs == outputs_by_node.end() ||
+        root_outputs->second.size() !=
+            left_outputs->second.size() + right_outputs->second.size() ||
+        root.output_descriptor_ids.size() != root_outputs->second.size()) {
+      return false;
+    }
+    std::vector<const RelationalOutputRecord*> expected = left_outputs->second;
+    expected.insert(expected.end(), right_outputs->second.begin(),
+                    right_outputs->second.end());
+    for (std::size_t ordinal = 0; ordinal < expected.size(); ++ordinal) {
+      const auto* output = root_outputs->second[ordinal];
+      if (output->ordinal != ordinal || !output->visible ||
+          output->output_name_utf8 != expected[ordinal]->output_name_utf8 ||
+          output->expression_id != expected[ordinal]->expression_id ||
+          output->descriptor_id != expected[ordinal]->descriptor_id ||
+          root.output_descriptor_ids[ordinal] != output->descriptor_id) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (!exact_root_outputs()) return Compatibility::kNone;
+
+  const auto exact_identifier = [](const RelationalExpressionRecord* expression,
+                                   const std::optional<std::string>& bound) {
+    return expression != nullptr &&
+           expression->expression_kind ==
+               RelationalExpressionKind::kIdentifier &&
+           expression->child_expression_ids.empty() &&
+           expression->function_uuid.has_value() == false &&
+           expression->bound_name_uuid == bound &&
+           !expression->literal_kind.has_value() &&
+           !expression->literal_or_parameter_ref.has_value() &&
+           !expression->operator_name.has_value();
+  };
+  const auto exact_literal = [](const RelationalExpressionRecord* expression,
+                                const RelationalLiteralKind kind) {
+    return expression != nullptr &&
+           expression->expression_kind == RelationalExpressionKind::kLiteral &&
+           expression->child_expression_ids.empty() &&
+           !expression->function_uuid.has_value() &&
+           !expression->bound_name_uuid.has_value() &&
+           expression->literal_kind == kind &&
+           expression->literal_or_parameter_ref.has_value() &&
+           !expression->literal_or_parameter_ref->empty() &&
+           !expression->operator_name.has_value();
+  };
+  const auto exact_function = [](const RelationalExpressionRecord* expression,
+                                 const std::string_view name,
+                                 const std::size_t arity,
+                                 const bool bound_name) {
+    return expression != nullptr &&
+           expression->expression_kind ==
+               RelationalExpressionKind::kFunctionCall &&
+           !expression->function_uuid.has_value() &&
+           expression->bound_name_uuid.has_value() == bound_name &&
+           !expression->literal_kind.has_value() &&
+           !expression->literal_or_parameter_ref.has_value() &&
+           expression->operator_name == name &&
+           expression->child_expression_ids.size() == arity;
+  };
+  const auto non_null_descriptor = [&](const std::uint32_t descriptor_id) {
+    const auto found = descriptors_by_id.find(descriptor_id);
+    return found != descriptors_by_id.end() &&
+           found->second->nullability == RelationalNullability::kNonNull;
+  };
+  const auto positive_uint_literal = [&](const RelationalExpressionRecord* e) {
+    if (!exact_literal(e, RelationalLiteralKind::kNumeric)) return false;
+    std::uint64_t value = 0;
+    const auto& text = *e->literal_or_parameter_ref;
+    const auto parsed =
+        std::from_chars(text.data(), text.data() + text.size(), value);
+    return parsed.ec == std::errc{} &&
+           parsed.ptr == text.data() + text.size() && value > 0 &&
+           (text.size() == 1 || text.front() != '0') &&
+           non_null_descriptor(e->result_descriptor_id);
+  };
+  const auto expression_named = [&](const std::string_view name) {
+    const auto found = std::ranges::find_if(
+        dag.expressions, [&](const auto& expression) {
+          return expression.operator_name == name;
+        });
+    return found == dag.expressions.end() ? nullptr : &*found;
+  };
+  const auto exact_operator_count = [&](const std::string_view name,
+                                        const std::size_t count) {
+    return std::ranges::count_if(dag.expressions, [&](const auto& expression) {
+             return expression.operator_name == name;
+           }) == count;
+  };
+  const auto attached_suffix_exact = [&](const RelationalDagNode& node,
+                                         const std::span<const std::uint32_t> ids) {
+    if (node.bound_expression_ids.size() !=
+        node.output_descriptor_ids.size() + ids.size()) {
+      return false;
+    }
+    return std::equal(ids.begin(), ids.end(),
+                      node.bound_expression_ids.begin() +
+                          static_cast<std::ptrdiff_t>(
+                              node.output_descriptor_ids.size()));
+  };
+
+  const auto family_node_for = [&](const std::string_view operation)
+      -> const RelationalDagNode* {
+    const auto* expression = expression_named(operation);
+    if (expression == nullptr) return nullptr;
+    const RelationalDagNode* owner = nullptr;
+    for (const auto* candidate : {&left, &right}) {
+      if (std::ranges::find(candidate->bound_expression_ids,
+                            expression->expression_id) !=
+          candidate->bound_expression_ids.end()) {
+        if (owner != nullptr) return nullptr;
+        owner = candidate;
+      }
+    }
+    return owner;
+  };
+
+  const auto exact_time_series = [&](const RelationalDagNode& node) {
+    static constexpr std::array<std::string_view, 6> kNames{
+        "row_uuid", "series_uuid", "metric_uuid", "point_timestamp",
+        "tags", "value"};
+    if (node.node_kind != RelationalDagNodeKind::kScan ||
+        node.semantic_variant_id != "SBLR_MODEL_SOURCE_V1" ||
+        !exact_outputs(node, kNames, true) ||
+        !exact_operator_count("TIME_RANGE", 1) ||
+        !exact_operator_count("TIME_BUCKET", 0) ||
+        !exact_operator_count("TIME_DOWNSAMPLE", 0)) {
+      return false;
+    }
+    const auto* range = expression_named("TIME_RANGE");
+    if (!exact_function(range, "TIME_RANGE", 3, false) ||
+        !attached_suffix_exact(node,
+                               std::array<std::uint32_t, 1>{
+                                   range->expression_id})) {
+      return false;
+    }
+    const auto alias = expressions_by_id.find(range->child_expression_ids[0]);
+    const auto start = expressions_by_id.find(range->child_expression_ids[1]);
+    const auto end = expressions_by_id.find(range->child_expression_ids[2]);
+    if (alias == expressions_by_id.end() || start == expressions_by_id.end() ||
+        end == expressions_by_id.end() ||
+        !exact_identifier(alias->second, node.required_object_uuids.front()) ||
+        !exact_literal(start->second, RelationalLiteralKind::kTemporal) ||
+        !exact_literal(end->second, RelationalLiteralKind::kTemporal) ||
+        start->second->result_descriptor_id !=
+            end->second->result_descriptor_id ||
+        !non_null_descriptor(start->second->result_descriptor_id) ||
+        *start->second->literal_or_parameter_ref >=
+            *end->second->literal_or_parameter_ref ||
+        std::unordered_set<std::uint32_t>(range->child_expression_ids.begin(),
+                                          range->child_expression_ids.end())
+                .size() != 3) {
+      return false;
+    }
+    return true;
+  };
+  const auto exact_columnar = [&](const RelationalDagNode& node) {
+    static constexpr std::array<std::string_view, 5> kNames{
+        "join_uuid", "payload", "event_timestamp", "metric_uuid", "tags"};
+    const auto* source = expression_named("COLUMNAR_SOURCE");
+    return node.node_kind == RelationalDagNodeKind::kScan &&
+           node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1" &&
+           exact_outputs(node, kNames, true) &&
+           exact_operator_count("COLUMNAR_SOURCE", 1) &&
+           exact_operator_count("COLUMNAR_FILTER", 0) &&
+           exact_operator_count("COLUMNAR_PROJECT", 0) &&
+           exact_function(source, "COLUMNAR_SOURCE", 0, true) &&
+           source->bound_name_uuid == node.required_object_uuids.front() &&
+           attached_suffix_exact(node,
+                                 std::array<std::uint32_t, 1>{
+                                     source->expression_id});
+  };
+  const auto* time_node = family_node_for("TIME_RANGE");
+  const auto* columnar_node = family_node_for("COLUMNAR_SOURCE");
+  const bool asof_semantic =
+      root.semantic_variant_id == "join.asof.inner.v1" ||
+      root.semantic_variant_id == "join.asof.left.v1";
+  if (time_node != nullptr && columnar_node != nullptr &&
+      time_node != columnar_node && asof_semantic &&
+      ((time_node == &left && columnar_node == &right) ||
+       (time_node == &right && columnar_node == &left)) &&
+      exact_time_series(*time_node) && exact_columnar(*columnar_node) &&
+      root.bound_expression_ids.size() == 7) {
+    const auto time_metric = output_named(*time_node, "metric_uuid");
+    const auto time_tags = output_named(*time_node, "tags");
+    const auto time_stamp = output_named(*time_node, "point_timestamp");
+    const auto column_metric = output_named(*columnar_node, "metric_uuid");
+    const auto column_tags = output_named(*columnar_node, "tags");
+    const auto column_stamp = output_named(*columnar_node, "event_timestamp");
+    const auto tolerance =
+        expressions_by_id.find(root.bound_expression_ids.back());
+    const std::array<std::uint32_t, 3> time_keys{
+        time_metric == nullptr ? 0 : time_metric->expression_id,
+        time_tags == nullptr ? 0 : time_tags->expression_id,
+        time_stamp == nullptr ? 0 : time_stamp->expression_id};
+    const std::array<std::uint32_t, 3> column_keys{
+        column_metric == nullptr ? 0 : column_metric->expression_id,
+        column_tags == nullptr ? 0 : column_tags->expression_id,
+        column_stamp == nullptr ? 0 : column_stamp->expression_id};
+    std::array<std::uint32_t, 7> exact_keys{};
+    const auto& first_keys = time_node == &left ? time_keys : column_keys;
+    const auto& second_keys = time_node == &left ? column_keys : time_keys;
+    std::copy(first_keys.begin(), first_keys.end(), exact_keys.begin());
+    std::copy(second_keys.begin(), second_keys.end(), exact_keys.begin() + 3);
+    exact_keys[6] = root.bound_expression_ids.back();
+    if (std::ranges::all_of(exact_keys.begin(), exact_keys.begin() + 6,
+                            [](const auto id) { return id != 0; }) &&
+        root.bound_expression_ids ==
+            std::vector<std::uint32_t>(exact_keys.begin(), exact_keys.end()) &&
+        tolerance != expressions_by_id.end() &&
+        positive_uint_literal(tolerance->second)) {
+      return Compatibility::kTimeSeriesColumnarAsof;
+    }
+  }
+
+  const auto exact_spatial = [&](const RelationalDagNode& node) {
+    static constexpr std::array<std::string_view, 5> kNames{
+        "row_uuid", "spatial_value", "crs_uuid", "predicate_truth",
+        "distance"};
+    if (node.node_kind != RelationalDagNodeKind::kScan ||
+        node.semantic_variant_id != "SBLR_MODEL_SOURCE_V1" ||
+        !exact_outputs(node, kNames, true) ||
+        !exact_operator_count("SPATIAL_SOURCE", 1) ||
+        !exact_operator_count("SPATIAL_MATCH", 1) ||
+        !exact_operator_count("SPATIAL_NEAREST", 1)) {
+      return false;
+    }
+    const auto* source = expression_named("SPATIAL_SOURCE");
+    const auto* match = expression_named("SPATIAL_MATCH");
+    const auto* nearest = expression_named("SPATIAL_NEAREST");
+    if (!exact_function(source, "SPATIAL_SOURCE", 0, true) ||
+        source->bound_name_uuid != node.required_object_uuids.front() ||
+        !exact_function(match, "SPATIAL_MATCH", 4, false) ||
+        !exact_function(nearest, "SPATIAL_NEAREST", 4, false)) {
+      return false;
+    }
+    const auto alias = expressions_by_id.find(match->child_expression_ids[0]);
+    const auto predicate =
+        expressions_by_id.find(match->child_expression_ids[1]);
+    const auto point = expressions_by_id.find(match->child_expression_ids[2]);
+    const auto crs = expressions_by_id.find(match->child_expression_ids[3]);
+    if (alias == expressions_by_id.end() ||
+        predicate == expressions_by_id.end() || point == expressions_by_id.end() ||
+        crs == expressions_by_id.end() ||
+        !exact_identifier(alias->second, node.required_object_uuids.front()) ||
+        !exact_literal(predicate->second, RelationalLiteralKind::kString) ||
+        predicate->second->literal_or_parameter_ref != "INTERSECTS" ||
+        !exact_function(point->second, "POINT", 2, false) ||
+        !exact_identifier(crs->second, crs->second->bound_name_uuid) ||
+        !crs->second->bound_name_uuid.has_value() ||
+        crs->second->bound_name_uuid == node.required_object_uuids.front() ||
+        nearest->child_expression_ids[0] != alias->second->expression_id ||
+        nearest->child_expression_ids[1] != point->second->expression_id ||
+        nearest->child_expression_ids[2] != crs->second->expression_id) {
+      return false;
+    }
+    const auto x = expressions_by_id.find(point->second->child_expression_ids[0]);
+    const auto y = expressions_by_id.find(point->second->child_expression_ids[1]);
+    const auto top_k =
+        expressions_by_id.find(nearest->child_expression_ids[3]);
+    if (x == expressions_by_id.end() || y == expressions_by_id.end() ||
+        top_k == expressions_by_id.end() ||
+        !exact_literal(x->second, RelationalLiteralKind::kNumeric) ||
+        !exact_literal(y->second, RelationalLiteralKind::kNumeric) ||
+        !positive_uint_literal(top_k->second)) {
+      return false;
+    }
+    const std::array<std::uint32_t, 10> suffix{
+        source->expression_id, alias->second->expression_id,
+        predicate->second->expression_id, x->second->expression_id,
+        y->second->expression_id, point->second->expression_id,
+        crs->second->expression_id, match->expression_id,
+        top_k->second->expression_id, nearest->expression_id};
+    return attached_suffix_exact(node, suffix);
+  };
+  const auto exact_search = [&](const RelationalDagNode& node) {
+    static constexpr std::array<std::string_view, 5> kNames{
+        "document_uuid", "analyzer_uuid", "analyzer_generation", "score",
+        "rank"};
+    if (node.node_kind != RelationalDagNodeKind::kScan ||
+        node.semantic_variant_id != "SBLR_MODEL_SOURCE_V1" ||
+        !exact_outputs(node, kNames, false) ||
+        !exact_operator_count("SEARCH_TERMS", 1) ||
+        !exact_operator_count("SEARCH_MATCH", 1) ||
+        !exact_operator_count("SEARCH_ANALYZER_BINDING", 1) ||
+        !exact_operator_count("SEARCH_PHRASE", 0) ||
+        !exact_operator_count("SEARCH_FUZZY", 0) ||
+        !exact_operator_count("SEARCH_FILTER", 0)) {
+      return false;
+    }
+    const auto* terms = expression_named("SEARCH_TERMS");
+    const auto* binding = expression_named("SEARCH_ANALYZER_BINDING");
+    const auto* match = expression_named("SEARCH_MATCH");
+    if (!exact_function(terms, "SEARCH_TERMS", 1, false) ||
+        !exact_function(binding, "SEARCH_ANALYZER_BINDING", 3, false) ||
+        !exact_function(match, "SEARCH_MATCH", 4, false)) {
+      return false;
+    }
+    const auto alias = expressions_by_id.find(match->child_expression_ids[0]);
+    const auto text = expressions_by_id.find(terms->child_expression_ids[0]);
+    const auto digest = expressions_by_id.find(binding->child_expression_ids[2]);
+    const auto category = std::ranges::find_if(
+        dag.expressions, [&](const auto& expression) {
+          return std::ranges::find(node.bound_expression_ids.begin() + 5,
+                                   node.bound_expression_ids.end(),
+                                   expression.expression_id) !=
+                     node.bound_expression_ids.end() &&
+                 expression.expression_kind ==
+                     RelationalExpressionKind::kIdentifier &&
+                 expression.expression_id !=
+                     (alias == expressions_by_id.end() ? 0
+                                                       : alias->second->expression_id) &&
+                 expression.expression_id != binding->child_expression_ids[0];
+        });
+    const auto analyzer_output = output_named(node, "analyzer_uuid");
+    const auto generation_output = output_named(node, "analyzer_generation");
+    const auto rank_output = output_named(node, "rank");
+    if (alias == expressions_by_id.end() || text == expressions_by_id.end() ||
+        digest == expressions_by_id.end() || category == dag.expressions.end() ||
+        analyzer_output == nullptr || generation_output == nullptr ||
+        rank_output == nullptr ||
+        !exact_identifier(alias->second, node.required_object_uuids.front()) ||
+        !exact_literal(text->second, RelationalLiteralKind::kString) ||
+        terms->result_descriptor_id != text->second->result_descriptor_id ||
+        binding->child_expression_ids[0] != analyzer_output->expression_id ||
+        binding->child_expression_ids[1] != generation_output->expression_id ||
+        !exact_literal(digest->second, RelationalLiteralKind::kString) ||
+        digest->second->literal_or_parameter_ref->size() != 64 ||
+        !std::ranges::all_of(*digest->second->literal_or_parameter_ref,
+                             [](const unsigned char ch) {
+                               return (ch >= '0' && ch <= '9') ||
+                                      (ch >= 'a' && ch <= 'f');
+                             }) ||
+        match->child_expression_ids[1] != terms->expression_id ||
+        match->child_expression_ids[2] != binding->expression_id ||
+        match->child_expression_ids[3] != rank_output->expression_id ||
+        !exact_identifier(&*category, category->bound_name_uuid) ||
+        !category->bound_name_uuid.has_value() ||
+        category->bound_name_uuid == node.required_object_uuids.front()) {
+      return false;
+    }
+    const std::array<std::uint32_t, 7> suffix{
+        alias->second->expression_id, text->second->expression_id,
+        terms->expression_id, digest->second->expression_id,
+        binding->expression_id, match->expression_id,
+        category->expression_id};
+    return attached_suffix_exact(node, suffix);
+  };
+  const auto* spatial_node = family_node_for("SPATIAL_SOURCE");
+  const auto* search_node = family_node_for("SEARCH_MATCH");
+  const bool outer_semantic =
+      root.semantic_variant_id == "join.left-outer.on.v1" ||
+      root.semantic_variant_id == "join.right-outer.on.v1" ||
+      root.semantic_variant_id == "join.full-outer.on.v1";
+  if (spatial_node != nullptr && search_node != nullptr &&
+      spatial_node == &left && search_node == &right && outer_semantic &&
+      exact_spatial(*spatial_node) && exact_search(*search_node) &&
+      root.bound_expression_ids.size() == 1) {
+    const auto predicate =
+        expressions_by_id.find(root.bound_expression_ids.front());
+    const auto spatial_key = output_named(*spatial_node, "row_uuid");
+    const auto search_key = output_named(*search_node, "document_uuid");
+    if (predicate != expressions_by_id.end() && spatial_key != nullptr &&
+        search_key != nullptr &&
+        predicate->second->expression_kind == RelationalExpressionKind::kBinary &&
+        predicate->second->operator_name == "=" &&
+        !predicate->second->function_uuid.has_value() &&
+        !predicate->second->bound_name_uuid.has_value() &&
+        !predicate->second->literal_kind.has_value() &&
+        !predicate->second->literal_or_parameter_ref.has_value() &&
+        predicate->second->child_expression_ids ==
+            std::vector<std::uint32_t>{spatial_key->expression_id,
+                                       search_key->expression_id} &&
+        non_null_descriptor(predicate->second->result_descriptor_id)) {
+      return Compatibility::kSpatialSearchOuter;
+    }
+  }
+  return Compatibility::kNone;
+}
 
 RelationalDagValidationResult ValidateTypedRelationalDag(
     const TypedRelationalDag& dag,
@@ -294,6 +1401,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   const bool multileg_model_wire =
       planning_wire &&
       (multileg_model_family_by_node.size() > 1 || has_spatial_or_columnar_leg);
+  const auto rcp079_pair_compatibility =
+      ExactRcp079PairCohortCompatibilityV1(dag);
   if (multileg_model_wire) {
     std::unordered_set<std::uint32_t> attached_operation_ids;
     for (const auto& node : dag.nodes) {
@@ -367,6 +1476,36 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                                               "COLUMNAR_FILTER",
                                               "COLUMNAR_PROJECT"};
         multileg_identity_invalid = multileg_identity_invalid || !exact;
+      } else if (family->second == "key_value") {
+        multileg_identity_invalid =
+            multileg_identity_invalid ||
+            attached_operation_names !=
+                std::vector<std::string_view>{"KV_KEY"} ||
+            !ExactKeyValueOwnedClosureV1(dag, node);
+      } else if (family->second == "time_series") {
+        const bool compatible_rcp079_pair =
+            rcp079_pair_compatibility ==
+            Rcp079PairCohortCompatibilityV1::kTimeSeriesColumnarAsof;
+        multileg_identity_invalid = multileg_identity_invalid ||
+                                    (!compatible_rcp079_pair &&
+                                     (attached_operation_names !=
+                                          std::vector<std::string_view>{
+                                              "TIME_RANGE"} ||
+                                      !ExactTimeSeriesOwnedClosureV1(dag,
+                                                                     node)));
+      } else if (family->second == "search") {
+        const bool compatible_rcp079_pair =
+            rcp079_pair_compatibility ==
+            Rcp079PairCohortCompatibilityV1::kSpatialSearchOuter;
+        multileg_identity_invalid =
+            multileg_identity_invalid ||
+            (!compatible_rcp079_pair &&
+             (attached_operation_names.size() != 2 ||
+              std::ranges::count(attached_operation_names,
+                                 std::string_view{"SEARCH_TERMS"}) != 1 ||
+              std::ranges::count(attached_operation_names,
+                                 std::string_view{"SEARCH_MATCH"}) != 1 ||
+              !ExactSearchOwnedClosureV1(dag, node)));
       }
       if (multileg_identity_invalid) break;
     }
@@ -398,6 +1537,62 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       std::ranges::count_if(dag.expressions, [](const auto& expression) {
         return expression.operator_name == "DOCUMENT_UNNEST";
       }) == 1;
+  // QOW-SOURCE-RCP080-EXACT-DOCUMENT-SOURCE-LOCAL-WIRE-V1
+  // A bounded composition validates its complete multileg graph before
+  // deriving one exact source closure for an established family executor.
+  // Recognize only that closed one-node DOCUMENT_SOURCE form here.
+  const auto document_source_operation_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "DOCUMENT_SOURCE";
+      });
+  const auto document_source_operation = std::ranges::find_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "DOCUMENT_SOURCE";
+      });
+  const auto document_source_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
+      });
+  const auto document_source_node_count = std::ranges::count_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
+      });
+  const auto document_source_alias =
+      document_source_operation == dag.expressions.end() ||
+              document_source_operation->child_expression_ids.size() != 1
+          ? dag.expressions.end()
+          : std::ranges::find_if(dag.expressions, [&](const auto& expression) {
+              return expression.expression_id ==
+                     document_source_operation->child_expression_ids.front();
+            });
+  const bool document_source_wire =
+      planning_wire && !multileg_model_wire && dag.nodes.size() == 1 &&
+      document_source_operation_count == 1 &&
+      document_source_node_count == 1 &&
+      document_source_operation != dag.expressions.end() &&
+      document_source_node != dag.nodes.end() &&
+      document_source_alias != dag.expressions.end() &&
+      document_source_node->node_kind == RelationalDagNodeKind::kScan &&
+      document_source_node->required_object_uuids.size() == 1 &&
+      document_source_operation->expression_kind ==
+          RelationalExpressionKind::kFunctionCall &&
+      !document_source_operation->function_uuid.has_value() &&
+      !document_source_operation->bound_name_uuid.has_value() &&
+      document_source_alias->expression_kind ==
+          RelationalExpressionKind::kIdentifier &&
+      document_source_alias->bound_name_uuid ==
+          document_source_node->required_object_uuids.front() &&
+      std::ranges::find(document_source_node->bound_expression_ids,
+                        document_source_operation->expression_id) !=
+          document_source_node->bound_expression_ids.end() &&
+      std::ranges::find(document_source_node->bound_expression_ids,
+                        document_source_alias->expression_id) !=
+          document_source_node->bound_expression_ids.end();
+  if (!multileg_model_wire && document_source_operation_count != 0 &&
+      !document_source_wire) {
+    return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", 0,
+                  "document_source_operation_identity");
+  }
   const auto graph_operation_count = std::ranges::count_if(
       dag.expressions, [](const auto& expression) {
         return expression.operator_name == "GRAPH_MATCH" ||
@@ -662,6 +1857,10 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         document_expand_node->bound_expression_ids.size() == 1 &&
         document_expand_node->bound_expression_ids.front() ==
             expression.expression_id;
+    const bool functionless_document_source =
+        document_source_wire && function_call &&
+        !expression.function_uuid.has_value() &&
+        expression.expression_id == document_source_operation->expression_id;
     const bool functionless_graph_operation =
         graph_model_wire && function_call &&
         !expression.function_uuid.has_value() &&
@@ -710,7 +1909,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     const bool operator_expression =
         expression.expression_kind == RelationalExpressionKind::kUnary ||
         expression.expression_kind == RelationalExpressionKind::kBinary ||
-        functionless_document_unnest || functionless_graph_operation ||
+        functionless_document_unnest || functionless_document_source ||
+        functionless_graph_operation ||
         functionless_key_value_operation || functionless_time_series_operation ||
         functionless_vector_operation || functionless_search_operation ||
         functionless_multileg_model_operation ||
@@ -720,6 +1920,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
          !known_literal_kind(*expression.literal_kind)) ||
         function_call != (expression.function_uuid.has_value() ||
                           functionless_document_unnest ||
+                          functionless_document_source ||
                           functionless_graph_operation ||
                           functionless_key_value_operation ||
                           functionless_time_series_operation ||
@@ -747,6 +1948,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         ((literal || parameter || identifier) && child_count == 0) ||
         (function_call &&
          ((!functionless_document_unnest &&
+           !functionless_document_source &&
            !functionless_graph_operation &&
            !functionless_key_value_operation &&
            !functionless_time_series_operation &&
@@ -755,6 +1957,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
            !functionless_multileg_model_operation &&
            !functionless_spatial_point_constructor) ||
           (functionless_document_unnest && child_count == 2) ||
+          (functionless_document_source && child_count == 1) ||
           (functionless_graph_operation &&
            ((expression.operator_name == "GRAPH_MATCH" && child_count == 2) ||
             (expression.operator_name == "GRAPH_EXPAND" && child_count == 5))) ||
@@ -1839,6 +3042,127 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                     "document_unnest_expression_root");
     }
   }
+  if (document_source_wire) {
+    // QOW-SOURCE-RCP080-EXACT-DOCUMENT-SOURCE-LOCAL-SHAPE-V1
+    // The early marker admits only typed-field parsing.  Prove the complete
+    // output/root/alias closure, descriptor inventory, and reachability here
+    // before the DAG can become a logical document source.
+    const auto& node = *document_source_node;
+    const auto& root = *document_source_operation;
+    const auto& alias = *document_source_alias;
+    std::vector<const RelationalOutputRecord*> document_outputs;
+    for (const auto& output : dag.outputs) {
+      if (output.relation_node_id == node.node_id) {
+        document_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(document_outputs, {}, [](const auto* output) {
+      return output->ordinal;
+    });
+    bool exact_outputs =
+        !document_outputs.empty() &&
+        document_outputs.size() == node.output_descriptor_ids.size() &&
+        node.bound_expression_ids.size() >= document_outputs.size();
+    std::unordered_set<std::uint32_t> output_expression_ids;
+    std::unordered_set<std::string> output_names;
+    for (std::size_t ordinal = 0;
+         exact_outputs && ordinal < document_outputs.size(); ++ordinal) {
+      const auto* output = document_outputs[ordinal];
+      const auto expression = expressions_by_id.find(output->expression_id);
+      exact_outputs =
+          output->ordinal == ordinal && output->visible &&
+          !output->output_name_utf8.empty() &&
+          output_names.insert(output->output_name_utf8).second &&
+          output->descriptor_id == node.output_descriptor_ids[ordinal] &&
+          node.bound_expression_ids[ordinal] == output->expression_id &&
+          output_expression_ids.insert(output->expression_id).second &&
+          expression != expressions_by_id.end() &&
+          expression->second->expression_kind ==
+              RelationalExpressionKind::kIdentifier &&
+          expression->second->result_descriptor_id == output->descriptor_id &&
+          expression->second->child_expression_ids.empty() &&
+          !expression->second->function_uuid.has_value() &&
+          expression->second->bound_name_uuid.has_value() &&
+          canonical_uuid(*expression->second->bound_name_uuid) &&
+          *expression->second->bound_name_uuid !=
+              node.required_object_uuids.front() &&
+          !expression->second->literal_kind.has_value() &&
+          !expression->second->literal_or_parameter_ref.has_value() &&
+          !expression->second->operator_name.has_value();
+    }
+    const std::unordered_set<std::uint32_t> exact_operation_closure{
+        root.expression_id, alias.expression_id};
+    const std::unordered_set<std::uint32_t> attached_operation_closure(
+        node.bound_expression_ids.begin() +
+            static_cast<std::ptrdiff_t>(document_outputs.size()),
+        node.bound_expression_ids.end());
+    std::unordered_set<std::uint32_t> reachable_expression_ids;
+    std::vector<std::uint32_t> pending(node.bound_expression_ids.begin(),
+                                       node.bound_expression_ids.end());
+    bool complete_reachability = true;
+    while (!pending.empty() && complete_reachability) {
+      const auto expression_id = pending.back();
+      pending.pop_back();
+      if (!reachable_expression_ids.insert(expression_id).second) continue;
+      const auto expression = expressions_by_id.find(expression_id);
+      if (expression == expressions_by_id.end()) {
+        complete_reachability = false;
+        break;
+      }
+      pending.insert(pending.end(),
+                     expression->second->child_expression_ids.begin(),
+                     expression->second->child_expression_ids.end());
+    }
+    complete_reachability =
+        complete_reachability &&
+        reachable_expression_ids.size() == dag.expressions.size();
+    std::unordered_set<std::uint32_t> reachable_descriptor_ids;
+    for (const auto expression_id : reachable_expression_ids) {
+      reachable_descriptor_ids.insert(
+          expressions_by_id.at(expression_id)->result_descriptor_id);
+    }
+    reachable_descriptor_ids.insert(node.output_descriptor_ids.begin(),
+                                    node.output_descriptor_ids.end());
+    complete_reachability =
+        complete_reachability &&
+        reachable_descriptor_ids.size() == dag.descriptors.size() &&
+        std::ranges::all_of(dag.descriptors, [&](const auto& descriptor) {
+          return reachable_descriptor_ids.contains(descriptor.descriptor_id);
+        });
+    if (dag.root_node_id != node.node_id ||
+        node.node_kind != RelationalDagNodeKind::kScan ||
+        node.semantic_variant_id != "SBLR_MODEL_SOURCE_V1" ||
+        !node.input_node_ids.empty() || !node.values_row_ids.empty() ||
+        node.required_object_uuids.size() != 1 ||
+        !canonical_uuid(node.required_object_uuids.front()) ||
+        !node.required_property_uuids.empty() ||
+        !node.delivered_property_uuids.empty() ||
+        node.bound_expression_ids.size() !=
+            node.output_descriptor_ids.size() + 2 ||
+        !exact_outputs ||
+        output_expression_ids.contains(root.expression_id) ||
+        output_expression_ids.contains(alias.expression_id) ||
+        attached_operation_closure != exact_operation_closure ||
+        root.expression_kind != RelationalExpressionKind::kFunctionCall ||
+        root.function_uuid.has_value() || root.bound_name_uuid.has_value() ||
+        root.literal_kind.has_value() ||
+        root.literal_or_parameter_ref.has_value() ||
+        root.operator_name != "DOCUMENT_SOURCE" ||
+        root.child_expression_ids !=
+            std::vector<std::uint32_t>{alias.expression_id} ||
+        alias.expression_kind != RelationalExpressionKind::kIdentifier ||
+        !alias.child_expression_ids.empty() || alias.function_uuid.has_value() ||
+        alias.bound_name_uuid != node.required_object_uuids.front() ||
+        alias.literal_kind.has_value() ||
+        alias.literal_or_parameter_ref.has_value() ||
+        alias.operator_name.has_value() || !dag.values_rows.empty() ||
+        !dag.grouping_sets.empty() || !dag.window_definitions.empty() ||
+        !dag.window_invocations.empty() || !dag.properties.empty() ||
+        !complete_reachability) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                    "document_source_operation_shape");
+    }
+  }
   if (graph_model_wire) {
     // QOW-SOURCE-RCP-074-TYPED-DAG-FUNCTIONLESS-GRAPH-V1
     const auto& node = *graph_node;
@@ -2083,11 +3407,42 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                  owner->second->node_kind ==
                      RelationalDagNodeKind::kSetOperation;
         });
+    // QOW-SOURCE-RCP080-EXACT-STANDALONE-GRAPH-CLOSURE-WIDTH-V1
+    // The public outputs remain the ordered prefix.  Preserve the complete
+    // explicit graph operation as an exact suffix: root plus every ordered
+    // operand, with no overlap, duplicate, foreign, missing, or extra ID.
+    const std::size_t exact_graph_operation_width =
+        root.operator_name == "GRAPH_MATCH" ? 3U : 6U;
+    bool exact_graph_closure_binding =
+        node.bound_expression_ids.size() ==
+            node.output_descriptor_ids.size() + exact_graph_operation_width &&
+        root.child_expression_ids.size() + 1 == exact_graph_operation_width;
+    if (exact_graph_closure_binding) {
+      const auto suffix_begin =
+          node.bound_expression_ids.begin() + static_cast<std::ptrdiff_t>(
+                                                  node.output_descriptor_ids.size());
+      const std::unordered_set<std::uint32_t> output_prefix_ids(
+          node.bound_expression_ids.begin(), suffix_begin);
+      const std::unordered_set<std::uint32_t> attached_operation_ids(
+          suffix_begin, node.bound_expression_ids.end());
+      std::unordered_set<std::uint32_t> exact_operation_ids{
+          root.expression_id};
+      exact_operation_ids.insert(root.child_expression_ids.begin(),
+                                 root.child_expression_ids.end());
+      exact_graph_closure_binding =
+          output_prefix_ids.size() == node.output_descriptor_ids.size() &&
+          attached_operation_ids.size() == exact_graph_operation_width &&
+          exact_operation_ids.size() == exact_graph_operation_width &&
+          attached_operation_ids == exact_operation_ids &&
+          std::ranges::none_of(output_prefix_ids, [&](const auto expression_id) {
+            return exact_operation_ids.contains(expression_id);
+          });
+    }
     if (node.node_kind != RelationalDagNodeKind::kScan ||
         !node.input_node_ids.empty() || node.required_object_uuids.size() != 1 ||
         !canonical_uuid(node.required_object_uuids.front()) ||
         node.bound_expression_ids.empty() || node.output_descriptor_ids.empty() ||
-        node.bound_expression_ids.size() != node.output_descriptor_ids.size() ||
+        !exact_graph_closure_binding ||
         graph_outputs.size() != node.output_descriptor_ids.size() ||
         root.expression_kind != RelationalExpressionKind::kFunctionCall ||
         root.function_uuid.has_value() || root.bound_name_uuid.has_value() ||
@@ -2843,6 +4198,8 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
     const auto& issue = validation.issues.front();
     return refuse(issue.diagnostic_id, issue.node_id, issue.field_id);
   }
+  const auto rcp079_pair_compatibility =
+      ExactRcp079PairCohortCompatibilityV1(dag);
   // QOW-SOURCE-RCP079-MULTILEG-CANONICAL-FAMILY-POPULATION-V1
   // Reconstruct the admitted per-node family map from bound operation roots.
   // ValidateTypedRelationalDag has already proven uniqueness, attachment,
@@ -2878,6 +4235,9 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
   }
   std::unordered_map<std::uint32_t, std::string_view>
       multileg_family_by_node;
+  std::unordered_set<std::uint32_t> exact_multileg_key_value_node_ids;
+  std::unordered_set<std::uint32_t> exact_multileg_time_series_node_ids;
+  std::unordered_set<std::uint32_t> exact_multileg_search_node_ids;
   for (const auto& node : dag.nodes) {
     for (const auto expression_id : node.bound_expression_ids) {
       const auto found = bridge_expressions_by_id.find(expression_id);
@@ -2886,6 +4246,22 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
           multileg_family_for_operator(found->second->operator_name);
       if (!family.empty()) {
         multileg_family_by_node.emplace(node.node_id, family);
+        if (family == "key_value" &&
+            ExactKeyValueOwnedClosureV1(dag, node)) {
+          exact_multileg_key_value_node_ids.insert(node.node_id);
+        } else if (family == "time_series" &&
+                   (ExactTimeSeriesOwnedClosureV1(dag, node) ||
+                    rcp079_pair_compatibility ==
+                        Rcp079PairCohortCompatibilityV1::
+                            kTimeSeriesColumnarAsof)) {
+          exact_multileg_time_series_node_ids.insert(node.node_id);
+        } else if (family == "search" &&
+                   (ExactSearchOwnedClosureV1(dag, node) ||
+                    rcp079_pair_compatibility ==
+                        Rcp079PairCohortCompatibilityV1::
+                            kSpatialSearchOuter)) {
+          exact_multileg_search_node_ids.insert(node.node_id);
+        }
         break;
       }
     }
@@ -2895,6 +4271,35 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
       std::ranges::any_of(multileg_family_by_node, [](const auto& item) {
         return item.second == "spatial" || item.second == "columnar";
       });
+  // QOW-SOURCE-RCP080-EXACT-DOCUMENT-SOURCE-LOGICAL-BRIDGE-V1
+  // Validation above has already proven the complete closed shape.  Carry
+  // only that one-node explicit source identity into the logical graph.
+  const auto exact_document_source_operation_count = std::ranges::count_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "DOCUMENT_SOURCE";
+      });
+  const auto exact_document_source_operation = std::ranges::find_if(
+      dag.expressions, [](const auto& expression) {
+        return expression.operator_name == "DOCUMENT_SOURCE";
+      });
+  const auto exact_document_source_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1";
+      });
+  const bool exact_document_source_family =
+      !exact_multileg_model && dag.wire_version == 2 && dag.nodes.size() == 1 &&
+      multileg_family_by_node.size() == 1 &&
+      multileg_family_by_node.begin()->second == "document" &&
+      exact_document_source_operation_count == 1 &&
+      exact_document_source_operation != dag.expressions.end() &&
+      exact_document_source_node != dag.nodes.end() &&
+      exact_document_source_node->node_kind == RelationalDagNodeKind::kScan &&
+      exact_document_source_node->required_object_uuids.size() == 1 &&
+      exact_document_source_node->bound_expression_ids.size() ==
+          exact_document_source_node->output_descriptor_ids.size() + 2 &&
+      std::ranges::find(exact_document_source_node->bound_expression_ids,
+                        exact_document_source_operation->expression_id) !=
+          exact_document_source_node->bound_expression_ids.end();
   // QOW-SOURCE-RCP-074-CANONICAL-MODEL-FAMILY-POPULATION-V1
   // The family marker is derived only after complete typed-DAG admission.
   // Preserve the exact operator/semantic pairing used by the validator; an
@@ -3174,15 +4579,27 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
         logical_node.model_family_identity =
             plan::CanonicalLogicalModelFamilyIdentity::kGraph;
       } else if (multileg_family->second == "key_value") {
+        if (!exact_multileg_key_value_node_ids.contains(node.node_id)) {
+          return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                        "key_value_exact_owned_closure");
+        }
         logical_node.model_family_identity =
             plan::CanonicalLogicalModelFamilyIdentity::kKeyValue;
       } else if (multileg_family->second == "time_series") {
+        if (!exact_multileg_time_series_node_ids.contains(node.node_id)) {
+          return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                        "time_series_exact_owned_closure");
+        }
         logical_node.model_family_identity =
             plan::CanonicalLogicalModelFamilyIdentity::kTimeSeries;
       } else if (multileg_family->second == "vector") {
         logical_node.model_family_identity =
             plan::CanonicalLogicalModelFamilyIdentity::kVector;
       } else if (multileg_family->second == "search") {
+        if (!exact_multileg_search_node_ids.contains(node.node_id)) {
+          return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                        "search_exact_owned_closure");
+        }
         logical_node.model_family_identity =
             plan::CanonicalLogicalModelFamilyIdentity::kSearch;
       } else if (multileg_family->second == "spatial") {
@@ -3195,6 +4612,10 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
     } else if (exact_graph_family && node.node_id == graph_node->node_id) {
       logical_node.model_family_identity =
           plan::CanonicalLogicalModelFamilyIdentity::kGraph;
+    } else if (exact_document_source_family &&
+               node.node_id == exact_document_source_node->node_id) {
+      logical_node.model_family_identity =
+          plan::CanonicalLogicalModelFamilyIdentity::kDocument;
     } else if (exact_key_value_family &&
                node.semantic_variant_id == "SBLR_MODEL_SOURCE_V1") {
       logical_node.model_family_identity =

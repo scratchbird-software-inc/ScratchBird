@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace sbsql = scratchbird::parser::sbsql;
@@ -23,6 +24,7 @@ std::uint64_t Rcp073DocumentFrontdoorProofMaskForTest();
 std::uint64_t Rcp074GraphFrontdoorProofMaskForTest();
 std::uint64_t Rcp076TimeSeriesFrontdoorProofMaskForTest();
 std::uint64_t Rcp079SpatialColumnarFrontdoorProofMaskForTest();
+std::uint64_t Rcp080MultimodelWireProofMaskForTest();
 }
 
 namespace {
@@ -598,6 +600,417 @@ sbsql::NativeRelationalBindingContext SpatialColumnarContextFor(
     context.expressions.push_back(std::move(input));
   }
   return context;
+}
+
+sbsql::NativeRelationalBindingContext MultimodelJoinContextFor(
+    const sbsql::NativeRelationalAstDocument& ast,
+    const bool carry_timestamp) {
+  sbsql::NativeRelationalBindingContext context;
+  context.bound_ast_uuid = Uuid(2000);
+  context.catalog_epoch_uuid = Uuid(2001);
+  context.security_context_uuid = Uuid(2002);
+  context.statement_uuid = Uuid(2003);
+  context.statement_timestamp =
+      carry_timestamp ? "2026-08-12T20:00:00.123456789Z" : "";
+  context.owning_transaction_uuid = Uuid(2004);
+  context.statement_snapshot_uuid = Uuid(2005);
+  context.statement_metadata_snapshot_uuid = Uuid(2006);
+  context.local_transaction_id = 80;
+  context.snapshot_visible_through_local_transaction_id = 79;
+  SetEngineAuthority(&context);
+  context.search_analyzer_uuid = Uuid(2007);
+  context.search_analyzer_generation = 80;
+  const auto source_count = ast.catalog_relation_sources.size();
+  std::vector<std::vector<std::uint32_t>> source_projection_expression_ids(
+      source_count);
+  std::vector<std::vector<std::uint32_t>> source_projection_descriptor_ids(
+      source_count);
+  std::uint32_t next_descriptor_id = 1;
+  std::uint32_t next_expression_id = 1;
+  std::uint32_t next_output_id = 1;
+  for (std::size_t ordinal = 0; ordinal < source_count; ++ordinal) {
+    const auto persisted_descriptor_id = next_descriptor_id++;
+    context.descriptors.push_back(
+        {persisted_descriptor_id, Uuid(2010 + ordinal), Uuid(2030 + ordinal),
+         sbsql::BoundNullability::kNonNull, std::nullopt, std::nullopt, {},
+         "uuid"});
+    const auto& ast_source = ast.catalog_relation_sources[ordinal];
+    sbsql::NativeCatalogRelationBindingInput source;
+    source.source_id = ast_source.source_id;
+    source.resolution_state =
+        sbsql::NativeCatalogRelationResolutionState::kBound;
+    source.object_uuid = Uuid(2050 + ordinal);
+    source.resolved_schema_uuid = Uuid(2070 + ordinal);
+    source.catalog_generation_id = 80;
+    source.security_epoch = 80;
+    source.resource_epoch = 80;
+    switch (ast_source.source_kind) {
+      case sbsql::NativeRelationSourceAstKind::kDocument:
+        source.resolved_object_type = "document_collection";
+        break;
+      case sbsql::NativeRelationSourceAstKind::kGraph:
+        source.resolved_object_type = "graph";
+        break;
+      case sbsql::NativeRelationSourceAstKind::kKeyValue:
+        source.resolved_object_type = "key_value";
+        break;
+      case sbsql::NativeRelationSourceAstKind::kTimeSeries:
+        source.resolved_object_type = "time_series";
+        break;
+      case sbsql::NativeRelationSourceAstKind::kVector:
+        source.resolved_object_type = "vector";
+        break;
+      case sbsql::NativeRelationSourceAstKind::kSearch:
+        source.resolved_object_type = "search";
+        break;
+      case sbsql::NativeRelationSourceAstKind::kSpatial:
+        source.resolved_object_type = "spatial_collection";
+        break;
+      case sbsql::NativeRelationSourceAstKind::kColumnar:
+        source.resolved_object_type = "logical_relation";
+        break;
+      default: source.resolved_object_type = "table"; break;
+    }
+    source.columns.push_back(
+        {0, Uuid(2100 + ordinal), persisted_descriptor_id,
+         "source_" + std::to_string(ordinal + 1)});
+    context.catalog_relations.push_back(std::move(source));
+    const bool vector = ast_source.source_kind ==
+                        sbsql::NativeRelationSourceAstKind::kVector;
+    const bool search = ast_source.source_kind ==
+                        sbsql::NativeRelationSourceAstKind::kSearch;
+    const std::vector<std::string_view> output_names =
+        vector ? std::vector<std::string_view>{"row_uuid", "distance", "score"}
+        : search ? std::vector<std::string_view>{
+                       "document_uuid", "analyzer_uuid",
+                       "analyzer_generation", "score", "rank"}
+                 : std::vector<std::string_view>{
+                       context.catalog_relations.back()
+                           .columns.front()
+                           .canonical_name_key};
+    for (std::size_t output_ordinal = 0;
+         output_ordinal < output_names.size(); ++output_ordinal) {
+      auto descriptor_id = persisted_descriptor_id;
+      if (vector || search) {
+        descriptor_id = next_descriptor_id++;
+        context.descriptors.push_back(
+            {descriptor_id,
+             Uuid(2200 + ordinal * 8 + output_ordinal),
+             Uuid(2300 + ordinal * 8 + output_ordinal),
+             sbsql::BoundNullability::kNonNull, std::nullopt, std::nullopt, {},
+             output_ordinal == 2 && search ? "uint64" : "uuid"});
+      }
+      const auto expression_id = next_expression_id++;
+      const auto bound_name =
+          search && (output_ordinal == 1 || output_ordinal == 2)
+              ? context.search_analyzer_uuid
+              : (vector || search)
+                    ? context.catalog_relations.back().object_uuid
+                    : context.catalog_relations.back()
+                          .columns.front()
+                          .column_uuid;
+      context.expressions.push_back(
+          {expression_id, descriptor_id, std::nullopt, bound_name});
+      context.outputs.push_back(
+          {next_output_id++, expression_id, std::string(output_names[output_ordinal]),
+           descriptor_id, true, static_cast<std::uint32_t>(output_ordinal),
+           static_cast<std::uint32_t>(ordinal + 1)});
+      source_projection_expression_ids[ordinal].push_back(expression_id);
+      source_projection_descriptor_ids[ordinal].push_back(descriptor_id);
+    }
+  }
+
+  for (std::size_t ordinal = 0; ordinal < source_count; ++ordinal) {
+    const auto& source = ast.catalog_relation_sources[ordinal];
+    if (source.source_kind ==
+        sbsql::NativeRelationSourceAstKind::kCatalogRelation) {
+      continue;
+    }
+    std::unordered_set<std::uint32_t> closure;
+    std::vector<std::uint32_t> pending{
+        source.model_operation_expression_ids.front()};
+    const auto relation = std::ranges::find_if(
+        ast.relations, [&](const auto& candidate) {
+          return candidate.relation_kind ==
+                     sbsql::NativeRelationAstKind::kCatalogSource &&
+                 candidate.relation_source_ids ==
+                     std::vector<std::uint32_t>{source.source_id};
+        });
+    pending.insert(pending.end(), relation->predicate_expression_ids.begin(),
+                   relation->predicate_expression_ids.end());
+    while (!pending.empty()) {
+      const auto expression_id = pending.back();
+      pending.pop_back();
+      if (!closure.insert(expression_id).second) continue;
+      const auto expression = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == expression_id;
+          });
+      pending.insert(pending.end(), expression->child_expression_ids.begin(),
+                     expression->child_expression_ids.end());
+    }
+    std::vector<std::uint32_t> ordered(closure.begin(), closure.end());
+    std::ranges::sort(ordered);
+    const auto primary_id = source.model_operation_expression_ids.front();
+    const auto primary = std::ranges::find_if(
+        ast.expressions, [&](const auto& candidate) {
+          return candidate.expression_id == primary_id;
+        });
+    const auto alias_id = primary->child_expression_ids.empty()
+                              ? 0
+                              : primary->child_expression_ids.front();
+    for (const auto ast_expression_id : ordered) {
+      std::optional<std::string> bound_name;
+      if (ast_expression_id == alias_id) {
+        bound_name = context.catalog_relations[ordinal].object_uuid;
+      } else if (source.model_search_analyzer_expression_id ==
+                 ast_expression_id) {
+        bound_name = context.search_analyzer_uuid;
+      } else if (ast_expression_id == primary_id &&
+                 (source.source_kind ==
+                      sbsql::NativeRelationSourceAstKind::kSpatial ||
+                  source.source_kind ==
+                      sbsql::NativeRelationSourceAstKind::kColumnar)) {
+        bound_name = context.catalog_relations[ordinal].object_uuid;
+      }
+      context.expressions.push_back(
+          {next_expression_id++,
+           context.catalog_relations[ordinal].columns.front().descriptor_id,
+           std::nullopt, bound_name});
+    }
+  }
+
+  for (std::size_t join_ordinal = 1; join_ordinal < source_count;
+       ++join_ordinal) {
+    const auto relation_id =
+        static_cast<std::uint32_t>(source_count + join_ordinal);
+    context.relations.push_back({relation_id, "join.cross.v1"});
+    for (std::size_t ordinal = 0; ordinal <= join_ordinal; ++ordinal) {
+      for (std::size_t output_ordinal = 0;
+           output_ordinal < source_projection_expression_ids[ordinal].size();
+           ++output_ordinal) {
+        const auto source_output = std::ranges::find_if(
+            context.outputs, [&](const auto& output) {
+              return output.relation_id == ordinal + 1 &&
+                     output.ordinal == output_ordinal;
+            });
+        context.outputs.push_back(
+            {next_output_id++,
+             source_projection_expression_ids[ordinal][output_ordinal],
+             source_output->output_name_utf8,
+             source_projection_descriptor_ids[ordinal][output_ordinal], true,
+             0, relation_id});
+      }
+    }
+    std::uint32_t output_ordinal = 0;
+    for (auto& output : context.outputs) {
+      if (output.relation_id == relation_id) output.ordinal = output_ordinal++;
+    }
+  }
+  return context;
+}
+
+bool MultimodelJoinBindingLowering() {
+  const auto timestamp_cst = sbsql::BuildCst(
+      "SELECT * FROM app.heap CROSS JOIN "
+      "DOCUMENT_SOURCE(app.docs) AS d CROSS JOIN "
+      "SPATIAL_SOURCE(app.spatial) AS s CROSS JOIN "
+      "COLUMNAR_SOURCE(app.columnar) AS c;");
+  const auto timestamp_ast = sbsql::BuildAst(timestamp_cst);
+  bool passed = Require(
+      timestamp_ast.native_relational.accepted() &&
+          timestamp_ast.native_relational.catalog_relation_sources.size() == 4 &&
+          timestamp_ast.native_relational.relations.size() == 7 &&
+          timestamp_ast.native_relational.model_object_resolution_requests.size() ==
+              3,
+      "four-leg multimodel AST was not accepted: " +
+          DiagnosticSummary(timestamp_ast.messages));
+  if (!timestamp_ast.native_relational.accepted()) return false;
+  auto timestamp_context =
+      MultimodelJoinContextFor(timestamp_ast.native_relational, true);
+  const auto timestamp_bound = sbsql::BindAst(
+      timestamp_ast, timestamp_cst, Config(), Session(), {},
+      &timestamp_context);
+  const auto timestamp_lowered =
+      sbsql::LowerToSblr(timestamp_bound, timestamp_cst, Session());
+  const auto timestamp_verified = sbsql::VerifySblrEnvelope(timestamp_lowered);
+  passed &= Require(
+      timestamp_bound.bound && timestamp_bound.native_relational.bound &&
+          !timestamp_lowered.messages.has_errors() &&
+          HasOperand(timestamp_lowered, "text",
+                     "relational_statement_timestamp") &&
+          timestamp_verified.admitted,
+      "four-leg multimodel binding/lowering failed: " +
+          DiagnosticSummary(timestamp_bound.messages) + ":" +
+          DiagnosticSummary(timestamp_lowered.messages) + ":" +
+          DiagnosticSummary(timestamp_verified.messages));
+
+  const auto nontimestamp_cst = sbsql::BuildCst(
+      "SELECT * FROM app.heap CROSS JOIN "
+      "DOCUMENT_SOURCE(app.docs) AS d CROSS JOIN "
+      "GRAPH_SOURCE(app.graph_fixture) AS g WHERE "
+      "GRAPH_MATCH(g, 'vertex(*)');");
+  const auto nontimestamp_ast = sbsql::BuildAst(nontimestamp_cst);
+  if (!Require(nontimestamp_ast.native_relational.accepted(),
+               "three-leg explicit multimodel AST was not accepted: " +
+                   DiagnosticSummary(nontimestamp_ast.messages))) {
+    return false;
+  }
+  auto nontimestamp_context =
+      MultimodelJoinContextFor(nontimestamp_ast.native_relational, false);
+  const auto nontimestamp_bound = sbsql::BindAst(
+      nontimestamp_ast, nontimestamp_cst, Config(), Session(), {},
+      &nontimestamp_context);
+  const auto nontimestamp_lowered =
+      sbsql::LowerToSblr(nontimestamp_bound, nontimestamp_cst, Session());
+  const auto nontimestamp_verified =
+      sbsql::VerifySblrEnvelope(nontimestamp_lowered);
+  passed &= Require(
+      nontimestamp_ast.native_relational.accepted() &&
+          nontimestamp_bound.bound &&
+          !HasOperand(nontimestamp_lowered, "text",
+                      "relational_statement_timestamp") &&
+          nontimestamp_verified.admitted,
+      "document/graph/relational composition minted a timestamp: " +
+          DiagnosticSummary(nontimestamp_bound.messages) + ":" +
+          DiagnosticSummary(nontimestamp_lowered.messages) + ":" +
+          DiagnosticSummary(nontimestamp_verified.messages));
+
+  const auto full_nine_cst = sbsql::BuildCst(
+      "SELECT * FROM app.heap CROSS JOIN "
+      "DOCUMENT_SOURCE(app.docs) AS d CROSS JOIN "
+      "GRAPH_SOURCE(app.graph_fixture) AS g CROSS JOIN "
+      "KEY_VALUE_SOURCE(app.kv) AS kv CROSS JOIN "
+      "TIME_SERIES_SOURCE(app.series) AS ts CROSS JOIN "
+      "VECTOR_SOURCE(app.vectors) AS v CROSS JOIN "
+      "SEARCH_SOURCE(app.search_fixture) AS q CROSS JOIN "
+      "SPATIAL_SOURCE(app.spatial) AS s CROSS JOIN "
+      "COLUMNAR_SOURCE(app.columnar) AS c WHERE "
+      "GRAPH_MATCH(g, 'vertex(*)') AND KV_KEY(kv) = 'alpha' AND "
+      "TIME_RANGE(ts, TIMESTAMP '2026-08-10T12:00:00Z', "
+      "TIMESTAMP '2026-08-10T12:02:00Z') AND "
+      "VECTOR_NEAREST(v, VECTOR '[1,0,0]', L2_SQUARED, 2) AND "
+      "SEARCH_MATCH(q, SEARCH_TERMS('quick fox'), app.ascii_v1, 3);");
+  const auto full_nine_ast = sbsql::BuildAst(full_nine_cst);
+  if (!Require(full_nine_ast.native_relational.accepted(),
+               "full-nine explicit multimodel AST was not accepted: " +
+                   DiagnosticSummary(full_nine_ast.messages))) {
+    return false;
+  }
+  auto full_nine_context =
+      MultimodelJoinContextFor(full_nine_ast.native_relational, true);
+  const auto full_nine_bound = sbsql::BindAst(
+      full_nine_ast, full_nine_cst, Config(), Session(), {},
+      &full_nine_context);
+  const auto full_nine_lowered =
+      sbsql::LowerToSblr(full_nine_bound, full_nine_cst, Session());
+  const auto full_nine_verified = sbsql::VerifySblrEnvelope(full_nine_lowered);
+  passed &= Require(
+      full_nine_ast.native_relational.accepted() &&
+          full_nine_ast.native_relational.catalog_relation_sources.size() == 9 &&
+          full_nine_ast.native_relational.relations.size() == 17 &&
+          full_nine_bound.bound &&
+          full_nine_bound.native_relational.relations.size() == 17 &&
+          !full_nine_lowered.messages.has_errors() &&
+          full_nine_verified.admitted,
+      "full-nine multimodel translation was not admitted: " +
+          DiagnosticSummary(full_nine_ast.messages) + ":" +
+          DiagnosticSummary(full_nine_bound.messages) + ":" +
+          DiagnosticSummary(full_nine_lowered.messages) + ":" +
+          DiagnosticSummary(full_nine_verified.messages));
+
+  const auto ten_source_ast = sbsql::BuildAst(sbsql::BuildCst(
+      "SELECT * FROM app.heap CROSS JOIN "
+      "DOCUMENT_SOURCE(app.docs) AS d CROSS JOIN "
+      "GRAPH_SOURCE(app.graph_fixture) AS g CROSS JOIN "
+      "KEY_VALUE_SOURCE(app.kv) AS kv CROSS JOIN "
+      "TIME_SERIES_SOURCE(app.series) AS ts CROSS JOIN "
+      "VECTOR_SOURCE(app.vectors) AS v CROSS JOIN "
+      "SEARCH_SOURCE(app.search_fixture) AS q CROSS JOIN "
+      "SPATIAL_SOURCE(app.spatial) AS s CROSS JOIN "
+      "COLUMNAR_SOURCE(app.columnar) AS c CROSS JOIN app.extra WHERE "
+      "GRAPH_MATCH(g, 'vertex(*)') AND KV_KEY(kv) = 'alpha' AND "
+      "TIME_RANGE(ts, TIMESTAMP '2026-08-10T12:00:00Z', "
+      "TIMESTAMP '2026-08-10T12:02:00Z') AND "
+      "VECTOR_NEAREST(v, VECTOR '[1,0,0]', L2_SQUARED, 2) AND "
+      "SEARCH_MATCH(q, SEARCH_TERMS('quick fox'), app.ascii_v1, 3);"));
+  passed &= Require(
+      ten_source_ast.native_relational.status ==
+              sbsql::NativeRelationalParseStatus::kRefused &&
+          HasDiagnostic(ten_source_ast.messages,
+                        "SB_MODEL_COMPOSITION_PROFILE_REFUSED_V1"),
+      "ten-source composition did not fail closed");
+
+  auto unattached_ast = full_nine_ast;
+  unattached_ast.native_relational.catalog_relation_sources[1]
+      .model_operation_expression_ids.clear();
+  auto unattached_context = full_nine_context;
+  const auto unattached_bound = sbsql::BindAst(
+      unattached_ast, full_nine_cst, Config(), Session(), {},
+      &unattached_context);
+  passed &= Require(
+      !unattached_bound.bound &&
+          HasDiagnostic(unattached_bound.messages,
+                        "SB_MODEL_BINDING_INCOMPLETE_V1"),
+      "unattached multimodel operation root was not refused");
+
+  auto lineage_context = full_nine_context;
+  lineage_context.outputs.back().descriptor_id = 1;
+  const auto lineage_bound = sbsql::BindAst(
+      full_nine_ast, full_nine_cst, Config(), Session(), {},
+      &lineage_context);
+  passed &= Require(
+      !lineage_bound.bound &&
+          HasDiagnostic(lineage_bound.messages,
+                        "QOW-DIAG-BOUNDAST-OUTPUT"),
+      "multimodel descriptor-lineage substitution was not refused");
+
+  auto duplicate_source_ast = full_nine_ast;
+  duplicate_source_ast.native_relational.catalog_relation_sources[2].source_id =
+      duplicate_source_ast.native_relational.catalog_relation_sources[1].source_id;
+  const auto duplicate_source_bound = sbsql::BindAst(
+      duplicate_source_ast, full_nine_cst, Config(), Session(), {},
+      &full_nine_context);
+  passed &= Require(
+      !duplicate_source_bound.bound &&
+          HasDiagnostic(duplicate_source_bound.messages,
+                        "SB_MODEL_BINDING_INCOMPLETE_V1"),
+      "duplicate multimodel source identity was not refused");
+
+  auto missing_source_relation_ast = full_nine_ast;
+  const auto missing_source_relation = std::ranges::find_if(
+      missing_source_relation_ast.native_relational.relations,
+      [](const auto& relation) {
+        return relation.relation_kind ==
+                   sbsql::NativeRelationAstKind::kCatalogSource &&
+               relation.relation_source_ids ==
+                   std::vector<std::uint32_t>{1};
+      });
+  if (missing_source_relation !=
+      missing_source_relation_ast.native_relational.relations.end()) {
+    missing_source_relation_ast.native_relational.relations.erase(
+        missing_source_relation);
+  }
+  const auto missing_source_relation_bound = sbsql::BindAst(
+      missing_source_relation_ast, full_nine_cst, Config(), Session(), {},
+      &full_nine_context);
+  passed &= Require(
+      !missing_source_relation_bound.bound &&
+          HasDiagnostic(missing_source_relation_bound.messages,
+                        "QOW-DIAG-BOUNDAST-RELATION"),
+      "missing multimodel source relation was not refused before access");
+
+  auto cyclic_bound = full_nine_bound;
+  cyclic_bound.native_relational.relations.back().input_relation_ids.front() =
+      cyclic_bound.native_relational.root_relation_id;
+  const auto cyclic_lowered =
+      sbsql::LowerToSblr(cyclic_bound, full_nine_cst, Session());
+  passed &= Require(
+      cyclic_lowered.messages.has_errors() &&
+          HasDiagnostic(cyclic_lowered.messages,
+                        "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "cyclic multimodel relation DAG was not refused");
+  return passed;
 }
 
 bool SpatialColumnarBindingLowering(
@@ -2881,6 +3294,15 @@ bool SpatialColumnarWireFrontdoorProjectionCohort() {
                      std::to_string(mask));
 }
 
+bool MultimodelWireFrontdoorProjectionCohort() {
+  constexpr std::uint64_t kExpectedMask = (1ull << 15) - 1;
+  const auto mask = sbsql::Rcp080MultimodelWireProofMaskForTest();
+  return Require(mask == kExpectedMask,
+                 "RCP-080 live 3/4/9 engine-projected wire/refusal mask was "
+                 "incomplete: " +
+                     std::to_string(mask));
+}
+
 }  // namespace
 
 int main() {
@@ -2899,5 +3321,7 @@ int main() {
   passed &= GraphWireFrontdoorProjectionCohort();
   passed &= TimeSeriesWireFrontdoorProjectionCohort();
   passed &= SpatialColumnarWireFrontdoorProjectionCohort();
+  passed &= MultimodelWireFrontdoorProjectionCohort();
+  passed &= MultimodelJoinBindingLowering();
   return passed ? 0 : 1;
 }
