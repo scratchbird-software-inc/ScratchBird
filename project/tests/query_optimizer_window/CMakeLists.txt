@@ -36,7 +36,7 @@ add_test(
   COMMAND qow_tst_001_harness_test_v1
 )
 set_tests_properties(qow_tst_001_harness_v1 PROPERTIES
-  LABELS "qow_closure;QOW-022;QOW-LEAF-TST-001-HARNESS;development_candidate"
+  LABELS "qow_closure;QOW-022;QOW-LEAF-TST-001-HARNESS;RCP-081A;case_free_proof_record;development_candidate"
 )
 
 set(SB_QOW_NATIVE_HARNESS_ENROLLED TRUE PARENT_SCOPE)
