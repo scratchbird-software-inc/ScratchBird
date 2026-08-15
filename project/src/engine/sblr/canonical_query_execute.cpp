@@ -436,6 +436,10 @@ bool CheckedAdd(std::uint64_t left, std::uint64_t right,
                 std::uint64_t* result);
 bool CheckedMultiply(std::uint64_t left, std::uint64_t right,
                      std::uint64_t* result);
+bool EncodeCanonicalScalarEqualityKey(
+    const api::EngineTypedValue& value,
+    std::string* key,
+    std::string* refusal_detail);
 
 struct CanonicalDocumentWildcardExpansion {
   bool ok{false};
@@ -1222,28 +1226,41 @@ MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(
   const auto left_rows = retagged_rows(reconciled_left);
   const auto right_rows = retagged_rows(aligned_right);
   using SetRowKey = std::vector<std::string>;
-  const auto row_key = [](const exec::DescriptorTuple& row) {
-    SetRowKey key;
-    key.reserve(row.values.size());
+  const auto row_key = [&](const exec::DescriptorTuple& row,
+                           SetRowKey* key) {
+    if (key == nullptr) return false;
+    key->clear();
+    key->reserve(row.values.size());
     for (const auto& value : row.values) {
       if (value.state == api::EngineValueState::sql_null) {
-        key.emplace_back("null");
+        key->emplace_back("null");
         continue;
       }
-      std::string token = value.descriptor.canonical_type_name + ":" +
-                          value.encoded_value + ":";
-      token.append(reinterpret_cast<const char*>(value.binary_value.data()),
-                   value.binary_value.size());
-      key.push_back(std::move(token));
+      std::string token;
+      std::string detail;
+      if (!EncodeCanonicalScalarEqualityKey(value, &token, &detail)) {
+        result.values.detail =
+            "set-operation planning equality key: " + detail;
+        return false;
+      }
+      key->push_back(std::move(token));
     }
-    return key;
+    return true;
   };
   std::vector<SetRowKey> left_keys;
   std::vector<SetRowKey> right_keys;
   left_keys.reserve(left_rows.size());
   right_keys.reserve(right_rows.size());
-  for (const auto& row : left_rows) left_keys.push_back(row_key(row));
-  for (const auto& row : right_rows) right_keys.push_back(row_key(row));
+  for (const auto& row : left_rows) {
+    SetRowKey key;
+    if (!row_key(row, &key)) return result;
+    left_keys.push_back(std::move(key));
+  }
+  for (const auto& row : right_rows) {
+    SetRowKey key;
+    if (!row_key(row, &key)) return result;
+    right_keys.push_back(std::move(key));
+  }
 
   if (profile.equality_profile ==
       exec::CanonicalSetOperationEqualityProfile::
@@ -6023,6 +6040,81 @@ bool CheckedMultiply(const std::uint64_t left, const std::uint64_t right,
     return false;
   }
   *result = left * right;
+  return true;
+}
+
+bool EncodeCanonicalScalarEqualityKey(
+    const api::EngineTypedValue& value,
+    std::string* key,
+    std::string* refusal_detail) {
+  if (key == nullptr || refusal_detail == nullptr) return false;
+  key->clear();
+  refusal_detail->clear();
+  if (value.state != api::EngineValueState::value || value.is_null) {
+    *refusal_detail =
+        "aggregate DISTINCT received a non-value scalar payload";
+    return false;
+  }
+  const auto append = [key](const std::string_view field) {
+    const auto size = static_cast<std::uint64_t>(field.size());
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      key->push_back(static_cast<char>(size >> shift));
+    }
+    key->append(field);
+  };
+  append(value.descriptor.canonical_type_name);
+  std::string canonical_payload = value.encoded_value;
+  std::string_view auxiliary_binary;
+  const auto& type = value.descriptor.canonical_type_name;
+  if (type == "int8" || type == "int16" || type == "int32" ||
+      type == "int64") {
+    const auto decoded = exec::DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      *refusal_detail = decoded.diagnostic.detail;
+      return false;
+    }
+    canonical_payload = std::to_string(decoded.value);
+  } else if (type == "boolean" || type == "bool") {
+    const auto decoded = exec::DecodeBoolValue(value);
+    if (!decoded.ok()) {
+      *refusal_detail = decoded.diagnostic.detail;
+      return false;
+    }
+    canonical_payload = decoded.value ? "true" : "false";
+  } else if (type == "real64" || type == "double" ||
+             type == "double precision") {
+    const auto decoded = exec::DecodeReal64Value(value);
+    if (!decoded.ok()) {
+      *refusal_detail = decoded.diagnostic.detail;
+      return false;
+    }
+    if (decoded.value == 0.0) {
+      canonical_payload = "0";
+    } else {
+      std::array<char, 128> buffer{};
+      const auto encoded = std::to_chars(
+          buffer.data(), buffer.data() + buffer.size(), decoded.value,
+          std::chars_format::general,
+          std::numeric_limits<double>::max_digits10);
+      if (encoded.ec != std::errc{}) {
+        *refusal_detail =
+            "aggregate DISTINCT real64 key encoding failed";
+        return false;
+      }
+      canonical_payload.assign(buffer.data(), encoded.ptr);
+    }
+  } else if ((type == "binary" || type == "blob" || type == "bytes") &&
+             !value.binary_value.empty()) {
+    canonical_payload.assign(
+        reinterpret_cast<const char*>(value.binary_value.data()),
+        value.binary_value.size());
+  } else if (!value.binary_value.empty()) {
+    auxiliary_binary = std::string_view(
+        reinterpret_cast<const char*>(value.binary_value.data()),
+        value.binary_value.size());
+  }
+  append(canonical_payload);
+  append(auxiliary_binary);
   return true;
 }
 
@@ -11448,11 +11540,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               continue;
             }
             if (prepared.distinct) {
-              std::string key = value.descriptor.canonical_type_name + ":" +
-                                value.encoded_value + ":";
-              key.append(
-                  reinterpret_cast<const char*>(value.binary_value.data()),
-                  value.binary_value.size());
+              std::string key;
+              std::string distinct_detail;
+              if (!EncodeCanonicalScalarEqualityKey(
+                      value, &key, &distinct_detail)) {
+                return refuse(
+                    std::string(kPayloadDiagnostic),
+                    "composition COUNT(DISTINCT): " + distinct_detail);
+              }
               if (!distinct_values.insert(std::move(key)).second) continue;
             }
             ++count_value;
@@ -11561,10 +11656,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   "composition statistical input is not canonical int64");
             }
             if (prepared.distinct) {
-              std::string key = value.encoded_value + ":";
-              key.append(
-                  reinterpret_cast<const char*>(value.binary_value.data()),
-                  value.binary_value.size());
+              std::string key;
+              std::string distinct_detail;
+              if (!EncodeCanonicalScalarEqualityKey(
+                      value, &key, &distinct_detail)) {
+                return refuse(
+                    std::string(kPayloadDiagnostic),
+                    "composition statistical DISTINCT: " + distinct_detail);
+              }
               if (!distinct_values.insert(std::move(key)).second) continue;
             }
             std::int64_t decoded = 0;
@@ -11708,10 +11807,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                             "composition AVG input is not canonical int64");
             }
             if (prepared.distinct) {
-              std::string key = value.encoded_value + ":";
-              key.append(
-                  reinterpret_cast<const char*>(value.binary_value.data()),
-                  value.binary_value.size());
+              std::string key;
+              std::string distinct_detail;
+              if (!EncodeCanonicalScalarEqualityKey(
+                      value, &key, &distinct_detail)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition AVG(DISTINCT): " +
+                                  distinct_detail);
+              }
               if (!distinct_values.insert(std::move(key)).second) continue;
             }
             std::int64_t decoded = 0;
@@ -11836,10 +11939,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                             "composition SUM input is not canonical int64");
             }
             if (prepared.distinct) {
-              std::string key = value.encoded_value + ":";
-              key.append(
-                  reinterpret_cast<const char*>(value.binary_value.data()),
-                  value.binary_value.size());
+              std::string key;
+              std::string distinct_detail;
+              if (!EncodeCanonicalScalarEqualityKey(
+                      value, &key, &distinct_detail)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition SUM(DISTINCT): " +
+                                  distinct_detail);
+              }
               if (!distinct_values.insert(std::move(key)).second) continue;
             }
             std::int64_t decoded = 0;
@@ -11971,10 +12078,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                             "int64");
             }
             if (prepared.distinct) {
-              std::string key = value.encoded_value + ":";
-              key.append(
-                  reinterpret_cast<const char*>(value.binary_value.data()),
-                  value.binary_value.size());
+              std::string key;
+              std::string distinct_detail;
+              if (!EncodeCanonicalScalarEqualityKey(
+                      value, &key, &distinct_detail)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition extremum DISTINCT: " +
+                                  distinct_detail);
+              }
               if (!distinct_values.insert(std::move(key)).second) continue;
             }
             if (!extremum.has_value()) {
@@ -12097,10 +12208,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                             "canonical boolean");
             }
             if (prepared.distinct) {
-              std::string key = value.encoded_value + ":";
-              key.append(
-                  reinterpret_cast<const char*>(value.binary_value.data()),
-                  value.binary_value.size());
+              std::string key;
+              std::string distinct_detail;
+              if (!EncodeCanonicalScalarEqualityKey(
+                      value, &key, &distinct_detail)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition boolean aggregate DISTINCT: " +
+                                  distinct_detail);
+              }
               if (!distinct_values.insert(std::move(key)).second) continue;
             }
             api::EngineSqlTruthValue truth =
