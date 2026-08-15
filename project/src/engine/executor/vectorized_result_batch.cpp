@@ -72,10 +72,32 @@ u64 SetBitCount(const std::vector<std::uint8_t>& bitmap, u64 row_count) {
   return bit_count;
 }
 
+u64 SaturatingResultBytesAdd(u64 left, u64 right) {
+  return right > std::numeric_limits<u64>::max() - left
+             ? std::numeric_limits<u64>::max()
+             : left + right;
+}
+
+u64 SaturatingResultBytesMultiply(u64 count, u64 width) {
+  return width != 0 && count > std::numeric_limits<u64>::max() / width
+             ? std::numeric_limits<u64>::max()
+             : count * width;
+}
+
+u64 ResultContainerBytes(std::size_t count, u64 width = 1) {
+  if constexpr (sizeof(std::size_t) > sizeof(u64)) {
+    if (count > static_cast<std::size_t>(std::numeric_limits<u64>::max())) {
+      return std::numeric_limits<u64>::max();
+    }
+  }
+  return SaturatingResultBytesMultiply(static_cast<u64>(count), width);
+}
+
 u64 StringBytes(const std::vector<std::string>& values) {
   u64 bytes = 0;
   for (const auto& value : values) {
-    bytes += static_cast<u64>(value.size());
+    bytes = SaturatingResultBytesAdd(bytes,
+                                     ResultContainerBytes(value.size()));
   }
   return bytes;
 }
@@ -83,26 +105,27 @@ u64 StringBytes(const std::vector<std::string>& values) {
 u64 ChildEncodedBytes(const std::vector<ResultBatchColumnDiagnostics>& items) {
   u64 bytes = 0;
   for (const auto& item : items) {
-    bytes += item.encoded_byte_count;
+    bytes = SaturatingResultBytesAdd(bytes, item.encoded_byte_count);
   }
   return bytes;
 }
 
 u64 EstimateResultFrameScratchBytes(const ResultBatchColumn& column) {
-  u64 bytes = static_cast<u64>(column.validity_bitmap.size()) +
-              static_cast<u64>(column.redaction_bitmap.size()) +
-              static_cast<u64>(column.fixed_width_data.size()) +
-              static_cast<u64>(column.offsets.size() * sizeof(u64)) +
-              static_cast<u64>(column.variable_data.size()) +
-              static_cast<u64>(column.dictionary_ids.size() * sizeof(u32)) +
-              StringBytes(column.dictionary_values) +
-              static_cast<u64>(column.run_ends.size() * sizeof(u64)) +
-              StringBytes(column.run_values);
+  u64 bytes = 0;
+  const auto add = [&bytes](u64 value) {
+    bytes = SaturatingResultBytesAdd(bytes, value);
+  };
+  add(ResultContainerBytes(column.validity_bitmap.size()));
+  add(ResultContainerBytes(column.redaction_bitmap.size()));
+  add(ResultContainerBytes(column.fixed_width_data.size()));
+  add(ResultContainerBytes(column.offsets.size(), sizeof(u64)));
+  add(ResultContainerBytes(column.variable_data.size()));
+  add(ResultContainerBytes(column.dictionary_ids.size(), sizeof(u32)));
+  add(StringBytes(column.dictionary_values));
+  add(ResultContainerBytes(column.run_ends.size(), sizeof(u64)));
+  add(StringBytes(column.run_values));
   for (const auto& child : column.children) {
-    const u64 child_bytes = EstimateResultFrameScratchBytes(child);
-    bytes = child_bytes > std::numeric_limits<u64>::max() - bytes
-                ? std::numeric_limits<u64>::max()
-                : bytes + child_bytes;
+    add(EstimateResultFrameScratchBytes(child));
   }
   return bytes;
 }
@@ -110,10 +133,8 @@ u64 EstimateResultFrameScratchBytes(const ResultBatchColumn& column) {
 u64 EstimateResultFrameScratchBytes(const std::vector<ResultBatchColumn>& columns) {
   u64 bytes = 0;
   for (const auto& column : columns) {
-    const u64 column_bytes = EstimateResultFrameScratchBytes(column);
-    bytes = column_bytes > std::numeric_limits<u64>::max() - bytes
-                ? std::numeric_limits<u64>::max()
-                : bytes + column_bytes;
+    bytes = SaturatingResultBytesAdd(
+        bytes, EstimateResultFrameScratchBytes(column));
   }
   return bytes == 0 ? 1 : bytes;
 }
@@ -370,9 +391,9 @@ VectorizedResultBatchResult ValidateColumn(
                       "fixed_width_data_size_mismatch", column.row_count,
                       column.layout);
       }
-      diagnostic.encoded_byte_count =
-          diagnostic.validity_byte_count +
-          static_cast<u64>(column.fixed_width_data.size());
+      diagnostic.encoded_byte_count = SaturatingResultBytesAdd(
+          diagnostic.validity_byte_count,
+          ResultContainerBytes(column.fixed_width_data.size()));
       break;
     }
     case ResultBatchLayoutKind::variable_width: {
@@ -381,10 +402,11 @@ VectorizedResultBatchResult ValidateColumn(
       if (!offsets.ok()) {
         return offsets;
       }
-      diagnostic.encoded_byte_count =
-          diagnostic.validity_byte_count +
-          static_cast<u64>(column.offsets.size() * sizeof(u64)) +
-          static_cast<u64>(column.variable_data.size());
+      diagnostic.encoded_byte_count = SaturatingResultBytesAdd(
+          diagnostic.validity_byte_count,
+          SaturatingResultBytesAdd(
+              ResultContainerBytes(column.offsets.size(), sizeof(u64)),
+              ResultContainerBytes(column.variable_data.size())));
       break;
     }
     case ResultBatchLayoutKind::dictionary: {
@@ -410,10 +432,11 @@ VectorizedResultBatchResult ValidateColumn(
       }
       diagnostic.dictionary_value_count =
           static_cast<u64>(column.dictionary_values.size());
-      diagnostic.encoded_byte_count =
-          diagnostic.validity_byte_count +
-          static_cast<u64>(column.dictionary_ids.size() * sizeof(u32)) +
-          StringBytes(column.dictionary_values);
+      diagnostic.encoded_byte_count = SaturatingResultBytesAdd(
+          diagnostic.validity_byte_count,
+          SaturatingResultBytesAdd(
+              ResultContainerBytes(column.dictionary_ids.size(), sizeof(u32)),
+              StringBytes(column.dictionary_values)));
       break;
     }
     case ResultBatchLayoutKind::run_end: {
@@ -441,10 +464,11 @@ VectorizedResultBatchResult ValidateColumn(
                       column.layout);
       }
       diagnostic.run_count = static_cast<u64>(column.run_ends.size());
-      diagnostic.encoded_byte_count =
-          diagnostic.validity_byte_count +
-          static_cast<u64>(column.run_ends.size() * sizeof(u64)) +
-          StringBytes(column.run_values);
+      diagnostic.encoded_byte_count = SaturatingResultBytesAdd(
+          diagnostic.validity_byte_count,
+          SaturatingResultBytesAdd(
+              ResultContainerBytes(column.run_ends.size(), sizeof(u64)),
+              StringBytes(column.run_values)));
       break;
     }
     case ResultBatchLayoutKind::struct_view: {
@@ -454,9 +478,9 @@ VectorizedResultBatchResult ValidateColumn(
         return children;
       }
       diagnostic.child_count = static_cast<u64>(column.children.size());
-      diagnostic.encoded_byte_count =
-          diagnostic.validity_byte_count +
-          ChildEncodedBytes(child_diagnostics);
+      diagnostic.encoded_byte_count = SaturatingResultBytesAdd(
+          diagnostic.validity_byte_count,
+          ChildEncodedBytes(child_diagnostics));
       break;
     }
     case ResultBatchLayoutKind::list_view: {
@@ -466,10 +490,11 @@ VectorizedResultBatchResult ValidateColumn(
       }
       diagnostic.child_count = 1;
       diagnostic.list_value_count = column.offsets.back();
-      diagnostic.encoded_byte_count =
-          diagnostic.validity_byte_count +
-          static_cast<u64>(column.offsets.size() * sizeof(u64)) +
-          ChildEncodedBytes(child_diagnostics);
+      diagnostic.encoded_byte_count = SaturatingResultBytesAdd(
+          diagnostic.validity_byte_count,
+          SaturatingResultBytesAdd(
+              ResultContainerBytes(column.offsets.size(), sizeof(u64)),
+              ChildEncodedBytes(child_diagnostics)));
       break;
     }
     case ResultBatchLayoutKind::unknown:
