@@ -5285,6 +5285,190 @@ PreparedSortRoot PrepareExpressionSortRoot(
   return result;
 }
 
+struct PreparedGlobalRowNumberWindowBinding {
+  bool ok{false};
+  std::string diagnostic_id{"SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1"};
+  std::string detail;
+  const api::RelationalWindowInvocationRecord* invocation{nullptr};
+  const api::RelationalExpressionRecord* function{nullptr};
+  const api::RelationalTypeDescriptor* result_descriptor{nullptr};
+  std::vector<const api::RelationalOutputRecord*> outputs;
+};
+
+PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
+    const api::TypedRelationalDag& dag,
+    const plan::CanonicalLogicalPropertyCatalog& logical_properties,
+    const api::RelationalDagNode& consumer,
+    const plan::CanonicalLogicalRelationalNode& logical_consumer,
+    const plan::CanonicalLogicalRelationalNode& previous_logical,
+    const PreparedSortRoot& prepared_sort,
+    const std::size_t materialized_column_count,
+    const std::size_t result_binding_count,
+    const std::string& int64_type_uuid,
+    const std::string_view family_label) {
+  constexpr std::string_view kRowNumberFunctionUuid =
+      "019de5fc-2400-7539-bcce-00eef3ae7220";
+  PreparedGlobalRowNumberWindowBinding result;
+  result.detail = std::string(family_label) +
+                  " ROW_NUMBER binding is not exact";
+
+  std::vector<const api::RelationalWindowDefinitionRecord*> definitions;
+  std::vector<const api::RelationalWindowInvocationRecord*> invocations;
+  for (const auto& definition : dag.window_definitions) {
+    if (definition.relation_node_id == consumer.node_id) {
+      definitions.push_back(&definition);
+    }
+  }
+  for (const auto& invocation : dag.window_invocations) {
+    if (invocation.relation_node_id == consumer.node_id) {
+      invocations.push_back(&invocation);
+    }
+  }
+  for (const auto& output : dag.outputs) {
+    if (output.relation_node_id == consumer.node_id) {
+      result.outputs.push_back(&output);
+    }
+  }
+  std::ranges::sort(result.outputs, {},
+                    &api::RelationalOutputRecord::ordinal);
+
+  const auto typed_sort = std::ranges::find_if(
+      dag.nodes, [&](const auto& node) {
+        return node.node_id == previous_logical.logical_node_id;
+      });
+  const auto function =
+      invocations.size() == 1
+          ? std::ranges::find_if(dag.expressions, [&](const auto& expression) {
+              return expression.expression_id ==
+                     invocations.front()->function_expression_id;
+            })
+          : dag.expressions.end();
+  const auto result_descriptor =
+      invocations.size() == 1
+          ? std::ranges::find_if(dag.descriptors, [&](const auto& descriptor) {
+              return descriptor.descriptor_id ==
+                     invocations.front()->result_descriptor_id;
+            })
+          : dag.descriptors.end();
+  const bool ordered_input =
+      previous_logical.node_kind ==
+          plan::CanonicalLogicalRelationalNodeKind::kSort &&
+      typed_sort != dag.nodes.end() &&
+      typed_sort->bound_expression_ids.size() == 1 &&
+      consumer.required_property_uuids ==
+          std::vector<std::string>{prepared_sort.ordering_property_uuid} &&
+      consumer.delivered_property_uuids.size() == 2 &&
+      std::ranges::find(consumer.delivered_property_uuids,
+                        prepared_sort.ordering_property_uuid) !=
+          consumer.delivered_property_uuids.end();
+  bool passthrough_outputs =
+      result.outputs.size() ==
+          previous_logical.output_descriptor_ids.size() + 1 &&
+      materialized_column_count ==
+          previous_logical.output_descriptor_ids.size() &&
+      result_binding_count == previous_logical.output_descriptor_ids.size();
+  for (std::size_t ordinal = 0;
+       passthrough_outputs &&
+       ordinal < previous_logical.output_descriptor_ids.size();
+       ++ordinal) {
+    passthrough_outputs =
+        result.outputs[ordinal]->ordinal == ordinal &&
+        result.outputs[ordinal]->visible &&
+        result.outputs[ordinal]->descriptor_id ==
+            previous_logical.output_descriptor_ids[ordinal];
+  }
+
+  if (consumer.semantic_variant_id != "window.row-number.v1" ||
+      consumer.node_id != dag.root_node_id || !ordered_input ||
+      definitions.size() != 1 || invocations.size() != 1 ||
+      !passthrough_outputs || !consumer.required_object_uuids.empty() ||
+      consumer.bound_expression_ids !=
+          std::vector<std::uint32_t>{
+              typed_sort->bound_expression_ids.front(),
+              invocations.front()->function_expression_id} ||
+      definitions.front()->canonical_name_key.has_value() ||
+      definitions.front()->inherited_window_id.has_value() ||
+      !definitions.front()->partition_expression_ids.empty() ||
+      definitions.front()->ordering_terms.size() != 1 ||
+      definitions.front()->ordering_terms.front().expression_id !=
+          typed_sort->bound_expression_ids.front() ||
+      definitions.front()->frame_unit.has_value() ||
+      definitions.front()->frame_start.has_value() ||
+      definitions.front()->frame_end.has_value() ||
+      definitions.front()->exclusion !=
+          api::RelationalWindowFrameExclusion::kNoOthers ||
+      invocations.front()->window_definition_id !=
+          definitions.front()->window_id ||
+      invocations.front()->function_abi_version != 1 ||
+      invocations.front()->builtin_id != "sb.window.row_number" ||
+      invocations.front()->function_uuid != kRowNumberFunctionUuid ||
+      !invocations.front()->argument_expression_ids.empty() ||
+      function == dag.expressions.end() ||
+      function->expression_kind !=
+          api::RelationalExpressionKind::kFunctionCall ||
+      function->function_uuid !=
+          std::optional<std::string>(kRowNumberFunctionUuid) ||
+      function->bound_name_uuid.has_value() ||
+      function->operator_name.has_value() ||
+      function->literal_kind.has_value() ||
+      function->literal_or_parameter_ref.has_value() ||
+      !function->child_expression_ids.empty() ||
+      function->result_descriptor_id !=
+          invocations.front()->result_descriptor_id ||
+      result_descriptor == dag.descriptors.end() || int64_type_uuid.empty() ||
+      result_descriptor->type_uuid != int64_type_uuid ||
+      result_descriptor->nullability !=
+          api::RelationalNullability::kNonNull ||
+      consumer.output_descriptor_ids.size() !=
+          previous_logical.output_descriptor_ids.size() + 1 ||
+      !std::equal(previous_logical.output_descriptor_ids.begin(),
+                  previous_logical.output_descriptor_ids.end(),
+                  consumer.output_descriptor_ids.begin()) ||
+      consumer.output_descriptor_ids.back() !=
+          result_descriptor->descriptor_id ||
+      logical_consumer.output_descriptor_ids !=
+          consumer.output_descriptor_ids ||
+      result.outputs.back()->ordinal !=
+          previous_logical.output_descriptor_ids.size() ||
+      !result.outputs.back()->visible ||
+      result.outputs.back()->expression_id != function->expression_id ||
+      result.outputs.back()->descriptor_id !=
+          result_descriptor->descriptor_id ||
+      result.outputs.back()->output_name_utf8 !=
+          invocations.front()->output_name_utf8) {
+    return result;
+  }
+
+  const auto window_property_uuid = std::ranges::find_if(
+      consumer.delivered_property_uuids, [&](const auto& property_uuid) {
+        return property_uuid != prepared_sort.ordering_property_uuid;
+      });
+  const auto window_property = std::ranges::find_if(
+      logical_properties.properties, [&](const auto& property) {
+        return window_property_uuid != consumer.delivered_property_uuids.end() &&
+               property.property_uuid == *window_property_uuid;
+      });
+  if (window_property_uuid == consumer.delivered_property_uuids.end() ||
+      window_property == logical_properties.properties.end() ||
+      window_property->property_kind !=
+          plan::CanonicalLogicalPropertyKind::kWindow ||
+      window_property->origin_logical_node_id != consumer.node_id ||
+      window_property->dependency_property_uuids !=
+          std::vector<std::string>{prepared_sort.ordering_property_uuid} ||
+      window_property->window_frame_descriptor_uuid.empty()) {
+    result.diagnostic_id = "QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1";
+    result.detail = std::string(family_label) +
+                    " ROW_NUMBER property binding is not exact";
+    return result;
+  }
+
+  result.ok = true;
+  result.invocation = invocations.front();
+  result.function = &*function;
+  result.result_descriptor = &*result_descriptor;
+  return result;
+}
+
 bool MaterializeExpressionProjectBatch(
     const api::TypedRelationalDag& dag,
     const std::vector<PreparedProjectExpression>& expressions,
@@ -24624,50 +24808,21 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             plan::CanonicalLogicalPropertyKind::kOrdering};
       } else if (consumer->node_kind ==
                  api::RelationalDagNodeKind::kWindow) {
-        constexpr std::string_view kRowNumberFunctionUuid =
-            "019de5fc-2400-7539-bcce-00eef3ae7220";
-        const auto invocation = std::ranges::find_if(
-            dag.window_invocations, [&](const auto& candidate) {
-              return candidate.relation_node_id == consumer->node_id;
-            });
-        const auto function =
-            invocation == dag.window_invocations.end()
-                ? dag.expressions.end()
-                : expression_for(invocation->function_expression_id);
-        const auto output_descriptor =
-            invocation == dag.window_invocations.end()
-                ? dag.descriptors.end()
-                : descriptor_for(invocation->result_descriptor_id);
-        std::vector<const api::RelationalOutputRecord*> window_outputs;
-        for (const auto& output : dag.outputs) {
-          if (output.relation_node_id == consumer->node_id) {
-            window_outputs.push_back(&output);
-          }
-        }
-        std::ranges::sort(window_outputs, {},
-                          &api::RelationalOutputRecord::ordinal);
-        if (consumer->semantic_variant_id != "window.row-number.v1" ||
-            !composition_sort.has_value() ||
-            invocation == dag.window_invocations.end() ||
-            function == dag.expressions.end() ||
-            function->function_uuid !=
-                std::optional<std::string>(kRowNumberFunctionUuid) ||
-            invocation->builtin_id != "sb.window.row_number" ||
-            !invocation->argument_expression_ids.empty() ||
-            output_descriptor == dag.descriptors.end() ||
-            output_descriptor->type_uuid != type_uuid_for("int64") ||
-            output_descriptor->nullability !=
-                api::RelationalNullability::kNonNull ||
-            consumer->output_descriptor_ids.size() !=
-                previous_logical->output_descriptor_ids.size() + 1 ||
-            !std::equal(previous_logical->output_descriptor_ids.begin(),
-                        previous_logical->output_descriptor_ids.end(),
-                        consumer->output_descriptor_ids.begin()) ||
-            window_outputs.size() !=
-                consumer->output_descriptor_ids.size()) {
+        if (!composition_sort.has_value()) {
           return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                         "time-series ROW_NUMBER binding is not exact");
         }
+        const auto row_number = PrepareGlobalRowNumberWindowBinding(
+            dag, canonical_admission.request.logical_properties, *consumer,
+            *logical_consumer, *previous_logical, *composition_sort,
+            composition_state.batch.columns.size(),
+            composition_state.result_bindings.size(), type_uuid_for("int64"),
+            "time-series");
+        if (!row_number.ok) {
+          return refuse(row_number.diagnostic_id, row_number.detail);
+        }
+        const auto* output_descriptor = row_number.result_descriptor;
+        const auto& window_outputs = row_number.outputs;
         api::EngineDescriptor descriptor;
         descriptor.descriptor_uuid.canonical =
             output_descriptor->descriptor_uuid;
@@ -29146,49 +29301,21 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       consumer_profile.supported_property_kinds = {
           plan::CanonicalLogicalPropertyKind::kOrdering};
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kWindow) {
-      constexpr std::string_view kRowNumberFunctionUuid =
-          "019de5fc-2400-7539-bcce-00eef3ae7220";
-      const auto invocation = std::ranges::find_if(
-          dag.window_invocations, [&](const auto& candidate) {
-            return candidate.relation_node_id == consumer->node_id;
-          });
-      const auto function = invocation == dag.window_invocations.end()
-                                ? dag.expressions.end()
-                                : expression_for(
-                                      invocation->function_expression_id);
-      const auto output_descriptor =
-          invocation == dag.window_invocations.end()
-              ? dag.descriptors.end()
-              : descriptor_for(invocation->result_descriptor_id);
-      std::vector<const api::RelationalOutputRecord*> window_outputs;
-      for (const auto& output : dag.outputs) {
-        if (output.relation_node_id == consumer->node_id) {
-          window_outputs.push_back(&output);
-        }
-      }
-      std::ranges::sort(window_outputs, {},
-                        &api::RelationalOutputRecord::ordinal);
-      if (consumer->semantic_variant_id != "window.row-number.v1" ||
-          !prepared_sort.has_value() ||
-          invocation == dag.window_invocations.end() ||
-          function == dag.expressions.end() ||
-          function->function_uuid !=
-              std::optional<std::string>(kRowNumberFunctionUuid) ||
-          invocation->builtin_id != "sb.window.row_number" ||
-          !invocation->argument_expression_ids.empty() ||
-          output_descriptor == dag.descriptors.end() ||
-          output_descriptor->type_uuid != type_uuid_for("int64") ||
-          output_descriptor->nullability !=
-              api::RelationalNullability::kNonNull ||
-          consumer->output_descriptor_ids.size() !=
-              previous_logical->output_descriptor_ids.size() + 1 ||
-          !std::equal(previous_logical->output_descriptor_ids.begin(),
-                      previous_logical->output_descriptor_ids.end(),
-                      consumer->output_descriptor_ids.begin()) ||
-          window_outputs.size() != consumer->output_descriptor_ids.size()) {
+      if (!prepared_sort.has_value()) {
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                       "search ROW_NUMBER binding is not exact");
       }
+      const auto row_number = PrepareGlobalRowNumberWindowBinding(
+          dag, canonical_admission.request.logical_properties, *consumer,
+          *logical_consumer, *previous_logical, *prepared_sort,
+          composition_state.batch.columns.size(),
+          composition_state.result_bindings.size(), type_uuid_for("int64"),
+          "search");
+      if (!row_number.ok) {
+        return refuse(row_number.diagnostic_id, row_number.detail);
+      }
+      const auto* output_descriptor = row_number.result_descriptor;
+      const auto& window_outputs = row_number.outputs;
       api::EngineDescriptor descriptor;
       descriptor.descriptor_uuid.canonical =
           output_descriptor->descriptor_uuid;
@@ -31363,49 +31490,21 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       consumer_profile.supported_property_kinds = {
           plan::CanonicalLogicalPropertyKind::kOrdering};
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kWindow) {
-      constexpr std::string_view kRowNumberFunctionUuid =
-          "019de5fc-2400-7539-bcce-00eef3ae7220";
-      const auto invocation = std::ranges::find_if(
-          dag.window_invocations, [&](const auto& candidate) {
-            return candidate.relation_node_id == consumer->node_id;
-          });
-      const auto function =
-          invocation == dag.window_invocations.end()
-              ? dag.expressions.end()
-              : expression_for(invocation->function_expression_id);
-      const auto output_descriptor =
-          invocation == dag.window_invocations.end()
-              ? dag.descriptors.end()
-              : descriptor_for(invocation->result_descriptor_id);
-      std::vector<const api::RelationalOutputRecord*> window_outputs;
-      for (const auto& output : dag.outputs) {
-        if (output.relation_node_id == consumer->node_id) {
-          window_outputs.push_back(&output);
-        }
-      }
-      std::ranges::sort(window_outputs, {},
-                        &api::RelationalOutputRecord::ordinal);
-      if (consumer->semantic_variant_id != "window.row-number.v1" ||
-          !prepared_sort.has_value() ||
-          invocation == dag.window_invocations.end() ||
-          function == dag.expressions.end() ||
-          function->function_uuid !=
-              std::optional<std::string>(kRowNumberFunctionUuid) ||
-          invocation->builtin_id != "sb.window.row_number" ||
-          !invocation->argument_expression_ids.empty() ||
-          output_descriptor == dag.descriptors.end() ||
-          output_descriptor->type_uuid != type_uuid_for("int64") ||
-          output_descriptor->nullability !=
-              api::RelationalNullability::kNonNull ||
-          consumer->output_descriptor_ids.size() !=
-              previous_logical->output_descriptor_ids.size() + 1 ||
-          !std::equal(previous_logical->output_descriptor_ids.begin(),
-                      previous_logical->output_descriptor_ids.end(),
-                      consumer->output_descriptor_ids.begin()) ||
-          window_outputs.size() != consumer->output_descriptor_ids.size()) {
+      if (!prepared_sort.has_value()) {
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                       "key/value ROW_NUMBER binding is not exact");
       }
+      const auto row_number = PrepareGlobalRowNumberWindowBinding(
+          dag, canonical_admission.request.logical_properties, *consumer,
+          *logical_consumer, *previous_logical, *prepared_sort,
+          composition_state.batch.columns.size(),
+          composition_state.result_bindings.size(), type_uuid_for("int64"),
+          "key/value");
+      if (!row_number.ok) {
+        return refuse(row_number.diagnostic_id, row_number.detail);
+      }
+      const auto* output_descriptor = row_number.result_descriptor;
+      const auto& window_outputs = row_number.outputs;
       api::EngineDescriptor descriptor;
       descriptor.descriptor_uuid.canonical =
           output_descriptor->descriptor_uuid;
