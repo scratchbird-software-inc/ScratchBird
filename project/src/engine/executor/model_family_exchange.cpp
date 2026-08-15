@@ -637,6 +637,16 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     const auto preflight_string = [&](const std::string_view value) {
       return preflight_account(value.size());
     };
+    const auto preflight_array = [&](const std::size_t count,
+                                     const std::uint64_t element_bytes) {
+      if (element_bytes != 0 &&
+          count > std::numeric_limits<std::uint64_t>::max() /
+                      element_bytes) {
+        return false;
+      }
+      return preflight_account(static_cast<std::uint64_t>(count) *
+                               element_bytes);
+    };
     if (provider_batch.batch.rows.size() > input.maximum_rows) {
       return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                     "graph exchange row preflight exceeded its resource contract");
@@ -651,7 +661,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
         !preflight_string(input.input_descriptor_id) ||
         !preflight_string(input.family_id) ||
         !std::ranges::all_of(input.operation_ids, preflight_string) ||
-        !preflight_account(input.operation_ids.size() * sizeof(std::string)) ||
+        !preflight_array(input.operation_ids.size(), sizeof(std::string)) ||
         !preflight_string(input.operation_id) ||
         !preflight_string(input.object_uuid) ||
         !preflight_string(input.selected_alternative_uuid) ||
@@ -659,8 +669,8 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
         !preflight_string(input.provider_uuid) ||
         !preflight_string(input.result_handle_uuid) ||
         !preflight_string(input.multimodel_composition_receipt_uuid) ||
-        !preflight_account(input.output_descriptor_ids.size() *
-                           sizeof(std::uint32_t)) ||
+        !preflight_array(input.output_descriptor_ids.size(),
+                         sizeof(std::uint32_t)) ||
         !preflight_string(provider_batch.properties.property_descriptor_id) ||
         !preflight_string(provider_batch.properties.property_uuid) ||
         !preflight_string(provider_batch.properties.ordering_id) ||
@@ -673,12 +683,14 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
         !preflight_string(
             input.mga_statement_context.statement_metadata_snapshot_uuid) ||
         !preflight_string(input.mga_statement_context.snapshot_kind) ||
-        !preflight_account(
+        !preflight_array(
             input.mga_statement_context.active_excluded_local_transaction_ids
-                .size() * sizeof(std::uint64_t)) ||
-        !preflight_account(
+                .size(),
+            sizeof(std::uint64_t)) ||
+        !preflight_array(
             input.mga_statement_context.in_doubt_excluded_local_transaction_ids
-                .size() * sizeof(std::uint64_t)) ||
+                .size(),
+            sizeof(std::uint64_t)) ||
         !preflight_string(provider_batch.security_receipt_uuid)) {
       return Refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                     "graph exchange output metadata exceeded its resource contract");
