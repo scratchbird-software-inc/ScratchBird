@@ -101,7 +101,10 @@ bool ParseTimeSeriesEndpointUnsigned(const std::string_view value,
                                      const std::size_t offset,
                                      const std::size_t count,
                                      unsigned* out) {
-  if (out == nullptr || offset + count > value.size()) return false;
+  if (out == nullptr || offset > value.size() ||
+      count > value.size() - offset) {
+    return false;
+  }
   unsigned parsed = 0;
   for (std::size_t index = 0; index < count; ++index) {
     const char ch = value[offset + index];
@@ -169,7 +172,7 @@ bool ParseTimeSeriesEndpointNsV1(const std::string_view value,
   unsigned offset_minute = 0;
   if (offset < value.size() && value[offset] == 'Z') {
     ++offset;
-  } else if (offset + 6 == value.size() &&
+  } else if (offset <= value.size() && value.size() - offset == 6 &&
              (value[offset] == '+' || value[offset] == '-') &&
              value[offset + 3] == ':' &&
              ParseTimeSeriesEndpointUnsigned(value, offset + 1, 2,

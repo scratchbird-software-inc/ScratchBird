@@ -247,7 +247,10 @@ bool ParseFixedDigits(const std::string_view text,
                       const std::size_t begin,
                       const std::size_t count,
                       int* value) {
-  if (value == nullptr || begin + count > text.size()) return false;
+  if (value == nullptr || begin > text.size() ||
+      count > text.size() - begin) {
+    return false;
+  }
   int parsed = 0;
   for (std::size_t index = begin; index < begin + count; ++index) {
     if (text[index] < '0' || text[index] > '9') return false;
