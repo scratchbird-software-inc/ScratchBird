@@ -636,6 +636,11 @@ bool RuntimeMaterializedBatchMemoryBytes(const exec::DescriptorBatch& batch,
         return false;
       }
       *bytes += value.encoded_value.size();
+      if (value.binary_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.binary_value.size();
     }
   }
   return true;
@@ -5990,6 +5995,11 @@ bool AddBatchMemoryBytes(const exec::DescriptorBatch& batch,
         return false;
       }
       *memory_bytes += value.encoded_value.size();
+      if (value.binary_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *memory_bytes) {
+        return false;
+      }
+      *memory_bytes += value.binary_value.size();
     }
   }
   return true;
