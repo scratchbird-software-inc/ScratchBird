@@ -57,6 +57,30 @@ bool IsCanonicalCteEvidenceUuid(const std::string_view value) {
   return true;
 }
 
+bool SameCanonicalCteColumns(
+    const std::vector<ExecutorColumnDescriptor>& left,
+    const std::vector<ExecutorColumnDescriptor>& right) {
+  if (left.size() != right.size()) return false;
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    const auto& left_column = left[index];
+    const auto& right_column = right[index];
+    if (left_column.descriptor_id != right_column.descriptor_id ||
+        left_column.stable_name != right_column.stable_name ||
+        left_column.nullable != right_column.nullable ||
+        left_column.descriptor.descriptor_uuid.canonical !=
+            right_column.descriptor.descriptor_uuid.canonical ||
+        left_column.descriptor.descriptor_kind !=
+            right_column.descriptor.descriptor_kind ||
+        left_column.descriptor.canonical_type_name !=
+            right_column.descriptor.canonical_type_name ||
+        left_column.descriptor.encoded_descriptor !=
+            right_column.descriptor.encoded_descriptor) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 // QOW-SOURCE-QRY-014-WORKING-V1
@@ -204,6 +228,10 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     if (!intermediate_validation.ok) {
       return refuse(intermediate_validation.diagnostic_code + ":" +
                     intermediate_validation.detail);
+    }
+    if (!SameCanonicalCteColumns(intermediate.columns,
+                                 request.anchor_batch.columns)) {
+      return refuse("recursive CTE generated schema differs from its anchor");
     }
     if (intermediate.rows.size() > request.maximum_working_row_count ||
         intermediate.rows.size() >
@@ -700,6 +728,11 @@ ExecuteCanonicalRecursiveCteSearchCycle(
       return refuse(generated_validation.diagnostic_code + ":" +
                     generated_validation.detail);
     }
+    if (!SameCanonicalCteColumns(generated.batch.columns,
+                                 request.anchor_batch.columns)) {
+      return refuse(
+          "recursive CTE SEARCH/CYCLE generated schema differs from its anchor");
+    }
     if (generated.parent_working_row_indices.size() !=
             generated.batch.rows.size() ||
         generated.batch.rows.size() > request.maximum_result_row_count -
@@ -708,7 +741,7 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     }
 
     DescriptorBatch next_working;
-    next_working.columns = generated.batch.columns;
+    next_working.columns = request.anchor_batch.columns;
     std::vector<std::vector<DescriptorTuple>> next_paths;
     try {
       for (std::size_t row_index = 0;
