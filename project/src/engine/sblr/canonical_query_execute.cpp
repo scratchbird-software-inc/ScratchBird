@@ -41754,11 +41754,18 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
       65'536, input.context.optimizer_maximum_candidate_count));
   const auto maximum_columns = join->output_descriptor_ids.size();
   std::uint64_t maximum_pairs = 0;
+  std::uint64_t maximum_cells = 0;
+  std::uint64_t maximum_total_rows = 0;
+  std::uint64_t maximum_total_cells = 0;
   if (maximum_rows == 0 || maximum_columns == 0 ||
       !CheckedMultiply(maximum_rows, maximum_rows, &maximum_pairs) ||
       maximum_pairs > std::numeric_limits<std::size_t>::max() ||
-      maximum_rows > std::numeric_limits<std::size_t>::max() /
-                         maximum_columns) {
+      !CheckedMultiply(maximum_rows, maximum_columns, &maximum_cells) ||
+      !CheckedMultiply(maximum_rows, 3, &maximum_total_rows) ||
+      !CheckedMultiply(maximum_cells, 3, &maximum_total_cells) ||
+      maximum_cells > std::numeric_limits<std::size_t>::max() ||
+      maximum_total_rows > std::numeric_limits<std::size_t>::max() ||
+      maximum_total_cells > std::numeric_limits<std::size_t>::max()) {
     return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                   "captured model-family execution bounds overflowed");
   }
@@ -42033,7 +42040,7 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
             std::numeric_limits<std::size_t>::max()));
     heap_request.maximum_output_rows = maximum_rows;
     heap_request.maximum_output_columns = maximum_columns;
-    heap_request.maximum_output_cells = maximum_rows * maximum_columns;
+    heap_request.maximum_output_cells = maximum_cells;
     heap_request.cancellation_requested =
         input.context.query_cancellation_requested
             ? input.context.query_cancellation_requested
@@ -42093,11 +42100,11 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
                                           physical.physical_dag);
   selected.runtime_limits.maximum_rows_per_batch = maximum_rows;
   selected.runtime_limits.maximum_columns_per_batch = maximum_columns;
-  selected.runtime_limits.maximum_cells_per_batch =
-      maximum_rows * maximum_columns;
-  selected.runtime_limits.maximum_total_materialized_rows = maximum_rows * 3;
+  selected.runtime_limits.maximum_cells_per_batch = maximum_cells;
+  selected.runtime_limits.maximum_total_materialized_rows =
+      maximum_total_rows;
   selected.runtime_limits.maximum_total_materialized_cells =
-      maximum_rows * maximum_columns * 3;
+      maximum_total_cells;
   selected.cancellation_requested =
       input.context.query_cancellation_requested
           ? input.context.query_cancellation_requested
@@ -42749,11 +42756,18 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
       65'536, input.context.optimizer_maximum_candidate_count));
   const auto maximum_columns = join->output_descriptor_ids.size();
   std::uint64_t maximum_pairs_u64 = 0;
+  std::uint64_t maximum_cells = 0;
+  std::uint64_t maximum_total_rows = 0;
+  std::uint64_t maximum_total_cells = 0;
   if (maximum_rows == 0 || maximum_columns == 0 ||
       !CheckedMultiply(maximum_rows, maximum_rows, &maximum_pairs_u64) ||
       maximum_pairs_u64 > std::numeric_limits<std::size_t>::max() ||
-      maximum_rows > std::numeric_limits<std::size_t>::max() /
-                         maximum_columns) {
+      !CheckedMultiply(maximum_rows, maximum_columns, &maximum_cells) ||
+      !CheckedMultiply(maximum_rows, 3, &maximum_total_rows) ||
+      !CheckedMultiply(maximum_cells, 3, &maximum_total_cells) ||
+      maximum_cells > std::numeric_limits<std::size_t>::max() ||
+      maximum_total_rows > std::numeric_limits<std::size_t>::max() ||
+      maximum_total_cells > std::numeric_limits<std::size_t>::max()) {
     return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                   "columnar composition execution bounds overflowed");
   }
@@ -43050,12 +43064,11 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                                           physical.physical_dag);
   selected.runtime_limits.maximum_rows_per_batch = maximum_rows;
   selected.runtime_limits.maximum_columns_per_batch = maximum_columns;
-  selected.runtime_limits.maximum_cells_per_batch =
-      maximum_rows * maximum_columns;
+  selected.runtime_limits.maximum_cells_per_batch = maximum_cells;
   selected.runtime_limits.maximum_total_materialized_rows =
-      maximum_rows * 3;
+      maximum_total_rows;
   selected.runtime_limits.maximum_total_materialized_cells =
-      maximum_rows * maximum_columns * 3;
+      maximum_total_cells;
   selected.cancellation_requested = cancellation_requested;
   source_registration.executor_capability_uuid =
       shared_source_capability_uuid;
