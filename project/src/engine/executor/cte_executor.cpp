@@ -277,12 +277,12 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
 
 // QOW-SOURCE-QRY-014-UNION-V1
 // Admit either UNION ALL, which preserves every anchor and recursive row, or
-// descriptor-wide UNION DISTINCT. The legacy one-column int64 identity is an
-// exact alias; the general typed profile binds one equality term per output
-// column. DISTINCT uses the canonical ordering comparator (with SQL NULL equal
-// to SQL NULL for set semantics), removes duplicates against the complete
-// accumulated result and the current intermediate relation, and feeds only
-// newly admitted rows into the next recursive working transition.
+// descriptor-wide UNION DISTINCT. The legacy one-column int64 profile uses
+// canonical decoded integer identity plus one shared SQL NULL identity; the
+// general typed profile binds one canonical equality term per output column.
+// Both remove duplicates against the complete accumulated result and current
+// intermediate relation, then feed only newly admitted rows into the next
+// recursive working transition.
 CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
     const CanonicalRecursiveCteUnionRequest& request) {
   CanonicalRecursiveCteUnionResult result;
@@ -390,48 +390,90 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
       covered[term.column] = true;
     }
 
-    auto comparison_count = std::make_shared<std::size_t>(0);
-    const auto equal_rows =
-        [equality_terms = std::move(equality_terms), comparison_count,
-         maximum = request.maximum_value_comparison_count](
-            const DescriptorTuple& left, const DescriptorTuple& right) {
-          if (left.values.size() != equality_terms.size() ||
-              right.values.size() != equality_terms.size()) {
-            throw std::runtime_error("recursive UNION DISTINCT row is ragged");
+    std::function<bool(const DescriptorTuple&)> admit;
+    if (legacy_int64_profile) {
+      auto identity_count = std::make_shared<std::size_t>(0);
+      auto seen_values =
+          std::make_shared<std::unordered_set<std::int64_t>>();
+      auto seen_null = std::make_shared<bool>(false);
+      admit = [identity_count, maximum =
+                                   request.maximum_value_comparison_count,
+               seen_values, seen_null, duplicate_count](
+                  const DescriptorTuple& row) {
+        if (row.values.size() != 1) {
+          throw std::runtime_error("recursive UNION DISTINCT row is ragged");
+        }
+        if (*identity_count == maximum) {
+          throw std::runtime_error(
+              "recursive CTE UNION DISTINCT value comparison bound was "
+              "exceeded");
+        }
+        ++*identity_count;
+        const auto& value = row.values.front();
+        if (value.state == scratchbird::engine::internal_api::
+                               EngineValueState::sql_null) {
+          if (*seen_null) {
+            ++*duplicate_count;
+            return false;
           }
-          for (const auto& term : equality_terms) {
-            if (*comparison_count == maximum) {
-              throw std::runtime_error(
-                  "recursive CTE UNION DISTINCT value comparison bound was "
-                  "exceeded");
-            }
-            ++*comparison_count;
-            const auto compared = CompareCanonicalDescriptorOrderValues(
-                left.values[term.column], right.values[term.column], term);
-            if (!compared.diagnostic.ok) {
-              throw std::runtime_error(compared.diagnostic.diagnostic_code +
-                                       ":" + compared.diagnostic.detail);
-            }
-            if (compared.comparison != 0) return false;
-          }
+          *seen_null = true;
           return true;
-        };
-    auto seen = std::make_shared<std::vector<DescriptorTuple>>();
-    const auto admit = [seen, duplicate_count, equal_rows](
-                           const DescriptorTuple& row) {
-      if (!equal_rows(row, row)) {
-        throw std::runtime_error(
-            "recursive UNION DISTINCT self comparison failed");
-      }
-      for (const auto& representative : *seen) {
-        if (equal_rows(row, representative)) {
+        }
+        const auto decoded = DecodeInt64Value(value);
+        if (!decoded.ok()) {
+          throw std::runtime_error(decoded.diagnostic.diagnostic_code + ":" +
+                                   decoded.diagnostic.detail);
+        }
+        if (!seen_values->insert(decoded.value).second) {
           ++*duplicate_count;
           return false;
         }
-      }
-      seen->push_back(row);
-      return true;
-    };
+        return true;
+      };
+    } else {
+      auto comparison_count = std::make_shared<std::size_t>(0);
+      const auto equal_rows =
+          [equality_terms = std::move(equality_terms), comparison_count,
+           maximum = request.maximum_value_comparison_count](
+              const DescriptorTuple& left, const DescriptorTuple& right) {
+            if (left.values.size() != equality_terms.size() ||
+                right.values.size() != equality_terms.size()) {
+              throw std::runtime_error(
+                  "recursive UNION DISTINCT row is ragged");
+            }
+            for (const auto& term : equality_terms) {
+              if (*comparison_count == maximum) {
+                throw std::runtime_error(
+                    "recursive CTE UNION DISTINCT value comparison bound was "
+                    "exceeded");
+              }
+              ++*comparison_count;
+              const auto compared = CompareCanonicalDescriptorOrderValues(
+                  left.values[term.column], right.values[term.column], term);
+              if (!compared.diagnostic.ok) {
+                throw std::runtime_error(compared.diagnostic.diagnostic_code +
+                                         ":" + compared.diagnostic.detail);
+              }
+              if (compared.comparison != 0) return false;
+            }
+            return true;
+          };
+      auto seen = std::make_shared<std::vector<DescriptorTuple>>();
+      admit = [seen, duplicate_count, equal_rows](const DescriptorTuple& row) {
+        if (!equal_rows(row, row)) {
+          throw std::runtime_error(
+              "recursive UNION DISTINCT self comparison failed");
+        }
+        for (const auto& representative : *seen) {
+          if (equal_rows(row, representative)) {
+            ++*duplicate_count;
+            return false;
+          }
+        }
+        seen->push_back(row);
+        return true;
+      };
+    }
     DescriptorBatch distinct_anchor;
     distinct_anchor.columns = working.anchor_batch.columns;
     try {
