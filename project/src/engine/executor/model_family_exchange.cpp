@@ -1034,6 +1034,17 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
             kModelTypedExchangeInvalid,
             "model-family row uniqueness or ordering identity is invalid");
       }
+      if (key_value_family &&
+          input.operation_id == "KEY_VALUE_PREFIX_RANGE" &&
+          identity_ordinal != 0) {
+        const auto& previous =
+            provider_batch.ordered_row_identities[identity_ordinal - 1];
+        if (!UnsignedUtf8Less(previous.key, identity.key)) {
+          return Refuse(
+              kModelTypedExchangeInvalid,
+              "key/value prefix identities do not satisfy UTF-8 byte order");
+        }
+      }
       if (time_series_family && identity_ordinal != 0) {
         const auto& previous =
             provider_batch.ordered_row_identities[identity_ordinal - 1];
