@@ -15,6 +15,7 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include <iterator>
 #include <limits>
 #include <string_view>
 #include <utility>
@@ -29,6 +30,80 @@ DescriptorRuntimeDiagnostic TableSubqueryRefusal(std::string detail) {
       "QOW-DIAG-QRY-013-TABLE-REFUSAL-V1";
   diagnostic.detail = std::move(detail);
   return diagnostic;
+}
+
+struct CorrelatedCancellationPoll {
+  DescriptorRuntimeDiagnostic diagnostic;
+  bool cancelled = false;
+};
+
+CorrelatedCancellationPoll PollCorrelatedCancellation(
+    const std::function<bool()>& probe,
+    const std::string_view phase) {
+  CorrelatedCancellationPoll result;
+  if (!probe) return result;
+  try {
+    if (!probe()) return result;
+    result.cancelled = true;
+    result.diagnostic = TableSubqueryRefusal(
+        "correlated/LATERAL execution cancelled " + std::string(phase));
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-013-CANCELLATION-REFUSAL-V1";
+  } catch (const std::exception& error) {
+    result.diagnostic = TableSubqueryRefusal(
+        "correlated/LATERAL cancellation probe failed " +
+        std::string(phase) + ":" + error.what());
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-013-CANCELLATION-PROBE-V1";
+  } catch (...) {
+    result.diagnostic = TableSubqueryRefusal(
+        "correlated/LATERAL cancellation probe failed " +
+        std::string(phase));
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-013-CANCELLATION-PROBE-V1";
+  }
+  return result;
+}
+
+bool CorrelatedCancellationEvidenceBound(
+    const TypedPhysicalNodeDag& dag,
+    const std::function<bool()>& probe,
+    const std::string& evidence_uuid) {
+  if (!probe) return evidence_uuid.empty();
+  const PhysicalAdmissionEvidence* policy = nullptr;
+  for (const auto& evidence : dag.admission_evidence) {
+    if (evidence.stage != PhysicalAdmissionStage::kPolicyCapability) continue;
+    if (policy != nullptr) return false;
+    policy = &evidence;
+  }
+  return policy != nullptr && !evidence_uuid.empty() &&
+         policy->evidence_uuid == evidence_uuid;
+}
+
+struct CorrelatedBatchValidation {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::optional<CorrelatedCancellationPoll> cancellation;
+};
+
+CorrelatedBatchValidation ValidateCorrelatedBatch(
+    const DescriptorBatch& batch,
+    const std::vector<std::uint32_t>& descriptor_ids,
+    const std::function<bool()>& cancellation_requested,
+    const std::string_view phase) {
+  CorrelatedBatchValidation result;
+  bool validation_cancelled = false;
+  result.diagnostic = ValidateCanonicalDescriptorBatch(
+      batch, descriptor_ids,
+      [&]() {
+        auto poll = PollCorrelatedCancellation(
+            cancellation_requested, phase);
+        if (poll.diagnostic.ok) return false;
+        result.cancellation = std::move(poll);
+        return true;
+      },
+      &validation_cancelled);
+  if (!validation_cancelled) result.cancellation.reset();
+  return result;
 }
 
 }  // namespace
@@ -635,10 +710,27 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     result.scope_execution_count = 0;
     result.comparison_count = 0;
     result.result_row_count = 0;
+    result.cancellation_observed = false;
+    result.transient_state_cleanup_proven = true;
+    result.cancellation_evidence_uuid.clear();
     result.selected_plan_uuid.clear();
     result.executed_physical_node_id = 0;
     result.causal_counter_id = 0;
     return result;
+  };
+  const auto refuse_poll = [&](CorrelatedCancellationPoll poll) {
+    auto diagnostic = std::move(poll.diagnostic);
+    auto refused = refuse(diagnostic.detail);
+    refused.diagnostic = std::move(diagnostic);
+    refused.cancellation_observed = poll.cancelled;
+    if (poll.cancelled) {
+      refused.cancellation_evidence_uuid =
+          request.cancellation_evidence_uuid;
+    }
+    return refused;
+  };
+  const auto poll_cancellation = [&](const std::string_view phase) {
+    return PollCorrelatedCancellation(request.cancellation_requested, phase);
   };
 
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
@@ -646,6 +738,11 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
   if (!authority_validation.ok)
     return refuse(authority_validation.diagnostic_code + ":" +
                   authority_validation.detail);
+  if (!CorrelatedCancellationEvidenceBound(
+          request.physical_dag, request.cancellation_requested,
+          request.cancellation_evidence_uuid)) {
+    return refuse("correlated cancellation evidence is not bound");
+  }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
           request.physical_dag.root_physical_node_id) {
@@ -688,27 +785,43 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
           inner_node->output_descriptor_ids) {
     return refuse("correlated subquery input or output handles are unresolved");
   }
+  const auto& outer_batch = request.borrowed_outer_batch != nullptr
+                                ? *request.borrowed_outer_batch
+                                : request.outer_batch;
+  const auto& inner_batch = request.borrowed_inner_batch != nullptr
+                                ? *request.borrowed_inner_batch
+                                : request.inner_batch;
 
-  auto outer_validation = ValidateCanonicalDescriptorBatch(
-      request.outer_batch, outer_node->output_descriptor_ids);
-  if (!outer_validation.ok) {
-    return refuse(outer_validation.diagnostic_code + ":" +
-                  outer_validation.detail);
+  auto outer_validation = ValidateCorrelatedBatch(
+      outer_batch, outer_node->output_descriptor_ids,
+      request.cancellation_requested,
+      "while validating correlated outer rows");
+  if (outer_validation.cancellation.has_value()) {
+    return refuse_poll(std::move(*outer_validation.cancellation));
   }
-  auto inner_validation = ValidateCanonicalDescriptorBatch(
-      request.inner_batch, inner_node->output_descriptor_ids);
-  if (!inner_validation.ok) {
-    return refuse(inner_validation.diagnostic_code + ":" +
-                  inner_validation.detail);
+  if (!outer_validation.diagnostic.ok) {
+    return refuse(outer_validation.diagnostic.diagnostic_code + ":" +
+                  outer_validation.diagnostic.detail);
   }
-  if (request.outer_binding_column >= request.outer_batch.columns.size() ||
-      request.inner_reference_column >= request.inner_batch.columns.size()) {
+  auto inner_validation = ValidateCorrelatedBatch(
+      inner_batch, inner_node->output_descriptor_ids,
+      request.cancellation_requested,
+      "while validating correlated inner rows");
+  if (inner_validation.cancellation.has_value()) {
+    return refuse_poll(std::move(*inner_validation.cancellation));
+  }
+  if (!inner_validation.diagnostic.ok) {
+    return refuse(inner_validation.diagnostic.diagnostic_code + ":" +
+                  inner_validation.diagnostic.detail);
+  }
+  if (request.outer_binding_column >= outer_batch.columns.size() ||
+      request.inner_reference_column >= inner_batch.columns.size()) {
     return refuse("correlated binding column is outside its scope");
   }
   const auto& outer_column =
-      request.outer_batch.columns[request.outer_binding_column];
+      outer_batch.columns[request.outer_binding_column];
   const auto& inner_column =
-      request.inner_batch.columns[request.inner_reference_column];
+      inner_batch.columns[request.inner_reference_column];
   if (request.outer_binding_expression_descriptor_id == 0 ||
       request.outer_binding_expression_descriptor_id !=
           outer_column.descriptor_id ||
@@ -727,8 +840,8 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     return refuse("correlated binding descriptors are not type-compatible");
   }
 
-  const auto outer_count = request.outer_batch.rows.size();
-  const auto inner_count = request.inner_batch.rows.size();
+  const auto outer_count = outer_batch.rows.size();
+  const auto inner_count = inner_batch.rows.size();
   if (request.maximum_scope_execution_count == 0 ||
       outer_count > request.maximum_scope_execution_count ||
       request.maximum_comparison_count == 0 ||
@@ -739,9 +852,16 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     return refuse("correlated subquery resource bound was exceeded");
   }
 
+  std::optional<CorrelatedCancellationPoll> key_cancellation;
   const auto validate_keys = [&](const DescriptorBatch& batch,
                                  const std::size_t column) {
     for (const auto& row : batch.rows) {
+      auto cancellation =
+          poll_cancellation("while validating correlated keys");
+      if (!cancellation.diagnostic.ok) {
+        key_cancellation = std::move(cancellation);
+        return std::string{};
+      }
       const auto& value = row.values[column];
       if (value.state == api::EngineValueState::sql_null) continue;
       int comparison = 0;
@@ -754,14 +874,20 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     return std::string{};
   };
   if (const auto detail =
-          validate_keys(request.outer_batch, request.outer_binding_column);
+          validate_keys(outer_batch, request.outer_binding_column);
       !detail.empty()) {
     return refuse("correlated outer key refused: " + detail);
   }
+  if (key_cancellation.has_value()) {
+    return refuse_poll(std::move(*key_cancellation));
+  }
   if (const auto detail =
-          validate_keys(request.inner_batch, request.inner_reference_column);
+          validate_keys(inner_batch, request.inner_reference_column);
       !detail.empty()) {
     return refuse("correlated inner key refused: " + detail);
+  }
+  if (key_cancellation.has_value()) {
+    return refuse_poll(std::move(*key_cancellation));
   }
 
   std::vector<CanonicalCorrelatedScopeResult> scopes;
@@ -769,20 +895,32 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
   std::size_t comparison_count = 0;
   std::size_t result_row_count = 0;
   for (std::size_t outer_index = 0; outer_index < outer_count; ++outer_index) {
+    auto cancellation =
+        poll_cancellation("before a correlated outer scope");
+    if (!cancellation.diagnostic.ok) {
+      return refuse_poll(std::move(cancellation));
+    }
     CanonicalCorrelatedScopeResult scope;
     scope.outer_row_index = outer_index;
-    scope.bound_outer_value =
-        request.outer_batch.rows[outer_index]
-            .values[request.outer_binding_column];
-    scope.output_batch.columns = request.inner_batch.columns;
+    if (request.retain_bound_outer_values) {
+      scope.bound_outer_value =
+          outer_batch.rows[outer_index]
+              .values[request.outer_binding_column];
+    }
+    scope.output_batch.columns = inner_batch.columns;
     const auto& outer_value =
-        request.outer_batch.rows[outer_index]
+        outer_batch.rows[outer_index]
             .values[request.outer_binding_column];
     if (outer_value.state != api::EngineValueState::sql_null) {
       for (std::size_t inner_index = 0; inner_index < inner_count;
            ++inner_index) {
+        cancellation =
+            poll_cancellation("while evaluating a correlated scope");
+        if (!cancellation.diagnostic.ok) {
+          return refuse_poll(std::move(cancellation));
+        }
         const auto& inner_value =
-            request.inner_batch.rows[inner_index]
+            inner_batch.rows[inner_index]
                 .values[request.inner_reference_column];
         if (inner_value.state == api::EngineValueState::sql_null) continue;
         if (comparison_count == request.maximum_comparison_count) {
@@ -799,20 +937,30 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
           if (result_row_count == request.maximum_result_row_count) {
             return refuse("correlated subquery result bound was exceeded");
           }
-          scope.output_batch.rows.push_back(request.inner_batch.rows[inner_index]);
+          scope.output_batch.rows.push_back(inner_batch.rows[inner_index]);
           ++result_row_count;
         }
       }
     }
-    auto scope_validation = ValidateCanonicalDescriptorBatch(
-        scope.output_batch, selected_node->output_descriptor_ids);
-    if (!scope_validation.ok) {
-      return refuse(scope_validation.diagnostic_code + ":" +
-                    scope_validation.detail);
+    auto scope_validation = ValidateCorrelatedBatch(
+        scope.output_batch, selected_node->output_descriptor_ids,
+        request.cancellation_requested,
+        "while validating a correlated scope result");
+    if (scope_validation.cancellation.has_value()) {
+      return refuse_poll(std::move(*scope_validation.cancellation));
+    }
+    if (!scope_validation.diagnostic.ok) {
+      return refuse(scope_validation.diagnostic.diagnostic_code + ":" +
+                    scope_validation.diagnostic.detail);
     }
     scopes.push_back(std::move(scope));
   }
 
+  auto cancellation =
+      poll_cancellation("before correlated result publication");
+  if (!cancellation.diagnostic.ok) {
+    return refuse_poll(std::move(cancellation));
+  }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.mga_authority, request.physical_dag);
   if (!result_authority.ok)
@@ -824,6 +972,10 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
   result.scope_execution_count = outer_count;
   result.comparison_count = comparison_count;
   result.result_row_count = result_row_count;
+  result.transient_state_cleanup_proven = true;
+  if (request.cancellation_requested) {
+    result.cancellation_evidence_uuid = request.cancellation_evidence_uuid;
+  }
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
@@ -852,11 +1004,28 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     result.matched_scope_count = 0;
     result.null_extended_outer_row_count = 0;
     result.output_row_count = 0;
+    result.cancellation_observed = false;
+    result.transient_state_cleanup_proven = true;
+    result.cancellation_evidence_uuid.clear();
     result.correlated_plan_uuid.clear();
     result.selected_plan_uuid.clear();
     result.executed_physical_node_id = 0;
     result.causal_counter_id = 0;
     return result;
+  };
+  const auto refuse_poll = [&](CorrelatedCancellationPoll poll) {
+    auto diagnostic = std::move(poll.diagnostic);
+    auto refused = refuse(diagnostic.detail);
+    refused.diagnostic = std::move(diagnostic);
+    refused.cancellation_observed = poll.cancelled;
+    if (poll.cancelled) {
+      refused.cancellation_evidence_uuid =
+          request.cancellation_evidence_uuid;
+    }
+    return refused;
+  };
+  const auto poll_cancellation = [&](const std::string_view phase) {
+    return PollCorrelatedCancellation(request.cancellation_requested, phase);
   };
 
   const auto lateral_authority = RevalidateCanonicalExecutionMgaAuthority(
@@ -875,6 +1044,20 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
                              ? correlated_authority.diagnostic_code + ":" +
                                    correlated_authority.detail
                              : "LATERAL and correlation MGA statement contexts differ"));
+  }
+  if (!CorrelatedCancellationEvidenceBound(
+          request.physical_dag, request.cancellation_requested,
+          request.cancellation_evidence_uuid) ||
+      !CorrelatedCancellationEvidenceBound(
+          request.correlated_request.physical_dag,
+          request.correlated_request.cancellation_requested,
+          request.correlated_request.cancellation_evidence_uuid) ||
+      static_cast<bool>(request.cancellation_requested) !=
+          static_cast<bool>(request.correlated_request
+                                .cancellation_requested) ||
+      request.cancellation_evidence_uuid !=
+          request.correlated_request.cancellation_evidence_uuid) {
+    return refuse("LATERAL and correlation cancellation authority differ");
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
@@ -941,17 +1124,23 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
       subquery_node->node_kind != PhysicalNodeKind::kSubquery) {
     return refuse("LATERAL outer or correlated input node is unresolved");
   }
+  const auto& outer_batch =
+      request.correlated_request.borrowed_outer_batch != nullptr
+          ? *request.correlated_request.borrowed_outer_batch
+          : request.correlated_request.outer_batch;
+  const auto& inner_batch =
+      request.correlated_request.borrowed_inner_batch != nullptr
+          ? *request.correlated_request.borrowed_inner_batch
+          : request.correlated_request.inner_batch;
 
   std::vector<std::uint32_t> outer_descriptor_ids;
-  outer_descriptor_ids.reserve(
-      request.correlated_request.outer_batch.columns.size());
-  for (const auto& column : request.correlated_request.outer_batch.columns) {
+  outer_descriptor_ids.reserve(outer_batch.columns.size());
+  for (const auto& column : outer_batch.columns) {
     outer_descriptor_ids.push_back(column.descriptor_id);
   }
   std::vector<std::uint32_t> inner_descriptor_ids;
-  inner_descriptor_ids.reserve(
-      request.correlated_request.inner_batch.columns.size());
-  for (const auto& column : request.correlated_request.inner_batch.columns) {
+  inner_descriptor_ids.reserve(inner_batch.columns.size());
+  for (const auto& column : inner_batch.columns) {
     inner_descriptor_ids.push_back(column.descriptor_id);
   }
   std::vector<std::uint32_t> output_descriptor_ids = outer_descriptor_ids;
@@ -967,11 +1156,24 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     return refuse("LATERAL output resource bound is zero");
   }
 
+  auto cancellation =
+      poll_cancellation("before correlated LATERAL execution");
+  if (!cancellation.diagnostic.ok) {
+    return refuse_poll(std::move(cancellation));
+  }
+
   auto correlated =
       ExecuteCanonicalCorrelatedSubquery(request.correlated_request);
   if (!correlated.diagnostic.ok) {
-    return refuse(correlated.diagnostic.diagnostic_code + ":" +
-                  correlated.diagnostic.detail);
+    auto diagnostic = std::move(correlated.diagnostic);
+    auto refused = refuse(diagnostic.detail);
+    refused.diagnostic = std::move(diagnostic);
+    refused.cancellation_observed = correlated.cancellation_observed;
+    refused.transient_state_cleanup_proven =
+        correlated.transient_state_cleanup_proven;
+    refused.cancellation_evidence_uuid =
+        std::move(correlated.cancellation_evidence_uuid);
+    return refused;
   }
   if (!PhysicalMgaStatementContextEqual(
           correlated.mga_statement_context,
@@ -979,13 +1181,18 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     return refuse("correlated LATERAL input returned a different MGA statement context");
   }
   if (correlated.scopes.size() !=
-      request.correlated_request.outer_batch.rows.size()) {
+      outer_batch.rows.size()) {
     return refuse("correlated scopes do not cover the outer relation");
   }
   std::size_t matched_scope_count = 0;
   std::size_t null_extended_outer_row_count = 0;
   for (std::size_t scope_index = 0; scope_index < correlated.scopes.size();
        ++scope_index) {
+    cancellation =
+        poll_cancellation("while classifying correlated LATERAL scopes");
+    if (!cancellation.diagnostic.ok) {
+      return refuse_poll(std::move(cancellation));
+    }
     const auto& scope = correlated.scopes[scope_index];
     if (scope.outer_row_index != scope_index) {
       return refuse("correlated scope lost canonical outer-row order");
@@ -1005,15 +1212,19 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
   }
 
   DescriptorBatch output;
-  output.columns = request.correlated_request.outer_batch.columns;
+  output.columns = outer_batch.columns;
   output.columns.insert(output.columns.end(),
-                        request.correlated_request.inner_batch.columns.begin(),
-                        request.correlated_request.inner_batch.columns.end());
-  const auto inner_column_begin =
-      request.correlated_request.outer_batch.columns.size();
+                        inner_batch.columns.begin(),
+                        inner_batch.columns.end());
+  const auto inner_column_begin = outer_batch.columns.size();
   if (null_extend_empty_scopes) {
     for (std::size_t column = inner_column_begin;
          column < output.columns.size(); ++column) {
+      cancellation =
+          poll_cancellation("while deriving LATERAL null descriptors");
+      if (!cancellation.diagnostic.ok) {
+        return refuse_poll(std::move(cancellation));
+      }
       output.columns[column].nullable = true;
       if (!DeriveCanonicalNullableDescriptorEncoding(
               &output.columns[column].descriptor)) {
@@ -1025,14 +1236,23 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
   }
   output.rows.reserve(correlated.result_row_count +
                       null_extended_outer_row_count);
-  for (const auto& scope : correlated.scopes) {
+  for (auto& scope : correlated.scopes) {
+    cancellation =
+        poll_cancellation("while flattening a correlated LATERAL scope");
+    if (!cancellation.diagnostic.ok) {
+      return refuse_poll(std::move(cancellation));
+    }
     const auto& outer_row =
-        request.correlated_request.outer_batch.rows[scope.outer_row_index];
+        outer_batch.rows[scope.outer_row_index];
     if (scope.output_batch.rows.empty() && null_extend_empty_scopes) {
       DescriptorTuple lateral_row;
       lateral_row.values = outer_row.values;
-      for (const auto& column :
-           request.correlated_request.inner_batch.columns) {
+      for (const auto& column : inner_batch.columns) {
+        cancellation =
+            poll_cancellation("while forming a null-extended LATERAL row");
+        if (!cancellation.diagnostic.ok) {
+          return refuse_poll(std::move(cancellation));
+        }
         scratchbird::engine::internal_api::EngineTypedValue null_value;
         null_value.descriptor = column.descriptor;
         null_value.is_null = true;
@@ -1043,12 +1263,19 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
       output.rows.push_back(std::move(lateral_row));
       continue;
     }
-    for (const auto& inner_row : scope.output_batch.rows) {
+    for (auto& inner_row : scope.output_batch.rows) {
+      cancellation =
+          poll_cancellation("while flattening a LATERAL result row");
+      if (!cancellation.diagnostic.ok) {
+        return refuse_poll(std::move(cancellation));
+      }
       DescriptorTuple lateral_row;
       lateral_row.values = outer_row.values;
       lateral_row.values.insert(lateral_row.values.end(),
-                                inner_row.values.begin(),
-                                inner_row.values.end());
+                                std::make_move_iterator(
+                                    inner_row.values.begin()),
+                                std::make_move_iterator(
+                                    inner_row.values.end()));
       output.rows.push_back(std::move(lateral_row));
     }
   }
@@ -1056,15 +1283,28 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     for (auto& row : output.rows) {
       for (std::size_t column = inner_column_begin;
            column < output.columns.size(); ++column) {
+        cancellation =
+            poll_cancellation("while rebinding LATERAL null descriptors");
+        if (!cancellation.diagnostic.ok) {
+          return refuse_poll(std::move(cancellation));
+        }
         row.values[column].descriptor = output.columns[column].descriptor;
       }
     }
   }
-  auto output_validation =
-      ValidateCanonicalDescriptorBatch(output, output_descriptor_ids);
-  if (!output_validation.ok) {
-    return refuse(output_validation.diagnostic_code + ":" +
-                  output_validation.detail);
+  auto output_validation = ValidateCorrelatedBatch(
+      output, output_descriptor_ids, request.cancellation_requested,
+      "while validating the LATERAL result");
+  if (output_validation.cancellation.has_value()) {
+    return refuse_poll(std::move(*output_validation.cancellation));
+  }
+  if (!output_validation.diagnostic.ok) {
+    return refuse(output_validation.diagnostic.diagnostic_code + ":" +
+                  output_validation.diagnostic.detail);
+  }
+  cancellation = poll_cancellation("before LATERAL result publication");
+  if (!cancellation.diagnostic.ok) {
+    return refuse_poll(std::move(cancellation));
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.mga_authority, request.physical_dag);
@@ -1079,6 +1319,10 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
   result.matched_scope_count = matched_scope_count;
   result.null_extended_outer_row_count = null_extended_outer_row_count;
   result.output_row_count = result.output_batch.rows.size();
+  result.transient_state_cleanup_proven = true;
+  if (request.cancellation_requested) {
+    result.cancellation_evidence_uuid = request.cancellation_evidence_uuid;
+  }
   result.correlated_plan_uuid = std::move(correlated.selected_plan_uuid);
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;

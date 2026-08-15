@@ -512,6 +512,12 @@ struct CanonicalCorrelatedSubqueryRequest {
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch outer_batch;
   DescriptorBatch inner_batch;
+  // Live physical dispatch borrows its immutable input batches for the
+  // synchronous correlated/lateral call. Standalone callers may continue to
+  // populate the owned batches above.
+  const DescriptorBatch* borrowed_outer_batch = nullptr;
+  const DescriptorBatch* borrowed_inner_batch = nullptr;
+  bool retain_bound_outer_values = true;
   std::size_t outer_binding_column = 0;
   std::uint32_t outer_binding_expression_descriptor_id = 0;
   std::size_t inner_reference_column = 0;
@@ -519,6 +525,8 @@ struct CanonicalCorrelatedSubqueryRequest {
   std::size_t maximum_scope_execution_count = 1048576;
   std::size_t maximum_comparison_count = 1048576;
   std::size_t maximum_result_row_count = 1048576;
+  std::function<bool()> cancellation_requested;
+  std::string cancellation_evidence_uuid;
   CanonicalExecutionMgaAuthority mga_authority;
 };
 
@@ -534,6 +542,9 @@ struct CanonicalCorrelatedSubqueryResult {
   std::size_t scope_execution_count = 0;
   std::size_t comparison_count = 0;
   std::size_t result_row_count = 0;
+  bool cancellation_observed = false;
+  bool transient_state_cleanup_proven = false;
+  std::string cancellation_evidence_uuid;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
@@ -553,6 +564,8 @@ struct CanonicalLateralSubqueryRequest {
   std::uint64_t selected_physical_node_id = 0;
   CanonicalLateralJoinForm form = CanonicalLateralJoinForm::kInnerLateral;
   std::size_t maximum_output_row_count = 1048576;
+  std::function<bool()> cancellation_requested;
+  std::string cancellation_evidence_uuid;
   CanonicalExecutionMgaAuthority mga_authority;
 };
 
@@ -564,6 +577,9 @@ struct CanonicalLateralSubqueryResult {
   std::size_t matched_scope_count = 0;
   std::size_t null_extended_outer_row_count = 0;
   std::size_t output_row_count = 0;
+  bool cancellation_observed = false;
+  bool transient_state_cleanup_proven = false;
+  std::string cancellation_evidence_uuid;
   std::string correlated_plan_uuid;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;

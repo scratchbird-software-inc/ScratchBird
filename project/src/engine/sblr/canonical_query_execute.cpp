@@ -9043,13 +9043,75 @@ MakeLiveCorrelatedSubqueryRegistration(
           step.diagnostic.detail = std::move(detail);
           return step;
         }
+        const auto cancellation_policy = std::ranges::find_if(
+            operator_dag.admission_evidence,
+            [](const exec::PhysicalAdmissionEvidence& evidence) {
+              return evidence.stage ==
+                     exec::PhysicalAdmissionStage::kPolicyCapability;
+            });
+        const auto cancellation_policy_count = std::ranges::count_if(
+            operator_dag.admission_evidence,
+            [](const exec::PhysicalAdmissionEvidence& evidence) {
+              return evidence.stage ==
+                     exec::PhysicalAdmissionStage::kPolicyCapability;
+            });
+        if (cancellation_policy_count != 1 ||
+            cancellation_policy == operator_dag.admission_evidence.end() ||
+            cancellation_policy->evidence_uuid.empty()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
+          step.diagnostic.detail =
+              "correlated subquery cancellation policy evidence is missing";
+          return step;
+        }
+        const auto cancellation_evidence_uuid =
+            cancellation_policy->evidence_uuid;
+        const auto cancellation_requested =
+            mga_context.query_cancellation_requested
+                ? mga_context.query_cancellation_requested
+                : std::function<bool()>([] { return false; });
+        const auto poll_cancellation = [&](const char* phase) {
+          try {
+            if (!cancellation_requested()) return false;
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1";
+            step.diagnostic.detail =
+                std::string("live correlated subquery cancellation observed ") +
+                phase;
+            step.cancellation_observed = true;
+            step.transient_state_cleanup_proven = true;
+            step.cancellation_evidence_uuid = cancellation_evidence_uuid;
+            return true;
+          } catch (const std::exception& exception) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+            step.diagnostic.detail =
+                std::string("live correlated subquery cancellation probe threw: ") +
+                exception.what();
+            step.transient_state_cleanup_proven = true;
+            return true;
+          } catch (...) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+            step.diagnostic.detail =
+                "live correlated subquery cancellation probe threw a "
+                "non-standard exception";
+            step.transient_state_cleanup_proven = true;
+            return true;
+          }
+        };
         exec::CanonicalCorrelatedSubqueryRequest correlated_request;
         correlated_request.physical_dag = std::move(operator_dag);
         correlated_request.selected_physical_node_id = node.physical_node_id;
-        correlated_request.outer_batch =
-            *inputs[0].materialized_output_batch;
-        correlated_request.inner_batch =
-            *inputs[1].materialized_output_batch;
+        correlated_request.borrowed_outer_batch =
+            &*inputs[0].materialized_output_batch;
+        correlated_request.borrowed_inner_batch =
+            &*inputs[1].materialized_output_batch;
+        correlated_request.retain_bound_outer_values = false;
         correlated_request.outer_binding_column =
             prepared.outer_binding_column;
         correlated_request.outer_binding_expression_descriptor_id =
@@ -9064,24 +9126,56 @@ MakeLiveCorrelatedSubqueryRegistration(
             std::max<std::size_t>(1, prepared.pair_count);
         correlated_request.maximum_result_row_count =
             std::max<std::size_t>(1, prepared.output_row_bound);
+        correlated_request.cancellation_requested = cancellation_requested;
+        correlated_request.cancellation_evidence_uuid =
+            cancellation_evidence_uuid;
         correlated_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, correlated_request.physical_dag);
-        const auto correlated =
+        auto correlated =
             exec::ExecuteCanonicalCorrelatedSubquery(correlated_request);
         if (!correlated.diagnostic.ok) {
-          step.diagnostic = correlated.diagnostic;
+          step.diagnostic = std::move(correlated.diagnostic);
+          step.cancellation_observed =
+              correlated.cancellation_observed;
+          step.transient_state_cleanup_proven =
+              correlated.transient_state_cleanup_proven;
+          step.cancellation_evidence_uuid =
+              std::move(correlated.cancellation_evidence_uuid);
+          if (step.cancellation_observed) {
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1";
+          } else if (step.diagnostic.diagnostic_code ==
+                     "QOW-DIAG-QRY-013-CANCELLATION-PROBE-V1") {
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+          }
           return step;
         }
         exec::DescriptorBatch output;
-        output.columns = correlated_request.inner_batch.columns;
-        for (const auto& scope : correlated.scopes) {
-          output.rows.insert(output.rows.end(),
-                             scope.output_batch.rows.begin(),
-                             scope.output_batch.rows.end());
+        output.columns =
+            inputs[1].materialized_output_batch->columns;
+        output.rows.reserve(correlated.result_row_count);
+        if (poll_cancellation("before result flattening")) return step;
+        for (auto& scope : correlated.scopes) {
+          if (poll_cancellation("while flattening a result scope")) {
+            return step;
+          }
+          for (auto& row : scope.output_batch.rows) {
+            if (poll_cancellation("while flattening a result row")) {
+              return step;
+            }
+            output.rows.push_back(std::move(row));
+          }
         }
+        bool validation_stopped = false;
         const auto validated = exec::ValidateCanonicalDescriptorBatch(
-            output, node.output_descriptor_ids);
+            output, node.output_descriptor_ids,
+            [&] {
+              return poll_cancellation("while validating flattened results");
+            },
+            &validation_stopped);
+        if (validation_stopped) return step;
         if (!validated.ok ||
             output.rows.size() != correlated.result_row_count) {
           step.diagnostic = validated;
@@ -9094,13 +9188,17 @@ MakeLiveCorrelatedSubqueryRegistration(
           }
           return step;
         }
+        if (poll_cancellation("before result publication")) return step;
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = prepared.outer_row_count +
                                prepared.inner_row_count;
         step.rows_examined = correlated.comparison_count;
         step.output_row_count = output.rows.size();
         step.materialized_output_batch = std::move(output);
-        step.mga_statement_context = correlated.mga_statement_context;
+        step.mga_statement_context =
+            std::move(correlated.mga_statement_context);
+        step.transient_state_cleanup_proven =
+            correlated.transient_state_cleanup_proven;
         return step;
       };
   return registration;
@@ -9157,6 +9255,34 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
           step.diagnostic.detail = std::move(detail);
           return step;
         }
+        const auto cancellation_policy = std::ranges::find_if(
+            operator_dag.admission_evidence,
+            [](const exec::PhysicalAdmissionEvidence& evidence) {
+              return evidence.stage ==
+                     exec::PhysicalAdmissionStage::kPolicyCapability;
+            });
+        const auto cancellation_policy_count = std::ranges::count_if(
+            operator_dag.admission_evidence,
+            [](const exec::PhysicalAdmissionEvidence& evidence) {
+              return evidence.stage ==
+                     exec::PhysicalAdmissionStage::kPolicyCapability;
+            });
+        if (cancellation_policy_count != 1 ||
+            cancellation_policy == operator_dag.admission_evidence.end() ||
+            cancellation_policy->evidence_uuid.empty()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
+          step.diagnostic.detail =
+              "LATERAL/APPLY cancellation policy evidence is missing";
+          return step;
+        }
+        const auto cancellation_evidence_uuid =
+            cancellation_policy->evidence_uuid;
+        const auto cancellation_requested =
+            mga_context.query_cancellation_requested
+                ? mga_context.query_cancellation_requested
+                : std::function<bool()>([] { return false; });
         const auto selected = std::ranges::find_if(
             operator_dag.nodes, [&](const auto& candidate) {
               return candidate.physical_node_id == node.physical_node_id;
@@ -9194,35 +9320,43 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
         auto inner_reference_descriptor_id =
             prepared.inner_reference_descriptor_id;
         if (runtime_bounded_inputs) {
-          const auto int64_column = [](const auto& batch) {
-            return std::ranges::find_if(
-                batch.columns, [](const auto& column) {
-                  return column.descriptor.canonical_type_name == "int64";
-                });
-          };
-          const auto outer_column =
-              int64_column(*inputs[0].materialized_output_batch);
-          const auto inner_column =
-              int64_column(*inputs[1].materialized_output_batch);
-          if (outer_column ==
-                  inputs[0].materialized_output_batch->columns.end() ||
-              inner_column ==
-                  inputs[1].materialized_output_batch->columns.end()) {
+          const auto& outer_columns =
+              inputs[0].materialized_output_batch->columns;
+          const auto& inner_columns =
+              inputs[1].materialized_output_batch->columns;
+          const auto outer_type =
+              outer_columns.empty()
+                  ? dt::CanonicalTypeId::unknown
+                  : dt::CanonicalTypeIdFromStableName(
+                        outer_columns.front()
+                            .descriptor.canonical_type_name);
+          const auto inner_type =
+              inner_columns.empty()
+                  ? dt::CanonicalTypeId::unknown
+                  : dt::CanonicalTypeIdFromStableName(
+                        inner_columns.front()
+                            .descriptor.canonical_type_name);
+          if (outer_type == dt::CanonicalTypeId::unknown ||
+              outer_type != inner_type ||
+              (!profile.required_operand_type.empty() &&
+               (outer_columns.front()
+                        .descriptor.canonical_type_name !=
+                    profile.required_operand_type ||
+                inner_columns.front()
+                        .descriptor.canonical_type_name !=
+                    profile.required_operand_type))) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
                 "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
             step.diagnostic.detail =
-                "LATERAL/APPLY lacks an exact int64 correlation handle";
+                "LATERAL/APPLY lacks an exact type-compatible first-column "
+                "correlation handle";
             return step;
           }
-          outer_binding_column = static_cast<std::size_t>(std::distance(
-              inputs[0].materialized_output_batch->columns.begin(),
-              outer_column));
-          inner_reference_column = static_cast<std::size_t>(std::distance(
-              inputs[1].materialized_output_batch->columns.begin(),
-              inner_column));
-          outer_binding_descriptor_id = outer_column->descriptor_id;
-          inner_reference_descriptor_id = inner_column->descriptor_id;
+          outer_binding_column = 0;
+          inner_reference_column = 0;
+          outer_binding_descriptor_id = outer_columns.front().descriptor_id;
+          inner_reference_descriptor_id = inner_columns.front().descriptor_id;
         }
 
         auto correlated_dag = operator_dag;
@@ -9259,10 +9393,11 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
         exec::CanonicalCorrelatedSubqueryRequest correlated_request;
         correlated_request.physical_dag = std::move(correlated_dag);
         correlated_request.selected_physical_node_id = node.physical_node_id;
-        correlated_request.outer_batch =
-            *inputs[0].materialized_output_batch;
-        correlated_request.inner_batch =
-            *inputs[1].materialized_output_batch;
+        correlated_request.borrowed_outer_batch =
+            &*inputs[0].materialized_output_batch;
+        correlated_request.borrowed_inner_batch =
+            &*inputs[1].materialized_output_batch;
+        correlated_request.retain_bound_outer_values = false;
         correlated_request.outer_binding_column =
             outer_binding_column;
         correlated_request.outer_binding_expression_descriptor_id =
@@ -9277,6 +9412,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
             std::max<std::size_t>(1, prepared.pair_count);
         correlated_request.maximum_result_row_count =
             std::max<std::size_t>(1, prepared.output_row_bound);
+        correlated_request.cancellation_requested = cancellation_requested;
+        correlated_request.cancellation_evidence_uuid =
+            cancellation_evidence_uuid;
         correlated_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, correlated_request.physical_dag);
@@ -9289,21 +9427,39 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
         lateral_request.form = profile.form;
         lateral_request.maximum_output_row_count =
             std::max<std::size_t>(1, prepared.output_row_bound);
+        lateral_request.cancellation_requested = cancellation_requested;
+        lateral_request.cancellation_evidence_uuid =
+            cancellation_evidence_uuid;
         lateral_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, lateral_request.physical_dag);
-        const auto lateral =
+        auto lateral =
             exec::ExecuteCanonicalLateralSubquery(lateral_request);
         if (!lateral.diagnostic.ok) {
-          step.diagnostic = lateral.diagnostic;
+          step.diagnostic = std::move(lateral.diagnostic);
+          step.cancellation_observed = lateral.cancellation_observed;
+          step.transient_state_cleanup_proven =
+              lateral.transient_state_cleanup_proven;
+          step.cancellation_evidence_uuid =
+              std::move(lateral.cancellation_evidence_uuid);
+          if (step.cancellation_observed) {
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1";
+          } else if (step.diagnostic.diagnostic_code ==
+                     "QOW-DIAG-QRY-013-CANCELLATION-PROBE-V1") {
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+          }
           return step;
         }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = outer_row_count + inner_row_count;
         step.rows_examined = actual_pair_count;
         step.output_row_count = lateral.output_batch.rows.size();
-        step.materialized_output_batch = lateral.output_batch;
-        step.mga_statement_context = lateral.mga_statement_context;
+        step.materialized_output_batch = std::move(lateral.output_batch);
+        step.mga_statement_context = std::move(lateral.mga_statement_context);
+        step.transient_state_cleanup_proven =
+            lateral.transient_state_cleanup_proven;
         return step;
       };
   return registration;
@@ -43348,6 +43504,18 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
     join_kind = exec::CanonicalAcceptedJoinKind::kLeftOuter;
     join_form = "LATERAL_LEFT";
     join_component = "lateral-left";
+  } else if (lateral_profile.matched &&
+             lateral_profile.form ==
+                 exec::CanonicalLateralJoinForm::kCrossApply) {
+    join_kind = exec::CanonicalAcceptedJoinKind::kInner;
+    join_form = "LATERAL_INNER";
+    join_component = "cross-apply";
+  } else if (lateral_profile.matched &&
+             lateral_profile.form ==
+                 exec::CanonicalLateralJoinForm::kOuterApply) {
+    join_kind = exec::CanonicalAcceptedJoinKind::kLeftOuter;
+    join_form = "LATERAL_LEFT";
+    join_component = "outer-apply";
   } else if (join->semantic_variant_id.starts_with("join.inner")) {
     join_kind = exec::CanonicalAcceptedJoinKind::kInner;
     join_form = "INNER";
@@ -46441,6 +46609,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         std::ranges::any_of(dag.nodes, [](const auto& node) {
           return node.semantic_variant_id == "relation.source.v1";
         });
+    const bool lateral_or_apply_pair =
+        std::ranges::any_of(dag.nodes, [](const auto& node) {
+          return node.node_kind == api::RelationalDagNodeKind::kJoin &&
+                 MatchLiveLateralSubqueryProfile(
+                     node.semantic_variant_id).matched;
+        });
     if (composition_source_count >= 3 && composition_source_count <= 9 &&
         model_composition_source_count >= 2) {
       const auto composition =
@@ -46449,7 +46623,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     }
     if (composition_source_count == 2 &&
         model_composition_source_count >= 1 &&
-        !time_series_relational_pair) {
+        (!time_series_relational_pair || lateral_or_apply_pair)) {
       const auto captured = ExecuteCanonicalCapturedModelFamilyJoinQuery(input);
       if (captured.profile_matched) return captured;
       const auto composition = ExecuteCanonicalColumnarFamilyJoinQuery(input);
