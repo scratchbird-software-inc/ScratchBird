@@ -177,8 +177,9 @@ std::size_t CanonicalAggregateExpectedArity(
 }
 
 std::string FormatAggregateReal(long double value);
-std::string AggregateDistinctKey(
-    const std::vector<EngineTypedValue>& values);
+bool AggregateDistinctKey(const std::vector<EngineTypedValue>& values,
+                          std::string* key,
+                          DescriptorRuntimeDiagnostic* diagnostic);
 
 bool WellFormedAggregateUtf8(const std::string_view value) {
   std::size_t offset = 0;
@@ -600,7 +601,8 @@ bool TransitionCanonicalAggregateCore(
   if (descriptor.function ==
       CanonicalAggregateFunction::approx_count_distinct) {
     if (value.state == EngineValueState::sql_null) return true;
-    std::string identity = AggregateDistinctKey({value});
+    std::string identity;
+    if (!AggregateDistinctKey({value}, &identity, diagnostic)) return false;
     if (std::find(state->approximate_distinct_values.begin(),
                   state->approximate_distinct_values.end(), identity) ==
         state->approximate_distinct_values.end()) {
@@ -1629,22 +1631,67 @@ void AppendAggregateDistinctKeyField(std::string* key,
   key->append(field);
 }
 
-std::string AggregateDistinctKey(const std::vector<EngineTypedValue>& values) {
-  std::string key;
-  key.reserve(values.size() * 64);
+bool AggregateDistinctKey(const std::vector<EngineTypedValue>& values,
+                          std::string* key,
+                          DescriptorRuntimeDiagnostic* diagnostic) {
+  namespace dt = scratchbird::core::datatypes;
+  if (key == nullptr || diagnostic == nullptr) return false;
+  key->clear();
+  key->reserve(values.size() * 64);
   for (const auto& value : values) {
     AppendAggregateDistinctKeyField(
-        &key, value.descriptor.descriptor_uuid.canonical);
-    AppendAggregateDistinctKeyField(&key,
+        key, value.descriptor.descriptor_uuid.canonical);
+    AppendAggregateDistinctKeyField(key,
                                     value.descriptor.canonical_type_name);
-    key.push_back(static_cast<char>(value.state));
-    key.push_back(value.is_null ? 1 : 0);
+    key->push_back(static_cast<char>(value.state));
+    key->push_back(value.is_null ? 1 : 0);
     std::string canonical_payload = value.encoded_value;
     std::string_view auxiliary_binary;
     if (value.state == EngineValueState::value && !value.is_null) {
-      if (IsCanonicalBoundedSignedIntegerDescriptor(value.descriptor)) {
-        const auto decoded = DecodeInt64Value(value);
-        if (decoded.ok()) canonical_payload = std::to_string(decoded.value);
+      const auto type_id = dt::CanonicalTypeIdFromStableName(
+          value.descriptor.canonical_type_name);
+      const bool canonical_integer =
+          type_id == dt::CanonicalTypeId::int8 ||
+          type_id == dt::CanonicalTypeId::int16 ||
+          type_id == dt::CanonicalTypeId::int32 ||
+          type_id == dt::CanonicalTypeId::int64 ||
+          type_id == dt::CanonicalTypeId::int128 ||
+          type_id == dt::CanonicalTypeId::uint8 ||
+          type_id == dt::CanonicalTypeId::uint16 ||
+          type_id == dt::CanonicalTypeId::uint32 ||
+          type_id == dt::CanonicalTypeId::uint64 ||
+          type_id == dt::CanonicalTypeId::uint128;
+      const bool canonical_decimal =
+          type_id == dt::CanonicalTypeId::decimal ||
+          type_id == dt::CanonicalTypeId::decimal_float;
+      if (canonical_integer) {
+        dt::DatatypeCastRequest request;
+        request.value.type_id = type_id;
+        request.value.encoded_value = value.encoded_value;
+        request.value.is_null = false;
+        request.target_type_id = type_id;
+        request.explicit_cast = true;
+        const auto cast = dt::CastDatatypeValue(request);
+        if (!cast.ok()) {
+          *diagnostic = Refusal(
+              "QOW-DIAG-QRY-011-REGISTRY-DISTINCT-V1",
+              cast.diagnostic.diagnostic_code);
+          return false;
+        }
+        canonical_payload = cast.value.encoded_value;
+      } else if (canonical_decimal) {
+        dt::DatatypeSortKeyRequest request;
+        request.value.type_id = type_id;
+        request.value.encoded_value = value.encoded_value;
+        request.value.is_null = false;
+        const auto sorted = dt::MakeDatatypeSortKey(request);
+        if (!sorted.ok()) {
+          *diagnostic = Refusal(
+              "QOW-DIAG-QRY-011-REGISTRY-DISTINCT-V1",
+              sorted.diagnostic.diagnostic_code);
+          return false;
+        }
+        canonical_payload = sorted.sort_key;
       } else if (value.descriptor.canonical_type_name == "boolean" ||
                  value.descriptor.canonical_type_name == "bool") {
         const auto decoded = DecodeBoolValue(value);
@@ -1667,10 +1714,10 @@ std::string AggregateDistinctKey(const std::vector<EngineTypedValue>& values) {
             value.binary_value.size());
       }
     }
-    AppendAggregateDistinctKeyField(&key, canonical_payload);
-    AppendAggregateDistinctKeyField(&key, auxiliary_binary);
+    AppendAggregateDistinctKeyField(key, canonical_payload);
+    AppendAggregateDistinctKeyField(key, auxiliary_binary);
   }
-  return key;
+  return true;
 }
 
 struct BoundAggregateTransition {
@@ -1718,7 +1765,11 @@ bool PrepareCanonicalAggregateTransitions(
       values.push_back(request.input_batch.rows[row].values[column]);
     }
     if (request.distinct) {
-      if (!distinct_keys.insert(AggregateDistinctKey(values)).second) continue;
+      std::string distinct_key;
+      if (!AggregateDistinctKey(values, &distinct_key, diagnostic)) {
+        return false;
+      }
+      if (!distinct_keys.insert(std::move(distinct_key)).second) continue;
       if (distinct_keys.size() > request.maximum_distinct_value_count) {
         *diagnostic = Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                               "aggregate DISTINCT bound is exceeded");
