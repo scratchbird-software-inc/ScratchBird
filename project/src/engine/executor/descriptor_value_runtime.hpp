@@ -1789,6 +1789,15 @@ struct CanonicalAggregateRuntimeRequest {
   std::size_t maximum_aggregate_order_term_count = 64;
   std::size_t maximum_order_comparison_count = 1048576;
   std::size_t maximum_state_bytes = 16777216;
+  // Persistent transition state, retained final output, and transient
+  // finalizer workspace are separate resources within one selected-node
+  // grant. Zero delegates the corresponding new cap to that immutable grant;
+  // a nonzero caller value may only narrow it.
+  std::size_t maximum_final_output_bytes = 0;
+  std::size_t maximum_finalization_workspace_bytes = 0;
+  // Exact bytes already retained by an enclosing composite runtime. The
+  // aggregate charges them against, but cannot expand, the selected grant.
+  std::size_t retained_memory_bytes = 0;
   bool parser_execution_authority_claimed = false;
   bool transaction_finality_claimed = false;
   bool recovery_authority_claimed = false;
@@ -1811,6 +1820,8 @@ struct CanonicalAggregateRuntimeResult {
   std::size_t aggregate_order_term_count = 0;
   std::size_t order_comparison_count = 0;
   std::size_t state_bytes = 0;
+  std::size_t final_output_bytes = 0;
+  std::size_t peak_finalization_workspace_bytes = 0;
   // Input-row ordinals that reached the canonical transition pipeline after
   // FILTER, DISTINCT, and aggregate ORDER BY were applied.
   std::vector<std::size_t> transition_row_indices;
@@ -1838,6 +1849,9 @@ struct CanonicalAggregateStateSpillRequest {
   std::uint64_t memory_quota_bytes = 0;
   std::size_t maximum_serialized_state_bytes = 16777216;
   std::size_t maximum_spill_record_count = 16777216;
+  // Bytes retained by an enclosing aggregate composite while this replay
+  // executes. They are charged against the selected physical-node grant.
+  std::size_t retained_memory_bytes = 0;
   bool cancellation_requested = false;
   bool cleanup_after_cancellation = true;
   bool restart_recovery_proof_available = true;
@@ -1896,6 +1910,7 @@ struct CanonicalAggregateMovingRuntimeRequest {
   std::size_t maximum_addition_transition_count = 8388608;
   std::size_t maximum_inverse_transition_count = 8388608;
   std::size_t maximum_cumulative_state_bytes = 268435456;
+  std::size_t maximum_combined_final_output_bytes = 0;
   bool cancellation_requested = false;
 };
 
@@ -1907,6 +1922,8 @@ struct CanonicalAggregateMovingRuntimeResult {
   std::size_t inverse_transition_count = 0;
   std::size_t cumulative_state_bytes = 0;
   std::size_t maximum_retained_state_bytes = 0;
+  std::size_t combined_final_output_bytes = 0;
+  std::size_t peak_finalization_workspace_bytes = 0;
   bool moving_inverse_state_used = false;
   bool frame_recomputation_used = false;
   bool cancellation_observed = false;
@@ -1968,6 +1985,7 @@ struct CanonicalGroupedAggregateRuntimeRequest {
   std::size_t maximum_combined_distinct_tuple_count = 1048576;
   std::size_t maximum_combined_order_comparison_count = 1048576;
   std::size_t maximum_combined_state_bytes = 67108864;
+  std::size_t maximum_combined_final_output_bytes = 0;
   std::size_t maximum_output_rows = 65536;
 };
 
@@ -1992,6 +2010,8 @@ struct CanonicalGroupedAggregateRuntimeResult {
   std::size_t aggregate_distinct_tuple_count = 0;
   std::size_t aggregate_order_comparison_count = 0;
   std::size_t combined_state_bytes = 0;
+  std::size_t combined_final_output_bytes = 0;
+  std::size_t peak_finalization_workspace_bytes = 0;
   bool aggregate_state_spill_required = false;
   bool shared_state_authority_used = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
@@ -2013,6 +2033,7 @@ struct CanonicalGroupedAggregateSetRuntimeRequest {
   std::size_t maximum_combined_distinct_tuple_count = 8388608;
   std::size_t maximum_combined_order_comparison_count = 8388608;
   std::size_t maximum_combined_state_bytes = 268435456;
+  std::size_t maximum_combined_final_output_bytes = 0;
 };
 
 struct CanonicalGroupedAggregateSetMetadata {
@@ -2036,6 +2057,8 @@ struct CanonicalGroupedAggregateSetRuntimeResult {
   std::size_t aggregate_distinct_tuple_count = 0;
   std::size_t aggregate_order_comparison_count = 0;
   std::size_t combined_state_bytes = 0;
+  std::size_t combined_final_output_bytes = 0;
+  std::size_t peak_finalization_workspace_bytes = 0;
   bool group_identity_proven = false;
   bool aggregate_state_spill_required = false;
   bool shared_state_authority_used = false;
@@ -2077,6 +2100,7 @@ struct CanonicalPivotRequest {
   std::size_t maximum_total_aggregate_transition_count = 1048576;
   std::size_t maximum_output_row_count = 1048576;
   std::size_t maximum_output_cell_count = 16777216;
+  std::size_t maximum_combined_final_output_bytes = 0;
   CanonicalExecutionMgaAuthority mga_authority;
 };
 
@@ -2090,6 +2114,8 @@ struct CanonicalPivotResult {
   std::size_t matched_input_row_count = 0;
   std::size_t key_comparison_count = 0;
   std::size_t aggregate_transition_count = 0;
+  std::size_t combined_final_output_bytes = 0;
+  std::size_t peak_finalization_workspace_bytes = 0;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
@@ -2591,6 +2617,10 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request);
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request);
+CanonicalAggregateRuntimeResult
+ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
+    const CanonicalAggregateRuntimeRequest& request,
+    std::size_t exact_final_output_ceiling);
 CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
     const CanonicalAggregateStateSpillRequest& request);
 CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(

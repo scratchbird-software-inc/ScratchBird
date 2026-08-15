@@ -6232,6 +6232,21 @@ bool CheckedMultiply(const std::uint64_t left, const std::uint64_t right,
   return true;
 }
 
+std::optional<std::size_t> SelectedNodeAggregateMemoryBound(
+    const exec::TypedPhysicalNodeDag& dag,
+    const exec::PhysicalNodeRecord& node) {
+  if (dag.memory_budget_bytes == 0 || node.memory_bytes_required == 0 ||
+      node.memory_bytes_required > dag.memory_budget_bytes ||
+      node.memory_bytes_required >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max())) {
+    return std::nullopt;
+  }
+  return static_cast<std::size_t>(node.memory_bytes_required);
+}
+
+constexpr std::uint64_t kCanonicalAggregateKernelBaseMemoryBytes = 1024;
+
 struct ExpressionSortKeyReceiptIssueResult {
   exec::DescriptorRuntimeDiagnostic diagnostic;
   std::shared_ptr<const exec::CanonicalDescriptorSortKeyReceipt> receipt;
@@ -8806,6 +8821,16 @@ MakeLiveAggregateRegistryRegistration(
           }
           filter_truth_values = std::move(materialized_filter);
         }
+        const auto aggregate_memory_bound =
+            SelectedNodeAggregateMemoryBound(dag, node);
+        if (!aggregate_memory_bound.has_value()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "aggregate finalization memory grant is unresolved";
+          return step;
+        }
         exec::CanonicalAggregateRuntimeRequest aggregate_request;
         aggregate_request.physical_dag = std::move(execution_dag);
         aggregate_request.selected_physical_node_id = node.physical_node_id;
@@ -8833,6 +8858,10 @@ MakeLiveAggregateRegistryRegistration(
             prepared.listagg_with_count;
         aggregate_request.forced_strategy =
             exec::CanonicalAggregateExecutionStrategy::serial;
+        aggregate_request.maximum_final_output_bytes =
+            *aggregate_memory_bound;
+        aggregate_request.maximum_finalization_workspace_bytes =
+            *aggregate_memory_bound;
         aggregate_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, aggregate_request.physical_dag);
@@ -8943,7 +8972,17 @@ MakeLiveGroupedCountSumRegistration(
           runtime_node->output_descriptor_ids.resize(
               prepared.key_terms.size() + 2);
         }
-        const auto make_aggregate = [](
+        const auto aggregate_memory_bound =
+            SelectedNodeAggregateMemoryBound(dag, node);
+        if (!aggregate_memory_bound.has_value()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "grouped aggregate finalization memory grant is unresolved";
+          return step;
+        }
+        const auto make_aggregate = [aggregate_memory_bound](
                                         const PreparedGlobalAggregateRoot&
                                             prepared_aggregate) {
           exec::CanonicalAggregateRuntimeRequest aggregate;
@@ -8968,6 +9007,9 @@ MakeLiveGroupedCountSumRegistration(
               prepared_aggregate.listagg_with_count;
           aggregate.forced_strategy =
               exec::CanonicalAggregateExecutionStrategy::serial;
+          aggregate.maximum_final_output_bytes = *aggregate_memory_bound;
+          aggregate.maximum_finalization_workspace_bytes =
+              *aggregate_memory_bound;
           return aggregate;
         };
         exec::CanonicalGroupedAggregateSetRuntimeRequest grouped_request;
@@ -8986,9 +9028,13 @@ MakeLiveGroupedCountSumRegistration(
         first.grouping_sets = prepared.grouping_sets;
         first.maximum_group_count = maximum_output_row_count;
         first.maximum_output_rows = maximum_output_row_count;
+        first.maximum_combined_final_output_bytes =
+            *aggregate_memory_bound;
         auto sum = make_aggregate(prepared.sum);
         sum.mga_authority = first.aggregate_request.mga_authority;
         grouped_request.additional_aggregates = {std::move(sum)};
+        grouped_request.maximum_combined_final_output_bytes =
+            *aggregate_memory_bound;
         auto grouped =
             exec::ExecuteCanonicalGroupedAggregateSetRuntime(grouped_request);
         if (!grouped.diagnostic.ok) {
@@ -14347,9 +14393,24 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
 
     std::uint64_t output_memory = 1;
     std::uint64_t operator_memory = 0;
+    std::uint64_t aggregate_workspace_memory = 0;
+    if (physical_kind == exec::PhysicalNodeKind::kAggregate &&
+        (!CheckedMultiply(
+             static_cast<std::uint64_t>(state.batch.rows.size()),
+             sizeof(std::size_t), &aggregate_workspace_memory) ||
+         !CheckedAdd(aggregate_workspace_memory,
+                     kCanonicalAggregateKernelBaseMemoryBytes,
+                     &aggregate_workspace_memory))) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "composition aggregate workspace size overflowed");
+    }
     if (!AddBatchMemoryBytes(state.batch, &output_memory) ||
         !CheckedAdd(input_memory, output_memory, &operator_memory) ||
         !CheckedAdd(operator_memory, auxiliary_memory, &operator_memory) ||
+        (physical_kind == exec::PhysicalNodeKind::kAggregate &&
+         !CheckedAdd(operator_memory,
+                     aggregate_workspace_memory,
+                     &operator_memory)) ||
         operator_memory >
             request.optimizer_request.resource.memory_budget_bytes) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
@@ -19103,8 +19164,10 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   std::uint64_t per_group_memory = 0;
   std::uint64_t output_memory = 0;
   std::uint64_t projection_memory = 0;
+  std::uint64_t aggregate_workspace_memory = 0;
   std::uint64_t total_memory = 0;
-  constexpr std::uint64_t kGroupedStateOverhead = 256;
+  constexpr std::uint64_t kGroupedStateOverhead =
+      kCanonicalAggregateKernelBaseMemoryBytes;
   constexpr std::uint64_t kGroupingProjectionBytes = 64;
   if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
       !CheckedMultiply(
@@ -19122,9 +19185,12 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
           static_cast<std::uint64_t>(grouping_projection_count) *
               kGroupingProjectionBytes,
           &projection_memory) ||
+      !CheckedMultiply(input_row_count, sizeof(std::size_t),
+                       &aggregate_workspace_memory) ||
       !CheckedAdd(input_memory, per_group_memory, &total_memory) ||
       !CheckedAdd(total_memory, output_memory, &total_memory) ||
       !CheckedAdd(total_memory, projection_memory, &total_memory) ||
+      !CheckedAdd(total_memory, aggregate_workspace_memory, &total_memory) ||
       output_row_bound > std::numeric_limits<std::size_t>::max()) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live grouped COUNT/SUM memory size overflowed");
@@ -19280,7 +19346,18 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
           return step;
         }
 
-        const auto make_aggregate = [](const PreparedGlobalAggregateRoot& prepared) {
+        const auto aggregate_memory_bound =
+            SelectedNodeAggregateMemoryBound(dag, node);
+        if (!aggregate_memory_bound.has_value()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "grouped aggregate finalization memory grant is unresolved";
+          return step;
+        }
+        const auto make_aggregate = [aggregate_memory_bound](
+                                        const PreparedGlobalAggregateRoot& prepared) {
           exec::CanonicalAggregateRuntimeRequest aggregate;
           aggregate.descriptor = prepared.aggregate_descriptor;
           aggregate.value_columns = prepared.value_columns;
@@ -19299,6 +19376,9 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
           aggregate.listagg_with_count = prepared.listagg_with_count;
           aggregate.forced_strategy =
               exec::CanonicalAggregateExecutionStrategy::serial;
+          aggregate.maximum_final_output_bytes = *aggregate_memory_bound;
+          aggregate.maximum_finalization_workspace_bytes =
+              *aggregate_memory_bound;
           return aggregate;
         };
 
@@ -19355,6 +19435,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         first.grouping_sets = prepared_root.grouping_sets;
         first.maximum_group_count = maximum_output_rows;
         first.maximum_output_rows = maximum_output_rows;
+        first.maximum_combined_final_output_bytes =
+            *aggregate_memory_bound;
         auto additional_sum = make_aggregate(prepared_root.sum);
         // Grouped-set runtimes deliberately share the first aggregate's DAG,
         // selected node, and input batch.  The additional specification still
@@ -19362,6 +19444,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         // a stale or detached participant in that shared execution.
         additional_sum.mga_authority = first.aggregate_request.mga_authority;
         grouped_request.additional_aggregates = {std::move(additional_sum)};
+        grouped_request.maximum_combined_final_output_bytes =
+            *aggregate_memory_bound;
 
         auto aggregate_result =
             exec::ExecuteCanonicalGroupedAggregateSetRuntime(grouped_request);
@@ -20020,10 +20104,18 @@ ExecuteCanonicalObjectFreePivotQuery(
   std::uint64_t item_comparisons = 0;
   std::uint64_t maximum_key_comparisons = 0;
   std::uint64_t maximum_transitions = 0;
+  std::uint64_t aggregate_workspace_memory = 0;
   if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
       !CheckedMultiply(input_row_count, outputs.size(), &output_cells) ||
       !CheckedMultiply(output_cells, 64U, &output_memory) ||
       !CheckedAdd(input_memory, output_memory, &total_memory) ||
+      !CheckedAdd(total_memory, input_memory, &total_memory) ||
+      !CheckedMultiply(input_row_count, sizeof(std::size_t),
+                       &aggregate_workspace_memory) ||
+      !CheckedAdd(total_memory, aggregate_workspace_memory, &total_memory) ||
+      !CheckedAdd(total_memory,
+                  kCanonicalAggregateKernelBaseMemoryBytes,
+                  &total_memory) ||
       !CheckedMultiply(input_row_count, input_row_count,
                        &group_comparisons) ||
       !CheckedMultiply(group_comparisons, group_count,
@@ -20136,6 +20228,10 @@ ExecuteCanonicalObjectFreePivotQuery(
           binding.aggregate_template.maximum_transition_count =
               std::max<std::size_t>(1, input_row_count);
           binding.aggregate_template.maximum_state_bytes = maximum_state_bytes;
+          binding.aggregate_template.maximum_final_output_bytes =
+              maximum_state_bytes;
+          binding.aggregate_template.maximum_finalization_workspace_bytes =
+              maximum_state_bytes;
         }
         exec::CanonicalPivotRequest pivot_request;
         pivot_request.physical_dag = dag;
@@ -20156,6 +20252,8 @@ ExecuteCanonicalObjectFreePivotQuery(
         pivot_request.maximum_output_row_count =
             std::max<std::size_t>(1, input_row_count);
         pivot_request.maximum_output_cell_count = maximum_output_cells;
+        pivot_request.maximum_combined_final_output_bytes =
+            maximum_state_bytes;
         pivot_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         const auto pivot = exec::ExecuteCanonicalPivot(pivot_request);
@@ -21038,6 +21136,17 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                     "live ordered-set aggregate state size overflowed");
     }
+    if (aggregate_function == exec::CanonicalAggregateFunction::mode) {
+      std::uint64_t mode_value_and_comparison_memory = 0;
+      if (!CheckedMultiply(input_memory, 13U,
+                           &mode_value_and_comparison_memory) ||
+          !CheckedAdd(aggregate_result_memory,
+                      mode_value_and_comparison_memory,
+                      &aggregate_result_memory)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                      "live MODE state or comparison workspace overflowed");
+      }
+    }
   }
   if (approximate_expression) {
     std::uint64_t approximate_state_memory = 0;
@@ -21052,10 +21161,16 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
     if (aggregate_function ==
         exec::CanonicalAggregateFunction::approx_top_k) {
       std::uint64_t rendered_value_memory = 0;
+      std::uint64_t comparison_workspace_memory = 0;
       if (!CheckedMultiply(input_memory, 6U, &rendered_value_memory) ||
           !CheckedAdd(rendered_value_memory, row_overhead_memory,
                       &rendered_value_memory) ||
           !CheckedAdd(rendered_value_memory, 2U,
+                      &aggregate_result_memory) ||
+          !CheckedMultiply(input_memory, 12U,
+                           &comparison_workspace_memory) ||
+          !CheckedAdd(aggregate_result_memory,
+                      comparison_workspace_memory,
                       &aggregate_result_memory)) {
         return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                       "live approximate top-k result size overflowed");
@@ -21067,7 +21182,18 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
                     "live approximate aggregate result size overflowed");
     }
   }
-  if (!CheckedAdd(input_memory, aggregate_result_memory, &total_memory)) {
+  std::uint64_t aggregate_workspace_memory = 0;
+  if (!CheckedMultiply(input_row_count, sizeof(std::size_t),
+                       &aggregate_workspace_memory) ||
+      !CheckedAdd(aggregate_result_memory, aggregate_workspace_memory,
+                  &aggregate_result_memory)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live aggregate transition workspace size overflowed");
+  }
+  if (!CheckedAdd(aggregate_result_memory,
+                  kCanonicalAggregateKernelBaseMemoryBytes,
+                  &aggregate_result_memory) ||
+      !CheckedAdd(input_memory, aggregate_result_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live global aggregate input or result size overflowed");
   }
@@ -21244,6 +21370,16 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           }
           output_batch = aggregate_result.output_batch;
         } else {
+          const auto aggregate_memory_bound =
+              SelectedNodeAggregateMemoryBound(dag, node);
+          if (!aggregate_memory_bound.has_value()) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+            step.diagnostic.detail =
+                "aggregate finalization memory grant is unresolved";
+            return step;
+          }
           exec::CanonicalAggregateRuntimeRequest aggregate_request;
           aggregate_request.physical_dag = dag;
           aggregate_request.selected_physical_node_id = node.physical_node_id;
@@ -21267,6 +21403,10 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           aggregate_request.listagg_with_count = listagg_with_count;
           aggregate_request.forced_strategy =
               exec::CanonicalAggregateExecutionStrategy::serial;
+          aggregate_request.maximum_final_output_bytes =
+              *aggregate_memory_bound;
+          aggregate_request.maximum_finalization_workspace_bytes =
+              *aggregate_memory_bound;
           aggregate_request.mga_authority = mga_authority;
           const auto aggregate_result =
               exec::ExecuteCanonicalAggregateRuntime(aggregate_request);

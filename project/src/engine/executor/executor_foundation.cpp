@@ -54,6 +54,44 @@ bool IsCanonicalUuid(const std::string_view value) {
   return true;
 }
 
+std::optional<std::size_t> FoundationNodeMemoryGrant(
+    const TypedPhysicalNodeDag& dag, const std::uint64_t node_id) {
+  const auto node = std::ranges::find_if(
+      dag.nodes, [&](const auto& candidate) {
+        return candidate.physical_node_id == node_id;
+      });
+  if (node == dag.nodes.end() || dag.memory_budget_bytes == 0 ||
+      node->memory_bytes_required == 0 ||
+      node->memory_bytes_required > dag.memory_budget_bytes ||
+      node->memory_bytes_required >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max())) {
+    return std::nullopt;
+  }
+  return static_cast<std::size_t>(node->memory_bytes_required);
+}
+
+bool FoundationBatchPayloadBytes(const DescriptorBatch& batch,
+                                 std::size_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = 1;
+  for (const auto& row : batch.rows) {
+    for (const auto& value : row.values) {
+      if (*bytes > std::numeric_limits<std::size_t>::max() -
+                       value.encoded_value.size()) {
+        return false;
+      }
+      *bytes += value.encoded_value.size();
+      if (*bytes > std::numeric_limits<std::size_t>::max() -
+                       value.binary_value.size()) {
+        return false;
+      }
+      *bytes += value.binary_value.size();
+    }
+  }
+  return true;
+}
+
 bool CanonicalWindowAuthorityAbsent(
     const CanonicalExecutionMgaAuthority& authority) {
   return authority.origin == CanonicalMgaAuthorityOrigin::kMissing &&
@@ -4646,6 +4684,21 @@ CanonicalPivotResult ExecuteCanonicalPivot(
     return refuse(input_validation.diagnostic_code,
                   input_validation.detail);
   }
+  const auto node_memory_grant = FoundationNodeMemoryGrant(
+      request.physical_dag, request.selected_physical_node_id);
+  std::size_t input_payload_bytes = 0;
+  if (!node_memory_grant.has_value() ||
+      !FoundationBatchPayloadBytes(request.input_batch,
+                                   &input_payload_bytes) ||
+      input_payload_bytes > *node_memory_grant) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "PIVOT selected-node memory grant is invalid or exhausted");
+  }
+  const auto maximum_combined_final_output_bytes =
+      request.maximum_combined_final_output_bytes == 0
+          ? *node_memory_grant
+          : std::min(request.maximum_combined_final_output_bytes,
+                     *node_memory_grant);
 
   std::set<std::size_t> key_columns;
   const auto validate_terms = [&](const auto& terms,
@@ -4686,6 +4739,7 @@ CanonicalPivotResult ExecuteCanonicalPivot(
     const auto& aggregate_request = binding.aggregate_template;
     if (!aggregate_request.physical_dag.nodes.empty() ||
         aggregate_request.selected_physical_node_id != 0 ||
+        aggregate_request.retained_memory_bytes != 0 ||
         !aggregate_request.input_batch.columns.empty() ||
         !aggregate_request.input_batch.rows.empty() ||
         aggregate_request.result_column.descriptor_id != 0 ||
@@ -4814,6 +4868,39 @@ CanonicalPivotResult ExecuteCanonicalPivot(
   DescriptorBatch output;
   output.columns = request.result_columns;
   std::size_t total_transitions = 0;
+  std::size_t combined_final_output_bytes = 0;
+  std::size_t peak_finalization_workspace_bytes = 0;
+  std::size_t retained_output_payload_bytes = 0;
+  const auto charge_output_value = [&](const auto& value) {
+    if (retained_output_payload_bytes >
+            std::numeric_limits<std::size_t>::max() -
+                value.encoded_value.size()) {
+      return false;
+    }
+    retained_output_payload_bytes += value.encoded_value.size();
+    if (retained_output_payload_bytes >
+            std::numeric_limits<std::size_t>::max() -
+                value.binary_value.size()) {
+      return false;
+    }
+    retained_output_payload_bytes += value.binary_value.size();
+    return retained_output_payload_bytes <=
+           *node_memory_grant - input_payload_bytes;
+  };
+  const auto can_materialize_output_value = [&](const auto& source) {
+    std::size_t source_payload_bytes = source.encoded_value.size();
+    if (source_payload_bytes >
+        std::numeric_limits<std::size_t>::max() -
+            source.binary_value.size()) {
+      return false;
+    }
+    source_payload_bytes += source.binary_value.size();
+    return retained_output_payload_bytes <=
+               *node_memory_grant - input_payload_bytes &&
+           source_payload_bytes <=
+               *node_memory_grant - input_payload_bytes -
+                   retained_output_payload_bytes;
+  };
   for (const auto& group : groups) {
     DescriptorTuple output_row;
     output_row.values.reserve(expected_width);
@@ -4821,31 +4908,80 @@ CanonicalPivotResult ExecuteCanonicalPivot(
         request.input_batch.rows[group.representative_row];
     for (std::size_t key = 0; key < request.group_key_terms.size(); ++key) {
       const auto source_column = request.group_key_terms[key].column;
-      DescriptorRuntimeDiagnostic cast_diagnostic;
-      auto value = CastDescriptorValue(
-          representative.values[source_column],
-          request.result_columns[key].descriptor, &cast_diagnostic);
-      if (!cast_diagnostic.ok) {
+      if (!DescriptorMatches(representative.values[source_column].descriptor,
+                             request.result_columns[key].descriptor)) {
         return refuse("QOW-DIAG-QRY-019-PIVOT-DESCRIPTOR-V1",
-                      cast_diagnostic.diagnostic_code + ":" +
-                          cast_diagnostic.detail);
+                      "PIVOT group key result must preserve its exact descriptor");
+      }
+      if (!can_materialize_output_value(
+              representative.values[source_column])) {
+        return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                      "PIVOT group-key copy exceeds the selected-node grant");
+      }
+      auto value = representative.values[source_column];
+      value.descriptor = request.result_columns[key].descriptor;
+      if (!charge_output_value(value)) {
+        return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                      "PIVOT retained output exhausted the selected-node grant");
       }
       output_row.values.push_back(std::move(value));
     }
     for (std::size_t item = 0; item < request.in_items.size(); ++item) {
-      DescriptorBatch cell_input;
-      cell_input.columns = request.input_batch.columns;
+      std::size_t cell_input_payload_bytes = 1;
       for (const auto row : group.item_rows[item]) {
-        cell_input.rows.push_back(request.input_batch.rows[row]);
+        for (const auto& value : request.input_batch.rows[row].values) {
+          if (cell_input_payload_bytes >
+                  std::numeric_limits<std::size_t>::max() -
+                      value.encoded_value.size()) {
+            return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "PIVOT cell input payload size overflowed");
+          }
+          cell_input_payload_bytes += value.encoded_value.size();
+          if (cell_input_payload_bytes >
+                  std::numeric_limits<std::size_t>::max() -
+                      value.binary_value.size()) {
+            return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "PIVOT cell input payload size overflowed");
+          }
+          cell_input_payload_bytes += value.binary_value.size();
+        }
+      }
+      if (retained_output_payload_bytes >
+              *node_memory_grant - input_payload_bytes ||
+          cell_input_payload_bytes >
+              *node_memory_grant - input_payload_bytes -
+                  retained_output_payload_bytes) {
+        return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                      "PIVOT cell input exceeds the selected-node grant");
       }
       for (std::size_t aggregate = 0;
            aggregate < request.aggregates.size(); ++aggregate) {
+        if (retained_output_payload_bytes >
+                *node_memory_grant - input_payload_bytes ||
+            cell_input_payload_bytes >
+                *node_memory_grant - input_payload_bytes -
+                    retained_output_payload_bytes) {
+          return refuse(
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+              "PIVOT cell input exceeds the selected-node grant");
+        }
         const auto& binding = request.aggregates[aggregate];
         auto aggregate_request = binding.aggregate_template;
-        aggregate_request.input_batch = cell_input;
+        aggregate_request.input_batch.columns = request.input_batch.columns;
+        aggregate_request.input_batch.rows.reserve(
+            group.item_rows[item].size());
+        for (const auto row : group.item_rows[item]) {
+          aggregate_request.input_batch.rows.push_back(
+              request.input_batch.rows[row]);
+        }
         aggregate_request.result_column =
             binding.result_columns_by_item[item];
         aggregate_request.mga_authority = request.mga_authority;
+        const auto remaining_finalization_bytes =
+            maximum_combined_final_output_bytes -
+            combined_final_output_bytes;
+        aggregate_request.retained_memory_bytes =
+            input_payload_bytes + retained_output_payload_bytes;
         if (aggregate_request.filter_truth_values.has_value()) {
           if (aggregate_request.filter_truth_values->size() !=
               request.input_batch.rows.size()) {
@@ -4888,7 +5024,7 @@ CanonicalPivotResult ExecuteCanonicalPivot(
         input_node.implementation_id = "values.materialize.canonical.v1";
         input_node.input_physical_node_ids.clear();
         input_node.output_descriptor_ids.clear();
-        for (const auto& column : cell_input.columns) {
+        for (const auto& column : aggregate_request.input_batch.columns) {
           input_node.output_descriptor_ids.push_back(column.descriptor_id);
         }
         PhysicalNodeRecord aggregate_node = *pivot_node;
@@ -4905,8 +5041,9 @@ CanonicalPivotResult ExecuteCanonicalPivot(
         aggregate_dag.root_physical_node_id = 2;
         aggregate_request.physical_dag = std::move(aggregate_dag);
         aggregate_request.selected_physical_node_id = 2;
-        const auto aggregated =
-            ExecuteCanonicalAggregateRuntime(aggregate_request);
+        auto aggregated =
+            ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
+                aggregate_request, remaining_finalization_bytes);
         if (!aggregated.diagnostic.ok ||
             aggregated.output_batch.rows.size() != 1 ||
             aggregated.output_batch.rows.front().values.size() != 1) {
@@ -4925,8 +5062,23 @@ CanonicalPivotResult ExecuteCanonicalPivot(
                         "PIVOT aggregate transition bound was exceeded");
         }
         total_transitions += aggregated.transition_count;
-        output_row.values.push_back(
+        if (aggregated.final_output_bytes >
+            maximum_combined_final_output_bytes -
+                combined_final_output_bytes) {
+          return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                        "PIVOT combined final output byte bound was exceeded");
+        }
+        combined_final_output_bytes += aggregated.final_output_bytes;
+        peak_finalization_workspace_bytes = std::max(
+            peak_finalization_workspace_bytes,
+            aggregated.peak_finalization_workspace_bytes);
+        auto aggregate_value = std::move(
             aggregated.output_batch.rows.front().values.front());
+        if (!charge_output_value(aggregate_value)) {
+          return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                        "PIVOT retained output exhausted the selected-node grant");
+        }
+        output_row.values.push_back(std::move(aggregate_value));
       }
     }
     output.rows.push_back(std::move(output_row));
@@ -4952,6 +5104,9 @@ CanonicalPivotResult ExecuteCanonicalPivot(
   result.matched_input_row_count = matched_input_rows;
   result.key_comparison_count = key_comparisons;
   result.aggregate_transition_count = total_transitions;
+  result.combined_final_output_bytes = combined_final_output_bytes;
+  result.peak_finalization_workspace_bytes =
+      peak_finalization_workspace_bytes;
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = pivot_node->physical_node_id;
   result.causal_counter_id = pivot_node->causal_counter_id;
@@ -7052,6 +7207,27 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
                   "aggregate kernel and window frame authority diverge");
   }
+  const auto node_memory_grant = FoundationNodeMemoryGrant(
+      aggregate_template.physical_dag,
+      aggregate_template.selected_physical_node_id);
+  std::size_t input_payload_bytes = 0;
+  if (!node_memory_grant.has_value() ||
+      !FoundationBatchPayloadBytes(request.frames.ordered_batch,
+                                   &input_payload_bytes) ||
+      aggregate_template.retained_memory_bytes > *node_memory_grant ||
+      input_payload_bytes >
+          *node_memory_grant -
+              aggregate_template.retained_memory_bytes) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
+                  "aggregate window selected-node memory grant is exhausted");
+  }
+  const auto maximum_combined_final_output_bytes =
+      request.maximum_combined_final_output_bytes == 0
+          ? *node_memory_grant
+          : std::min(request.maximum_combined_final_output_bytes,
+                     *node_memory_grant);
+  const auto base_retained_memory_bytes =
+      aggregate_template.retained_memory_bytes + input_payload_bytes;
 
   const auto make_frame_request = [&]() {
     auto aggregate = aggregate_template;
@@ -7059,11 +7235,12 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
     return aggregate;
   };
   auto preflight_request = make_frame_request();
+  preflight_request.retained_memory_bytes = base_retained_memory_bytes;
   if (preflight_request.filter_truth_values.has_value()) {
     preflight_request.filter_truth_values =
         std::vector<api::EngineSqlTruthValue>{};
   }
-  const auto preflight = ExecuteCanonicalAggregateRuntime(preflight_request);
+  auto preflight = ExecuteCanonicalAggregateRuntime(preflight_request);
   if (!preflight.diagnostic.ok) {
     return refuse(preflight.diagnostic.diagnostic_code,
                   preflight.diagnostic.detail);
@@ -7109,6 +7286,9 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-EVIDENCE",
                   "aggregate window preflight lost descriptor or modifier receipts");
   }
+  result.peak_finalization_workspace_bytes =
+      preflight.peak_finalization_workspace_bytes;
+  preflight.output_batch = {};
 
   const auto within_total = [](const std::size_t next,
                                const std::size_t current,
@@ -7131,10 +7311,17 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
 
   if (selected_state_strategy ==
       CanonicalRegistryWindowAggregateStateStrategy::moving_inverse) {
+    if (input_payload_bytes >
+        *node_memory_grant - base_retained_memory_bytes) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
+                    "moving aggregate input copy exceeds its selected-node grant");
+    }
     CanonicalAggregateMovingRuntimeRequest moving_request;
     moving_request.aggregate_request = make_frame_request();
     moving_request.aggregate_request.input_batch.rows =
         request.frames.ordered_batch.rows;
+    moving_request.aggregate_request.retained_memory_bytes =
+        base_retained_memory_bytes;
     moving_request.effective_frame_row_indices = result.frame_row_indices;
     moving_request.maximum_output_rows = request.maximum_output_rows;
     moving_request.maximum_addition_transition_count =
@@ -7143,6 +7330,8 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
         request.maximum_inverse_transition_count;
     moving_request.maximum_cumulative_state_bytes =
         request.maximum_combined_state_bytes;
+    moving_request.maximum_combined_final_output_bytes =
+        maximum_combined_final_output_bytes;
     moving_request.cancellation_requested = request.cancellation_requested;
     auto moving = ExecuteCanonicalAggregateMovingRuntime(moving_request);
     if (!moving.diagnostic.ok) {
@@ -7173,10 +7362,49 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
     result.transition_count = moving.addition_transition_count;
     result.inverse_transition_count = moving.inverse_transition_count;
     result.combined_state_bytes = moving.cumulative_state_bytes;
+    result.combined_final_output_bytes =
+        moving.combined_final_output_bytes;
+    result.peak_finalization_workspace_bytes =
+        moving.peak_finalization_workspace_bytes;
     result.moving_inverse_state_used = true;
   } else {
+    std::size_t retained_output_payload_bytes = 0;
     for (const auto& frame : request.frames.effective_frames) {
       auto aggregate = make_frame_request();
+      const auto remaining_finalization_bytes =
+          maximum_combined_final_output_bytes -
+          result.combined_final_output_bytes;
+      if (retained_output_payload_bytes >
+          *node_memory_grant - base_retained_memory_bytes) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
+                      "aggregate window retained output exhausted its grant");
+      }
+      aggregate.retained_memory_bytes =
+          base_retained_memory_bytes + retained_output_payload_bytes;
+      std::size_t frame_input_payload_bytes = 1;
+      for (const auto row : frame.effective_row_indices) {
+        for (const auto& value : request.frames.ordered_batch.rows[row].values) {
+          if (frame_input_payload_bytes >
+                  std::numeric_limits<std::size_t>::max() -
+                      value.encoded_value.size()) {
+            return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
+                          "aggregate window frame input size overflowed");
+          }
+          frame_input_payload_bytes += value.encoded_value.size();
+          if (frame_input_payload_bytes >
+                  std::numeric_limits<std::size_t>::max() -
+                      value.binary_value.size()) {
+            return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
+                          "aggregate window frame input size overflowed");
+          }
+          frame_input_payload_bytes += value.binary_value.size();
+        }
+      }
+      if (frame_input_payload_bytes >
+          *node_memory_grant - aggregate.retained_memory_bytes) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
+                      "aggregate window frame input exceeds its selected-node grant");
+      }
       aggregate.input_batch.rows.reserve(frame.effective_row_indices.size());
       for (const auto row : frame.effective_row_indices) {
         aggregate.input_batch.rows.push_back(
@@ -7190,7 +7418,9 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
         }
         aggregate.filter_truth_values = std::move(filter);
       }
-      auto frame_result = ExecuteCanonicalAggregateRuntime(aggregate);
+      auto frame_result =
+          ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
+              aggregate, remaining_finalization_bytes);
       if (!frame_result.diagnostic.ok) {
         return refuse(frame_result.diagnostic.diagnostic_code,
                       frame_result.diagnostic.detail);
@@ -7218,7 +7448,10 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
                         result.order_comparison_count,
                         request.maximum_order_comparison_count) ||
           !within_total(frame_result.state_bytes, result.combined_state_bytes,
-                        request.maximum_combined_state_bytes)) {
+                        request.maximum_combined_state_bytes) ||
+          !within_total(frame_result.final_output_bytes,
+                        result.combined_final_output_bytes,
+                        maximum_combined_final_output_bytes)) {
         return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
                       "combined aggregate window state bound is exceeded");
       }
@@ -7226,6 +7459,11 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
       result.distinct_tuple_count += frame_result.distinct_tuple_count;
       result.order_comparison_count += frame_result.order_comparison_count;
       result.combined_state_bytes += frame_result.state_bytes;
+      result.combined_final_output_bytes +=
+          frame_result.final_output_bytes;
+      result.peak_finalization_workspace_bytes = std::max(
+          result.peak_finalization_workspace_bytes,
+          frame_result.peak_finalization_workspace_bytes);
       std::vector<std::size_t> transition_rows;
       transition_rows.reserve(frame_result.transition_row_indices.size());
       for (const auto frame_row : frame_result.transition_row_indices) {
@@ -7236,21 +7474,40 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
         transition_rows.push_back(frame.effective_row_indices[frame_row]);
       }
       result.transition_row_indices.push_back(std::move(transition_rows));
-      result.values.push_back(
-          std::move(frame_result.output_batch.rows.front().values.front()));
+      auto frame_value = std::move(
+          frame_result.output_batch.rows.front().values.front());
+      if (retained_output_payload_bytes >
+              std::numeric_limits<std::size_t>::max() -
+                  frame_value.encoded_value.size() ||
+          retained_output_payload_bytes + frame_value.encoded_value.size() >
+              std::numeric_limits<std::size_t>::max() -
+                  frame_value.binary_value.size()) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
+                      "aggregate window retained output size overflowed");
+      }
+      retained_output_payload_bytes += frame_value.encoded_value.size();
+      retained_output_payload_bytes += frame_value.binary_value.size();
+      result.values.push_back(std::move(frame_value));
     }
   }
 
   DescriptorBatch output;
   output.columns = {aggregate_template.result_column};
   output.rows.reserve(result.values.size());
-  for (const auto& value : result.values) output.rows.push_back({{value}});
+  for (auto& value : result.values) {
+    output.rows.push_back({{std::move(value)}});
+  }
   const auto output_validation = ValidateCanonicalDescriptorBatch(
       output, {aggregate_template.result_column.descriptor_id});
   if (!output_validation.ok) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-EVIDENCE",
                   output_validation.diagnostic_code + ":" +
-                      output_validation.detail);
+                  output_validation.detail);
+  }
+  result.values.clear();
+  result.values.reserve(output.rows.size());
+  for (auto& row : output.rows) {
+    result.values.push_back(std::move(row.values.front()));
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       aggregate_template.mga_authority, aggregate_template.physical_dag);
@@ -7349,7 +7606,7 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
     return refuse(entry_authority.diagnostic_code, entry_authority.detail);
   }
 
-  const auto canonical = ExecuteCanonicalRegistryWindowAggregateSelected(
+  auto canonical = ExecuteCanonicalRegistryWindowAggregateSelected(
       aggregate_request, true);
   if (!canonical.diagnostic.ok) {
     return refuse(canonical.diagnostic.diagnostic_code,
@@ -7402,20 +7659,71 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
   }
 
   namespace api = scratchbird::engine::internal_api;
-  auto reopened = canonical;
-  reopened.values.clear();
+  const auto expected_combined_final_output_bytes =
+      canonical.combined_final_output_bytes;
+  const auto baseline_peak_finalization_workspace_bytes =
+      canonical.peak_finalization_workspace_bytes;
+  const auto expected_value_count = canonical.values.size();
+  const auto expected_transition_count = canonical.transition_count;
+  const auto expected_inverse_transition_count =
+      canonical.inverse_transition_count;
+  const auto expected_distinct_tuple_count =
+      canonical.distinct_tuple_count;
+  const auto expected_order_comparison_count =
+      canonical.order_comparison_count;
+  const auto expected_combined_state_bytes =
+      canonical.combined_state_bytes;
+  auto reopened = std::move(canonical);
   reopened.transition_count = 0;
   reopened.inverse_transition_count = 0;
   reopened.distinct_tuple_count = 0;
   reopened.order_comparison_count = 0;
   reopened.combined_state_bytes = 0;
+  std::size_t replayed_combined_final_output_bytes = 0;
+  std::size_t replay_peak_finalization_workspace_bytes = 0;
+  std::size_t ordered_input_payload_bytes = 0;
+  if (!FoundationBatchPayloadBytes(
+          aggregate_request.frames.ordered_batch,
+          &ordered_input_payload_bytes)) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
+                  "window aggregate frame input size overflowed");
+  }
+  const auto node_memory_grant = FoundationNodeMemoryGrant(
+      aggregate_template.physical_dag,
+      aggregate_template.selected_physical_node_id);
+  if (!node_memory_grant.has_value() ||
+      aggregate_template.retained_memory_bytes > *node_memory_grant ||
+      ordered_input_payload_bytes >
+          *node_memory_grant - aggregate_template.retained_memory_bytes ||
+      expected_combined_final_output_bytes >
+          *node_memory_grant - aggregate_template.retained_memory_bytes -
+              ordered_input_payload_bytes) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
+                  "window aggregate replay retention exceeds its selected-node grant");
+  }
+  const auto replay_retained_memory_bytes =
+      aggregate_template.retained_memory_bytes +
+      ordered_input_payload_bytes + expected_combined_final_output_bytes;
   const auto within_total = [](const std::size_t next,
                                const std::size_t current,
                                const std::size_t maximum) {
     return current <= maximum && next <= maximum - current;
   };
+  const auto descriptor_equal = [](const auto& left, const auto& right) {
+    return left.descriptor_uuid.canonical ==
+               right.descriptor_uuid.canonical &&
+           left.descriptor_kind == right.descriptor_kind &&
+           left.canonical_type_name == right.canonical_type_name &&
+           left.encoded_descriptor == right.encoded_descriptor;
+  };
+  const auto value_equal = [&](const auto& left, const auto& right) {
+    return descriptor_equal(left.descriptor, right.descriptor) &&
+           left.encoded_value == right.encoded_value &&
+           left.binary_value == right.binary_value &&
+           left.is_null == right.is_null && left.state == right.state;
+  };
   for (std::size_t frame_index = 0;
-       frame_index < canonical.frame_row_indices.size(); ++frame_index) {
+       frame_index < reopened.frame_row_indices.size(); ++frame_index) {
     const auto remaining_bytes = request.maximum_serialized_state_bytes -
                                  result.serialized_aggregate_state_bytes;
     const auto remaining_records = request.maximum_spill_record_count -
@@ -7425,10 +7733,37 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
                     "window aggregate state spill bound is exhausted");
     }
 
+    const auto& frame = reopened.frame_row_indices[frame_index];
+    std::size_t selected_frame_payload_bytes = 1;
+    for (const auto row : frame) {
+      for (const auto& value :
+           aggregate_request.frames.ordered_batch.rows[row].values) {
+        if (selected_frame_payload_bytes >
+                std::numeric_limits<std::size_t>::max() -
+                    value.encoded_value.size()) {
+          return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
+                        "window aggregate selected frame size overflowed");
+        }
+        selected_frame_payload_bytes += value.encoded_value.size();
+        if (selected_frame_payload_bytes >
+                std::numeric_limits<std::size_t>::max() -
+                    value.binary_value.size()) {
+          return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
+                        "window aggregate selected frame size overflowed");
+        }
+        selected_frame_payload_bytes += value.binary_value.size();
+      }
+    }
+    if (selected_frame_payload_bytes >
+        *node_memory_grant - replay_retained_memory_bytes) {
+      return refuse(
+          "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
+          "window aggregate selected frame copy exceeds its selected-node grant");
+    }
+
     auto aggregate = aggregate_template;
     aggregate.input_batch.columns =
         aggregate_request.frames.ordered_batch.columns;
-    const auto& frame = canonical.frame_row_indices[frame_index];
     aggregate.input_batch.rows.reserve(frame.size());
     for (const auto row : frame) {
       aggregate.input_batch.rows.push_back(
@@ -7453,6 +7788,8 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
     state_request.memory_quota_bytes = request.memory_quota_bytes;
     state_request.maximum_serialized_state_bytes = remaining_bytes;
     state_request.maximum_spill_record_count = remaining_records;
+    state_request.retained_memory_bytes =
+        ordered_input_payload_bytes + expected_combined_final_output_bytes;
     state_request.cancellation_requested = request.cancellation_requested;
     state_request.cleanup_after_cancellation =
         request.cleanup_after_cancellation;
@@ -7479,12 +7816,12 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
         !state.spill_reopened || !state.state_restored ||
         !state.restored_result_equivalent || !state.cleanup_proven ||
         state.aggregate_result.output_batch.rows.size() != 1 ||
-        state.aggregate_result.output_batch.rows.front().values.size() != 1 ||
+            state.aggregate_result.output_batch.rows.front().values.size() != 1 ||
         state.aggregate_result.selected_plan_uuid !=
-            canonical.selected_plan_uuid ||
+            reopened.selected_plan_uuid ||
         state.aggregate_result.executed_physical_node_id !=
-            canonical.executed_physical_node_id ||
-        state.aggregate_result.causal_counter_id != canonical.causal_counter_id ||
+            reopened.executed_physical_node_id ||
+        state.aggregate_result.causal_counter_id != reopened.causal_counter_id ||
         !PhysicalMgaStatementContextEqual(
             state.mga_statement_context,
             aggregate_template.mga_authority.statement_context) ||
@@ -7512,7 +7849,10 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
             aggregate_request.maximum_order_comparison_count) ||
         !within_total(state.aggregate_result.state_bytes,
                       reopened.combined_state_bytes,
-                      aggregate_request.maximum_combined_state_bytes)) {
+                      aggregate_request.maximum_combined_state_bytes) ||
+        !within_total(state.aggregate_result.final_output_bytes,
+                      replayed_combined_final_output_bytes,
+                      expected_combined_final_output_bytes)) {
       return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
                     "restored aggregate frame state exceeds its combined bound");
     }
@@ -7526,8 +7866,20 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
     reopened.order_comparison_count +=
         state.aggregate_result.order_comparison_count;
     reopened.combined_state_bytes += state.aggregate_result.state_bytes;
-    reopened.values.push_back(std::move(
-        state.aggregate_result.output_batch.rows.front().values.front()));
+    const auto& expected_value = reopened.values[frame_index];
+    const auto& actual_value =
+        state.aggregate_result.output_batch.rows.front().values.front();
+    if (!value_equal(expected_value, actual_value)) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-EQUIVALENCE",
+                    "restored aggregate window value diverged");
+    }
+    replayed_combined_final_output_bytes +=
+        state.aggregate_result.final_output_bytes;
+    replay_peak_finalization_workspace_bytes = std::max(
+        replay_peak_finalization_workspace_bytes,
+        state.aggregate_result.peak_finalization_workspace_bytes);
+    reopened.values[frame_index] = std::move(
+        state.aggregate_result.output_batch.rows.front().values.front());
   }
 
   bool cleanup_inspection_ok = false;
@@ -7541,34 +7893,26 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
                   "window aggregate state spill cleanup is incomplete");
   }
 
-  const auto descriptor_equal = [](const auto& left, const auto& right) {
-    return left.descriptor_uuid.canonical ==
-               right.descriptor_uuid.canonical &&
-           left.descriptor_kind == right.descriptor_kind &&
-           left.canonical_type_name == right.canonical_type_name &&
-           left.encoded_descriptor == right.encoded_descriptor;
-  };
-  const auto value_equal = [&](const auto& left, const auto& right) {
-    return descriptor_equal(left.descriptor, right.descriptor) &&
-           left.encoded_value == right.encoded_value &&
-           left.binary_value == right.binary_value &&
-           left.is_null == right.is_null && left.state == right.state;
-  };
   if (!reopened.diagnostic.ok ||
-      reopened.values.size() != canonical.values.size() ||
-      reopened.frame_row_indices != canonical.frame_row_indices ||
-      reopened.frame_input_row_count != canonical.frame_input_row_count ||
-      reopened.transition_count != canonical.transition_count ||
-      reopened.inverse_transition_count != canonical.inverse_transition_count ||
-      reopened.distinct_tuple_count != canonical.distinct_tuple_count ||
-      reopened.order_comparison_count != canonical.order_comparison_count ||
-      reopened.combined_state_bytes != canonical.combined_state_bytes ||
-      !std::equal(reopened.values.begin(), reopened.values.end(),
-                  canonical.values.begin(), canonical.values.end(),
-                  value_equal)) {
+      reopened.values.size() != expected_value_count ||
+      reopened.transition_count != expected_transition_count ||
+      reopened.inverse_transition_count !=
+          expected_inverse_transition_count ||
+      reopened.distinct_tuple_count != expected_distinct_tuple_count ||
+      reopened.order_comparison_count !=
+          expected_order_comparison_count ||
+      reopened.combined_state_bytes != expected_combined_state_bytes ||
+      replayed_combined_final_output_bytes !=
+          expected_combined_final_output_bytes ||
+      reopened.combined_final_output_bytes !=
+          expected_combined_final_output_bytes ||
+      replay_peak_finalization_workspace_bytes !=
+          baseline_peak_finalization_workspace_bytes) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-EQUIVALENCE",
                   "restored and in-memory aggregate window results diverge");
   }
+  reopened.peak_finalization_workspace_bytes =
+      replay_peak_finalization_workspace_bytes;
 
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       aggregate_template.mga_authority, aggregate_template.physical_dag);
@@ -8312,6 +8656,8 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
       request.aggregate_order_terms.empty()
           ? std::size_t{1}
           : request.maximum_pair_comparisons;
+  canonical.maximum_combined_final_output_bytes =
+      request.maximum_combined_final_output_bytes;
 
   auto& aggregate = canonical.aggregate_template;
   aggregate.physical_dag = request.frames.physical_dag;
@@ -8344,6 +8690,10 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
       canonical_per_frame_distinct_bound;
   aggregate.maximum_order_comparison_count =
       canonical.maximum_order_comparison_count;
+  aggregate.maximum_final_output_bytes =
+      request.maximum_final_output_bytes;
+  aggregate.maximum_finalization_workspace_bytes =
+      request.maximum_finalization_workspace_bytes;
   aggregate.mga_authority = request.mga_authority;
 
   auto registry_result = ExecuteCanonicalRegistryWindowAggregate(canonical);
@@ -8412,6 +8762,10 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
   result.transition_count = transition_count;
   result.distinct_value_count = distinct_value_count;
   result.pair_comparison_count = pair_comparison_count;
+  result.combined_final_output_bytes =
+      registry_result.combined_final_output_bytes;
+  result.peak_finalization_workspace_bytes =
+      registry_result.peak_finalization_workspace_bytes;
   result.filter_applied_before_transition =
       request.filter_truth_values.has_value();
   result.distinct_applied_before_transition = request.distinct;

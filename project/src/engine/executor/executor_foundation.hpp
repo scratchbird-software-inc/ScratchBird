@@ -195,6 +195,9 @@ struct CanonicalWindowAggregateRequest {
   std::size_t maximum_transition_count = 1048576;
   std::size_t maximum_distinct_value_count = 1048576;
   std::size_t maximum_pair_comparisons = 1048576;
+  std::size_t maximum_final_output_bytes = 0;
+  std::size_t maximum_finalization_workspace_bytes = 0;
+  std::size_t maximum_combined_final_output_bytes = 0;
   bool parser_execution_authority_claimed = false;
   bool transaction_finality_claimed = false;
   bool recovery_authority_claimed = false;
@@ -210,6 +213,8 @@ struct CanonicalWindowAggregateResult {
   std::size_t transition_count = 0;
   std::size_t distinct_value_count = 0;
   std::size_t pair_comparison_count = 0;
+  std::size_t combined_final_output_bytes = 0;
+  std::size_t peak_finalization_workspace_bytes = 0;
   bool filter_applied_before_transition = false;
   bool distinct_applied_before_transition = false;
   bool aggregate_order_independent_of_window_order = false;
@@ -245,6 +250,7 @@ struct CanonicalRegistryWindowAggregateRequest {
   std::size_t maximum_distinct_tuple_count = 8388608;
   std::size_t maximum_order_comparison_count = 8388608;
   std::size_t maximum_combined_state_bytes = 268435456;
+  std::size_t maximum_combined_final_output_bytes = 0;
   bool cancellation_requested = false;
 };
 
@@ -266,6 +272,8 @@ struct CanonicalRegistryWindowAggregateResult {
   std::size_t aggregate_order_term_count = 0;
   std::size_t order_comparison_count = 0;
   std::size_t combined_state_bytes = 0;
+  std::size_t combined_final_output_bytes = 0;
+  std::size_t peak_finalization_workspace_bytes = 0;
   bool every_aggregate_descriptor_field_consumed = false;
   bool every_effective_frame_consumed = false;
   bool modifier_pipeline_validated = false;
