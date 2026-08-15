@@ -101,6 +101,7 @@ dt::CanonicalTypeId NumericWorkType(const dt::CanonicalTypeId type) {
     case dt::CanonicalTypeId::uint16:
     case dt::CanonicalTypeId::uint32:
     case dt::CanonicalTypeId::uint64:
+      return dt::CanonicalTypeId::int128;
     case dt::CanonicalTypeId::uint128:
       return dt::CanonicalTypeId::uint128;
     case dt::CanonicalTypeId::decimal:
@@ -206,10 +207,17 @@ bool ValidateNonnegativeNumeric(const api::EngineTypedValue& value) {
   return compared.ok() && compared.comparison >= 0;
 }
 
+struct NumericRangeThreshold {
+  dt::CanonicalTypeId work_type = dt::CanonicalTypeId::unknown;
+  dt::DatatypeOperationValue value;
+  dt::DatatypeNumericContext context;
+};
+
 bool NumericThreshold(const api::EngineTypedValue& current,
                       const api::EngineTypedValue& offset,
                       const bool add,
-                      api::EngineTypedValue* threshold) {
+                      NumericRangeThreshold* threshold) {
+  if (threshold == nullptr) return false;
   const auto order_type = dt::CanonicalTypeIdFromStableName(
       current.descriptor.canonical_type_name);
   const auto work_type = NumericWorkType(order_type);
@@ -228,18 +236,9 @@ bool NumericThreshold(const api::EngineTypedValue& current,
   operation.context = NumericContext(current.descriptor, order_type);
   const auto calculated = dt::ApplyNumericOperation(operation);
   if (!calculated.ok() || calculated.value.is_null) return false;
-
-  dt::DatatypeCastRequest cast_back;
-  cast_back.value = calculated.value;
-  cast_back.target_type_id = order_type;
-  cast_back.explicit_cast = true;
-  const auto cast = dt::CastDatatypeValue(cast_back);
-  if (!cast.ok() || cast.value.is_null) return false;
-  *threshold = current;
-  threshold->encoded_value = cast.value.encoded_value;
-  threshold->binary_value.clear();
-  threshold->is_null = false;
-  threshold->state = api::EngineValueState::value;
+  threshold->work_type = work_type;
+  threshold->value = calculated.value;
+  threshold->context = operation.context;
   return true;
 }
 
@@ -1010,7 +1009,7 @@ BaseBounds GroupsBounds(const CanonicalWindowPartitionOrderResult& input,
 bool RangeThreshold(const CanonicalWindowPartitionOrderResult& input,
                     const CanonicalWindowFrameBound& bound,
                     const std::size_t current,
-                    api::EngineTypedValue* numeric_threshold,
+                    NumericRangeThreshold* numeric_threshold,
                     __int128* temporal_threshold,
                     bool* temporal,
                     std::string* detail) {
@@ -1046,7 +1045,7 @@ bool RangeThreshold(const CanonicalWindowPartitionOrderResult& input,
 bool CompareRangeRowToThreshold(
     const CanonicalWindowPartitionOrderResult& input,
     const std::size_t row,
-    const api::EngineTypedValue& numeric_threshold,
+    const NumericRangeThreshold& numeric_threshold,
     const __int128 temporal_threshold,
     const bool temporal,
     int* comparison,
@@ -1068,13 +1067,28 @@ bool CompareRangeRowToThreshold(
     }
     return true;
   }
-  const auto compared = CompareCanonicalDescriptorOrderValues(
-      value, numeric_threshold, term);
-  if (!compared.diagnostic.ok) {
-    *detail = compared.diagnostic.detail;
+  dt::DatatypeOperationValue candidate;
+  if (!CastNumeric(value, numeric_threshold.work_type, &candidate)) {
+    *detail = "numeric RANGE order value cannot use the widened threshold type";
     return false;
   }
-  *comparison = compared.comparison;
+  dt::DatatypeNumericOperationRequest operation;
+  operation.operation = dt::DatatypeNumericOperationKind::compare;
+  operation.type_id = numeric_threshold.work_type;
+  operation.left = candidate;
+  operation.right = numeric_threshold.value;
+  operation.context = numeric_threshold.context;
+  const auto compared = dt::ApplyNumericOperation(operation);
+  if (!compared.ok()) {
+    *detail = "numeric RANGE order value comparison was refused";
+    return false;
+  }
+  *comparison = compared.comparison < 0
+                    ? -1
+                    : (compared.comparison > 0 ? 1 : 0);
+  if (term.direction == CanonicalDescriptorOrderDirection::descending) {
+    *comparison = -*comparison;
+  }
   return true;
 }
 
@@ -1106,7 +1120,7 @@ bool RangeBoundary(const CanonicalWindowPartitionOrderResult& input,
     *boundary = start ? metadata.peer_begin : metadata.peer_end_exclusive;
     return true;
   }
-  api::EngineTypedValue numeric_threshold;
+  NumericRangeThreshold numeric_threshold;
   __int128 temporal_threshold = 0;
   bool temporal = false;
   if (!RangeThreshold(input, bound, current, &numeric_threshold,
@@ -1168,7 +1182,7 @@ bool RangeSemanticallyReversed(
   if (current_value.isSqlNull()) return true;
 
   const auto coordinate = [&](const CanonicalWindowFrameBound& bound,
-                              api::EngineTypedValue* numeric,
+                              NumericRangeThreshold* numeric,
                               __int128* temporal,
                               bool* is_temporal) {
     const auto current_type = dt::CanonicalTypeIdFromStableName(
@@ -1183,7 +1197,14 @@ bool RangeSemanticallyReversed(
         }
         *temporal = TemporalOrdinal(point);
       } else {
-        *numeric = current_value;
+        numeric->work_type = NumericWorkType(current_type);
+        numeric->context =
+            NumericContext(current_value.descriptor, current_type);
+        if (!CastNumeric(current_value, numeric->work_type,
+                         &numeric->value)) {
+          *detail = "numeric RANGE current value is invalid";
+          return false;
+        }
       }
       return true;
     }
@@ -1191,8 +1212,8 @@ bool RangeSemanticallyReversed(
                           is_temporal, detail);
   };
 
-  api::EngineTypedValue start_numeric;
-  api::EngineTypedValue end_numeric;
+  NumericRangeThreshold start_numeric;
+  NumericRangeThreshold end_numeric;
   __int128 start_temporal = 0;
   __int128 end_temporal = 0;
   bool start_is_temporal = false;
@@ -1214,13 +1235,25 @@ bool RangeSemanticallyReversed(
       comparison = -comparison;
     }
   } else {
-    const auto compared = CompareCanonicalDescriptorOrderValues(
-        start_numeric, end_numeric, term);
-    if (!compared.diagnostic.ok) {
-      *detail = compared.diagnostic.detail;
+    if (start_numeric.work_type != end_numeric.work_type) {
+      *detail = "numeric RANGE bounds use different widened types";
+      return false;
+    }
+    dt::DatatypeNumericOperationRequest operation;
+    operation.operation = dt::DatatypeNumericOperationKind::compare;
+    operation.type_id = start_numeric.work_type;
+    operation.left = start_numeric.value;
+    operation.right = end_numeric.value;
+    operation.context = start_numeric.context;
+    const auto compared = dt::ApplyNumericOperation(operation);
+    if (!compared.ok()) {
+      *detail = "numeric RANGE bound comparison was refused";
       return false;
     }
     comparison = compared.comparison;
+    if (term.direction == CanonicalDescriptorOrderDirection::descending) {
+      comparison = -comparison;
+    }
   }
   *reversed = comparison > 0;
   return true;
