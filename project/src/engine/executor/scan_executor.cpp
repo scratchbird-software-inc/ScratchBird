@@ -179,7 +179,10 @@ CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
       break;
     }
   }
-  if (request.selected_physical_node_id == 0 || selected_node == nullptr ||
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id ||
+      selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kScan ||
       !selected_node->input_physical_node_ids.empty()) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -386,7 +389,10 @@ ExecuteCanonicalSelectedIndexStorageAccessV1(
       break;
     }
   }
-  if (request.selected_physical_node_id == 0 || selected_node == nullptr ||
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id ||
+      selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kScan ||
       !selected_node->input_physical_node_ids.empty() ||
       !IsCanonicalIndexImplementation(selected_node->implementation_id) ||

@@ -353,6 +353,12 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
         return refuse(
             "recursive CTE UNION DISTINCT equality term coverage is invalid");
       }
+      const auto term_validation = ValidateCanonicalDescriptorOrderTerm(
+          term, working.anchor_batch.columns[term.column]);
+      if (!term_validation.ok) {
+        return refuse(term_validation.diagnostic_code + ":" +
+                      term_validation.detail);
+      }
       covered[term.column] = true;
     }
 

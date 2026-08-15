@@ -53,9 +53,12 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
       selected_node = &node;
     }
   }
-  if (request.selected_physical_node_id == 0 || selected_node == nullptr) {
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id ||
+      selected_node == nullptr) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
-                          "selected physical node is unresolved"));
+                          "selected projection node is not the physical root"));
   }
   if (selected_node->node_kind != PhysicalNodeKind::kProject ||
       selected_node->input_physical_node_ids.size() != 1) {

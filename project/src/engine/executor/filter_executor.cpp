@@ -54,12 +54,15 @@ CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
       selected_node = &node;
     }
   }
-  if (request.selected_physical_node_id == 0 || selected_node == nullptr ||
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id ||
+      selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kFilter ||
       selected_node->input_physical_node_ids.size() != 1) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-FILTER-PHYSICAL-ROUTE-V1",
-        "descriptor filter requires one selected reachable filter node"));
+        "descriptor filter requires one selected root filter node"));
   }
   for (const auto& node : request.physical_dag.nodes) {
     if (node.physical_node_id ==

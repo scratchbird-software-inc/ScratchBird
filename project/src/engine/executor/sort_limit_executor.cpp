@@ -385,12 +385,15 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
       selected_node = &node;
     }
   }
-  if (selected_node == nullptr ||
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id ||
+      selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kLimit ||
       selected_node->input_physical_node_ids.size() != 1) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-SORT-LIMIT-PHYSICAL-ROUTE-V1",
-        "descriptor limit requires one selected limit node"));
+        "descriptor limit requires one selected root limit node"));
   }
   for (const auto& node : request.physical_dag.nodes) {
     if (node.physical_node_id ==
@@ -469,13 +472,16 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
       selected_node = &node;
     }
   }
-  if (request.selected_physical_node_id == 0 || selected_node == nullptr ||
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id ||
+      selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kAggregate ||
       selected_node->implementation_id !=
           "aggregate.query-distinct.typed.v1" ||
       selected_node->input_physical_node_ids.size() != 1) {
     return distinct_refusal(
-        "query DISTINCT requires one selected distinct-aggregate node");
+        "query DISTINCT requires one selected root distinct-aggregate node");
   }
   for (const auto& node : request.physical_dag.nodes) {
     if (node.physical_node_id ==
@@ -632,10 +638,14 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
       selected_node = &node;
     }
   }
-  if (selected_node == nullptr ||
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id ||
+      selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kSort ||
       selected_node->input_physical_node_ids.size() != 1) {
-    return order_refusal("descriptor order requires one selected sort node");
+    return order_refusal(
+        "descriptor order requires one selected root sort node");
   }
   for (const auto& node : request.physical_dag.nodes) {
     if (node.physical_node_id ==
