@@ -112,6 +112,33 @@ RecursiveCteCancellationPoll PollRecursiveCteCancellation(
   }
 }
 
+struct RecursiveCteBatchValidation {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::optional<RecursiveCteCancellationPoll> cancellation;
+};
+
+RecursiveCteBatchValidation ValidateRecursiveCteBatch(
+    const DescriptorBatch& batch,
+    const std::vector<std::uint32_t>& output_descriptor_ids,
+    const CanonicalRecursiveCteCancellationProbe& probe,
+    const std::size_t iteration_ordinal,
+    const std::string_view phase) {
+  RecursiveCteBatchValidation result;
+  bool validation_cancelled = false;
+  result.diagnostic = ValidateCanonicalDescriptorBatch(
+      batch, output_descriptor_ids,
+      [&]() {
+        auto cancellation = PollRecursiveCteCancellation(
+            probe, iteration_ordinal, phase);
+        if (cancellation.diagnostic.ok) return false;
+        result.cancellation = std::move(cancellation);
+        return true;
+      },
+      &validation_cancelled);
+  if (!validation_cancelled) result.cancellation.reset();
+  return result;
+}
+
 bool RecursiveCteCancellationEvidenceBound(
     const TypedPhysicalNodeDag& dag,
     const CanonicalRecursiveCteCancellationProbe& probe,
@@ -247,11 +274,26 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     return refuse("recursive CTE input or output descriptor handles drifted");
   }
 
-  const auto anchor_validation = ValidateCanonicalDescriptorBatch(
-      request.anchor_batch, anchor_node->output_descriptor_ids);
-  if (!anchor_validation.ok) {
-    return refuse(anchor_validation.diagnostic_code + ":" +
-                  anchor_validation.detail);
+  if (!request.recursive_step || request.maximum_iteration_count == 0 ||
+      request.maximum_working_row_count == 0 ||
+      request.maximum_result_row_count == 0 ||
+      !RecursiveCteCancellationEvidenceBound(
+          request.physical_dag, request.cancellation_requested,
+          request.cancellation_evidence_uuid) ||
+      request.anchor_batch.rows.size() >
+          request.maximum_working_row_count ||
+      request.anchor_batch.rows.size() > request.maximum_result_row_count) {
+    return refuse("recursive CTE working resource contract is invalid");
+  }
+  const auto anchor_validation = ValidateRecursiveCteBatch(
+      request.anchor_batch, anchor_node->output_descriptor_ids,
+      request.cancellation_requested, 0, "while validating anchor rows");
+  if (anchor_validation.cancellation.has_value()) {
+    return refuse_poll(std::move(*anchor_validation.cancellation));
+  }
+  if (!anchor_validation.diagnostic.ok) {
+    return refuse(anchor_validation.diagnostic.diagnostic_code + ":" +
+                  anchor_validation.diagnostic.detail);
   }
   if (materialized_count_anchor &&
       (request.anchor_batch.columns.size() != 1 ||
@@ -266,17 +308,6 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
             .ok())) {
     return refuse(
         "recursive CTE COUNT(*) anchor is not one materialized non-null int64 value");
-  }
-  if (!request.recursive_step || request.maximum_iteration_count == 0 ||
-      request.maximum_working_row_count == 0 ||
-      request.maximum_result_row_count == 0 ||
-      !RecursiveCteCancellationEvidenceBound(
-          request.physical_dag, request.cancellation_requested,
-          request.cancellation_evidence_uuid) ||
-      request.anchor_batch.rows.size() >
-          request.maximum_working_row_count ||
-      request.anchor_batch.rows.size() > request.maximum_result_row_count) {
-    return refuse("recursive CTE working resource contract is invalid");
   }
   auto cancellation = poll_cancellation(0, "before anchor publication");
   if (!cancellation.diagnostic.ok) {
@@ -324,11 +355,16 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     if (!cancellation.diagnostic.ok) {
       return refuse_poll(std::move(cancellation));
     }
-    const auto intermediate_validation = ValidateCanonicalDescriptorBatch(
-        intermediate, recursive_node->output_descriptor_ids);
-    if (!intermediate_validation.ok) {
-      return refuse(intermediate_validation.diagnostic_code + ":" +
-                    intermediate_validation.detail);
+    const auto intermediate_validation = ValidateRecursiveCteBatch(
+        intermediate, recursive_node->output_descriptor_ids,
+        request.cancellation_requested, iteration_ordinal,
+        "while validating recursive output rows");
+    if (intermediate_validation.cancellation.has_value()) {
+      return refuse_poll(std::move(*intermediate_validation.cancellation));
+    }
+    if (!intermediate_validation.diagnostic.ok) {
+      return refuse(intermediate_validation.diagnostic.diagnostic_code + ":" +
+                    intermediate_validation.diagnostic.detail);
     }
     if (!SameCanonicalCteColumns(intermediate.columns,
                                  request.anchor_batch.columns)) {
@@ -356,11 +392,16 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     return refuse_poll(std::move(cancellation));
   }
 
-  const auto output_validation = ValidateCanonicalDescriptorBatch(
-      accumulated, selected_node->output_descriptor_ids);
-  if (!output_validation.ok) {
-    return refuse(output_validation.diagnostic_code + ":" +
-                  output_validation.detail);
+  const auto output_validation = ValidateRecursiveCteBatch(
+      accumulated, selected_node->output_descriptor_ids,
+      request.cancellation_requested, iteration_ordinal,
+      "while validating the recursive result");
+  if (output_validation.cancellation.has_value()) {
+    return refuse_poll(std::move(*output_validation.cancellation));
+  }
+  if (!output_validation.diagnostic.ok) {
+    return refuse(output_validation.diagnostic.diagnostic_code + ":" +
+                  output_validation.diagnostic.detail);
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.mga_authority, request.physical_dag);
@@ -841,12 +882,6 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     covered[term.column] = true;
   }
 
-  const auto anchor_validation = ValidateCanonicalDescriptorBatch(
-      request.anchor_batch, anchor_node->output_descriptor_ids);
-  if (!anchor_validation.ok) {
-    return refuse(anchor_validation.diagnostic_code + ":" +
-                  anchor_validation.detail);
-  }
   if (!request.recursive_step || request.maximum_iteration_count == 0 ||
       request.maximum_working_row_count == 0 ||
       request.maximum_result_row_count == 0 ||
@@ -857,6 +892,16 @@ ExecuteCanonicalRecursiveCteSearchCycle(
           request.maximum_working_row_count ||
       request.anchor_batch.rows.size() > request.maximum_result_row_count) {
     return refuse("recursive CTE SEARCH/CYCLE resource contract is invalid");
+  }
+  const auto anchor_validation = ValidateRecursiveCteBatch(
+      request.anchor_batch, anchor_node->output_descriptor_ids,
+      request.cancellation_requested, 0, "while validating anchor rows");
+  if (anchor_validation.cancellation.has_value()) {
+    return refuse_poll(std::move(*anchor_validation.cancellation));
+  }
+  if (!anchor_validation.diagnostic.ok) {
+    return refuse(anchor_validation.diagnostic.diagnostic_code + ":" +
+                  anchor_validation.diagnostic.detail);
   }
   auto cancellation = poll_cancellation(0, "before anchor publication");
   if (!cancellation.diagnostic.ok) {
@@ -987,11 +1032,16 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     if (!cancellation.diagnostic.ok) {
       return refuse_poll(std::move(cancellation));
     }
-    const auto generated_validation = ValidateCanonicalDescriptorBatch(
-        generated.batch, recursive_node->output_descriptor_ids);
-    if (!generated_validation.ok) {
-      return refuse(generated_validation.diagnostic_code + ":" +
-                    generated_validation.detail);
+    const auto generated_validation = ValidateRecursiveCteBatch(
+        generated.batch, recursive_node->output_descriptor_ids,
+        request.cancellation_requested, iteration,
+        "while validating recursive SEARCH/CYCLE rows");
+    if (generated_validation.cancellation.has_value()) {
+      return refuse_poll(std::move(*generated_validation.cancellation));
+    }
+    if (!generated_validation.diagnostic.ok) {
+      return refuse(generated_validation.diagnostic.diagnostic_code + ":" +
+                    generated_validation.diagnostic.detail);
     }
     if (!SameCanonicalCteColumns(generated.batch.columns,
                                  request.anchor_batch.columns)) {
@@ -1104,11 +1154,15 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     return refuse_poll(std::move(cancellation));
   }
 
-  const auto output_validation =
-      ValidateCanonicalDescriptorBatch(output, output_descriptor_ids);
-  if (!output_validation.ok) {
-    return refuse(output_validation.diagnostic_code + ":" +
-                  output_validation.detail);
+  const auto output_validation = ValidateRecursiveCteBatch(
+      output, output_descriptor_ids, request.cancellation_requested,
+      iteration, "while validating the recursive SEARCH/CYCLE result");
+  if (output_validation.cancellation.has_value()) {
+    return refuse_poll(std::move(*output_validation.cancellation));
+  }
+  if (!output_validation.diagnostic.ok) {
+    return refuse(output_validation.diagnostic.diagnostic_code + ":" +
+                  output_validation.diagnostic.detail);
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.mga_authority, request.physical_dag);
