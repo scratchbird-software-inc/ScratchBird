@@ -24825,19 +24825,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         CanonicalObjectFreeValuesExecutionRequest{
             input.context, dag, canonical_admission.request,
             canonical_admission.admission});
-    if (mixed_join != nullptr) {
-      composition_planning_request->expression_services
-          .comparison_evaluator =
-          [context = input.context](const api::EngineTypedValue& left,
-                                    const api::EngineTypedValue& right,
-                                    int* comparison,
-                                    std::string* diagnostic_id,
-                                    std::string* refusal_detail) {
-            return CompareCanonicalQueryScalarsV1(
-                context, left, right, comparison, diagnostic_id,
-                refusal_detail);
-          };
-    }
+    composition_planning_request->expression_services.comparison_evaluator =
+        [context = input.context](const api::EngineTypedValue& left,
+                                  const api::EngineTypedValue& right,
+                                  int* comparison,
+                                  std::string* diagnostic_id,
+                                  std::string* refusal_detail) {
+          return CompareCanonicalQueryScalarsV1(
+              context, left, right, comparison, diagnostic_id,
+              refusal_detail);
+        };
 
     composition_state.ok = true;
     composition_state.batch.columns = public_columns;
@@ -33607,6 +33604,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   CanonicalObjectFreeValuesExecutionRequest canonical_planning_request{
       input.context, dag, canonical_admission.request,
       canonical_admission.admission};
+  canonical_planning_request.expression_services.comparison_evaluator =
+      [context = input.context](const api::EngineTypedValue& left,
+                                const api::EngineTypedValue& right,
+                                int* comparison,
+                                std::string* diagnostic_id,
+                                std::string* refusal_detail) {
+        return CompareCanonicalQueryScalarsV1(
+            context, left, right, comparison, diagnostic_id, refusal_detail);
+      };
   const auto descriptor_for_composition =
       [&](const std::uint32_t descriptor_id) {
         return std::ranges::find_if(
@@ -36238,6 +36244,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
     CanonicalObjectFreeValuesExecutionRequest canonical_planning_request{
         input.context, dag, canonical_admission.request,
         canonical_admission.admission};
+    canonical_planning_request.expression_services.comparison_evaluator =
+        [context = input.context](const api::EngineTypedValue& left,
+                                  const api::EngineTypedValue& right,
+                                  int* comparison,
+                                  std::string* diagnostic_id,
+                                  std::string* refusal_detail) {
+          return CompareCanonicalQueryScalarsV1(
+              context, left, right, comparison, diagnostic_id,
+              refusal_detail);
+        };
     const auto bounded_rows = static_cast<std::size_t>(
         std::min<std::uint64_t>(
             65536,
