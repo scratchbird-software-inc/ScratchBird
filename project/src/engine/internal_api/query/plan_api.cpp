@@ -6666,8 +6666,10 @@ using scratchbird::core::catalog::BuiltinCatalogTableProfiles;
 
 plan::PhysicalAccessKind AccessKindForQueryOperation(const std::string& operation);
 bool StatisticsForcedStale(const EnginePlanOperationRequest& request);
-bool ProjectionRowMatchesPredicate(const EngineRowValue& row,
-                                   const EnginePredicateEnvelope& predicate);
+std::optional<bool> ProjectionRowMatchesPredicate(
+    const EngineRowValue& row,
+    const EnginePredicateEnvelope& predicate,
+    std::string* error_detail);
 
 bool ApiBehaviorFallbackSuppressedObjectKind(std::string_view object_kind) {
   return object_kind == "schema" ||
@@ -6788,6 +6790,21 @@ bool TryParseSizeValue(const std::string& value, std::size_t* out) {
   return true;
 }
 
+bool TryParseOptionalSizeValue(const std::string& value,
+                               std::size_t fallback,
+                               std::size_t* out,
+                               std::string* error_detail,
+                               std::string_view diagnostic_code) {
+  if (out == nullptr) return false;
+  if (value.empty()) {
+    *out = fallback;
+    return true;
+  }
+  if (TryParseSizeValue(value, out)) return true;
+  if (error_detail != nullptr) *error_detail = diagnostic_code;
+  return false;
+}
+
 std::uint64_t ParseU64Value(const std::string& value, std::uint64_t fallback) {
   if (value.empty()) { return fallback; }
   std::uint64_t parsed = 0;
@@ -6798,6 +6815,19 @@ std::uint64_t ParseU64Value(const std::string& value, std::uint64_t fallback) {
     parsed = (parsed * 10) + digit;
   }
   return parsed;
+}
+
+bool TryParseU64Value(const std::string& value, std::uint64_t* out) {
+  if (out == nullptr || value.empty()) return false;
+  std::uint64_t parsed = 0;
+  const auto result =
+      std::from_chars(value.data(), value.data() + value.size(), parsed);
+  if (result.ec != std::errc{} ||
+      result.ptr != value.data() + value.size()) {
+    return false;
+  }
+  *out = parsed;
+  return true;
 }
 
 bool ParseBoolValue(const std::string& value, bool fallback) {
@@ -6811,22 +6841,164 @@ bool ParseBoolValue(const std::string& value, bool fallback) {
   return fallback;
 }
 
+bool TryParseBoolValue(const std::string& value, bool* out) {
+  if (out == nullptr || value.empty()) return false;
+  const std::string lowered = LowerAscii(value);
+  if (lowered == "1" || lowered == "true" || lowered == "yes" ||
+      lowered == "asc" || lowered == "ascending") {
+    *out = true;
+    return true;
+  }
+  if (lowered == "0" || lowered == "false" || lowered == "no" ||
+      lowered == "desc" || lowered == "descending") {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
+bool TryParseOptionalBoolValue(const std::string& value,
+                               bool fallback,
+                               bool* out,
+                               std::string* error_detail,
+                               std::string_view diagnostic_code) {
+  if (out == nullptr) return false;
+  if (value.empty()) {
+    *out = fallback;
+    return true;
+  }
+  if (TryParseBoolValue(value, out)) return true;
+  if (error_detail != nullptr) *error_detail = diagnostic_code;
+  return false;
+}
+
+bool TryParseToggleValue(const std::string& value, bool* out) {
+  if (TryParseBoolValue(value, out)) return true;
+  if (out == nullptr || value.empty()) return false;
+  const std::string lowered = LowerAscii(value);
+  if (lowered == "enabled" || lowered == "on") {
+    *out = true;
+    return true;
+  }
+  if (lowered == "disabled" || lowered == "off") {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
+bool ValidatePlanOperationOptionSyntax(
+    const EnginePlanOperationRequest& request,
+    std::string* error_detail) {
+  constexpr std::array<std::string_view, 25> kUnsignedOptions{
+      "left_key_column:",
+      "right_key_column:",
+      "group_key_column:",
+      "aggregate_value_column:",
+      "aggregate_pair_value_column:",
+      "order_column:",
+      "window_value_column:",
+      "partition_column:",
+      "window_n:",
+      "window_bucket_count:",
+      "limit:",
+      "offset:",
+      "having_value_column:",
+      "recursive_iterations:",
+      "sample_seed:",
+      "sample_block_rows:",
+      "sample_maximum_input_rows:",
+      "aggregate_limit:",
+      "listagg_max_output_bytes:",
+      "stats_epoch:",
+      "memory_policy_epoch:",
+      "compatibility_epoch:",
+      "format_compatibility_epoch:",
+      "route_epoch:",
+      "optimizer_max_stats_freshness_us:"};
+  for (const auto prefix : kUnsignedOptions) {
+    const std::string value = OptionValue(request, std::string(prefix));
+    std::uint64_t parsed = 0;
+    if (!value.empty() && !TryParseU64Value(value, &parsed)) {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_unsigned_option_invalid:" +
+                        std::string(prefix.substr(0, prefix.size() - 1));
+      }
+      return false;
+    }
+  }
+
+  constexpr std::array<std::string_view, 14> kBooleanOptions{
+      "execute:",
+      "order:",
+      "count_all:",
+      "count_distinct:",
+      "count_distinct_include_null:",
+      "set_by_name:",
+      "cross_join_equality_filter:",
+      "listagg_with_count:",
+      "optimizer_plan_cache:",
+      "plan_cache:",
+      "optimizer_force_stale_stats:",
+      "statistics_stale:",
+      "optimizer_statistics:",
+      "statistics_enabled:"};
+  for (const auto prefix : kBooleanOptions) {
+    const std::string value = OptionValue(request, std::string(prefix));
+    bool parsed = false;
+    if (!value.empty() && !TryParseToggleValue(value, &parsed)) {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_boolean_option_invalid:" +
+                        std::string(prefix.substr(0, prefix.size() - 1));
+      }
+      return false;
+    }
+  }
+  const auto toggle_pair_agrees = [&](std::string_view primary_prefix,
+                                      std::string_view alias_prefix) {
+    const std::string primary =
+        OptionValue(request, std::string(primary_prefix));
+    const std::string alias = OptionValue(request, std::string(alias_prefix));
+    if (primary.empty() || alias.empty()) return true;
+    bool primary_value = false;
+    bool alias_value = false;
+    return TryParseToggleValue(primary, &primary_value) &&
+           TryParseToggleValue(alias, &alias_value) &&
+           primary_value == alias_value;
+  };
+  if (!toggle_pair_agrees("optimizer_plan_cache:", "plan_cache:") ||
+      !toggle_pair_agrees("optimizer_force_stale_stats:",
+                          "statistics_stale:") ||
+      !toggle_pair_agrees("optimizer_statistics:",
+                          "statistics_enabled:")) {
+    if (error_detail != nullptr) {
+      *error_detail = "query_plan_boolean_option_alias_conflict";
+    }
+    return false;
+  }
+  return true;
+}
+
 bool RequestOptionEnabled(const EngineApiRequest& request,
                           const std::string& primary_prefix,
                           const std::string& alias_prefix = {}) {
-  const std::string primary = LowerAscii(OptionValue(request, primary_prefix));
-  const std::string alias = alias_prefix.empty() ? std::string{} : LowerAscii(OptionValue(request, alias_prefix));
-  return primary == "enabled" || primary == "true" || primary == "1" ||
-         alias == "enabled" || alias == "true" || alias == "1";
+  const std::string primary = OptionValue(request, primary_prefix);
+  const std::string alias =
+      alias_prefix.empty() ? std::string{} : OptionValue(request, alias_prefix);
+  bool value = false;
+  return (!primary.empty() && TryParseToggleValue(primary, &value) && value) ||
+         (!alias.empty() && TryParseToggleValue(alias, &value) && value);
 }
 
 bool RequestOptionDisabled(const EngineApiRequest& request,
                            const std::string& primary_prefix,
                            const std::string& alias_prefix = {}) {
-  const std::string primary = LowerAscii(OptionValue(request, primary_prefix));
-  const std::string alias = alias_prefix.empty() ? std::string{} : LowerAscii(OptionValue(request, alias_prefix));
-  return primary == "disabled" || primary == "false" || primary == "0" ||
-         alias == "disabled" || alias == "false" || alias == "0";
+  const std::string primary = OptionValue(request, primary_prefix);
+  const std::string alias =
+      alias_prefix.empty() ? std::string{} : OptionValue(request, alias_prefix);
+  bool value = true;
+  return (!primary.empty() && TryParseToggleValue(primary, &value) && !value) ||
+         (!alias.empty() && TryParseToggleValue(alias, &value) && !value);
 }
 
 void AddSbsfc081Evidence(EnginePlanOperationResult* result,
@@ -6956,12 +7128,36 @@ void AddSbsfc085Evidence(EnginePlanOperationResult* result,
   AddApiBehaviorEvidence(result, "wal_recovery_authority", "false");
 }
 
-std::vector<std::size_t> ParseProjectedColumns(const EnginePlanOperationRequest& request) {
-  if (!request.projected_columns.empty()) { return request.projected_columns; }
+bool ParseProjectedColumns(const EnginePlanOperationRequest& request,
+                           std::vector<std::size_t>* columns,
+                           std::string* error_detail) {
+  if (columns == nullptr) return false;
+  columns->clear();
+  if (!request.projected_columns.empty()) {
+    *columns = request.projected_columns;
+    return true;
+  }
   const std::string encoded = OptionValue(request, "project_columns:");
-  std::vector<std::size_t> columns;
-  for (const auto& part : Split(encoded, ',')) { columns.push_back(ParseSizeValue(part, 0)); }
-  return columns;
+  if (!encoded.empty() &&
+      (encoded.front() == ',' || encoded.back() == ',' ||
+       encoded.find(",,") != std::string::npos)) {
+    if (error_detail != nullptr) {
+      *error_detail = "query_plan_project_column_invalid";
+    }
+    return false;
+  }
+  for (const auto& part : Split(encoded, ',')) {
+    std::size_t column = 0;
+    if (!TryParseSizeValue(part, &column)) {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_project_column_invalid";
+      }
+      columns->clear();
+      return false;
+    }
+    columns->push_back(column);
+  }
+  return true;
 }
 
 bool TryParseI64Value(const std::string& value, std::int64_t* out) {
@@ -7574,9 +7770,7 @@ EngineDescriptor ListDescriptor(const EngineDescriptor& element_descriptor) {
   EngineDescriptor descriptor;
   descriptor.descriptor_kind = "list";
   descriptor.canonical_type_name = "list";
-  const std::string element_type = element_descriptor.canonical_type_name.empty()
-                                       ? "any"
-                                       : element_descriptor.canonical_type_name;
+  const std::string& element_type = element_descriptor.canonical_type_name;
   descriptor.encoded_descriptor = "canonical=list;element=" + element_type +
                                   ";nulls=included;order=parser_provided";
   return descriptor;
@@ -7637,7 +7831,12 @@ EngineTypedValue CrudRelationTypedValue(const std::string& value,
   EngineTypedValue typed;
   if (descriptor != nullptr) { typed.descriptor = *descriptor; }
   typed.is_null = value == "<NULL>";
-  if (!typed.is_null) { typed.encoded_value = value; }
+  if (typed.is_null) {
+    typed.setState(EngineValueState::sql_null);
+  } else {
+    typed.encoded_value = value;
+    typed.setState(EngineValueState::value);
+  }
   return typed;
 }
 
@@ -7686,6 +7885,7 @@ EngineTypedValue NullValue(EngineDescriptor descriptor) {
   EngineTypedValue typed;
   typed.descriptor = std::move(descriptor);
   typed.is_null = true;
+  typed.setState(EngineValueState::sql_null);
   return typed;
 }
 
@@ -7696,7 +7896,11 @@ EngineDescriptor InferredDescriptorForValue(const EngineTypedValue& typed) {
 EngineTypedValue NormalizeTypedValue(const EngineTypedValue& typed) {
   EngineTypedValue normalized = typed;
   normalized.descriptor = InferredDescriptorForValue(typed);
-  if (normalized.is_null) { normalized.encoded_value.clear(); }
+  if (normalized.is_null) {
+    normalized.encoded_value.clear();
+    normalized.binary_value.clear();
+    normalized.setState(EngineValueState::sql_null);
+  }
   return normalized;
 }
 
@@ -8694,7 +8898,7 @@ std::string CanonicalListElementTypeName(std::string type_name) {
       type_name.rfind("character(", 0) == 0) {
     return "text";
   }
-  return type_name.empty() ? "any" : type_name;
+  return type_name;
 }
 
 std::string ListElementFromTypedValue(const EngineTypedValue& typed) {
@@ -9028,42 +9232,47 @@ EngineResultShape BatchToResultShape(const exec::Batch& batch) {
   return shape;
 }
 
-EngineResultShape ValuesRowsToResultShape(const std::vector<EngineRowValue>& rows) {
+EngineResultShape ValuesRowsToResultShape(const EngineQueryRelation& relation) {
   EngineResultShape shape;
   shape.result_kind = "values_rowset";
-  std::size_t width = 0;
-  for (const auto& row : rows) { width = std::max(width, row.fields.size()); }
-  for (std::size_t column = 0; column < width; ++column) {
-    EngineDescriptor descriptor;
-    descriptor.descriptor_kind = "scalar";
-    descriptor.canonical_type_name = "text";
-    descriptor.encoded_descriptor = "type=text";
-    for (const auto& row : rows) {
-      if (column < row.fields.size()) {
-        descriptor = row.fields[column].second.descriptor;
-        break;
-      }
+  shape.columns = relation.columns;
+  if (shape.columns.empty() && !relation.rows.empty()) {
+    shape.columns.reserve(relation.rows.front().fields.size());
+    for (const auto& [name, value] : relation.rows.front().fields) {
+      (void)name;
+      shape.columns.push_back(value.descriptor);
     }
-    shape.columns.push_back(std::move(descriptor));
   }
-  shape.rows = rows;
+  shape.rows = relation.rows;
   return shape;
 }
 
 std::string EqualityKeyDescriptorFamily(std::string type_name);
 std::optional<std::string> EqualityKeyForTypedValue(const EngineTypedValue& value);
 
-std::uint64_t ApplyCountWindow(const EnginePlanOperationRequest& request,
-                               std::uint64_t count) {
+std::optional<std::uint64_t> ApplyCountWindow(
+    const EnginePlanOperationRequest& request,
+    std::uint64_t count,
+    std::string* error_detail) {
   const std::string offset_text = OptionValue(request, "offset:");
   const std::string limit_text = OptionValue(request, "limit:");
-  const std::size_t offset =
-      ParseSizeValue(offset_text, static_cast<std::size_t>(request.offset));
+  std::size_t offset = 0;
+  std::size_t limit = 0;
+  if (!TryParseOptionalSizeValue(offset_text,
+                                 static_cast<std::size_t>(request.offset),
+                                 &offset,
+                                 error_detail,
+                                 "query_plan_offset_invalid") ||
+      !TryParseOptionalSizeValue(limit_text,
+                                 static_cast<std::size_t>(request.limit),
+                                 &limit,
+                                 error_detail,
+                                 "query_plan_limit_invalid")) {
+    return std::nullopt;
+  }
   if (count <= offset) return 0;
   count -= offset;
-  if (!limit_text.empty()) {
-    const std::size_t limit =
-        ParseSizeValue(limit_text, static_cast<std::size_t>(request.limit));
+  if (limit != 0) {
     if (count > limit) count = limit;
   }
   return count;
@@ -9072,21 +9281,41 @@ std::uint64_t ApplyCountWindow(const EnginePlanOperationRequest& request,
 std::optional<std::uint64_t> CountRelationRows(const EnginePlanOperationRequest& request,
                                                const EngineQueryRelation& relation,
                                                std::string* error_detail) {
-  const bool count_all =
-      ParseBoolValue(OptionValue(request, "count_all:"), request.aggregate_value_field.empty());
-  const bool count_distinct =
-      ParseBoolValue(OptionValue(request, "count_distinct:"), false);
-  const bool count_distinct_include_null =
-      ParseBoolValue(OptionValue(request, "count_distinct_include_null:"), false);
+  bool count_all = false;
+  bool count_distinct = false;
+  bool count_distinct_include_null = false;
+  if (!TryParseOptionalBoolValue(OptionValue(request, "count_all:"),
+                                 request.aggregate_value_field.empty(),
+                                 &count_all,
+                                 error_detail,
+                                 "query_plan_count_all_option_invalid") ||
+      !TryParseOptionalBoolValue(OptionValue(request, "count_distinct:"),
+                                 false,
+                                 &count_distinct,
+                                 error_detail,
+                                 "query_plan_count_distinct_option_invalid") ||
+      !TryParseOptionalBoolValue(
+          OptionValue(request, "count_distinct_include_null:"),
+          false,
+          &count_distinct_include_null,
+          error_detail,
+          "query_plan_count_distinct_include_null_option_invalid")) {
+    return std::nullopt;
+  }
   if (count_all) {
     if (request.predicate.predicate_kind.empty()) {
-      return ApplyCountWindow(request, static_cast<std::uint64_t>(relation.rows.size()));
+      return ApplyCountWindow(request,
+                              static_cast<std::uint64_t>(relation.rows.size()),
+                              error_detail);
     }
     std::uint64_t count = 0;
     for (const auto& row : relation.rows) {
-      if (ProjectionRowMatchesPredicate(row, request.predicate)) ++count;
+      const auto matches =
+          ProjectionRowMatchesPredicate(row, request.predicate, error_detail);
+      if (!matches) return std::nullopt;
+      if (*matches) ++count;
     }
-    return ApplyCountWindow(request, count);
+    return ApplyCountWindow(request, count, error_detail);
   }
 
   const std::string value_field = !request.aggregate_value_field.empty()
@@ -9101,7 +9330,10 @@ std::optional<std::uint64_t> CountRelationRows(const EnginePlanOperationRequest&
   std::set<std::string> distinct_values;
   std::uint64_t count = 0;
   for (const auto& row : relation.rows) {
-    if (!ProjectionRowMatchesPredicate(row, request.predicate)) continue;
+    const auto matches =
+        ProjectionRowMatchesPredicate(row, request.predicate, error_detail);
+    if (!matches) return std::nullopt;
+    if (!*matches) continue;
     if (value_column >= row.fields.size()) {
       if (error_detail != nullptr) *error_detail = "query_plan_count_value_column_out_of_range";
       return std::nullopt;
@@ -9120,8 +9352,12 @@ std::optional<std::uint64_t> CountRelationRows(const EnginePlanOperationRequest&
     }
     ++count;
   }
-  if (count_distinct) return static_cast<std::uint64_t>(distinct_values.size());
-  return ApplyCountWindow(request, count);
+  if (count_distinct) {
+    return ApplyCountWindow(request,
+                            static_cast<std::uint64_t>(distinct_values.size()),
+                            error_detail);
+  }
+  return ApplyCountWindow(request, count, error_detail);
 }
 
 EngineResultShape CountResultShape(const EnginePlanOperationRequest& request,
@@ -9158,7 +9394,14 @@ bool CountFastPathCanUseTargetRows(const EnginePlanOperationRequest& request,
     return false;
   }
   if (!OptionValue(request, "catalog_projection:").empty()) return false;
-  if (ParseBoolValue(OptionValue(request, "count_distinct:"), false)) return false;
+  const std::string count_distinct_text =
+      OptionValue(request, "count_distinct:");
+  bool count_distinct = false;
+  if (!count_distinct_text.empty() &&
+      !TryParseBoolValue(count_distinct_text, &count_distinct)) {
+    return false;
+  }
+  if (count_distinct) return false;
   const std::string result_projection =
       LowerAscii(OptionValue(request, "result_projection:"));
   return result_projection.empty() || result_projection == "count";
@@ -9198,9 +9441,16 @@ EnginePlanOperationResult ExecuteFastCrudCount(
         request.context,
         "query_relation_target_not_visible");
   }
-  const bool count_all =
-      ParseBoolValue(OptionValue(request, "count_all:"),
-                     request.aggregate_value_field.empty());
+  bool count_all = false;
+  std::string option_error;
+  if (!TryParseOptionalBoolValue(OptionValue(request, "count_all:"),
+                                 request.aggregate_value_field.empty(),
+                                 &count_all,
+                                 &option_error,
+                                 "query_plan_count_all_option_invalid")) {
+    return QueryFailure<EnginePlanOperationResult>(request.context,
+                                                   option_error);
+  }
   std::string value_field = !request.aggregate_value_field.empty()
                                 ? request.aggregate_value_field
                                 : OptionValue(request, "aggregate_value_field:");
@@ -9219,7 +9469,12 @@ EnginePlanOperationResult ExecuteFastCrudCount(
       ++count;
     }
   }
-  count = ApplyCountWindow(request, count);
+  const auto windowed_count = ApplyCountWindow(request, count, &option_error);
+  if (!windowed_count) {
+    return QueryFailure<EnginePlanOperationResult>(request.context,
+                                                   option_error);
+  }
+  count = *windowed_count;
 
   EnginePlanOperationResult result =
       MakeApiBehaviorSuccess<EnginePlanOperationResult>(request.context,
@@ -9329,6 +9584,15 @@ std::optional<std::string> JoinKeyForRow(const EngineRowValue& row,
       if (error_detail != nullptr) *error_detail = "query_plan_join_key_offset_requires_int64";
       return std::nullopt;
     }
+    if ((offset > 0 &&
+         parsed > std::numeric_limits<std::int64_t>::max() - offset) ||
+        (offset < 0 &&
+         parsed < std::numeric_limits<std::int64_t>::min() - offset)) {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_join_key_offset_overflow";
+      }
+      return std::nullopt;
+    }
     return EqualityKeyDescriptorFamily(typed.descriptor.canonical_type_name) + ":" +
            std::to_string(parsed + offset);
   }
@@ -9349,9 +9613,20 @@ EngineResultShape GenericGroupCountResultShape(const EngineQueryRelation& relati
       return {};
     }
     auto typed = NormalizeTypedValue(row.fields[group_key_column].second);
-    const std::string key = typed.is_null
-        ? "null:" + EqualityKeyDescriptorFamily(typed.descriptor.canonical_type_name)
-        : EqualityKeyForTypedValue(typed).value_or("value:" + typed.encoded_value);
+    std::string key;
+    if (typed.is_null) {
+      key = "null:" +
+            EqualityKeyDescriptorFamily(typed.descriptor.canonical_type_name);
+    } else {
+      const auto equality_key = EqualityKeyForTypedValue(typed);
+      if (!equality_key) {
+        if (error_detail != nullptr) {
+          *error_detail = "query_plan_aggregate_group_key_invalid";
+        }
+        return {};
+      }
+      key = *equality_key;
+    }
     auto& state = groups[key];
     if (state.count == 0) state.key_value = std::move(typed);
     ++state.count;
@@ -9383,24 +9658,55 @@ EngineResultShape GenericGroupCountResultShape(const EngineQueryRelation& relati
   return shape;
 }
 
-EngineTypedValue DerivedConstantValueForRequest(
-    const EnginePlanOperationRequest& request) {
+std::optional<EngineTypedValue> DerivedConstantValueForRequest(
+    const EnginePlanOperationRequest& request,
+    std::string* error_detail) {
   const std::string type = LowerAscii(OptionValue(request, "derived_constant_type:"));
   const std::string value = OptionValue(request, "derived_constant_value:");
-  if (type == "integer" || type == "bigint" || type == "uint64") {
-    try {
-      return Int64Value(std::stoll(value));
-    } catch (...) {
-      return TextValue(value);
+  if (type == "integer" || type == "bigint" || type == "int64") {
+    std::int64_t parsed = 0;
+    if (TryParseI64Value(value, &parsed)) return Int64Value(parsed);
+    if (error_detail != nullptr) {
+      *error_detail = "query_plan_derived_constant_integer_invalid";
     }
+    return std::nullopt;
+  }
+  if (type == "uint64") {
+    std::uint64_t parsed = 0;
+    if (TryParseU64Value(value, &parsed) &&
+        parsed <= static_cast<std::uint64_t>(
+                      std::numeric_limits<std::int64_t>::max())) {
+      return Int64Value(static_cast<std::int64_t>(parsed));
+    }
+    if (error_detail != nullptr) {
+      *error_detail = "query_plan_derived_constant_uint64_out_of_range";
+    }
+    return std::nullopt;
   }
   if (type == "boolean") {
-    return BoolValue(ParseBoolValue(value, false));
+    bool parsed = false;
+    if (TryParseBoolValue(value, &parsed)) return BoolValue(parsed);
+    if (error_detail != nullptr) {
+      *error_detail = "query_plan_derived_constant_boolean_invalid";
+    }
+    return std::nullopt;
   }
   if (type == "numeric" || type == "real64" || type == "real128") {
-    return Real64Value(ParseReal64Value(value, 0.0));
+    double parsed = 0.0;
+    if (TryParseReal64Value(value, &parsed)) return Real64Value(parsed);
+    if (error_detail != nullptr) {
+      *error_detail = "query_plan_derived_constant_numeric_invalid";
+    }
+    return std::nullopt;
   }
-  return TextValue(value);
+  if (type == "text" || type == "string" || type == "varchar" ||
+      type == "character") {
+    return TextValue(value);
+  }
+  if (error_detail != nullptr) {
+    *error_detail = "query_plan_derived_constant_type_required_or_unsupported";
+  }
+  return std::nullopt;
 }
 
 EngineResultShape DerivedGroupConstantProjectionResultShape(
@@ -9410,8 +9716,9 @@ EngineResultShape DerivedGroupConstantProjectionResultShape(
     std::string* error_detail) {
   EngineResultShape shape;
   shape.result_kind = "query_rowset";
-  const EngineTypedValue constant = DerivedConstantValueForRequest(request);
-  shape.columns.push_back(constant.descriptor);
+  const auto constant = DerivedConstantValueForRequest(request, error_detail);
+  if (!constant) return {};
+  shape.columns.push_back(constant->descriptor);
 
   std::set<std::string> emitted_groups;
   for (const auto& row : relation.rows) {
@@ -9422,12 +9729,23 @@ EngineResultShape DerivedGroupConstantProjectionResultShape(
       return {};
     }
     auto typed = NormalizeTypedValue(row.fields[group_key_column].second);
-    const std::string key = typed.is_null
-        ? "null:" + EqualityKeyDescriptorFamily(typed.descriptor.canonical_type_name)
-        : EqualityKeyForTypedValue(typed).value_or("value:" + typed.encoded_value);
+    std::string key;
+    if (typed.is_null) {
+      key = "null:" +
+            EqualityKeyDescriptorFamily(typed.descriptor.canonical_type_name);
+    } else {
+      const auto equality_key = EqualityKeyForTypedValue(typed);
+      if (!equality_key) {
+        if (error_detail != nullptr) {
+          *error_detail = "query_plan_derived_group_key_invalid";
+        }
+        return {};
+      }
+      key = *equality_key;
+    }
     if (!emitted_groups.insert(key).second) continue;
     EngineRowValue out;
-    out.fields.push_back({"c0", constant});
+    out.fields.push_back({"c0", *constant});
     shape.rows.push_back(std::move(out));
   }
   return shape;
@@ -9463,10 +9781,20 @@ EngineResultShape TypedInnerJoinResultShape(const EnginePlanOperationRequest& re
                                             std::string* error_detail) {
   const std::size_t left_width = RelationWidth(left);
   const std::size_t right_width = RelationWidth(right);
-  const std::size_t offset =
-      ParseSizeValue(OptionValue(request, "offset:"), static_cast<std::size_t>(request.offset));
-  const std::size_t limit =
-      ParseSizeValue(OptionValue(request, "limit:"), static_cast<std::size_t>(request.limit));
+  std::size_t offset = 0;
+  std::size_t limit = 0;
+  if (!TryParseOptionalSizeValue(OptionValue(request, "offset:"),
+                                 static_cast<std::size_t>(request.offset),
+                                 &offset,
+                                 error_detail,
+                                 "query_plan_offset_invalid") ||
+      !TryParseOptionalSizeValue(OptionValue(request, "limit:"),
+                                 static_cast<std::size_t>(request.limit),
+                                 &limit,
+                                 error_detail,
+                                 "query_plan_limit_invalid")) {
+    return {};
+  }
 
   EngineResultShape shape;
   shape.result_kind = "query_rowset";
@@ -9597,10 +9925,20 @@ EngineResultShape TypedLeftJoinResultShape(const EnginePlanOperationRequest& req
                                            std::string* error_detail) {
   const std::size_t left_width = RelationWidth(left);
   const std::size_t right_width = RelationWidth(right);
-  const std::size_t offset =
-      ParseSizeValue(OptionValue(request, "offset:"), static_cast<std::size_t>(request.offset));
-  const std::size_t limit =
-      ParseSizeValue(OptionValue(request, "limit:"), static_cast<std::size_t>(request.limit));
+  std::size_t offset = 0;
+  std::size_t limit = 0;
+  if (!TryParseOptionalSizeValue(OptionValue(request, "offset:"),
+                                 static_cast<std::size_t>(request.offset),
+                                 &offset,
+                                 error_detail,
+                                 "query_plan_offset_invalid") ||
+      !TryParseOptionalSizeValue(OptionValue(request, "limit:"),
+                                 static_cast<std::size_t>(request.limit),
+                                 &limit,
+                                 error_detail,
+                                 "query_plan_limit_invalid")) {
+    return {};
+  }
 
   EngineResultShape shape;
   shape.result_kind = "query_rowset";
@@ -9662,13 +10000,35 @@ EngineResultShape TypedLeftJoinResultShape(const EnginePlanOperationRequest& req
   std::string order_field = request.order_field;
   if (order_field.empty()) order_field = OptionValue(request, "order_by:");
   if (!order_field.empty() || request.order_column != 0 ||
-      !OptionValue(request, "order_column:").empty()) {
-    const std::size_t order_column =
-        !order_field.empty()
-            ? ColumnIndexForRelation(left, order_field, request.order_column)
-            : ParseSizeValue(OptionValue(request, "order_column:"), request.order_column);
+      !OptionValue(request, "order_column:").empty() ||
+      !OptionValue(request, "order:").empty()) {
+    std::size_t order_column = 0;
+    if (!order_field.empty()) {
+      order_column = ColumnIndexForRelation(
+          left, order_field, std::numeric_limits<std::size_t>::max());
+      if (order_column == std::numeric_limits<std::size_t>::max()) {
+        if (error_detail != nullptr) {
+          *error_detail = "query_plan_order_field_not_found";
+        }
+        return {};
+      }
+    } else if (!TryParseOptionalSizeValue(
+                   OptionValue(request, "order_column:"),
+                   request.order_column,
+                   &order_column,
+                   error_detail,
+                   "query_plan_order_column_invalid")) {
+      return {};
+    }
     const std::string order_key = "c" + std::to_string(order_column);
-    const bool ascending = ParseBoolValue(OptionValue(request, "order:"), request.ascending);
+    bool ascending = true;
+    if (!TryParseOptionalBoolValue(OptionValue(request, "order:"),
+                                   request.ascending,
+                                   &ascending,
+                                   error_detail,
+                                   "query_plan_order_direction_invalid")) {
+      return {};
+    }
     const auto row_field_value = [](const EngineRowValue& row,
                                     const std::string& key) -> const EngineTypedValue* {
       for (const auto& [field_name, value] : row.fields) {
@@ -9694,8 +10054,9 @@ EngineResultShape TypedLeftJoinResultShape(const EnginePlanOperationRequest& req
   }
   if (offset != 0 || limit != 0) {
     const std::size_t begin = std::min(offset, shape.rows.size());
-    const std::size_t end = limit == 0 ? shape.rows.size()
-                                       : std::min(shape.rows.size(), begin + limit);
+    const std::size_t remaining = shape.rows.size() - begin;
+    const std::size_t end =
+        limit == 0 ? shape.rows.size() : begin + std::min(limit, remaining);
     std::vector<EngineRowValue> sliced;
     sliced.reserve(end - begin);
     for (std::size_t row = begin; row < end; ++row) {
@@ -10061,9 +10422,7 @@ std::optional<std::vector<DescriptorRowFilter>> DescriptorRowFiltersForRequest(
   const std::string count_text = OptionValue(request, std::string(prefix) + "count:");
   if (count_text.empty()) return std::vector<DescriptorRowFilter>{};
   std::uint64_t count = 0;
-  try {
-    count = static_cast<std::uint64_t>(std::stoull(count_text));
-  } catch (...) {
+  if (!TryParseU64Value(count_text, &count)) {
     if (error_detail != nullptr) *error_detail = "query_plan_join_filter_count_invalid";
     return std::nullopt;
   }
@@ -10643,6 +11002,15 @@ std::optional<std::string> ProjectionFieldValue(const EngineRowValue& row,
   return std::nullopt;
 }
 
+const EngineTypedValue* ProjectionTypedFieldValue(
+    const EngineRowValue& row,
+    const std::string& field_name) {
+  for (const auto& [field, value] : row.fields) {
+    if (field == field_name) return &value;
+  }
+  return nullptr;
+}
+
 bool SqlLikePatternMatches(std::string_view value, std::string_view pattern) {
   std::vector<bool> previous(pattern.size() + 1, false);
   std::vector<bool> current(pattern.size() + 1, false);
@@ -10681,28 +11049,60 @@ bool SqlLikePatternMatches(std::string_view value, std::string_view pattern) {
   return previous[pattern.size()];
 }
 
-bool ProjectionRowMatchesPredicate(const EngineRowValue& row,
-                                   const EnginePredicateEnvelope& predicate) {
+std::optional<bool> ProjectionRowMatchesPredicate(
+    const EngineRowValue& row,
+    const EnginePredicateEnvelope& predicate,
+    std::string* error_detail) {
+  const auto invalid = [&](std::string_view diagnostic) -> std::optional<bool> {
+    if (error_detail != nullptr) *error_detail = diagnostic;
+    return std::nullopt;
+  };
+  const auto equal_nonnull = [](const EngineTypedValue& left,
+                                const EngineTypedValue& right) {
+    if (left.isSqlNull() || right.isSqlNull()) return false;
+    const auto left_key = EqualityKeyForTypedValue(left);
+    const auto right_key = EqualityKeyForTypedValue(right);
+    return left_key.has_value() && right_key.has_value() &&
+           *left_key == *right_key;
+  };
+  const auto field_equal = [&](std::string_view field_name,
+                               const EngineTypedValue& bound) {
+    const auto* value = ProjectionTypedFieldValue(row, std::string(field_name));
+    return value != nullptr && equal_nonnull(*value, bound);
+  };
+  for (const auto& bound : predicate.bound_values) {
+    if (bound.descriptor.canonical_type_name.empty() ||
+        (bound.isSqlNull() &&
+         (bound.state != EngineValueState::sql_null ||
+          !bound.encoded_value.empty() || !bound.binary_value.empty())) ||
+        (!bound.isSqlNull() &&
+         (bound.state != EngineValueState::value || bound.is_null))) {
+      return invalid("query_plan_predicate_bound_value_invalid");
+    }
+  }
   if (predicate.predicate_kind.empty()) return true;
   if (predicate.predicate_kind == "column_equals") {
-    if (predicate.bound_values.empty()) return false;
-    const auto value = ProjectionFieldValue(row, predicate.canonical_predicate_envelope);
-    if (value && *value == predicate.bound_values.front().encoded_value) return true;
+    if (predicate.bound_values.size() != 1) {
+      return invalid("query_plan_predicate_bound_value_count_invalid");
+    }
+    if (field_equal(predicate.canonical_predicate_envelope,
+                    predicate.bound_values.front())) {
+      return true;
+    }
     if (predicate.canonical_predicate_envelope == "schema_name") {
-      const auto path = ProjectionFieldValue(row, "schema_path");
-      return path && *path == predicate.bound_values.front().encoded_value;
+      return field_equal("schema_path", predicate.bound_values.front());
     }
     return false;
   }
   if (predicate.predicate_kind == "columns_all_equal") {
     const auto columns = Split(predicate.canonical_predicate_envelope, ',');
-    if (columns.empty() || predicate.bound_values.size() < columns.size()) return false;
+    if (columns.empty() || predicate.bound_values.size() != columns.size()) {
+      return invalid("query_plan_predicate_bound_value_count_invalid");
+    }
     for (std::size_t index = 0; index < columns.size(); ++index) {
-      const auto value = ProjectionFieldValue(row, columns[index]);
-      if (value && *value == predicate.bound_values[index].encoded_value) continue;
+      if (field_equal(columns[index], predicate.bound_values[index])) continue;
       if (columns[index] == "schema_name") {
-        const auto path = ProjectionFieldValue(row, "schema_path");
-        if (path && *path == predicate.bound_values[index].encoded_value) continue;
+        if (field_equal("schema_path", predicate.bound_values[index])) continue;
       }
       return false;
     }
@@ -10710,100 +11110,153 @@ bool ProjectionRowMatchesPredicate(const EngineRowValue& row,
   }
   if (predicate.predicate_kind == "columns_all_null") {
     const auto columns = Split(predicate.canonical_predicate_envelope, ',');
-    if (columns.empty()) return false;
+    if (columns.empty()) return invalid("query_plan_predicate_column_list_invalid");
     for (const auto& column : columns) {
-      const auto value = ProjectionFieldValue(row, column);
-      if (value && !value->empty()) return false;
+      const auto* value = ProjectionTypedFieldValue(row, column);
+      if (value == nullptr || !value->isSqlNull()) return false;
     }
     return true;
   }
   if (predicate.predicate_kind == "columns_all_not_null") {
     const auto columns = Split(predicate.canonical_predicate_envelope, ',');
-    if (columns.empty()) return false;
+    if (columns.empty()) return invalid("query_plan_predicate_column_list_invalid");
     for (const auto& column : columns) {
-      const auto value = ProjectionFieldValue(row, column);
-      if (!value || value->empty()) return false;
+      const auto* value = ProjectionTypedFieldValue(row, column);
+      if (value == nullptr || value->isSqlNull()) return false;
     }
     return true;
   }
   if (predicate.predicate_kind == "column_equals_column_or_left_null") {
     const auto columns = Split(predicate.canonical_predicate_envelope, ',');
-    if (columns.size() != 2) return false;
-    const auto left = ProjectionFieldValue(row, columns[0]);
-    if (left && left->empty()) return true;
-    const auto right = ProjectionFieldValue(row, columns[1]);
-    return left && right && *left == *right;
+    if (columns.size() != 2) {
+      return invalid("query_plan_predicate_column_list_invalid");
+    }
+    const auto* left = ProjectionTypedFieldValue(row, columns[0]);
+    const auto* right = ProjectionTypedFieldValue(row, columns[1]);
+    if (left != nullptr && left->isSqlNull()) return true;
+    return left != nullptr && right != nullptr && equal_nonnull(*left, *right);
   }
   if (predicate.predicate_kind == "column_mod_equals") {
-    if (predicate.bound_values.size() < 2) return false;
-    const auto value_text = ProjectionFieldValue(row, predicate.canonical_predicate_envelope);
-    if (!value_text) return false;
-    try {
-      const auto value = std::stoll(*value_text);
-      const auto divisor = std::stoll(predicate.bound_values[0].encoded_value);
-      const auto expected = std::stoll(predicate.bound_values[1].encoded_value);
-      return divisor != 0 && value % divisor == expected;
-    } catch (...) {
-      return false;
+    if (predicate.bound_values.size() != 2) {
+      return invalid("query_plan_predicate_bound_value_count_invalid");
     }
+    const auto* value = ProjectionTypedFieldValue(
+        row, predicate.canonical_predicate_envelope);
+    if (value == nullptr || value->isSqlNull()) return false;
+    std::int64_t parsed_value = 0;
+    std::int64_t divisor = 0;
+    std::int64_t expected = 0;
+    if (!TryParseI64Value(value->encoded_value, &parsed_value) ||
+        !TryParseI64Value(predicate.bound_values[0].encoded_value, &divisor) ||
+        !TryParseI64Value(predicate.bound_values[1].encoded_value, &expected) ||
+        divisor == 0) {
+      return invalid("query_plan_predicate_mod_operand_invalid");
+    }
+    if (parsed_value == std::numeric_limits<std::int64_t>::min() &&
+        divisor == -1) {
+      return invalid("query_plan_predicate_mod_overflow");
+    }
+    return parsed_value % divisor == expected;
   }
   if (predicate.predicate_kind == "column_in_list") {
-    const auto value = ProjectionFieldValue(row, predicate.canonical_predicate_envelope);
-    if (!value) return false;
+    if (predicate.bound_values.empty()) {
+      return invalid("query_plan_predicate_bound_value_count_invalid");
+    }
+    const auto* value = ProjectionTypedFieldValue(
+        row, predicate.canonical_predicate_envelope);
+    if (value == nullptr || value->isSqlNull()) return false;
     for (const auto& bound : predicate.bound_values) {
-      if (*value == bound.encoded_value) return true;
+      if (equal_nonnull(*value, bound)) return true;
     }
     return false;
   }
   if (predicate.predicate_kind == "column_range") {
-    if (predicate.bound_values.size() < 2) return false;
-    const auto value = ProjectionFieldValue(row, predicate.canonical_predicate_envelope);
-    if (!value) return false;
+    if (predicate.bound_values.size() != 2) {
+      return invalid("query_plan_predicate_bound_value_count_invalid");
+    }
+    const auto* value = ProjectionTypedFieldValue(
+        row, predicate.canonical_predicate_envelope);
+    if (value == nullptr || value->isSqlNull() ||
+        predicate.bound_values[0].isSqlNull() ||
+        predicate.bound_values[1].isSqlNull()) {
+      return false;
+    }
     double current = 0.0;
     double lower = 0.0;
     double upper = 0.0;
-    if (TryParseReal64Value(*value, &current) &&
+    if (TryParseReal64Value(value->encoded_value, &current) &&
         TryParseReal64Value(predicate.bound_values[0].encoded_value, &lower) &&
         TryParseReal64Value(predicate.bound_values[1].encoded_value, &upper)) {
       return current >= lower && current <= upper;
     }
-    return *value >= predicate.bound_values[0].encoded_value &&
-           *value <= predicate.bound_values[1].encoded_value;
+    const std::string family =
+        EqualityKeyDescriptorFamily(value->descriptor.canonical_type_name);
+    const std::string lower_family = EqualityKeyDescriptorFamily(
+        predicate.bound_values[0].descriptor.canonical_type_name);
+    const std::string upper_family = EqualityKeyDescriptorFamily(
+        predicate.bound_values[1].descriptor.canonical_type_name);
+    if (family != "text" || lower_family != "text" ||
+        upper_family != "text") {
+      return invalid("query_plan_predicate_range_operand_invalid");
+    }
+    return value->encoded_value >= predicate.bound_values[0].encoded_value &&
+           value->encoded_value <= predicate.bound_values[1].encoded_value;
   }
   if (predicate.predicate_kind == "column_not_in_list") {
-    const auto value = ProjectionFieldValue(row, predicate.canonical_predicate_envelope);
-    if (!value) return false;
+    if (predicate.bound_values.empty()) {
+      return invalid("query_plan_predicate_bound_value_count_invalid");
+    }
+    const auto* value = ProjectionTypedFieldValue(
+        row, predicate.canonical_predicate_envelope);
+    if (value == nullptr || value->isSqlNull()) return false;
     for (const auto& bound : predicate.bound_values) {
-      if (*value == bound.encoded_value) return false;
+      if (bound.isSqlNull()) return false;
+      if (equal_nonnull(*value, bound)) return false;
     }
     return true;
   }
   if (predicate.predicate_kind == "column_like" ||
       predicate.predicate_kind == "column_not_like") {
-    if (predicate.bound_values.empty()) return false;
-    const auto value = ProjectionFieldValue(row, predicate.canonical_predicate_envelope);
-    if (!value) return false;
-    const bool matches = SqlLikePatternMatches(*value, predicate.bound_values.front().encoded_value);
+    if (predicate.bound_values.size() != 1) {
+      return invalid("query_plan_predicate_bound_value_count_invalid");
+    }
+    const auto* value = ProjectionTypedFieldValue(
+        row, predicate.canonical_predicate_envelope);
+    if (value == nullptr || value->isSqlNull() ||
+        predicate.bound_values.front().isSqlNull()) {
+      return false;
+    }
+    const bool matches = SqlLikePatternMatches(
+        value->encoded_value, predicate.bound_values.front().encoded_value);
     return predicate.predicate_kind == "column_like" ? matches : !matches;
   }
   if (predicate.predicate_kind == "expression_equals") {
-    if (predicate.bound_values.empty()) return false;
+    if (predicate.bound_values.size() != 1) {
+      return invalid("query_plan_predicate_bound_value_count_invalid");
+    }
     const std::string expression = predicate.canonical_predicate_envelope;
     const auto separator = expression.find(':');
-    if (separator == std::string::npos) return false;
+    if (separator == std::string::npos) {
+      return invalid("query_plan_expression_predicate_invalid");
+    }
     const std::string function_name = LowerAscii(expression.substr(0, separator));
-    auto value = ProjectionFieldValue(row, expression.substr(separator + 1));
-    if (!value) return false;
-    if (function_name == "lower") {
-      *value = LowerAscii(std::move(*value));
-    } else if (function_name == "upper") {
-      *value = UpperAscii(std::move(*value));
-    } else {
+    const auto* typed_value = ProjectionTypedFieldValue(
+        row, expression.substr(separator + 1));
+    if (typed_value == nullptr || typed_value->isSqlNull() ||
+        predicate.bound_values.front().isSqlNull()) {
       return false;
     }
-    return *value == predicate.bound_values.front().encoded_value;
+    std::string value = typed_value->encoded_value;
+    if (function_name == "lower") {
+      value = LowerAscii(std::move(value));
+    } else if (function_name == "upper") {
+      value = UpperAscii(std::move(value));
+    } else {
+      return invalid("query_plan_expression_predicate_unsupported");
+    }
+    return value == predicate.bound_values.front().encoded_value;
   }
-  return false;
+  return invalid("query_plan_predicate_kind_unsupported");
 }
 
 SysInformationProjectionContext ProjectionContextFromRequest(
@@ -11590,7 +12043,10 @@ std::optional<EngineQueryRelation> SysInformationProjectionRelation(
     for (const auto& [field, value] : source_row.fields) {
       row.fields.emplace_back(field, TextValue(value));
     }
-    if (ProjectionRowMatchesPredicate(row, request.predicate)) {
+    const auto matches =
+        ProjectionRowMatchesPredicate(row, request.predicate, error_detail);
+    if (!matches) return std::nullopt;
+    if (*matches) {
       relation.rows.push_back(std::move(row));
     }
   }
@@ -11733,20 +12189,53 @@ bool RelationsAreIntegerCompatible(const std::vector<EngineQueryRelation>& relat
   return true;
 }
 
-void ApplyCommonPipeline(const EnginePlanOperationRequest& request, exec::Batch* batch) {
+bool ApplyCommonPipeline(const EnginePlanOperationRequest& request,
+                         exec::Batch* batch,
+                         std::string* error_detail) {
+  if (batch == nullptr) {
+    if (error_detail != nullptr) *error_detail = "query_plan_batch_required";
+    return false;
+  }
   if (request.order_column != 0 || !request.ordering.canonical_ordering_envelopes.empty() ||
-      !OptionValue(request, "order_column:").empty()) {
-    const auto order_column = ParseSizeValue(OptionValue(request, "order_column:"), request.order_column);
-    const bool ascending = ParseBoolValue(OptionValue(request, "order:"), request.ascending);
+      !OptionValue(request, "order_column:").empty() ||
+      !OptionValue(request, "order:").empty()) {
+    std::size_t order_column = 0;
+    bool ascending = true;
+    if (!TryParseOptionalSizeValue(OptionValue(request, "order_column:"),
+                                   request.order_column,
+                                   &order_column,
+                                   error_detail,
+                                   "query_plan_order_column_invalid") ||
+        !TryParseOptionalBoolValue(OptionValue(request, "order:"),
+                                   request.ascending,
+                                   &ascending,
+                                   error_detail,
+                                   "query_plan_order_direction_invalid")) {
+      return false;
+    }
     *batch = exec::SortByColumn(*batch, order_column, ascending);
   }
-  const auto projected = ParseProjectedColumns(request);
+  std::vector<std::size_t> projected;
+  if (!ParseProjectedColumns(request, &projected, error_detail)) return false;
   if (!projected.empty()) { *batch = exec::ProjectColumns(*batch, projected); }
-  const auto offset = ParseSizeValue(OptionValue(request, "offset:"), static_cast<std::size_t>(request.offset));
-  const auto limit = ParseSizeValue(OptionValue(request, "limit:"), static_cast<std::size_t>(request.limit));
+  std::size_t offset = 0;
+  std::size_t limit = 0;
+  if (!TryParseOptionalSizeValue(OptionValue(request, "offset:"),
+                                 static_cast<std::size_t>(request.offset),
+                                 &offset,
+                                 error_detail,
+                                 "query_plan_offset_invalid") ||
+      !TryParseOptionalSizeValue(OptionValue(request, "limit:"),
+                                 static_cast<std::size_t>(request.limit),
+                                 &limit,
+                                 error_detail,
+                                 "query_plan_limit_invalid")) {
+    return false;
+  }
   if (limit != 0 || offset != 0) {
     *batch = exec::LimitOffset(*batch, limit == 0 ? batch->rows.size() : limit, offset);
   }
+  return true;
 }
 
 std::string QueryOperation(const EnginePlanOperationRequest& request) {
@@ -11795,7 +12284,15 @@ bool ApplyAggregateHavingFilter(const EnginePlanOperationRequest& request,
     if (error_detail != nullptr) { *error_detail = "query_plan_aggregate_having_threshold_invalid"; }
     return false;
   }
-  const std::size_t value_column = ParseSizeValue(OptionValue(request, "having_value_column:"), 1);
+  std::size_t value_column = 0;
+  if (!TryParseOptionalSizeValue(
+          OptionValue(request, "having_value_column:"),
+          1,
+          &value_column,
+          error_detail,
+          "query_plan_aggregate_having_value_column_invalid")) {
+    return false;
+  }
   *batch = exec::FilterByInt64Comparison(*batch, value_column, comparison, threshold);
   if (evidence != nullptr) {
     evidence->push_back({"query_aggregate_having_predicate", normalized_predicate});
@@ -11836,7 +12333,14 @@ bool NormalizeHavingPredicate(const EnginePlanOperationRequest& request,
     if (error_detail != nullptr) *error_detail = "query_plan_aggregate_having_threshold_invalid";
     return true;
   }
-  *value_column = ParseSizeValue(OptionValue(request, "having_value_column:"), 1);
+  if (!TryParseOptionalSizeValue(
+          OptionValue(request, "having_value_column:"),
+          1,
+          value_column,
+          error_detail,
+          "query_plan_aggregate_having_value_column_invalid")) {
+    return true;
+  }
   return true;
 }
 
@@ -12226,7 +12730,7 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
             ? request.window_value_column
             : ColumnIndexForRelation(relations[0], request.window_value_field, request.window_value_column);
     std::string function = LowerAscii(request.window_function);
-    if (function == "row_number_window") function = "row_number";
+    if (operation == "row_number_window") function = "row_number";
     if (operation == "partition_count_window") function = "count_star_partition";
     if (operation == "lag_window") function = "lag";
     if (operation == "lead_window") function = "lead";
@@ -12250,7 +12754,16 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
     } else if (function == "dense_rank") {
       batch = exec::AddDenseRankWindow(batch, order_column);
     } else if (function == "ntile") {
-      batch = exec::AddNtileWindow(batch, order_column, static_cast<std::int64_t>(request.window_n));
+      if (request.window_n == 0 ||
+          request.window_n > static_cast<EngineApiU64>(
+                                 std::numeric_limits<std::int64_t>::max())) {
+        if (error_detail != nullptr) {
+          *error_detail = "query_plan_ntile_bucket_count_invalid";
+        }
+        return exec::MakeBatch("query_plan_window_invalid", {});
+      }
+      batch = exec::AddNtileWindow(
+          batch, order_column, static_cast<std::int64_t>(request.window_n));
     } else if (function == "lag") {
       batch = exec::AddLagWindow(batch, order_column, value_column);
     } else if (function == "lead") {
@@ -12379,23 +12892,29 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
             ? std::llround(scaled_percent)
             : -1LL;
     const std::string seed_text = OptionValue(request, "sample_seed:");
-    const bool seed_is_decimal = !seed_text.empty() &&
-        std::all_of(seed_text.begin(), seed_text.end(), [](const char ch) {
-          return std::isdigit(static_cast<unsigned char>(ch));
-        });
+    std::uint64_t repeatable_seed = 0;
+    const bool seed_is_decimal =
+        TryParseU64Value(seed_text, &repeatable_seed);
     const std::string block_rows_text = OptionValue(request, "sample_block_rows:");
-    const bool block_rows_are_decimal = !block_rows_text.empty() &&
-        std::all_of(block_rows_text.begin(), block_rows_text.end(),
-                    [](const char ch) {
-                      return std::isdigit(static_cast<unsigned char>(ch));
-                    });
+    std::size_t block_rows = 1;
+    const bool block_rows_are_decimal =
+        method != "system" || TryParseSizeValue(block_rows_text, &block_rows);
+    std::size_t maximum_input_rows = 0;
+    const bool maximum_input_rows_valid = TryParseOptionalSizeValue(
+        OptionValue(request, "sample_maximum_input_rows:"),
+        1048576,
+        &maximum_input_rows,
+        error_detail,
+        "query_plan_sample_maximum_input_rows_invalid");
     if ((method != "bernoulli" && method != "system") ||
         percent < 0.0 || percent > 100.0 || !std::isfinite(percent) ||
         std::fabs(scaled_percent -
                   static_cast<double>(rounded_basis_points)) > 0.000000001 ||
         !seed_is_decimal ||
-        (method == "system" && !block_rows_are_decimal)) {
-      if (error_detail != nullptr) *error_detail = "query_plan_sample_descriptor_invalid";
+        !block_rows_are_decimal || !maximum_input_rows_valid) {
+      if (error_detail != nullptr && error_detail->empty()) {
+        *error_detail = "query_plan_sample_descriptor_invalid";
+      }
       return exec::MakeBatch("query_plan_sample_invalid", {});
     }
     const std::size_t before_count = batch.rows.size();
@@ -12406,13 +12925,10 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
                                 : CanonicalSeededSampleMethod::kSystem;
     sample_request.sample_basis_points =
         static_cast<std::uint32_t>(rounded_basis_points);
-    sample_request.repeatable_seed = ParseU64Value(seed_text, 0);
+    sample_request.repeatable_seed = repeatable_seed;
     sample_request.repeatable_seed_is_bound = seed_is_decimal;
-    sample_request.system_block_row_count =
-        method == "system" ? ParseSizeValue(block_rows_text, 0) : 1;
-    sample_request.maximum_input_row_count =
-        ParseSizeValue(OptionValue(request, "sample_maximum_input_rows:"),
-                       1048576);
+    sample_request.system_block_row_count = block_rows;
+    sample_request.maximum_input_row_count = maximum_input_rows;
     const auto sample = ExecuteCanonicalSeededSample(sample_request);
     if (!sample.accepted) {
       if (error_detail != nullptr) *error_detail = sample.diagnostic_code;
@@ -12437,8 +12953,15 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
     evidence->push_back({"query_sample_rows_before", std::to_string(before_count)});
     evidence->push_back({"query_sample_rows_after", std::to_string(batch.rows.size())});
   } else if (IsSetOperationName(operation)) {
-    const bool set_by_name = request.set_by_name ||
-                             ParseBoolValue(OptionValue(request, "set_by_name:"), false);
+    bool set_by_name_option = false;
+    if (!TryParseOptionalBoolValue(OptionValue(request, "set_by_name:"),
+                                   false,
+                                   &set_by_name_option,
+                                   error_detail,
+                                   "query_plan_set_by_name_option_invalid")) {
+      return exec::MakeBatch("query_plan_set_binding_invalid", {});
+    }
+    const bool set_by_name = request.set_by_name || set_by_name_option;
     const std::string set_operation = operation == "set_operation"
         ? LowerAscii(!request.set_operation.empty() ? request.set_operation : OptionValue(request, "set_operation:"))
         : operation;
@@ -12559,7 +13082,9 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
   } else {
     evidence->push_back({"query_scan", "local_rowset"});
   }
-  ApplyCommonPipeline(request, &batch);
+  if (!ApplyCommonPipeline(request, &batch, error_detail)) {
+    return exec::MakeBatch("query_plan_pipeline_invalid", {});
+  }
   return batch;
   } catch (const std::exception& exception) {
     if (error_detail != nullptr) *error_detail = exception.what();
@@ -12593,7 +13118,17 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
   AddSbsfc083Evidence(&result, request);
   AddSbsfc084Evidence(&result, request);
   AddSbsfc085Evidence(&result, request);
-  if (request.execute || OptionValue(request, "execute:") == "true") {
+  bool execute = request.execute;
+  const std::string execute_text = OptionValue(request, "execute:");
+  if (!execute_text.empty()) {
+    bool execute_option = false;
+    if (!TryParseToggleValue(execute_text, &execute_option)) {
+      return QueryFailure<EnginePlanOperationResult>(
+          request.context, "query_plan_execute_option_invalid");
+    }
+    execute = execute || execute_option;
+  }
+  if (execute) {
     const std::string operation = QueryOperation(request);
     const auto legacy_window = RefuseNoncanonicalLegacyWindowRoute(
         operation, LowerAscii(OptionValue(request, "result_projection:")));
@@ -12612,8 +13147,16 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       return QueryFailure<EnginePlanOperationResult>(request.context,
                                                      error_detail);
     }
-    const bool set_by_name = request.set_by_name ||
-                             ParseBoolValue(OptionValue(request, "set_by_name:"), false);
+    bool set_by_name_option = false;
+    if (!TryParseOptionalBoolValue(OptionValue(request, "set_by_name:"),
+                                   false,
+                                   &set_by_name_option,
+                                   &error_detail,
+                                   "query_plan_set_by_name_option_invalid")) {
+      return QueryFailure<EnginePlanOperationResult>(request.context,
+                                                     error_detail);
+    }
+    const bool set_by_name = request.set_by_name || set_by_name_option;
     if (IsSetOperationName(operation) && set_by_name &&
         !RelationsAreNameAligned(*relations, &error_detail)) {
       return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
@@ -12623,7 +13166,7 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       result.evidence.push_back({"query_values_rowset", std::to_string(relations->front().rows.size())});
       result.plan_kind = "values";
       result.output_row_count = relations->front().rows.size();
-      result.result_shape = ValuesRowsToResultShape(relations->front().rows);
+      result.result_shape = ValuesRowsToResultShape(relations->front());
       AddApiBehaviorEvidence(&result, "query_execution", "values");
       return result;
     }
@@ -12726,8 +13269,15 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       if (!AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
       }
-      const bool count_all =
-          ParseBoolValue(OptionValue(request, "count_all:"), request.aggregate_value_field.empty());
+      bool count_all = false;
+      if (!TryParseOptionalBoolValue(OptionValue(request, "count_all:"),
+                                     request.aggregate_value_field.empty(),
+                                     &count_all,
+                                     &error_detail,
+                                     "query_plan_count_all_option_invalid")) {
+        return QueryFailure<EnginePlanOperationResult>(request.context,
+                                                       error_detail);
+      }
       const std::string result_column_name = OptionValue(request, "result_column_name:");
       if (!result_column_name.empty()) {
         const auto count = CountRelationRows(request, relations->front(), &error_detail);
@@ -12930,7 +13480,13 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
         }
         if (result_projection == "rowset") {
           std::int64_t right_key_offset = 0;
-          (void)TryParseI64Value(OptionValue(request, "right_key_offset:"), &right_key_offset);
+          const std::string right_key_offset_text =
+              OptionValue(request, "right_key_offset:");
+          if (!right_key_offset_text.empty() &&
+              !TryParseI64Value(right_key_offset_text, &right_key_offset)) {
+            return QueryFailure<EnginePlanOperationResult>(
+                request.context, "query_plan_right_key_offset_invalid");
+          }
           result.result_shape = TypedLeftJoinResultShape(request,
                                                          (*relations)[0],
                                                          (*relations)[1],
@@ -12954,7 +13510,13 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
         std::uint64_t joined_row_count = 0;
         if (right_null_filter_field.empty()) {
           std::int64_t right_key_offset = 0;
-          (void)TryParseI64Value(OptionValue(request, "right_key_offset:"), &right_key_offset);
+          const std::string right_key_offset_text =
+              OptionValue(request, "right_key_offset:");
+          if (!right_key_offset_text.empty() &&
+              !TryParseI64Value(right_key_offset_text, &right_key_offset)) {
+            return QueryFailure<EnginePlanOperationResult>(
+                request.context, "query_plan_right_key_offset_invalid");
+          }
           joined_row_count = TypedLeftJoinRowCount((*relations)[0],
                                                    (*relations)[1],
                                                    left_key_column,
@@ -13057,8 +13619,16 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
               request.context,
               "query_plan_cross_join_requires_count_result");
         }
-        const bool equality_filter =
-            ParseBoolValue(OptionValue(request, "cross_join_equality_filter:"), false);
+        bool equality_filter = false;
+        if (!TryParseOptionalBoolValue(
+                OptionValue(request, "cross_join_equality_filter:"),
+                false,
+                &equality_filter,
+                &error_detail,
+                "query_plan_cross_join_equality_filter_invalid")) {
+          return QueryFailure<EnginePlanOperationResult>(request.context,
+                                                         error_detail);
+        }
         const std::uint64_t joined_row_count =
             TypedCrossJoinRowCount((*relations)[0],
                                    (*relations)[1],
@@ -13284,8 +13854,25 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
                                                        aggregate_pair_value_column,
                                                        &error_detail);
       } else if (DistributionAggregateRequiresTypedResult(aggregate_function)) {
-        const double aggregate_fraction = ParseReal64Value(OptionValue(request, "aggregate_fraction:"), 0.5);
-        const std::size_t aggregate_limit = ParseSizeValue(OptionValue(request, "aggregate_limit:"), 10);
+        double aggregate_fraction = 0.5;
+        const std::string aggregate_fraction_text =
+            OptionValue(request, "aggregate_fraction:");
+        if (!aggregate_fraction_text.empty() &&
+            !TryParseReal64Value(aggregate_fraction_text,
+                                 &aggregate_fraction)) {
+          return QueryFailure<EnginePlanOperationResult>(
+              request.context, "query_plan_aggregate_fraction_invalid");
+        }
+        std::size_t aggregate_limit = 0;
+        if (!TryParseOptionalSizeValue(
+                OptionValue(request, "aggregate_limit:"),
+                10,
+                &aggregate_limit,
+                &error_detail,
+                "query_plan_aggregate_limit_invalid")) {
+          return QueryFailure<EnginePlanOperationResult>(request.context,
+                                                         error_detail);
+        }
         result.evidence.push_back({"query_aggregate_fraction", FormatReal64(aggregate_fraction)});
         if (aggregate_leaf == "approx_top_k") {
           result.evidence.push_back({"query_aggregate_limit", std::to_string(aggregate_limit)});
@@ -13302,12 +13889,29 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
             ? ","
             : OptionValue(request, "listagg_separator:");
         const std::string overflow_mode = LowerAscii(OptionValue(request, "listagg_overflow_mode:"));
-        const std::size_t max_output_bytes =
-            ParseSizeValue(OptionValue(request, "listagg_max_output_bytes:"), 0);
+        std::size_t max_output_bytes = 0;
+        if (!TryParseOptionalSizeValue(
+                OptionValue(request, "listagg_max_output_bytes:"),
+                0,
+                &max_output_bytes,
+                &error_detail,
+                "query_plan_listagg_max_output_bytes_invalid")) {
+          return QueryFailure<EnginePlanOperationResult>(request.context,
+                                                         error_detail);
+        }
         const std::string indicator = OptionValue(request, "listagg_truncation_indicator:").empty()
             ? "..."
             : OptionValue(request, "listagg_truncation_indicator:");
-        const bool with_count = ParseBoolValue(OptionValue(request, "listagg_with_count:"), true);
+        bool with_count = true;
+        if (!TryParseOptionalBoolValue(
+                OptionValue(request, "listagg_with_count:"),
+                true,
+                &with_count,
+                &error_detail,
+                "query_plan_listagg_with_count_invalid")) {
+          return QueryFailure<EnginePlanOperationResult>(request.context,
+                                                         error_detail);
+        }
         result.evidence.push_back({"query_aggregate_order_column", std::to_string(aggregate_order_column)});
         result.evidence.push_back({"query_aggregate_order_binding",
                                    request.order_field.empty() ? "ordinal" : "descriptor_field"});
@@ -13571,6 +14175,11 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
 }
 
 EnginePlanOperationResult EnginePlanOperation(const EnginePlanOperationRequest& request) {
+  std::string option_syntax_error;
+  if (!ValidatePlanOperationOptionSyntax(request, &option_syntax_error)) {
+    return QueryFailure<EnginePlanOperationResult>(request.context,
+                                                   option_syntax_error);
+  }
   if (RetiredResultExpectationRequested(request)) {
     return QueryFailure<EnginePlanOperationResult>(
         request.context, "query_plan_retired_result_expectation_refused");

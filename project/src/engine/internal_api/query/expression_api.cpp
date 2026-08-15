@@ -1986,24 +1986,34 @@ bool HasDomainRight(const EngineRequestContext& context,
          SecurityContextHasRight(context, right, domain_uuid);
 }
 
-bool ParseBoolOption(const std::string& value, bool fallback) {
-  if (value.empty()) { return fallback; }
+bool TryParseBoolOption(const std::string& value, bool* out) {
+  if (out == nullptr || value.empty()) return false;
   std::string lowered = value;
   for (char& c : lowered) { c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
-  if (lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on") { return true; }
-  if (lowered == "0" || lowered == "false" || lowered == "no" || lowered == "off") { return false; }
-  return fallback;
+  if (lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on") {
+    *out = true;
+    return true;
+  }
+  if (lowered == "0" || lowered == "false" || lowered == "no" || lowered == "off") {
+    *out = false;
+    return true;
+  }
+  return false;
 }
 
-std::uint32_t ParseU32Option(const std::string& value, std::uint32_t fallback) {
-  if (value.empty()) { return fallback; }
-  std::uint64_t parsed = 0;
+bool TryParseU32Option(const std::string& value, std::uint32_t* out) {
+  if (out == nullptr || value.empty()) return false;
+  std::uint32_t parsed = 0;
   for (const char c : value) {
-    if (!std::isdigit(static_cast<unsigned char>(c))) { return fallback; }
-    parsed = (parsed * 10) + static_cast<unsigned>(c - '0');
-    if (parsed > 0xffffffffULL) { return fallback; }
+    if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+    const auto digit = static_cast<std::uint32_t>(c - '0');
+    if (parsed > (std::numeric_limits<std::uint32_t>::max() - digit) / 10) {
+      return false;
+    }
+    parsed = (parsed * 10) + digit;
   }
-  return static_cast<std::uint32_t>(parsed);
+  *out = parsed;
+  return true;
 }
 
 std::string MethodBindingField(const std::string& binding, const std::string& key) {
@@ -2024,16 +2034,35 @@ std::string UpperValue(std::string value) {
   return value;
 }
 
-dt::DatatypeSetOperationKind SetOperationKind(const std::string& operation) {
-  if (operation == "equals") { return dt::DatatypeSetOperationKind::equals; }
-  if (operation == "subset") { return dt::DatatypeSetOperationKind::subset; }
-  if (operation == "superset") { return dt::DatatypeSetOperationKind::superset; }
-  if (operation == "cardinality") { return dt::DatatypeSetOperationKind::cardinality; }
-  return dt::DatatypeSetOperationKind::membership;
+bool SetOperationKind(const std::string& operation,
+                      dt::DatatypeSetOperationKind* out) {
+  if (out == nullptr) return false;
+  const std::string lowered = LowerValue(operation);
+  if (lowered == "membership" || lowered == "contains") {
+    *out = dt::DatatypeSetOperationKind::membership;
+    return true;
+  }
+  if (lowered == "equals") {
+    *out = dt::DatatypeSetOperationKind::equals;
+    return true;
+  }
+  if (lowered == "subset") {
+    *out = dt::DatatypeSetOperationKind::subset;
+    return true;
+  }
+  if (lowered == "superset") {
+    *out = dt::DatatypeSetOperationKind::superset;
+    return true;
+  }
+  if (lowered == "cardinality") {
+    *out = dt::DatatypeSetOperationKind::cardinality;
+    return true;
+  }
+  return false;
 }
 
 bool NumericOperationKind(const std::string& operation, dt::DatatypeNumericOperationKind* out) {
-  const std::string lowered = LowerValue(operation.empty() ? "canonicalize" : operation);
+  const std::string lowered = LowerValue(operation);
   if (lowered == "canonicalize" || lowered == "normalize" ||
       lowered == "operator.numeric.canonicalize") {
     *out = dt::DatatypeNumericOperationKind::canonicalize;
@@ -2332,6 +2361,9 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
     candidate.descriptor.canonical_type_name = dt::CanonicalTypeName(cast.value.type_id);
     candidate.encoded_value = cast.value.encoded_value;
     candidate.is_null = cast.value.is_null;
+    candidate.state = cast.value.is_null ? EngineValueState::sql_null
+                                         : EngineValueState::value;
+    if (candidate.is_null) candidate.encoded_value.clear();
     const auto validation = ValidateDomainTypedValue(request.context,
                                                     target,
                                                     candidate,
@@ -2355,6 +2387,9 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
   result.value.descriptor = target;
   result.value.encoded_value = cast.value.encoded_value;
   result.value.is_null = cast.value.is_null;
+  result.value.state = cast.value.is_null ? EngineValueState::sql_null
+                                          : EngineValueState::value;
+  if (result.value.is_null) result.value.encoded_value.clear();
   result.cast_category = dt::DatatypeCastCategoryName(cast.category);
   result.result_shape.result_kind = "typed_value";
   result.result_shape.columns.push_back(target);
@@ -2532,6 +2567,9 @@ EngineExtractValueResult EngineExtractValue(const EngineExtractValueRequest& req
   result.value.descriptor.descriptor_kind = "scalar";
   result.value.encoded_value = extracted.value.encoded_value;
   result.value.is_null = extracted.value.is_null;
+  result.value.state = extracted.value.is_null ? EngineValueState::sql_null
+                                               : EngineValueState::value;
+  if (result.value.is_null) result.value.encoded_value.clear();
   result.result_shape.result_kind = "typed_value";
   result.result_shape.columns.push_back(result.value.descriptor);
   result.evidence.push_back({"datatype_extract", field});
@@ -2540,12 +2578,47 @@ EngineExtractValueResult EngineExtractValue(const EngineExtractValueRequest& req
 
 EngineSetOperationResult EngineSetOperation(const EngineSetOperationRequest& request) {
   const EngineTypedValue left = RequestInputValue(request, request.left_set);
-  EngineTypedValue right = request.right_set_or_value;
-  if (right.encoded_value.empty() && request.predicate.bound_values.size() >= 2) { right = request.predicate.bound_values[1]; }
+  const EngineTypedValue right =
+      RequestSecondValue(request, request.right_set_or_value);
   const std::string operation = !request.set_operation.empty() ? request.set_operation : OptionValue(request, "set_operation:");
   dt::DatatypeSetOperationRequest set_request;
-  set_request.operation = SetOperationKind(operation);
-  set_request.descriptor.element_type_id = request.descriptors.empty() ? dt::CanonicalTypeId::character : TypeFromDescriptor(request.descriptors.front());
+  if (!SetOperationKind(operation, &set_request.operation)) {
+    return ApiFailure<EngineSetOperationResult>(
+        request.context,
+        "query.set_operation",
+        MakeInvalidRequestDiagnostic("query.set_operation",
+                                     "set_operation_required_or_unsupported:" +
+                                         operation));
+  }
+  if (request.descriptors.empty()) {
+    return ApiFailure<EngineSetOperationResult>(
+        request.context,
+        "query.set_operation",
+        MakeInvalidRequestDiagnostic("query.set_operation",
+                                     "set_element_descriptor_required"));
+  }
+  set_request.descriptor.element_type_id =
+      TypeFromDescriptor(request.descriptors.front());
+  if (set_request.descriptor.element_type_id ==
+      dt::CanonicalTypeId::unknown) {
+    return ApiFailure<EngineSetOperationResult>(
+        request.context,
+        "query.set_operation",
+        MakeInvalidRequestDiagnostic("query.set_operation",
+                                     "set_element_descriptor_unresolved"));
+  }
+  if (left.descriptor.canonical_type_name.empty() ||
+      right.descriptor.canonical_type_name.empty() ||
+      (left.isSqlNull() && !QowCanonicalSqlNullStateV1(left)) ||
+      (right.isSqlNull() && !QowCanonicalSqlNullStateV1(right)) ||
+      (!left.isSqlNull() && left.state != EngineValueState::value) ||
+      (!right.isSqlNull() && right.state != EngineValueState::value)) {
+    return ApiFailure<EngineSetOperationResult>(
+        request.context,
+        "query.set_operation",
+        MakeInvalidRequestDiagnostic("query.set_operation",
+                                     "set_operand_descriptor_or_state_invalid"));
+  }
   set_request.left_encoded_set = left.encoded_value;
   set_request.right_encoded_set_or_value = right.encoded_value;
   const auto set_result = dt::ApplySetOperation(set_request);
@@ -2560,9 +2633,12 @@ EngineSetOperationResult EngineSetOperation(const EngineSetOperationRequest& req
   result.value.descriptor.descriptor_kind = "scalar";
   result.value.encoded_value = set_result.value.encoded_value;
   result.value.is_null = set_result.value.is_null;
+  result.value.state = set_result.value.is_null ? EngineValueState::sql_null
+                                                : EngineValueState::value;
+  if (result.value.is_null) result.value.encoded_value.clear();
   result.result_shape.result_kind = "typed_value";
   result.result_shape.columns.push_back(result.value.descriptor);
-  result.evidence.push_back({"datatype_set_operation", operation.empty() ? "membership" : operation});
+  result.evidence.push_back({"datatype_set_operation", LowerValue(operation)});
   return result;
 }
 
@@ -2608,6 +2684,23 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
         "query.apply_numeric_operation",
         MakeInvalidRequestDiagnostic("query.apply_numeric_operation", "numeric_operation_unsupported:" + operation_text));
   }
+  const auto value_state_valid = [](const EngineTypedValue& value) {
+    return value.isSqlNull()
+               ? QowCanonicalSqlNullStateV1(value)
+               : value.state == EngineValueState::value && !value.is_null;
+  };
+  if (left.descriptor.canonical_type_name.empty() ||
+      result_descriptor.canonical_type_name.empty() ||
+      !value_state_valid(left) ||
+      (operation != dt::DatatypeNumericOperationKind::canonicalize &&
+       (right.descriptor.canonical_type_name.empty() ||
+        !value_state_valid(right)))) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeInvalidRequestDiagnostic("query.apply_numeric_operation",
+                                     "numeric_operand_descriptor_or_state_invalid"));
+  }
   dt::DatatypeRoundingMode rounding;
   const std::string rounding_text = !request.rounding_mode.empty()
       ? request.rounding_mode
@@ -2623,18 +2716,55 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
   numeric_request.operation = operation;
   numeric_request.type_id = request.descriptors.empty() ? TypeFromDescriptor(left.descriptor) : TypeFromDescriptor(request.descriptors.front());
   numeric_request.left.type_id = TypeFromDescriptor(left.descriptor);
-  if (numeric_request.left.type_id == dt::CanonicalTypeId::unknown) { numeric_request.left.type_id = numeric_request.type_id; }
   numeric_request.left.encoded_value = left.encoded_value;
   numeric_request.left.is_null = left.isSqlNull();
   numeric_request.right.type_id = TypeFromDescriptor(right.descriptor);
-  if (numeric_request.right.type_id == dt::CanonicalTypeId::unknown) { numeric_request.right.type_id = numeric_request.type_id; }
   numeric_request.right.encoded_value = right.encoded_value;
   numeric_request.right.is_null = right.isSqlNull();
-  numeric_request.context.precision = ParseU32Option(OptionValue(request, "precision:"), request.precision);
-  numeric_request.context.scale = ParseU32Option(OptionValue(request, "scale:"), request.scale);
+  if (numeric_request.type_id == dt::CanonicalTypeId::unknown ||
+      numeric_request.left.type_id == dt::CanonicalTypeId::unknown ||
+      (operation != dt::DatatypeNumericOperationKind::canonicalize &&
+       numeric_request.right.type_id == dt::CanonicalTypeId::unknown)) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeInvalidRequestDiagnostic("query.apply_numeric_operation",
+                                     "numeric_operand_descriptor_unresolved"));
+  }
+  numeric_request.context.precision = request.precision;
+  const std::string precision_text = OptionValue(request, "precision:");
+  if (!precision_text.empty() &&
+      !TryParseU32Option(precision_text,
+                         &numeric_request.context.precision)) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeInvalidRequestDiagnostic("query.apply_numeric_operation",
+                                     "numeric_precision_invalid"));
+  }
+  numeric_request.context.scale = request.scale;
+  const std::string scale_text = OptionValue(request, "scale:");
+  if (!scale_text.empty() &&
+      !TryParseU32Option(scale_text, &numeric_request.context.scale)) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeInvalidRequestDiagnostic("query.apply_numeric_operation",
+                                     "numeric_scale_invalid"));
+  }
   numeric_request.context.rounding = rounding;
-  numeric_request.context.allow_special_values =
-      ParseBoolOption(OptionValue(request, "allow_special_values:"), request.allow_special_values);
+  numeric_request.context.allow_special_values = request.allow_special_values;
+  const std::string allow_special_values_text =
+      OptionValue(request, "allow_special_values:");
+  if (!allow_special_values_text.empty() &&
+      !TryParseBoolOption(allow_special_values_text,
+                          &numeric_request.context.allow_special_values)) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeInvalidRequestDiagnostic("query.apply_numeric_operation",
+                                     "allow_special_values_invalid"));
+  }
 
   if (canonical_descriptor_route) {
     const auto canonical_result_type = dt::CanonicalTypeIdFromStableName(
@@ -2787,8 +2917,18 @@ EngineCanonicalizeDocumentValueResult EngineCanonicalizeDocumentValue(
       ? request.reference_profile
       : OptionValue(request, "document_reference_profile:");
   if (document_request.reference_profile.empty()) { document_request.reference_profile = OptionValue(request, "reference_profile:"); }
-  document_request.allow_hstore_domain =
-      ParseBoolOption(OptionValue(request, "allow_hstore_domain:"), request.allow_hstore_domain);
+  document_request.allow_hstore_domain = request.allow_hstore_domain;
+  const std::string allow_hstore_domain_text =
+      OptionValue(request, "allow_hstore_domain:");
+  if (!allow_hstore_domain_text.empty() &&
+      !TryParseBoolOption(allow_hstore_domain_text,
+                          &document_request.allow_hstore_domain)) {
+    return ApiFailure<EngineCanonicalizeDocumentValueResult>(
+        request.context,
+        "query.canonicalize_document_value",
+        MakeInvalidRequestDiagnostic("query.canonicalize_document_value",
+                                     "allow_hstore_domain_invalid"));
+  }
 
   const auto canonical = dt::CanonicalizeDocumentValue(document_request);
   if (!canonical.ok()) {
@@ -2842,7 +2982,18 @@ EngineEvaluateAdvancedDatatypeFamilyResult EngineEvaluateAdvancedDatatypeFamily(
   advanced_request.descriptor_profile = !request.descriptor_profile.empty()
       ? request.descriptor_profile
       : OptionValue(request, "descriptor_profile:");
-  advanced_request.vector_dimension = ParseU32Option(OptionValue(request, "vector_dimension:"), request.vector_dimension);
+  advanced_request.vector_dimension = request.vector_dimension;
+  const std::string vector_dimension_text =
+      OptionValue(request, "vector_dimension:");
+  if (!vector_dimension_text.empty() &&
+      !TryParseU32Option(vector_dimension_text,
+                         &advanced_request.vector_dimension)) {
+    return ApiFailure<EngineEvaluateAdvancedDatatypeFamilyResult>(
+        request.context,
+        "query.evaluate_advanced_datatype_family",
+        MakeInvalidRequestDiagnostic("query.evaluate_advanced_datatype_family",
+                                     "vector_dimension_invalid"));
+  }
 
   const auto evaluated = dt::EvaluateAdvancedDatatypeFamily(advanced_request);
   if (!evaluated.ok()) {

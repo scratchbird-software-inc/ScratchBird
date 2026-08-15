@@ -487,7 +487,7 @@ struct EnginePlanOperationRequest : EngineApiRequest {
   bool execute = false;
   std::string query_operation;
   std::string join_algorithm;
-  std::string set_operation = "union_distinct";
+  std::string set_operation;
   bool set_by_name = false;
   std::vector<EngineQueryRelation> relations;
   std::vector<std::size_t> projected_columns;
@@ -501,7 +501,7 @@ struct EnginePlanOperationRequest : EngineApiRequest {
   std::string group_key_field;
   std::string aggregate_value_field;
   std::string aggregate_pair_value_field;
-  std::string aggregate_function = "sum";
+  std::string aggregate_function;
   std::size_t order_column = 0;
   std::string order_field;
   std::string window_function;

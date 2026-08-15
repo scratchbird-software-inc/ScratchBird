@@ -118,6 +118,7 @@
 #include <cctype>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
@@ -4537,13 +4538,14 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
       value.descriptor.descriptor_kind = "scalar";
       const auto type_separator = operand.type.find(':');
       value.descriptor.canonical_type_name =
-          type_separator == std::string::npos ? "text" : operand.type.substr(type_separator + 1);
-      value.descriptor.encoded_descriptor = "type=text";
-      if (value.descriptor.canonical_type_name != "text") {
+          type_separator == std::string::npos
+              ? std::string{}
+              : operand.type.substr(type_separator + 1);
+      if (!value.descriptor.canonical_type_name.empty()) {
         value.descriptor.encoded_descriptor = "type=" + value.descriptor.canonical_type_name;
       }
       value.encoded_value = operand.value;
-      value.is_null = row_null_field || value.descriptor.canonical_type_name == "null";
+      value.is_null = row_null_field;
       if (value.is_null) {
         value.encoded_value.clear();
         value.setState(api::EngineValueState::sql_null);
@@ -6865,7 +6867,11 @@ bool ParseRelationRowUuid(const std::string& row_uuid,
   for (std::size_t i = prefix.size(); i < marker_pos; ++i) {
     const unsigned char ch = static_cast<unsigned char>(row_uuid[i]);
     if (ch < '0' || ch > '9') return false;
-    parsed = parsed * 10u + static_cast<std::size_t>(ch - '0');
+    const auto digit = static_cast<std::size_t>(ch - '0');
+    if (parsed > (std::numeric_limits<std::size_t>::max() - digit) / 10) {
+      return false;
+    }
+    parsed = parsed * 10u + digit;
   }
   if (relation_index != nullptr) *relation_index = parsed;
   if (relation_row_uuid != nullptr) {
@@ -6949,7 +6955,8 @@ api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
 SblrValue SblrValueFromProjectionArgument(
     const api::EngineProjectionFunctionArgument& argument) {
   SblrValue value;
-  value.descriptor_id = argument.type_name;
+  const std::string type_name = LowerAscii(argument.type_name);
+  value.descriptor_id = type_name;
   value.encoded_value = argument.encoded_value;
   value.text_value = argument.encoded_value;
   value.is_null = argument.is_null;
@@ -6957,27 +6964,50 @@ SblrValue SblrValueFromProjectionArgument(
     value.payload_kind = SblrValuePayloadKind::none;
     return value;
   }
-  if (argument.type_name == "binary") {
+  if (type_name == "binary" || type_name == "varbinary") {
     std::vector<std::uint8_t> bytes;
     if (HexDecodeBytes(argument.encoded_value, &bytes)) {
       value.binary_value = std::move(bytes);
       value.payload_kind = SblrValuePayloadKind::binary;
       return value;
     }
+    value.payload_kind = SblrValuePayloadKind::none;
+    return value;
   }
-  if (argument.type_name == "bigint" || argument.type_name == "int64" ||
-      argument.type_name == "integer") {
-    try {
-      value.int64_value = std::stoll(argument.encoded_value);
+  if (type_name == "bigint" || type_name == "integer" ||
+      type_name == "int8" || type_name == "int16" ||
+      type_name == "int32" || type_name == "int64") {
+    const auto parsed = std::from_chars(
+        argument.encoded_value.data(),
+        argument.encoded_value.data() + argument.encoded_value.size(),
+        value.int64_value);
+    if (parsed.ec == std::errc{} &&
+        parsed.ptr ==
+            argument.encoded_value.data() + argument.encoded_value.size()) {
       value.has_int64_value = true;
       value.payload_kind = SblrValuePayloadKind::signed_integer;
       return value;
-    } catch (...) {
-      value.payload_kind = SblrValuePayloadKind::text;
+    }
+    value.payload_kind = SblrValuePayloadKind::none;
+    return value;
+  }
+  if (type_name == "uint8" || type_name == "uint16" ||
+      type_name == "uint32" || type_name == "uint64") {
+    const auto parsed = std::from_chars(
+        argument.encoded_value.data(),
+        argument.encoded_value.data() + argument.encoded_value.size(),
+        value.uint64_value);
+    if (parsed.ec == std::errc{} &&
+        parsed.ptr ==
+            argument.encoded_value.data() + argument.encoded_value.size()) {
+      value.has_uint64_value = true;
+      value.payload_kind = SblrValuePayloadKind::unsigned_integer;
       return value;
     }
+    value.payload_kind = SblrValuePayloadKind::none;
+    return value;
   }
-  if (argument.type_name == "boolean" || argument.type_name == "bool") {
+  if (type_name == "boolean" || type_name == "bool") {
     const std::string lowered = LowerAscii(argument.encoded_value);
     if (lowered == "true" || lowered == "1") {
       value.int64_value = 1;
@@ -6993,29 +7023,60 @@ SblrValue SblrValueFromProjectionArgument(
       value.descriptor_id = "boolean";
       return value;
     }
+    value.payload_kind = SblrValuePayloadKind::none;
+    return value;
   }
-  if (argument.type_name == "real64" || argument.type_name == "double" ||
-      argument.type_name == "numeric" || argument.type_name == "decimal") {
-    try {
-      value.real64_value = std::stod(argument.encoded_value);
+  if (type_name == "real32" || type_name == "real64" ||
+      type_name == "real128" || type_name == "double" ||
+      type_name == "numeric" || type_name == "decimal" ||
+      type_name.rfind("numeric(", 0) == 0 ||
+      type_name.rfind("decimal(", 0) == 0) {
+    const auto parsed = std::from_chars(
+        argument.encoded_value.data(),
+        argument.encoded_value.data() + argument.encoded_value.size(),
+        value.real64_value,
+        std::chars_format::general);
+    if (parsed.ec == std::errc{} &&
+        parsed.ptr ==
+            argument.encoded_value.data() + argument.encoded_value.size() &&
+        std::isfinite(value.real64_value)) {
       value.has_real64_value = true;
       value.payload_kind = SblrValuePayloadKind::real64;
       return value;
-    } catch (...) {
-      value.payload_kind = SblrValuePayloadKind::text;
-      return value;
     }
+    value.payload_kind = SblrValuePayloadKind::none;
+    return value;
   }
   value.payload_kind = SblrValuePayloadKind::text;
   return value;
 }
 
+bool ProjectionArgumentEncodingValid(
+    const api::EngineProjectionFunctionArgument& argument) {
+  if (argument.type_name.empty()) return false;
+  if (argument.is_null) return argument.encoded_value.empty();
+  const SblrValue value = SblrValueFromProjectionArgument(argument);
+  return value.payload_kind != SblrValuePayloadKind::none;
+}
+
+bool ProjectionSblrValueResolved(const SblrValue& value) {
+  return !value.descriptor_id.empty() &&
+         (value.is_null || value.payload_kind != SblrValuePayloadKind::none);
+}
+
 api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
   api::EngineTypedValue out;
   out.descriptor.descriptor_kind = "scalar";
-  out.descriptor.canonical_type_name = value.descriptor_id.empty() ? "text" : value.descriptor_id;
+  out.descriptor.canonical_type_name = value.descriptor_id;
   out.descriptor.encoded_descriptor = "type=" + out.descriptor.canonical_type_name;
   out.is_null = value.is_null;
+  if (out.is_null) {
+    out.encoded_value.clear();
+    out.binary_value.clear();
+    out.setState(api::EngineValueState::sql_null);
+    return out;
+  }
+  out.setState(api::EngineValueState::value);
   if (value.payload_kind == SblrValuePayloadKind::binary) {
     out.binary_value = value.binary_value;
     out.encoded_value = HexEncodeBytes(value.binary_value);
@@ -7294,11 +7355,13 @@ SblrExecutionContext ProjectionOperatorContext(const api::EngineRequestContext& 
   return SblrExecutionContextFromEngineContext(context);
 }
 
-SblrValue ProjectionLiteralToSblrValue(const api::EngineProjectionExpression& expression) {
+std::optional<SblrValue> ProjectionLiteralToSblrValue(
+    const api::EngineProjectionExpression& expression) {
   api::EngineProjectionFunctionArgument argument;
   argument.type_name = expression.type_name;
   argument.encoded_value = expression.encoded_value;
   argument.is_null = expression.is_null;
+  if (!ProjectionArgumentEncodingValid(argument)) return std::nullopt;
   return SblrValueFromProjectionArgument(argument);
 }
 
@@ -7317,9 +7380,15 @@ bool TruthFromProjectionValue(const api::EngineTypedValue& value, SblrTruthValue
     return true;
   }
   const std::string lowered = LowerAscii(value.encoded_value);
-  *truth = (lowered == "true" || lowered == "1") ? SblrTruthValue::true_value
-                                                  : SblrTruthValue::false_value;
-  return true;
+  if (lowered == "true" || lowered == "1") {
+    *truth = SblrTruthValue::true_value;
+    return true;
+  }
+  if (lowered == "false" || lowered == "0") {
+    *truth = SblrTruthValue::false_value;
+    return true;
+  }
+  return false;
 }
 
 api::EngineProjectionFunctionResult ProjectionOperatorFailure(const api::EngineProjectionOperatorRequest& request,
@@ -7392,7 +7461,8 @@ api::EngineProjectionFunctionResult OperatorResultToProjectionResult(
     const std::string& operator_id,
     const SblrResult& result) {
   api::EngineProjectionFunctionResult out;
-  out.ok = result.ok() && result.scalar_values.size() == 1;
+  out.ok = result.ok() && result.scalar_values.size() == 1 &&
+           ProjectionSblrValueResolved(result.scalar_values.front());
   out.evidence.push_back({"operator_runtime", operator_id});
   if (out.ok) {
     out.value = EngineTypedValueFromSblrValue(result.scalar_values.front());
@@ -7402,7 +7472,7 @@ api::EngineProjectionFunctionResult OperatorResultToProjectionResult(
     out.diagnostics.push_back(api::MakeEngineApiDiagnostic(
         "SB_DIAG_OPERATOR_RESULT_SHAPE_INVALID",
         "engine.operator.result_shape_invalid",
-        "operator projection expected exactly one scalar value",
+        "operator projection expected exactly one resolved typed scalar value",
         true));
   } else {
     for (const auto& diagnostic : result.diagnostics) {
@@ -7416,9 +7486,19 @@ api::EngineProjectionFunctionResult EvaluateProjectionOperatorExpression(
     const api::EngineRequestContext& context,
     const api::EngineProjectionExpression& expression) {
   if (expression.expression_kind == "literal") {
+    const auto literal = ProjectionLiteralToSblrValue(expression);
+    if (!literal) {
+      api::EngineProjectionOperatorRequest failure_request;
+      failure_request.context = context;
+      failure_request.expression = expression;
+      return ProjectionOperatorFailure(
+          failure_request,
+          "SB_DIAG_OPERATOR_INVALID_INPUT",
+          "projection literal encoding does not match its bound type");
+    }
     api::EngineProjectionFunctionResult out;
     out.ok = true;
-    out.value = EngineTypedValueFromSblrValue(ProjectionLiteralToSblrValue(expression));
+    out.value = EngineTypedValueFromSblrValue(*literal);
     return out;
   }
   if (expression.expression_kind == "function") {
@@ -7840,38 +7920,88 @@ std::optional<long double> UserFunctionNumericArg(
     const api::EngineProjectionFunctionRequest& request,
     std::size_t index) {
   if (index >= request.arguments.size() || request.arguments[index].is_null) return std::nullopt;
-  try {
-    return std::stold(request.arguments[index].encoded_value);
-  } catch (...) {
+  const std::string& encoded = request.arguments[index].encoded_value;
+  long double value = 0.0L;
+  const auto parsed = std::from_chars(
+      encoded.data(), encoded.data() + encoded.size(), value,
+      std::chars_format::general);
+  if (parsed.ec != std::errc{} ||
+      parsed.ptr != encoded.data() + encoded.size() ||
+      !std::isfinite(value)) {
     return std::nullopt;
   }
+  return value;
+}
+
+bool UserFunctionTypeIsNumeric(std::string type) {
+  type = LowerAscii(std::move(type));
+  return type == "bigint" || type == "integer" || type == "int8" ||
+         type == "int16" || type == "int32" || type == "int64" ||
+         type == "uint8" || type == "uint16" || type == "uint32" ||
+         type == "uint64" || type == "real32" || type == "real64" ||
+         type == "real128" || type == "double" || type == "numeric" ||
+         type == "decimal" || type.rfind("numeric(", 0) == 0 ||
+         type.rfind("decimal(", 0) == 0;
+}
+
+bool UserFunctionTypeIsInteger(std::string type) {
+  type = LowerAscii(std::move(type));
+  return type == "bigint" || type == "integer" || type == "int8" ||
+         type == "int16" || type == "int32" || type == "int64" ||
+         type == "uint8" || type == "uint16" || type == "uint32" ||
+         type == "uint64";
+}
+
+bool UserFunctionTypeIsText(std::string type) {
+  type = LowerAscii(std::move(type));
+  return type == "text" || type == "string" || type == "char" ||
+         type == "character" || type == "varchar" ||
+         type.rfind("char(", 0) == 0 || type.rfind("varchar(", 0) == 0 ||
+         type.rfind("character(", 0) == 0;
+}
+
+bool UserFunctionArgumentHasNumericType(
+    const api::EngineProjectionFunctionRequest& request,
+    std::size_t index) {
+  return index < request.arguments.size() &&
+         UserFunctionTypeIsNumeric(request.arguments[index].type_name);
+}
+
+bool UserFunctionArgumentHasIntegerType(
+    const api::EngineProjectionFunctionRequest& request,
+    std::size_t index) {
+  return index < request.arguments.size() &&
+         UserFunctionTypeIsInteger(request.arguments[index].type_name);
 }
 
 std::string FormatDecimal(long double value, std::uint32_t scale) {
   std::ostringstream encoded;
-  encoded << std::fixed << std::setprecision(scale) << static_cast<double>(value);
+  encoded << std::fixed << std::setprecision(scale) << value;
   return encoded.str();
 }
 
-std::uint32_t DecimalScaleFromType(std::string_view type_name, std::uint32_t fallback) {
+std::optional<std::uint32_t> DecimalScaleFromType(
+    std::string_view type_name) {
   const std::size_t comma = type_name.find(',');
   const std::size_t close = type_name.find(')', comma == std::string_view::npos ? 0 : comma);
   if (comma == std::string_view::npos || close == std::string_view::npos || close <= comma + 1) {
-    return fallback;
+    return std::nullopt;
   }
-  try {
-    return static_cast<std::uint32_t>(std::stoul(std::string(type_name.substr(comma + 1,
-                                                                              close - comma - 1))));
-  } catch (...) {
-    return fallback;
+  const auto encoded = type_name.substr(comma + 1, close - comma - 1);
+  std::uint32_t scale = 0;
+  const auto parsed =
+      std::from_chars(encoded.data(), encoded.data() + encoded.size(), scale);
+  if (parsed.ec != std::errc{} ||
+      parsed.ptr != encoded.data() + encoded.size()) {
+    return std::nullopt;
   }
+  return scale;
 }
 
-std::string UserFunctionReturnType(const api::EngineExecutableObjectRecord& record,
-                                   std::string fallback) {
+std::string UserFunctionReturnType(
+    const api::EngineExecutableObjectRecord& record) {
   std::string type = PayloadFieldValue(record.payload, "routine_return_0_type:");
   if (type.empty()) type = PayloadFieldValue(record.payload, "routine_return_0_type=");
-  if (type.empty()) return fallback;
   return LowerAscii(std::move(type));
 }
 
@@ -7880,38 +8010,90 @@ api::EngineProjectionFunctionResult EvaluateUserFunctionDescriptor(
     const api::EngineExecutableObjectRecord& record) {
   const std::string descriptor =
       PayloadFieldValue(record.payload, "compiled_body_descriptor:");
-  const std::string return_type = UserFunctionReturnType(record, "unknown");
+  const std::string return_type = UserFunctionReturnType(record);
+  if (return_type.empty()) {
+    return UserFunctionFailure(
+        "SB_DIAG_USER_FUNCTION_RETURN_DESCRIPTOR_REQUIRED",
+        "compiled user function has no bound return descriptor",
+        request.function_id);
+  }
   api::EngineProjectionFunctionResult out;
   out.ok = true;
 
   if (descriptor == "sbsql.compiled.expression.multiply.v1") {
+    if (!UserFunctionTypeIsNumeric(return_type)) {
+      return UserFunctionFailure(
+          "SB_DIAG_USER_FUNCTION_RESULT_TYPE_MISMATCH",
+          "multiply requires a numeric return descriptor",
+          request.function_id);
+    }
+    if (!UserFunctionArgumentHasNumericType(request, 0) ||
+        !UserFunctionArgumentHasNumericType(request, 1)) {
+      return UserFunctionFailure("SB_DIAG_USER_FUNCTION_ARGUMENT_TYPE_MISMATCH",
+                                 "multiply requires two numeric arguments",
+                                 request.function_id);
+    }
     const auto left = UserFunctionNumericArg(request, 0);
     const auto right = UserFunctionNumericArg(request, 1);
     if (!left || !right) {
-      out.value = UserFunctionValue(return_type == "unknown" ? "decimal" : return_type, "", true);
+      out.value = UserFunctionValue(return_type, "", true);
     } else {
-      out.value = UserFunctionValue(return_type == "unknown" ? "decimal" : return_type,
-                                    FormatDecimal(*left * *right,
-                                                  DecimalScaleFromType(return_type, 2)));
+      const auto scale = DecimalScaleFromType(return_type);
+      const long double value = *left * *right;
+      if (!scale || !std::isfinite(value)) {
+        return UserFunctionFailure(
+            "SB_DIAG_USER_FUNCTION_RESULT_DESCRIPTOR_INVALID",
+            "multiply requires a bounded decimal return descriptor and finite result",
+            request.function_id);
+      }
+      out.value = UserFunctionValue(return_type,
+                                    FormatDecimal(value, *scale));
     }
   } else if (descriptor == "sbsql.compiled.expression.substring_from_for.v1") {
+    if (!UserFunctionTypeIsText(return_type) ||
+        request.arguments.empty() ||
+        !UserFunctionTypeIsText(request.arguments.front().type_name) ||
+        !UserFunctionArgumentHasIntegerType(request, 1)) {
+      return UserFunctionFailure(
+          "SB_DIAG_USER_FUNCTION_ARGUMENT_TYPE_MISMATCH",
+          "substring requires a text input, integer length, and text return descriptor",
+          request.function_id);
+    }
     if (request.arguments.size() < 2 || request.arguments[0].is_null ||
         request.arguments[1].is_null) {
-      out.value = UserFunctionValue(return_type == "unknown" ? "varchar" : return_type, "", true);
+      out.value = UserFunctionValue(return_type, "", true);
     } else {
-      std::size_t len = 0;
-      try {
-        len = static_cast<std::size_t>(std::stoull(request.arguments[1].encoded_value));
-      } catch (...) {
+      const std::string& encoded_length = request.arguments[1].encoded_value;
+      std::uint64_t parsed_length = 0;
+      const auto parsed = std::from_chars(
+          encoded_length.data(),
+          encoded_length.data() + encoded_length.size(),
+          parsed_length);
+      if (parsed.ec != std::errc{} ||
+          parsed.ptr != encoded_length.data() + encoded_length.size() ||
+          parsed_length > std::numeric_limits<std::size_t>::max()) {
         return UserFunctionFailure("SB_DIAG_USER_FUNCTION_ARGUMENT_INVALID",
                                    "substring length argument is not an integer",
                                    request.function_id);
       }
+      const auto len = static_cast<std::size_t>(parsed_length);
       const std::string& source = request.arguments[0].encoded_value;
-      out.value = UserFunctionValue(return_type == "unknown" ? "varchar" : return_type,
+      out.value = UserFunctionValue(return_type,
                                     source.substr(0, std::min(len, source.size())));
     }
   } else if (descriptor == "sbsql.compiled.expression.greater_than_zero.v1") {
+    if (return_type != "boolean" && return_type != "bool") {
+      return UserFunctionFailure(
+          "SB_DIAG_USER_FUNCTION_RESULT_TYPE_MISMATCH",
+          "greater_than_zero requires a boolean return descriptor",
+          request.function_id);
+    }
+    if (!UserFunctionArgumentHasNumericType(request, 0)) {
+      return UserFunctionFailure(
+          "SB_DIAG_USER_FUNCTION_ARGUMENT_TYPE_MISMATCH",
+          "greater_than_zero requires a numeric argument",
+          request.function_id);
+    }
     const auto value = UserFunctionNumericArg(request, 0);
     if (!value) {
       out.value = UserFunctionValue("boolean", "", true);
@@ -7919,37 +8101,98 @@ api::EngineProjectionFunctionResult EvaluateUserFunctionDescriptor(
       out.value = UserFunctionValue("boolean", *value > 0 ? "true" : "false");
     }
   } else if (descriptor == "sbsql.compiled.procedural.classify_amount.v1") {
+    if (!UserFunctionTypeIsText(return_type)) {
+      return UserFunctionFailure(
+          "SB_DIAG_USER_FUNCTION_RESULT_TYPE_MISMATCH",
+          "classify_amount requires a text return descriptor",
+          request.function_id);
+    }
+    if (!UserFunctionArgumentHasNumericType(request, 0)) {
+      return UserFunctionFailure(
+          "SB_DIAG_USER_FUNCTION_ARGUMENT_TYPE_MISMATCH",
+          "classify_amount requires a numeric argument",
+          request.function_id);
+    }
     const auto value = UserFunctionNumericArg(request, 0);
     if (!value) {
-      out.value = UserFunctionValue(return_type == "unknown" ? "varchar" : return_type, "", true);
+      out.value = UserFunctionValue(return_type, "", true);
     } else if (*value >= 1000) {
-      out.value = UserFunctionValue(return_type == "unknown" ? "varchar" : return_type, "large");
+      out.value = UserFunctionValue(return_type, "large");
     } else if (*value <= 0) {
-      out.value = UserFunctionValue(return_type == "unknown" ? "varchar" : return_type,
+      out.value = UserFunctionValue(return_type,
                                     "zero_or_negative");
     } else {
-      out.value = UserFunctionValue(return_type == "unknown" ? "varchar" : return_type, "standard");
+      out.value = UserFunctionValue(return_type, "standard");
     }
   } else if (descriptor == "sbsql.compiled.procedural.factorial.v1") {
-    const auto value = UserFunctionNumericArg(request, 0);
-    if (!value || *value < 0) {
-      out.value = UserFunctionValue(return_type == "unknown" ? "int64" : return_type, "", true);
+    if (!UserFunctionTypeIsInteger(return_type)) {
+      return UserFunctionFailure(
+          "SB_DIAG_USER_FUNCTION_RESULT_TYPE_MISMATCH",
+          "factorial requires an integer return descriptor",
+          request.function_id);
+    }
+    if (!UserFunctionArgumentHasIntegerType(request, 0)) {
+      return UserFunctionFailure(
+          "SB_DIAG_USER_FUNCTION_ARGUMENT_TYPE_MISMATCH",
+          "factorial requires an integer argument",
+          request.function_id);
+    }
+    if (request.arguments.empty() || request.arguments.front().is_null) {
+      out.value = UserFunctionValue(return_type, "", true);
     } else {
-      std::uint64_t n = static_cast<std::uint64_t>(*value);
+      const std::string& encoded = request.arguments.front().encoded_value;
+      std::int64_t signed_n = 0;
+      const auto parsed = std::from_chars(
+          encoded.data(), encoded.data() + encoded.size(), signed_n);
+      if (parsed.ec != std::errc{} ||
+          parsed.ptr != encoded.data() + encoded.size()) {
+        return UserFunctionFailure("SB_DIAG_USER_FUNCTION_ARGUMENT_INVALID",
+                                   "factorial argument is not an exact integer",
+                                   request.function_id);
+      }
+      if (signed_n < 0) {
+        out.value = UserFunctionValue(return_type, "", true);
+        out.evidence.push_back({"user_function_runtime", request.function_id});
+        out.evidence.push_back({"compiled_body_descriptor", descriptor});
+        return out;
+      }
+      if (signed_n > 20) {
+        return UserFunctionFailure("SB_DIAG_USER_FUNCTION_RESULT_OVERFLOW",
+                                   "factorial result exceeds the uint64 execution carrier",
+                                   request.function_id);
+      }
+      const auto n = static_cast<std::uint64_t>(signed_n);
       std::uint64_t factorial = 1;
       for (std::uint64_t i = 2; i <= n; ++i) factorial *= i;
-      out.value = UserFunctionValue(return_type == "unknown" ? "int64" : return_type,
-                                    std::to_string(factorial));
+      out.value = UserFunctionValue(return_type, std::to_string(factorial));
     }
   } else if (descriptor == "sbsql.compiled.procedural.safe_divide.v1") {
+    if (!UserFunctionTypeIsNumeric(return_type)) {
+      return UserFunctionFailure(
+          "SB_DIAG_USER_FUNCTION_RESULT_TYPE_MISMATCH",
+          "safe_divide requires a numeric return descriptor",
+          request.function_id);
+    }
+    if (!UserFunctionArgumentHasNumericType(request, 0) ||
+        !UserFunctionArgumentHasNumericType(request, 1)) {
+      return UserFunctionFailure("SB_DIAG_USER_FUNCTION_ARGUMENT_TYPE_MISMATCH",
+                                 "safe_divide requires two numeric arguments",
+                                 request.function_id);
+    }
     const auto numerator = UserFunctionNumericArg(request, 0);
     const auto denominator = UserFunctionNumericArg(request, 1);
     if (!numerator || !denominator || *denominator == 0) {
-      out.value = UserFunctionValue(return_type == "unknown" ? "decimal" : return_type, "", true);
+      out.value = UserFunctionValue(return_type, "", true);
     } else {
-      out.value = UserFunctionValue(return_type == "unknown" ? "decimal" : return_type,
-                                    FormatDecimal(*numerator / *denominator,
-                                                  DecimalScaleFromType(return_type, 6)));
+      const auto scale = DecimalScaleFromType(return_type);
+      const long double value = *numerator / *denominator;
+      if (!scale || !std::isfinite(value)) {
+        return UserFunctionFailure(
+            "SB_DIAG_USER_FUNCTION_RESULT_DESCRIPTOR_INVALID",
+            "safe_divide requires a bounded decimal return descriptor and finite result",
+            request.function_id);
+      }
+      out.value = UserFunctionValue(return_type, FormatDecimal(value, *scale));
     }
   } else {
     return UserFunctionFailure("SB_DIAG_USER_FUNCTION_DESCRIPTOR_UNSUPPORTED",
@@ -8054,6 +8297,19 @@ bool EnrichCanonicalFunctionResultDescriptor(
 
 api::EngineProjectionFunctionResult EvaluateProjectionFunction(
     const api::EngineProjectionFunctionRequest& request) {
+  for (const auto& argument : request.arguments) {
+    if (!ProjectionArgumentEncodingValid(argument)) {
+      api::EngineProjectionFunctionResult out;
+      out.ok = false;
+      out.diagnostics.push_back(api::MakeEngineApiDiagnostic(
+          "SB_DIAG_FUNCTION_ARGUMENT_INVALID",
+          "engine.function.argument_encoding_invalid",
+          "function argument encoding does not match its bound type",
+          true));
+      out.evidence.push_back({"function_runtime", request.function_id});
+      return out;
+    }
+  }
   if (StartsWith(request.function_id, "sbsql.user_function:")) {
     return EvaluateUserFunction(request);
   }
@@ -8122,7 +8378,8 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
   api::EngineProjectionFunctionResult out;
   const auto function_result =
       functions::DispatchFunctionCall(package.registry, std::move(function_request)).result;
-  out.ok = function_result.ok() && function_result.scalar_values.size() == 1;
+  out.ok = function_result.ok() && function_result.scalar_values.size() == 1 &&
+           ProjectionSblrValueResolved(function_result.scalar_values.front());
   if (out.ok) {
     out.value = EngineTypedValueFromSblrValue(function_result.scalar_values.front());
     out.evidence.push_back({"function_runtime", request.function_id});
@@ -8132,7 +8389,7 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
     out.diagnostics.push_back(api::MakeEngineApiDiagnostic(
         "SB_DIAG_FUNCTION_RESULT_SHAPE_INVALID",
         "engine.function.result_shape_invalid",
-        "function projection expected exactly one scalar value",
+        "function projection expected exactly one resolved typed scalar value",
         true));
   } else {
     for (const auto& diagnostic : function_result.diagnostics) {
