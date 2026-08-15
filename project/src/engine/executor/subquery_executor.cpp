@@ -1009,11 +1009,18 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
   output.columns.insert(output.columns.end(),
                         request.correlated_request.inner_batch.columns.begin(),
                         request.correlated_request.inner_batch.columns.end());
+  const auto inner_column_begin =
+      request.correlated_request.outer_batch.columns.size();
   if (null_extend_empty_scopes) {
-    for (std::size_t column =
-             request.correlated_request.outer_batch.columns.size();
+    for (std::size_t column = inner_column_begin;
          column < output.columns.size(); ++column) {
       output.columns[column].nullable = true;
+      if (!DeriveCanonicalNullableDescriptorEncoding(
+              &output.columns[column].descriptor)) {
+        return refuse(
+            "LATERAL null-extended descriptor lacks an exact nullability "
+            "carrier");
+      }
     }
   }
   output.rows.reserve(correlated.result_row_count +
@@ -1043,6 +1050,14 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
                                 inner_row.values.begin(),
                                 inner_row.values.end());
       output.rows.push_back(std::move(lateral_row));
+    }
+  }
+  if (null_extend_empty_scopes) {
+    for (auto& row : output.rows) {
+      for (std::size_t column = inner_column_begin;
+           column < output.columns.size(); ++column) {
+        row.values[column].descriptor = output.columns[column].descriptor;
+      }
     }
   }
   auto output_validation =

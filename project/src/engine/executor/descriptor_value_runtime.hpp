@@ -2429,6 +2429,11 @@ bool CanonicalDerivedDescriptorTypeMatches(
     bool input_nullable,
     const scratchbird::engine::internal_api::EngineDescriptor& output,
     bool expected_output_nullable);
+// Derive the nullable form carried by outer-join and OUTER APPLY outputs.
+// The operation refuses descriptors that do not explicitly encode
+// nullability; callers must never change only ExecutorColumnDescriptor::nullable.
+bool DeriveCanonicalNullableDescriptorEncoding(
+    scratchbird::engine::internal_api::EngineDescriptor* descriptor);
 DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch);
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     const DescriptorBatch& batch,

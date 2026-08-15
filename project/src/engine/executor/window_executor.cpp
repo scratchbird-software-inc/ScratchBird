@@ -285,9 +285,13 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
                   "window comparison resource bound overflowed");
   }
   const auto pair_count = row_count * row_count;
-  if (term_count != 0 &&
-      (pair_count > std::numeric_limits<std::size_t>::max() / term_count ||
-       pair_count * term_count > request.maximum_pair_comparisons)) {
+  // The runtime materializes two pair matrices even when the window has no
+  // explicit PARTITION BY or ORDER BY terms. Charge at least one unit per
+  // pair so a termless window cannot bypass the only bound on that memory.
+  const auto charged_term_count = std::max<std::size_t>(1, term_count);
+  if (pair_count >
+          std::numeric_limits<std::size_t>::max() / charged_term_count ||
+      pair_count * charged_term_count > request.maximum_pair_comparisons) {
     return refuse("QOW-DIAG-WINDOW-PEER",
                   "window comparison resource bound was exceeded");
   }

@@ -176,6 +176,8 @@ std::size_t CanonicalAggregateExpectedArity(
 }
 
 std::string FormatAggregateReal(long double value);
+std::string AggregateDistinctKey(
+    const std::vector<EngineTypedValue>& values);
 
 std::string EscapeAggregateJson(const std::string_view input) {
   std::ostringstream stream;
@@ -260,27 +262,52 @@ bool RenderAggregateJsonValue(const EngineTypedValue& value,
 
 std::size_t EstimateCanonicalAggregateStateBytes(
     const CanonicalAggregateCoreState& state) {
+  const auto add = [](std::size_t* total, const std::size_t amount) {
+    if (*total > std::numeric_limits<std::size_t>::max() - amount) {
+      *total = std::numeric_limits<std::size_t>::max();
+      return;
+    }
+    *total += amount;
+  };
   std::size_t bytes = sizeof(state);
   for (const auto& value : state.collection_values) {
-    bytes += sizeof(value) + value.encoded_value.size() +
-             value.binary_value.size() +
-             value.descriptor.canonical_type_name.size() +
-             value.descriptor.encoded_descriptor.size();
+    add(&bytes, sizeof(value));
+    add(&bytes, value.descriptor.descriptor_uuid.canonical.size());
+    add(&bytes, value.descriptor.descriptor_kind.size());
+    add(&bytes, value.encoded_value.size());
+    add(&bytes, value.binary_value.size());
+    add(&bytes, value.descriptor.canonical_type_name.size());
+    add(&bytes, value.descriptor.encoded_descriptor.size());
   }
-  for (const auto& value : state.text_values) bytes += value.size();
+  for (const auto& value : state.text_values) {
+    add(&bytes, sizeof(value));
+    add(&bytes, value.size());
+  }
   for (const auto& [key, value] : state.json_object_values) {
-    bytes += key.size() + value.size();
+    add(&bytes, sizeof(std::pair<std::string, std::string>));
+    add(&bytes, key.size());
+    add(&bytes, value.size());
   }
-  bytes += state.ordered_numeric_values.size() * sizeof(long double);
+  if (state.ordered_numeric_values.size() >
+      std::numeric_limits<std::size_t>::max() / sizeof(long double)) {
+    bytes = std::numeric_limits<std::size_t>::max();
+  } else {
+    add(&bytes,
+        state.ordered_numeric_values.size() * sizeof(long double));
+  }
   for (const auto& value : state.approximate_distinct_values) {
-    bytes += value.size();
+    add(&bytes, sizeof(value));
+    add(&bytes, value.size());
   }
   for (const auto& [value, count] : state.frequency_values) {
     (void)count;
-    bytes += sizeof(value) + value.encoded_value.size() +
-             value.binary_value.size() +
-             value.descriptor.canonical_type_name.size() +
-             value.descriptor.encoded_descriptor.size();
+    add(&bytes, sizeof(std::pair<EngineTypedValue, std::size_t>));
+    add(&bytes, value.descriptor.descriptor_uuid.canonical.size());
+    add(&bytes, value.descriptor.descriptor_kind.size());
+    add(&bytes, value.encoded_value.size());
+    add(&bytes, value.binary_value.size());
+    add(&bytes, value.descriptor.canonical_type_name.size());
+    add(&bytes, value.descriptor.encoded_descriptor.size());
   }
   return bytes;
 }
@@ -301,8 +328,12 @@ bool SameAggregateValueIdentity(const EngineTypedValue& left,
                                 const EngineTypedValue& right) {
   return left.descriptor.descriptor_uuid.canonical ==
              right.descriptor.descriptor_uuid.canonical &&
+         left.descriptor.descriptor_kind ==
+             right.descriptor.descriptor_kind &&
          left.descriptor.canonical_type_name ==
              right.descriptor.canonical_type_name &&
+         left.descriptor.encoded_descriptor ==
+             right.descriptor.encoded_descriptor &&
          left.state == right.state && left.is_null == right.is_null &&
          left.encoded_value == right.encoded_value &&
          left.binary_value == right.binary_value;
@@ -328,6 +359,7 @@ EngineTypedValue AggregateValue(const ExecutorColumnDescriptor& column,
   EngineTypedValue value;
   value.descriptor = column.descriptor;
   value.encoded_value = std::move(encoded_value);
+  value.is_null = false;
   value.state = EngineValueState::value;
   return value;
 }
@@ -469,11 +501,7 @@ bool TransitionCanonicalAggregateCore(
   if (descriptor.function ==
       CanonicalAggregateFunction::approx_count_distinct) {
     if (value.state == EngineValueState::sql_null) return true;
-    std::string identity = value.descriptor.descriptor_uuid.canonical + ":" +
-                           value.descriptor.canonical_type_name + ":" +
-                           value.encoded_value;
-    identity.append(reinterpret_cast<const char*>(value.binary_value.data()),
-                    value.binary_value.size());
+    std::string identity = AggregateDistinctKey({value});
     if (std::find(state->approximate_distinct_values.begin(),
                   state->approximate_distinct_values.end(), identity) ==
         state->approximate_distinct_values.end()) {

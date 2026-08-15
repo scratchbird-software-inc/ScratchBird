@@ -574,6 +574,51 @@ bool CanonicalDerivedDescriptorTypeMatches(
          expected_output_nullable == output_identity->nullable;
 }
 
+bool DeriveCanonicalNullableDescriptorEncoding(
+    EngineDescriptor* descriptor) {
+  if (descriptor == nullptr || descriptor->encoded_descriptor.empty()) {
+    return false;
+  }
+  std::string derived;
+  derived.reserve(descriptor->encoded_descriptor.size());
+  bool nullability_carrier_seen = false;
+  std::size_t offset = 0;
+  while (offset <= descriptor->encoded_descriptor.size()) {
+    const auto separator = descriptor->encoded_descriptor.find(';', offset);
+    const auto end = separator == std::string::npos
+                         ? descriptor->encoded_descriptor.size()
+                         : separator;
+    const std::string_view field(
+        descriptor->encoded_descriptor.data() + offset, end - offset);
+    if (field.empty()) return false;
+    if (!derived.empty()) derived.push_back(';');
+    if (field.starts_with("nullability=")) {
+      const auto value = field.substr(std::string_view("nullability=").size());
+      if (nullability_carrier_seen ||
+          (value != "nullable" && value != "non_null")) {
+        return false;
+      }
+      derived.append("nullability=nullable");
+      nullability_carrier_seen = true;
+    } else if (field.starts_with("nullable=")) {
+      const auto value = field.substr(std::string_view("nullable=").size());
+      if (nullability_carrier_seen ||
+          (value != "true" && value != "false")) {
+        return false;
+      }
+      derived.append("nullable=true");
+      nullability_carrier_seen = true;
+    } else {
+      derived.append(field);
+    }
+    if (separator == std::string::npos) break;
+    offset = separator + 1;
+  }
+  if (!nullability_carrier_seen) return false;
+  descriptor->encoded_descriptor = std::move(derived);
+  return true;
+}
+
 DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch) {
   if (batch.columns.empty()) {
     return ErrorDiagnostic("SB_EXECUTOR_DESCRIPTOR_REQUIRED", "column descriptor vector is empty");

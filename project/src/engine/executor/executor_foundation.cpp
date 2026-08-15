@@ -54,40 +54,6 @@ bool IsCanonicalUuid(const std::string_view value) {
   return true;
 }
 
-bool DeriveNullableDescriptorEncoding(
-    scratchbird::engine::internal_api::EngineDescriptor* descriptor) {
-  if (descriptor == nullptr || descriptor->encoded_descriptor.empty()) {
-    return false;
-  }
-  std::string derived;
-  derived.reserve(descriptor->encoded_descriptor.size());
-  bool nullability_carrier_seen = false;
-  std::size_t offset = 0;
-  while (offset <= descriptor->encoded_descriptor.size()) {
-    const auto separator = descriptor->encoded_descriptor.find(';', offset);
-    const auto end = separator == std::string::npos
-                         ? descriptor->encoded_descriptor.size()
-                         : separator;
-    const std::string_view field(descriptor->encoded_descriptor.data() + offset,
-                                 end - offset);
-    if (!derived.empty()) derived.push_back(';');
-    if (field.starts_with("nullability=")) {
-      derived.append("nullability=nullable");
-      nullability_carrier_seen = true;
-    } else if (field.starts_with("nullable=")) {
-      derived.append("nullable=true");
-      nullability_carrier_seen = true;
-    } else {
-      derived.append(field);
-    }
-    if (separator == std::string::npos) break;
-    offset = separator + 1;
-  }
-  if (!nullability_carrier_seen) return false;
-  descriptor->encoded_descriptor = std::move(derived);
-  return true;
-}
-
 bool CanonicalWindowAuthorityAbsent(
     const CanonicalExecutionMgaAuthority& authority) {
   return authority.origin == CanonicalMgaAuthorityOrigin::kMissing &&
@@ -1968,16 +1934,30 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
   const auto matched_left_row_count = left_count - unmatched_left_row_count;
 
   std::size_t expected_output_rows = accepted_pair_indices.size();
+  const auto add_expected_rows = [&](const std::size_t additional) {
+    if (expected_output_rows >
+        std::numeric_limits<std::size_t>::max() - additional) {
+      return false;
+    }
+    expected_output_rows += additional;
+    return true;
+  };
   switch (request.join_kind) {
     case CanonicalAcceptedJoinKind::kLeftOuter:
-      expected_output_rows += unmatched_left_row_count;
+      if (!add_expected_rows(unmatched_left_row_count)) {
+        return refuse("left outer join output cardinality overflowed");
+      }
       break;
     case CanonicalAcceptedJoinKind::kRightOuter:
-      expected_output_rows += unmatched_right_row_count;
+      if (!add_expected_rows(unmatched_right_row_count)) {
+        return refuse("right outer join output cardinality overflowed");
+      }
       break;
     case CanonicalAcceptedJoinKind::kFullOuter:
-      expected_output_rows +=
-          unmatched_left_row_count + unmatched_right_row_count;
+      if (!add_expected_rows(unmatched_left_row_count) ||
+          !add_expected_rows(unmatched_right_row_count)) {
+        return refuse("full outer join output cardinality overflowed");
+      }
       break;
     case CanonicalAcceptedJoinKind::kLeftSemi:
       expected_output_rows = matched_left_row_count;
@@ -2022,7 +2002,7 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
   }
   for (std::size_t column = 0; column < output.columns.size(); ++column) {
     if (derived_nullable_columns[column] &&
-        !DeriveNullableDescriptorEncoding(
+        !DeriveCanonicalNullableDescriptorEncoding(
             &output.columns[column].descriptor)) {
       return refuse("outer join result descriptor lacks an exact nullability "
                     "carrier");

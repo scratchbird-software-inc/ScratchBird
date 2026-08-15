@@ -613,6 +613,12 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     return true;
   };
   const auto sequence_value = [&](const std::uint64_t sequence) {
+    if (sequence == 0 ||
+        sequence > static_cast<std::uint64_t>(
+                       std::numeric_limits<std::int64_t>::max())) {
+      throw std::runtime_error(
+          "recursive CTE SEARCH sequence exceeds int64 result width");
+    }
     api::EngineTypedValue value;
     value.descriptor = request.search_sequence_column.descriptor;
     value.encoded_value = std::to_string(sequence);
@@ -834,6 +840,11 @@ CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
           throw std::runtime_error("recursive CTE byte accounting overflow");
         }
         bytes += value.encoded_value.size();
+        if (value.binary_value.size() >
+            std::numeric_limits<std::size_t>::max() - bytes) {
+          throw std::runtime_error("recursive CTE byte accounting overflow");
+        }
+        bytes += value.binary_value.size();
       }
     }
     return bytes;
