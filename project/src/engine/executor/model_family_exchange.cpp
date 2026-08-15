@@ -354,6 +354,16 @@ bool CanonicalFiniteReal64(const std::string_view encoded) {
                                          rendered.ptr - canonical));
 }
 
+bool CanonicalNonnegativeFiniteReal64(const std::string_view encoded) {
+  if (!CanonicalFiniteReal64(encoded)) return false;
+  double value = 0.0;
+  const auto parsed = std::from_chars(encoded.data(),
+                                      encoded.data() + encoded.size(), value,
+                                      std::chars_format::general);
+  return parsed.ec == std::errc{} &&
+         parsed.ptr == encoded.data() + encoded.size() && value >= 0.0;
+}
+
 bool CanonicalInt64(const std::string_view encoded,
                     const bool require_positive = false) {
   if (encoded.empty()) return false;
@@ -979,7 +989,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           identity.series_uuid.empty() && identity.metric_uuid.empty() &&
           identity.tags.empty() && identity.point_timestamp_ns == 0 &&
           identity.bucket_start_ns == 0 && empty_time_series_payload &&
-          CanonicalFiniteReal64(identity.vector_distance) &&
+          CanonicalNonnegativeFiniteReal64(identity.vector_distance) &&
           CanonicalFiniteReal64(identity.vector_score) &&
           empty_search_payload &&
           row_uuids.insert(identity.row_uuid).second;
@@ -1390,7 +1400,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
           row.values[0].encoded_value != identity.row_uuid ||
           !CanonicalUuid(row.values[0].encoded_value) ||
           row.values[1].encoded_value != identity.vector_distance ||
-          !CanonicalFiniteReal64(row.values[1].encoded_value) ||
+          !CanonicalNonnegativeFiniteReal64(row.values[1].encoded_value) ||
           row.values[2].encoded_value != identity.vector_score ||
           !CanonicalFiniteReal64(row.values[2].encoded_value)) {
         return Refuse(kModelTypedExchangeInvalid,
