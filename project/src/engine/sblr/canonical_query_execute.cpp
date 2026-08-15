@@ -298,9 +298,9 @@ bool CompareCanonicalQueryScalarsV1(
     }
     std::int64_t left_instant_ns = 0;
     std::int64_t right_instant_ns = 0;
-    if (!ParseTimeSeriesEndpointNsV1(left.encoded_value,
+    if (!ParseTimeSeriesEndpointNsV1(left_result.value.encoded_value,
                                      &left_instant_ns) ||
-        !ParseTimeSeriesEndpointNsV1(right.encoded_value,
+        !ParseTimeSeriesEndpointNsV1(right_result.value.encoded_value,
                                      &right_instant_ns)) {
       *diagnostic_id =
           "QOW-DIAG-RCP024-TIMEZONE-COMPARISON-REFUSAL-V1";
