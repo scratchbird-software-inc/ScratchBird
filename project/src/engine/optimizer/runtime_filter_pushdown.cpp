@@ -8,6 +8,7 @@
 
 #include "runtime_filter_pushdown.hpp"
 
+#include <limits>
 #include <sstream>
 #include <utility>
 
@@ -59,6 +60,13 @@ RuntimeFilterCandidateDecision EvaluateCandidate(
   decision.descriptor = descriptor;
   decision.diagnostic_code = "SB_RUNTIME_FILTER.NOT_SELECTED";
 
+  if (descriptor.filter_cost_units >
+      std::numeric_limits<std::uint64_t>::max() -
+          descriptor.exact_recheck_cost_units) {
+    return RefuseCandidate(std::move(decision),
+                           "SB_RUNTIME_FILTER.COST_OVERFLOW",
+                           "filter_and_exact_recheck_cost_overflowed");
+  }
   const auto filtered_cost =
       descriptor.filter_cost_units + descriptor.exact_recheck_cost_units;
   decision.net_benefit_units =

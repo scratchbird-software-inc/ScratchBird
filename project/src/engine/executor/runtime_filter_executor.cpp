@@ -10,6 +10,7 @@
 
 #include "candidate_set_executor.hpp"
 
+#include <limits>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -31,6 +32,15 @@ platform::Status RefusalStatus() {
 
 void Add(std::vector<std::string>* evidence, std::string value) {
   evidence->push_back(std::move(value));
+}
+
+bool CheckedAdd(std::uint64_t value, std::uint64_t* total) {
+  if (total == nullptr ||
+      value > std::numeric_limits<std::uint64_t>::max() - *total) {
+    return false;
+  }
+  *total += value;
+  return true;
 }
 
 const char* FamilyName(opt::RuntimeFilterFamily family) {
@@ -174,7 +184,8 @@ RuntimeFilterExecutionResult ValidateDescriptor(
 }
 
 RuntimeFilterExecutionResult ValidateProviderRows(
-    const RuntimeFilterProviderResult& provider_result) {
+    const RuntimeFilterProviderResult& provider_result,
+    const opt::RuntimeFilterDescriptor& descriptor) {
   if (provider_result.unsupported) {
     return Refuse("SB_RUNTIME_FILTER_EXECUTOR.PROVIDER_UNSUPPORTED",
                   "provider_runtime_filter_unsupported");
@@ -205,6 +216,10 @@ RuntimeFilterExecutionResult ValidateProviderRows(
   if (!provider_result.security_recheck_evidence_present) {
     return Refuse("SB_RUNTIME_FILTER_EXECUTOR.SECURITY_RECHECK_EVIDENCE_REQUIRED",
                   "provider_security_recheck_evidence_missing");
+  }
+  if (provider_result.candidate_rows.size() > descriptor.input_rows) {
+    return Refuse("SB_RUNTIME_FILTER_EXECUTOR.CANDIDATE_BOUND_EXCEEDED",
+                  "provider_candidate_rows_exceed_admitted_input_rows");
   }
   RuntimeFilterExecutionResult ok;
   ok.status = OkStatus();
@@ -263,8 +278,14 @@ RuntimeFilterExecutionResult ExecuteRuntimeFilterPushdown(
     if (!descriptor_check.ok()) {
       return descriptor_check;
     }
-    result.counters.input_rows += descriptor.input_rows;
-    result.counters.pruned_rows += descriptor.estimated_pruned_rows;
+    if (!CheckedAdd(descriptor.input_rows, &result.counters.input_rows) ||
+        !CheckedAdd(descriptor.estimated_pruned_rows,
+                    &result.counters.pruned_rows) ||
+        result.counters.pushed_filter_count ==
+            std::numeric_limits<std::uint64_t>::max()) {
+      return Refuse("SB_RUNTIME_FILTER_EXECUTOR.COUNTERS_INVALID",
+                    "runtime_filter_cumulative_counter_overflowed");
+    }
     ++result.counters.pushed_filter_count;
     AddDescriptorEvidence(&result, descriptor);
 
@@ -289,6 +310,11 @@ RuntimeFilterExecutionResult ExecuteRuntimeFilterPushdown(
 
     RuntimeFilterProviderRequest request{descriptor, authority};
     if (use_exact_fallback) {
+      if (result.counters.fallback_count ==
+          std::numeric_limits<std::uint64_t>::max()) {
+        return Refuse("SB_RUNTIME_FILTER_EXECUTOR.COUNTERS_INVALID",
+                      "runtime_filter_fallback_counter_overflowed");
+      }
       ++result.counters.fallback_count;
       Add(&result.evidence, "runtime_filter.provider_unsupported=true");
       Add(&result.evidence, "runtime_filter.fallback=exact_provider");
@@ -300,6 +326,11 @@ RuntimeFilterExecutionResult ExecuteRuntimeFilterPushdown(
         return Refuse("SB_RUNTIME_FILTER_EXECUTOR.PROVIDER_UNSUPPORTED",
                       "provider_runtime_filter_unsupported_no_fallback");
       }
+      if (result.counters.fallback_count ==
+          std::numeric_limits<std::uint64_t>::max()) {
+        return Refuse("SB_RUNTIME_FILTER_EXECUTOR.COUNTERS_INVALID",
+                      "runtime_filter_fallback_counter_overflowed");
+      }
       ++result.counters.fallback_count;
       Add(&result.evidence, "runtime_filter.fallback=exact_provider");
       provider_result = providers.exact_fallback_provider(request);
@@ -308,13 +339,18 @@ RuntimeFilterExecutionResult ExecuteRuntimeFilterPushdown(
                       "exact_fallback_provider_unsupported");
       }
     }
-    auto provider_check = ValidateProviderRows(provider_result);
+    auto provider_check = ValidateProviderRows(provider_result, descriptor);
     if (!provider_check.ok()) {
       return provider_check;
     }
     result.evidence.insert(result.evidence.end(),
                            provider_result.evidence.begin(),
                            provider_result.evidence.end());
+    if (provider_result.candidate_rows.size() >
+        all_rows.max_size() - all_rows.size()) {
+      return Refuse("SB_RUNTIME_FILTER_EXECUTOR.CANDIDATE_BOUND_EXCEEDED",
+                    "runtime_filter_cumulative_candidate_rows_overflowed");
+    }
     all_rows.insert(all_rows.end(), provider_result.candidate_rows.begin(),
                     provider_result.candidate_rows.end());
   }
