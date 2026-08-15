@@ -595,6 +595,16 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
                   "composition executor did not receive one complete admitted dependency plan");
   }
+  if (request.admitted_plan.relational_consumers.empty() ||
+      std::ranges::any_of(
+          request.admitted_plan.relational_consumers,
+          [](const auto& consumer) {
+            return consumer.input_physical_node_uuids.size() != 2;
+          })) {
+    return refuse(
+        "SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+        "each composition consumer requires exactly two inputs and one root consumer");
+  }
   std::vector<const scratchbird::engine::optimizer::ModelFamilyScheduledLegV1*>
       schedule_by_ordinal(request.legs.size(), nullptr);
   std::set<std::string> result_handle_uuids;
