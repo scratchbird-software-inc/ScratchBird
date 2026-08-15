@@ -12,6 +12,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <exception>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -796,7 +797,37 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch
 
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     const DescriptorBatch& batch,
-    const std::vector<std::uint32_t>& output_descriptor_ids) {
+    const std::vector<std::uint32_t>& output_descriptor_ids,
+    const std::function<bool()>& cancellation_requested,
+    bool* cancellation_observed) {
+  if (cancellation_observed != nullptr) *cancellation_observed = false;
+  const auto poll_cancellation = [&](const std::size_t row,
+                                     const std::size_t column)
+      -> std::optional<DescriptorRuntimeDiagnostic> {
+    if (!cancellation_requested) return std::nullopt;
+    try {
+      if (!cancellation_requested()) return std::nullopt;
+      if (cancellation_observed != nullptr) *cancellation_observed = true;
+      return ErrorDiagnostic("QOW-DIAG-QRY-012-JOIN-CANCELLED-V1",
+                             "descriptor-batch validation was cancelled",
+                             row, column);
+    } catch (const std::exception& exception) {
+      return ErrorDiagnostic(
+          "QOW-DIAG-QRY-012-CANCELLATION-PROBE-V1",
+          std::string("descriptor-batch cancellation probe threw: ") +
+              exception.what(),
+          row, column);
+    } catch (...) {
+      return ErrorDiagnostic(
+          "QOW-DIAG-QRY-012-CANCELLATION-PROBE-V1",
+          "descriptor-batch cancellation probe threw a non-standard exception",
+          row, column);
+    }
+  };
+  if (const auto cancelled = poll_cancellation(0, 0);
+      cancelled.has_value()) {
+    return *cancelled;
+  }
   if (batch.columns.size() != output_descriptor_ids.size() ||
       batch.columns.empty()) {
     return ErrorDiagnostic("SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -804,6 +835,10 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
   }
   std::unordered_set<std::uint32_t> descriptor_ids;
   for (std::size_t column = 0; column < batch.columns.size(); ++column) {
+    if (const auto cancelled = poll_cancellation(0, column);
+        cancelled.has_value()) {
+      return *cancelled;
+    }
     const auto& bound_column = batch.columns[column];
     const auto& descriptor = bound_column.descriptor;
     if (bound_column.descriptor_id == 0 ||
@@ -823,12 +858,20 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     }
   }
   for (std::size_t row = 0; row < batch.rows.size(); ++row) {
+    if (const auto cancelled = poll_cancellation(row, 0);
+        cancelled.has_value()) {
+      return *cancelled;
+    }
     if (batch.rows[row].values.size() != batch.columns.size()) {
       return ErrorDiagnostic("SBLR.PLAN_TREE.INVALID_HANDLE",
                              "typed row width does not match physical output",
                              row, 0);
     }
     for (std::size_t column = 0; column < batch.columns.size(); ++column) {
+      if (const auto cancelled = poll_cancellation(row, column);
+          cancelled.has_value()) {
+        return *cancelled;
+      }
       const auto& value = batch.rows[row].values[column];
       const auto& bound_column = batch.columns[column];
       if (!SameCanonicalDescriptor(value.descriptor,

@@ -976,6 +976,10 @@ struct CanonicalCompositeJoinKeyRequest {
   std::vector<CanonicalCompositeJoinKeyTerm> key_terms;
   std::size_t maximum_key_term_count = 64;
   std::size_t maximum_key_comparisons = 1048576;
+  // The live selected-DAG join route may synchronously borrow dispatcher-owned
+  // inputs to avoid duplicating both batches while the node executes.
+  const DescriptorBatch* borrowed_left_batch = nullptr;
+  const DescriptorBatch* borrowed_right_batch = nullptr;
   CanonicalExecutionMgaAuthority mga_authority;
 };
 
@@ -1031,7 +1035,13 @@ struct CanonicalJoinKindRequest {
   // the physical input/output shape, and the MGA statement authority before
   // materializing any row.
   bool bound_pair_truth_profile = false;
+  // The live selected-DAG route synchronously borrows its already-bound truth
+  // matrix so the dispatcher and join executor never retain duplicate copies.
+  // Owned residual truth and this borrowed carrier are mutually exclusive.
+  const std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>*
+      borrowed_bound_pair_truth_values = nullptr;
   std::size_t maximum_output_rows = 1048576;
+  std::function<bool()> cancellation_requested;
 };
 
 struct CanonicalJoinKindResult {
@@ -1044,6 +1054,8 @@ struct CanonicalJoinKindResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  bool cancellation_observed = false;
+  bool transient_state_cleanup_proven = false;
   PhysicalMgaStatementContext mga_statement_context;
 };
 
@@ -2570,7 +2582,9 @@ bool DeriveCanonicalNullableDescriptorEncoding(
 DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch);
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     const DescriptorBatch& batch,
-    const std::vector<std::uint32_t>& output_descriptor_ids);
+    const std::vector<std::uint32_t>& output_descriptor_ids,
+    const std::function<bool()>& cancellation_requested = {},
+    bool* cancellation_observed = nullptr);
 CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
     const CanonicalDescriptorProjectionRequest& request);
 CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(

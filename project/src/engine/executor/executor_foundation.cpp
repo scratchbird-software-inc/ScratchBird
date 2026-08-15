@@ -149,6 +149,42 @@ bool FoundationFilterBytes(
   return true;
 }
 
+std::optional<DescriptorRuntimeDiagnostic> PollFoundationJoinCancellation(
+    const std::function<bool()>& probe,
+    const char* phase,
+    const std::size_t row,
+    bool* cancellation_observed) {
+  if (!probe) return std::nullopt;
+  try {
+    if (!probe()) return std::nullopt;
+    if (cancellation_observed != nullptr) *cancellation_observed = true;
+    DescriptorRuntimeDiagnostic diagnostic;
+    diagnostic.ok = false;
+    diagnostic.diagnostic_code = "QOW-DIAG-QRY-012-JOIN-CANCELLED-V1";
+    diagnostic.detail = std::string("join cancellation observed ") + phase;
+    diagnostic.row_index = row;
+    return diagnostic;
+  } catch (const std::exception& exception) {
+    DescriptorRuntimeDiagnostic diagnostic;
+    diagnostic.ok = false;
+    diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-012-CANCELLATION-PROBE-V1";
+    diagnostic.detail = std::string("join cancellation probe threw: ") +
+                        exception.what();
+    diagnostic.row_index = row;
+    return diagnostic;
+  } catch (...) {
+    DescriptorRuntimeDiagnostic diagnostic;
+    diagnostic.ok = false;
+    diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-012-CANCELLATION-PROBE-V1";
+    diagnostic.detail =
+        "join cancellation probe threw a non-standard exception";
+    diagnostic.row_index = row;
+    return diagnostic;
+  }
+}
+
 bool CanonicalWindowAuthorityAbsent(
     const CanonicalExecutionMgaAuthority& authority) {
   return authority.origin == CanonicalMgaAuthorityOrigin::kMissing &&
@@ -436,7 +472,6 @@ CanonicalInt64SumStateResult ExecuteCanonicalInt64SumState(
     result.state = {};
     return result;
   };
-
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
       request.mga_authority, request.physical_dag);
   if (!authority_validation.ok)
@@ -1558,7 +1593,6 @@ CanonicalCompositeJoinKeyResult ExecuteCanonicalCompositeJoinKey(
           request.maximum_key_comparisons / pair_count) {
     return refuse("composite join key comparison bound was exceeded");
   }
-
   CanonicalDescriptorInnerJoinRequest route;
   route.physical_dag = request.physical_dag;
   route.selected_physical_node_id = request.selected_physical_node_id;
@@ -1650,7 +1684,6 @@ CanonicalCompositeJoinKeyResult ExecuteCanonicalCompositeJoinKey(
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
-
   result.diagnostic = {};
   result.pair_truth_values = std::move(pair_truth_values);
   result.pair_count = pair_count;
@@ -1685,7 +1718,6 @@ CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
     result.causal_counter_id = 0;
     return result;
   };
-
   if (request.maximum_candidate_rechecks == 0) {
     return refuse("residual join candidate resource contract is invalid");
   }
@@ -1723,7 +1755,6 @@ CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
   if (candidate_pair_count > request.maximum_candidate_rechecks) {
     return refuse("residual join candidate recheck bound was exceeded");
   }
-
   std::vector<api::EngineSqlTruthValue> accepted_pair_truth_values(
       keys.pair_count, api::EngineSqlTruthValue::false_value);
   std::vector<std::size_t> accepted_pair_indices;
@@ -1765,7 +1796,6 @@ CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
-
   result.diagnostic = {};
   result.output_batch = std::move(joined.output_batch);
   result.accepted_pair_indices = std::move(accepted_pair_indices);
@@ -1803,6 +1833,80 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     result.causal_counter_id = 0;
     return result;
   };
+  const auto refuse_resource = [&](std::string detail) {
+    (void)refuse(std::move(detail));
+    result.diagnostic.diagnostic_code = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+    return result;
+  };
+  const auto& cancellation_requested =
+      request.cancellation_requested;
+  const auto poll_cancellation = [&](const char* phase,
+                                     const std::size_t row = 0) {
+    bool observed = false;
+    auto diagnostic = PollFoundationJoinCancellation(
+        cancellation_requested, phase, row, &observed);
+    if (!diagnostic.has_value()) return false;
+    result.cancellation_observed = observed;
+    result.transient_state_cleanup_proven = true;
+    result.diagnostic = std::move(*diagnostic);
+    result.output_batch = {};
+    result.matched_pair_count = 0;
+    result.unmatched_left_row_count = 0;
+    result.unmatched_right_row_count = 0;
+    result.emitted_left_row_count = 0;
+    return true;
+  };
+  const auto adopt_validation_cancellation =
+      [&](const DescriptorRuntimeDiagnostic& diagnostic,
+          const bool observed) {
+        if (diagnostic.diagnostic_code !=
+                "QOW-DIAG-QRY-012-JOIN-CANCELLED-V1" &&
+            diagnostic.diagnostic_code !=
+                "QOW-DIAG-QRY-012-CANCELLATION-PROBE-V1") {
+          return false;
+        }
+        result.diagnostic = diagnostic;
+        result.cancellation_observed = observed;
+        result.transient_state_cleanup_proven = true;
+        result.output_batch = {};
+        result.matched_pair_count = 0;
+        result.unmatched_left_row_count = 0;
+        result.unmatched_right_row_count = 0;
+        result.emitted_left_row_count = 0;
+        return true;
+      };
+  const auto add_payload_bytes = [](const std::size_t additional,
+                                    std::size_t* total) {
+    if (total == nullptr ||
+        additional > std::numeric_limits<std::size_t>::max() - *total) {
+      return false;
+    }
+    *total += additional;
+    return true;
+  };
+  const auto account_tuple_payload =
+      [&](const DescriptorTuple& tuple, const char* phase,
+          const std::size_t row, std::size_t* total) {
+        for (std::size_t column = 0; column < tuple.values.size(); ++column) {
+          if (poll_cancellation(phase, row)) return false;
+          const auto& value = tuple.values[column];
+          if (!add_payload_bytes(value.encoded_value.size(), total) ||
+              !add_payload_bytes(value.binary_value.size(), total)) {
+            return false;
+          }
+        }
+        return true;
+      };
+  const auto account_batch_payload =
+      [&](const DescriptorBatch& batch, const char* phase,
+          std::size_t* total) {
+        for (std::size_t row = 0; row < batch.rows.size(); ++row) {
+          if (!account_tuple_payload(batch.rows[row], phase, row, total)) {
+            return false;
+          }
+        }
+        return true;
+      };
 
   switch (request.join_kind) {
     case CanonicalAcceptedJoinKind::kCross:
@@ -1820,27 +1924,56 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     return refuse("join-kind output resource contract is invalid");
   }
   const auto& key_request = request.residual_request.key_request;
+  const bool borrowed_left = key_request.borrowed_left_batch != nullptr;
+  const bool borrowed_right = key_request.borrowed_right_batch != nullptr;
+  if (borrowed_left != borrowed_right ||
+      (borrowed_left &&
+       (!key_request.left_batch.columns.empty() ||
+        !key_request.left_batch.rows.empty() ||
+        !key_request.right_batch.columns.empty() ||
+        !key_request.right_batch.rows.empty())) ||
+      (borrowed_left && !request.bound_pair_truth_profile)) {
+    return refuse("join input ownership carriage is inconsistent");
+  }
+  const auto& left_batch = borrowed_left ? *key_request.borrowed_left_batch
+                                         : key_request.left_batch;
+  const auto& right_batch = borrowed_right ? *key_request.borrowed_right_batch
+                                           : key_request.right_batch;
   const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
       key_request.mga_authority, key_request.physical_dag);
   if (!entry_authority.ok)
     return refuse(entry_authority.diagnostic_code + ":" +
                   entry_authority.detail);
-  const auto left_count = key_request.left_batch.rows.size();
-  const auto right_count = key_request.right_batch.rows.size();
+  const auto left_count = left_batch.rows.size();
+  const auto right_count = right_batch.rows.size();
   if (left_count != 0 &&
       right_count > std::numeric_limits<std::size_t>::max() / left_count) {
     return refuse("join pair cardinality overflowed");
   }
   const auto pair_count = left_count * right_count;
+  if (poll_cancellation("before join-kind pair allocation")) return result;
+  const bool borrowed_bound_truth =
+      request.borrowed_bound_pair_truth_values != nullptr;
+  if ((borrowed_bound_truth && !request.bound_pair_truth_profile) ||
+      (borrowed_bound_truth &&
+       !request.residual_request.residual_truth_values.empty())) {
+    return refuse("join truth ownership carriage is inconsistent");
+  }
+  const auto& bound_pair_truth_values =
+      borrowed_bound_truth
+          ? *request.borrowed_bound_pair_truth_values
+          : request.residual_request.residual_truth_values;
 
   std::vector<std::size_t> accepted_pair_indices;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  std::optional<std::size_t> selected_node_memory_grant;
+  std::size_t retained_join_state_bytes = 0;
   if (request.bound_pair_truth_profile) {
     if (request.conditionless_predicate || !key_request.key_terms.empty() ||
         request.residual_request.maximum_candidate_rechecks == 0 ||
-        request.residual_request.residual_truth_values.size() != pair_count ||
+        bound_pair_truth_values.size() != pair_count ||
         pair_count > request.residual_request.maximum_candidate_rechecks) {
       return refuse("bound join truth matrix contract is invalid or exhausted");
     }
@@ -1849,6 +1982,9 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     const PhysicalNodeRecord* left_node = nullptr;
     const PhysicalNodeRecord* right_node = nullptr;
     for (const auto& node : key_request.physical_dag.nodes) {
+      if (poll_cancellation("while resolving selected join node")) {
+        return result;
+      }
       if (node.physical_node_id == key_request.selected_physical_node_id) {
         selected_node = &node;
       }
@@ -1863,6 +1999,9 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
       return refuse("bound join truth route is not one selected two-input root");
     }
     for (const auto& node : key_request.physical_dag.nodes) {
+      if (poll_cancellation("while resolving join input nodes")) {
+        return result;
+      }
       if (node.physical_node_id ==
           selected_node->input_physical_node_ids[0]) {
         left_node = &node;
@@ -1875,24 +2014,104 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     if (left_node == nullptr || right_node == nullptr) {
       return refuse("bound join truth input identity is unresolved");
     }
+    if (key_request.physical_dag.memory_budget_bytes != 0 &&
+        selected_node->memory_bytes_required != 0 &&
+        selected_node->memory_bytes_required <=
+            key_request.physical_dag.memory_budget_bytes &&
+        selected_node->memory_bytes_required <=
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::size_t>::max())) {
+      selected_node_memory_grant =
+          static_cast<std::size_t>(selected_node->memory_bytes_required);
+    }
+    if (!selected_node_memory_grant.has_value()) {
+      return refuse_resource(
+          "bound join selected-node memory grant is absent or invalid");
+    }
+    // The optimizer/runtime memory ABI measures retained encoded/binary
+    // payload plus explicit operator work state. Borrowed batches are charged
+    // once here, without copying them, before pair state is reserved.
+    retained_join_state_bytes = 2;
+    std::size_t truth_bytes = 0;
+    std::size_t accepted_bytes = 0;
+    const bool input_payload_accounted =
+        account_batch_payload(left_batch,
+                              "while accounting left join input payload",
+                              &retained_join_state_bytes) &&
+        account_batch_payload(right_batch,
+                              "while accounting right join input payload",
+                              &retained_join_state_bytes);
+    if (!input_payload_accounted) {
+      if (!result.diagnostic.ok) return result;
+      return refuse_resource("bound join retained-state size overflowed");
+    }
+    if ((pair_count != 0 &&
+         sizeof(api::EngineSqlTruthValue) >
+             std::numeric_limits<std::size_t>::max() / pair_count) ||
+        (pair_count != 0 &&
+         sizeof(std::size_t) >
+             std::numeric_limits<std::size_t>::max() / pair_count)) {
+      return refuse_resource("bound join retained-state size overflowed");
+    }
+    truth_bytes = pair_count * sizeof(api::EngineSqlTruthValue);
+    accepted_bytes = pair_count * sizeof(std::size_t);
+    if (!add_payload_bytes(truth_bytes, &retained_join_state_bytes) ||
+        !add_payload_bytes(accepted_bytes, &retained_join_state_bytes) ||
+        !add_payload_bytes(left_count, &retained_join_state_bytes) ||
+        !add_payload_bytes(right_count, &retained_join_state_bytes)) {
+      return refuse_resource("bound join retained-state size overflowed");
+    }
+    if (retained_join_state_bytes > *selected_node_memory_grant) {
+      return refuse_resource(
+          "bound join retained inputs, truth, and pair state exceed the "
+          "selected-node memory grant");
+    }
+    if (poll_cancellation("before bound join input validation")) return result;
+    bool validation_cancelled = false;
     const auto left_validation = ValidateCanonicalDescriptorBatch(
-        key_request.left_batch, left_node->output_descriptor_ids);
+        left_batch, left_node->output_descriptor_ids, cancellation_requested,
+        &validation_cancelled);
+    if (!left_validation.ok &&
+        adopt_validation_cancellation(left_validation,
+                                      validation_cancelled)) {
+      return result;
+    }
+    validation_cancelled = false;
     const auto right_validation = ValidateCanonicalDescriptorBatch(
-        key_request.right_batch, right_node->output_descriptor_ids);
+        right_batch, right_node->output_descriptor_ids, cancellation_requested,
+        &validation_cancelled);
+    if (!right_validation.ok &&
+        adopt_validation_cancellation(right_validation,
+                                      validation_cancelled)) {
+      return result;
+    }
     if (!left_validation.ok || !right_validation.ok) {
       const auto& diagnostic =
           !left_validation.ok ? left_validation : right_validation;
       return refuse(diagnostic.diagnostic_code + ":" + diagnostic.detail);
     }
+    if (poll_cancellation("after bound join input validation")) return result;
 
-    std::vector<std::uint32_t> expected_output_descriptor_ids =
-        left_node->output_descriptor_ids;
+    std::vector<std::uint32_t> expected_output_descriptor_ids;
+    expected_output_descriptor_ids.reserve(
+        left_node->output_descriptor_ids.size() +
+        right_node->output_descriptor_ids.size());
+    for (const auto descriptor_id : left_node->output_descriptor_ids) {
+      if (poll_cancellation(
+              "while binding expected join output descriptors")) {
+        return result;
+      }
+      expected_output_descriptor_ids.push_back(descriptor_id);
+    }
     if (request.join_kind != CanonicalAcceptedJoinKind::kLeftSemi &&
         request.join_kind != CanonicalAcceptedJoinKind::kLeftAnti) {
-      expected_output_descriptor_ids.insert(
-          expected_output_descriptor_ids.end(),
-          right_node->output_descriptor_ids.begin(),
-          right_node->output_descriptor_ids.end());
+      for (const auto descriptor_id : right_node->output_descriptor_ids) {
+        if (poll_cancellation(
+                "while binding expected join output descriptors")) {
+          return result;
+        }
+        expected_output_descriptor_ids.push_back(descriptor_id);
+      }
     }
     if (selected_node->output_descriptor_ids !=
         expected_output_descriptor_ids) {
@@ -1901,10 +2120,13 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
 
     accepted_pair_indices.reserve(pair_count);
     for (std::size_t pair = 0; pair < pair_count; ++pair) {
+      if (poll_cancellation("while scanning bound join truth", pair)) {
+        return result;
+      }
       bool passes = false;
       std::string refusal_detail;
       if (!api::QowPredicateConsumerPassesV1(
-              request.residual_request.residual_truth_values[pair],
+              bound_pair_truth_values[pair],
               api::EnginePredicateConsumer::join_on, &passes,
               &refusal_detail)) {
         return refuse("bound join truth at pair " + std::to_string(pair) +
@@ -1944,10 +2166,16 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     conditionless.physical_dag = key_request.physical_dag;
     conditionless.selected_physical_node_id =
         key_request.selected_physical_node_id;
-    conditionless.left_batch = key_request.left_batch;
-    conditionless.right_batch = key_request.right_batch;
-    conditionless.pair_truth_values.assign(
-        pair_count, api::EngineSqlTruthValue::true_value);
+    conditionless.left_batch = left_batch;
+    conditionless.right_batch = right_batch;
+    conditionless.pair_truth_values.reserve(pair_count);
+    for (std::size_t pair = 0; pair < pair_count; ++pair) {
+      if (poll_cancellation("while binding conditionless join truth", pair)) {
+        return result;
+      }
+      conditionless.pair_truth_values.push_back(
+          api::EngineSqlTruthValue::true_value);
+    }
     conditionless.maximum_output_rows = request.maximum_output_rows;
     conditionless.mga_authority = key_request.mga_authority;
     auto joined = ExecuteCanonicalDescriptorInnerJoin(conditionless);
@@ -1960,8 +2188,14 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
             key_request.mga_authority.statement_context)) {
       return refuse("conditionless join returned a different MGA statement context");
     }
-    accepted_pair_indices.resize(pair_count);
-    std::iota(accepted_pair_indices.begin(), accepted_pair_indices.end(), 0);
+    accepted_pair_indices.reserve(pair_count);
+    for (std::size_t pair = 0; pair < pair_count; ++pair) {
+      if (poll_cancellation("while binding conditionless pair identities",
+                            pair)) {
+        return result;
+      }
+      accepted_pair_indices.push_back(pair);
+    }
     selected_plan_uuid = std::move(joined.selected_plan_uuid);
     executed_physical_node_id = joined.executed_physical_node_id;
     causal_counter_id = joined.causal_counter_id;
@@ -1969,10 +2203,16 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     CanonicalDescriptorInnerJoinRequest cross;
     cross.physical_dag = key_request.physical_dag;
     cross.selected_physical_node_id = key_request.selected_physical_node_id;
-    cross.left_batch = key_request.left_batch;
-    cross.right_batch = key_request.right_batch;
-    cross.pair_truth_values.assign(
-        pair_count, api::EngineSqlTruthValue::true_value);
+    cross.left_batch = left_batch;
+    cross.right_batch = right_batch;
+    cross.pair_truth_values.reserve(pair_count);
+    for (std::size_t pair = 0; pair < pair_count; ++pair) {
+      if (poll_cancellation("while binding CROSS join truth", pair)) {
+        return result;
+      }
+      cross.pair_truth_values.push_back(
+          api::EngineSqlTruthValue::true_value);
+    }
     cross.maximum_output_rows = request.maximum_output_rows;
     cross.mga_authority = key_request.mga_authority;
     auto crossed = ExecuteCanonicalDescriptorInnerJoin(cross);
@@ -1985,8 +2225,13 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
             key_request.mga_authority.statement_context)) {
       return refuse("cross join returned a different MGA statement context");
     }
-    accepted_pair_indices.resize(pair_count);
-    std::iota(accepted_pair_indices.begin(), accepted_pair_indices.end(), 0);
+    accepted_pair_indices.reserve(pair_count);
+    for (std::size_t pair = 0; pair < pair_count; ++pair) {
+      if (poll_cancellation("while binding CROSS pair identities", pair)) {
+        return result;
+      }
+      accepted_pair_indices.push_back(pair);
+    }
     selected_plan_uuid = std::move(crossed.selected_plan_uuid);
     executed_physical_node_id = crossed.executed_physical_node_id;
     causal_counter_id = crossed.causal_counter_id;
@@ -2016,6 +2261,9 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
   std::size_t previous_pair = 0;
   bool has_previous_pair = false;
   for (const auto pair : accepted_pair_indices) {
+    if (poll_cancellation("while binding matched pair identities", pair)) {
+      return result;
+    }
     if (right_count == 0 || pair >= pair_count ||
         (has_previous_pair && pair <= previous_pair)) {
       return refuse("residual pair identity is not canonical");
@@ -2025,12 +2273,20 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     previous_pair = pair;
     has_previous_pair = true;
   }
-  const auto unmatched_left_row_count =
-      static_cast<std::size_t>(std::count(matched_left_rows.begin(),
-                                          matched_left_rows.end(), false));
-  const auto unmatched_right_row_count =
-      static_cast<std::size_t>(std::count(matched_right_rows.begin(),
-                                          matched_right_rows.end(), false));
+  std::size_t unmatched_left_row_count = 0;
+  for (std::size_t left = 0; left < matched_left_rows.size(); ++left) {
+    if (poll_cancellation("while counting unmatched left rows", left)) {
+      return result;
+    }
+    if (!matched_left_rows[left]) ++unmatched_left_row_count;
+  }
+  std::size_t unmatched_right_row_count = 0;
+  for (std::size_t right = 0; right < matched_right_rows.size(); ++right) {
+    if (poll_cancellation("while counting unmatched right rows", right)) {
+      return result;
+    }
+    if (!matched_right_rows[right]) ++unmatched_right_row_count;
+  }
   const auto matched_left_row_count = left_count - unmatched_left_row_count;
 
   std::size_t expected_output_rows = accepted_pair_indices.size();
@@ -2073,21 +2329,133 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     return refuse("join-kind output row bound was exceeded");
   }
 
+  if (selected_node_memory_grant.has_value()) {
+    std::size_t planned_peak_bytes = retained_join_state_bytes;
+    const bool left_only_output =
+        request.join_kind == CanonicalAcceptedJoinKind::kLeftSemi ||
+        request.join_kind == CanonicalAcceptedJoinKind::kLeftAnti;
+    const auto account_joined_pair = [&](const std::size_t pair) {
+      return right_count != 0 &&
+             account_tuple_payload(
+                 left_batch.rows[pair / right_count],
+                 "while accounting joined left payload", pair,
+                 &planned_peak_bytes) &&
+             account_tuple_payload(
+                 right_batch.rows[pair % right_count],
+                 "while accounting joined right payload", pair,
+                 &planned_peak_bytes);
+    };
+    bool output_accounted = true;
+    if (left_only_output) {
+      const bool emit_matches =
+          request.join_kind == CanonicalAcceptedJoinKind::kLeftSemi;
+      for (std::size_t left = 0; left < left_count; ++left) {
+        if (poll_cancellation("while accounting semi or anti output", left)) {
+          return result;
+        }
+        if (matched_left_rows[left] == emit_matches &&
+            !account_tuple_payload(
+                left_batch.rows[left],
+                "while accounting semi or anti row payload", left,
+                &planned_peak_bytes)) {
+          output_accounted = false;
+          break;
+        }
+      }
+    } else {
+      for (const auto pair : accepted_pair_indices) {
+        if (poll_cancellation("while accounting joined output", pair)) {
+          return result;
+        }
+        if (!account_joined_pair(pair)) {
+          output_accounted = false;
+          break;
+        }
+      }
+      if (output_accounted &&
+          (request.join_kind == CanonicalAcceptedJoinKind::kLeftOuter ||
+           request.join_kind == CanonicalAcceptedJoinKind::kFullOuter)) {
+        for (std::size_t left = 0; left < left_count; ++left) {
+          if (poll_cancellation("while accounting null-extended left output",
+                                left)) {
+            return result;
+          }
+          if (!matched_left_rows[left] &&
+              !account_tuple_payload(
+                  left_batch.rows[left],
+                  "while accounting unmatched left payload", left,
+                  &planned_peak_bytes)) {
+            output_accounted = false;
+            break;
+          }
+        }
+      }
+      if (output_accounted &&
+          (request.join_kind == CanonicalAcceptedJoinKind::kRightOuter ||
+           request.join_kind == CanonicalAcceptedJoinKind::kFullOuter)) {
+        for (std::size_t right = 0; right < right_count; ++right) {
+          if (poll_cancellation("while accounting null-extended right output",
+                                right)) {
+            return result;
+          }
+          if (!matched_right_rows[right] &&
+              !account_tuple_payload(
+                  right_batch.rows[right],
+                  "while accounting unmatched right payload", right,
+                  &planned_peak_bytes)) {
+            output_accounted = false;
+            break;
+          }
+        }
+      }
+    }
+    if (!output_accounted) {
+      if (!result.diagnostic.ok) return result;
+      return refuse_resource("bound join output size overflowed");
+    }
+    if (planned_peak_bytes > *selected_node_memory_grant) {
+      return refuse_resource(
+          "bound join retained state and exact output exceed the "
+          "selected-node memory grant");
+    }
+  }
+
   DescriptorBatch output;
-  const auto left_width = key_request.left_batch.columns.size();
+  const auto left_width = left_batch.columns.size();
   const bool left_only =
       request.join_kind == CanonicalAcceptedJoinKind::kLeftSemi ||
       request.join_kind == CanonicalAcceptedJoinKind::kLeftAnti;
-  output.columns = key_request.left_batch.columns;
+  if (poll_cancellation("before deriving join output descriptors")) {
+    return result;
+  }
+  output.columns.reserve(
+      left_batch.columns.size() +
+      (left_only ? 0 : right_batch.columns.size()));
+  for (std::size_t column = 0; column < left_batch.columns.size(); ++column) {
+    if (poll_cancellation("while copying left join output descriptors",
+                          column)) {
+      return result;
+    }
+    output.columns.push_back(left_batch.columns[column]);
+  }
   if (!left_only) {
-    output.columns.insert(output.columns.end(),
-                          key_request.right_batch.columns.begin(),
-                          key_request.right_batch.columns.end());
+    for (std::size_t column = 0; column < right_batch.columns.size();
+         ++column) {
+      if (poll_cancellation("while copying right join output descriptors",
+                            column)) {
+        return result;
+      }
+      output.columns.push_back(right_batch.columns[column]);
+    }
   }
   std::vector<bool> derived_nullable_columns(output.columns.size(), false);
   if (request.join_kind == CanonicalAcceptedJoinKind::kRightOuter ||
       request.join_kind == CanonicalAcceptedJoinKind::kFullOuter) {
     for (std::size_t column = 0; column < left_width; ++column) {
+      if (poll_cancellation("while marking nullable left descriptors",
+                            column)) {
+        return result;
+      }
       output.columns[column].nullable = true;
       derived_nullable_columns[column] = true;
     }
@@ -2096,11 +2464,18 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
       request.join_kind == CanonicalAcceptedJoinKind::kFullOuter) {
     for (std::size_t column = left_width; column < output.columns.size();
          ++column) {
+      if (poll_cancellation("while marking nullable right descriptors",
+                            column)) {
+        return result;
+      }
       output.columns[column].nullable = true;
       derived_nullable_columns[column] = true;
     }
   }
   for (std::size_t column = 0; column < output.columns.size(); ++column) {
+    if (poll_cancellation("while deriving nullable join descriptors", column)) {
+      return result;
+    }
     if (derived_nullable_columns[column] &&
         !DeriveCanonicalNullableDescriptorEncoding(
             &output.columns[column].descriptor)) {
@@ -2113,16 +2488,44 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
   const auto append_joined = [&](const std::size_t left,
                                  const std::size_t right) {
     DescriptorTuple joined;
-    joined.values = key_request.left_batch.rows[left].values;
-    joined.values.insert(joined.values.end(),
-                         key_request.right_batch.rows[right].values.begin(),
-                         key_request.right_batch.rows[right].values.end());
+    joined.values.reserve(left_batch.rows[left].values.size() +
+                          right_batch.rows[right].values.size());
+    for (std::size_t column = 0;
+         column < left_batch.rows[left].values.size(); ++column) {
+      if (poll_cancellation("while copying joined left values", column)) {
+        return false;
+      }
+      joined.values.push_back(left_batch.rows[left].values[column]);
+    }
+    for (std::size_t column = 0;
+         column < right_batch.rows[right].values.size(); ++column) {
+      if (poll_cancellation("while copying joined right values", column)) {
+        return false;
+      }
+      joined.values.push_back(right_batch.rows[right].values[column]);
+    }
     output.rows.push_back(std::move(joined));
+    return true;
   };
   const auto append_unmatched_left = [&](const std::size_t left) {
     DescriptorTuple unmatched;
-    unmatched.values = key_request.left_batch.rows[left].values;
-    for (const auto& column : key_request.right_batch.columns) {
+    unmatched.values.reserve(left_batch.rows[left].values.size() +
+                             right_batch.columns.size());
+    for (std::size_t column = 0;
+         column < left_batch.rows[left].values.size(); ++column) {
+      if (poll_cancellation("while copying unmatched left values", column)) {
+        return false;
+      }
+      unmatched.values.push_back(left_batch.rows[left].values[column]);
+    }
+    for (std::size_t column_index = 0;
+         column_index < right_batch.columns.size();
+         ++column_index) {
+      if (poll_cancellation("while null-extending right columns",
+                            column_index)) {
+        return false;
+      }
+      const auto& column = right_batch.columns[column_index];
       api::EngineTypedValue null_value;
       null_value.descriptor = column.descriptor;
       null_value.is_null = true;
@@ -2130,20 +2533,35 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
       unmatched.values.push_back(std::move(null_value));
     }
     output.rows.push_back(std::move(unmatched));
+    return true;
   };
   const auto append_unmatched_right = [&](const std::size_t right) {
     DescriptorTuple unmatched;
-    for (const auto& column : key_request.left_batch.columns) {
+    unmatched.values.reserve(left_batch.columns.size() +
+                             right_batch.rows[right].values.size());
+    for (std::size_t column_index = 0;
+         column_index < left_batch.columns.size();
+         ++column_index) {
+      if (poll_cancellation("while null-extending left columns",
+                            column_index)) {
+        return false;
+      }
+      const auto& column = left_batch.columns[column_index];
       api::EngineTypedValue null_value;
       null_value.descriptor = column.descriptor;
       null_value.is_null = true;
       null_value.state = api::EngineValueState::sql_null;
       unmatched.values.push_back(std::move(null_value));
     }
-    unmatched.values.insert(unmatched.values.end(),
-                            key_request.right_batch.rows[right].values.begin(),
-                            key_request.right_batch.rows[right].values.end());
+    for (std::size_t column = 0;
+         column < right_batch.rows[right].values.size(); ++column) {
+      if (poll_cancellation("while copying unmatched right values", column)) {
+        return false;
+      }
+      unmatched.values.push_back(right_batch.rows[right].values[column]);
+    }
     output.rows.push_back(std::move(unmatched));
+    return true;
   };
 
   if (request.join_kind == CanonicalAcceptedJoinKind::kLeftSemi ||
@@ -2151,50 +2569,95 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     const bool emit_matches =
         request.join_kind == CanonicalAcceptedJoinKind::kLeftSemi;
     for (std::size_t left = 0; left < left_count; ++left) {
+      if (poll_cancellation("while materializing semi or anti rows", left)) {
+        return result;
+      }
       if (matched_left_rows[left] == emit_matches) {
-        output.rows.push_back(key_request.left_batch.rows[left]);
+        DescriptorTuple emitted;
+        emitted.values.reserve(left_batch.rows[left].values.size());
+        for (std::size_t column = 0;
+             column < left_batch.rows[left].values.size(); ++column) {
+          if (poll_cancellation("while copying semi or anti values",
+                                column)) {
+            return result;
+          }
+          emitted.values.push_back(left_batch.rows[left].values[column]);
+        }
+        output.rows.push_back(std::move(emitted));
       }
     }
   } else if (request.join_kind == CanonicalAcceptedJoinKind::kRightOuter) {
     for (std::size_t right = 0; right < right_count; ++right) {
+      if (poll_cancellation("while materializing right outer rows", right)) {
+        return result;
+      }
       bool emitted = false;
       for (const auto pair : accepted_pair_indices) {
+        if (poll_cancellation("while scanning right outer pairs", pair)) {
+          return result;
+        }
         if (pair % right_count == right) {
-          append_joined(pair / right_count, right);
+          if (!append_joined(pair / right_count, right)) return result;
           emitted = true;
         }
       }
-      if (!emitted) append_unmatched_right(right);
+      if (!emitted && !append_unmatched_right(right)) return result;
     }
   } else if (request.join_kind == CanonicalAcceptedJoinKind::kLeftOuter ||
              request.join_kind == CanonicalAcceptedJoinKind::kFullOuter) {
     std::size_t accepted = 0;
     for (std::size_t left = 0; left < left_count; ++left) {
+      if (poll_cancellation("while materializing left outer rows", left)) {
+        return result;
+      }
       bool emitted = false;
       while (accepted < accepted_pair_indices.size() &&
              accepted_pair_indices[accepted] / right_count == left) {
-        append_joined(left, accepted_pair_indices[accepted] % right_count);
+        if (poll_cancellation("while scanning left outer pairs",
+                              accepted_pair_indices[accepted])) {
+          return result;
+        }
+        if (!append_joined(
+                left, accepted_pair_indices[accepted] % right_count)) {
+          return result;
+        }
         ++accepted;
         emitted = true;
       }
-      if (!emitted) append_unmatched_left(left);
+      if (!emitted && !append_unmatched_left(left)) return result;
     }
     if (accepted != accepted_pair_indices.size()) {
       return refuse("residual output did not map to its left input");
     }
     if (request.join_kind == CanonicalAcceptedJoinKind::kFullOuter) {
       for (std::size_t right = 0; right < right_count; ++right) {
-        if (!matched_right_rows[right]) append_unmatched_right(right);
+        if (poll_cancellation("while materializing full outer rows", right)) {
+          return result;
+        }
+        if (!matched_right_rows[right] && !append_unmatched_right(right)) {
+          return result;
+        }
       }
     }
   } else {
     for (const auto pair : accepted_pair_indices) {
-      append_joined(pair / right_count, pair % right_count);
+      if (poll_cancellation("while materializing joined pairs", pair)) {
+        return result;
+      }
+      if (!append_joined(pair / right_count, pair % right_count)) return result;
     }
   }
 
-  for (auto& row : output.rows) {
+  for (std::size_t row_index = 0; row_index < output.rows.size(); ++row_index) {
+    if (poll_cancellation("while rebinding nullable output values", row_index)) {
+      return result;
+    }
+    auto& row = output.rows[row_index];
     for (std::size_t column = 0; column < output.columns.size(); ++column) {
+      if (poll_cancellation("while rebinding nullable output cells",
+                            row_index)) {
+        return result;
+      }
       if (derived_nullable_columns[column]) {
         row.values[column].descriptor = output.columns[column].descriptor;
       }
@@ -2203,19 +2666,31 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
 
   std::vector<std::uint32_t> output_descriptor_ids;
   output_descriptor_ids.reserve(output.columns.size());
-  for (const auto& column : output.columns) {
-    output_descriptor_ids.push_back(column.descriptor_id);
+  for (std::size_t column = 0; column < output.columns.size(); ++column) {
+    if (poll_cancellation("while binding output descriptor ids", column)) {
+      return result;
+    }
+    output_descriptor_ids.push_back(output.columns[column].descriptor_id);
   }
-  auto validation =
-      ValidateCanonicalDescriptorBatch(output, output_descriptor_ids);
+  if (poll_cancellation("before join-kind output validation")) return result;
+  bool validation_cancelled = false;
+  auto validation = ValidateCanonicalDescriptorBatch(
+      output, output_descriptor_ids, cancellation_requested,
+      &validation_cancelled);
+  if (!validation.ok &&
+      adopt_validation_cancellation(validation, validation_cancelled)) {
+    return result;
+  }
   if (!validation.ok) {
     return refuse(validation.diagnostic_code + ":" + validation.detail);
   }
+  if (poll_cancellation("after join-kind output validation")) return result;
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       key_request.mga_authority, key_request.physical_dag);
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
+  if (poll_cancellation("before join-kind publication")) return result;
 
   result.diagnostic = {};
   result.output_batch = std::move(output);

@@ -6232,6 +6232,270 @@ bool CheckedMultiply(const std::uint64_t left, const std::uint64_t right,
   return true;
 }
 
+struct LiveJoinPredicateScratchBound {
+  bool ok = false;
+  bool cancelled = false;
+  std::uint64_t maximum_payload_bytes = 0;
+  std::string detail;
+};
+
+LiveJoinPredicateScratchBound BoundLiveJoinPredicateScratchBytes(
+    const api::TypedRelationalDag& dag, const std::uint32_t root_expression_id,
+    const std::uint64_t pair_payload_bytes,
+    const std::function<bool()>& abort_requested) {
+  LiveJoinPredicateScratchBound result;
+  std::unordered_map<std::uint32_t,
+                     const api::RelationalExpressionRecord*>
+      expressions;
+  expressions.reserve(dag.expressions.size());
+  for (const auto& expression : dag.expressions) {
+    if (abort_requested && abort_requested()) {
+      result.cancelled = true;
+      return result;
+    }
+    if (expression.expression_id == 0 ||
+        !expressions.emplace(expression.expression_id, &expression).second) {
+      result.detail = "join predicate expression identity is not unique";
+      return result;
+    }
+  }
+  std::unordered_map<std::uint32_t,
+                     const api::RelationalTypeDescriptor*>
+      descriptors;
+  descriptors.reserve(dag.descriptors.size());
+  for (const auto& descriptor : dag.descriptors) {
+    if (abort_requested && abort_requested()) {
+      result.cancelled = true;
+      return result;
+    }
+    if (descriptor.descriptor_id == 0 ||
+        !descriptors.emplace(descriptor.descriptor_id, &descriptor).second) {
+      result.detail = "join predicate descriptor identity is not unique";
+      return result;
+    }
+  }
+  const auto upper_ascii = [](std::string value) {
+    std::ranges::transform(value, value.begin(), [](const unsigned char ch) {
+      return static_cast<char>(std::toupper(ch));
+    });
+    return value;
+  };
+  struct EvaluationBound {
+    std::uint64_t output_payload_bytes = 0;
+    std::uint64_t peak_scratch_bytes = 0;
+  };
+  std::unordered_map<std::uint32_t, EvaluationBound> memo;
+  std::unordered_set<std::uint32_t> visiting;
+  std::function<bool(std::uint32_t, EvaluationBound*)> bound_expression;
+  bound_expression = [&](const std::uint32_t expression_id,
+                         EvaluationBound* bound) {
+    if (abort_requested && abort_requested()) {
+      result.cancelled = true;
+      return false;
+    }
+    const auto cached = memo.find(expression_id);
+    if (cached != memo.end()) {
+      *bound = cached->second;
+      return true;
+    }
+    if (!visiting.insert(expression_id).second) {
+      result.detail = "join predicate expression graph is cyclic";
+      return false;
+    }
+    const auto expression = expressions.find(expression_id);
+    if (expression == expressions.end()) {
+      result.detail = "join predicate references an absent expression";
+      visiting.erase(expression_id);
+      return false;
+    }
+    const auto& record = *expression->second;
+    const auto descriptor = descriptors.find(record.result_descriptor_id);
+    if (descriptor == descriptors.end()) {
+      result.detail = "join predicate result descriptor is absent";
+      visiting.erase(expression_id);
+      return false;
+    }
+    const auto& type = *descriptor->second;
+    const std::uint64_t declared_extent =
+        static_cast<std::uint64_t>(type.width.value_or(0)) +
+        static_cast<std::uint64_t>(type.precision.value_or(0)) +
+        static_cast<std::uint64_t>(type.scale.value_or(0)) + 64;
+    EvaluationBound computed;
+    const auto finish_leaf = [&](const std::uint64_t payload) {
+      computed.output_payload_bytes = payload;
+      computed.peak_scratch_bytes = payload;
+      return true;
+    };
+    const auto finish_unary = [&](const EvaluationBound& child,
+                                  const std::uint64_t output,
+                                  const std::uint64_t copies) {
+      std::uint64_t frame_payload = 0;
+      if (!CheckedAdd(child.output_payload_bytes, output, &frame_payload) ||
+          !CheckedMultiply(frame_payload, copies, &frame_payload)) {
+        return false;
+      }
+      computed.output_payload_bytes = output;
+      computed.peak_scratch_bytes =
+          std::max(child.peak_scratch_bytes, frame_payload);
+      return true;
+    };
+    const auto finish_binary = [&](const EvaluationBound& left,
+                                   const EvaluationBound& right,
+                                   const std::uint64_t output,
+                                   const std::uint64_t copies) {
+      std::uint64_t right_with_left = 0;
+      std::uint64_t frame_payload = 0;
+      if (!CheckedAdd(left.output_payload_bytes, right.peak_scratch_bytes,
+                      &right_with_left) ||
+          !CheckedAdd(left.output_payload_bytes, right.output_payload_bytes,
+                      &frame_payload) ||
+          !CheckedAdd(frame_payload, output, &frame_payload) ||
+          !CheckedMultiply(frame_payload, copies, &frame_payload)) {
+        return false;
+      }
+      computed.output_payload_bytes = output;
+      computed.peak_scratch_bytes =
+          std::max({left.peak_scratch_bytes, right_with_left, frame_payload});
+      return true;
+    };
+
+    bool bounded = false;
+    switch (record.expression_kind) {
+      case api::RelationalExpressionKind::kLiteral: {
+        if (!record.child_expression_ids.empty()) break;
+        std::uint64_t literal_payload = declared_extent;
+        if (record.literal_or_parameter_ref.has_value() &&
+            !CheckedAdd(literal_payload,
+                        record.literal_or_parameter_ref->size(),
+                        &literal_payload)) {
+          break;
+        }
+        bounded = finish_leaf(literal_payload);
+        break;
+      }
+      case api::RelationalExpressionKind::kIdentifier: {
+        if (!record.child_expression_ids.empty()) break;
+        std::uint64_t identifier_payload = 0;
+        bounded = CheckedAdd(pair_payload_bytes, declared_extent,
+                             &identifier_payload) &&
+                  finish_leaf(identifier_payload);
+        break;
+      }
+      case api::RelationalExpressionKind::kParenthesized: {
+        if (record.child_expression_ids.size() != 1) break;
+        EvaluationBound child;
+        std::uint64_t output = 0;
+        bounded = bound_expression(record.child_expression_ids.front(),
+                                   &child) &&
+                  CheckedAdd(child.output_payload_bytes, declared_extent,
+                             &output) &&
+                  finish_unary(child, output, 3);
+        break;
+      }
+      case api::RelationalExpressionKind::kUnary: {
+        const auto operation =
+            record.operator_name.has_value()
+                ? upper_ascii(*record.operator_name)
+                : std::string{};
+        if (record.child_expression_ids.size() != 1 ||
+            (operation != "+" && operation != "-" &&
+             operation != "NOT")) {
+          break;
+        }
+        EvaluationBound child;
+        std::uint64_t output = 0;
+        bounded = bound_expression(record.child_expression_ids.front(),
+                                   &child) &&
+                  CheckedAdd(child.output_payload_bytes, declared_extent,
+                             &output) &&
+                  finish_unary(child, output, 4);
+        break;
+      }
+      case api::RelationalExpressionKind::kBinary: {
+        const auto operation =
+            record.operator_name.has_value()
+                ? upper_ascii(*record.operator_name)
+                : std::string{};
+        const bool arithmetic =
+            operation == "+" || operation == "-" || operation == "*" ||
+            operation == "/" || operation == "%";
+        const bool logical = operation == "AND" || operation == "OR" ||
+                             operation == "XOR";
+        const bool text_concat = operation == "||";
+        const bool text_match = operation == "LIKE" || operation == "ILIKE";
+        const bool comparison =
+            operation == "IS" || operation == "=" || operation == "<>" ||
+            operation == "!=" || operation == "<" || operation == "<=" ||
+            operation == ">" || operation == ">=" ||
+            operation == "IS DISTINCT FROM" ||
+            operation == "IS NOT DISTINCT FROM";
+        if (record.child_expression_ids.size() != 2 ||
+            (!arithmetic && !logical && !text_concat && !text_match &&
+             !comparison)) {
+          break;
+        }
+        EvaluationBound left;
+        EvaluationBound right;
+        std::uint64_t child_payload = 0;
+        std::uint64_t output = 0;
+        if (!bound_expression(record.child_expression_ids[0], &left) ||
+            !bound_expression(record.child_expression_ids[1], &right) ||
+            !CheckedAdd(left.output_payload_bytes,
+                        right.output_payload_bytes, &child_payload)) {
+          break;
+        }
+        if (logical || text_match || comparison) {
+          bounded = CheckedAdd(8, declared_extent, &output) &&
+                    finish_binary(left, right, output,
+                                  text_match ? 6 : 4);
+        } else {
+          bounded = CheckedAdd(child_payload, declared_extent, &output) &&
+                    finish_binary(left, right, output, 4);
+        }
+        break;
+      }
+      case api::RelationalExpressionKind::kFunctionCall: {
+        // POINT is the sole functionless built-in in this runtime and has a
+        // fixed 16-byte result. External function callbacks have no payload
+        // ceiling in this ABI and therefore remain fail-closed here.
+        if (record.function_uuid.has_value() ||
+            record.operator_name != "POINT" ||
+            record.child_expression_ids.size() != 2) {
+          break;
+        }
+        EvaluationBound left;
+        EvaluationBound right;
+        std::uint64_t output = 0;
+        bounded = bound_expression(record.child_expression_ids[0], &left) &&
+                  bound_expression(record.child_expression_ids[1], &right) &&
+                  CheckedAdd(16, declared_extent, &output) &&
+                  finish_binary(left, right, output, 4);
+        break;
+      }
+      case api::RelationalExpressionKind::kParameter:
+        break;
+    }
+    visiting.erase(expression_id);
+    if (!bounded) {
+      if (result.detail.empty()) {
+        result.detail =
+            "join predicate is outside the finite payload-bounded profile "
+            "or its multiplicity-aware bound overflowed";
+      }
+      return false;
+    }
+    memo.emplace(expression_id, computed);
+    *bound = computed;
+    return true;
+  };
+
+  EvaluationBound root_bound;
+  if (!bound_expression(root_expression_id, &root_bound)) return result;
+  result.maximum_payload_bytes = root_bound.peak_scratch_bytes;
+  result.ok = true;
+  return result;
+}
+
 std::optional<std::size_t> SelectedNodeAggregateMemoryBound(
     const exec::TypedPhysicalNodeDag& dag,
     const exec::PhysicalNodeRecord& node) {
@@ -7952,6 +8216,66 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
               " input cardinality differs or overflows its selected cost";
           return step;
         }
+        const exec::PhysicalAdmissionEvidence* cancellation_policy = nullptr;
+        bool duplicate_cancellation_policy = false;
+        for (const auto& evidence : dag.admission_evidence) {
+          if (evidence.stage !=
+              exec::PhysicalAdmissionStage::kPolicyCapability) {
+            continue;
+          }
+          if (cancellation_policy != nullptr) {
+            duplicate_cancellation_policy = true;
+            break;
+          }
+          cancellation_policy = &evidence;
+        }
+        if (cancellation_policy == nullptr ||
+            duplicate_cancellation_policy ||
+            cancellation_policy->evidence_uuid.empty()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-CANCELLATION-POLICY-V1";
+          step.diagnostic.detail = operation_name +
+              " requires one exact cancellation policy evidence row";
+          return step;
+        }
+        const auto cancellation_requested =
+            mga_context.query_cancellation_requested
+                ? mga_context.query_cancellation_requested
+                : std::function<bool()>([] { return false; });
+        const auto poll_cancellation = [&](const char* phase) {
+          try {
+            if (!cancellation_requested()) return false;
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-012-JOIN-CANCELLED-V1";
+            step.diagnostic.detail =
+                std::string("live join cancellation observed ") + phase;
+            step.cancellation_observed = true;
+            step.transient_state_cleanup_proven = true;
+            step.cancellation_evidence_uuid =
+                cancellation_policy->evidence_uuid;
+            return true;
+          } catch (const std::exception& exception) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+            step.diagnostic.detail =
+                std::string("live join cancellation probe threw: ") +
+                exception.what();
+            step.transient_state_cleanup_proven = true;
+            return true;
+          } catch (...) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+            step.diagnostic.detail =
+                "live join cancellation probe threw a non-standard exception";
+            step.transient_state_cleanup_proven = true;
+            return true;
+          }
+        };
+        if (poll_cancellation("before binding input batches")) return step;
         exec::CanonicalJoinKindRequest join_request;
         auto& key_request = join_request.residual_request.key_request;
         key_request.physical_dag = dag;
@@ -7971,28 +8295,155 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
           key_request.physical_dag.root_physical_node_id =
               node.physical_node_id;
         }
+        if (poll_cancellation("after binding operator-local join DAG")) {
+          return step;
+        }
         key_request.selected_physical_node_id = node.physical_node_id;
-        key_request.left_batch = left_batch;
-        key_request.right_batch = right_batch;
+        key_request.borrowed_left_batch = &left_batch;
+        key_request.borrowed_right_batch = &right_batch;
         key_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, key_request.physical_dag);
-        auto runtime_truth_values = predicate_truth_values;
-        if (runtime_bounded_inputs) {
-          runtime_truth_values.clear();
-          runtime_truth_values.reserve(actual_pair_count);
-          if (join_kind == exec::CanonicalAcceptedJoinKind::kCross) {
-            runtime_truth_values.assign(
-                actual_pair_count, api::EngineSqlTruthValue::true_value);
-          } else {
-            if (runtime_predicate_expression_id == 0) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "QOW-DIAG-RELATIONAL-LIVE-JOIN-PREDICATE-V1";
-              step.diagnostic.detail =
-                  operation_name + " runtime predicate identity is absent";
-              return step;
+        if (poll_cancellation("before predicate evaluation")) return step;
+        if (runtime_bounded_inputs &&
+            join_kind != exec::CanonicalAcceptedJoinKind::kCross &&
+            runtime_predicate_expression_id == 0) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-PREDICATE-V1";
+          step.diagnostic.detail =
+              operation_name + " runtime predicate identity is absent";
+          return step;
+        }
+        const auto selected_node_memory_bound =
+            SelectedNodeAggregateMemoryBound(dag, node);
+        const auto truth_value_count = runtime_bounded_inputs
+                                           ? actual_pair_count
+                                           : predicate_truth_values.size();
+        std::uint64_t truth_value_bytes = 0;
+        std::uint64_t preflight_retained_bytes = 2;
+        const auto account_batch_payload =
+            [&](const exec::DescriptorBatch& batch, const char* phase) {
+              for (std::size_t row = 0; row < batch.rows.size(); ++row) {
+                for (std::size_t column = 0;
+                     column < batch.rows[row].values.size(); ++column) {
+                  if (poll_cancellation(phase)) return false;
+                  const auto& value = batch.rows[row].values[column];
+                  if (!CheckedAdd(preflight_retained_bytes,
+                                  value.encoded_value.size(),
+                                  &preflight_retained_bytes) ||
+                      !CheckedAdd(preflight_retained_bytes,
+                                  value.binary_value.size(),
+                                  &preflight_retained_bytes)) {
+                    return false;
+                  }
+                }
+              }
+              return true;
+            };
+        const auto largest_row_payload =
+            [&](const exec::DescriptorBatch& batch,
+                std::uint64_t* largest) {
+              *largest = 0;
+              for (std::size_t row = 0; row < batch.rows.size(); ++row) {
+                std::uint64_t row_bytes = 0;
+                for (std::size_t column = 0;
+                     column < batch.rows[row].values.size(); ++column) {
+                  if (poll_cancellation(
+                          "while accounting predicate row scratch")) {
+                    return false;
+                  }
+                  const auto& value = batch.rows[row].values[column];
+                  if (!CheckedAdd(row_bytes, value.encoded_value.size(),
+                                  &row_bytes) ||
+                      !CheckedAdd(row_bytes, value.binary_value.size(),
+                                  &row_bytes)) {
+                    return false;
+                  }
+                }
+                *largest = std::max(*largest, row_bytes);
+              }
+              return true;
+            };
+        std::uint64_t left_row_scratch = 0;
+        std::uint64_t right_row_scratch = 0;
+        bool preflight_ok =
+            selected_node_memory_bound.has_value() &&
+            CheckedMultiply(truth_value_count,
+                            sizeof(api::EngineSqlTruthValue),
+                            &truth_value_bytes) &&
+            account_batch_payload(
+                left_batch, "while accounting left join input payload") &&
+            account_batch_payload(
+                right_batch, "while accounting right join input payload") &&
+            CheckedAdd(preflight_retained_bytes, truth_value_bytes,
+                       &preflight_retained_bytes);
+        if (preflight_ok && runtime_bounded_inputs &&
+            join_kind != exec::CanonicalAcceptedJoinKind::kCross) {
+          preflight_ok = largest_row_payload(left_batch, &left_row_scratch) &&
+                         largest_row_payload(right_batch,
+                                             &right_row_scratch) &&
+                         CheckedAdd(preflight_retained_bytes,
+                                    left_row_scratch,
+                                    &preflight_retained_bytes) &&
+                         CheckedAdd(preflight_retained_bytes,
+                                    right_row_scratch,
+                                    &preflight_retained_bytes);
+          if (preflight_ok) {
+            std::uint64_t pair_payload_bytes = 0;
+            if (!CheckedAdd(left_row_scratch, right_row_scratch,
+                            &pair_payload_bytes)) {
+              preflight_ok = false;
+            } else {
+              const auto predicate_scratch =
+                  BoundLiveJoinPredicateScratchBytes(
+                      runtime_relational_dag,
+                      runtime_predicate_expression_id,
+                      pair_payload_bytes,
+                      [&] {
+                        return poll_cancellation(
+                            "while bounding predicate evaluation scratch");
+                      });
+              if (predicate_scratch.cancelled) return step;
+              if (!predicate_scratch.ok) {
+                step.diagnostic.ok = false;
+                step.diagnostic.diagnostic_code =
+                    "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+                step.diagnostic.detail = operation_name + ":" +
+                                         predicate_scratch.detail;
+                return step;
+              }
+              preflight_ok = CheckedAdd(
+                  preflight_retained_bytes,
+                  predicate_scratch.maximum_payload_bytes,
+                  &preflight_retained_bytes);
             }
+          }
+        }
+        if (!preflight_ok ||
+            preflight_retained_bytes > *selected_node_memory_bound) {
+          if (!step.diagnostic.ok) return step;
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail = operation_name +
+              " retained inputs, truth, or predicate scratch exceed the "
+              "selected-node memory grant";
+          return step;
+        }
+        std::vector<api::EngineSqlTruthValue> runtime_truth_values;
+        const std::vector<api::EngineSqlTruthValue>* bound_truth_values =
+            &predicate_truth_values;
+        if (runtime_bounded_inputs) {
+          runtime_truth_values.reserve(actual_pair_count);
+          bound_truth_values = &runtime_truth_values;
+          if (join_kind == exec::CanonicalAcceptedJoinKind::kCross) {
+            for (std::size_t pair = 0; pair < actual_pair_count; ++pair) {
+              if (poll_cancellation("while binding CROSS truth")) return step;
+              runtime_truth_values.push_back(
+                  api::EngineSqlTruthValue::true_value);
+            }
+          } else {
             CanonicalRelationalExpressionRuntime expression_runtime(
                 runtime_relational_dag, runtime_expression_services);
             std::vector<api::EngineTypedValue> pair_values;
@@ -8000,11 +8451,22 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
                                 right_batch.columns.size());
             for (const auto& left : left_batch.rows) {
               for (const auto& right : right_batch.rows) {
+                if (poll_cancellation("while evaluating ON truth")) return step;
                 pair_values.clear();
-                pair_values.insert(pair_values.end(), left.values.begin(),
-                                   left.values.end());
-                pair_values.insert(pair_values.end(), right.values.begin(),
-                                   right.values.end());
+                for (const auto& value : left.values) {
+                  if (poll_cancellation(
+                          "while copying left predicate values")) {
+                    return step;
+                  }
+                  pair_values.push_back(value);
+                }
+                for (const auto& value : right.values) {
+                  if (poll_cancellation(
+                          "while copying right predicate values")) {
+                    return step;
+                  }
+                  pair_values.push_back(value);
+                }
                 api::EngineSqlTruthValue truth =
                     api::EngineSqlTruthValue::unknown;
                 std::string detail;
@@ -8024,8 +8486,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
             }
           }
         }
-        join_request.residual_request.residual_truth_values =
-            std::move(runtime_truth_values);
+        join_request.borrowed_bound_pair_truth_values = bound_truth_values;
         join_request.residual_request.maximum_candidate_rechecks =
             std::max<std::size_t>(1, runtime_bounded_inputs
                                          ? actual_pair_count
@@ -8034,19 +8495,36 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
         join_request.bound_pair_truth_profile = true;
         join_request.maximum_output_rows =
             std::max<std::size_t>(1, output_row_bound);
-        const auto join_result =
+        join_request.cancellation_requested = cancellation_requested;
+        if (poll_cancellation("before canonical join execution")) return step;
+        auto join_result =
             exec::ExecuteCanonicalJoinKind(join_request);
-        if (!join_result.diagnostic.ok) {
+        if (join_result.cancellation_observed) {
           step.diagnostic = join_result.diagnostic;
+          step.cancellation_observed = true;
+          step.transient_state_cleanup_proven =
+              join_result.transient_state_cleanup_proven;
+          step.cancellation_evidence_uuid =
+              cancellation_policy->evidence_uuid;
           return step;
         }
+        if (!join_result.diagnostic.ok) {
+          step.diagnostic = join_result.diagnostic;
+          if (step.diagnostic.diagnostic_code ==
+              "QOW-DIAG-QRY-012-CANCELLATION-PROBE-V1") {
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+          }
+          return step;
+        }
+        if (poll_cancellation("after canonical join execution")) return step;
         step.result_handle_id = node.physical_node_id;
         step.input_row_count =
             left_batch.rows.size() + right_batch.rows.size();
         step.rows_examined = runtime_bounded_inputs ? actual_pair_count
                                                     : pair_count;
         step.output_row_count = join_result.output_batch.rows.size();
-        step.materialized_output_batch = join_result.output_batch;
+        step.materialized_output_batch = std::move(join_result.output_batch);
         step.mga_statement_context = join_result.mga_statement_context;
         return step;
       };
@@ -8057,17 +8535,69 @@ exec::CanonicalPhysicalExecutorRegistration
 WithMultilegResultDescriptorRebindingV1(
     exec::CanonicalPhysicalExecutorRegistration registration,
     std::vector<opt::MultilegDescriptorAllocationV1> allocations,
-    std::string operation_name) {
+    std::string operation_name,
+    std::function<bool()> cancellation_requested) {
   auto execute = std::move(registration.execute);
   registration.execute =
       [execute = std::move(execute), allocations = std::move(allocations),
-       operation_name = std::move(operation_name)](
+       operation_name = std::move(operation_name),
+       cancellation_requested = std::move(cancellation_requested)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs)
           mutable {
         auto step = execute(dag, node, inputs);
         if (!step.diagnostic.ok) return step;
+        const exec::PhysicalAdmissionEvidence* cancellation_policy = nullptr;
+        for (const auto& evidence : dag.admission_evidence) {
+          if (evidence.stage !=
+              exec::PhysicalAdmissionStage::kPolicyCapability) {
+            continue;
+          }
+          if (cancellation_policy != nullptr) {
+            cancellation_policy = nullptr;
+            break;
+          }
+          cancellation_policy = &evidence;
+        }
+        const auto poll_cancellation = [&](const char* phase) {
+          try {
+            if (!cancellation_requested || !cancellation_requested()) {
+              return false;
+            }
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-012-JOIN-CANCELLED-V1";
+            step.diagnostic.detail = operation_name +
+                                     " cancellation observed " + phase;
+            step.cancellation_observed = true;
+            step.transient_state_cleanup_proven = true;
+            step.cancellation_evidence_uuid =
+                cancellation_policy == nullptr
+                    ? std::string{}
+                    : cancellation_policy->evidence_uuid;
+          } catch (const std::exception& exception) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+            step.diagnostic.detail = operation_name +
+                                     " cancellation probe threw: " +
+                                     exception.what();
+            step.transient_state_cleanup_proven = true;
+          } catch (...) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+            step.diagnostic.detail = operation_name +
+                " cancellation probe threw a non-standard exception";
+            step.transient_state_cleanup_proven = true;
+          }
+          step.result_handle_id = 0;
+          step.output_row_count = 0;
+          step.materialized_output_batch.reset();
+          return true;
+        };
+        if (poll_cancellation("before descriptor rebinding")) return step;
         if (!step.materialized_output_batch.has_value() ||
             allocations.size() !=
                 step.materialized_output_batch->columns.size() ||
@@ -8081,7 +8611,134 @@ WithMultilegResultDescriptorRebindingV1(
           return step;
         }
         auto& batch = *step.materialized_output_batch;
+        std::uint64_t projected_memory_bytes = 1;
+        // Dispatcher inputs remain live throughout wrapper execution, so the
+        // rebound publication peak must charge them before output metadata.
+        for (const auto& input : inputs) {
+          if (!input.materialized_output_batch.has_value()) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_RESULT_DESCRIPTOR_DEMAND_INVALID_V1";
+            step.diagnostic.detail = operation_name +
+                " descriptor rebinding input batch is absent";
+            step.materialized_output_batch.reset();
+            return step;
+          }
+          for (std::size_t row = 0;
+               row < input.materialized_output_batch->rows.size(); ++row) {
+            for (std::size_t column = 0;
+                 column < input.materialized_output_batch->rows[row]
+                              .values.size();
+                 ++column) {
+              if (poll_cancellation(
+                      "while accounting rebound input payload")) {
+                return step;
+              }
+              const auto& value =
+                  input.materialized_output_batch->rows[row].values[column];
+              if (!CheckedAdd(projected_memory_bytes,
+                              value.encoded_value.size(),
+                              &projected_memory_bytes) ||
+                  !CheckedAdd(projected_memory_bytes,
+                              value.binary_value.size(),
+                              &projected_memory_bytes)) {
+                step.diagnostic.ok = false;
+                step.diagnostic.diagnostic_code =
+                    "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+                step.diagnostic.detail = operation_name +
+                    " retained input payload size overflowed";
+                step.materialized_output_batch.reset();
+                return step;
+              }
+            }
+          }
+        }
+        for (std::size_t row = 0; row < batch.rows.size(); ++row) {
+          for (std::size_t column = 0;
+               column < batch.rows[row].values.size(); ++column) {
+            if (poll_cancellation("while accounting rebound result payload")) {
+              return step;
+            }
+            const auto& value = batch.rows[row].values[column];
+            if (!CheckedAdd(projected_memory_bytes,
+                            value.encoded_value.size(),
+                            &projected_memory_bytes) ||
+                !CheckedAdd(projected_memory_bytes,
+                            value.binary_value.size(),
+                            &projected_memory_bytes)) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+              step.diagnostic.detail = operation_name +
+                                       " result payload size overflowed";
+              step.materialized_output_batch.reset();
+              return step;
+            }
+          }
+        }
         for (std::size_t ordinal = 0; ordinal < allocations.size(); ++ordinal) {
+          if (poll_cancellation("while planning descriptor rebinding")) {
+            return step;
+          }
+          const auto& allocation = allocations[ordinal];
+          if (!allocation.demand.derived) continue;
+          const auto encoded_size =
+              std::string("type_uuid=").size() + allocation.type_uuid.size() +
+              std::string(";nullability=").size() +
+              std::string(allocation.demand.nullable ? "nullable"
+                                                     : "non_null").size();
+          std::uint64_t descriptor_bytes = 0;
+          if (!CheckedAdd(allocation.descriptor_uuid.size(),
+                          std::string("scalar").size(), &descriptor_bytes) ||
+              !CheckedAdd(descriptor_bytes,
+                          allocation.demand.canonical_type_name.size(),
+                          &descriptor_bytes) ||
+              !CheckedAdd(descriptor_bytes, encoded_size,
+                          &descriptor_bytes) ||
+              !CheckedAdd(projected_memory_bytes, descriptor_bytes,
+                          &projected_memory_bytes)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail = operation_name +
+                                     " descriptor rebound size overflowed";
+            step.materialized_output_batch.reset();
+            return step;
+          }
+          for (std::size_t row = 0; row < batch.rows.size(); ++row) {
+            if (poll_cancellation("while planning value rebinding")) {
+              return step;
+            }
+            if (ordinal >= batch.rows[row].values.size() ||
+                !CheckedAdd(projected_memory_bytes, descriptor_bytes,
+                            &projected_memory_bytes)) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  ordinal >= batch.rows[row].values.size()
+                      ? "SB_MODEL_RESULT_DESCRIPTOR_DEMAND_INVALID_V1"
+                      : "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+              step.diagnostic.detail = operation_name +
+                  " descriptor rebound row width or size changed";
+              step.materialized_output_batch.reset();
+              return step;
+            }
+          }
+        }
+        if (node.memory_bytes_required == 0 ||
+            node.memory_bytes_required > dag.memory_budget_bytes ||
+            projected_memory_bytes > node.memory_bytes_required) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail = operation_name +
+              " descriptor-rebound output exceeds the selected-node grant";
+          step.materialized_output_batch.reset();
+          return step;
+        }
+        for (std::size_t ordinal = 0; ordinal < allocations.size(); ++ordinal) {
+          if (poll_cancellation("while rebinding result descriptors")) {
+            return step;
+          }
           const auto& allocation = allocations[ordinal];
           auto& column = batch.columns[ordinal];
           if (allocation.demand.derived) {
@@ -8111,6 +8768,9 @@ WithMultilegResultDescriptorRebindingV1(
             return step;
           }
           for (auto& row : batch.rows) {
+            if (poll_cancellation("while rebinding result values")) {
+              return step;
+            }
             if (ordinal >= row.values.size()) {
               step.diagnostic.ok = false;
               step.diagnostic.diagnostic_code =
@@ -8123,13 +8783,29 @@ WithMultilegResultDescriptorRebindingV1(
             row.values[ordinal].descriptor = column.descriptor;
           }
         }
+        bool validation_cancelled = false;
         const auto validated = exec::ValidateCanonicalDescriptorBatch(
-            batch, node.output_descriptor_ids);
+            batch, node.output_descriptor_ids, cancellation_requested,
+            &validation_cancelled);
         if (!validated.ok) {
           step.diagnostic = validated;
+          if (validated.diagnostic_code ==
+                  "QOW-DIAG-QRY-012-JOIN-CANCELLED-V1" ||
+              validated.diagnostic_code ==
+                  "QOW-DIAG-QRY-012-CANCELLATION-PROBE-V1") {
+            step.cancellation_observed = validation_cancelled;
+            step.transient_state_cleanup_proven = true;
+            step.cancellation_evidence_uuid =
+                validation_cancelled && cancellation_policy != nullptr
+                    ? cancellation_policy->evidence_uuid
+                    : std::string{};
+          }
+          step.result_handle_id = 0;
+          step.output_row_count = 0;
           step.materialized_output_batch.reset();
           return step;
         }
+        if (poll_cancellation("after descriptor rebinding")) return step;
         return step;
       };
   return registration;
@@ -43142,7 +43818,10 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
       WithMultilegResultDescriptorRebindingV1(
           std::move(join_registration),
           descriptor_preflight.publication_allocations,
-          "captured model-family join"));
+          "captured model-family join",
+          input.context.query_cancellation_requested
+              ? input.context.query_cancellation_requested
+              : std::function<bool()>([] { return false; })));
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
       input.context.statement_uuid.canonical;
