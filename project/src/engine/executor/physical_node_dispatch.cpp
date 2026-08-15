@@ -498,6 +498,47 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
       return refuse(post_callback_authority);
     }
 
+    if (step.cancellation_observed) {
+      const PhysicalAdmissionEvidence* cancellation_policy = nullptr;
+      bool duplicate_cancellation_policy = false;
+      for (const auto& evidence : request.physical_dag.admission_evidence) {
+        if (evidence.stage != PhysicalAdmissionStage::kPolicyCapability) {
+          continue;
+        }
+        if (cancellation_policy != nullptr) {
+          duplicate_cancellation_policy = true;
+          break;
+        }
+        cancellation_policy = &evidence;
+      }
+      const bool exact_selected_identity =
+          step.selected_plan_uuid == request.physical_dag.selected_plan_uuid &&
+          step.executed_physical_node_id == node.physical_node_id &&
+          step.causal_counter_id == node.causal_counter_id &&
+          step.output_descriptor_ids == node.output_descriptor_ids &&
+          step.authority.engine_mga_snapshot_bound &&
+          (request.physical_dag.abi_version != 2 ||
+           PhysicalMgaStatementContextEqual(
+               step.mga_statement_context,
+               request.mga_authority.statement_context)) &&
+          !HasForbiddenAuthority(step.authority);
+      if (!step.transient_state_cleanup_proven || step.diagnostic.ok ||
+          step.result_handle_id != 0 ||
+          step.materialized_output_batch.has_value() ||
+          !exact_selected_identity || cancellation_policy == nullptr ||
+          duplicate_cancellation_policy ||
+          step.cancellation_evidence_uuid !=
+              cancellation_policy->evidence_uuid) {
+        return refuse(Refusal(
+            "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-RECEIPT-V1",
+            "selected executor cancellation receipt lacks exact identity, "
+            "policy evidence, or atomic cleanup"));
+      }
+      cancellation_observed = true;
+      return refuse(Refusal(
+          "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1",
+          "physical DAG cancellation observed inside a selected node"));
+    }
     if (!step.diagnostic.ok) {
       return refuse(std::move(step.diagnostic));
     }

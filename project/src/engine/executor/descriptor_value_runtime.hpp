@@ -573,6 +573,8 @@ struct CanonicalLateralSubqueryResult {
 
 using CanonicalRecursiveCteStep =
     std::function<DescriptorBatch(const DescriptorBatch&, std::size_t)>;
+using CanonicalRecursiveCteCancellationProbe =
+    std::function<bool(std::size_t)>;
 
 struct CanonicalRecursiveCteWorkingRequest {
   TypedPhysicalNodeDag physical_dag;
@@ -582,6 +584,8 @@ struct CanonicalRecursiveCteWorkingRequest {
   std::size_t maximum_iteration_count = 0;
   std::size_t maximum_working_row_count = 0;
   std::size_t maximum_result_row_count = 0;
+  CanonicalRecursiveCteCancellationProbe cancellation_requested;
+  std::string cancellation_evidence_uuid;
   CanonicalExecutionMgaAuthority mga_authority;
 };
 
@@ -598,6 +602,10 @@ struct CanonicalRecursiveCteWorkingResult {
   std::size_t recursive_iteration_count = 0;
   std::size_t maximum_observed_working_row_count = 0;
   bool converged = false;
+  bool cancellation_observed = false;
+  std::size_t cancellation_iteration_ordinal = 0;
+  bool working_state_cleaned = false;
+  std::string cancellation_evidence_uuid;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
@@ -681,6 +689,8 @@ struct CanonicalRecursiveCteSearchCycleRequest {
   std::size_t maximum_iteration_count = 0;
   std::size_t maximum_working_row_count = 0;
   std::size_t maximum_result_row_count = 0;
+  CanonicalRecursiveCteCancellationProbe cancellation_requested;
+  std::string cancellation_evidence_uuid;
   CanonicalExecutionMgaAuthority mga_authority;
 };
 
@@ -698,6 +708,10 @@ struct CanonicalRecursiveCteSearchCycleResult {
   std::size_t recursive_iteration_count = 0;
   std::size_t cycle_row_count = 0;
   bool converged = false;
+  bool cancellation_observed = false;
+  std::size_t cancellation_iteration_ordinal = 0;
+  bool working_state_cleaned = false;
+  std::string cancellation_evidence_uuid;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
@@ -717,9 +731,6 @@ struct CanonicalRecursiveCteResourceResult {
   std::string memory_grant_evidence_uuid;
   PhysicalMgaStatementContext mga_statement_context;
 };
-
-using CanonicalRecursiveCteCancellationProbe =
-    std::function<bool(std::size_t)>;
 
 struct CanonicalRecursiveCteCancellationRequest {
   CanonicalRecursiveCteWorkingRequest working_request;
@@ -1430,6 +1441,9 @@ struct CanonicalPhysicalDispatchStepResult {
   // conservative callback-started semantics.
   bool data_access_observation_known = false;
   bool data_access_observed = false;
+  bool cancellation_observed = false;
+  bool transient_state_cleanup_proven = false;
+  std::string cancellation_evidence_uuid;
   std::string current_relation_descriptor_uuid;
   std::uint64_t current_relation_descriptor_generation = 0;
   // Only an engine executor may attach a materialized typed batch. The

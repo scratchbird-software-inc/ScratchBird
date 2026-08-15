@@ -40,6 +40,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <iomanip>
 #include <iterator>
 #include <limits>
@@ -10020,6 +10021,56 @@ MakeLiveRecursiveCteRegistration(
           step.diagnostic.detail = std::move(detail);
           return step;
         }
+        const auto cancellation_policy = std::ranges::find_if(
+            operator_dag.admission_evidence,
+            [](const exec::PhysicalAdmissionEvidence& evidence) {
+              return evidence.stage ==
+                     exec::PhysicalAdmissionStage::kPolicyCapability;
+            });
+        if (cancellation_policy ==
+            operator_dag.admission_evidence.end()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-RECURSIVE-CTE-INPUT-V1";
+          step.diagnostic.detail =
+              "recursive CTE cancellation policy evidence is missing";
+          return step;
+        }
+        const auto cancellation_evidence_uuid =
+            cancellation_policy->evidence_uuid;
+        const auto cancellation_requested =
+            mga_context.query_cancellation_requested
+                ? mga_context.query_cancellation_requested
+                : std::function<bool()>([] { return false; });
+        struct RecursiveCancellationState {
+          bool cancellation_observed = false;
+          std::exception_ptr probe_failure;
+        };
+        const auto recursive_cancellation_state =
+            std::make_shared<RecursiveCancellationState>();
+        const exec::CanonicalRecursiveCteCancellationProbe
+            recursive_cancellation_requested =
+                [cancellation_requested, recursive_cancellation_state](
+                    const std::size_t) {
+                  if (recursive_cancellation_state->probe_failure) {
+                    std::rethrow_exception(
+                        recursive_cancellation_state->probe_failure);
+                  }
+                  if (recursive_cancellation_state
+                          ->cancellation_observed) {
+                    return true;
+                  }
+                  try {
+                    recursive_cancellation_state->cancellation_observed =
+                        cancellation_requested();
+                  } catch (...) {
+                    recursive_cancellation_state->probe_failure =
+                        std::current_exception();
+                    throw;
+                  }
+                  return recursive_cancellation_state
+                      ->cancellation_observed;
+                };
 
         exec::DescriptorBatch output;
         exec::DescriptorRuntimeDiagnostic diagnostic;
@@ -10044,13 +10095,25 @@ MakeLiveRecursiveCteRegistration(
               std::max<std::size_t>(1, prepared.maximum_working_row_count);
           recursive.maximum_result_row_count =
               std::max<std::size_t>(1, prepared.maximum_result_row_count);
+          recursive.cancellation_requested =
+              recursive_cancellation_requested;
+          recursive.cancellation_evidence_uuid =
+              cancellation_evidence_uuid;
           recursive.recursive_step =
-              [upper_bound = prepared.upper_bound](
+              [upper_bound = prepared.upper_bound,
+               recursive_cancellation_requested](
                   const exec::DescriptorBatch& current,
-                  const std::size_t) {
+                  const std::size_t iteration) {
                 exec::CanonicalRecursiveCteGeneratedBatch generated;
                 generated.batch.columns = current.columns;
                 for (std::size_t row = 0; row < current.rows.size(); ++row) {
+                  try {
+                    if (recursive_cancellation_requested(iteration)) {
+                      return generated;
+                    }
+                  } catch (...) {
+                    return generated;
+                  }
                   if (current.rows[row].values.size() != 1) {
                     throw std::runtime_error(
                         "recursive SEARCH/CYCLE term received a ragged row");
@@ -10083,6 +10146,11 @@ MakeLiveRecursiveCteRegistration(
           diagnostic = result.diagnostic;
           output = result.output_batch;
           result_mga = result.mga_statement_context;
+          step.cancellation_observed = result.cancellation_observed;
+          step.transient_state_cleanup_proven =
+              result.working_state_cleaned;
+          step.cancellation_evidence_uuid =
+              result.cancellation_evidence_uuid;
         } else {
           exec::CanonicalRecursiveCteUnionRequest recursive;
           recursive.union_mode = prepared.profile.union_mode;
@@ -10096,15 +10164,27 @@ MakeLiveRecursiveCteRegistration(
               std::max<std::size_t>(1, prepared.maximum_working_row_count);
           working.maximum_result_row_count =
               std::max<std::size_t>(1, prepared.maximum_result_row_count);
+          working.cancellation_requested =
+              recursive_cancellation_requested;
+          working.cancellation_evidence_uuid =
+              cancellation_evidence_uuid;
           working.recursive_step =
               [upper_bound = prepared.upper_bound,
                emit_current_duplicate =
-                   prepared.profile.emit_current_duplicate](
+                   prepared.profile.emit_current_duplicate,
+               recursive_cancellation_requested](
                   const exec::DescriptorBatch& current,
-                  const std::size_t) {
+                  const std::size_t iteration) {
                 exec::DescriptorBatch next;
                 next.columns = current.columns;
                 for (const auto& row : current.rows) {
+                  try {
+                    if (recursive_cancellation_requested(iteration)) {
+                      return next;
+                    }
+                  } catch (...) {
+                    return next;
+                  }
                   if (row.values.size() != 1) {
                     throw std::runtime_error(
                         "recursive int64 term received a ragged row");
@@ -10140,6 +10220,18 @@ MakeLiveRecursiveCteRegistration(
           diagnostic = result.working_result.diagnostic;
           output = result.working_result.output_batch;
           result_mga = result.mga_statement_context;
+          step.cancellation_observed =
+              result.working_result.cancellation_observed;
+          step.transient_state_cleanup_proven =
+              result.working_result.working_state_cleaned;
+          step.cancellation_evidence_uuid =
+              result.working_result.cancellation_evidence_uuid;
+        }
+        if (!diagnostic.ok &&
+            diagnostic.diagnostic_code ==
+                "QOW-DIAG-QRY-014-CANCELLATION-PROBE-V1") {
+          diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
         }
         if (!diagnostic.ok) {
           step.diagnostic = std::move(diagnostic);
@@ -10944,6 +11036,30 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   if (recursive_cte_base &&
       reverse_chain.front()->node_kind ==
           plan::CanonicalLogicalRelationalNodeKind::kRecursiveCte) {
+    const auto poll_recursive_planning_cancellation = [&]()
+        -> std::optional<CanonicalObjectFreeValuesExecutionResult> {
+      if (!request.context.query_cancellation_requested) return std::nullopt;
+      try {
+        if (!request.context.query_cancellation_requested()) {
+          return std::nullopt;
+        }
+        return refuse(
+            "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1",
+            "recursive CTE cancellation observed during bounded planning");
+      } catch (const std::exception& error) {
+        return refuse(
+            "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1",
+            std::string("recursive CTE planning cancellation probe failed:") +
+                error.what());
+      } catch (...) {
+        return refuse(
+            "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1",
+            "recursive CTE planning cancellation probe failed");
+      }
+    };
+    if (auto cancelled = poll_recursive_planning_cancellation()) {
+      return std::move(*cancelled);
+    }
     auto anchor = MaterializeValues(
         request.relational_dag, *recursive_anchor_node,
         request.expression_services);
@@ -11016,6 +11132,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     std::unordered_set<std::string> seen;
     std::string recursion_detail;
     for (const auto& row : anchor.batch.rows) {
+      if (auto cancelled = poll_recursive_planning_cancellation()) {
+        return std::move(*cancelled);
+      }
       if (recursive_cte_profile.union_mode ==
           exec::CanonicalRecursiveCteUnionMode::kDistinct) {
         std::string key;
@@ -11036,6 +11155,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     exec::ExecutorColumnDescriptor search_sequence_column;
     exec::ExecutorColumnDescriptor cycle_mark_column;
     while (!working.rows.empty()) {
+      if (auto cancelled = poll_recursive_planning_cancellation()) {
+        return std::move(*cancelled);
+      }
       if (iteration_count ==
           request.optimizer_request.resource.maximum_candidate_count) {
         return refuse(
@@ -11046,6 +11168,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       exec::DescriptorBatch generated;
       generated.columns = working.columns;
       for (const auto& row : working.rows) {
+        if (auto cancelled = poll_recursive_planning_cancellation()) {
+          return std::move(*cancelled);
+        }
         const auto& value = row.values.front();
         if (recursive_cte_profile.emit_current_duplicate) {
           generated.rows.push_back(row);
@@ -11084,6 +11209,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         exec::DescriptorBatch distinct;
         distinct.columns = generated.columns;
         for (const auto& row : generated.rows) {
+          if (auto cancelled = poll_recursive_planning_cancellation()) {
+            return std::move(*cancelled);
+          }
           std::string key;
           if (!row_key(row, &key, &recursion_detail)) {
             return refuse(std::string(kPayloadDiagnostic),

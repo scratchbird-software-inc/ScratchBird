@@ -74,6 +74,59 @@ std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
                    found->descriptor_uuid.value);
 }
 
+struct RecursiveCteCancellationPoll {
+  DescriptorRuntimeDiagnostic diagnostic;
+  bool cancelled = false;
+  std::size_t iteration_ordinal = 0;
+};
+
+RecursiveCteCancellationPoll PollRecursiveCteCancellation(
+    const CanonicalRecursiveCteCancellationProbe& probe,
+    const std::size_t iteration_ordinal,
+    const std::string_view phase) {
+  RecursiveCteCancellationPoll result;
+  result.iteration_ordinal = iteration_ordinal;
+  if (!probe) return result;
+  try {
+    if (!probe(iteration_ordinal)) return result;
+    result.cancelled = true;
+    result.diagnostic = RecursiveCteWorkingRefusal(
+        "recursive CTE cancellation observed " + std::string(phase) +
+        " at iteration " + std::to_string(iteration_ordinal));
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-014-CANCELLATION-REFUSAL-V1";
+    return result;
+  } catch (const std::exception& error) {
+    result.diagnostic = RecursiveCteWorkingRefusal(
+        "recursive CTE cancellation probe failed " + std::string(phase) +
+        ":" + error.what());
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-014-CANCELLATION-PROBE-V1";
+    return result;
+  } catch (...) {
+    result.diagnostic = RecursiveCteWorkingRefusal(
+        "recursive CTE cancellation probe failed " + std::string(phase));
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-014-CANCELLATION-PROBE-V1";
+    return result;
+  }
+}
+
+bool RecursiveCteCancellationEvidenceBound(
+    const TypedPhysicalNodeDag& dag,
+    const CanonicalRecursiveCteCancellationProbe& probe,
+    const std::string& evidence_uuid) {
+  if (!probe) return evidence_uuid.empty();
+  const PhysicalAdmissionEvidence* policy_evidence = nullptr;
+  for (const auto& evidence : dag.admission_evidence) {
+    if (evidence.stage != PhysicalAdmissionStage::kPolicyCapability) continue;
+    if (policy_evidence != nullptr) return false;
+    policy_evidence = &evidence;
+  }
+  return !evidence_uuid.empty() && policy_evidence != nullptr &&
+         policy_evidence->evidence_uuid == evidence_uuid;
+}
+
 bool SameCanonicalCteColumns(
     const std::vector<ExecutorColumnDescriptor>& left,
     const std::vector<ExecutorColumnDescriptor>& right) {
@@ -109,17 +162,31 @@ bool SameCanonicalCteColumns(
 CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     const CanonicalRecursiveCteWorkingRequest& request) {
   CanonicalRecursiveCteWorkingResult result;
-  const auto refuse = [&](std::string detail) {
-    result.diagnostic = RecursiveCteWorkingRefusal(std::move(detail));
-    result.output_batch = {};
-    result.iterations.clear();
-    result.recursive_iteration_count = 0;
-    result.maximum_observed_working_row_count = 0;
-    result.converged = false;
-    result.selected_plan_uuid.clear();
-    result.executed_physical_node_id = 0;
-    result.causal_counter_id = 0;
+  const auto refuse_diagnostic = [&](DescriptorRuntimeDiagnostic diagnostic,
+                                     const bool cancelled = false,
+                                     const std::size_t ordinal = 0) {
+    result = {};
+    result.diagnostic = std::move(diagnostic);
+    result.cancellation_observed = cancelled;
+    result.cancellation_iteration_ordinal = ordinal;
+    result.working_state_cleaned = true;
+    if (cancelled) {
+      result.cancellation_evidence_uuid =
+          request.cancellation_evidence_uuid;
+    }
     return result;
+  };
+  const auto refuse = [&](std::string detail) {
+    return refuse_diagnostic(RecursiveCteWorkingRefusal(std::move(detail)));
+  };
+  const auto poll_cancellation = [&](const std::size_t ordinal,
+                                     const std::string_view phase) {
+    return PollRecursiveCteCancellation(request.cancellation_requested,
+                                        ordinal, phase);
+  };
+  const auto refuse_poll = [&](RecursiveCteCancellationPoll poll) {
+    return refuse_diagnostic(std::move(poll.diagnostic), poll.cancelled,
+                             poll.iteration_ordinal);
   };
 
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
@@ -203,10 +270,17 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
   if (!request.recursive_step || request.maximum_iteration_count == 0 ||
       request.maximum_working_row_count == 0 ||
       request.maximum_result_row_count == 0 ||
+      !RecursiveCteCancellationEvidenceBound(
+          request.physical_dag, request.cancellation_requested,
+          request.cancellation_evidence_uuid) ||
       request.anchor_batch.rows.size() >
           request.maximum_working_row_count ||
       request.anchor_batch.rows.size() > request.maximum_result_row_count) {
     return refuse("recursive CTE working resource contract is invalid");
+  }
+  auto cancellation = poll_cancellation(0, "before anchor publication");
+  if (!cancellation.diagnostic.ok) {
+    return refuse_poll(std::move(cancellation));
   }
 
   DescriptorBatch accumulated = request.anchor_batch;
@@ -219,6 +293,11 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
       return refuse("recursive CTE did not converge within the iteration bound");
     }
     ++iteration_ordinal;
+    cancellation =
+        poll_cancellation(iteration_ordinal, "before a recursive step");
+    if (!cancellation.diagnostic.ok) {
+      return refuse_poll(std::move(cancellation));
+    }
 
     DescriptorBatch intermediate;
     const auto pre_step_authority = RevalidateCanonicalExecutionMgaAuthority(
@@ -239,6 +318,11 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     if (!post_step_authority.ok) {
       return refuse(post_step_authority.diagnostic_code + ":" +
                     post_step_authority.detail);
+    }
+    cancellation =
+        poll_cancellation(iteration_ordinal, "after a recursive step");
+    if (!cancellation.diagnostic.ok) {
+      return refuse_poll(std::move(cancellation));
     }
     const auto intermediate_validation = ValidateCanonicalDescriptorBatch(
         intermediate, recursive_node->output_descriptor_ids);
@@ -266,6 +350,12 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     working = std::move(intermediate);
   }
 
+  cancellation =
+      poll_cancellation(iteration_ordinal, "before result publication");
+  if (!cancellation.diagnostic.ok) {
+    return refuse_poll(std::move(cancellation));
+  }
+
   const auto output_validation = ValidateCanonicalDescriptorBatch(
       accumulated, selected_node->output_descriptor_ids);
   if (!output_validation.ok) {
@@ -285,6 +375,10 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
   result.recursive_iteration_count = iteration_ordinal;
   result.maximum_observed_working_row_count = maximum_working;
   result.converged = true;
+  result.working_state_cleaned = true;
+  if (request.cancellation_requested) {
+    result.cancellation_evidence_uuid = request.cancellation_evidence_uuid;
+  }
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
@@ -312,6 +406,20 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
     result.working_result.diagnostic.detail = std::move(detail);
     result.union_mode = request.union_mode;
     result.duplicate_row_count = 0;
+    return result;
+  };
+  const auto refuse_poll = [&](RecursiveCteCancellationPoll poll) {
+    result = {};
+    result.working_result.diagnostic = std::move(poll.diagnostic);
+    result.working_result.cancellation_observed = poll.cancelled;
+    result.working_result.cancellation_iteration_ordinal =
+        poll.iteration_ordinal;
+    result.working_result.working_state_cleaned = true;
+    if (poll.cancelled) {
+      result.working_result.cancellation_evidence_uuid =
+          request.working_request.cancellation_evidence_uuid;
+    }
+    result.union_mode = request.union_mode;
     return result;
   };
 
@@ -359,7 +467,19 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
   }
 
   auto duplicate_count = std::make_shared<std::size_t>(0);
+  auto cancellation_failure =
+      std::make_shared<std::optional<RecursiveCteCancellationPoll>>();
   if (request.union_mode == CanonicalRecursiveCteUnionMode::kDistinct) {
+    const auto poll_distinct =
+        [probe = working.cancellation_requested, cancellation_failure](
+            const std::size_t iteration, const std::string_view phase) {
+          auto polled =
+              PollRecursiveCteCancellation(probe, iteration, phase);
+          if (polled.diagnostic.ok) return;
+          *cancellation_failure = std::move(polled);
+          throw std::runtime_error(
+              cancellation_failure->value().diagnostic.detail);
+        };
     const bool legacy_int64_profile =
         selected_node->implementation_id ==
         "cte.recursive.union-distinct-int64.typed.v1";
@@ -407,7 +527,7 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
       covered[term.column] = true;
     }
 
-    std::function<bool(const DescriptorTuple&)> admit;
+    std::function<bool(const DescriptorTuple&, std::size_t)> admit;
     if (legacy_int64_profile) {
       auto identity_count = std::make_shared<std::size_t>(0);
       auto seen_values =
@@ -415,8 +535,10 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
       auto seen_null = std::make_shared<bool>(false);
       admit = [identity_count, maximum =
                                    request.maximum_value_comparison_count,
-               seen_values, seen_null, duplicate_count](
-                  const DescriptorTuple& row) {
+               seen_values, seen_null, duplicate_count, poll_distinct](
+                  const DescriptorTuple& row, const std::size_t iteration) {
+        poll_distinct(iteration,
+                      "while admitting recursive UNION DISTINCT rows");
         if (row.values.size() != 1) {
           throw std::runtime_error("recursive UNION DISTINCT row is ragged");
         }
@@ -451,14 +573,18 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
       auto comparison_count = std::make_shared<std::size_t>(0);
       const auto equal_rows =
           [equality_terms = std::move(equality_terms), comparison_count,
-           maximum = request.maximum_value_comparison_count](
-              const DescriptorTuple& left, const DescriptorTuple& right) {
+           maximum = request.maximum_value_comparison_count, poll_distinct](
+              const DescriptorTuple& left, const DescriptorTuple& right,
+              const std::size_t iteration) {
             if (left.values.size() != equality_terms.size() ||
                 right.values.size() != equality_terms.size()) {
               throw std::runtime_error(
                   "recursive UNION DISTINCT row is ragged");
             }
             for (const auto& term : equality_terms) {
+              poll_distinct(
+                  iteration,
+                  "while comparing recursive UNION DISTINCT rows");
               if (*comparison_count == maximum) {
                 throw std::runtime_error(
                     "recursive CTE UNION DISTINCT value comparison bound was "
@@ -476,13 +602,14 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
             return true;
           };
       auto seen = std::make_shared<std::vector<DescriptorTuple>>();
-      admit = [seen, duplicate_count, equal_rows](const DescriptorTuple& row) {
-        if (!equal_rows(row, row)) {
+      admit = [seen, duplicate_count, equal_rows](
+                  const DescriptorTuple& row, const std::size_t iteration) {
+        if (!equal_rows(row, row, iteration)) {
           throw std::runtime_error(
               "recursive UNION DISTINCT self comparison failed");
         }
         for (const auto& representative : *seen) {
-          if (equal_rows(row, representative)) {
+          if (equal_rows(row, representative, iteration)) {
             ++*duplicate_count;
             return false;
           }
@@ -495,11 +622,15 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
     distinct_anchor.columns = working.anchor_batch.columns;
     try {
       for (const auto& row : working.anchor_batch.rows) {
-        if (admit(row)) {
+        if (admit(row, 0)) {
           distinct_anchor.rows.push_back(row);
         }
       }
     } catch (const std::exception& error) {
+      if (cancellation_failure->has_value()) {
+        return refuse_poll(
+            std::move(cancellation_failure->value()));
+      }
       return refuse(error.what());
     }
     working.anchor_batch = std::move(distinct_anchor);
@@ -512,7 +643,7 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
           DescriptorBatch distinct;
           distinct.columns = generated.columns;
           for (const auto& row : generated.rows) {
-            if (admit(row)) {
+            if (admit(row, iteration)) {
               distinct.rows.push_back(row);
             }
           }
@@ -522,6 +653,16 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
 
   auto working_result = ExecuteCanonicalRecursiveCteWorking(working);
   if (!working_result.diagnostic.ok) {
+    if (cancellation_failure->has_value()) {
+      return refuse_poll(std::move(cancellation_failure->value()));
+    }
+    if (working_result.cancellation_observed ||
+        working_result.diagnostic.diagnostic_code ==
+            "QOW-DIAG-QRY-014-CANCELLATION-PROBE-V1") {
+      result.working_result = std::move(working_result);
+      result.union_mode = request.union_mode;
+      return result;
+    }
     return refuse(working_result.diagnostic.diagnostic_code + ":" +
                   working_result.diagnostic.detail);
   }
@@ -557,13 +698,36 @@ ExecuteCanonicalRecursiveCteSearchCycle(
   namespace api = scratchbird::engine::internal_api;
 
   CanonicalRecursiveCteSearchCycleResult result;
-  const auto refuse = [&](std::string detail) {
+  const auto refuse_diagnostic = [&](DescriptorRuntimeDiagnostic diagnostic,
+                                     const bool cancelled = false,
+                                     const std::size_t ordinal = 0) {
     result = {};
-    result.diagnostic.ok = false;
-    result.diagnostic.diagnostic_code =
-        "QOW-DIAG-QRY-014-SEARCH-CYCLE-REFUSAL-V1";
-    result.diagnostic.detail = std::move(detail);
+    result.diagnostic = std::move(diagnostic);
+    result.cancellation_observed = cancelled;
+    result.cancellation_iteration_ordinal = ordinal;
+    result.working_state_cleaned = true;
+    if (cancelled) {
+      result.cancellation_evidence_uuid =
+          request.cancellation_evidence_uuid;
+    }
     return result;
+  };
+  const auto refuse = [&](std::string detail) {
+    DescriptorRuntimeDiagnostic diagnostic;
+    diagnostic.ok = false;
+    diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-014-SEARCH-CYCLE-REFUSAL-V1";
+    diagnostic.detail = std::move(detail);
+    return refuse_diagnostic(std::move(diagnostic));
+  };
+  const auto poll_cancellation = [&](const std::size_t ordinal,
+                                     const std::string_view phase) {
+    return PollRecursiveCteCancellation(request.cancellation_requested,
+                                        ordinal, phase);
+  };
+  const auto refuse_poll = [&](RecursiveCteCancellationPoll poll) {
+    return refuse_diagnostic(std::move(poll.diagnostic), poll.cancelled,
+                             poll.iteration_ordinal);
   };
 
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
@@ -686,10 +850,17 @@ ExecuteCanonicalRecursiveCteSearchCycle(
   if (!request.recursive_step || request.maximum_iteration_count == 0 ||
       request.maximum_working_row_count == 0 ||
       request.maximum_result_row_count == 0 ||
+      !RecursiveCteCancellationEvidenceBound(
+          request.physical_dag, request.cancellation_requested,
+          request.cancellation_evidence_uuid) ||
       request.anchor_batch.rows.size() >
           request.maximum_working_row_count ||
       request.anchor_batch.rows.size() > request.maximum_result_row_count) {
     return refuse("recursive CTE SEARCH/CYCLE resource contract is invalid");
+  }
+  auto cancellation = poll_cancellation(0, "before anchor publication");
+  if (!cancellation.diagnostic.ok) {
+    return refuse_poll(std::move(cancellation));
   }
 
   std::size_t value_comparison_count = 0;
@@ -759,6 +930,10 @@ ExecuteCanonicalRecursiveCteSearchCycle(
   try {
     working_path_node_indices.reserve(working.rows.size());
     for (const auto& row : working.rows) {
+      cancellation = poll_cancellation(0, "while binding anchor rows");
+      if (!cancellation.diagnostic.ok) {
+        return refuse_poll(std::move(cancellation));
+      }
       if (!cycle_keys_equal(row, row, false)) {
         throw std::runtime_error(
             "recursive CTE cycle key self comparison failed");
@@ -783,6 +958,10 @@ ExecuteCanonicalRecursiveCteSearchCycle(
       return refuse("recursive CTE SEARCH/CYCLE did not converge");
     }
     ++iteration;
+    cancellation = poll_cancellation(iteration, "before a recursive step");
+    if (!cancellation.diagnostic.ok) {
+      return refuse_poll(std::move(cancellation));
+    }
     CanonicalRecursiveCteGeneratedBatch generated;
     const auto pre_step_authority = RevalidateCanonicalExecutionMgaAuthority(
         request.mga_authority, request.physical_dag);
@@ -803,6 +982,10 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     if (!post_step_authority.ok) {
       return refuse(post_step_authority.diagnostic_code + ":" +
                     post_step_authority.detail);
+    }
+    cancellation = poll_cancellation(iteration, "after a recursive step");
+    if (!cancellation.diagnostic.ok) {
+      return refuse_poll(std::move(cancellation));
     }
     const auto generated_validation = ValidateCanonicalDescriptorBatch(
         generated.batch, recursive_node->output_descriptor_ids);
@@ -830,6 +1013,11 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     try {
       for (std::size_t row_index = 0;
            row_index < generated.batch.rows.size(); ++row_index) {
+        cancellation =
+            poll_cancellation(iteration, "while processing generated rows");
+        if (!cancellation.diagnostic.ok) {
+          return refuse_poll(std::move(cancellation));
+        }
         const auto parent_index =
             generated.parent_working_row_indices[row_index];
         if (parent_index >= working.rows.size() ||
@@ -866,6 +1054,11 @@ ExecuteCanonicalRecursiveCteSearchCycle(
         bool cycle = false;
         for (auto ancestor = ancestor_node_indices.rbegin();
              ancestor != ancestor_node_indices.rend(); ++ancestor) {
+          cancellation =
+              poll_cancellation(iteration, "while comparing cycle ancestry");
+          if (!cancellation.diagnostic.ok) {
+            return refuse_poll(std::move(cancellation));
+          }
           const auto output_row_index =
               path_nodes[*ancestor].output_row_index;
           if (output_row_index >= output.rows.size()) {
@@ -906,6 +1099,11 @@ ExecuteCanonicalRecursiveCteSearchCycle(
         std::move(next_working_path_node_indices);
   }
 
+  cancellation = poll_cancellation(iteration, "before result publication");
+  if (!cancellation.diagnostic.ok) {
+    return refuse_poll(std::move(cancellation));
+  }
+
   const auto output_validation =
       ValidateCanonicalDescriptorBatch(output, output_descriptor_ids);
   if (!output_validation.ok) {
@@ -924,6 +1122,10 @@ ExecuteCanonicalRecursiveCteSearchCycle(
   result.recursive_iteration_count = iteration;
   result.cycle_row_count = cycle_rows;
   result.converged = true;
+  result.working_state_cleaned = true;
+  if (request.cancellation_requested) {
+    result.cancellation_evidence_uuid = request.cancellation_evidence_uuid;
+  }
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
