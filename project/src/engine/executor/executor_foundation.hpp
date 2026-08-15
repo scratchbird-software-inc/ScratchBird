@@ -386,6 +386,9 @@ struct CanonicalWindowRuntimeResult {
   std::optional<CanonicalWindowValueResult> value_strategy_result;
   std::optional<CanonicalRegistryWindowAggregateResult>
       aggregate_strategy_result;
+  // Retained only for source compatibility with the original unified ABI.
+  // Successful spill execution publishes the aggregate receipt exactly once
+  // through aggregate_strategy_result and carries spill-only evidence below.
   std::optional<CanonicalRegistryWindowAggregateSpillResult>
       aggregate_spill_strategy_result;
   CanonicalWindowRuntimeStrategy executed_strategy =
@@ -412,6 +415,7 @@ struct CanonicalWindowRuntimeResult {
   std::size_t aggregate_spilled_state_count = 0;
   std::size_t aggregate_serialized_state_bytes = 0;
   std::size_t aggregate_spilled_state_record_count = 0;
+  std::vector<std::string> aggregate_spill_evidence;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string window_property_uuid;
   std::string selected_plan_uuid;

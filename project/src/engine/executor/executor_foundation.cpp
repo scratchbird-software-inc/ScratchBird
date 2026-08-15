@@ -8291,7 +8291,11 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
   const auto& execution_authority = CanonicalWindowFrameExecutionAuthority(
       request.mga_authority, *payload_frames);
 
-  const auto publish = [&](const auto& strategy_result) {
+  // The unified runtime result is the sole owner of the published payload.
+  // Strategy receipts remain available for descriptor/authority inspection,
+  // but retaining their value vector as well would duplicate the complete
+  // result outside the selected node's memory grant.
+  const auto publish = [&](auto& strategy_result) {
     result.diagnostic = strategy_result.diagnostic;
     if (!result.diagnostic.ok) {
       result.values.clear();
@@ -8307,7 +8311,7 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
       result.values.clear();
       return false;
     }
-    result.values = strategy_result.values;
+    result.values = std::move(strategy_result.values);
     result.authority = strategy_result.authority;
     result.window_property_uuid = strategy_result.window_property_uuid;
     result.selected_plan_uuid = strategy_result.selected_plan_uuid;
@@ -8323,9 +8327,8 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
       return refuse("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
                     "ranking payload does not match the runtime descriptor");
     }
-    const auto ranking_result =
+    auto ranking_result =
         ExecuteCanonicalWindowRankingStrategy(*request.ranking);
-    result.ranking_strategy_result = ranking_result;
     std::optional<std::uint64_t> expected_ntile_bucket_count;
     if (request.ranking->ntile_bucket_count.has_value()) {
       std::uint64_t bucket_count = 0;
@@ -8364,7 +8367,8 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
           "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
           "ranking strategy did not return its exact descriptor and binding receipts");
     }
-    if (!publish(ranking_result)) return result;
+    result.ranking_strategy_result = std::move(ranking_result);
+    if (!publish(*result.ranking_strategy_result)) return result;
   } else if (expected_strategy == CanonicalWindowRuntimeStrategy::value) {
     if (!expected_value.has_value() ||
         request.value->function != *expected_value ||
@@ -8372,9 +8376,8 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
       return refuse("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
                     "value payload does not match the runtime descriptor");
     }
-    const auto value_result =
+    auto value_result =
         ExecuteCanonicalWindowValueStrategy(*request.value);
-    result.value_strategy_result = value_result;
     const bool navigation =
         request.value->function == CanonicalWindowValueFunction::lag ||
         request.value->function == CanonicalWindowValueFunction::lead;
@@ -8459,7 +8462,8 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
           "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
           "value strategy did not return its exact descriptor, operand, and binding receipts");
     }
-    if (!publish(value_result)) return result;
+    result.value_strategy_result = std::move(value_result);
+    if (!publish(*result.value_strategy_result)) return result;
   } else {
     const auto& aggregate = request.registry_aggregate.has_value()
                                 ? *request.registry_aggregate
@@ -8477,13 +8481,16 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
     }
     CanonicalRegistryWindowAggregateResult aggregate_result;
     if (request.registry_aggregate_spill.has_value()) {
-      const auto spill_result =
+      auto spill_result =
           ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
               *request.registry_aggregate_spill);
-      result.aggregate_spill_strategy_result = spill_result;
       if (!spill_result.diagnostic.ok) {
         result.diagnostic = spill_result.diagnostic;
         result.values.clear();
+        // A failed spill has already cleared its aggregate payload, so retain
+        // the sole failure receipt intact. Cancellation cleanup and spill
+        // evidence must remain observable through the public wrapper.
+        result.aggregate_spill_strategy_result = std::move(spill_result);
         return result;
       }
       if (!PhysicalMgaStatementContextEqual(
@@ -8492,7 +8499,11 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
         return refuse("QOW-DIAG-WINDOW-RUNTIME-MGA",
                       "window spill wrapper returned a different MGA statement context");
       }
-      aggregate_result = spill_result.aggregate_result;
+      // The unified runtime retains exactly one potentially large aggregate
+      // receipt. Spill-only evidence is detached below; the compatibility
+      // wrapper reconstructs its owning result without duplicating frame or
+      // transition vectors here.
+      aggregate_result = std::move(spill_result.aggregate_result);
       result.aggregate_state_spill_used = spill_result.spilled;
       result.aggregate_spill_reopened = spill_result.spill_reopened;
       result.aggregate_spill_cleanup_proven = spill_result.cleanup_proven;
@@ -8502,11 +8513,11 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
           spill_result.serialized_aggregate_state_bytes;
       result.aggregate_spilled_state_record_count =
           spill_result.spilled_aggregate_state_record_count;
+      result.aggregate_spill_evidence = std::move(spill_result.spill_evidence);
     } else {
       aggregate_result =
           ExecuteCanonicalRegistryWindowAggregateStrategy(aggregate);
     }
-    result.aggregate_strategy_result = aggregate_result;
     std::vector<std::vector<std::size_t>> expected_frame_rows;
     expected_frame_rows.reserve(aggregate.frames.effective_frames.size());
     std::size_t expected_frame_input_row_count = 0;
@@ -8579,21 +8590,23 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
           "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
           "aggregate strategy did not return its exact descriptor, modifier, frame, and binding receipts");
     }
-    if (!publish(aggregate_result)) return result;
+    result.aggregate_strategy_result = std::move(aggregate_result);
+    auto& published_aggregate = *result.aggregate_strategy_result;
+    if (!publish(published_aggregate)) return result;
     result.aggregate_registry_bridge_used = true;
     result.moving_inverse_state_used =
-        aggregate_result.moving_inverse_state_used;
+        published_aggregate.moving_inverse_state_used;
     result.effective_frame_recomputed =
-        aggregate_result.effective_frame_recomputed;
+        published_aggregate.effective_frame_recomputed;
     result.aggregate_state_strategy_selected_from_physical_plan =
-        aggregate_result.state_strategy_selected_from_physical_plan;
+        published_aggregate.state_strategy_selected_from_physical_plan;
     result.selected_aggregate_state_strategy =
-        aggregate_result.selected_state_strategy;
+        published_aggregate.selected_state_strategy;
     result.selected_aggregate_state_implementation_id =
-        aggregate_result.selected_state_implementation_id;
-    result.aggregate_transition_count = aggregate_result.transition_count;
+        published_aggregate.selected_state_implementation_id;
+    result.aggregate_transition_count = published_aggregate.transition_count;
     result.aggregate_inverse_transition_count =
-        aggregate_result.inverse_transition_count;
+        published_aggregate.inverse_transition_count;
   }
 
   result.descriptor = request.descriptor;
@@ -8653,7 +8666,8 @@ CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
   runtime_request.forced_strategy = CanonicalWindowRuntimeStrategy::ranking;
   runtime_request.mga_authority = request.mga_authority;
   auto runtime = ExecuteCanonicalWindowRuntime(runtime_request);
-  if (runtime.ranking_strategy_result.has_value()) {
+  if (runtime.diagnostic.ok && runtime.ranking_strategy_result.has_value()) {
+    runtime.ranking_strategy_result->values = std::move(runtime.values);
     return std::move(*runtime.ranking_strategy_result);
   }
   CanonicalWindowRankingResult refused;
@@ -8700,7 +8714,8 @@ CanonicalWindowValueResult ExecuteCanonicalWindowValue(
   runtime_request.forced_strategy = CanonicalWindowRuntimeStrategy::value;
   runtime_request.mga_authority = request.mga_authority;
   auto runtime = ExecuteCanonicalWindowRuntime(runtime_request);
-  if (runtime.value_strategy_result.has_value()) {
+  if (runtime.diagnostic.ok && runtime.value_strategy_result.has_value()) {
+    runtime.value_strategy_result->values = std::move(runtime.values);
     return std::move(*runtime.value_strategy_result);
   }
   CanonicalWindowValueResult refused;
@@ -8723,7 +8738,8 @@ ExecuteCanonicalRegistryWindowAggregate(
   runtime_request.forced_strategy = CanonicalWindowRuntimeStrategy::aggregate;
   runtime_request.mga_authority = request.aggregate_template.mga_authority;
   auto runtime = ExecuteCanonicalWindowRuntime(runtime_request);
-  if (runtime.aggregate_strategy_result.has_value()) {
+  if (runtime.diagnostic.ok && runtime.aggregate_strategy_result.has_value()) {
+    runtime.aggregate_strategy_result->values = std::move(runtime.values);
     return std::move(*runtime.aggregate_strategy_result);
   }
   CanonicalRegistryWindowAggregateResult refused;
@@ -8978,6 +8994,24 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
   auto runtime = ExecuteCanonicalWindowRuntime(runtime_request);
   if (runtime.aggregate_spill_strategy_result.has_value()) {
     return std::move(*runtime.aggregate_spill_strategy_result);
+  }
+  if (runtime.diagnostic.ok && runtime.aggregate_strategy_result.has_value()) {
+    CanonicalRegistryWindowAggregateSpillResult spill;
+    runtime.aggregate_strategy_result->values = std::move(runtime.values);
+    spill.diagnostic = runtime.diagnostic;
+    spill.aggregate_result = std::move(*runtime.aggregate_strategy_result);
+    spill.spilled_aggregate_state_count =
+        runtime.aggregate_spilled_state_count;
+    spill.serialized_aggregate_state_bytes =
+        runtime.aggregate_serialized_state_bytes;
+    spill.spilled_aggregate_state_record_count =
+        runtime.aggregate_spilled_state_record_count;
+    spill.spilled = runtime.aggregate_state_spill_used;
+    spill.spill_reopened = runtime.aggregate_spill_reopened;
+    spill.cleanup_proven = runtime.aggregate_spill_cleanup_proven;
+    spill.spill_evidence = std::move(runtime.aggregate_spill_evidence);
+    spill.mga_statement_context = runtime.mga_statement_context;
+    return spill;
   }
   CanonicalRegistryWindowAggregateSpillResult refused;
   refused.diagnostic = std::move(runtime.diagnostic);
