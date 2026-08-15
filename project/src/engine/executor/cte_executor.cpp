@@ -694,9 +694,13 @@ ExecuteCanonicalRecursiveCteSearchCycle(
 
   std::size_t value_comparison_count = 0;
   const auto cycle_keys_equal = [&](const DescriptorTuple& left,
-                                    const DescriptorTuple& right) {
-    if (left.values.size() != request.anchor_batch.columns.size() ||
-        right.values.size() != request.anchor_batch.columns.size()) {
+                                    const DescriptorTuple& right,
+                                    const bool right_is_projected_output) {
+    const auto base_width = request.anchor_batch.columns.size();
+    const auto right_width =
+        right_is_projected_output ? base_width + 2 : base_width;
+    if (left.values.size() != base_width ||
+        right.values.size() != right_width) {
       throw std::runtime_error("recursive CTE cycle-key row is ragged");
     }
     for (const auto& term : cycle_key_terms) {
@@ -742,23 +746,31 @@ ExecuteCanonicalRecursiveCteSearchCycle(
   output.columns.push_back(request.search_sequence_column);
   output.columns.push_back(request.cycle_mark_column);
   DescriptorBatch working = request.anchor_batch;
-  std::vector<std::vector<DescriptorTuple>> working_paths;
+  constexpr auto kNoParent = std::numeric_limits<std::size_t>::max();
+  struct RetainedPathNode {
+    std::size_t output_row_index;
+    std::size_t parent_node_index;
+  };
+  std::vector<RetainedPathNode> path_nodes;
+  std::vector<std::size_t> working_path_node_indices;
+  std::vector<std::size_t> ancestor_node_indices;
   std::vector<CanonicalRecursiveCteSearchCycleMetadata> metadata;
   std::uint64_t sequence = 0;
   try {
-    working_paths.reserve(working.rows.size());
+    working_path_node_indices.reserve(working.rows.size());
     for (const auto& row : working.rows) {
-      if (!cycle_keys_equal(row, row)) {
+      if (!cycle_keys_equal(row, row, false)) {
         throw std::runtime_error(
             "recursive CTE cycle key self comparison failed");
       }
-      working_paths.push_back({row});
       DescriptorTuple projected = row;
       projected.values.push_back(sequence_value(++sequence));
       projected.values.push_back(cycle_value(false));
       output.rows.push_back(std::move(projected));
       metadata.push_back(
           {output.rows.size() - 1, 0, sequence, false});
+      path_nodes.push_back({output.rows.size() - 1, kNoParent});
+      working_path_node_indices.push_back(path_nodes.size() - 1);
     }
   } catch (const std::exception& error) {
     return refuse(error.what());
@@ -805,6 +817,7 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     }
     if (generated.parent_working_row_indices.size() !=
             generated.batch.rows.size() ||
+        working_path_node_indices.size() != working.rows.size() ||
         generated.batch.rows.size() > request.maximum_result_row_count -
                                           output.rows.size()) {
       return refuse("recursive CTE SEARCH/CYCLE parent or result bound failed");
@@ -812,25 +825,55 @@ ExecuteCanonicalRecursiveCteSearchCycle(
 
     DescriptorBatch next_working;
     next_working.columns = request.anchor_batch.columns;
-    std::vector<std::vector<DescriptorTuple>> next_paths;
+    std::vector<std::size_t> next_working_path_node_indices;
+    next_working_path_node_indices.reserve(generated.batch.rows.size());
     try {
       for (std::size_t row_index = 0;
            row_index < generated.batch.rows.size(); ++row_index) {
         const auto parent_index =
             generated.parent_working_row_indices[row_index];
         if (parent_index >= working.rows.size() ||
-            parent_index >= working_paths.size()) {
+            parent_index >= working_path_node_indices.size()) {
           return refuse("recursive CTE SEARCH/CYCLE parent is unresolved");
         }
+        const auto parent_path_node_index =
+            working_path_node_indices[parent_index];
+        if (parent_path_node_index >= path_nodes.size()) {
+          return refuse("recursive CTE SEARCH/CYCLE path parent is unresolved");
+        }
         const auto& generated_row = generated.batch.rows[row_index];
-        if (!cycle_keys_equal(generated_row, generated_row)) {
+        if (!cycle_keys_equal(generated_row, generated_row, false)) {
           throw std::runtime_error(
               "recursive CTE cycle key self comparison failed");
         }
-        const auto& parent_path = working_paths[parent_index];
+        ancestor_node_indices.clear();
+        auto ancestor_node_index = parent_path_node_index;
+        while (ancestor_node_index != kNoParent) {
+          if (ancestor_node_index >= path_nodes.size()) {
+            return refuse(
+                "recursive CTE SEARCH/CYCLE path ancestry is unresolved");
+          }
+          ancestor_node_indices.push_back(ancestor_node_index);
+          const auto next_ancestor =
+              path_nodes[ancestor_node_index].parent_node_index;
+          if (next_ancestor != kNoParent &&
+              next_ancestor >= ancestor_node_index) {
+            return refuse(
+                "recursive CTE SEARCH/CYCLE path ancestry is cyclic");
+          }
+          ancestor_node_index = next_ancestor;
+        }
         bool cycle = false;
-        for (const auto& ancestor : parent_path) {
-          if (cycle_keys_equal(generated_row, ancestor)) {
+        for (auto ancestor = ancestor_node_indices.rbegin();
+             ancestor != ancestor_node_indices.rend(); ++ancestor) {
+          const auto output_row_index =
+              path_nodes[*ancestor].output_row_index;
+          if (output_row_index >= output.rows.size()) {
+            return refuse(
+                "recursive CTE SEARCH/CYCLE path output is unresolved");
+          }
+          if (cycle_keys_equal(generated_row,
+                               output.rows[output_row_index], true)) {
             cycle = true;
             break;
           }
@@ -851,15 +894,16 @@ ExecuteCanonicalRecursiveCteSearchCycle(
           return refuse("recursive CTE SEARCH/CYCLE working bound exceeded");
         }
         next_working.rows.push_back(generated_row);
-        auto path = parent_path;
-        path.push_back(generated_row);
-        next_paths.push_back(std::move(path));
+        path_nodes.push_back(
+            {output.rows.size() - 1, parent_path_node_index});
+        next_working_path_node_indices.push_back(path_nodes.size() - 1);
       }
     } catch (const std::exception& error) {
       return refuse(error.what());
     }
     working = std::move(next_working);
-    working_paths = std::move(next_paths);
+    working_path_node_indices =
+        std::move(next_working_path_node_indices);
   }
 
   const auto output_validation =
