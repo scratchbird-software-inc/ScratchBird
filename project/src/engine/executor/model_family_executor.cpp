@@ -1817,9 +1817,16 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
     return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
                   "ASOF input node is unresolved");
   }
-  if (root->output_descriptor_ids.size() !=
-          left_node->output_descriptor_ids.size() +
-              right_node->output_descriptor_ids.size() ||
+  if (left_node->output_descriptor_ids.size() >
+          std::numeric_limits<std::size_t>::max() -
+              right_node->output_descriptor_ids.size()) {
+    return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                  "ASOF output descriptor width overflowed");
+  }
+  const auto expected_output_width =
+      left_node->output_descriptor_ids.size() +
+      right_node->output_descriptor_ids.size();
+  if (root->output_descriptor_ids.size() != expected_output_width ||
       !std::equal(left_node->output_descriptor_ids.begin(),
                   left_node->output_descriptor_ids.end(),
                   root->output_descriptor_ids.begin()) ||
@@ -2076,6 +2083,11 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
   }
   const auto left_count = request.left_batch.rows.size();
   const auto right_count = request.right_batch.rows.size();
+  if (right_count > static_cast<std::size_t>(
+                        std::numeric_limits<std::int64_t>::max())) {
+    return refuse("SB_MODEL_RESOURCE_ROW_LIMIT_V1",
+                  "ASOF right cardinality exceeds the result ordinal width");
+  }
   std::uint64_t comparisons = 0;
   std::uint64_t uniqueness_comparisons = 0;
   std::uint64_t comparison_work = 0;
