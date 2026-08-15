@@ -1653,6 +1653,7 @@ CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
   join.right_batch = request.key_request.right_batch;
   join.pair_truth_values = std::move(accepted_pair_truth_values);
   join.consumer = api::EnginePredicateConsumer::join_on;
+  join.maximum_output_rows = request.maximum_candidate_rechecks;
   join.mga_authority = request.key_request.mga_authority;
   auto joined = ExecuteCanonicalDescriptorInnerJoin(join);
   if (!joined.diagnostic.ok) {
@@ -1852,6 +1853,7 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     conditionless.right_batch = key_request.right_batch;
     conditionless.pair_truth_values.assign(
         pair_count, api::EngineSqlTruthValue::true_value);
+    conditionless.maximum_output_rows = request.maximum_output_rows;
     conditionless.mga_authority = key_request.mga_authority;
     auto joined = ExecuteCanonicalDescriptorInnerJoin(conditionless);
     if (!joined.diagnostic.ok) {
@@ -1876,6 +1878,7 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     cross.right_batch = key_request.right_batch;
     cross.pair_truth_values.assign(
         pair_count, api::EngineSqlTruthValue::true_value);
+    cross.maximum_output_rows = request.maximum_output_rows;
     cross.mga_authority = key_request.mga_authority;
     auto crossed = ExecuteCanonicalDescriptorInnerJoin(cross);
     if (!crossed.diagnostic.ok) {

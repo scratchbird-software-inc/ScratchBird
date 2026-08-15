@@ -879,6 +879,8 @@ struct CanonicalDescriptorInnerJoinRequest {
       pair_truth_values;
   scratchbird::engine::internal_api::EnginePredicateConsumer consumer =
       scratchbird::engine::internal_api::EnginePredicateConsumer::join_on;
+  std::size_t maximum_output_rows = 1048576;
+  std::size_t maximum_output_cells = 16777216;
   CanonicalExecutionMgaAuthority mga_authority;
 };
 

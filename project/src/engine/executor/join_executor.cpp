@@ -8,6 +8,7 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <utility>
 
@@ -23,6 +24,44 @@ DescriptorRuntimeDiagnostic Refusal(std::string code,
   diagnostic.detail = std::move(detail);
   diagnostic.row_index = row;
   return diagnostic;
+}
+
+bool AccountJoinBytes(const std::uint64_t bytes,
+                      const std::uint64_t limit,
+                      std::uint64_t* total) {
+  if (total == nullptr || bytes > limit || *total > limit - bytes) {
+    return false;
+  }
+  *total += bytes;
+  return true;
+}
+
+bool AccountJoinString(const std::string& value,
+                       const std::uint64_t limit,
+                       std::uint64_t* total) {
+  return AccountJoinBytes(static_cast<std::uint64_t>(value.size()), limit,
+                          total);
+}
+
+bool AccountJoinDescriptor(const internal_api::EngineDescriptor& descriptor,
+                           const std::uint64_t limit,
+                           std::uint64_t* total) {
+  return AccountJoinString(descriptor.descriptor_uuid.canonical, limit,
+                           total) &&
+         AccountJoinString(descriptor.descriptor_kind, limit, total) &&
+         AccountJoinString(descriptor.canonical_type_name, limit, total) &&
+         AccountJoinString(descriptor.encoded_descriptor, limit, total);
+}
+
+bool AccountJoinValue(const internal_api::EngineTypedValue& value,
+                      const std::uint64_t limit,
+                      std::uint64_t* total) {
+  return AccountJoinBytes(sizeof(internal_api::EngineTypedValue), limit,
+                          total) &&
+         AccountJoinDescriptor(value.descriptor, limit, total) &&
+         AccountJoinString(value.encoded_value, limit, total) &&
+         AccountJoinBytes(static_cast<std::uint64_t>(value.binary_value.size()),
+                          limit, total);
 }
 
 }  // namespace
@@ -82,12 +121,22 @@ CanonicalDescriptorInnerJoinResult ExecuteCanonicalDescriptorInnerJoin(
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "join input node is unresolved"));
   }
-  std::vector<std::uint32_t> output_descriptor_ids =
-      left_node->output_descriptor_ids;
-  output_descriptor_ids.insert(output_descriptor_ids.end(),
-                               right_node->output_descriptor_ids.begin(),
-                               right_node->output_descriptor_ids.end());
-  if (selected_node->output_descriptor_ids != output_descriptor_ids) {
+  if (left_node->output_descriptor_ids.size() >
+      std::numeric_limits<std::size_t>::max() -
+          right_node->output_descriptor_ids.size()) {
+    return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "join output descriptor width overflows"));
+  }
+  const auto output_width = left_node->output_descriptor_ids.size() +
+                            right_node->output_descriptor_ids.size();
+  if (selected_node->output_descriptor_ids.size() != output_width ||
+      !std::equal(left_node->output_descriptor_ids.begin(),
+                  left_node->output_descriptor_ids.end(),
+                  selected_node->output_descriptor_ids.begin()) ||
+      !std::equal(right_node->output_descriptor_ids.begin(),
+                  right_node->output_descriptor_ids.end(),
+                  selected_node->output_descriptor_ids.begin() +
+                      left_node->output_descriptor_ids.size())) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "join output handles do not concatenate inputs"));
   }
@@ -114,10 +163,98 @@ CanonicalDescriptorInnerJoinResult ExecuteCanonicalDescriptorInnerJoin(
                           "join predicate cardinality is not bound"));
   }
 
+  if (request.maximum_output_rows == 0 ||
+      request.maximum_output_cells == 0 ||
+      request.physical_dag.memory_budget_bytes == 0) {
+    return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "join output resource contract is not bound"));
+  }
+  std::size_t output_row_count = 0;
+  for (std::size_t pair = 0; pair < pair_count; ++pair) {
+    bool passes = false;
+    std::string refusal_detail;
+    if (!QowPredicateConsumerPassesV1(request.pair_truth_values[pair],
+                                      request.consumer, &passes,
+                                      &refusal_detail)) {
+      return refuse(Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
+                            std::move(refusal_detail), pair));
+    }
+    if (passes) {
+      if (output_row_count == request.maximum_output_rows) {
+        return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                              "join output row bound was exceeded", pair));
+      }
+      ++output_row_count;
+    }
+  }
+  if (output_width != 0 &&
+      output_row_count > request.maximum_output_cells / output_width) {
+    return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "join output cell bound was exceeded"));
+  }
+
+  const auto memory_limit = request.physical_dag.memory_budget_bytes;
+  std::uint64_t output_memory = sizeof(DescriptorBatch);
+  for (const auto& column : request.left_batch.columns) {
+    if (!AccountJoinBytes(sizeof(ExecutorColumnDescriptor), memory_limit,
+                          &output_memory) ||
+        !AccountJoinString(column.stable_name, memory_limit, &output_memory) ||
+        !AccountJoinDescriptor(column.descriptor, memory_limit,
+                               &output_memory)) {
+      return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                            "join output descriptor memory bound was exceeded"));
+    }
+  }
+  for (const auto& column : request.right_batch.columns) {
+    if (!AccountJoinBytes(sizeof(ExecutorColumnDescriptor), memory_limit,
+                          &output_memory) ||
+        !AccountJoinString(column.stable_name, memory_limit, &output_memory) ||
+        !AccountJoinDescriptor(column.descriptor, memory_limit,
+                               &output_memory)) {
+      return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                            "join output descriptor memory bound was exceeded"));
+    }
+  }
+  for (std::size_t left = 0; left < left_count; ++left) {
+    for (std::size_t right = 0; right < right_count; ++right) {
+      const auto pair = left * right_count + right;
+      bool passes = false;
+      std::string refusal_detail;
+      if (!QowPredicateConsumerPassesV1(request.pair_truth_values[pair],
+                                        request.consumer, &passes,
+                                        &refusal_detail)) {
+        return refuse(Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
+                              std::move(refusal_detail), pair));
+      }
+      if (!passes) continue;
+      if (!AccountJoinBytes(sizeof(DescriptorTuple), memory_limit,
+                            &output_memory)) {
+        return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                              "join output tuple memory bound was exceeded",
+                              pair));
+      }
+      for (const auto& value : request.left_batch.rows[left].values) {
+        if (!AccountJoinValue(value, memory_limit, &output_memory)) {
+          return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                "join output value memory bound was exceeded",
+                                pair));
+        }
+      }
+      for (const auto& value : request.right_batch.rows[right].values) {
+        if (!AccountJoinValue(value, memory_limit, &output_memory)) {
+          return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                "join output value memory bound was exceeded",
+                                pair));
+        }
+      }
+    }
+  }
+
   result.output_batch.columns = request.left_batch.columns;
   result.output_batch.columns.insert(result.output_batch.columns.end(),
                                      request.right_batch.columns.begin(),
                                      request.right_batch.columns.end());
+  result.output_batch.rows.reserve(output_row_count);
   for (std::size_t left = 0; left < left_count; ++left) {
     for (std::size_t right = 0; right < right_count; ++right) {
       const auto pair = left * right_count + right;
