@@ -8,6 +8,7 @@
 
 #include "query/plan_api.hpp"
 #include "query/canonical_relational_bridge.hpp"
+#include "query/expression_api.hpp"
 #include "optimizer_plan_cache.hpp"
 
 #ifndef SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY
@@ -45,6 +46,7 @@
 #include <set>
 #include <span>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <system_error>
 #include <unordered_map>
@@ -6759,13 +6761,31 @@ std::vector<std::string> SplitOptionList(const EngineApiRequest& request,
 
 std::size_t ParseSizeValue(const std::string& value, std::size_t fallback) {
   if (value.empty()) { return fallback; }
-  std::uint64_t parsed = 0;
+  std::size_t parsed = 0;
   for (const char c : value) {
     if (!std::isdigit(static_cast<unsigned char>(c))) { return fallback; }
-    parsed = (parsed * 10) + static_cast<unsigned>(c - '0');
-    if (parsed > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) { return fallback; }
+    const auto digit = static_cast<std::size_t>(c - '0');
+    if (parsed > (std::numeric_limits<std::size_t>::max() - digit) / 10) {
+      return fallback;
+    }
+    parsed = (parsed * 10) + digit;
   }
-  return static_cast<std::size_t>(parsed);
+  return parsed;
+}
+
+bool TryParseSizeValue(const std::string& value, std::size_t* out) {
+  if (out == nullptr || value.empty()) return false;
+  std::size_t parsed = 0;
+  for (const char c : value) {
+    if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+    const auto digit = static_cast<std::size_t>(c - '0');
+    if (parsed > (std::numeric_limits<std::size_t>::max() - digit) / 10) {
+      return false;
+    }
+    parsed = (parsed * 10) + digit;
+  }
+  *out = parsed;
+  return true;
 }
 
 std::uint64_t ParseU64Value(const std::string& value, std::uint64_t fallback) {
@@ -6945,11 +6965,23 @@ std::vector<std::size_t> ParseProjectedColumns(const EnginePlanOperationRequest&
 }
 
 bool TryParseI64Value(const std::string& value, std::int64_t* out) {
-  if (value.empty()) { return false; }
-  char* end = nullptr;
-  const long long parsed = std::strtoll(value.c_str(), &end, 10);
-  if (end == nullptr || *end != '\0') { return false; }
-  if (out != nullptr) { *out = static_cast<std::int64_t>(parsed); }
+  if (value.empty()) return false;
+  std::string_view encoded = value;
+  bool positive_sign = false;
+  if (encoded.front() == '+') {
+    positive_sign = true;
+    encoded.remove_prefix(1);
+    if (encoded.empty()) return false;
+  }
+  std::int64_t parsed = 0;
+  const auto result =
+      std::from_chars(encoded.data(), encoded.data() + encoded.size(), parsed);
+  if (result.ec != std::errc{} ||
+      result.ptr != encoded.data() + encoded.size()) {
+    return false;
+  }
+  if (positive_sign && parsed < 0) return false;
+  if (out != nullptr) *out = parsed;
   return true;
 }
 
@@ -6964,7 +6996,9 @@ bool TryParseReal64Value(const std::string& value, double* out) {
 
 std::int64_t ParseI64Value(const std::string& value) {
   std::int64_t parsed = 0;
-  (void)TryParseI64Value(value, &parsed);
+  if (!TryParseI64Value(value, &parsed)) {
+    throw std::invalid_argument("query_plan_int64_value_invalid");
+  }
   return parsed;
 }
 
@@ -7656,11 +7690,7 @@ EngineTypedValue NullValue(EngineDescriptor descriptor) {
 }
 
 EngineDescriptor InferredDescriptorForValue(const EngineTypedValue& typed) {
-  if (!typed.descriptor.canonical_type_name.empty()) { return typed.descriptor; }
-  if (!typed.is_null && TryParseI64Value(typed.encoded_value, nullptr)) { return Int64Descriptor(); }
-  double ignored = 0.0;
-  if (!typed.is_null && TryParseReal64Value(typed.encoded_value, &ignored)) { return Real64Descriptor(); }
-  return TextDescriptor();
+  return typed.descriptor;
 }
 
 EngineTypedValue NormalizeTypedValue(const EngineTypedValue& typed) {
@@ -7670,21 +7700,43 @@ EngineTypedValue NormalizeTypedValue(const EngineTypedValue& typed) {
   return normalized;
 }
 
-exec::Batch RelationToBatch(const EngineQueryRelation& relation) {
+exec::Batch RelationToBatch(const EngineQueryRelation& relation,
+                            std::string* error_detail = nullptr) {
   std::vector<exec::Tuple> rows;
   rows.reserve(relation.rows.size());
   for (const auto& row : relation.rows) {
     exec::Tuple tuple;
     tuple.values.reserve(row.fields.size());
-    for (const auto& field : row.fields) { tuple.values.push_back(ParseI64Value(field.second.encoded_value)); }
+    for (const auto& field : row.fields) {
+      std::int64_t value = 0;
+      if (field.second.is_null ||
+          !TryParseI64Value(field.second.encoded_value, &value)) {
+        if (error_detail != nullptr) {
+          *error_detail =
+              "query_plan_integer_executor_requires_integer_row_values";
+        }
+        return exec::MakeBatch("query_plan_integer_relation_invalid", {});
+      }
+      tuple.values.push_back(value);
+    }
     rows.push_back(std::move(tuple));
   }
-  return exec::MakeBatch(relation.descriptor_digest.empty() ? relation.relation_name : relation.descriptor_digest,
-                         std::move(rows));
+  const auto column_count = relation.columns.empty()
+                                ? (relation.rows.empty()
+                                       ? 0
+                                       : relation.rows.front().fields.size())
+                                : relation.columns.size();
+  return exec::MakeBatch(
+      relation.descriptor_digest.empty() ? relation.relation_name
+                                         : relation.descriptor_digest,
+      std::move(rows), column_count);
 }
 
 bool WindowFunctionRequiresTypedResult(const std::string& function) {
-  return function == "percent_rank" || function == "cume_dist" || function == "nth_value";
+  return function == "percent_rank" || function == "cume_dist" ||
+         function == "nth_value" || function == "lag" ||
+         function == "lead" || function == "first_value" ||
+         function == "last_value";
 }
 
 std::string AggregateFunctionLeaf(std::string function) {
@@ -7817,21 +7869,34 @@ EngineResultShape TypedWindowResultShape(const EngineQueryRelation& relation,
 
   EngineResultShape shape;
   shape.result_kind = "query_rowset";
-  std::size_t input_width = 0;
+  std::size_t input_width = relation.columns.size();
   for (const auto& row : rows) { input_width = std::max(input_width, row.row.fields.size()); }
   for (std::size_t column = 0; column < input_width; ++column) {
-    EngineDescriptor descriptor = TextDescriptor();
-    for (const auto& row : rows) {
-      if (column < row.row.fields.size()) {
-        descriptor = InferredDescriptorForValue(row.row.fields[column].second);
-        break;
+    EngineDescriptor descriptor;
+    if (column < relation.columns.size()) {
+      descriptor = relation.columns[column];
+    } else {
+      for (const auto& row : rows) {
+        if (column < row.row.fields.size()) {
+          descriptor = InferredDescriptorForValue(row.row.fields[column].second);
+          break;
+        }
       }
+    }
+    if (descriptor.canonical_type_name.empty()) {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_window_result_descriptor_unresolved";
+      }
+      return {};
     }
     shape.columns.push_back(descriptor);
   }
   EngineDescriptor window_descriptor = Real64Descriptor();
-  if (function == "nth_value") {
-    if (window_n == 0) {
+  const bool value_function =
+      function == "nth_value" || function == "lag" || function == "lead" ||
+      function == "first_value" || function == "last_value";
+  if (value_function) {
+    if (function == "nth_value" && window_n == 0) {
       if (error_detail != nullptr) *error_detail = "query_plan_window_nth_value_requires_positive_n";
       return {};
     }
@@ -7873,13 +7938,33 @@ EngineResultShape TypedWindowResultShape(const EngineQueryRelation& relation,
           : static_cast<double>(peer_end) / static_cast<double>(row_count);
       out.fields.push_back({"c" + std::to_string(input_width), Real64Value(value)});
     } else {
-      const std::size_t requested_index = static_cast<std::size_t>(window_n - 1);
-      if (requested_index > row_index || requested_index >= row_count ||
-          value_column >= rows[requested_index].row.fields.size()) {
+      std::optional<std::size_t> requested_index;
+      if (function == "nth_value") {
+        const auto nth_index = static_cast<std::size_t>(window_n - 1);
+        if (nth_index <= row_index && nth_index < row_count) {
+          requested_index = nth_index;
+        }
+      } else if (function == "lag") {
+        if (row_index != 0) requested_index = row_index - 1;
+      } else if (function == "lead") {
+        if (row_index + 1 < row_count) requested_index = row_index + 1;
+      } else if (function == "first_value") {
+        if (row_count != 0) requested_index = 0;
+      } else if (function == "last_value") {
+        std::size_t peer_end = row_index + 1;
+        while (peer_end < row_count &&
+               rows[peer_end].order_value == rows[row_index].order_value) {
+          ++peer_end;
+        }
+        requested_index = peer_end - 1;
+      }
+      if (!requested_index ||
+          value_column >= rows[*requested_index].row.fields.size()) {
         out.fields.push_back({"c" + std::to_string(input_width), NullValue(window_descriptor)});
       } else {
         EngineTypedValue selected =
-            NormalizeTypedValue(rows[requested_index].row.fields[value_column].second);
+            NormalizeTypedValue(
+                rows[*requested_index].row.fields[value_column].second);
         if (selected.descriptor.canonical_type_name.empty()) { selected.descriptor = window_descriptor; }
         out.fields.push_back({"c" + std::to_string(input_width), std::move(selected)});
       }
@@ -8628,8 +8713,12 @@ EngineResultShape ArrayAggAggregateResultShape(const EngineQueryRelation& relati
     EngineTypedValue value;
   };
   std::map<std::int64_t, std::vector<OrderedValue>> groups;
-  EngineDescriptor element_descriptor = TextDescriptor();
+  EngineDescriptor element_descriptor;
   bool element_descriptor_set = false;
+  if (value_column < relation.columns.size()) {
+    element_descriptor = relation.columns[value_column];
+    element_descriptor_set = true;
+  }
 
   for (const auto& row : relation.rows) {
     const auto key = RowAggregateGroupKeyInt64ValueAt(row, group_key_column, error_detail);
@@ -8656,6 +8745,14 @@ EngineResultShape ArrayAggAggregateResultShape(const EngineQueryRelation& relati
       element_descriptor_set = true;
     }
     values.push_back(OrderedValue{*order, std::move(typed)});
+  }
+
+  if (!element_descriptor_set ||
+      element_descriptor.canonical_type_name.empty()) {
+    if (error_detail != nullptr) {
+      *error_detail = "query_plan_array_agg_element_descriptor_unresolved";
+    }
+    return {};
   }
 
   const EngineDescriptor list_descriptor = ListDescriptor(element_descriptor);
@@ -8826,13 +8923,14 @@ EngineResultShape ListAggAggregateResultShape(const EngineQueryRelation& relatio
 std::size_t ColumnIndexForRelation(const EngineQueryRelation& relation,
                                    const std::string& field_name,
                                    std::size_t fallback) {
-  if (field_name.empty() || relation.rows.empty()) return fallback;
+  if (field_name.empty()) return fallback;
+  if (relation.rows.empty()) return std::numeric_limits<std::size_t>::max();
   const std::string wanted = LowerAscii(field_name);
   const auto& fields = relation.rows.front().fields;
   for (std::size_t index = 0; index < fields.size(); ++index) {
     if (LowerAscii(fields[index].first) == wanted) return index;
   }
-  return fallback;
+  return std::numeric_limits<std::size_t>::max();
 }
 
 std::vector<std::string> FieldOrderForRelation(const EngineQueryRelation& relation) {
@@ -8888,25 +8986,36 @@ bool RelationsAreNameAligned(const std::vector<EngineQueryRelation>& relations,
 }
 
 exec::Batch RelationToBatchByName(const EngineQueryRelation& relation,
-                                  const std::vector<std::string>& field_order) {
+                                  const std::vector<std::string>& field_order,
+                                  std::string* error_detail = nullptr) {
   std::vector<exec::Tuple> rows;
   rows.reserve(relation.rows.size());
   for (const auto& row : relation.rows) {
     exec::Tuple tuple;
     tuple.values.reserve(field_order.size());
     for (const auto& field : field_order) {
-      tuple.values.push_back(RowFieldValueByName(row, field).value_or(0));
+      const auto value = RowFieldValueByName(row, field);
+      if (!value) {
+        if (error_detail != nullptr) {
+          *error_detail =
+              "set_operation_named_field_requires_non_null_int64_value";
+        }
+        return exec::MakeBatch("query_plan_set_relation_invalid", {});
+      }
+      tuple.values.push_back(*value);
     }
     rows.push_back(std::move(tuple));
   }
-  return exec::MakeBatch(relation.descriptor_digest.empty() ? relation.relation_name : relation.descriptor_digest,
-                         std::move(rows));
+  return exec::MakeBatch(
+      relation.descriptor_digest.empty() ? relation.relation_name
+                                         : relation.descriptor_digest,
+      std::move(rows), field_order.size());
 }
 
 EngineResultShape BatchToResultShape(const exec::Batch& batch) {
   EngineResultShape shape;
   shape.result_kind = "query_rowset";
-  std::size_t width = 0;
+  std::size_t width = batch.column_count;
   for (const auto& row : batch.rows) { width = std::max(width, row.values.size()); }
   for (std::size_t i = 0; i < width; ++i) { shape.columns.push_back(Int64Descriptor()); }
   for (const auto& row : batch.rows) {
@@ -9169,7 +9278,7 @@ EngineDescriptor DescriptorForRelationColumn(const EngineQueryRelation& relation
       return InferredDescriptorForValue(row.fields[column].second);
     }
   }
-  return TextDescriptor();
+  return {};
 }
 
 
@@ -9248,9 +9357,17 @@ EngineResultShape GenericGroupCountResultShape(const EngineQueryRelation& relati
     ++state.count;
   }
 
-  EngineDescriptor key_descriptor = TextDescriptor();
-  if (!groups.empty()) {
+  EngineDescriptor key_descriptor;
+  if (group_key_column < relation.columns.size()) {
+    key_descriptor = relation.columns[group_key_column];
+  } else if (!groups.empty()) {
     key_descriptor = InferredDescriptorForValue(groups.begin()->second.key_value);
+  }
+  if (key_descriptor.canonical_type_name.empty()) {
+    if (error_detail != nullptr) {
+      *error_detail = "query_plan_aggregate_group_key_descriptor_unresolved";
+    }
+    return {};
   }
   EngineResultShape shape;
   shape.result_kind = "query_rowset";
@@ -9329,6 +9446,14 @@ EngineTypedValue JoinOutputValue(const EngineRowValue& row,
   return NormalizeTypedValue(typed);
 }
 
+bool NormalizeJoinAlgorithm(std::string* algorithm) {
+  if (algorithm == nullptr) return false;
+  *algorithm = LowerAscii(std::move(*algorithm));
+  if (*algorithm == "nested") *algorithm = "nested_loop";
+  return *algorithm == "nested_loop" || *algorithm == "hash" ||
+         *algorithm == "merge";
+}
+
 EngineResultShape TypedInnerJoinResultShape(const EnginePlanOperationRequest& request,
                                             const EngineQueryRelation& left,
                                             const EngineQueryRelation& right,
@@ -9373,8 +9498,14 @@ EngineResultShape TypedInnerJoinResultShape(const EnginePlanOperationRequest& re
     return limit == 0 || shape.rows.size() < limit;
   };
 
-  const std::string normalized_algorithm = LowerAscii(std::string(algorithm));
-  if (normalized_algorithm == "nested" || normalized_algorithm == "nested_loop") {
+  std::string normalized_algorithm(algorithm);
+  if (!NormalizeJoinAlgorithm(&normalized_algorithm)) {
+    if (error_detail != nullptr) {
+      *error_detail = "query_plan_join_algorithm_unsupported";
+    }
+    return {};
+  }
+  if (normalized_algorithm == "nested_loop") {
     for (const auto& left_row : left.rows) {
       const auto left_key = JoinKeyForRow(left_row, left_key_column, error_detail);
       if (error_detail != nullptr && !error_detail->empty()) return {};
@@ -10261,7 +10392,12 @@ EngineResultShape PivotResultShape(const EnginePlanOperationRequest& request,
   if (aggregate_function.empty()) {
     aggregate_function = LowerAscii(OptionValue(request, "aggregate_function:"));
   }
-  if (aggregate_function.empty()) aggregate_function = "sum";
+  if (aggregate_function.empty()) {
+    if (error_detail != nullptr) {
+      *error_detail = "query_plan_pivot_aggregate_function_required";
+    }
+    return {};
+  }
   const std::string aggregate_leaf = AggregateFunctionLeaf(aggregate_function);
   if (group_field.empty() || for_field.empty() || value_field.empty()) {
     if (error_detail != nullptr) *error_detail = "query_plan_pivot_requires_descriptor_fields";
@@ -11506,6 +11642,80 @@ std::optional<std::vector<EngineQueryRelation>> BuildRelations(const EnginePlanO
   return relations;
 }
 
+bool RelationsHaveResolvedTypedValues(
+    const std::vector<EngineQueryRelation>& relations,
+    std::string* error_detail) {
+  const auto refuse = [&](std::string detail) {
+    if (error_detail != nullptr) *error_detail = std::move(detail);
+    return false;
+  };
+  const auto descriptor_resolved = [](const EngineDescriptor& descriptor) {
+    return !descriptor.descriptor_kind.empty() &&
+           !descriptor.canonical_type_name.empty() &&
+           !descriptor.encoded_descriptor.empty() &&
+           QowCanonicalTypeFromDescriptorV1(descriptor) !=
+               scratchbird::core::datatypes::CanonicalTypeId::unknown;
+  };
+  const auto same_descriptor = [](const EngineDescriptor& left,
+                                  const EngineDescriptor& right) {
+    return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
+           left.descriptor_kind == right.descriptor_kind &&
+           left.canonical_type_name == right.canonical_type_name &&
+           left.encoded_descriptor == right.encoded_descriptor;
+  };
+
+  for (const auto& relation : relations) {
+    for (const auto& descriptor : relation.columns) {
+      if (!descriptor_resolved(descriptor)) {
+        return refuse("query_relation_column_descriptor_unresolved");
+      }
+    }
+    std::vector<std::string> field_names;
+    if (!relation.rows.empty()) {
+      field_names.reserve(relation.rows.front().fields.size());
+      for (const auto& [name, value] : relation.rows.front().fields) {
+        (void)value;
+        if (name.empty() ||
+            std::find(field_names.begin(), field_names.end(), name) !=
+                field_names.end()) {
+          return refuse("query_relation_field_identity_invalid");
+        }
+        field_names.push_back(name);
+      }
+    }
+    const std::size_t expected_width = relation.columns.empty()
+                                           ? field_names.size()
+                                           : relation.columns.size();
+    for (const auto& row : relation.rows) {
+      if (row.fields.size() != expected_width) {
+        return refuse("query_relation_row_width_mismatch");
+      }
+      for (std::size_t column = 0; column < row.fields.size(); ++column) {
+        const auto& [name, value] = row.fields[column];
+        if (column >= field_names.size() || name != field_names[column]) {
+          return refuse("query_relation_field_order_mismatch");
+        }
+        if (!descriptor_resolved(value.descriptor)) {
+          return refuse("query_relation_value_descriptor_unresolved");
+        }
+        if (!relation.columns.empty() &&
+            !same_descriptor(value.descriptor, relation.columns[column])) {
+          return refuse("query_relation_value_descriptor_mismatch");
+        }
+        if (value.isSqlNull()) {
+          if (value.state != EngineValueState::sql_null || !value.is_null ||
+              !value.encoded_value.empty() || !value.binary_value.empty()) {
+            return refuse("query_relation_sql_null_state_invalid");
+          }
+        } else if (value.state != EngineValueState::value || value.is_null) {
+          return refuse("query_relation_value_state_invalid");
+        }
+      }
+    }
+  }
+  return true;
+}
+
 bool RelationsAreIntegerCompatible(const std::vector<EngineQueryRelation>& relations,
                                    std::string* error_detail) {
   for (const auto& relation : relations) {
@@ -11908,12 +12118,17 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
                               std::vector<EngineEvidenceReference>* evidence,
                               std::string* error_detail,
                               std::string planned_join_algorithm = {}) {
+  try {
   const auto require = [&](std::size_t index) -> exec::Batch {
-    if (index >= relations.size()) { return exec::MakeBatch("missing_relation", {}); }
-    return RelationToBatch(relations[index]);
+    if (index >= relations.size()) {
+      if (error_detail != nullptr) *error_detail = "query_relation_missing";
+      return exec::MakeBatch("missing_relation", {});
+    }
+    return RelationToBatch(relations[index], error_detail);
   };
 
   exec::Batch batch = require(0);
+  if (error_detail != nullptr && !error_detail->empty()) return batch;
   if (operation == "join" || operation == "inner_join" || operation == "equi_join" ||
       operation == "left_join" || operation == "left_outer_join" ||
       operation == "right_join" || operation == "right_outer_join" ||
@@ -11923,6 +12138,7 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
       operation == "cube_count" || operation == "semi_join" ||
       operation == "join_group_all_equality") {
     const exec::Batch right = require(1);
+    if (error_detail != nullptr && !error_detail->empty()) return right;
     const std::size_t left_key_column =
         relations.empty() ? request.left_key_column
                           : ColumnIndexForRelation(relations[0], request.left_key_field, request.left_key_column);
@@ -11941,7 +12157,13 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
                                            ? request.join_algorithm
                                            : OptionValue(request, "join_algorithm:"));
     if (algorithm.empty()) algorithm = std::move(planned_join_algorithm);
-    if (algorithm == "nested" || algorithm == "nested_loop") {
+    if (!NormalizeJoinAlgorithm(&algorithm)) {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_join_algorithm_unsupported";
+      }
+      return exec::MakeBatch("query_plan_join_algorithm_invalid", {});
+    }
+    if (algorithm == "nested_loop") {
       batch = exec::NestedLoopJoinEqual(batch, right, left_key_column, right_key_column);
       evidence->push_back({"query_join_algorithm", "nested_loop"});
     } else if (algorithm == "merge") {
@@ -11956,7 +12178,12 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
     std::string aggregate_function = request.aggregate_function;
     if (aggregate_function.empty()) aggregate_function = OptionValue(request, "aggregate_function:");
     if (aggregate_function.empty()) aggregate_function = OptionValue(request, "having_aggregate_function:");
-    if (aggregate_function.empty()) aggregate_function = "sum";
+    if (aggregate_function.empty()) {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_aggregate_function_required";
+      }
+      return exec::MakeBatch("query_plan_aggregate_invalid", {});
+    }
     const std::string aggregate_leaf = AggregateFunctionLeaf(aggregate_function);
     if (aggregate_leaf != "sum") {
       if (error_detail != nullptr) { *error_detail = "query_plan_aggregate_function_unsupported"; }
@@ -12045,7 +12272,15 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
     batch = exec::MaterializeCte(batch);
     evidence->push_back({"query_cte", "materialized"});
   } else if (operation == "recursive_cte") {
-    const auto max_iterations = ParseSizeValue(OptionValue(request, "recursive_iterations:"), 32);
+    std::size_t max_iterations = 0;
+    if (!TryParseSizeValue(OptionValue(request, "recursive_iterations:"),
+                           &max_iterations) ||
+        max_iterations == 0) {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_recursive_iteration_limit_required";
+      }
+      return exec::MakeBatch("query_plan_recursive_limit_invalid", {});
+    }
     const std::string step_mode = LowerAscii(OptionValue(request, "recursive_step_mode:"));
     if (step_mode == "counter_add_until_lt") {
       std::int64_t step = 0;
@@ -12068,40 +12303,76 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
         }
         std::int64_t current = anchor.values.front();
         std::size_t iteration = 0;
-        while (iteration++ < max_iterations && current < limit) {
+        while (iteration < max_iterations && current < limit) {
+          if (current > std::numeric_limits<std::int64_t>::max() - step) {
+            if (error_detail != nullptr) {
+              *error_detail = "query_plan_recursive_counter_overflow";
+            }
+            return exec::MakeBatch("query_plan_recursive_counter_invalid", {});
+          }
           current += step;
           rows.push_back(exec::Tuple{{current}});
+          ++iteration;
+        }
+        if (current < limit) {
+          if (error_detail != nullptr) {
+            *error_detail = "query_plan_recursive_iteration_limit_exceeded";
+          }
+          return exec::MakeBatch("query_plan_recursive_limit_exceeded", {});
         }
       }
-      batch = exec::MakeBatch(batch.descriptor_digest, std::move(rows));
+      batch = exec::MakeBatch(batch.descriptor_digest, std::move(rows),
+                              batch.column_count);
       evidence->push_back({"query_cte_recursive_step", "counter_add_until_lt"});
       evidence->push_back({"query_cte_recursive_counter_step", std::to_string(step)});
       evidence->push_back({"query_cte_recursive_counter_limit", std::to_string(limit)});
-    } else if (relations.size() >= 2) {
-      const exec::Batch recursive_step = RelationToBatch(relations[1]);
+    } else if (step_mode == "values_union_distinct" && relations.size() >= 2) {
+      const exec::Batch recursive_step =
+          RelationToBatch(relations[1], error_detail);
+      if (error_detail != nullptr && !error_detail->empty()) {
+        return recursive_step;
+      }
       std::size_t previous_count = 0;
       std::size_t iteration = 0;
-      while (iteration++ < max_iterations && batch.rows.size() != previous_count) {
+      while (iteration < max_iterations && batch.rows.size() != previous_count) {
         previous_count = batch.rows.size();
         batch = exec::SetUnionDistinct(batch, recursive_step);
+        ++iteration;
+      }
+      if (batch.rows.size() != previous_count) {
+        if (error_detail != nullptr) {
+          *error_detail = "query_plan_recursive_iteration_limit_exceeded";
+        }
+        return exec::MakeBatch("query_plan_recursive_limit_exceeded", {});
       }
       evidence->push_back({"query_cte_recursive_step", "values_union_distinct"});
+    } else {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_recursive_step_descriptor_invalid";
+      }
+      return exec::MakeBatch("query_plan_recursive_step_invalid", {});
     }
     batch = exec::MaterializeCte(batch);
     evidence->push_back({"query_cte", "recursive_fixed_point_materialized"});
   } else if (operation == "subquery" || operation == "scalar_subquery" || operation == "correlated_subquery") {
     const std::int64_t value = exec::ScalarSubqueryFirstValue(batch, request.projected_columns.empty() ? 0 : request.projected_columns.front());
-    batch = exec::MakeBatch("scalar_subquery", {{{value}}});
+    batch = exec::MakeBatch("scalar_subquery", {{{value}}}, 1);
     evidence->push_back({"query_subquery", operation});
   } else if (operation == "filter_gt") {
     const auto threshold = ParseI64Value(OptionValue(request, "threshold:"));
     batch = exec::FilterGreaterThan(batch, request.left_key_column, threshold);
     evidence->push_back({"query_filter", "greater_than"});
   } else if (operation == "sample" || operation == "table_sample") {
-    const std::string method = LowerAscii(OptionValue(request, "sample_method:").empty()
-                                              ? "bernoulli"
-                                              : OptionValue(request, "sample_method:"));
-    const double percent = ParseReal64Value(OptionValue(request, "sample_percent:"), 100.0);
+    const std::string method_text = OptionValue(request, "sample_method:");
+    const std::string percent_text = OptionValue(request, "sample_percent:");
+    if (method_text.empty() || percent_text.empty()) {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_sample_method_and_percent_required";
+      }
+      return exec::MakeBatch("query_plan_sample_invalid", {});
+    }
+    const std::string method = LowerAscii(method_text);
+    const double percent = ParseReal64Value(percent_text, -1.0);
     const double scaled_percent = percent * 100.0;
     const auto rounded_basis_points =
         std::isfinite(percent) && percent >= 0.0 && percent <= 100.0
@@ -12152,7 +12423,8 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
     for (const auto row_index : sample.selected_row_indices) {
       sampled_rows.push_back(batch.rows[row_index]);
     }
-    batch = exec::MakeBatch(batch.descriptor_digest, std::move(sampled_rows));
+    batch = exec::MakeBatch(batch.descriptor_digest, std::move(sampled_rows),
+                            batch.column_count);
     evidence->push_back({"query_sample", method});
     evidence->push_back({"query_sample_percent", FormatReal64(percent)});
     evidence->push_back({"query_sample_seed", seed_text});
@@ -12170,6 +12442,17 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
     const std::string set_operation = operation == "set_operation"
         ? LowerAscii(!request.set_operation.empty() ? request.set_operation : OptionValue(request, "set_operation:"))
         : operation;
+    if (set_operation != "union" && set_operation != "union_distinct" &&
+        set_operation != "union_all" && set_operation != "intersect" &&
+        set_operation != "intersect_distinct" &&
+        set_operation != "intersect_all" && set_operation != "except" &&
+        set_operation != "except_distinct" &&
+        set_operation != "except_all") {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_set_operation_required_or_unsupported";
+      }
+      return exec::MakeBatch("query_plan_set_operation_invalid", {});
+    }
     const std::string left_project_field = OptionValue(request, "left_project_field:");
     const std::string right_project_field = OptionValue(request, "right_project_field:");
     const auto projected_relation = [&](std::size_t relation_index) -> exec::Batch {
@@ -12225,16 +12508,20 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
           }
           evidence->push_back({"query_set_relation_" + std::to_string(relation_index) + "_not_null_filter",
                                not_null_filter});
-          return RelationToBatchByName(filtered, {project_field});
+          return RelationToBatchByName(filtered, {project_field}, error_detail);
         }
-        return RelationToBatchByName(relation_for_projection, {project_field});
+        return RelationToBatchByName(relation_for_projection, {project_field},
+                                     error_detail);
       }
       if (set_by_name && relation_index < relations.size()) {
-        return RelationToBatchByName(relations[relation_index], FieldOrderForRelation(relations[0]));
+        return RelationToBatchByName(relations[relation_index],
+                                     FieldOrderForRelation(relations[0]),
+                                     error_detail);
       }
       return require(relation_index);
     };
     batch = projected_relation(0);
+    if (error_detail != nullptr && !error_detail->empty()) return batch;
     evidence->push_back({"query_set_binding", set_by_name ? "descriptor_name" : "ordinal"});
     const auto apply_set_operation = [&](const exec::Batch& right) {
       if (set_operation == "intersect_all") {
@@ -12252,7 +12539,9 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
       }
     };
     for (std::size_t relation_index = 1; relation_index < relations.size(); ++relation_index) {
-      apply_set_operation(projected_relation(relation_index));
+      const auto right = projected_relation(relation_index);
+      if (error_detail != nullptr && !error_detail->empty()) return right;
+      apply_set_operation(right);
     }
     if (set_operation == "intersect_all") {
       evidence->push_back({"query_set_operation", "intersect_all"});
@@ -12272,6 +12561,10 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
   }
   ApplyCommonPipeline(request, &batch);
   return batch;
+  } catch (const std::exception& exception) {
+    if (error_detail != nullptr) *error_detail = exception.what();
+    return exec::MakeBatch("query_plan_execution_refused", {});
+  }
 }
 
 }  // namespace
@@ -12315,6 +12608,10 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
     const auto relations = BuildRelations(request, &error_detail);
     if (!relations) { return QueryFailure<EnginePlanOperationResult>(request.context, error_detail); }
     if (relations->empty()) { return QueryFailure<EnginePlanOperationResult>(request.context, "query_relation_required"); }
+    if (!RelationsHaveResolvedTypedValues(*relations, &error_detail)) {
+      return QueryFailure<EnginePlanOperationResult>(request.context,
+                                                     error_detail);
+    }
     const bool set_by_name = request.set_by_name ||
                              ParseBoolValue(OptionValue(request, "set_by_name:"), false);
     if (IsSetOperationName(operation) && set_by_name &&
@@ -12381,7 +12678,6 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       AddApiBehaviorEvidence(&result, "query_execution", "pivot");
       std::string pivot_aggregate = OptionValue(request, "pivot_aggregate_function:");
       if (pivot_aggregate.empty()) pivot_aggregate = OptionValue(request, "aggregate_function:");
-      if (pivot_aggregate.empty()) pivot_aggregate = "sum";
       const std::string pivot_aggregate_leaf = AggregateFunctionLeaf(pivot_aggregate);
       result.evidence.push_back({"query_pivot", pivot_aggregate_leaf + "_by_for_values"});
       result.evidence.push_back({"query_pivot_descriptor", "engine_row_descriptor_pivot_route"});
@@ -12555,6 +12851,10 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
         } else {
           join_algorithm = "hash";
         }
+      }
+      if (!NormalizeJoinAlgorithm(&join_algorithm)) {
+        return QueryFailure<EnginePlanOperationResult>(
+            request.context, "query_plan_join_algorithm_unsupported");
       }
       result.evidence.push_back({"query_join_algorithm", join_algorithm});
       const bool join_group_all_equality = operation == "join_group_all_equality";
@@ -12875,10 +13175,16 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
     }
     std::string aggregate_function = request.aggregate_function;
     if (aggregate_function.empty()) aggregate_function = OptionValue(request, "aggregate_function:");
-    if (aggregate_function.empty()) aggregate_function = "sum";
+    const bool aggregate_operation =
+        operation == "aggregate" || operation == "group" ||
+        operation == "group_by";
+    if (aggregate_operation && aggregate_function.empty()) {
+      return QueryFailure<EnginePlanOperationResult>(
+          request.context, "query_plan_aggregate_function_required");
+    }
     aggregate_function = LowerAscii(std::move(aggregate_function));
     const bool typed_aggregate_route =
-        (operation == "aggregate" || operation == "group" || operation == "group_by") &&
+        aggregate_operation &&
         (CoreAggregateRequiresTypedResult(aggregate_function) ||
          StatisticalAggregateRequiresTypedResult(aggregate_function) ||
          BooleanAggregateRequiresTypedResult(aggregate_function) ||
@@ -13107,13 +13413,21 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       return result;
     }
     std::string window_function = LowerAscii(request.window_function);
+    if (operation == "lag_window") window_function = "lag";
+    if (operation == "lead_window") window_function = "lead";
+    if (operation == "first_value_window") window_function = "first_value";
+    if (operation == "last_value_window") window_function = "last_value";
     if (operation == "percent_rank_window") window_function = "percent_rank";
     if (operation == "cume_dist_window") window_function = "cume_dist";
     if (operation == "nth_value_window") window_function = "nth_value";
+    const bool window_operation =
+        operation == "window" || operation == "lag_window" ||
+        operation == "lead_window" || operation == "first_value_window" ||
+        operation == "last_value_window" ||
+        operation == "percent_rank_window" ||
+        operation == "cume_dist_window" || operation == "nth_value_window";
     const bool typed_window_route =
-        (operation == "window" || operation == "percent_rank_window" ||
-         operation == "cume_dist_window" || operation == "nth_value_window") &&
-        WindowFunctionRequiresTypedResult(window_function);
+        window_operation && WindowFunctionRequiresTypedResult(window_function);
     if (typed_window_route) {
       result.evidence.push_back({"query_executor", "local_noncluster"});
       const auto statistics =

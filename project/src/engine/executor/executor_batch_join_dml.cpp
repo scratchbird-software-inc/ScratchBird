@@ -74,7 +74,8 @@ Batch DeterministicHashJoinEqual(const Batch& left,
       rows.push_back({.values = ConcatValues(left_row, right.rows[right_index])});
     }
   }
-  return MakeBatch(JoinDescriptor(left, right), std::move(rows));
+  return MakeBatch(JoinDescriptor(left, right), std::move(rows),
+                   left.column_count + right.column_count);
 }
 
 ExecutorBatchJoinEvidence BuildJoinEvidence(
@@ -148,7 +149,8 @@ ExecutorBatchJoinResult ExecuteBatchedJoinEqual(
 
   auto primitive = ExecuteScopedExecutorBatch(left, request.batch_request, row_step);
 
-  Batch output = MakeBatch(JoinDescriptor(left, right), {});
+  Batch output = MakeBatch(JoinDescriptor(left, right), {},
+                           left.column_count + right.column_count);
   bool hash_route_used = false;
   bool hash_candidate_matched_nested_loop_order = false;
   if (!primitive.evidence.cancelled && !primitive.evidence.error) {

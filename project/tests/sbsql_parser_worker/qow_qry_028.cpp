@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#include "api_types.hpp"
+#include "query/expression_api.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -162,6 +162,37 @@ bool ValidateRefusals() {
   return passed;
 }
 
+bool ValidateLegacyDescriptorResolution() {
+  auto legacy_descriptor = [](std::string type) {
+    api::EngineDescriptor descriptor;
+    descriptor.descriptor_kind = "scalar";
+    descriptor.canonical_type_name = std::move(type);
+    return descriptor;
+  };
+  namespace dt = scratchbird::core::datatypes;
+  bool passed = true;
+  passed &= Require(
+      api::QowCanonicalTypeFromDescriptorV1(legacy_descriptor("int64")) ==
+          dt::CanonicalTypeId::int64,
+      "legacy canonical descriptor did not resolve its declared type");
+  passed &= Require(
+      api::QowCanonicalTypeFromDescriptorV1(
+          legacy_descriptor("unknown_type")) == dt::CanonicalTypeId::unknown,
+      "legacy unknown descriptor resolved to substitute text semantics");
+  passed &= Require(
+      api::QowCanonicalTypeFromDescriptorV1(legacy_descriptor("")) ==
+          dt::CanonicalTypeId::unknown,
+      "legacy missing descriptor resolved to substitute text semantics");
+  auto domain = legacy_descriptor("domain");
+  domain.descriptor_kind = "domain";
+  domain.encoded_descriptor = "base_type=real64;nullability=nullable";
+  passed &= Require(
+      api::QowCanonicalTypeFromDescriptorV1(domain) ==
+          dt::CanonicalTypeId::real64,
+      "legacy domain descriptor did not resolve its canonical base type");
+  return passed;
+}
+
 }  // namespace
 
 // QOW-TEST-QRY-028-V1
@@ -169,5 +200,6 @@ int main() {
   bool passed = true;
   passed &= ValidateSupportedCoercion();
   passed &= ValidateRefusals();
+  passed &= ValidateLegacyDescriptorResolution();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

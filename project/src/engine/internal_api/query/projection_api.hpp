@@ -10,6 +10,7 @@
 
 #include "api_types.hpp"
 
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <vector>
@@ -17,10 +18,6 @@
 namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_QUERY_PROJECTION_API
-struct EngineBindProjectionRequest : EngineApiRequest {};
-struct EngineBindProjectionResult : EngineApiResult {};
-EngineBindProjectionResult EngineBindProjection(const EngineBindProjectionRequest& request);
-
 struct EngineProjectionFunctionArgument {
   std::string name;
   std::string type_name;
@@ -41,6 +38,16 @@ struct EngineProjectionExpression {
   std::string sblr_binding;
   std::vector<EngineProjectionExpression> arguments;
 };
+
+struct EngineBindProjectionRequest : EngineApiRequest {};
+struct EngineBindProjectionResult : EngineApiResult {
+  std::vector<EngineProjectionExpression> bound_expressions;
+  EngineProjectionEnvelope bound_projection;
+  std::size_t validated_node_count = 0;
+  std::size_t maximum_observed_depth = 0;
+};
+EngineBindProjectionResult EngineBindProjection(
+    const EngineBindProjectionRequest& request);
 
 struct EngineProjectionFunctionRequest {
   EngineRequestContext context;

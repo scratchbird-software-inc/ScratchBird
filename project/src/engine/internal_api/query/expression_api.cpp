@@ -276,6 +276,18 @@ bool QowCanonicalDescriptorIdentityV1(const EngineDescriptor& descriptor) {
          !descriptor.encoded_descriptor.empty();
 }
 
+scratchbird::core::datatypes::CanonicalTypeId
+QowCanonicalTypeFromDescriptorV1(const EngineDescriptor& descriptor) {
+  namespace dt = scratchbird::core::datatypes;
+  if (descriptor.descriptor_kind == "domain") {
+    const auto base_type = dt::CanonicalTypeIdFromStableName(
+        QowCanonicalDescriptorFieldV1(descriptor.encoded_descriptor,
+                                      "base_type"));
+    if (base_type != dt::CanonicalTypeId::unknown) return base_type;
+  }
+  return dt::CanonicalTypeIdFromStableName(descriptor.canonical_type_name);
+}
+
 EngineTypedValue QowPreserveCanonicalDescriptorAfterScalarV1(
     const EngineDescriptor& result_descriptor,
     EngineTypedValue computed_value) {
@@ -1949,12 +1961,7 @@ std::string DescriptorField(const std::string& descriptor, const std::string& ke
 }
 
 dt::CanonicalTypeId TypeFromDescriptor(const EngineDescriptor& descriptor) {
-  if (descriptor.descriptor_kind == "domain") {
-    const auto base_type = dt::CanonicalTypeIdFromStableName(DescriptorField(descriptor.encoded_descriptor, "base_type"));
-    if (base_type != dt::CanonicalTypeId::unknown) { return base_type; }
-  }
-  const auto type = dt::CanonicalTypeIdFromStableName(descriptor.canonical_type_name);
-  return type == dt::CanonicalTypeId::unknown ? dt::CanonicalTypeId::character : type;
+  return QowCanonicalTypeFromDescriptorV1(descriptor);
 }
 
 std::string OptionValue(const EngineApiRequest& request, const std::string& prefix) {
@@ -2195,53 +2202,58 @@ EngineBindExpressionResult EngineBindExpression(const EngineBindExpressionReques
       !request.sql_object_reference.object_name.normalized_lookup_key.empty() ||
       !request.bound_object_identity.object_uuid.canonical.empty() ||
       !request.related_objects.empty();
-  if (canonical_reference_requested) {
-    const auto refuse = [&](std::string reason,
-                            std::string detail) {
-      auto diagnostic = MakeEngineApiDiagnostic(
-          "QOW-DIAG-QRY-025-REFUSAL-V1",
-          "engine.query.expression_reference_binding_refused",
-          std::move(detail));
-      diagnostic.fields.push_back({"reason", std::move(reason)});
-      return ApiFailure<EngineBindExpressionResult>(
-          request.context, "query.bind_expression", std::move(diagnostic));
-    };
-
-    const auto& context = request.context;
-    EngineObjectReference bound_reference;
-    EngineDescriptor bound_descriptor;
-    std::string refusal_reason;
-    std::string refusal_detail;
-    if (!QowBindCanonicalExpressionReferenceV1(
-            request, &bound_reference, &bound_descriptor, &refusal_reason,
-            &refusal_detail)) {
-      return refuse(std::move(refusal_reason), std::move(refusal_detail));
-    }
-    const auto authorization = EvaluateMaterializedAuthorization(
-        context, context.authorization_context, "SELECT",
-        bound_reference.uuid.canonical);
-    if (!authorization.authorized) {
-      return refuse("unauthorized_reference",
-                    "SELECT authorization was not materialized for the resolved object");
-    }
-
-    auto result = ApiSuccess<EngineBindExpressionResult>(
-        context, "query.bind_expression");
-    result.primary_object = std::move(bound_reference);
-    result.result_shape.result_kind = "bound_expression_reference";
-    result.result_shape.columns.push_back(std::move(bound_descriptor));
-    result.evidence.push_back(
-        {"query_binding", "canonical_expression_reference"});
-    result.evidence.push_back(
-        {"statement_metadata_snapshot",
-         context.statement_metadata_snapshot_uuid.canonical});
-    result.evidence.push_back(
-        {"bound_object_uuid", result.primary_object.uuid.canonical});
-    return result;
+  if (!canonical_reference_requested) {
+    return ApiFailure<EngineBindExpressionResult>(
+        request.context, "query.bind_expression",
+        MakeEngineApiDiagnostic(
+            "QOW-DIAG-QRY-025-BIND-REFUSAL-V1",
+            "engine.query.expression_binding_refused",
+            "canonical expression reference binding input is required"));
   }
-  auto result = MakeApiBehaviorSuccess<EngineBindExpressionResult>(request.context, "query.bind_expression");
-  AddApiBehaviorEvidence(&result, "query_binding", "expression");
-  AddApiBehaviorRow(&result, {{"binding_kind", "expression"}, {"payload", ApiBehaviorPayloadFromRequest(request)}, {"descriptor_count", std::to_string(request.descriptors.size())}});
+  const auto refuse = [&](std::string reason, std::string detail) {
+    auto diagnostic = MakeEngineApiDiagnostic(
+        "QOW-DIAG-QRY-025-REFUSAL-V1",
+        "engine.query.expression_reference_binding_refused",
+        std::move(detail));
+    diagnostic.fields.push_back({"reason", std::move(reason)});
+    return ApiFailure<EngineBindExpressionResult>(
+        request.context, "query.bind_expression", std::move(diagnostic));
+  };
+
+  const auto& context = request.context;
+  EngineObjectReference bound_reference;
+  EngineDescriptor bound_descriptor;
+  std::string refusal_reason;
+  std::string refusal_detail;
+  if (!QowBindCanonicalExpressionReferenceV1(
+          request, &bound_reference, &bound_descriptor, &refusal_reason,
+          &refusal_detail)) {
+    return refuse(std::move(refusal_reason), std::move(refusal_detail));
+  }
+  const auto authorization = EvaluateMaterializedAuthorization(
+      context, context.authorization_context, "SELECT",
+      bound_reference.uuid.canonical);
+  if (!authorization.authorized) {
+    return refuse(
+        "unauthorized_reference",
+        "SELECT authorization was not materialized for the resolved object");
+  }
+
+  auto result = ApiSuccess<EngineBindExpressionResult>(
+      context, "query.bind_expression");
+  result.bound_reference = bound_reference;
+  result.bound_identity = request.bound_object_identity;
+  result.bound_descriptor = bound_descriptor;
+  result.primary_object = std::move(bound_reference);
+  result.result_shape.result_kind = "bound_expression_reference";
+  result.result_shape.columns.push_back(std::move(bound_descriptor));
+  result.evidence.push_back(
+      {"query_binding", "canonical_expression_reference"});
+  result.evidence.push_back(
+      {"statement_metadata_snapshot",
+       context.statement_metadata_snapshot_uuid.canonical});
+  result.evidence.push_back(
+      {"bound_object_uuid", result.primary_object.uuid.canonical});
   return result;
 }
 
@@ -2288,11 +2300,23 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
          result.value.descriptor.descriptor_uuid.canonical});
     return result;
   }
+  const auto source_type = TypeFromDescriptor(input.descriptor);
+  const auto target_type = TypeFromDescriptor(target);
+  if (source_type == dt::CanonicalTypeId::unknown ||
+      target_type == dt::CanonicalTypeId::unknown) {
+    return ApiFailure<EngineCastValueResult>(
+        request.context,
+        "query.cast_value",
+        MakeEngineApiDiagnostic(
+            "QOW-DIAG-QRY-028-DESC-REFUSAL-V1",
+            "engine.query.invalid_descriptor_state_refused",
+            "source and target descriptors must resolve to canonical types"));
+  }
   dt::DatatypeCastRequest cast_request;
-  cast_request.value.type_id = TypeFromDescriptor(input.descriptor);
+  cast_request.value.type_id = source_type;
   cast_request.value.encoded_value = input.encoded_value;
   cast_request.value.is_null = input.is_null;
-  cast_request.target_type_id = TypeFromDescriptor(target);
+  cast_request.target_type_id = target_type;
   cast_request.explicit_cast = request.explicit_cast;
   cast_request.reference_compatibility_profile = !request.compatibility_profile.names.empty();
   const auto cast = dt::CastDatatypeValue(cast_request);

@@ -14,7 +14,9 @@ namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_QUERY_PREDICATE_API
 struct EngineBindPredicateRequest : EngineApiRequest {};
-struct EngineBindPredicateResult : EngineApiResult {};
+struct EngineBindPredicateResult : EngineApiResult {
+  EnginePredicateEnvelope bound_predicate;
+};
 EngineBindPredicateResult EngineBindPredicate(const EngineBindPredicateRequest& request);
 
 struct EngineEvaluatePredicateRequest : EngineApiRequest {

@@ -202,5 +202,12 @@ int main() {
   Require(ResultSignature(planned_hash) == ResultSignature(explicit_merge),
           "CDP-023 explicit merge join changed join result");
 
+  const auto invalid_algorithm =
+      api::EnginePlanOperation(JoinRequest({}, "not_a_join_algorithm"));
+  Require(!invalid_algorithm.ok && !invalid_algorithm.diagnostics.empty() &&
+              invalid_algorithm.diagnostics.front().detail ==
+                  "query_plan_join_algorithm_unsupported",
+          "CDP-023 invalid join algorithm selected a substitute strategy");
+
   return EXIT_SUCCESS;
 }

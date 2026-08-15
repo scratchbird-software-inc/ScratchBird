@@ -8,6 +8,8 @@
 
 #include "query/projection_api.hpp"
 
+#include "datatype_operations.hpp"
+
 #ifndef SCRATCHBIRD_QOW_TYPED_PARAMETER_CONTRACT_ONLY
 #include "behavior_support/api_behavior_store.hpp"
 #include "api_diagnostics.hpp"
@@ -264,8 +266,25 @@ bool QowReadProjectionExpressionV1(
   expression->name = QowProjectionOptionValueV1(request, prefix + "name:");
   expression->expression_kind =
       QowProjectionOptionValueV1(request, prefix + "expr_kind:");
-  if (expression->expression_kind.empty()) expression->expression_kind = "literal";
+  if (expression->expression_kind != "literal" &&
+      expression->expression_kind != "parameter" &&
+      expression->expression_kind != "function" &&
+      expression->expression_kind != "operator" &&
+      expression->expression_kind != "special_form") {
+    return refuse("expression_kind",
+                  "projection expression kind is missing or unsupported");
+  }
   expression->type_name = QowProjectionOptionValueV1(request, prefix + "type:");
+  if (expression->type_name.empty()) {
+    return refuse("descriptor_missing",
+                  "projection expression requires a resolved type descriptor");
+  }
+  if (scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+          expression->type_name) ==
+          scratchbird::core::datatypes::CanonicalTypeId::unknown) {
+    return refuse("descriptor_unsupported",
+                  "projection expression type descriptor is unsupported");
+  }
   expression->encoded_value = QowProjectionOptionValueV1(request, prefix + "value:");
   const auto is_null = QowProjectionOptionValueV1(request, prefix + "is_null:");
   expression->is_null = is_null == "true" || is_null == "1";
@@ -280,21 +299,49 @@ bool QowReadProjectionExpressionV1(
   expression->sblr_binding =
       QowProjectionOptionValueV1(request, prefix + "sblr_binding:");
 
-  std::uint64_t argument_count = 0;
-  for (const auto& count_key : {std::string("function_arg_count:"),
+  std::string argument_count_key;
+  if (expression->expression_kind == "function") {
+    if (expression->function_id.empty()) {
+      return refuse("function_id", "projection function id is required");
+    }
+    argument_count_key = "function_arg_count:";
+  } else if (expression->expression_kind == "operator") {
+    if (expression->operator_id.empty() &&
+        expression->canonical_operator_id.empty()) {
+      return refuse("operator_id", "projection operator id is required");
+    }
+    argument_count_key = "operator_arg_count:";
+  } else if (expression->expression_kind == "special_form") {
+    if (expression->special_form_id.empty()) {
+      return refuse("special_form_id",
+                    "projection special-form id is required");
+    }
+    argument_count_key = "special_form_arg_count:";
+  } else if (expression->expression_kind == "parameter" &&
+             expression->name.empty()) {
+    return refuse("parameter_name", "projection parameter name is required");
+  }
+  for (const auto& candidate : {std::string("function_arg_count:"),
                                 std::string("operator_arg_count:"),
                                 std::string("special_form_arg_count:")}) {
-    const auto encoded_count =
-        QowProjectionOptionValueV1(request, prefix + count_key);
-    if (encoded_count.empty()) continue;
-    std::uint64_t parsed_count = 0;
-    if (!QowParseProjectionU64V1(
-            encoded_count, std::numeric_limits<std::uint64_t>::max(),
-            &parsed_count)) {
-      return refuse("argument_count",
-                    "projection expression argument count is malformed");
+    if (candidate != argument_count_key &&
+        !QowProjectionOptionValueV1(request, prefix + candidate).empty()) {
+      return refuse("argument_count_kind",
+                    "projection argument count does not match expression kind");
     }
-    argument_count = std::max(argument_count, parsed_count);
+  }
+  std::uint64_t argument_count = 0;
+  if (!argument_count_key.empty()) {
+    const auto encoded_count =
+        QowProjectionOptionValueV1(request, prefix + argument_count_key);
+    if (encoded_count.empty() ||
+        !QowParseProjectionU64V1(
+            encoded_count, std::numeric_limits<std::uint64_t>::max(),
+            &argument_count)) {
+      return refuse(
+          "argument_count",
+          "projection expression argument count is required and must be canonical");
+    }
   }
   if (argument_count > kQowMaximumProjectionExpressionFanoutV1) {
     return refuse("maximum_fanout",
@@ -506,7 +553,7 @@ namespace {
 EngineDescriptor ProjectionDescriptor(const std::string& type_name) {
   EngineDescriptor descriptor;
   descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = type_name.empty() ? "text" : type_name;
+  descriptor.canonical_type_name = type_name;
   descriptor.encoded_descriptor = "type=" + descriptor.canonical_type_name;
   return descriptor;
 }
@@ -532,7 +579,7 @@ EngineEvaluateProjectionResult ProjectionFailure(const EngineEvaluateProjectionR
 EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
     const EngineEvaluateProjectionRequest& request,
     const EngineProjectionExpression& expression) {
-  if (expression.expression_kind.empty() || expression.expression_kind == "literal") {
+  if (expression.expression_kind == "literal") {
     EngineProjectionFunctionResult out;
     out.ok = true;
     out.value.descriptor = ProjectionDescriptor(expression.type_name);
@@ -542,63 +589,47 @@ EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
   }
 
   if (expression.expression_kind == "parameter") {
-    if (!request.descriptors.empty() || !request.assignments.empty()) {
-      std::vector<EngineTypedValue> bound_values;
-      std::string refusal_reason;
-      std::string refusal_detail;
-      if (!QowBindCanonicalParameterSlotsV1(
-              request.descriptors, request.assignments, &bound_values,
-              &refusal_reason, &refusal_detail)) {
-        EngineProjectionFunctionResult out;
-        out.ok = false;
-        auto diagnostic = MakeEngineApiDiagnostic(
-            "QOW-DIAG-QRY-026-REFUSAL-V1",
-            "engine.query.typed_parameter_binding_refused",
-            std::move(refusal_detail));
-        diagnostic.fields.push_back(
-            {"reason", std::move(refusal_reason)});
-        out.diagnostics.push_back(std::move(diagnostic));
-        return out;
-      }
-      for (std::size_t index = 0; index < request.assignments.size(); ++index) {
-        if (request.assignments[index].first != expression.name) continue;
-        EngineProjectionFunctionResult out;
-        out.ok = true;
-        out.value = std::move(bound_values[index]);
-        if (!expression.type_name.empty() &&
-            expression.type_name != out.value.descriptor.canonical_type_name) {
-          out.ok = false;
-          out.value = EngineTypedValue{};
-          out.diagnostics.push_back(MakeEngineApiDiagnostic(
-              "QOW-DIAG-QRY-026-REFUSAL-V1",
-              "engine.query.typed_parameter_binding_refused",
-              "projection parameter type does not match the bound slot"));
-          return out;
-        }
-        out.evidence.push_back(
-            {"query_parameter_value_execution", "true"});
-        out.evidence.push_back(
-            {"query_parameter_name", expression.name});
-        return out;
-      }
+    std::vector<EngineTypedValue> bound_values;
+    std::string refusal_reason;
+    std::string refusal_detail;
+    if (!QowBindCanonicalParameterSlotsV1(
+            request.descriptors, request.assignments, &bound_values,
+            &refusal_reason, &refusal_detail)) {
       EngineProjectionFunctionResult out;
       out.ok = false;
-      out.diagnostics.push_back(MakeEngineApiDiagnostic(
+      auto diagnostic = MakeEngineApiDiagnostic(
           "QOW-DIAG-QRY-026-REFUSAL-V1",
           "engine.query.typed_parameter_binding_refused",
-          "projection parameter name does not resolve to a bound slot"));
+          std::move(refusal_detail));
+      diagnostic.fields.push_back({"reason", std::move(refusal_reason)});
+      out.diagnostics.push_back(std::move(diagnostic));
+      return out;
+    }
+    for (std::size_t index = 0; index < request.assignments.size(); ++index) {
+      if (request.assignments[index].first != expression.name) continue;
+      EngineProjectionFunctionResult out;
+      out.ok = true;
+      out.value = std::move(bound_values[index]);
+      if (!expression.type_name.empty() &&
+          expression.type_name != out.value.descriptor.canonical_type_name) {
+        out.ok = false;
+        out.value = EngineTypedValue{};
+        out.diagnostics.push_back(MakeEngineApiDiagnostic(
+            "QOW-DIAG-QRY-026-REFUSAL-V1",
+            "engine.query.typed_parameter_binding_refused",
+            "projection parameter type does not match the bound slot"));
+        return out;
+      }
+      out.evidence.push_back({"query_parameter_value_execution", "true"});
+      out.evidence.push_back({"query_parameter_name", expression.name});
       return out;
     }
     EngineProjectionFunctionResult out;
-    out.ok = true;
-    out.value.descriptor.descriptor_kind = "parameter";
-    out.value.descriptor.canonical_type_name =
-        expression.type_name.empty() ? "unknown" : expression.type_name;
-    out.value.descriptor.encoded_descriptor =
-        "kind=input;type=" + out.value.descriptor.canonical_type_name;
-    out.value.encoded_value = "unbound_parameter_descriptor";
-    out.value.is_null = false;
-    out.evidence.push_back({"query_parameter_value_execution", "false"});
+    out.ok = false;
+    out.diagnostics.push_back(MakeEngineApiDiagnostic(
+        "QOW-DIAG-QRY-026-REFUSAL-V1",
+        "engine.query.typed_parameter_binding_refused",
+        "projection parameter name does not resolve to a bound slot"));
     return out;
   }
 
@@ -703,6 +734,7 @@ EngineBindProjectionResult EngineBindProjection(const EngineBindProjectionReques
   std::size_t maximum_observed_depth = 0;
   std::string refusal_reason;
   std::string refusal_detail;
+  std::vector<EngineProjectionExpression> bound_expressions;
   const auto encoded_projection_count =
       QowProjectionOptionValueV1(request, "projection_count:");
   if (!encoded_projection_count.empty()) {
@@ -714,42 +746,28 @@ EngineBindProjectionResult EngineBindProjection(const EngineBindProjectionReques
           request, "root_count",
           "projection root count is malformed");
     }
-    std::vector<EngineProjectionExpression> expressions;
     if (!QowReadCanonicalProjectionExpressionsV1(
-            request, projection_count, &expressions, &validated_node_count,
+            request, projection_count, &bound_expressions,
+            &validated_node_count,
             &maximum_observed_depth, &refusal_reason, &refusal_detail)) {
       return BindProjectionGraphFailure(
           request, std::move(refusal_reason), std::move(refusal_detail));
     }
   } else if (!request.projection.canonical_projection_envelopes.empty()) {
-    const auto projection_count =
-        request.projection.canonical_projection_envelopes.size();
-    if (projection_count > kQowMaximumProjectionExpressionNodesV1) {
-      return BindProjectionGraphFailure(
-          request, "node_count",
-          "canonical projection envelope count exceeds the expression node limit");
-    }
-    std::vector<std::uint32_t> expression_ids;
-    std::vector<std::vector<std::uint32_t>> child_expression_ids(
-        projection_count);
-    std::vector<bool> shareable(projection_count, false);
-    std::vector<std::uint32_t> root_expression_ids;
-    expression_ids.reserve(projection_count);
-    root_expression_ids.reserve(projection_count);
-    for (std::size_t index = 0; index < projection_count; ++index) {
-      const auto expression_id = static_cast<std::uint32_t>(index + 1);
-      expression_ids.push_back(expression_id);
-      root_expression_ids.push_back(expression_id);
-    }
-    if (!QowValidateCanonicalExpressionGraphV1(
-            expression_ids, child_expression_ids, shareable,
-            root_expression_ids, &validated_node_count,
-            &maximum_observed_depth, &refusal_reason, &refusal_detail)) {
-      return BindProjectionGraphFailure(
-          request, std::move(refusal_reason), std::move(refusal_detail));
-    }
+    return BindProjectionGraphFailure(
+        request, "projection_envelope_not_decoded",
+        "opaque projection envelopes cannot be accepted as bound expressions");
+  } else {
+    return BindProjectionGraphFailure(
+        request, "root_expression_missing",
+        "canonical projection binding input is required");
   }
   auto result = MakeApiBehaviorSuccess<EngineBindProjectionResult>(request.context, "query.bind_projection");
+  result.bound_expressions = std::move(bound_expressions);
+  result.bound_projection = request.projection;
+  result.validated_node_count = validated_node_count;
+  result.maximum_observed_depth = maximum_observed_depth;
+  result.result_shape.result_kind = "bound_projection";
   AddApiBehaviorEvidence(&result, "query_binding", "projection");
   if (validated_node_count != 0) {
     AddApiBehaviorEvidence(

@@ -120,6 +120,17 @@ api::EngineDescriptor Descriptor() {
   return descriptor;
 }
 
+api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
+                                 const std::string& type_uuid,
+                                 const std::string& type_name) {
+  auto descriptor = Descriptor();
+  descriptor.descriptor_uuid.canonical = descriptor_uuid;
+  descriptor.canonical_type_name = type_name;
+  descriptor.encoded_descriptor =
+      "type_uuid=" + type_uuid + ";nullability=nullable";
+  return descriptor;
+}
+
 api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
                             std::string encoded) {
   api::EngineTypedValue value;
@@ -208,6 +219,63 @@ exec::CanonicalRecursiveCteUnionRequest Request(
   return request;
 }
 
+exec::CanonicalRecursiveCteUnionRequest CompositeTypedRequest() {
+  auto request = Request(exec::CanonicalRecursiveCteUnionMode::kDistinct);
+  auto& working = request.working_request;
+  const auto amount = Descriptor(
+      "019f0000-0000-7200-8000-000000003321",
+      "019f0000-0000-7300-8000-000000003322", "real64");
+  const auto flag = Descriptor(
+      "019f0000-0000-7200-8000-000000003323",
+      "019f0000-0000-7300-8000-000000003324", "boolean");
+  for (auto& node : working.physical_dag.nodes) {
+    node.output_descriptor_ids = {3301, 3302};
+  }
+  working.physical_dag.nodes[2].implementation_id =
+      "cte.recursive.union-distinct.typed.v1";
+  working.anchor_batch = exec::MakeDescriptorBatch(
+      {{"amount", amount, true, 3301}, {"flag", flag, true, 3302}},
+      {{{Value(amount, "1.5"), Value(flag, "true")}},
+       {{Value(amount, "1.50"), Value(flag, "true")}},
+       {{Value(amount, "1.5"), Value(flag, "false")}}});
+  working.recursive_step =
+      [amount, flag](const exec::DescriptorBatch& current,
+                     const std::size_t iteration) {
+        exec::DescriptorBatch next;
+        next.columns = current.columns;
+        if (iteration == 1) {
+          next.rows = {
+              {{Value(amount, "1.50"), Value(flag, "true")}},
+              {{Value(amount, "2.5"), Value(flag, "true")}},
+          };
+        } else if (iteration == 2) {
+          next.rows = {
+              {{Value(amount, "2.50"), Value(flag, "true")}},
+              {{Value(amount, "3.5"), Value(flag, "true")}},
+          };
+        } else if (iteration == 3) {
+          next.rows = {
+              {{Value(amount, "3.50"), Value(flag, "true")}},
+          };
+        }
+        return next;
+      };
+  request.equality_terms = {
+      {.column = 0,
+       .expression_descriptor_id = 3301,
+       .direction = exec::CanonicalDescriptorOrderDirection::ascending,
+       .null_placement = exec::CanonicalDescriptorNullPlacement::first},
+      {.column = 1,
+       .expression_descriptor_id = 3302,
+       .direction = exec::CanonicalDescriptorOrderDirection::ascending,
+       .null_placement = exec::CanonicalDescriptorNullPlacement::first},
+  };
+  request.maximum_value_comparison_count = 128;
+  working.maximum_working_row_count = 8;
+  working.maximum_result_row_count = 16;
+  return request;
+}
+
 // QOW-TEST-QRY-014-UNION-V1
 bool ValidateUnionModes() {
   bool passed = true;
@@ -232,6 +300,35 @@ bool ValidateUnionModes() {
               Request(exec::CanonicalRecursiveCteUnionMode::kDistinct)
                   .working_request.mga_authority.statement_context),
       "UNION DISTINCT did not remove typed duplicates across iterations");
+
+  result = exec::ExecuteCanonicalRecursiveCteUnion(
+      CompositeTypedRequest());
+  passed &= Require(
+      result.working_result.diagnostic.ok &&
+          result.working_result.converged &&
+          result.working_result.recursive_iteration_count == 3 &&
+          result.working_result.output_batch.columns.size() == 2 &&
+          result.working_result.output_batch.rows.size() == 4 &&
+          result.working_result.output_batch.rows[0]
+                  .values[0]
+                  .encoded_value == "1.5" &&
+          result.working_result.output_batch.rows[1]
+                  .values[1]
+                  .encoded_value == "false" &&
+          result.working_result.output_batch.rows[2]
+                  .values[0]
+                  .encoded_value == "2.5" &&
+          result.working_result.output_batch.rows[3]
+                  .values[0]
+                  .encoded_value == "3.5" &&
+          result.duplicate_row_count == 4,
+      "descriptor-wide recursive UNION DISTINCT lost typed row equality");
+
+  auto typed_request = CompositeTypedRequest();
+  typed_request.equality_terms.pop_back();
+  result = exec::ExecuteCanonicalRecursiveCteUnion(typed_request);
+  passed &= Require(!result.working_result.diagnostic.ok,
+                    "incomplete recursive DISTINCT equality coverage was accepted");
 
   auto request = Request(exec::CanonicalRecursiveCteUnionMode::kAll);
   request.working_request.recursive_step =

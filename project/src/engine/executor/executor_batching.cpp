@@ -220,6 +220,7 @@ ExecutorBatchResult ExecuteScopedExecutorBatch(const Batch& input,
                                                const ExecutorRowStep& row_step) {
   ExecutorBatchResult result;
   result.output.descriptor_digest = input.descriptor_digest;
+  result.output.column_count = input.column_count;
   result.evidence.rows_requested = input.rows.size();
 
   const auto validation = ValidateBatch(input);

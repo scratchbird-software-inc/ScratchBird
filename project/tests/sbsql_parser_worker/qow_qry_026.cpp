@@ -121,6 +121,11 @@ bool ValidatePositiveBinding() {
 bool ValidateRefusals() {
   bool passed = true;
   {
+    Fixture fixture;
+    passed &= Require(AtomicRefusal(fixture, "parameter_slots_missing"),
+                      "undeclared parameter acquired a substitute value");
+  }
+  {
     auto fixture = CanonicalFixture();
     fixture.parameters.pop_back();
     passed &= Require(AtomicRefusal(fixture, "parameter_missing"),

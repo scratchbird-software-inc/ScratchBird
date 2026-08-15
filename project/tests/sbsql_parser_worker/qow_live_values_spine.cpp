@@ -1888,6 +1888,7 @@ sblr::SblrOperationEnvelope NodeDrivenRowSubqueryLimitValuesEnvelope(
 enum class PredicateSubqueryInputProfile {
   kStandard,
   kInTrue,
+  kReal64,
   kEmpty,
 };
 
@@ -1898,6 +1899,8 @@ sblr::SblrOperationEnvelope NodeDrivenPredicateSubqueryLimitEnvelope(
     const PredicateSubqueryInputProfile input_profile) {
   const bool exists = semantic_variant == "subquery.exists.v1";
   const bool empty = input_profile == PredicateSubqueryInputProfile::kEmpty;
+  const bool real64 =
+      input_profile == PredicateSubqueryInputProfile::kReal64;
   const auto subquery_node_id = empty ? 3 : 2;
   const auto limit_node_id = empty ? 4 : 3;
   auto envelope = sblr::MakeSblrEnvelope(
@@ -1926,13 +1929,17 @@ sblr::SblrOperationEnvelope NodeDrivenPredicateSubqueryLimitEnvelope(
       {"relational_descriptor_v1", "4",
        "019f0000-0000-7300-8000-00000000cf67|"
        "019f0000-0000-7400-8000-00000000cf68|1|-|-|-|-|-"},
-      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "1",
+       real64 ? "1|-|1|-|-|1|-|312e35" : "1|-|1|-|-|1|-|31"},
       {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
       {"relational_expression_v1", "3",
-       input_profile == PredicateSubqueryInputProfile::kInTrue
+       real64
+           ? "1|-|1|-|-|1|-|322e35"
+           : input_profile == PredicateSubqueryInputProfile::kInTrue
            ? "1|-|1|-|-|1|-|32"
            : "1|-|1|-|-|1|-|33"},
-      {"relational_expression_v1", "4", "1|-|3|-|-|1|-|32"},
+      {"relational_expression_v1", "4",
+       real64 ? "1|-|3|-|-|1|-|322e35" : "1|-|3|-|-|1|-|32"},
       {"relational_expression_v1", "5",
        "1|-|2|-|-|6|-|66616c7365"},
       {"relational_expression_v1", "6", "1|-|4|-|-|1|-|31"},
@@ -1981,7 +1988,10 @@ sblr::SblrOperationEnvelope NodeDrivenCorrelationLimitEnvelope(
     const std::string& semantic_variant,
     const std::string& tree_uuid) {
   const bool correlated =
-      semantic_variant == "subquery.correlated-int64-equality.v1";
+      semantic_variant == "subquery.correlated-int64-equality.v1" ||
+      semantic_variant == "subquery.correlated-typed-equality.v1";
+  const bool typed =
+      semantic_variant.find("-typed-equality.v1") != std::string::npos;
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE",
       "qow.live.correlation." + semantic_variant);
@@ -2009,25 +2019,31 @@ sblr::SblrOperationEnvelope NodeDrivenCorrelationLimitEnvelope(
       {"relational_descriptor_v1", "5",
        "019f0000-0000-7300-8000-00000000cfa9|"
        "019f0000-0000-7400-8000-00000000cfaa|1|-|-|-|-|-"},
-      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "1",
+       typed ? "1|-|1|-|-|1|-|312e35" : "1|-|1|-|-|1|-|31"},
       {"relational_expression_v1", "2",
        "1|-|2|-|-|2|-|6f757465722d61"},
       {"relational_expression_v1", "3", "1|-|1|-|-|7|-|2d"},
       {"relational_expression_v1", "4",
        "1|-|2|-|-|2|-|6f757465722d6e756c6c"},
-      {"relational_expression_v1", "5", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "5",
+       typed ? "1|-|1|-|-|1|-|322e35" : "1|-|1|-|-|1|-|32"},
       {"relational_expression_v1", "6",
        "1|-|2|-|-|2|-|6f757465722d62"},
-      {"relational_expression_v1", "7", "1|-|1|-|-|1|-|3031"},
+      {"relational_expression_v1", "7",
+       typed ? "1|-|1|-|-|1|-|312e3530" : "1|-|1|-|-|1|-|3031"},
       {"relational_expression_v1", "8",
        "1|-|2|-|-|2|-|6f757465722d616c696173"},
-      {"relational_expression_v1", "9", "1|-|3|-|-|1|-|3031"},
+      {"relational_expression_v1", "9",
+       typed ? "1|-|3|-|-|1|-|312e3530" : "1|-|3|-|-|1|-|3031"},
       {"relational_expression_v1", "10",
        "1|-|4|-|-|2|-|696e6e65722d61"},
-      {"relational_expression_v1", "11", "1|-|3|-|-|1|-|32"},
+      {"relational_expression_v1", "11",
+       typed ? "1|-|3|-|-|1|-|322e35" : "1|-|3|-|-|1|-|32"},
       {"relational_expression_v1", "12",
        "1|-|4|-|-|2|-|696e6e65722d62"},
-      {"relational_expression_v1", "13", "1|-|3|-|-|1|-|31"},
+      {"relational_expression_v1", "13",
+       typed ? "1|-|3|-|-|1|-|312e35" : "1|-|3|-|-|1|-|31"},
       {"relational_expression_v1", "14",
        "1|-|4|-|-|2|-|696e6e65722d63"},
       {"relational_expression_v1", "15", "1|-|3|-|-|7|-|2d"},
@@ -14921,6 +14937,10 @@ bool ValidateNodeDrivenPredicateSubqueryCompositionSpine() {
        "019f0000-0000-7000-8000-00000000cf72",
        PredicateSubqueryInputProfile::kInTrue,
        ExpectedPredicateTruth::kTrue, 9},
+      {"subquery.quantified-any-eq-typed.v1",
+       "019f0000-0000-7000-8000-00000000cf81",
+       PredicateSubqueryInputProfile::kReal64,
+       ExpectedPredicateTruth::kTrue, 9},
       {"subquery.quantified-any-eq-int64.v1",
        "019f0000-0000-7000-8000-00000000cf73",
        PredicateSubqueryInputProfile::kStandard,
@@ -15070,10 +15090,16 @@ bool ValidateNodeDrivenCorrelatedLateralCompositionSpine() {
   const std::vector<CorrelationCase> cases{
       {"subquery.correlated-int64-equality.v1",
        "019f0000-0000-7000-8000-00000000cfb0", 2, 5, false},
+      {"subquery.correlated-typed-equality.v1",
+       "019f0000-0000-7000-8000-00000000cfb5", 2, 5, false},
       {"join.lateral-inner-int64-equality.v1",
        "019f0000-0000-7000-8000-00000000cfb1", 4, 5, false},
+      {"join.lateral-inner-typed-equality.v1",
+       "019f0000-0000-7000-8000-00000000cfb6", 4, 5, false},
       {"join.lateral-left-int64-equality.v1",
        "019f0000-0000-7000-8000-00000000cfb2", 4, 6, true},
+      {"join.lateral-left-typed-equality.v1",
+       "019f0000-0000-7000-8000-00000000cfb7", 4, 6, true},
       {"join.cross-apply-int64-equality.v1",
        "019f0000-0000-7000-8000-00000000cfb3", 4, 5, false},
       {"join.outer-apply-int64-equality.v1",

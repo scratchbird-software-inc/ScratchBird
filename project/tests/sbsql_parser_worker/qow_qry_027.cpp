@@ -236,6 +236,53 @@ bool ValidateCompleteOptionTreeRead() {
 bool ValidateOptionTreeRefusals() {
   bool passed = true;
   {
+    api::EngineApiRequest request;
+    request.option_envelopes = {
+        "projection_0_type:int64", "projection_0_value:1"};
+    std::vector<api::EngineProjectionExpression> expressions(1);
+    std::size_t node_count = 999;
+    std::size_t maximum_depth = 999;
+    std::string reason;
+    std::string detail;
+    const bool accepted = ReadOptions(request, &expressions, &node_count,
+                                      &maximum_depth, &reason, &detail);
+    passed &= Require(!accepted && expressions.empty() && node_count == 0 &&
+                          maximum_depth == 0 && reason == "expression_kind",
+                      "missing expression kind selected literal semantics");
+  }
+  {
+    api::EngineApiRequest request;
+    request.option_envelopes = {"projection_0_expr_kind:literal"};
+    std::vector<api::EngineProjectionExpression> expressions(1);
+    std::size_t node_count = 999;
+    std::size_t maximum_depth = 999;
+    std::string reason;
+    std::string detail;
+    const bool accepted = ReadOptions(request, &expressions, &node_count,
+                                      &maximum_depth, &reason, &detail);
+    passed &= Require(!accepted && expressions.empty() && node_count == 0 &&
+                          maximum_depth == 0 && reason == "descriptor_missing",
+                      "missing literal descriptor selected text semantics");
+  }
+  {
+    api::EngineApiRequest request;
+    request.option_envelopes = {
+        "projection_0_expr_kind:literal",
+        "projection_0_type:not_a_canonical_type",
+        "projection_0_value:value"};
+    std::vector<api::EngineProjectionExpression> expressions(1);
+    std::size_t node_count = 999;
+    std::size_t maximum_depth = 999;
+    std::string reason;
+    std::string detail;
+    const bool accepted = ReadOptions(request, &expressions, &node_count,
+                                      &maximum_depth, &reason, &detail);
+    passed &= Require(!accepted && expressions.empty() && node_count == 0 &&
+                          maximum_depth == 0 &&
+                          reason == "descriptor_unsupported",
+                      "unknown literal descriptor acquired text semantics");
+  }
+  {
     auto request = NestedOptionRequest(257);
     std::vector<api::EngineProjectionExpression> expressions(1);
     std::size_t node_count = 999;

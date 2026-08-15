@@ -619,29 +619,48 @@ bool InverseCanonicalAggregateCore(
                           "inverse non-NULL transition underflowed state");
     return false;
   }
-  std::int64_t decoded_value = 0;
+  std::int64_t decoded_integer = 0;
+  long double decoded_numeric = 0.0L;
+  bool signed_integer = false;
   if (descriptor.function == CanonicalAggregateFunction::sum ||
       descriptor.function == CanonicalAggregateFunction::avg) {
-    if (!IsCanonicalBoundedSignedIntegerDescriptor(value.descriptor)) {
+    if (IsCanonicalBoundedSignedIntegerDescriptor(value.descriptor)) {
+      const auto decoded = DecodeInt64Value(value);
+      if (!decoded.ok()) {
+        *diagnostic = decoded.diagnostic;
+        return false;
+      }
+      decoded_integer = decoded.value;
+      decoded_numeric = static_cast<long double>(decoded.value);
+      signed_integer = true;
+    } else if (IsType(value, "real64")) {
+      const auto decoded = DecodeReal64Value(value);
+      if (!decoded.ok()) {
+        *diagnostic = decoded.diagnostic;
+        return false;
+      }
+      decoded_numeric = static_cast<long double>(decoded.value);
+    } else {
       *diagnostic = Refusal(
           "QOW-DIAG-QRY-011-REGISTRY-INVERSE-TYPE-V1",
-          "moving SUM and AVG inverse state currently requires bounded "
-          "signed integer input");
+          "moving SUM and AVG inverse state requires bounded signed integer "
+          "or real64 input");
       return false;
     }
-    const auto decoded = DecodeInt64Value(value);
-    if (!decoded.ok()) {
-      *diagnostic = decoded.diagnostic;
-      return false;
-    }
-    decoded_value = decoded.value;
   }
   --state->transition_count;
   --state->non_null_count;
   if (descriptor.function == CanonicalAggregateFunction::sum ||
       descriptor.function == CanonicalAggregateFunction::avg) {
-    state->int64_sum -= static_cast<__int128>(decoded_value);
-    state->real_sum -= static_cast<long double>(decoded_value);
+    if (signed_integer) {
+      state->int64_sum -= static_cast<__int128>(decoded_integer);
+    }
+    state->real_sum -= decoded_numeric;
+    if (!std::isfinite(state->real_sum)) {
+      *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
+                            "floating inverse aggregate state is not finite");
+      return false;
+    }
     if (state->non_null_count == 0) {
       state->int64_sum = 0;
       state->real_sum = 0.0L;
@@ -3166,15 +3185,24 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                           "moving aggregate resource contract is invalid"));
   }
-  if ((aggregate.descriptor.function == CanonicalAggregateFunction::sum ||
-       aggregate.descriptor.function == CanonicalAggregateFunction::avg) &&
-      (aggregate.value_columns.size() != 1 ||
-       aggregate.value_columns.front() >= aggregate.input_batch.columns.size() ||
-       aggregate.input_batch.columns[aggregate.value_columns.front()]
-               .descriptor.canonical_type_name != "int64")) {
-    return refuse(Refusal(
-        "QOW-DIAG-QRY-011-REGISTRY-INVERSE-TYPE-V1",
-        "moving SUM and AVG inverse state currently requires one int64 input"));
+  if (aggregate.descriptor.function == CanonicalAggregateFunction::sum ||
+      aggregate.descriptor.function == CanonicalAggregateFunction::avg) {
+    if (aggregate.value_columns.size() != 1 ||
+        aggregate.value_columns.front() >= aggregate.input_batch.columns.size()) {
+      return refuse(Refusal(
+          "QOW-DIAG-QRY-011-REGISTRY-INVERSE-TYPE-V1",
+          "moving SUM and AVG inverse state requires one numeric input"));
+    }
+    const auto& value_descriptor =
+        aggregate.input_batch.columns[aggregate.value_columns.front()]
+            .descriptor;
+    if (!IsCanonicalBoundedSignedIntegerDescriptor(value_descriptor) &&
+        value_descriptor.canonical_type_name != "real64") {
+      return refuse(Refusal(
+          "QOW-DIAG-QRY-011-REGISTRY-INVERSE-TYPE-V1",
+          "moving SUM and AVG inverse state requires bounded signed integer "
+          "or real64 input"));
+    }
   }
   if (aggregate.filter_truth_values.has_value() &&
       aggregate.filter_truth_values->size() != aggregate.input_batch.rows.size()) {

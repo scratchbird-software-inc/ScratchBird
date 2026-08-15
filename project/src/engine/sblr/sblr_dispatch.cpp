@@ -6899,7 +6899,6 @@ api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
   typed.set_operation = api::SecurityOptionValue(base, "set_operation:");
   typed.set_by_name = api::SecurityOptionBool(base, "set_by_name:", false);
   typed.join_algorithm = api::SecurityOptionValue(base, "join_algorithm:");
-  if (typed.join_algorithm.empty()) typed.join_algorithm = "hash";
   typed.left_key_column = DispatchOptionU64(base, "left_key_column:");
   typed.right_key_column = DispatchOptionU64(base, "right_key_column:");
   typed.left_key_field = api::SecurityOptionValue(base, "left_key_field:");
@@ -6911,7 +6910,6 @@ api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
   typed.aggregate_value_field = api::SecurityOptionValue(base, "aggregate_value_field:");
   typed.aggregate_pair_value_field = api::SecurityOptionValue(base, "aggregate_pair_value_field:");
   typed.aggregate_function = api::SecurityOptionValue(base, "aggregate_function:");
-  if (typed.aggregate_function.empty()) typed.aggregate_function = "sum";
   typed.order_column = DispatchOptionU64(base, "order_column:");
   typed.order_field = api::SecurityOptionValue(base, "order_by:");
   typed.window_function = api::SecurityOptionValue(base, "window_function:");

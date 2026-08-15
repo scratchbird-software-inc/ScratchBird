@@ -24,7 +24,11 @@ namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_QUERY_EXPRESSION_API
 struct EngineBindExpressionRequest : EngineApiRequest {};
-struct EngineBindExpressionResult : EngineApiResult {};
+struct EngineBindExpressionResult : EngineApiResult {
+  EngineObjectReference bound_reference;
+  EngineBoundObjectIdentity bound_identity;
+  EngineDescriptor bound_descriptor;
+};
 EngineBindExpressionResult EngineBindExpression(const EngineBindExpressionRequest& request);
 
 enum class EngineSqlTruthValue : std::uint8_t {
@@ -134,6 +138,8 @@ struct EngineCanonicalExpressionEvaluationResult {
 // same runtime without a static-library dependency cycle.
 bool QowCanonicalDescriptorIdentityV1(
     const EngineDescriptor& descriptor);
+scratchbird::core::datatypes::CanonicalTypeId
+QowCanonicalTypeFromDescriptorV1(const EngineDescriptor& descriptor);
 EngineTypedValue QowPreserveCanonicalDescriptorAfterScalarV1(
     const EngineDescriptor& result_descriptor,
     EngineTypedValue computed_value);

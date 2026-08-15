@@ -1465,6 +1465,7 @@ struct LivePredicateSubqueryProfile {
       api::EngineComparisonPredicateOperator::unspecified;
   exec::CanonicalQuantifiedSubqueryQuantifier quantifier =
       exec::CanonicalQuantifiedSubqueryQuantifier::kAny;
+  std::string required_operand_type;
   std::string implementation_id;
   std::string transformation_id;
 };
@@ -1493,34 +1494,53 @@ LivePredicateSubqueryProfile MatchLivePredicateSubqueryProfile(
       {"ge", api::EngineComparisonPredicateOperator::greater_than_or_equal},
   }};
   for (const auto& name : kNames) {
-    const auto any = "subquery.quantified-any-" +
-                     std::string(name.suffix) + "-int64.v1";
-    const auto all = "subquery.quantified-all-" +
-                     std::string(name.suffix) + "-int64.v1";
-    if (semantic_variant_id != any && semantic_variant_id != all) continue;
-    profile.matched = true;
-    profile.kind = LivePredicateSubqueryKind::kQuantified;
-    profile.comparison_operator = name.operation;
-    profile.quantifier =
-        semantic_variant_id == any
-            ? exec::CanonicalQuantifiedSubqueryQuantifier::kAny
-            : exec::CanonicalQuantifiedSubqueryQuantifier::kAll;
-    profile.implementation_id =
-        "subquery.quantified.int64.typed.v1";
-    profile.transformation_id =
-        "canonical." + std::string(semantic_variant_id);
-    return profile;
+    for (const auto& type_profile :
+         std::array<std::pair<std::string_view, std::string_view>, 2>{{
+             {"int64", "int64"},
+             {"typed", ""},
+         }}) {
+      const auto any = "subquery.quantified-any-" +
+                       std::string(name.suffix) + "-" +
+                       std::string(type_profile.first) + ".v1";
+      const auto all = "subquery.quantified-all-" +
+                       std::string(name.suffix) + "-" +
+                       std::string(type_profile.first) + ".v1";
+      if (semantic_variant_id != any && semantic_variant_id != all) continue;
+      profile.matched = true;
+      profile.kind = LivePredicateSubqueryKind::kQuantified;
+      profile.comparison_operator = name.operation;
+      profile.quantifier =
+          semantic_variant_id == any
+              ? exec::CanonicalQuantifiedSubqueryQuantifier::kAny
+              : exec::CanonicalQuantifiedSubqueryQuantifier::kAll;
+      profile.required_operand_type = type_profile.second;
+      profile.implementation_id =
+          type_profile.second.empty()
+              ? "subquery.quantified.typed.v1"
+              : "subquery.quantified.int64.typed.v1";
+      profile.transformation_id =
+          "canonical." + std::string(semantic_variant_id);
+      return profile;
+    }
   }
-  if (semantic_variant_id == "subquery.in-int64.v1") {
+  if (semantic_variant_id == "subquery.in-int64.v1" ||
+      semantic_variant_id == "subquery.in-typed.v1") {
     profile.matched = true;
     profile.kind = LivePredicateSubqueryKind::kQuantified;
     profile.comparison_operator =
         api::EngineComparisonPredicateOperator::equal;
     profile.quantifier =
         exec::CanonicalQuantifiedSubqueryQuantifier::kAny;
+    profile.required_operand_type =
+        semantic_variant_id == "subquery.in-int64.v1" ? "int64" : "";
     profile.implementation_id =
-        "subquery.quantified.int64.typed.v1";
-    profile.transformation_id = "canonical.subquery.composed-in-int64.v1";
+        profile.required_operand_type.empty()
+            ? "subquery.quantified.typed.v1"
+            : "subquery.quantified.int64.typed.v1";
+    profile.transformation_id =
+        semantic_variant_id == "subquery.in-int64.v1"
+            ? "canonical.subquery.composed-in-int64.v1"
+            : "canonical.subquery.composed-in-typed.v1";
   }
   return profile;
 }
@@ -1534,12 +1554,15 @@ struct PreparedCorrelatedSubqueryRoot {
   std::size_t inner_row_count{0};
   std::size_t pair_count{0};
   std::size_t output_row_bound{0};
+  std::string implementation_id;
+  std::string transformation_id;
 };
 
 struct LiveLateralSubqueryProfile {
   bool matched{false};
   exec::CanonicalLateralJoinForm form =
       exec::CanonicalLateralJoinForm::kInnerLateral;
+  std::string required_operand_type;
   std::string implementation_id;
   std::string transformation_id;
 };
@@ -1547,34 +1570,47 @@ struct LiveLateralSubqueryProfile {
 LiveLateralSubqueryProfile MatchLiveLateralSubqueryProfile(
     const std::string_view semantic_variant_id) {
   LiveLateralSubqueryProfile profile;
-  if (semantic_variant_id ==
-      "join.lateral-inner-int64-equality.v1") {
+  struct Name {
+    std::string_view semantic_variant_id;
+    exec::CanonicalLateralJoinForm form;
+    std::string_view required_operand_type;
+    std::string_view implementation_id;
+  };
+  constexpr std::array<Name, 8> kNames{{
+      {"join.lateral-inner-int64-equality.v1",
+       exec::CanonicalLateralJoinForm::kInnerLateral, "int64",
+       "join.lateral-inner.correlated.typed.v1"},
+      {"join.lateral-inner-typed-equality.v1",
+       exec::CanonicalLateralJoinForm::kInnerLateral, "",
+       "join.lateral-inner.correlated.typed.v1"},
+      {"join.lateral-left-int64-equality.v1",
+       exec::CanonicalLateralJoinForm::kLeftLateral, "int64",
+       "join.lateral-left.correlated.typed.v1"},
+      {"join.lateral-left-typed-equality.v1",
+       exec::CanonicalLateralJoinForm::kLeftLateral, "",
+       "join.lateral-left.correlated.typed.v1"},
+      {"join.cross-apply-int64-equality.v1",
+       exec::CanonicalLateralJoinForm::kCrossApply, "int64",
+       "join.cross-apply.correlated.typed.v1"},
+      {"join.cross-apply-typed-equality.v1",
+       exec::CanonicalLateralJoinForm::kCrossApply, "",
+       "join.cross-apply.correlated.typed.v1"},
+      {"join.outer-apply-int64-equality.v1",
+       exec::CanonicalLateralJoinForm::kOuterApply, "int64",
+       "join.outer-apply.correlated.typed.v1"},
+      {"join.outer-apply-typed-equality.v1",
+       exec::CanonicalLateralJoinForm::kOuterApply, "",
+       "join.outer-apply.correlated.typed.v1"},
+  }};
+  for (const auto& name : kNames) {
+    if (semantic_variant_id != name.semantic_variant_id) continue;
     profile.matched = true;
-    profile.form = exec::CanonicalLateralJoinForm::kInnerLateral;
-    profile.implementation_id =
-        "join.lateral-inner.correlated.typed.v1";
-  } else if (semantic_variant_id ==
-             "join.lateral-left-int64-equality.v1") {
-    profile.matched = true;
-    profile.form = exec::CanonicalLateralJoinForm::kLeftLateral;
-    profile.implementation_id =
-        "join.lateral-left.correlated.typed.v1";
-  } else if (semantic_variant_id ==
-             "join.cross-apply-int64-equality.v1") {
-    profile.matched = true;
-    profile.form = exec::CanonicalLateralJoinForm::kCrossApply;
-    profile.implementation_id =
-        "join.cross-apply.correlated.typed.v1";
-  } else if (semantic_variant_id ==
-             "join.outer-apply-int64-equality.v1") {
-    profile.matched = true;
-    profile.form = exec::CanonicalLateralJoinForm::kOuterApply;
-    profile.implementation_id =
-        "join.outer-apply.correlated.typed.v1";
-  }
-  if (profile.matched) {
+    profile.form = name.form;
+    profile.required_operand_type = name.required_operand_type;
+    profile.implementation_id = name.implementation_id;
     profile.transformation_id =
         "canonical." + std::string(semantic_variant_id);
+    break;
   }
   return profile;
 }
@@ -7392,8 +7428,7 @@ MakeLiveCorrelatedSubqueryRegistration(
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kSubquery;
-  registration.implementation_id =
-      "subquery.correlated.int64-equality.typed.v1";
+  registration.implementation_id = prepared.implementation_id;
   registration.executor_capability_uuid = std::move(capability_uuid);
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
@@ -7623,7 +7658,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
             });
         correlated_root->node_kind = exec::PhysicalNodeKind::kSubquery;
         correlated_root->implementation_id =
-            "subquery.correlated.int64-equality.typed.v1";
+            profile.required_operand_type.empty()
+                ? "subquery.correlated.equality.typed.v1"
+                : "subquery.correlated.int64-equality.typed.v1";
         correlated_root->output_descriptor_ids =
             inputs[1].output_descriptor_ids;
 
@@ -9599,8 +9636,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     }
     if (current->node_kind ==
             plan::CanonicalLogicalRelationalNodeKind::kSubquery &&
-        current->semantic_variant_id ==
-            "subquery.correlated-int64-equality.v1") {
+        (current->semantic_variant_id ==
+             "subquery.correlated-int64-equality.v1" ||
+         current->semantic_variant_id ==
+             "subquery.correlated-typed-equality.v1")) {
       if (current->input_logical_node_ids.size() != 2 ||
           current->input_logical_node_ids[0] ==
               current->input_logical_node_ids[1] ||
@@ -10054,13 +10093,30 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           const MaterializedValues& inner,
           const plan::CanonicalLogicalRelationalNode& root,
           const bool lateral,
-          const bool null_extend) {
+          const bool null_extend,
+          const std::string_view required_operand_type) {
         CorrelationPlanningState planning;
-        if (outer.batch.columns.empty() || inner.batch.columns.empty() ||
-            outer.batch.columns.front().descriptor.canonical_type_name !=
-                "int64" ||
-            inner.batch.columns.front().descriptor.canonical_type_name !=
-                "int64" ||
+        const auto outer_type =
+            outer.batch.columns.empty()
+                ? dt::CanonicalTypeId::unknown
+                : dt::CanonicalTypeIdFromStableName(
+                      outer.batch.columns.front()
+                          .descriptor.canonical_type_name);
+        const auto inner_type =
+            inner.batch.columns.empty()
+                ? dt::CanonicalTypeId::unknown
+                : dt::CanonicalTypeIdFromStableName(
+                      inner.batch.columns.front()
+                          .descriptor.canonical_type_name);
+        if (outer_type == dt::CanonicalTypeId::unknown ||
+            outer_type != inner_type ||
+            (!required_operand_type.empty() &&
+             (outer.batch.columns.front()
+                      .descriptor.canonical_type_name !=
+                  required_operand_type ||
+              inner.batch.columns.front()
+                      .descriptor.canonical_type_name !=
+                  required_operand_type)) ||
             outer.result_bindings.size() != outer.batch.columns.size() ||
             inner.result_bindings.size() != inner.batch.columns.size() ||
             (outer.batch.rows.size() != 0 &&
@@ -10068,37 +10124,30 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                  std::numeric_limits<std::size_t>::max() /
                      outer.batch.rows.size())) {
           planning.values.detail =
-              "correlation inputs are not bounded int64-key relations";
+              "correlation inputs are not bounded type-compatible key "
+              "relations";
           return planning;
         }
         planning.pair_count =
             outer.batch.rows.size() * inner.batch.rows.size();
 
-        std::vector<std::optional<std::int64_t>> outer_keys;
-        std::vector<std::optional<std::int64_t>> inner_keys;
-        outer_keys.reserve(outer.batch.rows.size());
-        inner_keys.reserve(inner.batch.rows.size());
-        const auto decode_keys = [&](const exec::DescriptorBatch& batch,
-                                     auto* keys) {
+        const auto validate_keys = [&](const exec::DescriptorBatch& batch) {
           for (const auto& row : batch.rows) {
             const auto& value = row.values.front();
             if (value.state == api::EngineValueState::sql_null) {
-              keys->push_back(std::nullopt);
               continue;
             }
-            const auto decoded = exec::DecodeInt64Value(value);
-            if (!decoded.ok()) {
-              planning.values.detail =
-                  decoded.diagnostic.diagnostic_code + ":" +
-                  decoded.diagnostic.detail;
+            int comparison = 0;
+            std::string detail;
+            if (!api::QowCompareCanonicalNonCollatedScalarsV1(
+                    value, value, &comparison, &detail)) {
+              planning.values.detail = detail;
               return false;
             }
-            keys->push_back(decoded.value);
           }
           return true;
         };
-        if (!decode_keys(outer.batch, &outer_keys) ||
-            !decode_keys(inner.batch, &inner_keys)) {
+        if (!validate_keys(outer.batch) || !validate_keys(inner.batch)) {
           return planning;
         }
 
@@ -10142,14 +10191,21 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         for (std::size_t outer_row = 0;
              outer_row < outer.batch.rows.size(); ++outer_row) {
           bool matched = false;
-          if (outer_keys[outer_row].has_value()) {
+          const auto& outer_key = outer.batch.rows[outer_row].values.front();
+          if (outer_key.state != api::EngineValueState::sql_null) {
             for (std::size_t inner_row = 0;
                  inner_row < inner.batch.rows.size(); ++inner_row) {
-              if (!inner_keys[inner_row].has_value() ||
-                  outer_keys[outer_row].value() !=
-                      inner_keys[inner_row].value()) {
-                continue;
+              const auto& inner_key =
+                  inner.batch.rows[inner_row].values.front();
+              if (inner_key.state == api::EngineValueState::sql_null) continue;
+              int comparison = 0;
+              std::string detail;
+              if (!api::QowCompareCanonicalNonCollatedScalarsV1(
+                      outer_key, inner_key, &comparison, &detail)) {
+                planning.values.detail = detail;
+                return planning;
               }
+              if (comparison != 0) continue;
               matched = true;
               ++planning.matched_row_count;
               if (lateral) {
@@ -10568,7 +10624,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     }
     auto correlated = materialize_correlation(
         *join_left_values, *join_right_values,
-        *reverse_chain.front(), false, false);
+        *reverse_chain.front(), false, false,
+        reverse_chain.front()->semantic_variant_id ==
+                "subquery.correlated-int64-equality.v1"
+            ? "int64"
+            : "");
     if (!correlated.values.ok) {
       return refuse(std::string(kPayloadDiagnostic),
                     correlated.values.detail);
@@ -10584,6 +10644,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         join_right_values->batch.rows.size();
     prepared.pair_count = correlated.pair_count;
     prepared.output_row_bound = correlated.values.batch.rows.size();
+    prepared.implementation_id =
+        reverse_chain.front()->semantic_variant_id ==
+                "subquery.correlated-int64-equality.v1"
+            ? "subquery.correlated.int64-equality.typed.v1"
+            : "subquery.correlated.equality.typed.v1";
+    prepared.transformation_id =
+        "canonical." + reverse_chain.front()->semantic_variant_id;
     prepared_correlated_subquery = prepared;
     state = std::move(correlated.values);
 
@@ -10624,11 +10691,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          inner_memory, 0, 0});
     profiles.push_back(
         {reverse_chain.front()->logical_node_id,
-         "subquery.correlated.int64-equality.typed.v1",
+         prepared.implementation_id,
          subquery_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kSubquery,
          exec::PhysicalNodeKind::kSubquery,
-         "canonical.subquery.correlated-int64-equality.v1",
+         prepared.transformation_id,
          prepared.output_row_bound, correlated_memory, 2, 2});
   } else if (reverse_chain.front()->node_kind ==
              plan::CanonicalLogicalRelationalNodeKind::kJoin) {
@@ -10665,7 +10732,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               exec::CanonicalLateralJoinForm::kOuterApply;
       auto lateral = materialize_correlation(
           *join_left_values, *join_right_values,
-          *reverse_chain.front(), true, null_extend);
+          *reverse_chain.front(), true, null_extend,
+          lateral_subquery_profile.required_operand_type);
       if (!lateral.values.ok) {
         return refuse(std::string(kPayloadDiagnostic),
                       lateral.values.detail);
@@ -12997,12 +13065,21 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                          : api::EngineSqlTruthValue::true_value)
                   : api::EngineSqlTruthValue::unspecified;
           if (!exists) {
-            if (input_batch.columns.size() != 1 ||
-                input_batch.columns.front()
-                        .descriptor.canonical_type_name != "int64") {
+            if (input_batch.columns.size() != 1) {
               return refuse(
                   std::string(kPayloadDiagnostic),
-                  "quantified subquery requires one bound int64 column");
+                  "quantified subquery requires one bound scalar column");
+            }
+            const auto& right_operand_type =
+                input_batch.columns.front().descriptor.canonical_type_name;
+            if (right_operand_type.empty() ||
+                (!predicate_profile.required_operand_type.empty() &&
+                 right_operand_type !=
+                     predicate_profile.required_operand_type)) {
+              return refuse(
+                  std::string(kPayloadDiagnostic),
+                  "quantified subquery operand type does not match its "
+                  "bound profile");
             }
             const auto left_expression_id =
                 node.bound_expression_ids[1];
@@ -13053,12 +13130,20 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                     ? descriptor_only_input
                     : input_batch.rows.front().values;
             if (!expression_runtime.EvaluateForConsumer(
-                    left_expression_id, "int64", left_binding, input_row,
+                    left_expression_id, right_operand_type, left_binding,
+                    input_row,
                     api::EngineCanonicalExpressionConsumer::subquery,
                     &prepared.left_value, &detail)) {
               return refuse(
                   std::string(kPayloadDiagnostic),
                   "quantified left operand: " + detail);
+            }
+            if (prepared.left_value.descriptor.canonical_type_name !=
+                right_operand_type) {
+              return refuse(
+                  std::string(kPayloadDiagnostic),
+                  "quantified comparison operands are not "
+                  "descriptor-compatible");
             }
             prepared.left_operand_column = {
                 "quantified_left", prepared.left_value.descriptor,

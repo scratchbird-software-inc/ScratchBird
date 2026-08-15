@@ -99,7 +99,7 @@ Batch WithDescriptor(Batch batch, const std::string& descriptor_digest) {
 
 std::string DeterministicBatchSignature(const Batch& batch) {
   std::ostringstream out;
-  out << batch.descriptor_digest << '|';
+  out << batch.descriptor_digest << '|' << batch.column_count << '|';
   for (const auto& row : batch.rows) {
     out << '[';
     for (std::size_t i = 0; i < row.values.size(); ++i) {
@@ -160,6 +160,9 @@ ExecutorBatchRelationalResult ExecuteBatchedScanFilterProjection(
 
   auto primitive =
       ExecuteScopedExecutorBatch(input, request.batch_request, row_step);
+  primitive.output.column_count = request.projection_columns.empty()
+                                      ? input.column_count
+                                      : request.projection_columns.size();
   primitive.output =
       WithDescriptor(std::move(primitive.output), request.output_descriptor_digest);
 

@@ -367,6 +367,57 @@ exec::CanonicalJoinMgaRequest InputEvidenceRequest(
   return request;
 }
 
+void SelectTypedCompositeProfile(exec::CanonicalJoinMgaRequest* request) {
+  if (request == nullptr) return;
+  auto& strategy = request->strategy_request;
+  auto& key = strategy.residual_request.key_request;
+  auto left_real = key.left_batch.columns[0].descriptor;
+  auto right_real = key.right_batch.columns[0].descriptor;
+  auto left_boolean = key.left_batch.columns[1].descriptor;
+  auto right_boolean = key.right_batch.columns[1].descriptor;
+  left_real.canonical_type_name = "real64";
+  right_real.canonical_type_name = "real64";
+  left_boolean.canonical_type_name = "boolean";
+  right_boolean.canonical_type_name = "boolean";
+  key.left_batch.columns[0].descriptor = left_real;
+  key.right_batch.columns[0].descriptor = right_real;
+  key.left_batch.columns[1].descriptor = left_boolean;
+  key.right_batch.columns[1].descriptor = right_boolean;
+  const std::vector<std::string> left_real_values = {"1.5", "1.50", "2.5"};
+  const std::vector<std::string> right_real_values = {"1.50", "2.5", "1.5"};
+  const std::vector<std::string> left_boolean_values = {"true", "false",
+                                                        "true"};
+  const std::vector<std::string> right_boolean_values = {"true", "true",
+                                                         "false"};
+  for (std::size_t row = 0; row < key.left_batch.rows.size(); ++row) {
+    key.left_batch.rows[row].values[0] =
+        Value(left_real, left_real_values[row]);
+    key.left_batch.rows[row].values[1] =
+        Value(left_boolean, left_boolean_values[row]);
+  }
+  for (std::size_t row = 0; row < key.right_batch.rows.size(); ++row) {
+    key.right_batch.rows[row].values[0] =
+        Value(right_real, right_real_values[row]);
+    key.right_batch.rows[row].values[1] =
+        Value(right_boolean, right_boolean_values[row]);
+  }
+  key.key_terms.push_back(
+      {.left_column = 1,
+       .left_expression_descriptor_id = 2402,
+       .right_column = 1,
+       .right_expression_descriptor_id = 2404});
+  strategy.strategy =
+      exec::CanonicalJoinStrategyKind::kHashTypedCompositeEquality;
+  const auto kind = strategy.join_kind;
+  std::string_view join_kind = "inner";
+  if (kind == exec::CanonicalAcceptedJoinKind::kLeftOuter) {
+    join_kind = "left-outer";
+  }
+  key.physical_dag.nodes.back().implementation_id =
+      "join.hash-" + std::string(join_kind) +
+      ".typed-composite-equality.v1";
+}
+
 void RemovePairFive(exec::CanonicalJoinMgaRequest* request) {
   request->candidate_evidence.erase(request->candidate_evidence.begin() + 1);
 }
@@ -463,6 +514,33 @@ bool ValidateJoinMgaBoundary() {
       "MGA boundary produced the wrong visible and secured join output");
 
   auto request = Request();
+  SelectTypedCompositeProfile(&request);
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(
+      result.diagnostic.ok && result.mga_boundary_proven &&
+          result.candidate_pair_count == 3 && result.visible_pair_count == 1 &&
+          result.output_batch.rows.size() == 1 &&
+          result.output_batch.rows[0].values[0].encoded_value == "1.5" &&
+          result.output_batch.rows[0].values[1].encoded_value == "true" &&
+          result.output_batch.rows[0].values[2].encoded_value == "1.50" &&
+          result.output_batch.rows[0].values[3].encoded_value == "true",
+      "typed composite join keys did not survive MGA exact recheck");
+
+  request = InputEvidenceRequest(
+      exec::CanonicalAcceptedJoinKind::kLeftOuter);
+  SelectTypedCompositeProfile(&request);
+  request.right_row_evidence[2].visibility =
+      exec::CanonicalMgaVisibilityDecision::kInvisible;
+  RemovePairFive(&request);
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(
+      result.diagnostic.ok && result.mga_boundary_proven &&
+          result.candidate_pair_count == 2 && result.visible_pair_count == 2 &&
+          result.visibility_filtered_right_row_count == 1 &&
+          result.output_batch.rows.size() == 3,
+      "typed composite LEFT OUTER join lost MGA input-row semantics");
+
+  request = Request();
   request.candidate_evidence[1].index_candidate_generation = 6;
   result = exec::ExecuteCanonicalJoinMgaBoundary(request);
   passed &= Require(!result.diagnostic.ok && !result.mga_boundary_proven &&

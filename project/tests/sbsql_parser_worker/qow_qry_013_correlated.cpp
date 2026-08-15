@@ -220,6 +220,29 @@ exec::CanonicalCorrelatedSubqueryRequest Request() {
   return request;
 }
 
+exec::CanonicalCorrelatedSubqueryRequest Real64Request() {
+  auto request = Request();
+  const auto outer_key = Descriptor(
+      "019f0000-0000-7200-8000-000000003021",
+      "019f0000-0000-7300-8000-000000003022", "real64");
+  const auto inner_key = Descriptor(
+      "019f0000-0000-7200-8000-000000003023",
+      "019f0000-0000-7300-8000-000000003024", "real64");
+  request.outer_batch.columns[0].descriptor = outer_key;
+  request.inner_batch.columns[0].descriptor = inner_key;
+  request.outer_batch.rows[0].values[0] = Value(outer_key, "1.5");
+  request.outer_batch.rows[1].values[0] = Null(outer_key);
+  request.outer_batch.rows[2].values[0] = Value(outer_key, "2.5");
+  request.outer_batch.rows[3].values[0] = Value(outer_key, "1.50");
+  request.inner_batch.rows[0].values[0] = Value(inner_key, "1.50");
+  request.inner_batch.rows[1].values[0] = Value(inner_key, "2.5");
+  request.inner_batch.rows[2].values[0] = Value(inner_key, "1.5");
+  request.inner_batch.rows[3].values[0] = Null(inner_key);
+  request.physical_dag.nodes[2].implementation_id =
+      "subquery.correlated.equality.typed.v1";
+  return request;
+}
+
 // QOW-TEST-QRY-013-CORRELATED-V1
 bool ValidateCorrelatedSubquery() {
   bool passed = true;
@@ -275,6 +298,24 @@ bool ValidateCorrelatedSubquery() {
                         result.scope_execution_count == 0 &&
                         result.result_row_count == 0,
                     "malformed later inner key published earlier scopes");
+
+  request = Real64Request();
+  result = exec::ExecuteCanonicalCorrelatedSubquery(request);
+  passed &= Require(
+      result.diagnostic.ok && result.scope_execution_count == 4 &&
+          result.comparison_count == 16 && result.result_row_count == 5 &&
+          result.scopes[0].output_batch.rows.size() == 2 &&
+          result.scopes[2].output_batch.rows.size() == 1 &&
+          result.scopes[3].output_batch.rows.size() == 2,
+      "descriptor-compatible real64 correlated equality was refused");
+
+  request = Real64Request();
+  request.inner_batch.columns[0].descriptor.canonical_type_name = "int64";
+  request.inner_batch.rows[0].values[0].descriptor.canonical_type_name =
+      "int64";
+  result = exec::ExecuteCanonicalCorrelatedSubquery(request);
+  passed &= Require(!result.diagnostic.ok && result.scopes.empty(),
+                    "descriptor-incompatible correlation was accepted");
 
   request = Request();
   request.maximum_scope_execution_count = 3;

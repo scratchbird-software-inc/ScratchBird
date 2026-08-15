@@ -1117,18 +1117,22 @@ sblr::SblrOperationEnvelope EngineEnvelope() {
   envelope.parser_resolved_names_to_uuids = true;
   envelope.operands.push_back({"text", "projection_count", "4"});
   envelope.operands.push_back({"text", "projection_0_name", "one"});
+  envelope.operands.push_back({"text", "projection_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_0_type", "bigint"});
   envelope.operands.push_back({"text", "projection_0_value", "1"});
   envelope.operands.push_back({"text", "projection_0_is_null", "false"});
   envelope.operands.push_back({"text", "projection_1_name", "two"});
+  envelope.operands.push_back({"text", "projection_1_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_1_type", "text"});
   envelope.operands.push_back({"text", "projection_1_value", "two"});
   envelope.operands.push_back({"text", "projection_1_is_null", "false"});
   envelope.operands.push_back({"text", "projection_2_name", "empty_value"});
+  envelope.operands.push_back({"text", "projection_2_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_2_type", "null"});
   envelope.operands.push_back({"text", "projection_2_value", ""});
   envelope.operands.push_back({"text", "projection_2_is_null", "true"});
   envelope.operands.push_back({"text", "projection_3_name", "truth"});
+  envelope.operands.push_back({"text", "projection_3_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_3_type", "boolean"});
   envelope.operands.push_back({"text", "projection_3_value", "true"});
   envelope.operands.push_back({"text", "projection_3_is_null", "false"});
@@ -8475,6 +8479,31 @@ void RequireEngineDispatch() {
               vector_literal_row.fields[0].second.encoded_value == "[1,2,3]" &&
               !vector_literal_row.fields[0].second.is_null,
           "engine VECTOR literal scalar projection field mismatch");
+
+  auto unbound_parameter = sblr::MakeSblrEnvelope(
+      "query.evaluate_projection", "SBLR_QUERY_EVALUATE_PROJECTION",
+      "trace.query.scalar_projection.unbound_parameter");
+  unbound_parameter.requires_security_context = true;
+  unbound_parameter.requires_transaction_context = true;
+  unbound_parameter.contains_sql_text = false;
+  unbound_parameter.parser_resolved_names_to_uuids = true;
+  unbound_parameter.operands.push_back({"text", "projection_count", "1"});
+  unbound_parameter.operands.push_back(
+      {"text", "projection_0_expr_kind", "parameter"});
+  unbound_parameter.operands.push_back(
+      {"text", "projection_0_name", "missing_parameter"});
+  unbound_parameter.operands.push_back(
+      {"text", "projection_0_type", "int64"});
+  const auto unbound_result = sblr::DispatchSblrOperation(
+      {EngineContext(), std::move(unbound_parameter),
+       api::EngineApiRequest{}});
+  Require(unbound_result.envelope_validated && unbound_result.accepted &&
+              unbound_result.dispatched_to_api &&
+              !unbound_result.api_result.ok &&
+              !unbound_result.api_result.diagnostics.empty() &&
+              unbound_result.api_result.diagnostics.front().code ==
+                  "QOW-DIAG-QRY-026-REFUSAL-V1",
+          "unbound projection parameter executed as a data value");
 
 }
 

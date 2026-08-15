@@ -175,7 +175,6 @@ bool ValidateEveryRegistryAggregateAsWindow() {
   std::size_t executed_distinct_modifier_profile_count = 0;
   std::size_t inverse_admitted_registry_profile_count = 0;
   std::size_t moving_inverse_profile_count = 0;
-  std::size_t type_constrained_recompute_profile_count = 0;
   std::size_t frame_recompute_fallback_profile_count = 0;
   for (const auto& entry : registry) {
     const auto request = RegistryWindowProfile(entry.function);
@@ -275,32 +274,19 @@ bool ValidateEveryRegistryAggregateAsWindow() {
         exec::ExecuteCanonicalRegistryWindowAggregate(strategy_request);
     if (entry.moving_window_inverse) {
       ++inverse_admitted_registry_profile_count;
-      if (entry.function == exec::CanonicalAggregateFunction::avg) {
-        const bool type_fallback_ok =
-            direct.effective_frame_recomputed &&
-            RegistryAggregateRefused(
-                strategy_result,
-                {"QOW-DIAG-QRY-011-REGISTRY-INVERSE-TYPE-V1"});
-        passed &= Require401(
-            type_fallback_ok,
-            "real64 AVG profile did not retain recomputation when inverse state requires int64: " +
-                entry.builtin_id);
-        if (type_fallback_ok) ++type_constrained_recompute_profile_count;
-      } else {
-        const bool moving_ok =
-            SameRegistryAggregateValues(direct, strategy_result) &&
-            strategy_result.moving_inverse_state_used &&
-            !strategy_result.effective_frame_recomputed &&
-            strategy_result.selected_state_strategy ==
-                exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse &&
-            strategy_result.transient_state_cleanup_proven &&
-            strategy_result.all_or_nothing_publication;
-        passed &= Require401(
-            moving_ok,
-            "aggregate registry inverse-admitted profile did not match frame recomputation: " +
-                entry.builtin_id);
-        if (moving_ok) ++moving_inverse_profile_count;
-      }
+      const bool moving_ok =
+          SameRegistryAggregateValues(direct, strategy_result) &&
+          strategy_result.moving_inverse_state_used &&
+          !strategy_result.effective_frame_recomputed &&
+          strategy_result.selected_state_strategy ==
+              exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse &&
+          strategy_result.transient_state_cleanup_proven &&
+          strategy_result.all_or_nothing_publication;
+      passed &= Require401(
+          moving_ok,
+          "aggregate registry inverse-admitted profile did not match frame recomputation: " +
+              entry.builtin_id);
+      if (moving_ok) ++moving_inverse_profile_count;
     } else {
       const bool fallback_ok =
           direct.effective_frame_recomputed &&
@@ -396,10 +382,9 @@ bool ValidateEveryRegistryAggregateAsWindow() {
       "aggregate-as-window modifier proof did not cover 43 FILTER/order and 42 DISTINCT profiles by nine rows");
   passed &= Require401(
       inverse_admitted_registry_profile_count == 3 &&
-          moving_inverse_profile_count == 2 &&
-          type_constrained_recompute_profile_count == 1 &&
+          moving_inverse_profile_count == 3 &&
           frame_recompute_fallback_profile_count == 40,
-      "aggregate-as-window state-strategy proof did not cover three admitted identities, type fallback, and 40 non-invertible profiles");
+      "aggregate-as-window state-strategy proof did not cover three admitted identities and 40 non-invertible profiles");
   return passed;
 }
 

@@ -418,6 +418,58 @@ bool ValidateRegistryAggregateMovingInverseState() {
           moving.frame_row_indices == EffectiveFrameRows(moving_request.frames),
       "AVG bounded sliding state did not add/remove exact frame membership");
 
+  recompute_request = RegistryAverageWindowRequest(SlidingFrame());
+  const auto real_payload_descriptor = WindowDescriptor(
+      5103, "real64",
+      "type_uuid=" + WindowUuid(5203) + ";nullability=nullable");
+  recompute_request.frames.ordered_batch.columns[4].descriptor =
+      real_payload_descriptor;
+  for (auto& row : recompute_request.frames.ordered_batch.rows) {
+    row.values[4].descriptor = real_payload_descriptor;
+  }
+  const auto real_avg_recomputed =
+      exec::ExecuteCanonicalRegistryWindowAggregate(recompute_request);
+  moving_request = recompute_request;
+  SelectRegistryWindowStateStrategy(
+      &moving_request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
+  const auto real_avg_moving =
+      exec::ExecuteCanonicalRegistryWindowAggregate(moving_request);
+  passed &= Require401(
+      SameRegistryAggregateValues(real_avg_recomputed, real_avg_moving) &&
+          real_avg_moving.moving_inverse_state_used &&
+          real_avg_moving.transition_count > 0 &&
+          real_avg_moving.inverse_transition_count > 0 &&
+          real_avg_moving.transition_count <
+              real_avg_recomputed.transition_count,
+      "real64 AVG moving state did not match canonical frame recomputation");
+
+  recompute_request.aggregate_template.descriptor = {
+      1, exec::CanonicalAggregateFunction::sum, "sb.aggregate.sum",
+      std::string(kInt64SumUuid), false};
+  recompute_request.aggregate_template.result_column.stable_name =
+      "window_real_sum";
+  const auto real_sum_recomputed =
+      exec::ExecuteCanonicalRegistryWindowAggregate(recompute_request);
+  moving_request = recompute_request;
+  SelectRegistryWindowStateStrategy(
+      &moving_request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
+  const auto real_sum_moving =
+      exec::ExecuteCanonicalRegistryWindowAggregate(moving_request);
+  passed &= Require401(
+      SameRegistryAggregateValues(real_sum_recomputed, real_sum_moving) &&
+          real_sum_moving.moving_inverse_state_used &&
+          real_sum_moving.transition_count > 0 &&
+          real_sum_moving.inverse_transition_count > 0 &&
+          real_sum_moving.transition_count <
+              real_sum_recomputed.transition_count,
+      "real64 SUM moving state did not match canonical frame recomputation: " +
+          real_sum_recomputed.diagnostic.diagnostic_code + ":" +
+          real_sum_recomputed.diagnostic.detail + ":moving=" +
+          real_sum_moving.diagnostic.diagnostic_code + ":" +
+          real_sum_moving.diagnostic.detail);
+
   recompute_request = RegistryAverageWindowRequest(PrefixFrame());
   auto& sum = recompute_request.aggregate_template;
   sum.descriptor = {1, exec::CanonicalAggregateFunction::sum,

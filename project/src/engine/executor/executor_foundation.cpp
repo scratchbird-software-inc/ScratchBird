@@ -276,8 +276,10 @@ bool CompareCanonicalJoinKeyValues(
 void RequireResolvedColumnHandles(
     const Batch& input,
     const std::vector<std::size_t>& columns) {
-  if (input.rows.empty() && !columns.empty()) {
-    throw std::out_of_range("SBLR.PLAN_TREE.INVALID_HANDLE");
+  for (const auto column : columns) {
+    if (column >= input.column_count) {
+      throw std::out_of_range("SBLR.PLAN_TREE.INVALID_HANDLE");
+    }
   }
   for (const auto& row : input.rows) {
     for (const auto column : columns) {
@@ -3258,7 +3260,8 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
 // statement-snapshot evidence at the MGA boundary.  Visibility and security
 // verdicts are consumed, never synthesized here. The input-row evidence
 // profile filters relations before non-inner semantics, then exact-rechecks
-// every matched physical pair; stale generations or drift fail atomically.
+// every matched physical pair with the canonical typed composite key contract;
+// stale generations or drift fail atomically.
 CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
     const CanonicalJoinMgaRequest& request) {
   namespace api = scratchbird::engine::internal_api;
@@ -3332,15 +3335,45 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
     return refuse("MGA join boundary recheck bound was exceeded");
   }
 
+  const auto exact_key_truth = [&](const CanonicalCompositeJoinKeyRequest& key,
+                                   const std::size_t left_row,
+                                   const std::size_t right_row,
+                                   std::string* detail) {
+    if (detail == nullptr || left_row >= key.left_batch.rows.size() ||
+        right_row >= key.right_batch.rows.size() || key.key_terms.empty()) {
+      if (detail != nullptr) *detail = "join key row or term is unresolved";
+      return api::EngineSqlTruthValue::unspecified;
+    }
+    bool saw_unknown = false;
+    for (const auto& term : key.key_terms) {
+      if (term.left_column >= key.left_batch.columns.size() ||
+          term.right_column >= key.right_batch.columns.size()) {
+        *detail = "join key column is outside the bound input";
+        return api::EngineSqlTruthValue::unspecified;
+      }
+      const auto& left =
+          key.left_batch.rows[left_row].values[term.left_column];
+      const auto& right =
+          key.right_batch.rows[right_row].values[term.right_column];
+      if (left.state == api::EngineValueState::sql_null ||
+          right.state == api::EngineValueState::sql_null) {
+        saw_unknown = true;
+        continue;
+      }
+      bool equal = false;
+      if (!CompareCanonicalJoinKeyValues(left, right, term, &equal, detail)) {
+        return api::EngineSqlTruthValue::unspecified;
+      }
+      if (!equal) return api::EngineSqlTruthValue::false_value;
+    }
+    detail->clear();
+    return saw_unknown ? api::EngineSqlTruthValue::unknown
+                       : api::EngineSqlTruthValue::true_value;
+  };
+
   if (request.input_row_evidence_profile) {
     const auto& original_key_request =
         request.strategy_request.residual_request.key_request;
-    if (request.strategy_request.strategy !=
-            CanonicalJoinStrategyKind::kHashInnerInt64Equality ||
-        original_key_request.key_terms.size() != 1) {
-      return refuse(
-          "MGA input-row evidence admits one hash int64 key profile");
-    }
     const auto original_left_count = original_key_request.left_batch.rows.size();
     const auto original_right_count =
         original_key_request.right_batch.rows.size();
@@ -3359,42 +3392,17 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
         original_pair_count) {
       return refuse("MGA residual matrix is not bound to the input rows");
     }
-    CanonicalDescriptorInnerJoinRequest original_input_validation;
-    original_input_validation.physical_dag = original_key_request.physical_dag;
-    original_input_validation.selected_physical_node_id =
-        original_key_request.selected_physical_node_id;
-    original_input_validation.left_batch = original_key_request.left_batch;
-    original_input_validation.right_batch = original_key_request.right_batch;
-    original_input_validation.pair_truth_values.assign(
-        original_pair_count, api::EngineSqlTruthValue::false_value);
-    original_input_validation.mga_authority = request.mga_authority;
-    const auto original_input =
-        ExecuteCanonicalDescriptorInnerJoin(original_input_validation);
-    if (!original_input.diagnostic.ok) {
-      return refuse(original_input.diagnostic.diagnostic_code + ":" +
-                    original_input.diagnostic.detail);
+    const auto original_keys =
+        ExecuteCanonicalCompositeJoinKey(original_key_request);
+    if (!original_keys.diagnostic.ok) {
+      return refuse(original_keys.diagnostic.diagnostic_code + ":" +
+                    original_keys.diagnostic.detail);
     }
     if (!PhysicalMgaStatementContextEqual(
-            original_input.mga_statement_context,
+            original_keys.mga_statement_context,
             request.mga_authority.statement_context)) {
       return refuse(
           "MGA original input validation returned a different statement context");
-    }
-    const auto& original_key_term = original_key_request.key_terms.front();
-    const auto validate_key_domain = [&](const DescriptorBatch& batch,
-                                         const std::size_t column) {
-      for (const auto& row : batch.rows) {
-        const auto& value = row.values[column];
-        if (value.state == api::EngineValueState::sql_null) continue;
-        if (!DecodeInt64Value(value).ok()) return false;
-      }
-      return true;
-    };
-    if (!validate_key_domain(original_key_request.left_batch,
-                             original_key_term.left_column) ||
-        !validate_key_domain(original_key_request.right_batch,
-                             original_key_term.right_column)) {
-      return refuse("MGA input-row join-key domain is invalid");
     }
     for (const auto truth :
          request.strategy_request.residual_request.residual_truth_values) {
@@ -3509,7 +3517,6 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
       return refuse("MGA strategy lacks canonical pair/output proof");
     }
 
-    const auto& key_term = filtered_key_request.key_terms.front();
     const auto filtered_right_count = visible_right_indices.size();
     for (std::size_t index = 0; index < request.candidate_evidence.size();
          ++index) {
@@ -3561,24 +3568,13 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
         return refuse(
             "matched visible MGA candidate contradicts captured vector");
       }
-      const auto& left_key = filtered_key_request.left_batch
-                                 .rows[filtered_left]
-                                 .values[key_term.left_column];
-      const auto& right_key = filtered_key_request.right_batch
-                                  .rows[filtered_right]
-                                  .values[key_term.right_column];
-      auto computed_key_truth = api::EngineSqlTruthValue::unknown;
-      if (left_key.state != api::EngineValueState::sql_null &&
-          right_key.state != api::EngineValueState::sql_null) {
-        const auto left_decoded = DecodeInt64Value(left_key);
-        const auto right_decoded = DecodeInt64Value(right_key);
-        if (!left_decoded.ok() || !right_decoded.ok()) {
-          return refuse("matched MGA exact key encoding is invalid");
-        }
-        computed_key_truth =
-            left_decoded.value == right_decoded.value
-                ? api::EngineSqlTruthValue::true_value
-                : api::EngineSqlTruthValue::false_value;
+      std::string exact_key_detail;
+      const auto computed_key_truth = exact_key_truth(
+          filtered_key_request, filtered_left, filtered_right,
+          &exact_key_detail);
+      if (computed_key_truth == api::EngineSqlTruthValue::unspecified) {
+        return refuse("matched MGA exact key encoding is invalid:" +
+                      exact_key_detail);
       }
       if (computed_key_truth != api::EngineSqlTruthValue::true_value ||
           evidence.exact_key_recheck != computed_key_truth) {
@@ -3643,7 +3639,6 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
   std::size_t security_filtered_pair_count = 0;
   const auto& key_request =
       request.strategy_request.residual_request.key_request;
-  const auto& key_term = key_request.key_terms.front();
   const auto right_count = key_request.right_batch.rows.size();
   for (std::size_t index = 0; index < request.candidate_evidence.size();
        ++index) {
@@ -3705,22 +3700,12 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
     }
     const auto left = evidence.pair_index / right_count;
     const auto right = evidence.pair_index % right_count;
-    const auto& left_key =
-        key_request.left_batch.rows[left].values[key_term.left_column];
-    const auto& right_key =
-        key_request.right_batch.rows[right].values[key_term.right_column];
-    auto computed_key_truth = api::EngineSqlTruthValue::unknown;
-    if (left_key.state != api::EngineValueState::sql_null &&
-        right_key.state != api::EngineValueState::sql_null) {
-      const auto left_decoded = DecodeInt64Value(left_key);
-      const auto right_decoded = DecodeInt64Value(right_key);
-      if (!left_decoded.ok() || !right_decoded.ok()) {
-        return refuse("index candidate exact key encoding is invalid");
-      }
-      computed_key_truth =
-          left_decoded.value == right_decoded.value
-              ? api::EngineSqlTruthValue::true_value
-              : api::EngineSqlTruthValue::false_value;
+    std::string exact_key_detail;
+    const auto computed_key_truth =
+        exact_key_truth(key_request, left, right, &exact_key_detail);
+    if (computed_key_truth == api::EngineSqlTruthValue::unspecified) {
+      return refuse("index candidate exact key encoding is invalid:" +
+                    exact_key_detail);
     }
     if (computed_key_truth != api::EngineSqlTruthValue::true_value ||
         evidence.exact_key_recheck != computed_key_truth) {
@@ -5305,22 +5290,44 @@ CanonicalSetOperationNestingResult ExecuteCanonicalSetOperationNesting(
   return result;
 }
 
-Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows) {
-  return {.descriptor_digest = std::move(descriptor_digest), .rows = std::move(rows)};
+Batch MakeBatch(std::string descriptor_digest,
+                std::vector<Tuple> rows,
+                std::size_t column_count) {
+  if (column_count == 0 && !rows.empty()) {
+    column_count = rows.front().values.size();
+  }
+  return {.descriptor_digest = std::move(descriptor_digest),
+          .column_count = column_count,
+          .rows = std::move(rows)};
 }
 
 OperatorDiagnostic ValidateBatch(const Batch& batch) {
   if (batch.descriptor_digest.empty()) return {.ok = false, .diagnostic_code = "SB_EXECUTOR_DESCRIPTOR_REQUIRED"};
   if (batch.rows.empty()) return {.ok = true, .diagnostic_code = "SB_EXECUTOR_OK"};
-  const auto width = batch.rows.front().values.size();
+  const auto width = batch.column_count == 0
+                         ? batch.rows.front().values.size()
+                         : batch.column_count;
   for (const auto& row : batch.rows) {
     if (row.values.size() != width) return {.ok = false, .diagnostic_code = "SB_EXECUTOR_ROW_WIDTH_MISMATCH"};
   }
   return {.ok = true, .diagnostic_code = "SB_EXECUTOR_OK"};
 }
 
-std::int64_t EvalAdd(std::int64_t lhs, std::int64_t rhs) { return lhs + rhs; }
-std::int64_t EvalMultiply(std::int64_t lhs, std::int64_t rhs) { return lhs * rhs; }
+std::int64_t EvalAdd(std::int64_t lhs, std::int64_t rhs) {
+  std::int64_t result = 0;
+  if (__builtin_add_overflow(lhs, rhs, &result)) {
+    throw std::overflow_error("query_expression_int64_add_overflow");
+  }
+  return result;
+}
+
+std::int64_t EvalMultiply(std::int64_t lhs, std::int64_t rhs) {
+  std::int64_t result = 0;
+  if (__builtin_mul_overflow(lhs, rhs, &result)) {
+    throw std::overflow_error("query_expression_int64_multiply_overflow");
+  }
+  return result;
+}
 
 Batch FilterByInt64Comparison(const Batch& input,
                               std::size_t column,
@@ -5353,7 +5360,8 @@ Batch FilterByInt64Comparison(const Batch& input,
     }
     if (matches) rows.push_back(row);
   }
-  return MakeBatch(input.descriptor_digest, std::move(rows));
+  return MakeBatch(input.descriptor_digest, std::move(rows),
+                   input.column_count);
 }
 
 Batch FilterGreaterThan(const Batch& input, std::size_t column, std::int64_t threshold) {
@@ -5369,7 +5377,8 @@ Batch ProjectColumns(const Batch& input, const std::vector<std::size_t>& columns
     for (auto column : columns) projected.values.push_back(row.values[column]);
     rows.push_back(std::move(projected));
   }
-  return MakeBatch(input.descriptor_digest + ":projected", std::move(rows));
+  return MakeBatch(input.descriptor_digest + ":projected", std::move(rows),
+                   columns.size());
 }
 
 Batch SortByColumn(const Batch& input, std::size_t column, bool ascending) {
@@ -5380,51 +5389,67 @@ Batch SortByColumn(const Batch& input, std::size_t column, bool ascending) {
     const auto rv = rhs.values[column];
     return ascending ? lv < rv : lv > rv;
   });
-  return MakeBatch(input.descriptor_digest, std::move(rows));
+  return MakeBatch(input.descriptor_digest, std::move(rows),
+                   input.column_count);
 }
 
 Batch LimitOffset(const Batch& input, std::size_t limit, std::size_t offset) {
   std::vector<Tuple> rows;
-  if (offset >= input.rows.size()) return MakeBatch(input.descriptor_digest, {});
+  if (offset >= input.rows.size()) {
+    return MakeBatch(input.descriptor_digest, {}, input.column_count);
+  }
   const auto end = std::min(input.rows.size(), offset + limit);
   for (std::size_t i = offset; i < end; ++i) rows.push_back(input.rows[i]);
-  return MakeBatch(input.descriptor_digest, std::move(rows));
+  return MakeBatch(input.descriptor_digest, std::move(rows),
+                   input.column_count);
 }
 
 Batch AggregateSumByKey(const Batch& input, std::size_t key_column, std::size_t value_column) {
+  RequireResolvedColumnHandles(input, {key_column, value_column});
   std::map<std::int64_t, std::int64_t> sums;
   for (const auto& row : input.rows) {
-    if (HasColumn(row, key_column) && HasColumn(row, value_column)) sums[row.values[key_column]] += row.values[value_column];
+    auto& sum = sums[row.values[key_column]];
+    std::int64_t next_sum = 0;
+    if (__builtin_add_overflow(sum, row.values[value_column], &next_sum)) {
+      throw std::overflow_error("query_aggregate_int64_sum_overflow");
+    }
+    sum = next_sum;
   }
   std::vector<Tuple> rows;
   for (const auto& [key, sum] : sums) rows.push_back({.values = {key, sum}});
-  return MakeBatch(input.descriptor_digest + ":aggregate", std::move(rows));
+  return MakeBatch(input.descriptor_digest + ":aggregate", std::move(rows), 2);
 }
 
 Batch NestedLoopJoinEqual(const Batch& left, const Batch& right, std::size_t left_column, std::size_t right_column) {
+  RequireResolvedColumnHandles(left, {left_column});
+  RequireResolvedColumnHandles(right, {right_column});
   std::vector<Tuple> rows;
   for (const auto& l : left.rows) {
-    if (!HasColumn(l, left_column)) continue;
     for (const auto& r : right.rows) {
-      if (HasColumn(r, right_column) && l.values[left_column] == r.values[right_column]) rows.push_back({.values = ConcatValues(l, r)});
+      if (l.values[left_column] == r.values[right_column]) rows.push_back({.values = ConcatValues(l, r)});
     }
   }
-  return MakeBatch(JoinDescriptor(left.descriptor_digest, right.descriptor_digest), std::move(rows));
+  return MakeBatch(JoinDescriptor(left.descriptor_digest, right.descriptor_digest),
+                   std::move(rows), left.column_count + right.column_count);
 }
 
 Batch HashJoinEqual(const Batch& left, const Batch& right, std::size_t left_column, std::size_t right_column) {
+  RequireResolvedColumnHandles(left, {left_column});
+  RequireResolvedColumnHandles(right, {right_column});
   std::unordered_multimap<std::int64_t, const Tuple*> hash;
-  for (const auto& r : right.rows) if (HasColumn(r, right_column)) hash.emplace(r.values[right_column], &r);
+  for (const auto& r : right.rows) hash.emplace(r.values[right_column], &r);
   std::vector<Tuple> rows;
   for (const auto& l : left.rows) {
-    if (!HasColumn(l, left_column)) continue;
     const auto range = hash.equal_range(l.values[left_column]);
     for (auto it = range.first; it != range.second; ++it) rows.push_back({.values = ConcatValues(l, *it->second)});
   }
-  return MakeBatch(JoinDescriptor(left.descriptor_digest, right.descriptor_digest), std::move(rows));
+  return MakeBatch(JoinDescriptor(left.descriptor_digest, right.descriptor_digest),
+                   std::move(rows), left.column_count + right.column_count);
 }
 
 Batch MergeJoinEqual(const Batch& left_sorted, const Batch& right_sorted, std::size_t left_column, std::size_t right_column) {
+  RequireResolvedColumnHandles(left_sorted, {left_column});
+  RequireResolvedColumnHandles(right_sorted, {right_column});
   std::vector<Tuple> rows;
   std::size_t left_index = 0;
   std::size_t right_index = 0;
@@ -5433,15 +5458,6 @@ Batch MergeJoinEqual(const Batch& left_sorted, const Batch& right_sorted, std::s
          right_index < right_sorted.rows.size()) {
     const auto& left = left_sorted.rows[left_index];
     const auto& right = right_sorted.rows[right_index];
-    if (!HasColumn(left, left_column)) {
-      ++left_index;
-      continue;
-    }
-    if (!HasColumn(right, right_column)) {
-      ++right_index;
-      continue;
-    }
-
     const auto left_key = left.values[left_column];
     const auto right_key = right.values[right_column];
     if (left_key < right_key) {
@@ -5456,7 +5472,6 @@ Batch MergeJoinEqual(const Batch& left_sorted, const Batch& right_sorted, std::s
     const auto match_key = left_key;
     const auto left_begin = left_index;
     while (left_index < left_sorted.rows.size() &&
-           HasColumn(left_sorted.rows[left_index], left_column) &&
            left_sorted.rows[left_index].values[left_column] == match_key) {
       ++left_index;
     }
@@ -5464,7 +5479,6 @@ Batch MergeJoinEqual(const Batch& left_sorted, const Batch& right_sorted, std::s
 
     const auto right_begin = right_index;
     while (right_index < right_sorted.rows.size() &&
-           HasColumn(right_sorted.rows[right_index], right_column) &&
            right_sorted.rows[right_index].values[right_column] == match_key) {
       ++right_index;
     }
@@ -5480,12 +5494,14 @@ Batch MergeJoinEqual(const Batch& left_sorted, const Batch& right_sorted, std::s
 
   return MakeBatch(JoinDescriptor(left_sorted.descriptor_digest,
                                   right_sorted.descriptor_digest),
-                   std::move(rows));
+                   std::move(rows),
+                   left_sorted.column_count + right_sorted.column_count);
 }
 
 Batch AddRowNumberWindow(const Batch& input, std::size_t order_column) {
   auto sorted = SortByColumn(input, order_column, true);
   for (std::size_t i = 0; i < sorted.rows.size(); ++i) sorted.rows[i].values.push_back(static_cast<std::int64_t>(i + 1));
+  ++sorted.column_count;
   sorted.descriptor_digest += ":row_number";
   return sorted;
 }
@@ -5496,7 +5512,7 @@ Batch AddRankWindow(const Batch& input, std::size_t order_column) {
   std::int64_t previous_value = 0;
   bool have_previous = false;
   for (std::size_t i = 0; i < sorted.rows.size(); ++i) {
-    const std::int64_t value = HasColumn(sorted.rows[i], order_column) ? sorted.rows[i].values[order_column] : 0;
+    const std::int64_t value = sorted.rows[i].values[order_column];
     if (!have_previous || value != previous_value) {
       current_rank = static_cast<std::int64_t>(i + 1);
       previous_value = value;
@@ -5504,6 +5520,7 @@ Batch AddRankWindow(const Batch& input, std::size_t order_column) {
     }
     sorted.rows[i].values.push_back(current_rank);
   }
+  ++sorted.column_count;
   sorted.descriptor_digest += ":rank";
   return sorted;
 }
@@ -5514,7 +5531,7 @@ Batch AddDenseRankWindow(const Batch& input, std::size_t order_column) {
   std::int64_t previous_value = 0;
   bool have_previous = false;
   for (auto& row : sorted.rows) {
-    const std::int64_t value = HasColumn(row, order_column) ? row.values[order_column] : 0;
+    const std::int64_t value = row.values[order_column];
     if (!have_previous || value != previous_value) {
       ++current_dense_rank;
       previous_value = value;
@@ -5522,129 +5539,172 @@ Batch AddDenseRankWindow(const Batch& input, std::size_t order_column) {
     }
     row.values.push_back(current_dense_rank);
   }
+  ++sorted.column_count;
   sorted.descriptor_digest += ":dense_rank";
   return sorted;
 }
 
 Batch AddPartitionCountWindow(const Batch& input, std::size_t partition_column) {
+  RequireResolvedColumnHandles(input, {partition_column});
   std::unordered_map<std::int64_t, std::int64_t> partition_counts;
   for (const auto& row : input.rows) {
-    const std::int64_t key = HasColumn(row, partition_column) ? row.values[partition_column] : 0;
+    const std::int64_t key = row.values[partition_column];
     ++partition_counts[key];
   }
   auto out = input;
   for (auto& row : out.rows) {
-    const std::int64_t key = HasColumn(row, partition_column) ? row.values[partition_column] : 0;
+    const std::int64_t key = row.values[partition_column];
     row.values.push_back(partition_counts[key]);
   }
+  ++out.column_count;
   out.descriptor_digest += ":partition_count";
   return out;
 }
 
 Batch AddNtileWindow(const Batch& input, std::size_t order_column, std::int64_t bucket_count) {
   auto sorted = SortByColumn(input, order_column, true);
-  if (bucket_count <= 0 || sorted.rows.empty()) {
+  if (bucket_count <= 0) {
+    throw std::invalid_argument("query_window_ntile_bucket_count_invalid");
+  }
+  if (sorted.rows.empty()) {
+    ++sorted.column_count;
     sorted.descriptor_digest += ":ntile";
     return sorted;
   }
-  const std::uint64_t buckets = static_cast<std::uint64_t>(bucket_count);
   const std::uint64_t row_count = static_cast<std::uint64_t>(sorted.rows.size());
+  const std::uint64_t buckets = std::min(
+      static_cast<std::uint64_t>(bucket_count), row_count);
+  const std::uint64_t base_bucket_size = row_count / buckets;
+  const std::uint64_t larger_bucket_count = row_count % buckets;
+  const std::uint64_t larger_bucket_rows =
+      (base_bucket_size + 1) * larger_bucket_count;
   for (std::uint64_t i = 0; i < row_count; ++i) {
-    const auto bucket = static_cast<std::int64_t>((i * buckets) / row_count + 1);
+    const auto bucket = static_cast<std::int64_t>(
+        i < larger_bucket_rows
+            ? i / (base_bucket_size + 1) + 1
+            : larger_bucket_count +
+                  (i - larger_bucket_rows) / base_bucket_size + 1);
     sorted.rows[static_cast<std::size_t>(i)].values.push_back(bucket);
   }
+  ++sorted.column_count;
   sorted.descriptor_digest += ":ntile";
   return sorted;
 }
 
 Batch AddLagWindow(const Batch& input, std::size_t order_column, std::size_t value_column) {
+  RequireResolvedColumnHandles(input, {order_column, value_column});
   auto sorted = SortByColumn(input, order_column, true);
   for (std::size_t i = 0; i < sorted.rows.size(); ++i) {
     const std::int64_t value =
-        i == 0 || !HasColumn(sorted.rows[i - 1], value_column)
-            ? 0
-            : sorted.rows[i - 1].values[value_column];
+        i == 0 ? 0 : sorted.rows[i - 1].values[value_column];
     sorted.rows[i].values.push_back(value);
   }
+  ++sorted.column_count;
   sorted.descriptor_digest += ":lag";
   return sorted;
 }
 
 Batch AddLeadWindow(const Batch& input, std::size_t order_column, std::size_t value_column) {
+  RequireResolvedColumnHandles(input, {order_column, value_column});
   auto sorted = SortByColumn(input, order_column, true);
   for (std::size_t i = 0; i < sorted.rows.size(); ++i) {
-    const std::int64_t value =
-        i + 1 >= sorted.rows.size() || !HasColumn(sorted.rows[i + 1], value_column)
-            ? 0
-            : sorted.rows[i + 1].values[value_column];
+    const std::int64_t value = i + 1 >= sorted.rows.size()
+                                   ? 0
+                                   : sorted.rows[i + 1].values[value_column];
     sorted.rows[i].values.push_back(value);
   }
+  ++sorted.column_count;
   sorted.descriptor_digest += ":lead";
   return sorted;
 }
 
 Batch AddFirstValueWindow(const Batch& input, std::size_t order_column, std::size_t value_column) {
+  RequireResolvedColumnHandles(input, {order_column, value_column});
   auto sorted = SortByColumn(input, order_column, true);
   const std::int64_t value =
-      sorted.rows.empty() || !HasColumn(sorted.rows.front(), value_column)
-          ? 0
-          : sorted.rows.front().values[value_column];
+      sorted.rows.empty() ? 0 : sorted.rows.front().values[value_column];
   for (auto& row : sorted.rows) row.values.push_back(value);
+  ++sorted.column_count;
   sorted.descriptor_digest += ":first_value";
   return sorted;
 }
 
 Batch AddLastValueWindow(const Batch& input, std::size_t order_column, std::size_t value_column) {
+  RequireResolvedColumnHandles(input, {order_column, value_column});
   auto sorted = SortByColumn(input, order_column, true);
   const std::int64_t value =
-      sorted.rows.empty() || !HasColumn(sorted.rows.back(), value_column)
-          ? 0
-          : sorted.rows.back().values[value_column];
+      sorted.rows.empty() ? 0 : sorted.rows.back().values[value_column];
   for (auto& row : sorted.rows) row.values.push_back(value);
+  ++sorted.column_count;
   sorted.descriptor_digest += ":last_value";
   return sorted;
 }
 
-Batch MaterializeCte(const Batch& input) { return MakeBatch(input.descriptor_digest + ":materialized", input.rows); }
+Batch MaterializeCte(const Batch& input) {
+  return MakeBatch(input.descriptor_digest + ":materialized", input.rows,
+                   input.column_count);
+}
 
 std::int64_t ScalarSubqueryFirstValue(const Batch& input, std::size_t column) {
-  if (input.rows.empty() || !HasColumn(input.rows.front(), column)) return 0;
+  if (input.rows.empty()) {
+    throw std::invalid_argument(
+        "query_scalar_subquery_zero_row_requires_typed_null");
+  }
+  if (input.rows.size() != 1) {
+    throw std::length_error("query_scalar_subquery_cardinality_violation");
+  }
+  RequireResolvedColumnHandles(input, {column});
   return input.rows.front().values[column];
 }
 
 Batch SetUnionDistinct(const Batch& left, const Batch& right) {
+  if (left.column_count != right.column_count) {
+    throw std::invalid_argument("query_set_operation_arity_mismatch");
+  }
   std::set<std::vector<std::int64_t>> seen;
   std::vector<Tuple> rows;
   for (const auto& row : left.rows) if (seen.insert(row.values).second) rows.push_back(row);
   for (const auto& row : right.rows) if (seen.insert(row.values).second) rows.push_back(row);
-  return MakeBatch(left.descriptor_digest, std::move(rows));
+  return MakeBatch(left.descriptor_digest, std::move(rows), left.column_count);
 }
 
 Batch SetIntersectDistinct(const Batch& left, const Batch& right) {
+  if (left.column_count != right.column_count) {
+    throw std::invalid_argument("query_set_operation_arity_mismatch");
+  }
   std::set<std::vector<std::int64_t>> right_values;
   for (const auto& row : right.rows) right_values.insert(row.values);
   std::set<std::vector<std::int64_t>> emitted;
   std::vector<Tuple> rows;
   for (const auto& row : left.rows) if (right_values.contains(row.values) && emitted.insert(row.values).second) rows.push_back(row);
-  return MakeBatch(left.descriptor_digest, std::move(rows));
+  return MakeBatch(left.descriptor_digest, std::move(rows), left.column_count);
 }
 
 Batch SetExceptDistinct(const Batch& left, const Batch& right) {
+  if (left.column_count != right.column_count) {
+    throw std::invalid_argument("query_set_operation_arity_mismatch");
+  }
   std::set<std::vector<std::int64_t>> right_values;
   for (const auto& row : right.rows) right_values.insert(row.values);
   std::set<std::vector<std::int64_t>> emitted;
   std::vector<Tuple> rows;
   for (const auto& row : left.rows) if (!right_values.contains(row.values) && emitted.insert(row.values).second) rows.push_back(row);
-  return MakeBatch(left.descriptor_digest, std::move(rows));
+  return MakeBatch(left.descriptor_digest, std::move(rows), left.column_count);
 }
 
 Batch SetUnionAll(const Batch& left, const Batch& right) {
+  if (left.column_count != right.column_count) {
+    throw std::invalid_argument("query_set_operation_arity_mismatch");
+  }
   std::vector<Tuple> rows = left.rows;
   rows.insert(rows.end(), right.rows.begin(), right.rows.end());
-  return MakeBatch(left.descriptor_digest, std::move(rows));
+  return MakeBatch(left.descriptor_digest, std::move(rows), left.column_count);
 }
 
 Batch SetIntersectAll(const Batch& left, const Batch& right) {
+  if (left.column_count != right.column_count) {
+    throw std::invalid_argument("query_set_operation_arity_mismatch");
+  }
   std::map<std::vector<std::int64_t>, std::size_t> right_counts;
   for (const auto& row : right.rows) ++right_counts[row.values];
   std::vector<Tuple> rows;
@@ -5654,10 +5714,13 @@ Batch SetIntersectAll(const Batch& left, const Batch& right) {
     --found->second;
     rows.push_back(row);
   }
-  return MakeBatch(left.descriptor_digest, std::move(rows));
+  return MakeBatch(left.descriptor_digest, std::move(rows), left.column_count);
 }
 
 Batch SetExceptAll(const Batch& left, const Batch& right) {
+  if (left.column_count != right.column_count) {
+    throw std::invalid_argument("query_set_operation_arity_mismatch");
+  }
   std::map<std::vector<std::int64_t>, std::size_t> right_counts;
   for (const auto& row : right.rows) ++right_counts[row.values];
   std::vector<Tuple> rows;
@@ -5669,7 +5732,7 @@ Batch SetExceptAll(const Batch& left, const Batch& right) {
     }
     rows.push_back(row);
   }
-  return MakeBatch(left.descriptor_digest, std::move(rows));
+  return MakeBatch(left.descriptor_digest, std::move(rows), left.column_count);
 }
 
 std::vector<OperatorCatalogEntry> Stage6OperatorCatalog() {

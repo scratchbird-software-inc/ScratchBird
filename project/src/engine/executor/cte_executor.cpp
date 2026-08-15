@@ -249,11 +249,12 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
 
 // QOW-SOURCE-QRY-014-UNION-V1
 // Admit either UNION ALL, which preserves every anchor and recursive row, or
-// the bounded one-column int64 UNION DISTINCT profile. DISTINCT compares
-// decoded typed values (with SQL NULL equal to SQL NULL for set semantics),
-// removes duplicates against the complete accumulated result and the current
-// intermediate relation, and feeds only newly admitted rows into the next
-// recursive working transition.
+// descriptor-wide UNION DISTINCT. The legacy one-column int64 identity is an
+// exact alias; the general typed profile binds one equality term per output
+// column. DISTINCT uses the canonical ordering comparator (with SQL NULL equal
+// to SQL NULL for set semantics), removes duplicates against the complete
+// accumulated result and the current intermediate relation, and feeds only
+// newly admitted rows into the next recursive working transition.
 CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
     const CanonicalRecursiveCteUnionRequest& request) {
   CanonicalRecursiveCteUnionResult result;
@@ -283,16 +284,24 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
   const auto* selected_node = FindPhysicalNode(
       request.working_request.physical_dag,
       request.working_request.selected_physical_node_id);
-  const auto expected_profile =
+  const bool distinct_profile =
+      selected_node != nullptr &&
+      (selected_node->implementation_id ==
+           "cte.recursive.union-distinct-int64.typed.v1" ||
+       selected_node->implementation_id ==
+           "cte.recursive.union-distinct.typed.v1");
+  const bool profile_matches =
       request.union_mode == CanonicalRecursiveCteUnionMode::kAll
-          ? "cte.recursive.union-all.typed.v1"
-          : "cte.recursive.union-distinct-int64.typed.v1";
+          ? selected_node != nullptr &&
+                selected_node->implementation_id ==
+                    "cte.recursive.union-all.typed.v1"
+          : distinct_profile;
   if (request.working_request.selected_physical_node_id == 0 ||
       request.working_request.selected_physical_node_id !=
           request.working_request.physical_dag.root_physical_node_id ||
       selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
-      selected_node->implementation_id != expected_profile) {
+      !profile_matches) {
     return refuse("recursive CTE UNION physical profile is not bound");
   }
 
@@ -306,38 +315,95 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
 
   auto duplicate_count = std::make_shared<std::size_t>(0);
   if (request.union_mode == CanonicalRecursiveCteUnionMode::kDistinct) {
-    if (working.anchor_batch.columns.size() != 1 ||
-        working.anchor_batch.columns.front().descriptor.canonical_type_name !=
-            "int64") {
+    const bool legacy_int64_profile =
+        selected_node->implementation_id ==
+        "cte.recursive.union-distinct-int64.typed.v1";
+    if (legacy_int64_profile &&
+        (working.anchor_batch.columns.size() != 1 ||
+         working.anchor_batch.columns.front()
+                 .descriptor.canonical_type_name != "int64")) {
       return refuse("recursive CTE UNION DISTINCT requires one int64 column");
     }
+    std::vector<CanonicalDescriptorOrderTerm> equality_terms =
+        request.equality_terms;
+    if (legacy_int64_profile && equality_terms.empty()) {
+      CanonicalDescriptorOrderTerm term;
+      term.column = 0;
+      term.expression_descriptor_id =
+          working.anchor_batch.columns.front().descriptor_id;
+      term.direction = CanonicalDescriptorOrderDirection::ascending;
+      term.null_placement = CanonicalDescriptorNullPlacement::first;
+      equality_terms.push_back(std::move(term));
+    }
+    if (equality_terms.size() != working.anchor_batch.columns.size() ||
+        equality_terms.empty() ||
+        request.maximum_value_comparison_count == 0) {
+      return refuse(
+          "recursive CTE UNION DISTINCT requires one bounded equality term "
+          "per output column");
+    }
+    std::vector<bool> covered(working.anchor_batch.columns.size(), false);
+    for (const auto& term : equality_terms) {
+      if (term.column >= working.anchor_batch.columns.size() ||
+          covered[term.column] ||
+          term.expression_descriptor_id !=
+              working.anchor_batch.columns[term.column].descriptor_id ||
+          term.direction != CanonicalDescriptorOrderDirection::ascending ||
+          term.null_placement != CanonicalDescriptorNullPlacement::first) {
+        return refuse(
+            "recursive CTE UNION DISTINCT equality term coverage is invalid");
+      }
+      covered[term.column] = true;
+    }
 
-    const auto row_key = [](const DescriptorTuple& row) {
-      if (row.values.size() != 1) {
-        throw std::runtime_error("recursive UNION DISTINCT row is ragged");
+    auto comparison_count = std::make_shared<std::size_t>(0);
+    const auto equal_rows =
+        [equality_terms = std::move(equality_terms), comparison_count,
+         maximum = request.maximum_value_comparison_count](
+            const DescriptorTuple& left, const DescriptorTuple& right) {
+          if (left.values.size() != equality_terms.size() ||
+              right.values.size() != equality_terms.size()) {
+            throw std::runtime_error("recursive UNION DISTINCT row is ragged");
+          }
+          for (const auto& term : equality_terms) {
+            if (*comparison_count == maximum) {
+              throw std::runtime_error(
+                  "recursive CTE UNION DISTINCT value comparison bound was "
+                  "exceeded");
+            }
+            ++*comparison_count;
+            const auto compared = CompareCanonicalDescriptorOrderValues(
+                left.values[term.column], right.values[term.column], term);
+            if (!compared.diagnostic.ok) {
+              throw std::runtime_error(compared.diagnostic.diagnostic_code +
+                                       ":" + compared.diagnostic.detail);
+            }
+            if (compared.comparison != 0) return false;
+          }
+          return true;
+        };
+    auto seen = std::make_shared<std::vector<DescriptorTuple>>();
+    const auto admit = [seen, duplicate_count, equal_rows](
+                           const DescriptorTuple& row) {
+      if (!equal_rows(row, row)) {
+        throw std::runtime_error(
+            "recursive UNION DISTINCT self comparison failed");
       }
-      const auto& value = row.values.front();
-      if (value.state ==
-          scratchbird::engine::internal_api::EngineValueState::sql_null) {
-        return std::string("null");
+      for (const auto& representative : *seen) {
+        if (equal_rows(row, representative)) {
+          ++*duplicate_count;
+          return false;
+        }
       }
-      const auto decoded = DecodeInt64Value(value);
-      if (!decoded.ok()) {
-        throw std::runtime_error(decoded.diagnostic.diagnostic_code + ":" +
-                                 decoded.diagnostic.detail);
-      }
-      return std::string("int64:") + std::to_string(decoded.value);
+      seen->push_back(row);
+      return true;
     };
-
-    auto seen = std::make_shared<std::unordered_set<std::string>>();
     DescriptorBatch distinct_anchor;
     distinct_anchor.columns = working.anchor_batch.columns;
     try {
       for (const auto& row : working.anchor_batch.rows) {
-        if (seen->insert(row_key(row)).second) {
+        if (admit(row)) {
           distinct_anchor.rows.push_back(row);
-        } else {
-          ++*duplicate_count;
         }
       }
     } catch (const std::exception& error) {
@@ -347,16 +413,14 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
 
     const auto recursive_step = working.recursive_step;
     working.recursive_step =
-        [recursive_step, seen, duplicate_count, row_key](
+        [recursive_step, admit](
             const DescriptorBatch& current, const std::size_t iteration) {
           auto generated = recursive_step(current, iteration);
           DescriptorBatch distinct;
           distinct.columns = generated.columns;
           for (const auto& row : generated.rows) {
-            if (seen->insert(row_key(row)).second) {
+            if (admit(row)) {
               distinct.rows.push_back(row);
-            } else {
-              ++*duplicate_count;
             }
           }
           return distinct;
@@ -389,10 +453,11 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
 }
 
 // QOW-SOURCE-QRY-014-SEARCH-CYCLE-V1
-// Execute the accepted breadth-first SEARCH profile and one int64 CYCLE key.
-// Parent indices bind every generated row to one current working row, allowing
-// path-local cycle detection. A cycle row is emitted once with a typed TRUE
-// mark and is never placed into the next working relation.
+// Execute the accepted breadth-first SEARCH profile and descriptor-bound typed
+// CYCLE keys. Parent indices bind every generated row to one current working
+// row, allowing path-local cycle detection. A cycle row is emitted once with a
+// typed TRUE mark and is never placed into the next working relation. The
+// legacy physical profile is preserved as a one-column int64 specialization.
 CanonicalRecursiveCteSearchCycleResult
 ExecuteCanonicalRecursiveCteSearchCycle(
     const CanonicalRecursiveCteSearchCycleRequest& request) {
@@ -416,13 +481,20 @@ ExecuteCanonicalRecursiveCteSearchCycle(
   }
   const auto* selected_node = FindPhysicalNode(
       request.physical_dag, request.selected_physical_node_id);
+  const bool legacy_int64_profile =
+      selected_node != nullptr &&
+      selected_node->implementation_id ==
+          "cte.recursive.search-breadth-cycle-int64.typed.v1";
+  const bool generic_typed_profile =
+      selected_node != nullptr &&
+      selected_node->implementation_id ==
+          "cte.recursive.search-breadth-cycle.typed.v1";
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
           request.physical_dag.root_physical_node_id ||
       selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
-      selected_node->implementation_id !=
-          "cte.recursive.search-breadth-cycle-int64.typed.v1" ||
+      (!legacy_int64_profile && !generic_typed_profile) ||
       selected_node->input_physical_node_ids.size() != 2) {
     return refuse("recursive CTE SEARCH/CYCLE physical profile is not bound");
   }
@@ -448,12 +520,6 @@ ExecuteCanonicalRecursiveCteSearchCycle(
       request.search_sequence_column.descriptor_id);
   output_descriptor_ids.push_back(request.cycle_mark_column.descriptor_id);
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
-      request.cycle_key_column >= request.anchor_batch.columns.size() ||
-      request.cycle_key_expression_descriptor_id == 0 ||
-      request.anchor_batch.columns[request.cycle_key_column].descriptor_id !=
-          request.cycle_key_expression_descriptor_id ||
-      request.anchor_batch.columns[request.cycle_key_column]
-              .descriptor.canonical_type_name != "int64" ||
       request.search_sequence_column.descriptor_id == 0 ||
       request.search_sequence_column.nullable ||
       request.search_sequence_column.descriptor.canonical_type_name !=
@@ -462,6 +528,49 @@ ExecuteCanonicalRecursiveCteSearchCycle(
       request.cycle_mark_column.nullable ||
       request.cycle_mark_column.descriptor.canonical_type_name != "boolean") {
     return refuse("recursive CTE SEARCH/CYCLE descriptors are not exact");
+  }
+
+  std::vector<CanonicalDescriptorOrderTerm> cycle_key_terms =
+      request.cycle_key_terms;
+  if (legacy_int64_profile && cycle_key_terms.empty()) {
+    if (request.cycle_key_column >= request.anchor_batch.columns.size() ||
+        request.cycle_key_expression_descriptor_id == 0 ||
+        request.anchor_batch.columns[request.cycle_key_column].descriptor_id !=
+            request.cycle_key_expression_descriptor_id ||
+        request.anchor_batch.columns[request.cycle_key_column]
+                .descriptor.canonical_type_name != "int64") {
+      return refuse("legacy recursive CTE CYCLE key is not one int64 column");
+    }
+    CanonicalDescriptorOrderTerm term;
+    term.column = request.cycle_key_column;
+    term.expression_descriptor_id =
+        request.cycle_key_expression_descriptor_id;
+    term.direction = CanonicalDescriptorOrderDirection::ascending;
+    term.null_placement = CanonicalDescriptorNullPlacement::first;
+    cycle_key_terms.push_back(std::move(term));
+  }
+  if (cycle_key_terms.empty() ||
+      request.maximum_value_comparison_count == 0) {
+    return refuse(
+        "recursive CTE SEARCH/CYCLE requires bounded typed cycle keys");
+  }
+  std::vector<bool> covered(request.anchor_batch.columns.size(), false);
+  for (const auto& term : cycle_key_terms) {
+    if (term.column >= request.anchor_batch.columns.size() ||
+        covered[term.column] ||
+        term.expression_descriptor_id !=
+            request.anchor_batch.columns[term.column].descriptor_id ||
+        term.direction != CanonicalDescriptorOrderDirection::ascending ||
+        term.null_placement != CanonicalDescriptorNullPlacement::first) {
+      return refuse("recursive CTE SEARCH/CYCLE key binding is invalid");
+    }
+    const auto term_validation = ValidateCanonicalDescriptorOrderTerm(
+        term, request.anchor_batch.columns[term.column]);
+    if (!term_validation.ok) {
+      return refuse(term_validation.diagnostic_code + ":" +
+                    term_validation.detail);
+    }
+    covered[term.column] = true;
   }
 
   const auto anchor_validation = ValidateCanonicalDescriptorBatch(
@@ -479,20 +588,29 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     return refuse("recursive CTE SEARCH/CYCLE resource contract is invalid");
   }
 
-  const auto key_for_row = [&](const DescriptorTuple& row) {
-    if (request.cycle_key_column >= row.values.size()) {
+  std::size_t value_comparison_count = 0;
+  const auto cycle_keys_equal = [&](const DescriptorTuple& left,
+                                    const DescriptorTuple& right) {
+    if (left.values.size() != request.anchor_batch.columns.size() ||
+        right.values.size() != request.anchor_batch.columns.size()) {
       throw std::runtime_error("recursive CTE cycle-key row is ragged");
     }
-    const auto& value = row.values[request.cycle_key_column];
-    if (value.state == api::EngineValueState::sql_null) {
-      return std::string("null");
+    for (const auto& term : cycle_key_terms) {
+      if (value_comparison_count ==
+          request.maximum_value_comparison_count) {
+        throw std::runtime_error(
+            "recursive CTE SEARCH/CYCLE value comparison bound was exceeded");
+      }
+      ++value_comparison_count;
+      const auto compared = CompareCanonicalDescriptorOrderValues(
+          left.values[term.column], right.values[term.column], term);
+      if (!compared.diagnostic.ok) {
+        throw std::runtime_error(compared.diagnostic.diagnostic_code + ":" +
+                                 compared.diagnostic.detail);
+      }
+      if (compared.comparison != 0) return false;
     }
-    const auto decoded = DecodeInt64Value(value);
-    if (!decoded.ok()) {
-      throw std::runtime_error(decoded.diagnostic.diagnostic_code + ":" +
-                               decoded.diagnostic.detail);
-    }
-    return std::string("int64:") + std::to_string(decoded.value);
+    return true;
   };
   const auto sequence_value = [&](const std::uint64_t sequence) {
     api::EngineTypedValue value;
@@ -514,14 +632,17 @@ ExecuteCanonicalRecursiveCteSearchCycle(
   output.columns.push_back(request.search_sequence_column);
   output.columns.push_back(request.cycle_mark_column);
   DescriptorBatch working = request.anchor_batch;
-  std::vector<std::vector<std::string>> working_paths;
+  std::vector<std::vector<DescriptorTuple>> working_paths;
   std::vector<CanonicalRecursiveCteSearchCycleMetadata> metadata;
   std::uint64_t sequence = 0;
   try {
     working_paths.reserve(working.rows.size());
     for (const auto& row : working.rows) {
-      const auto key = key_for_row(row);
-      working_paths.push_back({key});
+      if (!cycle_keys_equal(row, row)) {
+        throw std::runtime_error(
+            "recursive CTE cycle key self comparison failed");
+      }
+      working_paths.push_back({row});
       DescriptorTuple projected = row;
       projected.values.push_back(sequence_value(++sequence));
       projected.values.push_back(cycle_value(false));
@@ -576,7 +697,7 @@ ExecuteCanonicalRecursiveCteSearchCycle(
 
     DescriptorBatch next_working;
     next_working.columns = generated.batch.columns;
-    std::vector<std::vector<std::string>> next_paths;
+    std::vector<std::vector<DescriptorTuple>> next_paths;
     try {
       for (std::size_t row_index = 0;
            row_index < generated.batch.rows.size(); ++row_index) {
@@ -586,13 +707,21 @@ ExecuteCanonicalRecursiveCteSearchCycle(
             parent_index >= working_paths.size()) {
           return refuse("recursive CTE SEARCH/CYCLE parent is unresolved");
         }
-        const auto key = key_for_row(generated.batch.rows[row_index]);
+        const auto& generated_row = generated.batch.rows[row_index];
+        if (!cycle_keys_equal(generated_row, generated_row)) {
+          throw std::runtime_error(
+              "recursive CTE cycle key self comparison failed");
+        }
         const auto& parent_path = working_paths[parent_index];
-        const bool cycle =
-            std::find(parent_path.begin(), parent_path.end(), key) !=
-            parent_path.end();
+        bool cycle = false;
+        for (const auto& ancestor : parent_path) {
+          if (cycle_keys_equal(generated_row, ancestor)) {
+            cycle = true;
+            break;
+          }
+        }
 
-        DescriptorTuple projected = generated.batch.rows[row_index];
+        DescriptorTuple projected = generated_row;
         projected.values.push_back(sequence_value(++sequence));
         projected.values.push_back(cycle_value(cycle));
         output.rows.push_back(std::move(projected));
@@ -606,9 +735,9 @@ ExecuteCanonicalRecursiveCteSearchCycle(
             request.maximum_working_row_count) {
           return refuse("recursive CTE SEARCH/CYCLE working bound exceeded");
         }
-        next_working.rows.push_back(generated.batch.rows[row_index]);
+        next_working.rows.push_back(generated_row);
         auto path = parent_path;
-        path.push_back(key);
+        path.push_back(generated_row);
         next_paths.push_back(std::move(path));
       }
     } catch (const std::exception& error) {

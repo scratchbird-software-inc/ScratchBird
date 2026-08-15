@@ -205,6 +205,26 @@ exec::CanonicalQuantifiedSubqueryRequest Request() {
   return request;
 }
 
+exec::CanonicalQuantifiedSubqueryRequest Real64Request() {
+  auto request = Request();
+  const auto right = Descriptor(
+      "019f0000-0000-7200-8000-000000002921",
+      "019f0000-0000-7300-8000-000000002922", "real64", "nullable");
+  const auto left = Descriptor(
+      "019f0000-0000-7200-8000-000000002923",
+      "019f0000-0000-7300-8000-000000002924", "real64", "nullable");
+  request.table_request.input_batch = exec::MakeDescriptorBatch(
+      {{"quantified_right", right, true, 2901}},
+      {{{Value(right, "1.5")}},
+       {{Null(right)}},
+       {{Value(right, "2.5")}}});
+  request.left_operand_column = {"quantified_left", left, true, 2902};
+  request.left_value = Value(left, "2.5");
+  request.table_request.physical_dag.nodes[1].implementation_id =
+      "subquery.quantified.typed.v1";
+  return request;
+}
+
 // QOW-TEST-QRY-013-QUANTIFIED-V1
 bool ValidateQuantifiedSubquery() {
   using Truth = api::EngineSqlTruthValue;
@@ -300,6 +320,20 @@ bool ValidateQuantifiedSubquery() {
                         result.truth_value == Truth::unspecified &&
                         result.comparison_count == 0,
                     "early TRUE hid a malformed later operand");
+
+  request = Real64Request();
+  result = exec::ExecuteCanonicalQuantifiedSubquery(request);
+  passed &= Require(
+      result.diagnostic.ok && result.truth_value == Truth::true_value &&
+          result.comparison_count == 3 &&
+          result.output_batch.rows[0].values[0].encoded_value == "true",
+      "descriptor-compatible real64 ANY comparison was refused");
+
+  request = Real64Request();
+  request.left_value.descriptor.canonical_type_name = "int64";
+  result = exec::ExecuteCanonicalQuantifiedSubquery(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "descriptor-incompatible quantified operands were accepted");
 
   request = Request();
   request.maximum_comparison_count = 2;

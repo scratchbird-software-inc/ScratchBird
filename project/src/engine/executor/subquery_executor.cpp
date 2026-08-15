@@ -427,9 +427,12 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
 }
 
 // QOW-SOURCE-QRY-013-QUANTIFIED-V1
-// Evaluate one bound int64 comparison against a one-column canonical table
-// result with SQL ANY/ALL three-valued folding. Every operand is decoded before
-// publication, so a decisive early truth cannot hide malformed later input.
+// Evaluate one descriptor-compatible canonical scalar comparison against a
+// one-column canonical table result with SQL ANY/ALL three-valued folding.
+// Every operand is decoded before publication, so a decisive early truth
+// cannot hide malformed later input. Collated character values remain behind
+// the catalog-bound comparison seam and are refused by the shared expression
+// runtime when no such authority is present.
 CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     const CanonicalQuantifiedSubqueryRequest& request) {
   namespace api = scratchbird::engine::internal_api;
@@ -466,10 +469,8 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
   if (request.right_expression_descriptor_id == 0 ||
       request.right_expression_descriptor_id != right_column.descriptor_id ||
       request.left_operand_column.descriptor_id == 0 ||
-      request.left_operand_column.stable_name.empty() ||
-      request.left_operand_column.descriptor.canonical_type_name != "int64" ||
-      right_column.descriptor.canonical_type_name != "int64") {
-    return refuse("quantified comparison operands are not bound int64");
+      request.left_operand_column.stable_name.empty()) {
+    return refuse("quantified comparison operands are not descriptor-bound");
   }
   const bool any = request.quantifier ==
                    CanonicalQuantifiedSubqueryQuantifier::kAny;
@@ -619,10 +620,12 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
 }
 
 // QOW-SOURCE-QRY-013-CORRELATED-V1
-// Bind and execute one correlated int64-equality subquery scope for every
-// outer row. The physical root owns both input relations and emits the inner
-// descriptor shape; scope results retain physical outer-row identity and
-// deterministic inner order without granting the parser execution authority.
+// Bind and execute one descriptor-compatible scalar-equality subquery scope
+// for every outer row. The physical root owns both input relations and emits
+// the inner descriptor shape; scope results retain physical outer-row identity
+// and deterministic inner order without granting the parser execution
+// authority. The legacy int64 implementation identity remains an exact alias
+// of the shared non-collated typed comparison route.
 CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     const CanonicalCorrelatedSubqueryRequest& request) {
   namespace api = scratchbird::engine::internal_api;
@@ -663,10 +666,15 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
       break;
     }
   }
+  const bool correlated_implementation =
+      selected_node != nullptr &&
+      (selected_node->implementation_id ==
+           "subquery.correlated.int64-equality.typed.v1" ||
+       selected_node->implementation_id ==
+           "subquery.correlated.equality.typed.v1");
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kSubquery ||
-      selected_node->implementation_id !=
-          "subquery.correlated.int64-equality.typed.v1" ||
+      !correlated_implementation ||
       selected_node->input_physical_node_ids.size() != 2) {
     return refuse("correlated subquery physical profile is not bound");
   }
@@ -711,10 +719,17 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
           outer_column.descriptor_id ||
       request.inner_reference_expression_descriptor_id == 0 ||
       request.inner_reference_expression_descriptor_id !=
-          inner_column.descriptor_id ||
-      outer_column.descriptor.canonical_type_name != "int64" ||
-      inner_column.descriptor.canonical_type_name != "int64") {
-    return refuse("correlated binding is not an exact int64 handle pair");
+          inner_column.descriptor_id) {
+    return refuse("correlated binding is not an exact descriptor handle pair");
+  }
+  namespace dt = scratchbird::core::datatypes;
+  const auto outer_type = dt::CanonicalTypeIdFromStableName(
+      outer_column.descriptor.canonical_type_name);
+  const auto inner_type = dt::CanonicalTypeIdFromStableName(
+      inner_column.descriptor.canonical_type_name);
+  if (outer_type == dt::CanonicalTypeId::unknown ||
+      outer_type != inner_type) {
+    return refuse("correlated binding descriptors are not type-compatible");
   }
 
   const auto outer_count = request.outer_batch.rows.size();
@@ -729,35 +744,29 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     return refuse("correlated subquery resource bound was exceeded");
   }
 
-  std::vector<std::optional<std::int64_t>> outer_keys;
-  outer_keys.reserve(outer_count);
-  for (const auto& row : request.outer_batch.rows) {
-    const auto& value = row.values[request.outer_binding_column];
-    if (value.state == api::EngineValueState::sql_null) {
-      outer_keys.push_back(std::nullopt);
-      continue;
+  const auto validate_keys = [&](const DescriptorBatch& batch,
+                                 const std::size_t column) {
+    for (const auto& row : batch.rows) {
+      const auto& value = row.values[column];
+      if (value.state == api::EngineValueState::sql_null) continue;
+      int comparison = 0;
+      std::string detail;
+      if (!api::QowCompareCanonicalNonCollatedScalarsV1(
+              value, value, &comparison, &detail)) {
+        return detail;
+      }
     }
-    const auto decoded = DecodeInt64Value(value);
-    if (!decoded.ok()) {
-      return refuse(decoded.diagnostic.diagnostic_code + ":" +
-                    decoded.diagnostic.detail);
-    }
-    outer_keys.push_back(decoded.value);
+    return std::string{};
+  };
+  if (const auto detail =
+          validate_keys(request.outer_batch, request.outer_binding_column);
+      !detail.empty()) {
+    return refuse("correlated outer key refused: " + detail);
   }
-  std::vector<std::optional<std::int64_t>> inner_keys;
-  inner_keys.reserve(inner_count);
-  for (const auto& row : request.inner_batch.rows) {
-    const auto& value = row.values[request.inner_reference_column];
-    if (value.state == api::EngineValueState::sql_null) {
-      inner_keys.push_back(std::nullopt);
-      continue;
-    }
-    const auto decoded = DecodeInt64Value(value);
-    if (!decoded.ok()) {
-      return refuse(decoded.diagnostic.diagnostic_code + ":" +
-                    decoded.diagnostic.detail);
-    }
-    inner_keys.push_back(decoded.value);
+  if (const auto detail =
+          validate_keys(request.inner_batch, request.inner_reference_column);
+      !detail.empty()) {
+    return refuse("correlated inner key refused: " + detail);
   }
 
   std::vector<CanonicalCorrelatedScopeResult> scopes;
@@ -770,12 +779,23 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
         request.outer_batch.rows[outer_index]
             .values[request.outer_binding_column];
     scope.output_batch.columns = request.inner_batch.columns;
-    if (outer_keys[outer_index].has_value()) {
+    const auto& outer_value =
+        request.outer_batch.rows[outer_index]
+            .values[request.outer_binding_column];
+    if (outer_value.state != api::EngineValueState::sql_null) {
       for (std::size_t inner_index = 0; inner_index < inner_count;
            ++inner_index) {
-        if (inner_keys[inner_index].has_value() &&
-            outer_keys[outer_index].value() ==
-                inner_keys[inner_index].value()) {
+        const auto& inner_value =
+            request.inner_batch.rows[inner_index]
+                .values[request.inner_reference_column];
+        if (inner_value.state == api::EngineValueState::sql_null) continue;
+        int comparison = 0;
+        std::string detail;
+        if (!api::QowCompareCanonicalNonCollatedScalarsV1(
+                outer_value, inner_value, &comparison, &detail)) {
+          return refuse("correlated key comparison refused: " + detail);
+        }
+        if (comparison == 0) {
           if (result_row_count == request.maximum_result_row_count) {
             return refuse("correlated subquery result bound was exceeded");
           }

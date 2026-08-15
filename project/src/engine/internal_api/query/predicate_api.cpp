@@ -69,7 +69,43 @@ const char* PredicateOperatorName(
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_QUERY_PREDICATE_API_BEHAVIOR
 EngineBindPredicateResult EngineBindPredicate(const EngineBindPredicateRequest& request) {
+  const auto refuse = [&](std::string detail) {
+    return MakeApiBehaviorDiagnostic<EngineBindPredicateResult>(
+        request.context, "query.bind_predicate",
+        MakeEngineApiDiagnostic(
+            "QOW-DIAG-QRY-025-BIND-REFUSAL-V1",
+            "engine.query.predicate_binding_refused", std::move(detail)));
+  };
+  if (request.predicate.predicate_kind.empty() ||
+      request.predicate.canonical_predicate_envelope.empty()) {
+    return refuse(
+        "canonical predicate kind and immutable envelope are required");
+  }
+  const auto& predicate_kind = request.predicate.predicate_kind;
+  if (predicate_kind != "equal" && predicate_kind != "not_equal" &&
+      predicate_kind != "less_than" &&
+      predicate_kind != "less_than_or_equal" &&
+      predicate_kind != "greater_than" &&
+      predicate_kind != "greater_than_or_equal" &&
+      predicate_kind != "is_null" && predicate_kind != "is_not_null" &&
+      predicate_kind != "logical_not" && predicate_kind != "logical_and" &&
+      predicate_kind != "logical_or") {
+    return refuse("canonical predicate kind is unsupported");
+  }
+  for (const auto& value : request.predicate.bound_values) {
+    if (!QowCanonicalDescriptorIdentityV1(value.descriptor) ||
+        scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+            value.descriptor.canonical_type_name) ==
+            scratchbird::core::datatypes::CanonicalTypeId::unknown ||
+        (value.isSqlNull() && !QowCanonicalSqlNullStateV1(value)) ||
+        (!value.isSqlNull() &&
+         (value.state != EngineValueState::value || value.is_null))) {
+      return refuse("predicate bound value descriptor or state is invalid");
+    }
+  }
   auto result = MakeApiBehaviorSuccess<EngineBindPredicateResult>(request.context, "query.bind_predicate");
+  result.bound_predicate = request.predicate;
+  result.result_shape.result_kind = "bound_predicate";
   AddApiBehaviorEvidence(&result, "query_binding", "predicate");
   AddApiBehaviorRow(&result, {{"predicate_kind", request.predicate.predicate_kind}, {"predicate_envelope", request.predicate.canonical_predicate_envelope}, {"bound_value_count", std::to_string(request.predicate.bound_values.size())}});
   return result;

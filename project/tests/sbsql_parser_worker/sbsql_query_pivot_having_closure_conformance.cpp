@@ -282,6 +282,20 @@ void RequirePivotAggregates() {
   const auto rejected = api::EnginePlanOperation(unsupported);
   Require(!rejected.ok && FirstDetail(rejected) == "query.plan_operation:query_plan_pivot_aggregate_unsupported",
           "unsupported pivot aggregate diagnostic drifted");
+
+  auto missing_function = unsupported;
+  missing_function.option_envelopes = {
+      "pivot_group_field:region",
+      "pivot_for_field:channel",
+      "pivot_value_field:amount",
+      "pivot_in_values:retail",
+  };
+  const auto missing_function_result =
+      api::EnginePlanOperation(missing_function);
+  Require(!missing_function_result.ok &&
+              FirstDetail(missing_function_result) ==
+                  "query.plan_operation:query_plan_pivot_aggregate_function_required",
+          "missing pivot aggregate function selected SUM as a substitute");
 }
 
 api::EngineQueryRelation HavingRelation() {
@@ -337,6 +351,7 @@ void RequireHavingPredicates() {
   unsupported.context.security_context_present = true;
   unsupported.execute = true;
   unsupported.query_operation = "aggregate";
+  unsupported.aggregate_function = "sum";
   unsupported.relations.push_back(HavingRelation());
   unsupported.option_envelopes = {
       "having_predicate:aggregate_like",
@@ -345,6 +360,16 @@ void RequireHavingPredicates() {
   const auto rejected = api::EnginePlanOperation(unsupported);
   Require(!rejected.ok && FirstDetail(rejected) == "query.plan_operation:query_plan_aggregate_having_predicate_unsupported",
           "unsupported HAVING predicate diagnostic drifted");
+
+  auto missing_function = unsupported;
+  missing_function.aggregate_function.clear();
+  missing_function.option_envelopes.clear();
+  const auto missing_function_result =
+      api::EnginePlanOperation(missing_function);
+  Require(!missing_function_result.ok &&
+              FirstDetail(missing_function_result) ==
+                  "query.plan_operation:query_plan_aggregate_function_required",
+          "missing aggregate function selected SUM as a substitute");
 }
 
 void AddOptionOperand(sblr::SblrOperationEnvelope* envelope,

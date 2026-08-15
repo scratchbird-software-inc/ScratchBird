@@ -553,6 +553,31 @@ struct CanonicalRecursiveCteWorkingResult {
   PhysicalMgaStatementContext mga_statement_context;
 };
 
+enum class CanonicalDescriptorOrderDirection : std::uint8_t {
+  ascending = 1,
+  descending,
+};
+
+enum class CanonicalDescriptorNullPlacement : std::uint8_t {
+  first = 1,
+  last,
+};
+
+struct CanonicalDescriptorOrderTerm {
+  std::size_t column = 0;
+  std::uint32_t expression_descriptor_id = 0;
+  CanonicalDescriptorOrderDirection direction =
+      CanonicalDescriptorOrderDirection::ascending;
+  CanonicalDescriptorNullPlacement null_placement =
+      CanonicalDescriptorNullPlacement::last;
+  std::string collation_uuid;
+  std::uint64_t resource_epoch = 0;
+  std::uint64_t collation_epoch = 0;
+  scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
+  std::uint64_t timezone_epoch = 0;
+  scratchbird::core::datatypes::TimezoneSeedAuthority timezone_seed;
+};
+
 enum class CanonicalRecursiveCteUnionMode : std::uint8_t {
   kAll = 1,
   kDistinct,
@@ -562,6 +587,8 @@ struct CanonicalRecursiveCteUnionRequest {
   CanonicalRecursiveCteWorkingRequest working_request;
   CanonicalRecursiveCteUnionMode union_mode =
       CanonicalRecursiveCteUnionMode::kAll;
+  std::vector<CanonicalDescriptorOrderTerm> equality_terms;
+  std::size_t maximum_value_comparison_count = 1048576;
 };
 
 struct CanonicalRecursiveCteUnionResult {
@@ -592,6 +619,10 @@ struct CanonicalRecursiveCteSearchCycleRequest {
   CanonicalRecursiveCteSearchCycleStep recursive_step;
   CanonicalRecursiveCteSearchOrder search_order =
       CanonicalRecursiveCteSearchOrder::kBreadthFirst;
+  std::vector<CanonicalDescriptorOrderTerm> cycle_key_terms;
+  std::size_t maximum_value_comparison_count = 1048576;
+  // Retained for the legacy one-column int64 physical profile. Generic typed
+  // SEARCH/CYCLE requests bind cycle_key_terms instead.
   std::size_t cycle_key_column = 0;
   std::uint32_t cycle_key_expression_descriptor_id = 0;
   ExecutorColumnDescriptor search_sequence_column;
@@ -1639,31 +1670,6 @@ struct CanonicalDescriptorRowNumberResult {
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
   PhysicalMgaStatementContext mga_statement_context;
-};
-
-enum class CanonicalDescriptorOrderDirection : std::uint8_t {
-  ascending = 1,
-  descending,
-};
-
-enum class CanonicalDescriptorNullPlacement : std::uint8_t {
-  first = 1,
-  last,
-};
-
-struct CanonicalDescriptorOrderTerm {
-  std::size_t column = 0;
-  std::uint32_t expression_descriptor_id = 0;
-  CanonicalDescriptorOrderDirection direction =
-      CanonicalDescriptorOrderDirection::ascending;
-  CanonicalDescriptorNullPlacement null_placement =
-      CanonicalDescriptorNullPlacement::last;
-  std::string collation_uuid;
-  std::uint64_t resource_epoch = 0;
-  std::uint64_t collation_epoch = 0;
-  scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
-  std::uint64_t timezone_epoch = 0;
-  scratchbird::core::datatypes::TimezoneSeedAuthority timezone_seed;
 };
 
 enum class CanonicalAggregateExecutionStrategy : std::uint8_t {

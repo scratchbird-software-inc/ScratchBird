@@ -129,6 +129,15 @@ api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
   return typed;
 }
 
+api::EngineTypedValue EncodedValue(const api::EngineDescriptor& descriptor,
+                                   std::string encoded_value) {
+  api::EngineTypedValue typed;
+  typed.descriptor = descriptor;
+  typed.encoded_value = std::move(encoded_value);
+  typed.state = api::EngineValueState::value;
+  return typed;
+}
+
 exec::CanonicalRecursiveCteSearchCycleRequest Request() {
   const auto key = Descriptor(
       "019f0000-0000-7200-8000-000000003401",
@@ -224,6 +233,68 @@ exec::CanonicalRecursiveCteSearchCycleRequest Request() {
   return request;
 }
 
+exec::CanonicalRecursiveCteSearchCycleRequest TypedCompositeRequest() {
+  auto request = Request();
+  const auto real_key = Descriptor(
+      "019f0000-0000-7200-8000-000000003421",
+      "019f0000-0000-7300-8000-000000003422", "real64");
+  const auto branch_key = Descriptor(
+      "019f0000-0000-7200-8000-000000003423",
+      "019f0000-0000-7300-8000-000000003424", "boolean");
+
+  request.physical_dag.nodes[0].output_descriptor_ids = {3401, 3404};
+  request.physical_dag.nodes[1].output_descriptor_ids = {3401, 3404};
+  request.physical_dag.nodes[2].implementation_id =
+      "cte.recursive.search-breadth-cycle.typed.v1";
+  request.physical_dag.nodes[2].output_descriptor_ids = {3401, 3404, 3402,
+                                                         3403};
+  request.anchor_batch = exec::MakeDescriptorBatch(
+      {{"real_key", real_key, false, 3401},
+       {"branch_key", branch_key, false, 3404}},
+      {{{EncodedValue(real_key, "1.5"),
+         EncodedValue(branch_key, "false")}}});
+  request.recursive_step =
+      [real_key, branch_key](const exec::DescriptorBatch& current,
+                             const std::size_t) {
+        exec::CanonicalRecursiveCteGeneratedBatch generated;
+        generated.batch.columns = current.columns;
+        for (std::size_t parent = 0; parent < current.rows.size(); ++parent) {
+          const auto& real = current.rows[parent].values[0].encoded_value;
+          const auto& branch = current.rows[parent].values[1].encoded_value;
+          if (real == "1.5" && branch == "false") {
+            generated.batch.rows.push_back(
+                {{EncodedValue(real_key, "2.5"),
+                  EncodedValue(branch_key, "false")}});
+            generated.parent_working_row_indices.push_back(parent);
+            generated.batch.rows.push_back(
+                {{EncodedValue(real_key, "1.50"),
+                  EncodedValue(branch_key, "true")}});
+            generated.parent_working_row_indices.push_back(parent);
+          } else if (real == "2.5" && branch == "false") {
+            generated.batch.rows.push_back(
+                {{EncodedValue(real_key, "1.50"),
+                  EncodedValue(branch_key, "false")}});
+            generated.parent_working_row_indices.push_back(parent);
+          }
+        }
+        return generated;
+      };
+  request.cycle_key_terms = {
+      {.column = 0,
+       .expression_descriptor_id = 3401,
+       .direction = exec::CanonicalDescriptorOrderDirection::ascending,
+       .null_placement = exec::CanonicalDescriptorNullPlacement::first},
+      {.column = 1,
+       .expression_descriptor_id = 3404,
+       .direction = exec::CanonicalDescriptorOrderDirection::ascending,
+       .null_placement = exec::CanonicalDescriptorNullPlacement::first},
+  };
+  request.maximum_value_comparison_count = 64;
+  request.cycle_key_column = 0;
+  request.cycle_key_expression_descriptor_id = 0;
+  return request;
+}
+
 // QOW-TEST-QRY-014-SEARCH-CYCLE-V1
 bool ValidateSearchCycle() {
   bool passed = true;
@@ -248,6 +319,34 @@ bool ValidateSearchCycle() {
               result.mga_statement_context,
               Request().mga_authority.statement_context),
       "breadth-first SEARCH/CYCLE output was not path-correct");
+
+  result = exec::ExecuteCanonicalRecursiveCteSearchCycle(
+      TypedCompositeRequest());
+  passed &= Require(
+      result.diagnostic.ok && result.converged &&
+          result.recursive_iteration_count == 2 &&
+          result.cycle_row_count == 1 && result.output_batch.rows.size() == 4 &&
+          result.output_batch.columns.size() == 4 &&
+          result.output_batch.rows[2].values[0].encoded_value == "1.50" &&
+          result.output_batch.rows[2].values[1].encoded_value == "true" &&
+          result.output_batch.rows[2].values[3].encoded_value == "false" &&
+          result.output_batch.rows[3].values[0].encoded_value == "1.50" &&
+          result.output_batch.rows[3].values[1].encoded_value == "false" &&
+          result.output_batch.rows[3].values[3].encoded_value == "true" &&
+          result.row_metadata[3].cycle,
+      "typed composite SEARCH/CYCLE output was not path-correct");
+
+  auto typed_request = TypedCompositeRequest();
+  typed_request.cycle_key_terms[1].expression_descriptor_id = 3401;
+  result = exec::ExecuteCanonicalRecursiveCteSearchCycle(typed_request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "mismatched typed CYCLE key descriptor was accepted");
+
+  typed_request = TypedCompositeRequest();
+  typed_request.maximum_value_comparison_count = 1;
+  result = exec::ExecuteCanonicalRecursiveCteSearchCycle(typed_request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "typed CYCLE key comparison excess was accepted");
 
   auto request = Request();
   request.search_order = exec::CanonicalRecursiveCteSearchOrder::kDepthFirst;

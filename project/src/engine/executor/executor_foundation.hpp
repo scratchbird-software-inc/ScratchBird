@@ -26,6 +26,7 @@ struct Tuple {
 
 struct Batch {
   std::string descriptor_digest;
+  std::size_t column_count = 0;
   std::vector<Tuple> rows;
 };
 
@@ -493,7 +494,9 @@ struct CanonicalWindowCompositionResult {
   std::uint64_t causal_counter_id = 0;
 };
 
-Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows);
+Batch MakeBatch(std::string descriptor_digest,
+                std::vector<Tuple> rows,
+                std::size_t column_count = 0);
 OperatorDiagnostic ValidateBatch(const Batch& batch);
 std::int64_t EvalAdd(std::int64_t lhs, std::int64_t rhs);
 std::int64_t EvalMultiply(std::int64_t lhs, std::int64_t rhs);
