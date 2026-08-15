@@ -29,6 +29,7 @@ struct TypedRelationalDag;
 }
 
 namespace scratchbird::engine::sblr {
+class CanonicalDescriptorFilterPredicateReceiptIssuer;
 class CanonicalDescriptorSortKeyReceiptIssuer;
 }
 
@@ -323,7 +324,53 @@ struct CanonicalDescriptorProjectionResult {
   PhysicalMgaStatementContext mga_statement_context;
 };
 
+struct CanonicalDescriptorFilterRequest;
+struct CanonicalDescriptorFilterResult;
+
+// FILTER/HAVING truth values are executable authority only after the
+// canonical query route has evaluated the bound predicate against the exact
+// ordered input batch under the selected physical plan and current MGA
+// statement. The private receipt prevents a same-cardinality truth sidecar
+// from being substituted at the generic filter boundary.
+class CanonicalDescriptorFilterPredicateReceipt {
+ public:
+  CanonicalDescriptorFilterPredicateReceipt(
+      const CanonicalDescriptorFilterPredicateReceipt&) = delete;
+  CanonicalDescriptorFilterPredicateReceipt& operator=(
+      const CanonicalDescriptorFilterPredicateReceipt&) = delete;
+
+ private:
+  friend class scratchbird::engine::sblr::
+      CanonicalDescriptorFilterPredicateReceiptIssuer;
+  friend CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
+      const CanonicalDescriptorFilterRequest& request);
+
+  CanonicalDescriptorFilterPredicateReceipt() = default;
+
+  TypedPhysicalNodeDag physical_dag_;
+  std::uint64_t selected_physical_node_id_ = 0;
+  DescriptorBatch input_batch_;
+  std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>
+      row_truth_values_;
+  scratchbird::engine::internal_api::EnginePredicateConsumer consumer_ =
+      scratchbird::engine::internal_api::EnginePredicateConsumer::filter;
+  scratchbird::engine::internal_api::EngineCanonicalExpressionConsumer
+      expression_consumer_ = scratchbird::engine::internal_api::
+          EngineCanonicalExpressionConsumer::filter;
+  std::uint32_t predicate_expression_id_ = 0;
+  std::vector<std::uint32_t> row_descriptor_ids_;
+  std::vector<std::uint32_t> row_slot_expression_ids_;
+  std::size_t maximum_input_row_count_ = 0;
+  CanonicalExecutionMgaAuthority mga_authority_;
+  bool exact_current_revalidated_before_issue_ = false;
+};
+
 struct CanonicalDescriptorFilterRequest {
+  std::shared_ptr<const CanonicalDescriptorFilterPredicateReceipt>
+      predicate_receipt;
+  // Source-compatibility carrier for deferred test migration only. Production
+  // execution rejects any populated legacy field; raw truth values never
+  // become executable authority.
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch input_batch;

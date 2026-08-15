@@ -6236,7 +6236,199 @@ struct ExpressionSortKeyReceiptIssueResult {
   std::shared_ptr<const exec::CanonicalDescriptorSortKeyReceipt> receipt;
 };
 
+struct FilterPredicateReceiptIssueResult {
+  exec::DescriptorRuntimeDiagnostic diagnostic;
+  std::shared_ptr<const exec::CanonicalDescriptorFilterPredicateReceipt>
+      receipt;
+};
+
 }  // namespace
+
+class CanonicalDescriptorFilterPredicateReceiptIssuer {
+ public:
+  static FilterPredicateReceiptIssueResult Issue(
+      const api::TypedRelationalDag& relational_dag,
+      const std::uint32_t predicate_expression_id,
+      const CanonicalRelationalExpressionRowBinding& predicate_row_binding,
+      const exec::DescriptorBatch& input_batch,
+      const CanonicalRelationalExpressionRuntimeServices& expression_services,
+      const api::EngineCanonicalExpressionConsumer expression_consumer,
+      const api::EnginePredicateConsumer predicate_consumer,
+      const exec::TypedPhysicalNodeDag& physical_dag,
+      const std::uint64_t selected_physical_node_id,
+      const std::size_t maximum_input_row_count,
+      const exec::CanonicalExecutionMgaAuthority& mga_authority) {
+    FilterPredicateReceiptIssueResult result;
+    const auto refuse = [&](std::string detail) {
+      result.diagnostic.ok = false;
+      result.diagnostic.diagnostic_code =
+          "QOW-DIAG-QRY-007-FILTER-PREDICATE-RECEIPT-REFUSAL-V1";
+      result.diagnostic.detail = std::move(detail);
+      result.receipt.reset();
+      return result;
+    };
+
+    const bool filter_consumer =
+        predicate_consumer == api::EnginePredicateConsumer::filter &&
+        expression_consumer ==
+            api::EngineCanonicalExpressionConsumer::filter;
+    const bool having_consumer =
+        predicate_consumer == api::EnginePredicateConsumer::having &&
+        expression_consumer ==
+            api::EngineCanonicalExpressionConsumer::aggregate;
+    if ((!filter_consumer && !having_consumer) ||
+        predicate_expression_id == 0 ||
+        input_batch.rows.size() > maximum_input_row_count) {
+      return refuse(
+          "predicate identity, consumer pairing, or input row ceiling is not "
+          "canonical");
+    }
+
+    const auto before = exec::RevalidateCanonicalExecutionMgaAuthority(
+        mga_authority, physical_dag);
+    if (!before.ok) {
+      result.diagnostic = before;
+      return result;
+    }
+
+    const auto selected_node = std::ranges::find_if(
+        physical_dag.nodes, [&](const auto& node) {
+          return node.physical_node_id == selected_physical_node_id;
+        });
+    if (selected_node == physical_dag.nodes.end() ||
+        selected_physical_node_id == 0 ||
+        selected_physical_node_id != physical_dag.root_physical_node_id ||
+        selected_node->node_kind != exec::PhysicalNodeKind::kFilter ||
+        selected_node->implementation_id != "filter.3vl.row.v1" ||
+        selected_node->input_physical_node_ids.size() != 1 ||
+        relational_dag.bound_sblr_tree_uuid !=
+            physical_dag.bound_sblr_tree_uuid) {
+      return refuse(
+          "predicate receipt is not bound to its selected filter plan");
+    }
+    const auto input_node = std::ranges::find_if(
+        physical_dag.nodes, [&](const auto& node) {
+          return node.physical_node_id ==
+                 selected_node->input_physical_node_ids.front();
+        });
+    if (input_node == physical_dag.nodes.end() ||
+        selected_node->output_descriptor_ids !=
+            input_node->output_descriptor_ids ||
+        predicate_row_binding.row_descriptor_ids !=
+            input_node->output_descriptor_ids) {
+      return refuse("predicate receipt physical schema is not preserved");
+    }
+    auto validation = exec::ValidateCanonicalDescriptorBatch(
+        input_batch, input_node->output_descriptor_ids);
+    if (!validation.ok) {
+      result.diagnostic = std::move(validation);
+      return result;
+    }
+
+    const auto logical_node = std::ranges::find_if(
+        relational_dag.nodes, [&](const auto& node) {
+          return node.node_id == selected_node->relational_node_id;
+        });
+    const auto predicate = std::ranges::find_if(
+        relational_dag.expressions, [&](const auto& expression) {
+          return expression.expression_id == predicate_expression_id;
+        });
+    if (logical_node == relational_dag.nodes.end() ||
+        logical_node->node_kind != api::RelationalDagNodeKind::kFilter ||
+        logical_node->input_node_ids !=
+            std::vector<std::uint32_t>{input_node->relational_node_id} ||
+        logical_node->output_descriptor_ids !=
+            selected_node->output_descriptor_ids ||
+        logical_node->bound_expression_ids !=
+            std::vector<std::uint32_t>{predicate_expression_id} ||
+        predicate == relational_dag.expressions.end()) {
+      return refuse(
+          "predicate receipt lacks exact typed relational filter authority");
+    }
+
+    std::unordered_set<std::uint32_t> row_slot_expression_ids;
+    for (const auto& slot : predicate_row_binding.slots) {
+      const auto expression = std::ranges::find_if(
+          relational_dag.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == slot.expression_id;
+          });
+      if (slot.expression_id == 0 ||
+          slot.row_ordinal >=
+              predicate_row_binding.row_descriptor_ids.size() ||
+          slot.descriptor_id != predicate_row_binding
+                                    .row_descriptor_ids[slot.row_ordinal] ||
+          expression == relational_dag.expressions.end() ||
+          expression->result_descriptor_id != slot.descriptor_id ||
+          !row_slot_expression_ids.insert(slot.expression_id).second) {
+        return refuse(
+            "predicate row binding is not descriptor-exact and unique");
+      }
+    }
+
+    std::uint64_t truth_memory_bytes = 0;
+    if (!CheckedMultiply(input_batch.rows.size(),
+                         sizeof(api::EngineSqlTruthValue),
+                         &truth_memory_bytes) ||
+        truth_memory_bytes > physical_dag.memory_budget_bytes) {
+      return refuse(
+          "predicate truth materialization exceeds the selected memory "
+          "ceiling");
+    }
+
+    CanonicalRelationalExpressionRuntime expression_runtime(
+        relational_dag, expression_services);
+    std::vector<api::EngineSqlTruthValue> row_truth_values;
+    row_truth_values.reserve(input_batch.rows.size());
+    for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+      api::EngineSqlTruthValue truth = api::EngineSqlTruthValue::unknown;
+      std::string detail;
+      if (!expression_runtime.EvaluatePredicateForConsumer(
+              predicate_expression_id, predicate_row_binding,
+              input_batch.rows[row].values, expression_consumer, &truth,
+              &detail) ||
+          (truth != api::EngineSqlTruthValue::true_value &&
+           truth != api::EngineSqlTruthValue::false_value &&
+           truth != api::EngineSqlTruthValue::unknown)) {
+        return refuse("row=" + std::to_string(row) +
+                      ": canonical predicate evaluation: " + detail);
+      }
+      row_truth_values.push_back(truth);
+    }
+
+    const auto after = exec::RevalidateCanonicalExecutionMgaAuthority(
+        mga_authority, physical_dag);
+    if (!after.ok) {
+      result.diagnostic = after;
+      return result;
+    }
+
+    try {
+      auto receipt = std::shared_ptr<
+          exec::CanonicalDescriptorFilterPredicateReceipt>(
+          new exec::CanonicalDescriptorFilterPredicateReceipt());
+      receipt->physical_dag_ = physical_dag;
+      receipt->selected_physical_node_id_ = selected_physical_node_id;
+      receipt->input_batch_ = input_batch;
+      receipt->row_truth_values_ = std::move(row_truth_values);
+      receipt->consumer_ = predicate_consumer;
+      receipt->expression_consumer_ = expression_consumer;
+      receipt->predicate_expression_id_ = predicate_expression_id;
+      receipt->row_descriptor_ids_ =
+          predicate_row_binding.row_descriptor_ids;
+      receipt->row_slot_expression_ids_.assign(
+          row_slot_expression_ids.begin(), row_slot_expression_ids.end());
+      std::ranges::sort(receipt->row_slot_expression_ids_);
+      receipt->maximum_input_row_count_ = maximum_input_row_count;
+      receipt->mga_authority_ = mga_authority;
+      receipt->exact_current_revalidated_before_issue_ = true;
+      result.receipt = std::move(receipt);
+    } catch (const std::bad_alloc&) {
+      return refuse("predicate receipt allocation failed");
+    }
+    result.diagnostic = {};
+    return result;
+  }
+};
 
 class CanonicalDescriptorSortKeyReceiptIssuer {
  public:
@@ -7344,8 +7536,17 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
   return registration;
 }
 
+bool BuildOperatorLocalPhysicalDag(
+    const exec::TypedPhysicalNodeDag& dag,
+    std::uint64_t root_physical_node_id,
+    exec::TypedPhysicalNodeDag* operator_dag,
+    std::string* detail);
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
-    std::vector<api::EngineSqlTruthValue> predicate_truth_values,
+    const std::uint32_t predicate_expression_id,
+    CanonicalRelationalExpressionRowBinding predicate_row_binding,
+    api::TypedRelationalDag relational_dag,
+    CanonicalRelationalExpressionRuntimeServices expression_services,
     std::string capability_uuid,
     const std::size_t expected_input_row_count,
     api::EngineRequestContext mga_context) {
@@ -7357,7 +7558,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
   registration.execute =
-      [predicate_truth_values = std::move(predicate_truth_values),
+      [predicate_expression_id,
+       predicate_row_binding = std::move(predicate_row_binding),
+       relational_dag = std::move(relational_dag),
+       expression_services = std::move(expression_services),
        expected_input_row_count, mga_context = std::move(mga_context)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
@@ -7379,8 +7583,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
           return step;
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
-        if (input_batch.rows.size() != expected_input_row_count ||
-            predicate_truth_values.size() != expected_input_row_count) {
+        if (input_batch.rows.size() != expected_input_row_count) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-FILTER-INPUT-V1";
@@ -7388,14 +7591,31 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
               "FILTER input cardinality differs from its selected cost";
           return step;
         }
+        exec::TypedPhysicalNodeDag operator_dag;
+        std::string operator_dag_detail;
+        if (!BuildOperatorLocalPhysicalDag(
+                dag, node.physical_node_id, &operator_dag,
+                &operator_dag_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-FILTER-INPUT-V1";
+          step.diagnostic.detail = std::move(operator_dag_detail);
+          return step;
+        }
+        const auto mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, operator_dag);
+        auto issued = CanonicalDescriptorFilterPredicateReceiptIssuer::Issue(
+            relational_dag, predicate_expression_id, predicate_row_binding,
+            input_batch, expression_services,
+            api::EngineCanonicalExpressionConsumer::filter,
+            api::EnginePredicateConsumer::filter, operator_dag,
+            node.physical_node_id, expected_input_row_count, mga_authority);
+        if (!issued.diagnostic.ok || !issued.receipt) {
+          step.diagnostic = std::move(issued.diagnostic);
+          return step;
+        }
         exec::CanonicalDescriptorFilterRequest filter_request;
-        filter_request.physical_dag = dag;
-        filter_request.selected_physical_node_id = node.physical_node_id;
-        filter_request.input_batch = input_batch;
-        filter_request.row_truth_values = predicate_truth_values;
-        filter_request.consumer = api::EnginePredicateConsumer::filter;
-        filter_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        filter_request.predicate_receipt = std::move(issued.receipt);
         const auto filter_result =
             exec::ExecuteCanonicalDescriptorFilter(filter_request);
         if (!filter_result.diagnostic.ok) {
@@ -7530,41 +7750,31 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
           step.diagnostic = input_validation;
           return step;
         }
-        const auto mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        const auto before =
-            exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority, dag);
-        if (!before.ok) {
-          step.diagnostic = before;
+        exec::TypedPhysicalNodeDag operator_dag;
+        std::string operator_dag_detail;
+        if (!BuildOperatorLocalPhysicalDag(
+                dag, node.physical_node_id, &operator_dag,
+                &operator_dag_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1";
+          step.diagnostic.detail = std::move(operator_dag_detail);
           return step;
         }
-        CanonicalRelationalExpressionRuntime expression_runtime(
-            relational_dag, expression_services);
-        std::vector<api::EngineSqlTruthValue> truth_values;
-        truth_values.reserve(input_batch.rows.size());
-        for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
-          api::EngineSqlTruthValue truth = api::EngineSqlTruthValue::unknown;
-          std::string detail;
-          if (!expression_runtime.EvaluatePredicateForConsumer(
-                  predicate_expression_id, predicate_row_binding,
-                  input_batch.rows[row].values,
-                  api::EngineCanonicalExpressionConsumer::filter, &truth,
-                  &detail)) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXPRESSION-V1";
-            step.diagnostic.detail = "row=" + std::to_string(row) + ":" + detail;
-            return step;
-          }
-          truth_values.push_back(truth);
+        const auto mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, operator_dag);
+        auto issued = CanonicalDescriptorFilterPredicateReceiptIssuer::Issue(
+            relational_dag, predicate_expression_id, predicate_row_binding,
+            input_batch, expression_services,
+            api::EngineCanonicalExpressionConsumer::filter,
+            api::EnginePredicateConsumer::filter, operator_dag,
+            node.physical_node_id, maximum_input_row_count, mga_authority);
+        if (!issued.diagnostic.ok || !issued.receipt) {
+          step.diagnostic = std::move(issued.diagnostic);
+          return step;
         }
         exec::CanonicalDescriptorFilterRequest filter_request;
-        filter_request.physical_dag = dag;
-        filter_request.selected_physical_node_id = node.physical_node_id;
-        filter_request.input_batch = input_batch;
-        filter_request.row_truth_values = std::move(truth_values);
-        filter_request.consumer = api::EnginePredicateConsumer::filter;
-        filter_request.mga_authority = mga_authority;
+        filter_request.predicate_receipt = std::move(issued.receipt);
         const auto filtered =
             exec::ExecuteCanonicalDescriptorFilter(filter_request);
         if (!filtered.diagnostic.ok) {
@@ -7647,12 +7857,6 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
       };
   return registration;
 }
-
-bool BuildOperatorLocalPhysicalDag(
-    const exec::TypedPhysicalNodeDag& dag,
-    std::uint64_t root_physical_node_id,
-    exec::TypedPhysicalNodeDag* operator_dag,
-    std::string* detail);
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
     std::string implementation_id,
@@ -16131,9 +16335,12 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
       std::string(kJoinImplementationId), join_capability_uuid,
       std::move(join_truth_values), pair_count, joined_row_count,
       exec::CanonicalAcceptedJoinKind::kInner, "INNER JOIN", request.context);
+  std::vector<api::EngineSqlTruthValue>().swap(filter_truth_values);
   auto filter_registration = MakeLiveFilterRegistration(
-      std::move(filter_truth_values), filter_capability_uuid,
-      joined_row_count, request.context);
+      prepared_filter.predicate_expression_id,
+      prepared_filter.predicate_row_binding, request.relational_dag,
+      request.expression_services, filter_capability_uuid, joined_row_count,
+      request.context);
   auto project_registration = MakeLiveProjectRegistration(
       prepared_project, "project.typed.expression-row.v1",
       project_capability_uuid, filtered_row_count, request.relational_dag,
@@ -16459,9 +16666,12 @@ ExecuteCanonicalObjectFreeFilterQuery(
       std::move(values_batches), values_capability_uuid,
       "QOW-DIAG-RELATIONAL-LIVE-FILTER-VALUES-V1", "FILTER");
 
+  std::vector<api::EngineSqlTruthValue>().swap(predicate_truth_values);
   auto filter_registration = MakeLiveFilterRegistration(
-      std::move(predicate_truth_values), filter_capability_uuid,
-      input_row_count, request.context);
+      prepared_root.predicate_expression_id,
+      prepared_root.predicate_row_binding, request.relational_dag,
+      request.expression_services, filter_capability_uuid, input_row_count,
+      request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
   execution_request.selected_physical_dag = planning.physical_dag;
@@ -16973,9 +17183,12 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
       std::move(values_batches), values_capability_uuid,
       "QOW-DIAG-RELATIONAL-LIVE-FILTER-PROJECT-VALUES-V1",
       "FILTER/PROJECT");
+  std::vector<api::EngineSqlTruthValue>().swap(predicate_truth_values);
   auto filter_registration = MakeLiveFilterRegistration(
-      std::move(predicate_truth_values), filter_capability_uuid,
-      input_row_count, request.context);
+      prepared_filter.predicate_expression_id,
+      prepared_filter.predicate_row_binding, request.relational_dag,
+      request.expression_services, filter_capability_uuid, input_row_count,
+      request.context);
   auto project_registration = MakeLiveProjectRegistration(
       prepared_project, "project.typed.expression-row.v1",
       project_capability_uuid, filtered_row_count, request.relational_dag,
@@ -17616,9 +17829,12 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
       std::move(values_batches), values_capability_uuid,
       "QOW-DIAG-RELATIONAL-LIVE-FILTER-PROJECT-SORT-VALUES-V1",
       "FILTER/PROJECT/SORT");
+  std::vector<api::EngineSqlTruthValue>().swap(predicate_truth_values);
   auto filter_registration = MakeLiveFilterRegistration(
-      std::move(predicate_truth_values), filter_capability_uuid,
-      input_row_count, request.context);
+      prepared_filter.predicate_expression_id,
+      prepared_filter.predicate_row_binding, request.relational_dag,
+      request.expression_services, filter_capability_uuid, input_row_count,
+      request.context);
   auto project_registration = MakeLiveProjectRegistration(
       prepared_project, "project.typed.expression-row.v1",
       project_capability_uuid, filtered_row_count, request.relational_dag,
@@ -18039,9 +18255,12 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
       std::move(values_batches), values_capability_uuid,
       "QOW-DIAG-RELATIONAL-LIVE-FILTER-PROJECT-SORT-LIMIT-VALUES-V1",
       "FILTER/PROJECT/SORT/LIMIT");
+  std::vector<api::EngineSqlTruthValue>().swap(predicate_truth_values);
   auto filter_registration = MakeLiveFilterRegistration(
-      std::move(predicate_truth_values), filter_capability_uuid,
-      input_row_count, request.context);
+      prepared_filter.predicate_expression_id,
+      prepared_filter.predicate_row_binding, request.relational_dag,
+      request.expression_services, filter_capability_uuid, input_row_count,
+      request.context);
   auto project_registration = MakeLiveProjectRegistration(
       prepared_project, "project.typed.expression-row.v1",
       project_capability_uuid, filtered_row_count, request.relational_dag,
@@ -18516,9 +18735,12 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
       std::move(values_batches), values_capability_uuid,
       "QOW-DIAG-RELATIONAL-LIVE-FULL-SQL-TAIL-VALUES-V1",
       "FILTER/PROJECT/DISTINCT/SORT/LIMIT/FETCH");
+  std::vector<api::EngineSqlTruthValue>().swap(predicate_truth_values);
   auto filter_registration = MakeLiveFilterRegistration(
-      std::move(predicate_truth_values), filter_capability_uuid,
-      input_row_count, request.context);
+      prepared_filter.predicate_expression_id,
+      prepared_filter.predicate_row_binding, request.relational_dag,
+      request.expression_services, filter_capability_uuid, input_row_count,
+      request.context);
   auto project_registration = MakeLiveProjectRegistration(
       prepared_project, "project.typed.expression-row.v1",
       project_capability_uuid, filtered_row_count, request.relational_dag,
@@ -19180,37 +19402,34 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
             return step;
           }
 
-          CanonicalRelationalExpressionRuntime expression_runtime(
-              relational_dag, expression_services);
-          std::vector<api::EngineSqlTruthValue> row_truth_values;
-          row_truth_values.reserve(input_batch.rows.size());
-          for (const auto& row : input_batch.rows) {
-            api::EngineSqlTruthValue predicate_truth =
-                api::EngineSqlTruthValue::unknown;
-            std::string predicate_detail;
-            if (!expression_runtime.EvaluatePredicateForConsumer(
-                    prepared_having.predicate_expression_id,
-                    prepared_having.row_binding, row.values,
-                    api::EngineCanonicalExpressionConsumer::aggregate,
-                    &predicate_truth, &predicate_detail)) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
-              step.diagnostic.detail =
-                  "HAVING canonical predicate refused: " + predicate_detail;
-              return step;
-            }
-            row_truth_values.push_back(predicate_truth);
+          exec::TypedPhysicalNodeDag operator_dag;
+          std::string operator_dag_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id, &operator_dag,
+                  &operator_dag_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
+            step.diagnostic.detail = std::move(operator_dag_detail);
+            return step;
+          }
+          const auto mga_authority =
+              BuildCanonicalExecutionMgaAuthority(mga_context, operator_dag);
+          auto issued =
+              CanonicalDescriptorFilterPredicateReceiptIssuer::Issue(
+                  relational_dag, prepared_having.predicate_expression_id,
+                  prepared_having.row_binding, input_batch,
+                  expression_services,
+                  api::EngineCanonicalExpressionConsumer::aggregate,
+                  api::EnginePredicateConsumer::having, operator_dag,
+                  node.physical_node_id, maximum_output_rows, mga_authority);
+          if (!issued.diagnostic.ok || !issued.receipt) {
+            step.diagnostic = std::move(issued.diagnostic);
+            return step;
           }
 
           exec::CanonicalDescriptorFilterRequest filter_request;
-          filter_request.physical_dag = dag;
-          filter_request.selected_physical_node_id = node.physical_node_id;
-          filter_request.input_batch = input_batch;
-          filter_request.row_truth_values = std::move(row_truth_values);
-          filter_request.consumer = api::EnginePredicateConsumer::having;
-          filter_request.mga_authority =
-              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+          filter_request.predicate_receipt = std::move(issued.receipt);
           const auto filter_result =
               exec::ExecuteCanonicalDescriptorFilter(filter_request);
           if (!filter_result.diagnostic.ok) {
