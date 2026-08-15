@@ -24131,6 +24131,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     current_logical_mga.inventory_authoritative = mga.inventory_authoritative;
     current_logical_mga.complete = mga.complete;
     current_logical_mga.current = true;
+    auto registered_logical_mga = current_logical_mga;
+    registered_logical_mga.current = false;
+    if (!plan::CanonicalMgaStatementContextEqual(
+            logical.logical_graph.mga_statement_context,
+            registered_logical_mga) ||
+        !plan::CanonicalMgaStatementContextEqual(
+            logical.property_catalog.mga_statement_context,
+            registered_logical_mga)) {
+      return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
+                    "time-series logical bridge MGA cohort changed");
+    }
     logical.logical_graph.mga_statement_context = current_logical_mga;
     logical.property_catalog.mga_statement_context = current_logical_mga;
 
