@@ -1363,6 +1363,106 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     }
   }
 
+  if (spatial_family) {
+    // QOW-SOURCE-RCP-079-SPATIAL-TYPED-EXCHANGE-ORDER-V1
+    const auto validation = ValidateCanonicalDescriptorBatch(
+        provider_batch.batch, input.output_descriptor_ids);
+    const bool has_match = HasOperation(input, "SPATIAL_MATCH");
+    const bool has_nearest = HasOperation(input, "SPATIAL_NEAREST");
+    const auto expected_width = std::size_t{3} +
+                                static_cast<std::size_t>(has_match) +
+                                static_cast<std::size_t>(has_nearest);
+    if (!validation.ok ||
+        provider_batch.batch.columns.size() != expected_width) {
+      return Refuse(kModelTypedExchangeInvalid,
+                    validation.ok
+                        ? "spatial public descriptor width is invalid"
+                        : validation.detail);
+    }
+    const auto exact_column = [&](const std::size_t ordinal,
+                                  const std::string_view name,
+                                  const std::string_view type) {
+      const auto& column = provider_batch.batch.columns[ordinal];
+      return column.stable_name == name && !column.nullable &&
+             column.descriptor.canonical_type_name == type &&
+             CanonicalUuid(column.descriptor.descriptor_uuid.canonical);
+    };
+    if (!exact_column(0, "row_uuid", "uuid") ||
+        !exact_column(1, "spatial_value", "geometry") ||
+        !exact_column(2, "crs_uuid", "uuid") ||
+        (has_match &&
+         !exact_column(3, "predicate_truth", "boolean")) ||
+        (has_nearest &&
+         !exact_column(has_match ? 4 : 3, "distance", "real64"))) {
+      return Refuse(kModelTypedExchangeInvalid,
+                    "spatial public descriptor contract drifted");
+    }
+    std::unordered_set<std::string> descriptor_uuids;
+    for (const auto& column : provider_batch.batch.columns) {
+      if (!descriptor_uuids.insert(
+              column.descriptor.descriptor_uuid.canonical).second) {
+        return Refuse(kModelTypedExchangeInvalid,
+                      "spatial public descriptor identities are duplicated");
+      }
+    }
+    std::optional<double> previous_distance;
+    std::string_view previous_row_uuid;
+    const auto distance_ordinal = has_match ? std::size_t{4}
+                                            : std::size_t{3};
+    for (std::size_t ordinal = 0;
+         ordinal < provider_batch.batch.rows.size(); ++ordinal) {
+      if (ExchangeCancellationRequested(cancellation_requested)) {
+        return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                      "spatial exchange row validation was cancelled");
+      }
+      const auto& row = provider_batch.batch.rows[ordinal];
+      const auto& identity = provider_batch.ordered_row_identities[ordinal];
+      if (row.values.size() != expected_width ||
+          row.values[0].state != internal_api::EngineValueState::value ||
+          row.values[0].is_null || !row.values[0].binary_value.empty() ||
+          row.values[0].encoded_value != identity.row_uuid ||
+          !CanonicalUuid(row.values[0].encoded_value) ||
+          row.values[1].state != internal_api::EngineValueState::value ||
+          row.values[1].is_null || row.values[1].binary_value.empty() ||
+          !row.values[1].encoded_value.empty() ||
+          row.values[2].state != internal_api::EngineValueState::value ||
+          row.values[2].is_null || !row.values[2].binary_value.empty() ||
+          row.values[2].encoded_value != input.spatial_crs_uuid ||
+          !CanonicalUuid(row.values[2].encoded_value) ||
+          (has_match &&
+           (row.values[3].state != internal_api::EngineValueState::value ||
+            row.values[3].is_null ||
+            !row.values[3].binary_value.empty() ||
+            row.values[3].encoded_value != "true"))) {
+        return Refuse(kModelTypedExchangeInvalid,
+                      "spatial row differs from its exact typed identity");
+      }
+      if (!has_nearest) continue;
+      const auto& distance = row.values[distance_ordinal];
+      double decoded_distance = 0.0;
+      const auto parsed = std::from_chars(
+          distance.encoded_value.data(),
+          distance.encoded_value.data() + distance.encoded_value.size(),
+          decoded_distance, std::chars_format::general);
+      if (distance.state != internal_api::EngineValueState::value ||
+          distance.is_null || !distance.binary_value.empty() ||
+          !CanonicalNonnegativeFiniteReal64(distance.encoded_value) ||
+          parsed.ec != std::errc{} ||
+          parsed.ptr != distance.encoded_value.data() +
+                            distance.encoded_value.size() ||
+          (previous_distance.has_value() &&
+           (decoded_distance < *previous_distance ||
+            (decoded_distance == *previous_distance &&
+             !UnsignedUtf8Less(previous_row_uuid, identity.row_uuid))))) {
+        return Refuse(
+            kModelTypedExchangeInvalid,
+            "spatial nearest rows do not satisfy distance/row UUID order");
+      }
+      previous_distance = decoded_distance;
+      previous_row_uuid = identity.row_uuid;
+    }
+  }
+
   if (vector_family) {
     // QOW-SOURCE-RCP-077-VECTOR-TYPED-EXCHANGE-V1
     const auto validation = ValidateCanonicalDescriptorBatch(
