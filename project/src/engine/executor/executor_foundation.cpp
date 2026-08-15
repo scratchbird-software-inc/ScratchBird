@@ -4407,6 +4407,13 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
 
   DescriptorBatch output;
   output.columns = request.result_columns;
+  const auto emit_row = [&](const DescriptorTuple& source) {
+    if (output.rows.size() >= request.maximum_output_row_count) {
+      return false;
+    }
+    output.rows.push_back(retag_row(source));
+    return true;
+  };
   std::size_t consumed_right_multiplicity_count = 0;
   std::size_t eliminated_duplicate_row_count = 0;
 
@@ -4418,14 +4425,18 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     std::set<RowKey> emitted;
     for (std::size_t index = 0; index < left_keys.size(); ++index) {
       if (emitted.insert(left_keys[index]).second) {
-        output.rows.push_back(retag_row(reconciled_left.rows[index]));
+        if (!emit_row(reconciled_left.rows[index])) {
+          return refuse("set-operation output resource bound was exceeded");
+        }
       } else {
         ++eliminated_duplicate_row_count;
       }
     }
     for (std::size_t index = 0; index < right_keys.size(); ++index) {
       if (emitted.insert(right_keys[index]).second) {
-        output.rows.push_back(retag_row(reconciled_right.rows[index]));
+        if (!emit_row(reconciled_right.rows[index])) {
+          return refuse("set-operation output resource bound was exceeded");
+        }
       } else {
         ++eliminated_duplicate_row_count;
       }
@@ -4442,7 +4453,9 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
               : !present_on_right;
       if (!candidate) continue;
       if (emitted.insert(left_keys[index]).second) {
-        output.rows.push_back(retag_row(reconciled_left.rows[index]));
+        if (!emit_row(reconciled_left.rows[index])) {
+          return refuse("set-operation output resource bound was exceeded");
+        }
       } else {
         ++eliminated_duplicate_row_count;
       }
@@ -4450,10 +4463,14 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   } else if (request.operation == CanonicalSetOperationKind::kUnion) {
     output.rows.reserve(left_keys.size() + right_keys.size());
     for (const auto& row : reconciled_left.rows) {
-      output.rows.push_back(retag_row(row));
+      if (!emit_row(row)) {
+        return refuse("set-operation output resource bound was exceeded");
+      }
     }
     for (const auto& row : reconciled_right.rows) {
-      output.rows.push_back(retag_row(row));
+      if (!emit_row(row)) {
+        return refuse("set-operation output resource bound was exceeded");
+      }
     }
   } else {
     std::map<RowKey, std::size_t> right_multiplicity;
@@ -4470,7 +4487,9 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
           request.operation == CanonicalSetOperationKind::kIntersect
               ? consumes
               : !consumes;
-      if (emit) output.rows.push_back(retag_row(reconciled_left.rows[index]));
+      if (emit && !emit_row(reconciled_left.rows[index])) {
+        return refuse("set-operation output resource bound was exceeded");
+      }
     }
   }
   if (output.rows.size() > request.maximum_output_row_count) {
