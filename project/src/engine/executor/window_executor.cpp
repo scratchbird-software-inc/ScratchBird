@@ -485,6 +485,7 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
   }
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kWindow ||
+      selected_node->implementation_id != "window.row-number.v1" ||
       selected_node->input_physical_node_ids.size() != 1) {
     return refuse(Refusal("QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1",
                           "ROW_NUMBER requires one selected window node"));
@@ -496,11 +497,37 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
       break;
     }
   }
-  if (input_node == nullptr || input_node->node_kind != PhysicalNodeKind::kSort ||
-      !IsCanonicalUuid(request.deterministic_order_evidence_uuid)) {
+  const bool exact_ordering_property =
+      selected_node->required_property_uuids.size() == 1 &&
+      IsCanonicalUuid(selected_node->required_property_uuids.front());
+  const std::string ordering_property_uuid =
+      exact_ordering_property
+          ? selected_node->required_property_uuids.front()
+          : std::string{};
+  const auto window_property = std::ranges::find_if(
+      selected_node->delivered_property_uuids,
+      [&](const auto& property_uuid) {
+        return property_uuid != ordering_property_uuid;
+      });
+  const bool exact_window_property =
+      exact_ordering_property &&
+      selected_node->delivered_property_uuids.size() == 2 &&
+      PropertyCount(selected_node->delivered_property_uuids,
+                    ordering_property_uuid) == 1 &&
+      window_property != selected_node->delivered_property_uuids.end() &&
+      IsCanonicalUuid(*window_property) &&
+      *window_property != ordering_property_uuid;
+  if (input_node == nullptr ||
+      input_node->node_kind != PhysicalNodeKind::kSort ||
+      input_node->delivered_property_uuids !=
+          std::vector<std::string>{ordering_property_uuid} ||
+      !exact_window_property ||
+      !IsCanonicalUuid(request.deterministic_order_evidence_uuid) ||
+      request.deterministic_order_evidence_uuid == ordering_property_uuid ||
+      request.deterministic_order_evidence_uuid == *window_property) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
-        "ROW_NUMBER input lacks deterministic physical order evidence"));
+        "ROW_NUMBER input lacks exact ordering/window property evidence"));
   }
   std::vector<std::uint32_t> output_descriptor_ids =
       input_node->output_descriptor_ids;
