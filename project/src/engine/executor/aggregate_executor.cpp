@@ -8,6 +8,7 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include "datatype_document.hpp"
 #include "datatype_operations.hpp"
 #include "temp_spill_executor.hpp"
 
@@ -179,6 +180,60 @@ std::string FormatAggregateReal(long double value);
 std::string AggregateDistinctKey(
     const std::vector<EngineTypedValue>& values);
 
+bool WellFormedAggregateUtf8(const std::string_view value) {
+  std::size_t offset = 0;
+  while (offset < value.size()) {
+    const auto first = static_cast<unsigned char>(value[offset]);
+    std::uint32_t code_point = 0;
+    std::size_t continuation_count = 0;
+    if (first <= 0x7f) {
+      code_point = first;
+    } else if (first >= 0xc2 && first <= 0xdf) {
+      code_point = first & 0x1f;
+      continuation_count = 1;
+    } else if (first >= 0xe0 && first <= 0xef) {
+      code_point = first & 0x0f;
+      continuation_count = 2;
+    } else if (first >= 0xf0 && first <= 0xf4) {
+      code_point = first & 0x07;
+      continuation_count = 3;
+    } else {
+      return false;
+    }
+    if (continuation_count > value.size() - offset - 1) return false;
+    for (std::size_t index = 1; index <= continuation_count; ++index) {
+      const auto next = static_cast<unsigned char>(value[offset + index]);
+      if ((next & 0xc0) != 0x80) return false;
+      code_point = (code_point << 6) | (next & 0x3f);
+    }
+    if ((continuation_count == 2 && code_point < 0x800) ||
+        (continuation_count == 3 && code_point < 0x10000) ||
+        (code_point >= 0xd800 && code_point <= 0xdfff) ||
+        code_point > 0x10ffff) {
+      return false;
+    }
+    offset += continuation_count + 1;
+  }
+  return true;
+}
+
+bool CanonicalizeAggregateJson(const std::string& input,
+                               std::string* canonical) {
+  if (canonical == nullptr || !WellFormedAggregateUtf8(input)) return false;
+  scratchbird::core::datatypes::DocumentCanonicalizationRequest request;
+  request.type_id =
+      scratchbird::core::datatypes::CanonicalTypeId::json_document;
+  request.encoded_value = input;
+  const auto result =
+      scratchbird::core::datatypes::CanonicalizeDocumentValue(request);
+  if (!result.ok() || result.canonical_type_id != request.type_id ||
+      !WellFormedAggregateUtf8(result.canonical_value)) {
+    return false;
+  }
+  *canonical = result.canonical_value;
+  return true;
+}
+
 std::string EscapeAggregateJson(const std::string_view input) {
   std::ostringstream stream;
   stream << '"';
@@ -272,19 +327,26 @@ bool RenderAggregateJsonValue(const EngineTypedValue& value,
     *rendered = decoded.value ? "true" : "false";
     return true;
   }
-  if (type == "json") {
-    if (value.encoded_value.empty()) {
+  if (type == "json" ||
+      type_id == scratchbird::core::datatypes::CanonicalTypeId::json_document ||
+      type_id == scratchbird::core::datatypes::CanonicalTypeId::object_document ||
+      type_id == scratchbird::core::datatypes::CanonicalTypeId::flattened_object_document) {
+    if (!CanonicalizeAggregateJson(value.encoded_value, rendered)) {
       *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-JSON-V1",
-                            "JSON aggregate input has no canonical payload");
+                            "JSON aggregate input is not canonical JSON");
       return false;
     }
-    *rendered = value.encoded_value;
     return true;
   }
   std::string scalar;
   if (!RenderAggregateScalarPayload(value, &scalar)) {
     *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
                           "aggregate scalar rendering overflowed");
+    return false;
+  }
+  if (!WellFormedAggregateUtf8(scalar)) {
+    *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-JSON-V1",
+                          "JSON aggregate scalar is not valid UTF-8");
     return false;
   }
   *rendered = EscapeAggregateJson(scalar);
@@ -461,6 +523,11 @@ bool TransitionCanonicalAggregateCore(
         return false;
       }
       const auto key_text = key.encoded_value;
+      if (!WellFormedAggregateUtf8(key_text)) {
+        *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-JSON-KEY-V1",
+                              "JSON object aggregate key is not valid UTF-8");
+        return false;
+      }
       const auto existing = std::find_if(
           state->json_object_values.begin(), state->json_object_values.end(),
           [&](const auto& member) { return member.first == key_text; });
@@ -1135,11 +1202,17 @@ EngineTypedValue FinalizeCanonicalAggregateCore(
   }
   if (function == CanonicalAggregateFunction::json_agg) {
     if (state.transition_count == 0) return AggregateNull(request.result_column);
-    return AggregateValue(
-        request.result_column,
+    const auto encoded =
         "[" + JoinAggregateTextValues(state.text_values,
                                        state.text_values.size(), ",") +
-            "]");
+        "]";
+    std::string canonical;
+    if (!CanonicalizeAggregateJson(encoded, &canonical)) {
+      *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-JSON-V1",
+                            "JSON_AGG result is not canonical JSON");
+      return {};
+    }
+    return AggregateValue(request.result_column, std::move(canonical));
   }
   if (function == CanonicalAggregateFunction::json_object_agg) {
     if (state.transition_count == 0) return AggregateNull(request.result_column);
@@ -1152,7 +1225,13 @@ EngineTypedValue FinalizeCanonicalAggregateCore(
       encoded += state.json_object_values[index].second;
     }
     encoded.push_back('}');
-    return AggregateValue(request.result_column, std::move(encoded));
+    std::string canonical;
+    if (!CanonicalizeAggregateJson(encoded, &canonical)) {
+      *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-JSON-V1",
+                            "JSON_OBJECT_AGG result is not canonical JSON");
+      return {};
+    }
+    return AggregateValue(request.result_column, std::move(canonical));
   }
   if (function == CanonicalAggregateFunction::string_agg ||
       function == CanonicalAggregateFunction::listagg) {
