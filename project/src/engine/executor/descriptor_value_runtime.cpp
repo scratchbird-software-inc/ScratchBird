@@ -544,6 +544,18 @@ ParseCanonicalDerivedDescriptorIdentity(const std::string_view encoded) {
         return std::nullopt;
       }
       field = "nullability=*";
+    } else if (field.starts_with("nullable=")) {
+      if (found_nullability) return std::nullopt;
+      found_nullability = true;
+      const auto value = field.substr(std::string_view("nullable=").size());
+      if (value == "true") {
+        identity.nullable = true;
+      } else if (value == "false") {
+        identity.nullable = false;
+      } else {
+        return std::nullopt;
+      }
+      field = "nullability=*";
     }
     if (!identity.shape_without_nullability.empty()) {
       identity.shape_without_nullability.push_back(';');
@@ -771,10 +783,13 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
         !IsCanonicalUuid(descriptor.descriptor_uuid.canonical) ||
         descriptor.descriptor_kind != "scalar" ||
         descriptor.canonical_type_name.empty() ||
-        descriptor.encoded_descriptor.empty()) {
+        descriptor.encoded_descriptor.empty() ||
+        !CanonicalDerivedDescriptorTypeMatches(
+            descriptor, bound_column.nullable, descriptor,
+            bound_column.nullable)) {
       return ErrorDiagnostic("SBLR.PLAN_TREE.INVALID_HANDLE",
-                             "canonical output descriptor is unresolved", 0,
-                             column);
+                             "canonical output descriptor or nullability is unresolved",
+                             0, column);
     }
   }
   for (std::size_t row = 0; row < batch.rows.size(); ++row) {
