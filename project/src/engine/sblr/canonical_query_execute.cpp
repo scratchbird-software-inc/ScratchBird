@@ -11113,9 +11113,27 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       working = std::move(generated);
     }
     if (recursive_cte_profile.search_cycle) {
+      const auto core_manifest =
+          dt::LoadCurrentCoreDatatypeCatalogManifest();
+      if (!core_manifest.ok()) {
+        return refuse(std::string(kPayloadDiagnostic),
+                      "recursive SEARCH/CYCLE core datatype catalog is "
+                      "unavailable");
+      }
+      const auto generated_type_uuid = [&](const std::string_view stable_name) {
+        const auto found = std::ranges::find_if(
+            core_manifest.manifest.descriptor_rows, [&](const auto& row) {
+              return row.stable_name == stable_name;
+            });
+        return found == core_manifest.manifest.descriptor_rows.end()
+                   ? std::string{}
+                   : scratchbird::core::uuid::UuidToString(
+                         found->descriptor_uuid.value);
+      };
       const auto make_generated_column =
           [&](const std::uint32_t descriptor_id,
               const std::string_view type_name,
+              const std::string& type_uuid,
               const std::string_view column_name,
               const std::uint32_t result_ordinal,
               exec::ExecutorColumnDescriptor* column,
@@ -11126,6 +11144,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   return candidate.descriptor_id == descriptor_id;
                 });
             if (descriptor == request.relational_dag.descriptors.end() ||
+                type_uuid.empty() ||
+                descriptor->type_uuid != type_uuid ||
                 descriptor->nullability !=
                     api::RelationalNullability::kNonNull ||
                 descriptor->collation_uuid.has_value() ||
@@ -11162,12 +11182,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       if (anchor_width != 1 || anchor.result_bindings.size() != 1 ||
           !make_generated_column(
               reverse_chain.front()->output_descriptor_ids[anchor_width],
-              "int64", "search_sequence",
+              "int64", generated_type_uuid("int64"), "search_sequence",
               static_cast<std::uint32_t>(anchor_width),
               &search_sequence_column, &sequence_binding) ||
           !make_generated_column(
               reverse_chain.front()->output_descriptor_ids[anchor_width + 1],
-              "boolean", "cycle_mark",
+              "boolean", generated_type_uuid("boolean"), "cycle_mark",
               static_cast<std::uint32_t>(anchor_width + 1),
               &cycle_mark_column, &cycle_binding)) {
         return refuse(std::string(kPayloadDiagnostic), recursion_detail);

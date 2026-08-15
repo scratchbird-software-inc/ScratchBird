@@ -15,6 +15,9 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include "datatype_catalog_manifest.hpp"
+#include "uuid.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <exception>
@@ -55,6 +58,20 @@ bool IsCanonicalCteEvidenceUuid(const std::string_view value) {
     if (!std::isxdigit(ch) || std::isupper(ch)) return false;
   }
   return true;
+}
+
+std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
+  static const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows, [&](const auto& row) {
+        return row.stable_name == stable_name;
+      });
+  return found == manifest.manifest.descriptor_rows.end()
+             ? std::string{}
+             : scratchbird::core::uuid::UuidToString(
+                   found->descriptor_uuid.value);
 }
 
 bool SameCanonicalCteColumns(
@@ -595,14 +612,25 @@ ExecuteCanonicalRecursiveCteSearchCycle(
   output_descriptor_ids.push_back(
       request.search_sequence_column.descriptor_id);
   output_descriptor_ids.push_back(request.cycle_mark_column.descriptor_id);
+  const auto int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
+  const auto boolean_type_uuid = CanonicalCoreDatatypeUuid("boolean");
+  const auto exact_generated_descriptor = [](
+                                              const ExecutorColumnDescriptor&
+                                                  column,
+                                              const std::string_view type_name,
+                                              const std::string& type_uuid) {
+    return !type_uuid.empty() && !column.nullable &&
+           column.descriptor.canonical_type_name == type_name &&
+           column.descriptor.encoded_descriptor ==
+               "type_uuid=" + type_uuid + ";nullability=non_null";
+  };
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
       request.search_sequence_column.descriptor_id == 0 ||
-      request.search_sequence_column.nullable ||
-      request.search_sequence_column.descriptor.canonical_type_name !=
-          "int64" ||
+      !exact_generated_descriptor(request.search_sequence_column, "int64",
+                                  int64_type_uuid) ||
       request.cycle_mark_column.descriptor_id == 0 ||
-      request.cycle_mark_column.nullable ||
-      request.cycle_mark_column.descriptor.canonical_type_name != "boolean") {
+      !exact_generated_descriptor(request.cycle_mark_column, "boolean",
+                                  boolean_type_uuid)) {
     return refuse("recursive CTE SEARCH/CYCLE descriptors are not exact");
   }
 
