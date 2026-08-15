@@ -114,6 +114,21 @@ bool CompareOrderValues(
     *refusal_detail = "order operands do not share a supported scalar encoding";
     return false;
   }
+  const auto canonical_state = [](const auto& value) {
+    if (value.state ==
+        scratchbird::engine::internal_api::EngineValueState::sql_null) {
+      return value.is_null && value.encoded_value.empty() &&
+             value.binary_value.empty();
+    }
+    return value.state ==
+               scratchbird::engine::internal_api::EngineValueState::value &&
+           !value.is_null;
+  };
+  if (!canonical_state(left) || !canonical_state(right)) {
+    *refusal_detail =
+        "order operand carries a malformed NULL or non-value sentinel";
+    return false;
+  }
   const bool carries_binary_payload =
       !left.binary_value.empty() || !right.binary_value.empty();
   if (carries_binary_payload && type_id != dt::CanonicalTypeId::binary) {
