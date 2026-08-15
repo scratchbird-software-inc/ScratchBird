@@ -14823,6 +14823,8 @@ ExecuteCanonicalObjectFreeJoinQuery(
     const auto add_tuple_memory = [&](const exec::DescriptorTuple& tuple) {
       for (const auto& value : tuple.values) {
         if (!CheckedAdd(output_memory, value.encoded_value.size(),
+                        &output_memory) ||
+            !CheckedAdd(output_memory, value.binary_value.size(),
                         &output_memory)) {
           return false;
         }
@@ -15892,6 +15894,8 @@ ExecuteCanonicalObjectFreeFilterQuery(
     }
     for (const auto& value : row.values) {
       if (!CheckedAdd(output_memory, value.encoded_value.size(),
+                      &output_memory) ||
+          !CheckedAdd(output_memory, value.binary_value.size(),
                       &output_memory)) {
         return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                       "live FILTER output payload overflowed");
@@ -21632,12 +21636,13 @@ ExecuteCanonicalObjectFreeValuesQuery(
   std::uint64_t memory_bytes = 1;
   for (const auto& row : materialized.batch.rows) {
     for (const auto& value : row.values) {
-      if (value.encoded_value.size() >
-          std::numeric_limits<std::uint64_t>::max() - memory_bytes) {
+      if (!CheckedAdd(memory_bytes, value.encoded_value.size(),
+                      &memory_bytes) ||
+          !CheckedAdd(memory_bytes, value.binary_value.size(),
+                      &memory_bytes)) {
         return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                       "live VALUES materialization size overflowed");
       }
-      memory_bytes += value.encoded_value.size();
     }
   }
   if (memory_bytes > request.optimizer_request.resource.memory_budget_bytes) {
