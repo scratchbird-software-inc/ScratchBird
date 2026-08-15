@@ -6406,6 +6406,14 @@ bool WindowValueResultColumnValid(
       RankingDescriptorField(result_column.descriptor, "type_uuid");
   const auto nullability =
       RankingDescriptorField(result_column.descriptor, "nullability");
+  const bool exact_nullable_descriptor =
+      value_column.nullable &&
+      SameWindowValueDescriptor(result_column.descriptor,
+                                value_column.descriptor);
+  const bool derived_nullable_descriptor =
+      CanonicalDerivedDescriptorTypeMatches(
+          value_column.descriptor, value_column.nullable,
+          result_column.descriptor, true);
   return result_column.descriptor_id != 0 &&
          result_column.descriptor_id != value_column.descriptor_id &&
          !result_column.stable_name.empty() && result_column.nullable &&
@@ -6416,8 +6424,7 @@ bool WindowValueResultColumnValid(
          type_uuid.has_value() && IsCanonicalUuid(*type_uuid) &&
          result_column.descriptor.descriptor_uuid.canonical != *type_uuid &&
          nullability.has_value() && *nullability == "nullable" &&
-         SameWindowValueDescriptor(result_column.descriptor,
-                                   value_column.descriptor);
+         (exact_nullable_descriptor || derived_nullable_descriptor);
 }
 
 bool WindowAssignmentCastAdmitted(
@@ -6478,7 +6485,10 @@ ConvertWindowAssignmentValue(
     return fail("window value is not assignment-compatible with the result");
   }
   if (source_type == target_type &&
-      source.descriptor.encoded_descriptor != target.encoded_descriptor) {
+      source.descriptor.encoded_descriptor != target.encoded_descriptor &&
+      !CanonicalDerivedDescriptorTypeMatches(
+          source.descriptor, *source_nullability == "nullable", target,
+          true)) {
     return fail("window value descriptor attributes differ from the result");
   }
   dt::DatatypeCastRequest conversion;
