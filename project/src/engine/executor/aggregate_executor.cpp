@@ -1559,14 +1559,36 @@ std::string AggregateDistinctKey(const std::vector<EngineTypedValue>& values) {
                                     value.descriptor.canonical_type_name);
     key.push_back(static_cast<char>(value.state));
     key.push_back(value.is_null ? 1 : 0);
-    AppendAggregateDistinctKeyField(&key, value.encoded_value);
-    const auto binary = value.binary_value.empty()
-                            ? std::string_view{}
-                            : std::string_view(
-                                  reinterpret_cast<const char*>(
-                                      value.binary_value.data()),
-                                  value.binary_value.size());
-    AppendAggregateDistinctKeyField(&key, binary);
+    std::string canonical_payload = value.encoded_value;
+    std::string_view auxiliary_binary;
+    if (value.state == EngineValueState::value && !value.is_null) {
+      if (IsCanonicalBoundedSignedIntegerDescriptor(value.descriptor)) {
+        const auto decoded = DecodeInt64Value(value);
+        if (decoded.ok()) canonical_payload = std::to_string(decoded.value);
+      } else if (value.descriptor.canonical_type_name == "boolean" ||
+                 value.descriptor.canonical_type_name == "bool") {
+        const auto decoded = DecodeBoolValue(value);
+        if (decoded.ok()) canonical_payload = decoded.value ? "true" : "false";
+      } else if (value.descriptor.canonical_type_name == "real64" ||
+                 value.descriptor.canonical_type_name == "double" ||
+                 value.descriptor.canonical_type_name == "double precision") {
+        const auto decoded = DecodeReal64Value(value);
+        if (decoded.ok()) canonical_payload = FormatAggregateReal(decoded.value);
+      } else if ((value.descriptor.canonical_type_name == "binary" ||
+                  value.descriptor.canonical_type_name == "blob" ||
+                  value.descriptor.canonical_type_name == "bytes") &&
+                 !value.binary_value.empty()) {
+        canonical_payload.assign(
+            reinterpret_cast<const char*>(value.binary_value.data()),
+            value.binary_value.size());
+      } else if (!value.binary_value.empty()) {
+        auxiliary_binary = std::string_view(
+            reinterpret_cast<const char*>(value.binary_value.data()),
+            value.binary_value.size());
+      }
+    }
+    AppendAggregateDistinctKeyField(&key, canonical_payload);
+    AppendAggregateDistinctKeyField(&key, auxiliary_binary);
   }
   return key;
 }

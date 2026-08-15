@@ -12231,25 +12231,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               continue;
             }
             if (y_value.descriptor.canonical_type_name != "int64" ||
-                x_value.descriptor.canonical_type_name != "int64") {
+                x_value.descriptor.canonical_type_name != "int64" ||
+                !y_value.binary_value.empty() ||
+                !x_value.binary_value.empty()) {
               return refuse(
                   std::string(kPayloadDiagnostic),
                   "composition pair statistical input is not canonical "
                   "int64");
-            }
-            if (prepared.distinct) {
-              std::string key;
-              for (const auto* value : {&y_value, &x_value}) {
-                key.append(std::to_string(value->encoded_value.size()));
-                key.push_back(':');
-                key.append(value->encoded_value);
-                key.push_back(':');
-                key.append(reinterpret_cast<const char*>(
-                               value->binary_value.data()),
-                           value->binary_value.size());
-                key.push_back('|');
-              }
-              if (!distinct_values.insert(std::move(key)).second) continue;
             }
             const auto decode = [](const api::EngineTypedValue& value,
                                    std::int64_t* decoded) {
@@ -12269,6 +12257,16 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               return refuse(
                   std::string(kPayloadDiagnostic),
                   "composition pair statistical input or count is invalid");
+            }
+            if (prepared.distinct) {
+              std::string key;
+              for (const auto decoded : {y_decoded, x_decoded}) {
+                const auto field = std::to_string(decoded);
+                key.append(std::to_string(field.size()));
+                key.push_back(':');
+                key.append(field);
+              }
+              if (!distinct_values.insert(std::move(key)).second) continue;
             }
             ++non_null_count;
             const auto y = static_cast<long double>(y_decoded);
