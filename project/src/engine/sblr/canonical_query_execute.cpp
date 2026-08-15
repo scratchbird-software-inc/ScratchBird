@@ -10094,7 +10094,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       request.relational_dag, request.expression_services);
 
   std::optional<PreparedFilterRoot> prepared_filter;
-  std::vector<api::EngineSqlTruthValue> filter_truth_values;
   std::size_t filter_input_row_count = 0;
   std::optional<PreparedProjectRoot> prepared_project;
   std::size_t project_input_row_count = 0;
@@ -11302,15 +11301,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     std::vector<std::string> delivered_property_uuids;
     std::vector<plan::CanonicalLogicalPropertyKind> property_kinds;
 
-    if (!planning_values_exact &&
-        node.node_kind !=
-            plan::CanonicalLogicalRelationalNodeKind::kLimit) {
-      return refuse(
-          std::string(kPayloadDiagnostic),
-          "composed aggregate planning placeholder only admits a direct "
-          "LIMIT/FETCH consumer");
-    }
-
     switch (node.node_kind) {
       case plan::CanonicalLogicalRelationalNodeKind::kFilter: {
         PreparedFilterRoot prepared;
@@ -11355,30 +11345,39 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         exec::DescriptorBatch output;
         output.columns = input_batch.columns;
         output.rows.reserve(input_row_count);
-        for (const auto& row : input_batch.rows) {
-          api::EngineSqlTruthValue truth = api::EngineSqlTruthValue::unknown;
-          std::string detail;
-          if (!expression_runtime.EvaluatePredicateForConsumer(
-                  prepared.predicate_expression_id,
-                  prepared.predicate_row_binding, row.values,
-                  api::EngineCanonicalExpressionConsumer::filter, &truth,
-                  &detail)) {
-            return refuse(std::string(kPayloadDiagnostic),
-                          "FILTER row " +
-                              std::to_string(truth_values.size()) + ": " +
-                              detail);
+        if (planning_values_exact) {
+          for (std::size_t row_ordinal = 0;
+               row_ordinal < input_batch.rows.size(); ++row_ordinal) {
+            const auto& row = input_batch.rows[row_ordinal];
+            api::EngineSqlTruthValue truth =
+                api::EngineSqlTruthValue::unknown;
+            std::string detail;
+            if (!expression_runtime.EvaluatePredicateForConsumer(
+                    prepared.predicate_expression_id,
+                    prepared.predicate_row_binding, row.values,
+                    api::EngineCanonicalExpressionConsumer::filter, &truth,
+                    &detail)) {
+              return refuse(
+                  std::string(kPayloadDiagnostic),
+                  "FILTER row " + std::to_string(row_ordinal) +
+                      ": " + detail);
+            }
+            if (truth == api::EngineSqlTruthValue::true_value) {
+              output.rows.push_back(row);
+            }
           }
-          truth_values.push_back(truth);
-          if (truth == api::EngineSqlTruthValue::true_value) {
-            output.rows.push_back(row);
-          }
+        } else {
+          // The complex aggregate callback owns the exact value. Preserve
+          // its one-row planning batch as a conservative cardinality/schema
+          // upper bound; the filter registration evaluates this predicate
+          // again against the actual callback batch under current MGA.
+          output.rows = input_batch.rows;
         }
         if (!add_work(input_row_count)) {
           return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                         "composition FILTER work exceeds the admitted bound");
         }
         prepared_filter = std::move(prepared);
-        filter_truth_values = std::move(truth_values);
         filter_input_row_count = input_row_count;
         state.batch = std::move(output);
         state.result_bindings = input_bindings;
@@ -13626,9 +13625,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     profiles.back().runtime_accounted_auxiliary_memory_bytes =
         auxiliary_memory;
     profiles.back().runtime_peak_from_callback_batches =
-        !planning_values_exact &&
-        (physical_kind == exec::PhysicalNodeKind::kAggregate ||
-         physical_kind == exec::PhysicalNodeKind::kLimit);
+        !planning_values_exact;
   }
 
   if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
@@ -13728,9 +13725,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   }
   if (prepared_filter.has_value()) {
     execution_request.available_executors.push_back(
-        MakeLiveFilterRegistration(
-            std::move(filter_truth_values), filter_capability_uuid,
-            filter_input_row_count, request.context));
+        MakeLiveHeapFilterRegistration(
+            prepared_filter->predicate_expression_id,
+            prepared_filter->predicate_row_binding,
+            request.relational_dag, request.expression_services,
+            filter_capability_uuid, filter_input_row_count,
+            request.context));
   }
   if (prepared_project.has_value()) {
     execution_request.available_executors.push_back(
@@ -13738,7 +13738,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             *prepared_project, project_implementation_id,
             project_capability_uuid, project_input_row_count,
             request.relational_dag, request.expression_services,
-            request.context));
+            request.context, true));
   }
   if (prepared_distinct.has_value()) {
     execution_request.available_executors.push_back(
