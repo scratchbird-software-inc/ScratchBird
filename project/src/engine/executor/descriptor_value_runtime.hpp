@@ -900,6 +900,8 @@ struct CanonicalCompositeJoinKeyTerm {
   std::uint64_t resource_epoch = 0;
   std::uint64_t collation_epoch = 0;
   scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
+  std::uint64_t timezone_epoch = 0;
+  scratchbird::core::datatypes::TimezoneSeedAuthority timezone_seed;
 };
 
 struct CanonicalCompositeJoinKeyRequest {

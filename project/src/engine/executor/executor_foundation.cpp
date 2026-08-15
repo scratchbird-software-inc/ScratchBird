@@ -211,6 +211,8 @@ CanonicalDescriptorOrderTerm JoinKeyOrderTerm(
   order_term.resource_epoch = term.resource_epoch;
   order_term.collation_epoch = term.collation_epoch;
   order_term.text_seed = term.text_seed;
+  order_term.timezone_epoch = term.timezone_epoch;
+  order_term.timezone_seed = term.timezone_seed;
   return order_term;
 }
 
@@ -2210,6 +2212,18 @@ CanonicalNamedJoinResult ExecuteCanonicalNamedJoin(
            left.collation_accent_insensitive ==
                right.collation_accent_insensitive;
   };
+  const auto timezone_seed_equal = [](const auto& left, const auto& right) {
+    return left.active == right.active &&
+           left.seed_pack_name == right.seed_pack_name &&
+           left.seed_pack_version == right.seed_pack_version &&
+           left.content_hash == right.content_hash &&
+           left.timezone_records == right.timezone_records &&
+           left.timezone_transition_records ==
+               right.timezone_transition_records &&
+           left.timezone_leap_second_records ==
+               right.timezone_leap_second_records &&
+           left.timezone_names == right.timezone_names;
+  };
   const auto term_equal = [&](const auto& left, const auto& right) {
     return left.left_column == right.left_column &&
            left.left_expression_descriptor_id ==
@@ -2220,7 +2234,9 @@ CanonicalNamedJoinResult ExecuteCanonicalNamedJoin(
            left.collation_uuid == right.collation_uuid &&
            left.resource_epoch == right.resource_epoch &&
            left.collation_epoch == right.collation_epoch &&
-           seed_equal(left.text_seed, right.text_seed);
+           seed_equal(left.text_seed, right.text_seed) &&
+           left.timezone_epoch == right.timezone_epoch &&
+           timezone_seed_equal(left.timezone_seed, right.timezone_seed);
   };
 
   const auto& left_columns = request.key_request.left_batch.columns;
