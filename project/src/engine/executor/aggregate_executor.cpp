@@ -404,6 +404,7 @@ EngineTypedValue AggregateNull(const ExecutorColumnDescriptor& column) {
 }
 
 std::string FormatAggregateReal(const long double value) {
+  if (value == 0.0L) return "0";
   std::ostringstream stream;
   stream << std::setprecision(17) << static_cast<double>(value);
   return stream.str();

@@ -327,13 +327,16 @@ bool ParseReal64Strict(const std::string& text, double* out) {
 }
 
 std::string FormatReal64(double value) {
+  if (value == 0.0) return "0";
   std::ostringstream out;
   out << std::setprecision(17) << value;
   return out.str();
 }
 
 bool ParseFixedWidthNumber(const std::string& text, std::size_t offset, std::size_t width, std::int64_t* out) {
-  if (out == nullptr || offset + width > text.size()) { return false; }
+  if (out == nullptr || offset > text.size() || width > text.size() - offset) {
+    return false;
+  }
   std::int64_t parsed = 0;
   for (std::size_t i = 0; i < width; ++i) {
     const char c = text[offset + i];
@@ -366,14 +369,31 @@ std::vector<std::string> RowKey(const DescriptorTuple& tuple) {
     append(value.descriptor.encoded_descriptor);
     field.push_back(static_cast<char>(value.state));
     field.push_back(value.is_null ? 1 : 0);
-    append(value.encoded_value);
-    const auto binary = value.binary_value.empty()
-                            ? std::string_view{}
-                            : std::string_view(
-                                  reinterpret_cast<const char*>(
-                                      value.binary_value.data()),
-                                  value.binary_value.size());
-    append(binary);
+    std::string canonical_payload = value.encoded_value;
+    std::string_view auxiliary_binary;
+    if (value.state == EngineValueState::value && !value.is_null) {
+      if (IsInt64Type(value.descriptor)) {
+        const auto decoded = DecodeInt64Value(value);
+        if (decoded.ok()) canonical_payload = std::to_string(decoded.value);
+      } else if (IsBoolType(value.descriptor)) {
+        const auto decoded = DecodeBoolValue(value);
+        if (decoded.ok()) canonical_payload = decoded.value ? "true" : "false";
+      } else if (IsReal64Type(value.descriptor)) {
+        const auto decoded = DecodeReal64Value(value);
+        if (decoded.ok()) canonical_payload = FormatReal64(decoded.value);
+      } else if (IsBinaryType(value.descriptor) &&
+                 !value.binary_value.empty()) {
+        canonical_payload.assign(
+            reinterpret_cast<const char*>(value.binary_value.data()),
+            value.binary_value.size());
+      } else if (!value.binary_value.empty()) {
+        auxiliary_binary = std::string_view(
+            reinterpret_cast<const char*>(value.binary_value.data()),
+            value.binary_value.size());
+      }
+    }
+    append(canonical_payload);
+    append(auxiliary_binary);
     key.push_back(std::move(field));
   }
   return key;

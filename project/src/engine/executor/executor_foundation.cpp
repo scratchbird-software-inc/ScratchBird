@@ -4269,17 +4269,21 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
                     decoded.diagnostic.detail;
           return false;
         }
-        char buffer[128]{};
-        const auto encoded = std::to_chars(
-            std::begin(buffer), std::end(buffer), decoded.value,
-            std::chars_format::general,
-            std::numeric_limits<double>::max_digits10);
-        if (encoded.ec != std::errc{}) {
-          *detail = "real64 set-operation key encoding failed";
-          return false;
+        if (decoded.value == 0.0) {
+          key->push_back("real64:0");
+        } else {
+          char buffer[128]{};
+          const auto encoded = std::to_chars(
+              std::begin(buffer), std::end(buffer), decoded.value,
+              std::chars_format::general,
+              std::numeric_limits<double>::max_digits10);
+          if (encoded.ec != std::errc{}) {
+            *detail = "real64 set-operation key encoding failed";
+            return false;
+          }
+          key->push_back("real64:" +
+                         std::string(buffer, encoded.ptr));
         }
-        key->push_back("real64:" +
-                       std::string(buffer, encoded.ptr));
       } else {
         const auto binary = value.binary_value.empty()
                                 ? std::string_view{}
