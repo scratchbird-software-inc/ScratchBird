@@ -28,6 +28,10 @@ namespace scratchbird::engine::internal_api {
 struct TypedRelationalDag;
 }
 
+namespace scratchbird::engine::sblr {
+class CanonicalDescriptorSortKeyReceiptIssuer;
+}
+
 namespace scratchbird::engine::executor {
 
 // SEARCH_KEY: SB_EXEC_DESCRIPTOR_VALUE_RUNTIME_AUTHORITY
@@ -2115,14 +2119,50 @@ struct CanonicalDescriptorDistinctResult {
   PhysicalMgaStatementContext mga_statement_context;
 };
 
+struct CanonicalDescriptorSortRequest;
+struct CanonicalDescriptorSortResult;
+
+// An expression ORDER BY key batch is executable authority only after the
+// canonical query route has bound the exact payload/key pair to the selected
+// physical node and current MGA statement. The private receipt prevents a raw
+// sidecar batch from being substituted at the generic sort boundary.
+class CanonicalDescriptorSortKeyReceipt {
+ public:
+  CanonicalDescriptorSortKeyReceipt(
+      const CanonicalDescriptorSortKeyReceipt&) = delete;
+  CanonicalDescriptorSortKeyReceipt& operator=(
+      const CanonicalDescriptorSortKeyReceipt&) = delete;
+
+ private:
+  friend class scratchbird::engine::sblr::
+      CanonicalDescriptorSortKeyReceiptIssuer;
+  friend CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+      const CanonicalDescriptorSortRequest& request);
+
+  CanonicalDescriptorSortKeyReceipt() = default;
+
+  TypedPhysicalNodeDag physical_dag_;
+  std::uint64_t selected_physical_node_id_ = 0;
+  DescriptorBatch input_batch_;
+  DescriptorBatch order_key_batch_;
+  std::vector<CanonicalDescriptorOrderTerm> order_terms_;
+  std::vector<std::uint32_t> expression_ids_;
+  std::vector<std::uint32_t> result_descriptor_ids_;
+  std::string ordering_property_uuid_;
+  std::string deterministic_tie_evidence_uuid_;
+  std::size_t maximum_pair_comparisons_ = 0;
+  std::uint64_t maximum_order_key_batch_bytes_ = 0;
+  CanonicalExecutionMgaAuthority mga_authority_;
+  bool exact_current_revalidated_before_issue_ = false;
+};
+
 struct CanonicalDescriptorSortRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch input_batch;
-  // Optional engine-materialized hidden ordering keys. When present, these
-  // rows supply comparisons while input_batch remains the exact physical
-  // output schema and payload.
-  std::optional<DescriptorBatch> order_key_batch;
+  // Expression ordering uses only an engine-issued receipt that owns the
+  // exact payload/key pair. Ordinary input-column ordering leaves this null.
+  std::shared_ptr<const CanonicalDescriptorSortKeyReceipt> order_key_receipt;
   std::vector<CanonicalDescriptorOrderTerm> order_terms;
   std::string deterministic_tie_evidence_uuid;
   std::size_t maximum_pair_comparisons = 1048576;
