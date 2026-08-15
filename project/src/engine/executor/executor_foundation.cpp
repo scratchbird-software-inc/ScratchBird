@@ -6451,12 +6451,12 @@ ConvertWindowAssignmentValue(
       source.descriptor.canonical_type_name.empty() ||
       source.descriptor.encoded_descriptor.empty() ||
       (source.state != api::EngineValueState::value &&
-       source.state != api::EngineValueState::sql_null) ||
-      !source.binary_value.empty()) {
+       source.state != api::EngineValueState::sql_null)) {
     return fail("window value is not a canonical scalar assignment operand");
   }
   if ((source.state == api::EngineValueState::sql_null &&
-       (!source.is_null || !source.encoded_value.empty())) ||
+       (!source.is_null || !source.encoded_value.empty() ||
+        !source.binary_value.empty())) ||
       (source.state == api::EngineValueState::value && source.is_null)) {
     return fail("window value carries contradictory SQL NULL state");
   }
@@ -6509,6 +6509,9 @@ ConvertWindowAssignmentValue(
   api::EngineTypedValue converted;
   converted.descriptor = target;
   converted.encoded_value = cast.value.encoded_value;
+  if (source_type == target_type && !cast.value.is_null) {
+    converted.binary_value = source.binary_value;
+  }
   converted.is_null = cast.value.is_null;
   converted.state = cast.value.is_null ? api::EngineValueState::sql_null
                                        : api::EngineValueState::value;
