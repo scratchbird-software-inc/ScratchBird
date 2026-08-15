@@ -19,9 +19,11 @@
 #include <iomanip>
 #include <iterator>
 #include <limits>
+#include <new>
 #include <numeric>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -416,6 +418,28 @@ std::string JoinAggregateTextValues(const std::vector<std::string>& values,
     joined += values[index];
   }
   return joined;
+}
+
+bool AggregateTextValuesEncodedSize(
+    const std::vector<std::string>& values, const std::size_t count,
+    const std::string_view separator, std::size_t* encoded_size) {
+  if (encoded_size == nullptr) return false;
+  *encoded_size = 0;
+  const auto limit = std::min(count, values.size());
+  for (std::size_t index = 0; index < limit; ++index) {
+    const auto separator_size = index == 0 ? 0 : separator.size();
+    if (*encoded_size > std::numeric_limits<std::size_t>::max() -
+                            separator_size) {
+      return false;
+    }
+    *encoded_size += separator_size;
+    if (*encoded_size >
+        std::numeric_limits<std::size_t>::max() - values[index].size()) {
+      return false;
+    }
+    *encoded_size += values[index].size();
+  }
+  return true;
 }
 
 bool SameAggregateValueIdentity(const EngineTypedValue& left,
@@ -1238,13 +1262,47 @@ EngineTypedValue FinalizeCanonicalAggregateCore(
   if (function == CanonicalAggregateFunction::string_agg ||
       function == CanonicalAggregateFunction::listagg) {
     if (state.text_values.empty()) return AggregateNull(request.result_column);
-    const auto full_text = JoinAggregateTextValues(
-        state.text_values, state.text_values.size(),
-        request.aggregate_separator);
+    const auto allocation_refusal = [&]() {
+      *diagnostic = Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "string aggregate result allocation was refused");
+      return EngineTypedValue{};
+    };
     if (function == CanonicalAggregateFunction::string_agg ||
-        request.listagg_overflow_mode == CanonicalListaggOverflowMode::none ||
-        full_text.size() <= request.listagg_max_output_bytes) {
-      return AggregateValue(request.result_column, full_text);
+        request.listagg_overflow_mode == CanonicalListaggOverflowMode::none) {
+      try {
+        return AggregateValue(
+            request.result_column,
+            JoinAggregateTextValues(state.text_values,
+                                    state.text_values.size(),
+                                    request.aggregate_separator));
+      } catch (const std::bad_alloc&) {
+        return allocation_refusal();
+      } catch (const std::length_error&) {
+        return allocation_refusal();
+      }
+    }
+    std::size_t full_text_size = 0;
+    if (!AggregateTextValuesEncodedSize(
+            state.text_values, state.text_values.size(),
+            request.aggregate_separator, &full_text_size)) {
+      *diagnostic = Refusal(
+          "QOW-DIAG-QRY-011-REGISTRY-LISTAGG-OVERFLOW-V1",
+          "LISTAGG result size overflowed before materialization");
+      return {};
+    }
+    if (full_text_size <= request.listagg_max_output_bytes) {
+      try {
+        return AggregateValue(
+            request.result_column,
+            JoinAggregateTextValues(state.text_values,
+                                    state.text_values.size(),
+                                    request.aggregate_separator));
+      } catch (const std::bad_alloc&) {
+        return allocation_refusal();
+      } catch (const std::length_error&) {
+        return allocation_refusal();
+      }
     }
     if (request.listagg_overflow_mode ==
         CanonicalListaggOverflowMode::error) {
@@ -1252,7 +1310,76 @@ EngineTypedValue FinalizeCanonicalAggregateCore(
                             "LISTAGG result exceeds its bound output bytes");
       return {};
     }
-    const auto suffix = [&](const std::size_t truncated_count) {
+    const auto decimal_digits = [](std::size_t value) {
+      std::size_t digits = 1;
+      while (value >= 10) {
+        value /= 10;
+        ++digits;
+      }
+      return digits;
+    };
+    const auto suffix_size = [&](const std::size_t truncated_count,
+                                 std::size_t* size) {
+      if (size == nullptr) return false;
+      *size = request.listagg_truncation_indicator.empty()
+                  ? 3
+                  : request.listagg_truncation_indicator.size();
+      if (!request.listagg_with_count) return true;
+      const auto digits = decimal_digits(truncated_count);
+      if (*size > std::numeric_limits<std::size_t>::max() - 2 ||
+          *size + 2 >
+              std::numeric_limits<std::size_t>::max() - digits) {
+        return false;
+      }
+      *size += 2 + digits;
+      return true;
+    };
+    std::size_t prefix_size = full_text_size;
+    std::size_t selected_retained = 0;
+    bool selected_candidate = false;
+    for (std::size_t retained = state.text_values.size(); retained > 0;
+         --retained) {
+      const auto truncated = state.text_values.size() - retained;
+      if (truncated != 0) {
+        std::size_t current_suffix_size = 0;
+        std::size_t candidate_size = prefix_size;
+        if (!suffix_size(truncated, &current_suffix_size) ||
+            candidate_size >
+                std::numeric_limits<std::size_t>::max() -
+                    request.aggregate_separator.size()) {
+          *diagnostic = Refusal(
+              "QOW-DIAG-QRY-011-REGISTRY-LISTAGG-OVERFLOW-V1",
+              "LISTAGG truncation size overflowed");
+          return {};
+        }
+        candidate_size += request.aggregate_separator.size();
+        if (candidate_size >
+            std::numeric_limits<std::size_t>::max() - current_suffix_size) {
+          *diagnostic = Refusal(
+              "QOW-DIAG-QRY-011-REGISTRY-LISTAGG-OVERFLOW-V1",
+              "LISTAGG truncation size overflowed");
+          return {};
+        }
+        candidate_size += current_suffix_size;
+        if (candidate_size <= request.listagg_max_output_bytes) {
+          selected_retained = retained;
+          selected_candidate = true;
+          break;
+        }
+      }
+      if (retained > 1) {
+        const auto removed = state.text_values[retained - 1].size();
+        if (prefix_size < removed ||
+            prefix_size - removed < request.aggregate_separator.size()) {
+          *diagnostic = Refusal(
+              "QOW-DIAG-QRY-011-REGISTRY-LISTAGG-OVERFLOW-V1",
+              "LISTAGG prefix accounting diverged");
+          return {};
+        }
+        prefix_size -= removed + request.aggregate_separator.size();
+      }
+    }
+    const auto make_suffix = [&](const std::size_t truncated_count) {
       auto value = request.listagg_truncation_indicator.empty()
                        ? std::string("...")
                        : request.listagg_truncation_indicator;
@@ -1261,21 +1388,32 @@ EngineTypedValue FinalizeCanonicalAggregateCore(
       }
       return value;
     };
-    for (std::size_t retained = state.text_values.size(); retained > 0;
-         --retained) {
-      const auto truncated = state.text_values.size() - retained;
-      if (truncated == 0) continue;
-      auto candidate = JoinAggregateTextValues(
-          state.text_values, retained, request.aggregate_separator);
-      candidate += request.aggregate_separator;
-      candidate += suffix(truncated);
-      if (candidate.size() <= request.listagg_max_output_bytes) {
+    if (selected_candidate) {
+      try {
+        auto candidate = JoinAggregateTextValues(
+            state.text_values, selected_retained,
+            request.aggregate_separator);
+        candidate += request.aggregate_separator;
+        candidate +=
+            make_suffix(state.text_values.size() - selected_retained);
         return AggregateValue(request.result_column, std::move(candidate));
+      } catch (const std::bad_alloc&) {
+        return allocation_refusal();
+      } catch (const std::length_error&) {
+        return allocation_refusal();
       }
     }
-    auto suffix_only = suffix(state.text_values.size());
-    if (suffix_only.size() <= request.listagg_max_output_bytes) {
-      return AggregateValue(request.result_column, std::move(suffix_only));
+    std::size_t suffix_only_size = 0;
+    if (suffix_size(state.text_values.size(), &suffix_only_size) &&
+        suffix_only_size <= request.listagg_max_output_bytes) {
+      try {
+        return AggregateValue(
+            request.result_column, make_suffix(state.text_values.size()));
+      } catch (const std::bad_alloc&) {
+        return allocation_refusal();
+      } catch (const std::length_error&) {
+        return allocation_refusal();
+      }
     }
     *diagnostic = Refusal(
         "QOW-DIAG-QRY-011-REGISTRY-LISTAGG-INDICATOR-V1",
