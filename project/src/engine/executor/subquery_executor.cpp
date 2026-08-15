@@ -173,13 +173,9 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
       request.result_column.descriptor_id != source_column.descriptor_id ||
       request.result_column.stable_name.empty() ||
       !request.result_column.nullable ||
-      result_descriptor.descriptor_uuid.canonical !=
-          source_descriptor.descriptor_uuid.canonical ||
-      result_descriptor.descriptor_kind != source_descriptor.descriptor_kind ||
-      result_descriptor.canonical_type_name !=
-          source_descriptor.canonical_type_name ||
-      result_descriptor.encoded_descriptor !=
-          source_descriptor.encoded_descriptor) {
+      !CanonicalDerivedDescriptorTypeMatches(
+          source_descriptor, source_column.nullable, result_descriptor,
+          true)) {
     return refuse("scalar result descriptor is not the bound source column");
   }
 
@@ -202,6 +198,7 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
     scalar_value.state = EngineValueState::sql_null;
   } else {
     scalar_value = table.output_batch.rows.front().values.front();
+    scalar_value.descriptor = request.result_column.descriptor;
   }
   output.rows = {{{std::move(scalar_value)}}};
   auto output_validation = ValidateCanonicalDescriptorBatch(
@@ -279,14 +276,8 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
             source.descriptor_id ||
         bound.descriptor_id != source.descriptor_id ||
         bound.stable_name.empty() || !bound.nullable ||
-        bound_descriptor.descriptor_uuid.canonical !=
-            source_descriptor.descriptor_uuid.canonical ||
-        bound_descriptor.descriptor_kind !=
-            source_descriptor.descriptor_kind ||
-        bound_descriptor.canonical_type_name !=
-            source_descriptor.canonical_type_name ||
-        bound_descriptor.encoded_descriptor !=
-            source_descriptor.encoded_descriptor) {
+        !CanonicalDerivedDescriptorTypeMatches(
+            source_descriptor, source.nullable, bound_descriptor, true)) {
       return refuse("row result descriptor is not the bound source field");
     }
     result_descriptor_ids.push_back(bound.descriptor_id);
@@ -316,6 +307,10 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
     }
   } else {
     row = table.output_batch.rows.front();
+    for (std::size_t column = 0; column < width; ++column) {
+      row.values[column].descriptor =
+          request.result_columns[column].descriptor;
+    }
   }
   output.rows.push_back(std::move(row));
   auto output_validation =
