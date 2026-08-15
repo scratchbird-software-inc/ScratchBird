@@ -206,6 +206,31 @@ std::string EscapeAggregateJson(const std::string_view input) {
   return stream.str();
 }
 
+bool RenderAggregateScalarPayload(const EngineTypedValue& value,
+                                  std::string* rendered) {
+  if (rendered == nullptr) return false;
+  const auto& type = value.descriptor.canonical_type_name;
+  const bool binary_backed =
+      type == "binary" || type == "blob" || type == "bytes" ||
+      (value.encoded_value.empty() && !value.binary_value.empty());
+  if (!binary_backed || value.binary_value.empty()) {
+    *rendered = value.encoded_value;
+    return true;
+  }
+  if (value.binary_value.size() >
+      std::numeric_limits<std::size_t>::max() / 2) {
+    return false;
+  }
+  static constexpr char kHex[] = "0123456789abcdef";
+  rendered->clear();
+  rendered->reserve(value.binary_value.size() * 2);
+  for (const auto byte : value.binary_value) {
+    rendered->push_back(kHex[(byte >> 4) & 0x0f]);
+    rendered->push_back(kHex[byte & 0x0f]);
+  }
+  return true;
+}
+
 bool RenderAggregateJsonValue(const EngineTypedValue& value,
                               std::string* rendered,
                               DescriptorRuntimeDiagnostic* diagnostic) {
@@ -256,7 +281,13 @@ bool RenderAggregateJsonValue(const EngineTypedValue& value,
     *rendered = value.encoded_value;
     return true;
   }
-  *rendered = EscapeAggregateJson(value.encoded_value);
+  std::string scalar;
+  if (!RenderAggregateScalarPayload(value, &scalar)) {
+    *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
+                          "aggregate scalar rendering overflowed");
+    return false;
+  }
+  *rendered = EscapeAggregateJson(scalar);
   return true;
 }
 
@@ -1088,7 +1119,14 @@ EngineTypedValue FinalizeCanonicalAggregateCore(
       } else {
         encoded += value.descriptor.canonical_type_name;
         encoded.push_back(':');
-        encoded += value.encoded_value;
+        std::string scalar;
+        if (!RenderAggregateScalarPayload(value, &scalar)) {
+          *diagnostic = Refusal(
+              "QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
+              "ARRAY_AGG scalar rendering overflowed");
+          return {};
+        }
+        encoded += scalar;
       }
     }
     encoded.push_back(']');
@@ -1323,8 +1361,15 @@ EngineTypedValue FinalizeCanonicalAggregateCore(
     for (std::size_t rank = 0; rank < limit; ++rank) {
       if (rank != 0) encoded.push_back(',');
       const auto index = order[rank];
-      encoded += "{\"value\":" + EscapeAggregateJson(
-          state.frequency_values[index].first.encoded_value);
+      std::string scalar;
+      if (!RenderAggregateScalarPayload(
+              state.frequency_values[index].first, &scalar)) {
+        *diagnostic = Refusal(
+            "QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
+            "APPROX_TOP_K scalar rendering overflowed");
+        return {};
+      }
+      encoded += "{\"value\":" + EscapeAggregateJson(scalar);
       encoded += ",\"count\":" +
                  std::to_string(state.frequency_values[index].second) + "}";
     }
