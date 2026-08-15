@@ -80,6 +80,33 @@ bool CheckedAsofMultiply(const std::uint64_t left,
   return true;
 }
 
+class TempOperationCleanupGuard {
+ public:
+  void Arm(
+      scratchbird::core::memory::TempWorkspaceLifecycleManager* manager,
+      const std::string* operation_id) noexcept {
+    manager_ = manager;
+    operation_id_ = operation_id;
+    armed_ = manager_ != nullptr && operation_id_ != nullptr;
+  }
+
+  void Disarm() noexcept { armed_ = false; }
+
+  ~TempOperationCleanupGuard() noexcept {
+    if (!armed_) return;
+    try {
+      manager_->CleanupOperation(*operation_id_);
+    } catch (...) {
+    }
+  }
+
+ private:
+  scratchbird::core::memory::TempWorkspaceLifecycleManager* manager_ =
+      nullptr;
+  const std::string* operation_id_ = nullptr;
+  bool armed_ = false;
+};
+
 bool ExactRcp080SortArtifactCeiling(const std::uint64_t maximum_rows,
                                     std::uint64_t* bytes) {
   if (bytes == nullptr || maximum_rows == 0) return false;
@@ -518,15 +545,20 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
   };
   bool temp_reservation_started = false;
   bool temp_reservation_cleaned = false;
+  bool temp_reservation_cleanup_attempted = false;
   bool temp_spill_artifact_cleaned = false;
+  TempOperationCleanupGuard temp_reservation_guard;
   const auto cleanup_temp_once = [&]() noexcept {
     if (!temp_reservation_started || temp_reservation_cleaned) return true;
-    temp_reservation_cleaned = true;
+    if (temp_reservation_cleanup_attempted) return false;
+    temp_reservation_cleanup_attempted = true;
     ++result.spill_cleanup_count;
     try {
       const auto cleanup = request.engine_temp_workspace->CleanupOperation(
           request.spill_owner.operation_id);
-      return cleanup.ok() && cleanup.cleaned_count == 1;
+      temp_reservation_cleaned = cleanup.ok() && cleanup.cleaned_count == 1;
+      if (temp_reservation_cleaned) temp_reservation_guard.Disarm();
+      return temp_reservation_cleaned;
     } catch (...) {
       return false;
     }
@@ -751,6 +783,13 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
                       "spill row ceiling accounting overflowed");
       }
     }
+    if (maximum_spill_rows != 0 &&
+        maximum_spill_rows - 1 >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max())) {
+      return refuse("SB_MODEL_RESOURCE_SPILL_REFUSED_V1",
+                    "spill row ordinal exceeds the signed payload domain");
+    }
     std::uint64_t exact_artifact_byte_ceiling = 0;
     if (!ExactRcp080SortArtifactCeiling(maximum_spill_rows,
                                         &exact_artifact_byte_ceiling) ||
@@ -802,8 +841,20 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     reservation.owner = request.spill_owner;
     reservation.bytes = request.admitted_plan.admitted_spill_bytes;
     reservation.purpose = "rcp080.multimodel.bounded.spill.v1";
-    const auto reserved =
-        request.engine_temp_workspace->ReserveTempFilespace(reservation);
+    temp_reservation_started = true;
+    temp_reservation_guard.Arm(request.engine_temp_workspace,
+                               &request.spill_owner.operation_id);
+    scratchbird::core::memory::TempWorkspaceResult reserved;
+    try {
+      reserved =
+          request.engine_temp_workspace->ReserveTempFilespace(reservation);
+    } catch (const std::bad_alloc&) {
+      return refuse("SB_MODEL_RESOURCE_SPILL_REFUSED_V1",
+                    "temp spill reservation allocation was refused");
+    } catch (...) {
+      return refuse("SB_MODEL_RESOURCE_SPILL_REFUSED_V1",
+                    "temp spill reservation threw");
+    }
     if (!reserved.ok() || !reserved.record.has_value() ||
         reserved.record->owner.statement_id != reservation.owner.statement_id ||
         reserved.record->owner.operation_id != reservation.owner.operation_id ||
@@ -820,7 +871,6 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
       return refuse("SB_MODEL_RESOURCE_SPILL_REFUSED_V1",
                     "engine temp workspace refused the exact byte reservation");
     }
-    temp_reservation_started = true;
     result.spill_reserved = true;
     result.spill_reserved_bytes = reserved.record->reserved_bytes;
     spill_directory = reserved.record->path.parent_path();
@@ -1536,11 +1586,32 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     spill.authority.security_recheck_required = true;
     spill.authority.security_context_bound = true;
     spill.authority.exact_recheck_required = true;
-    for (std::uint64_t ordinal = 0; ordinal < result.rows_received; ++ordinal) {
-      spill.rows.push_back({"rcp080.row." + std::to_string(ordinal),
-                            static_cast<std::int64_t>(ordinal), ordinal});
+    constexpr auto kMaximumSignedSpillOrdinal =
+        static_cast<std::uint64_t>(
+            std::numeric_limits<std::int64_t>::max());
+    if ((result.rows_received != 0 &&
+         result.rows_received - 1 > kMaximumSignedSpillOrdinal) ||
+        result.rows_received > std::numeric_limits<std::size_t>::max() ||
+        result.rows_received > spill.rows.max_size()) {
+      return refuse("SB_MODEL_RESOURCE_SPILL_REFUSED_V1",
+                    "spill row ordinal exceeds the signed payload domain");
     }
-    const auto spilled = ExecuteBoundedTempSpillRoute(spill);
+    TempSpillResult spilled;
+    try {
+      spill.rows.reserve(static_cast<std::size_t>(result.rows_received));
+      for (std::uint64_t ordinal = 0; ordinal < result.rows_received;
+           ++ordinal) {
+        spill.rows.push_back({"rcp080.row." + std::to_string(ordinal),
+                              static_cast<std::int64_t>(ordinal), ordinal});
+      }
+      spilled = ExecuteBoundedTempSpillRoute(spill);
+    } catch (const std::bad_alloc&) {
+      return refuse("SB_MODEL_RESOURCE_SPILL_REFUSED_V1",
+                    "bounded spill allocation was refused");
+    } catch (...) {
+      return refuse("SB_MODEL_RESOURCE_SPILL_REFUSED_V1",
+                    "bounded spill execution threw");
+    }
     temp_spill_artifact_cleaned = spilled.cleanup_proven;
     if (temp_spill_artifact_cleaned) ++result.spill_cleanup_count;
     if (!spilled.ok || !spilled.runtime_consumed || !spilled.spilled ||
