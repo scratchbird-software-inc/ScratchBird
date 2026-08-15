@@ -6860,6 +6860,7 @@ bool ParseRelationRowUuid(const std::string& row_uuid,
                           std::string* relation_row_uuid) {
   constexpr std::string_view prefix = "relation-";
   constexpr std::string_view marker = "-row-";
+  constexpr std::size_t kMaximumLegacyRelationCount = 16;
   if (!row_uuid.starts_with(prefix)) return false;
   const auto marker_pos = row_uuid.find(marker, prefix.size());
   if (marker_pos == std::string::npos || marker_pos == prefix.size()) return false;
@@ -6873,6 +6874,7 @@ bool ParseRelationRowUuid(const std::string& row_uuid,
     }
     parsed = parsed * 10u + digit;
   }
+  if (parsed >= kMaximumLegacyRelationCount) return false;
   if (relation_index != nullptr) *relation_index = parsed;
   if (relation_row_uuid != nullptr) {
     *relation_row_uuid = row_uuid.substr(marker_pos + marker.size());
