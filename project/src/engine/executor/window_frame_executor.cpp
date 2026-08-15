@@ -664,6 +664,8 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
     comparable.resource_epoch = term.resource_epoch;
     comparable.collation_epoch = term.collation_epoch;
     comparable.text_seed = term.text_seed;
+    comparable.timezone_epoch = term.timezone_epoch;
+    comparable.timezone_seed = term.timezone_seed;
     if (!ValidateCanonicalDescriptorOrderTerm(
              comparable, comparison_batch.columns[term.column])
              .ok) {

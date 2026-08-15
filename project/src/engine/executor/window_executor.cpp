@@ -56,6 +56,8 @@ CanonicalDescriptorOrderTerm PartitionOrderTerm(
   order_term.resource_epoch = partition_term.resource_epoch;
   order_term.collation_epoch = partition_term.collation_epoch;
   order_term.text_seed = partition_term.text_seed;
+  order_term.timezone_epoch = partition_term.timezone_epoch;
+  order_term.timezone_seed = partition_term.timezone_seed;
   return order_term;
 }
 
