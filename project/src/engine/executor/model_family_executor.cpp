@@ -11,6 +11,7 @@
 #include <future>
 #include <limits>
 #include <map>
+#include <new>
 #include <ranges>
 #include <set>
 #include <sstream>
@@ -863,6 +864,9 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
       const auto& right_bound = schedule_by_ordinal[1]->leg;
       DescriptorBatch correlated_output;
       bool have_correlated_output = false;
+      std::uint64_t correlated_row_count = 0;
+      std::uint64_t correlated_cells = 0;
+      std::uint64_t correlated_memory = sizeof(DescriptorBatch);
       for (std::size_t invocation = 0;
            invocation < outer->second.rows.size(); ++invocation) {
         result.launched_leg_ordinals.push_back(1);
@@ -1046,80 +1050,121 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
           return refuse(kModelTypedExchangeInvalid,
                         "correlated consumer descriptor cardinality changed");
         }
-        if (!have_correlated_output) {
-          correlated_output.columns = consumed.output_batch.columns;
-          have_correlated_output = true;
-        } else if (correlated_output.columns.size() !=
-                   consumed.output_batch.columns.size()) {
+        if (have_correlated_output &&
+            correlated_output.columns.size() !=
+                consumed.output_batch.columns.size()) {
           return refuse(kModelTypedExchangeInvalid,
                         "correlated consumer descriptor cardinality changed");
         }
+        std::uint64_t prospective_memory = correlated_memory;
         for (std::size_t column = 0;
              column < consumed.output_batch.columns.size(); ++column) {
           if (consumed.output_batch.columns[column]
                   .descriptor.descriptor_uuid.canonical !=
                   first_consumer->output_descriptor_uuids[column] ||
-              correlated_output.columns[column]
-                      .descriptor.descriptor_uuid.canonical !=
-                  consumed.output_batch.columns[column]
-                      .descriptor.descriptor_uuid.canonical) {
+              (have_correlated_output &&
+               correlated_output.columns[column]
+                       .descriptor.descriptor_uuid.canonical !=
+                   consumed.output_batch.columns[column]
+                       .descriptor.descriptor_uuid.canonical)) {
             return refuse(kModelTypedExchangeInvalid,
                           "correlated consumer descriptor lineage changed");
           }
-        }
-        correlated_output.rows.insert(
-            correlated_output.rows.end(),
-            std::make_move_iterator(consumed.output_batch.rows.begin()),
-            std::make_move_iterator(consumed.output_batch.rows.end()));
-        std::uint64_t correlated_cells = 0;
-        std::uint64_t correlated_memory = sizeof(DescriptorBatch);
-        bool bounded =
-            correlated_output.columns.size() <=
-                first_consumer->maximum_columns &&
-            correlated_output.rows.size() <= first_consumer->maximum_rows &&
-            correlated_output.columns.size() ==
-                first_consumer->output_descriptor_uuids.size();
-        for (const auto& column : correlated_output.columns) {
-          bounded = bounded &&
-              CheckedAsofAdd(sizeof(ExecutorColumnDescriptor),
-                             &correlated_memory) &&
-              CheckedAsofAdd(column.stable_name.size(), &correlated_memory) &&
-              CheckedAsofAdd(
-                  column.descriptor.descriptor_uuid.canonical.size(),
-                  &correlated_memory) &&
-              CheckedAsofAdd(column.descriptor.descriptor_kind.size(),
-                             &correlated_memory) &&
-              CheckedAsofAdd(column.descriptor.canonical_type_name.size(),
-                             &correlated_memory) &&
-              CheckedAsofAdd(column.descriptor.encoded_descriptor.size(),
-                             &correlated_memory);
-        }
-        for (const auto& row : correlated_output.rows) {
-          bounded = bounded &&
-              row.values.size() == correlated_output.columns.size() &&
-              CheckedAsofAdd(row.values.size(), &correlated_cells) &&
-              CheckedAsofAdd(sizeof(DescriptorTuple), &correlated_memory);
-          for (const auto& value : row.values) {
-            bounded = bounded &&
-                CheckedAsofAdd(sizeof(internal_api::EngineTypedValue),
-                               &correlated_memory) &&
-                CheckedAsofAdd(value.descriptor.descriptor_uuid.canonical.size(),
-                               &correlated_memory) &&
-                CheckedAsofAdd(value.descriptor.descriptor_kind.size(),
-                               &correlated_memory) &&
-                CheckedAsofAdd(value.descriptor.canonical_type_name.size(),
-                               &correlated_memory) &&
-                CheckedAsofAdd(value.descriptor.encoded_descriptor.size(),
-                               &correlated_memory) &&
-                CheckedAsofAdd(value.encoded_value.size(), &correlated_memory) &&
-                CheckedAsofAdd(value.binary_value.size(), &correlated_memory);
+          if (!have_correlated_output) {
+            const auto& descriptor = consumed.output_batch.columns[column];
+            if (!CheckedAsofAdd(sizeof(ExecutorColumnDescriptor),
+                                &prospective_memory) ||
+                !CheckedAsofAdd(descriptor.stable_name.size(),
+                                &prospective_memory) ||
+                !CheckedAsofAdd(
+                    descriptor.descriptor.descriptor_uuid.canonical.size(),
+                    &prospective_memory) ||
+                !CheckedAsofAdd(descriptor.descriptor.descriptor_kind.size(),
+                                &prospective_memory) ||
+                !CheckedAsofAdd(
+                    descriptor.descriptor.canonical_type_name.size(),
+                    &prospective_memory) ||
+                !CheckedAsofAdd(
+                    descriptor.descriptor.encoded_descriptor.size(),
+                    &prospective_memory)) {
+              return refuse(kModelTypedExchangeInvalid,
+                            "correlated consumer descriptor bound overflowed");
+            }
           }
         }
-        if (!bounded || correlated_cells > first_consumer->maximum_cells ||
-            correlated_memory > first_consumer->memory_grant_bytes) {
+        const auto incoming_rows = static_cast<std::uint64_t>(
+            consumed.output_batch.rows.size());
+        if (consumed.output_batch.columns.size() >
+                first_consumer->maximum_columns ||
+            correlated_row_count > first_consumer->maximum_rows ||
+            incoming_rows >
+                first_consumer->maximum_rows - correlated_row_count) {
+          return refuse(kModelTypedExchangeInvalid,
+                        "correlated consumer exceeded its admitted row bound");
+        }
+        const auto prospective_row_count =
+            correlated_row_count + incoming_rows;
+        if (prospective_row_count >
+                std::numeric_limits<std::size_t>::max() ||
+            prospective_row_count > correlated_output.rows.max_size()) {
+          return refuse(kModelTypedExchangeInvalid,
+                        "correlated consumer row allocation bound overflowed");
+        }
+        std::uint64_t prospective_cells = correlated_cells;
+        for (const auto& row : consumed.output_batch.rows) {
+          if (row.values.size() != consumed.output_batch.columns.size() ||
+              !CheckedAsofAdd(row.values.size(), &prospective_cells) ||
+              !CheckedAsofAdd(sizeof(DescriptorTuple),
+                              &prospective_memory)) {
+            return refuse(kModelTypedExchangeInvalid,
+                          "correlated consumer row bound overflowed");
+          }
+          for (const auto& value : row.values) {
+            if (!CheckedAsofAdd(sizeof(internal_api::EngineTypedValue),
+                                &prospective_memory) ||
+                !CheckedAsofAdd(
+                    value.descriptor.descriptor_uuid.canonical.size(),
+                    &prospective_memory) ||
+                !CheckedAsofAdd(value.descriptor.descriptor_kind.size(),
+                                &prospective_memory) ||
+                !CheckedAsofAdd(
+                    value.descriptor.canonical_type_name.size(),
+                    &prospective_memory) ||
+                !CheckedAsofAdd(
+                    value.descriptor.encoded_descriptor.size(),
+                    &prospective_memory) ||
+                !CheckedAsofAdd(value.encoded_value.size(),
+                                &prospective_memory) ||
+                !CheckedAsofAdd(value.binary_value.size(),
+                                &prospective_memory)) {
+              return refuse(kModelTypedExchangeInvalid,
+                            "correlated consumer value bound overflowed");
+            }
+          }
+        }
+        if (prospective_cells > first_consumer->maximum_cells ||
+            prospective_memory > first_consumer->memory_grant_bytes) {
           return refuse(kModelTypedExchangeInvalid,
                         "correlated consumer exceeded its admitted output bound");
         }
+        try {
+          if (!have_correlated_output) {
+            correlated_output.columns = consumed.output_batch.columns;
+          }
+          correlated_output.rows.reserve(
+              static_cast<std::size_t>(prospective_row_count));
+          correlated_output.rows.insert(
+              correlated_output.rows.end(),
+              std::make_move_iterator(consumed.output_batch.rows.begin()),
+              std::make_move_iterator(consumed.output_batch.rows.end()));
+        } catch (const std::bad_alloc&) {
+          return refuse("SB_MODEL_RESOURCE_ROW_LIMIT_V1",
+                        "correlated consumer output allocation was refused");
+        }
+        have_correlated_output = true;
+        correlated_row_count = prospective_row_count;
+        correlated_cells = prospective_cells;
+        correlated_memory = prospective_memory;
         if (cancelled()) {
           result.cancellation_fanout_complete = true;
           receipt("COORD-019-V1", true);
