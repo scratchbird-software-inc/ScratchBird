@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -279,6 +280,12 @@ std::vector<std::uint8_t> FixedBytes(platform::u64 row_count,
                                      platform::u64 width,
                                      std::uint8_t seed) {
   std::vector<std::uint8_t> bytes;
+  if (width == 0 ||
+      row_count >
+          static_cast<platform::u64>(std::numeric_limits<std::size_t>::max()) /
+              width) {
+    return bytes;
+  }
   bytes.resize(static_cast<std::size_t>(row_count * width));
   for (std::size_t i = 0; i < bytes.size(); ++i) {
     bytes[i] = static_cast<std::uint8_t>(seed + (i % 17u));
