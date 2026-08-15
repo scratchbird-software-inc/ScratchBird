@@ -444,9 +444,22 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
     cleanup_once();
     return result;
   }
-  auto exchange = PublishModelFamilyExchangeV1(request.input,
-                                                provider.provider_batch,
-                                                request.cancellation_requested);
+  ModelExchangeResultV1 exchange;
+  try {
+    exchange = PublishModelFamilyExchangeV1(
+        request.input, provider.provider_batch,
+        request.cancellation_requested);
+  } catch (const std::bad_alloc&) {
+    refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+           "model-family exchange allocation was refused");
+    cleanup_once();
+    return result;
+  } catch (...) {
+    refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+           "model-family exchange publication threw");
+    cleanup_once();
+    return result;
+  }
   if (!exchange.accepted) {
     refuse(exchange.diagnostic_id.c_str(), std::move(exchange.detail));
     cleanup_once();
@@ -466,13 +479,15 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
     return result;
   }
 
-  result.accepted = true;
-  result.root_published = exchange.root_publishable;
   result.output = std::move(exchange.output);
   if (!cleanup_once()) {
+    result.output = {};
     result.accepted = false;
     result.root_published = false;
+    return result;
   }
+  result.accepted = true;
+  result.root_published = exchange.root_publishable;
   return result;
 }
 
