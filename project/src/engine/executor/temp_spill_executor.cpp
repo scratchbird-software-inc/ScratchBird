@@ -11,7 +11,9 @@
 #include "temporary_work_index_runtime.hpp"
 
 #include <algorithm>
-#include <sstream>
+#include <array>
+#include <charconv>
+#include <limits>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -27,6 +29,17 @@ void AddEvidence(TempSpillResult* result, std::string evidence) {
 
 std::string Bool(bool value) { return value ? "true" : "false"; }
 
+std::string FormatStableHash(const std::uint64_t hash) {
+  std::array<char, 32> rendered{};
+  constexpr std::string_view prefix = "fnv1a64:";
+  std::copy(prefix.begin(), prefix.end(), rendered.begin());
+  const auto converted = std::to_chars(
+      rendered.data() + static_cast<std::ptrdiff_t>(prefix.size()),
+      rendered.data() + rendered.size(), hash, 16);
+  if (converted.ec != std::errc{}) return {};
+  return std::string(rendered.data(), converted.ptr);
+}
+
 std::string StableHash(const std::vector<std::string>& rows) {
   std::uint64_t hash = 1469598103934665603ull;
   for (const auto& row : rows) {
@@ -37,9 +50,7 @@ std::string StableHash(const std::vector<std::string>& rows) {
     hash ^= 0xffu;
     hash *= 1099511628211ull;
   }
-  std::ostringstream out;
-  out << "fnv1a64:" << std::hex << hash;
-  return out.str();
+  return FormatStableHash(hash);
 }
 
 TempSpillResult Refuse(const TempSpillRequest& request,
@@ -106,6 +117,11 @@ idx::TemporaryWorkRuntimeState Runtime(const TempSpillRequest& request,
   options.spill_directory = request.spill_directory;
   options.runtime_generation = generation;
   options.memory_quota_bytes = request.memory_quota_bytes;
+  if (request.maximum_live_memory_bytes != 0 &&
+      request.retained_memory_bytes <= request.maximum_live_memory_bytes) {
+    options.maximum_executor_buffer_bytes =
+        request.maximum_live_memory_bytes - request.retained_memory_bytes;
+  }
   options.artifact_prefix = "orh283_temp_spill";
   return idx::CreateTemporaryWorkRuntime(std::move(options));
 }
@@ -128,6 +144,128 @@ std::vector<idx::TemporaryHashBuildRow> HashRows(
     records.push_back({row.key, std::to_string(row.value), row.row_ordinal});
   }
   return records;
+}
+
+bool AddLiveBytes(std::size_t* total, const std::size_t amount) {
+  if (total == nullptr ||
+      *total > std::numeric_limits<std::size_t>::max() - amount) {
+    return false;
+  }
+  *total += amount;
+  return true;
+}
+
+std::size_t SignedDecimalBytes(const std::int64_t value) {
+  std::array<char, 32> storage{};
+  const auto rendered =
+      std::to_chars(storage.data(), storage.data() + storage.size(), value);
+  return rendered.ec == std::errc{}
+             ? static_cast<std::size_t>(rendered.ptr - storage.data())
+             : std::numeric_limits<std::size_t>::max();
+}
+
+std::size_t UnsignedDecimalBytes(const std::uint64_t value) {
+  std::array<char, 32> storage{};
+  const auto rendered =
+      std::to_chars(storage.data(), storage.data() + storage.size(), value);
+  return rendered.ec == std::errc{}
+             ? static_cast<std::size_t>(rendered.ptr - storage.data())
+             : std::numeric_limits<std::size_t>::max();
+}
+
+bool TempInputLogicalBytes(const std::vector<TempSpillInputRow>& rows,
+                           std::size_t* bytes) {
+  if (bytes == nullptr ||
+      rows.size() > std::numeric_limits<std::size_t>::max() /
+                        sizeof(TempSpillInputRow)) {
+    return false;
+  }
+  *bytes = rows.size() * sizeof(TempSpillInputRow);
+  for (const auto& row : rows) {
+    if (!AddLiveBytes(bytes, row.key.size())) return false;
+  }
+  return true;
+}
+
+bool ConvertedRowLogicalBytes(const std::vector<TempSpillInputRow>& rows,
+                              const bool hash_rows,
+                              std::size_t* bytes) {
+  const auto row_bytes = hash_rows ? sizeof(idx::TemporaryHashBuildRow)
+                                   : sizeof(idx::TemporaryWorkRecord);
+  if (bytes == nullptr ||
+      rows.size() > std::numeric_limits<std::size_t>::max() / row_bytes) {
+    return false;
+  }
+  *bytes = rows.size() * row_bytes;
+  for (const auto& row : rows) {
+    const auto payload_bytes = SignedDecimalBytes(row.value);
+    if (payload_bytes == std::numeric_limits<std::size_t>::max() ||
+        !AddLiveBytes(bytes, row.key.size()) ||
+        !AddLiveBytes(bytes, payload_bytes)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool SortedOutputLogicalBytes(
+    const std::vector<idx::TemporaryWorkRecord>& rows,
+    const std::size_t limit,
+    std::size_t* bytes) {
+  const auto count = std::min(limit, rows.size());
+  if (bytes == nullptr ||
+      count > std::numeric_limits<std::size_t>::max() /
+                  sizeof(std::string)) {
+    return false;
+  }
+  *bytes = count * sizeof(std::string);
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto ordinal_bytes = UnsignedDecimalBytes(rows[index].row_ordinal);
+    if (ordinal_bytes == std::numeric_limits<std::size_t>::max() ||
+        !AddLiveBytes(bytes, rows[index].key.size()) ||
+        !AddLiveBytes(bytes, 1) ||
+        !AddLiveBytes(bytes, rows[index].payload.size()) ||
+        !AddLiveBytes(bytes, 1) ||
+        !AddLiveBytes(bytes, ordinal_bytes)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+
+template <typename Row>
+bool RuntimeRowsLogicalBytes(const std::vector<Row>& rows,
+                             std::size_t* bytes) {
+  if (bytes == nullptr ||
+      rows.size() > std::numeric_limits<std::size_t>::max() / sizeof(Row)) {
+    return false;
+  }
+  *bytes = rows.size() * sizeof(Row);
+  for (const auto& row : rows) {
+    if (!AddLiveBytes(bytes, row.key.size()) ||
+        !AddLiveBytes(bytes, row.payload.size())) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool AdmitRoutePeak(const TempSpillRequest& request,
+                    const std::size_t phase_bytes,
+                    std::size_t* peak_live_bytes) {
+  if (peak_live_bytes == nullptr ||
+      request.retained_memory_bytes >
+          std::numeric_limits<std::size_t>::max() - phase_bytes) {
+    return false;
+  }
+  const auto live = request.retained_memory_bytes + phase_bytes;
+  if (request.maximum_live_memory_bytes != 0 &&
+      live > request.maximum_live_memory_bytes) {
+    return false;
+  }
+  *peak_live_bytes = std::max(*peak_live_bytes, live);
+  return true;
 }
 
 std::vector<std::string> SortedOutput(
@@ -191,18 +329,27 @@ std::vector<std::string> GroupByOutput(
 }
 
 std::vector<std::string> HashAggregateOutput(
-    std::vector<idx::TemporaryHashBuildRow> rows) {
-  std::stable_sort(rows.begin(), rows.end(), [](const auto& left,
-                                                const auto& right) {
-    return std::tie(left.key, left.row_ordinal, left.payload) <
-           std::tie(right.key, right.row_ordinal, right.payload);
-  });
-  std::vector<idx::TemporaryWorkRecord> sort_rows;
-  sort_rows.reserve(rows.size());
+    const std::vector<idx::TemporaryHashBuildRow>& rows) {
+  std::vector<std::string> output;
+  std::string current_key;
+  std::int64_t sum = 0;
+  bool have_group = false;
+  const auto flush = [&]() {
+    if (have_group) {
+      output.push_back(current_key + "=" + std::to_string(sum));
+    }
+  };
   for (const auto& row : rows) {
-    sort_rows.push_back({row.key, row.payload, row.row_ordinal});
+    if (!have_group || row.key != current_key) {
+      flush();
+      current_key = row.key;
+      sum = 0;
+      have_group = true;
+    }
+    sum += std::stoll(row.payload);
   }
-  return GroupByOutput(sort_rows);
+  flush();
+  return output;
 }
 
 std::vector<std::string> BaselineOutput(const TempSpillRequest& request) {
@@ -252,66 +399,147 @@ const char* TempSpillRouteKindName(TempSpillRouteKind kind) {
   return "unknown";
 }
 
-TempSpillResult ExecuteBoundedTempSpillRoute(const TempSpillRequest& request) {
+std::string ComputeOrderedTempSpillSortResultHash(
+    const std::vector<TempSpillInputRow>& rows) {
+  std::uint64_t hash = 1469598103934665603ull;
+  const auto add = [&](const std::string_view bytes) {
+    for (const unsigned char byte : bytes) {
+      hash ^= byte;
+      hash *= 1099511628211ull;
+    }
+  };
+  for (std::size_t index = 0; index < rows.size(); ++index) {
+    if (index != 0 && rows[index].key <= rows[index - 1].key) return {};
+    std::array<char, 32> value_text{};
+    std::array<char, 32> ordinal_text{};
+    const auto value = std::to_chars(
+        value_text.data(), value_text.data() + value_text.size(),
+        rows[index].value);
+    const auto ordinal = std::to_chars(
+        ordinal_text.data(), ordinal_text.data() + ordinal_text.size(),
+        rows[index].row_ordinal);
+    if (value.ec != std::errc{} || ordinal.ec != std::errc{}) return {};
+    add(rows[index].key);
+    add(":");
+    add(std::string_view(
+        value_text.data(),
+        static_cast<std::size_t>(value.ptr - value_text.data())));
+    add(":");
+    add(std::string_view(
+        ordinal_text.data(),
+        static_cast<std::size_t>(ordinal.ptr - ordinal_text.data())));
+    hash ^= 0xffu;
+    hash *= 1099511628211ull;
+  }
+  return FormatStableHash(hash);
+}
+
+TempSpillResult ExecuteBoundedTempSpillRouteOwned(TempSpillRequest request) {
+  std::size_t peak_live_memory_bytes = request.retained_memory_bytes;
+  const auto refuse = [&](std::string diagnostic,
+                          std::string reason) {
+    auto refused =
+        Refuse(request, std::move(diagnostic), std::move(reason));
+    refused.peak_live_memory_bytes = peak_live_memory_bytes;
+    return refused;
+  };
+  if (request.maximum_live_memory_bytes != 0 &&
+      (request.retained_memory_bytes > request.maximum_live_memory_bytes ||
+       request.expected_result_hash.empty())) {
+    return refuse("ORH_SORT_SPILL_LIVE_MEMORY_CONTRACT_INVALID",
+                  "bounded_route_requires_retained_ceiling_and_expected_hash");
+  }
   if (request.route_label.empty()) {
-    return Refuse(request, "ORH_SORT_SPILL_MISSING_ROUTE_LABEL",
+    return refuse("ORH_SORT_SPILL_MISSING_ROUTE_LABEL",
                   "route_label_required");
   }
   if (!request.runtime_enabled) {
-    return Refuse(request, "ORH_SORT_SPILL_NO_RUNTIME",
+    return refuse("ORH_SORT_SPILL_NO_RUNTIME",
                   "runtime_consumption_missing");
   }
   if (request.rows.empty()) {
-    return Refuse(request, "ORH_SORT_SPILL_EMPTY_INPUT",
+    return refuse("ORH_SORT_SPILL_EMPTY_INPUT",
                   "empty_input_not_benchmark_clean");
   }
   if (!request.exact_fallback_available) {
-    return Refuse(request, "ORH_SORT_SPILL_EXACT_FALLBACK_UNAVAILABLE",
+    return refuse("ORH_SORT_SPILL_EXACT_FALLBACK_UNAVAILABLE",
                   "exact_fallback_required");
   }
   if (request.benchmark_or_reference_dominance_claim) {
-    return Refuse(request, "ORH_SORT_SPILL_DOMINANCE_OVERCLAIM",
+    return refuse("ORH_SORT_SPILL_DOMINANCE_OVERCLAIM",
                   "temp_spill_gate_is_not_reference_dominance");
   }
   if (request.authority.parser_client_or_reference_spill_authority ||
       request.authority.temp_metadata_visibility_or_finality_authority ||
       request.authority.temp_metadata_recovery_authority) {
-    return Refuse(request, "ORH_SORT_SPILL_UNSAFE_AUTHORITY",
+    return refuse("ORH_SORT_SPILL_UNSAFE_AUTHORITY",
                   "temp_spill_metadata_is_advisory_only");
   }
   if (!request.authority.engine_mga_snapshot_bound ||
       !request.authority.transaction_inventory_authoritative) {
-    return Refuse(request, "ORH_SORT_SPILL_MGA_UNPROVEN",
+    return refuse("ORH_SORT_SPILL_MGA_UNPROVEN",
                   "engine_mga_transaction_inventory_required");
   }
   if (!request.authority.security_recheck_required ||
       !request.authority.security_context_bound ||
       !request.authority.exact_recheck_required) {
-    return Refuse(request, "ORH_SORT_SPILL_SECURITY_UNPROVEN",
+    return refuse("ORH_SORT_SPILL_SECURITY_UNPROVEN",
                   "security_and_exact_recheck_required");
   }
   if (!request.temp_accounting_available) {
-    return Refuse(request, "ORH_SORT_SPILL_TEMP_ACCOUNTING_MISSING",
+    return refuse("ORH_SORT_SPILL_TEMP_ACCOUNTING_MISSING",
                   "temp_accounting_required");
+  }
+
+  std::size_t input_row_bytes = 0;
+  std::size_t converted_row_bytes = 0;
+  if (!TempInputLogicalBytes(request.rows, &input_row_bytes) ||
+      !ConvertedRowLogicalBytes(
+          request.rows,
+          request.route_kind == TempSpillRouteKind::kHashAggregate,
+          &converted_row_bytes) ||
+      input_row_bytes >
+          std::numeric_limits<std::size_t>::max() - converted_row_bytes ||
+      !AdmitRoutePeak(request, input_row_bytes + converted_row_bytes,
+                      &peak_live_memory_bytes)) {
+    return refuse("ORH_SORT_SPILL_LIVE_MEMORY_EXHAUSTED",
+                  "input_conversion_peak_exceeds_bound");
   }
 
   auto runtime = Runtime(request, request.runtime_generation);
   const auto proof = Proof(request, true);
   idx::TemporaryWorkResult built;
   if (request.route_kind == TempSpillRouteKind::kHashAggregate) {
-    built = idx::BuildTemporaryHashJoinTable(&runtime, HashRows(request.rows),
-                                             proof, request.spill_allowed);
+    auto converted = HashRows(request.rows);
+    if (request.maximum_live_memory_bytes != 0) {
+      decltype(request.rows)().swap(request.rows);
+    }
+    built = idx::BuildTemporaryHashJoinTable(
+        &runtime, std::move(converted), proof, request.spill_allowed);
   } else {
-    built = idx::BuildTemporarySortRun(&runtime, SortRecords(request.rows),
-                                       proof, request.spill_allowed);
+    auto converted = SortRecords(request.rows);
+    if (request.maximum_live_memory_bytes != 0) {
+      decltype(request.rows)().swap(request.rows);
+    }
+    built = idx::BuildTemporarySortRun(
+        &runtime, std::move(converted), proof, request.spill_allowed);
+  }
+  if (built.peak_executor_buffer_bytes >
+          std::numeric_limits<std::size_t>::max() ||
+      !AdmitRoutePeak(
+          request, static_cast<std::size_t>(
+                       built.peak_executor_buffer_bytes),
+          &peak_live_memory_bytes)) {
+    return refuse("ORH_SORT_SPILL_LIVE_MEMORY_EXHAUSTED",
+                  "build_peak_exceeds_bound");
   }
 
   if (!built.ok()) {
     if (built.open_class == idx::TemporaryWorkOpenClass::memory_grant_denied) {
-      return Refuse(request, "ORH_SORT_SPILL_MEMORY_PRESSURE_FALLBACK",
+      return refuse("ORH_SORT_SPILL_MEMORY_PRESSURE_FALLBACK",
                     "temporary_memory_grant_denied");
     }
-    return Refuse(request, "ORH_SORT_SPILL_RUNTIME_REFUSED",
+    return refuse("ORH_SORT_SPILL_RUNTIME_REFUSED",
                   built.diagnostic.diagnostic_code);
   }
 
@@ -349,6 +577,9 @@ TempSpillResult ExecuteBoundedTempSpillRoute(const TempSpillRequest& request) {
     return refused;
   }
 
+  decltype(built.sorted_rows)().swap(built.sorted_rows);
+  decltype(built.hash_build_rows)().swap(built.hash_build_rows);
+
   const auto reopen_generation = request.reopen_runtime_generation == 0
                                      ? request.runtime_generation
                                      : request.reopen_runtime_generation;
@@ -356,6 +587,19 @@ TempSpillResult ExecuteBoundedTempSpillRoute(const TempSpillRequest& request) {
   auto reopened = idx::OpenTemporaryWorkArtifact(
       &reopened_runtime, built.descriptor, built.descriptor.family,
       Proof(request, request.restart_recovery_proof_available));
+  if (reopened.peak_executor_buffer_bytes >
+          std::numeric_limits<std::size_t>::max() ||
+      !AdmitRoutePeak(
+          request, static_cast<std::size_t>(
+                       reopened.peak_executor_buffer_bytes),
+          &peak_live_memory_bytes)) {
+    auto cleanup =
+        idx::CleanupTemporaryWorkArtifact(&runtime,
+                                          built.descriptor.artifact_id);
+    (void)cleanup;
+    return refuse("ORH_SORT_SPILL_LIVE_MEMORY_EXHAUSTED",
+                  "reopen_peak_exceeds_bound");
+  }
   if (!reopened.ok()) {
     auto cleanup =
         idx::CleanupTemporaryWorkArtifact(&runtime, built.descriptor.artifact_id);
@@ -372,6 +616,33 @@ TempSpillResult ExecuteBoundedTempSpillRoute(const TempSpillRequest& request) {
   }
 
   std::vector<std::string> output;
+  if (request.maximum_live_memory_bytes != 0) {
+    if (request.route_kind != TempSpillRouteKind::kSort) {
+      auto cleanup = idx::CleanupTemporaryWorkArtifact(
+          &runtime, built.descriptor.artifact_id);
+      (void)cleanup;
+      return refuse("ORH_SORT_SPILL_LIVE_MEMORY_CONTRACT_INVALID",
+                    "bounded_output_planner_requires_sort_route");
+    }
+    std::size_t reopened_row_bytes = 0;
+    std::size_t output_row_bytes = 0;
+    if (!RuntimeRowsLogicalBytes(reopened.sorted_rows,
+                                 &reopened_row_bytes) ||
+        !SortedOutputLogicalBytes(reopened.sorted_rows,
+                                  reopened.sorted_rows.size(),
+                                  &output_row_bytes) ||
+        reopened_row_bytes >
+            std::numeric_limits<std::size_t>::max() - output_row_bytes ||
+        !AdmitRoutePeak(request,
+                        reopened_row_bytes + output_row_bytes,
+                        &peak_live_memory_bytes)) {
+      auto cleanup = idx::CleanupTemporaryWorkArtifact(
+          &runtime, built.descriptor.artifact_id);
+      (void)cleanup;
+      return refuse("ORH_SORT_SPILL_LIVE_MEMORY_EXHAUSTED",
+                    "output_peak_exceeds_bound");
+    }
+  }
   if (request.route_kind == TempSpillRouteKind::kHashAggregate) {
     output = HashAggregateOutput(reopened.hash_build_rows);
   } else if (request.route_kind == TempSpillRouteKind::kTopN) {
@@ -383,9 +654,10 @@ TempSpillResult ExecuteBoundedTempSpillRoute(const TempSpillRequest& request) {
   } else {
     output = SortedOutput(reopened.sorted_rows);
   }
-  const auto baseline = BaselineOutput(request);
   const auto result_hash = StableHash(output);
-  const auto baseline_hash = StableHash(baseline);
+  const auto baseline_hash = request.expected_result_hash.empty()
+                                 ? StableHash(BaselineOutput(request))
+                                 : request.expected_result_hash;
   if (result_hash != baseline_hash ||
       (!request.expected_result_hash.empty() &&
        result_hash != request.expected_result_hash)) {
@@ -421,6 +693,7 @@ TempSpillResult ExecuteBoundedTempSpillRoute(const TempSpillRequest& request) {
   result.fallback_reason = "none";
   result.result_hash = result_hash;
   result.output_rows = std::move(output);
+  result.peak_live_memory_bytes = peak_live_memory_bytes;
   AddEvidence(&result, "orh283.route_label=" + request.route_label);
   AddEvidence(&result, "orh283.route_kind=" +
                            std::string(TempSpillRouteKindName(request.route_kind)));
@@ -450,12 +723,28 @@ TempSpillResult ExecuteBoundedTempSpillRoute(const TempSpillRequest& request) {
   AddEvidence(&result, "orh283.security_recheck_required=true");
   AddEvidence(&result, "orh283.exact_recheck_required=true");
   AddEvidence(&result, "orh283.benchmark_clean=true");
+  AddEvidence(&result,
+              "orh283.peak_live_memory_bytes=" +
+                  std::to_string(result.peak_live_memory_bytes));
   AppendTemporaryEvidence(&result, built.evidence);
   AppendTemporaryEvidence(&result, reopened.evidence);
   if (request.cleanup_required) {
     AppendTemporaryEvidence(&result, cleanup.evidence);
   }
   return result;
+}
+
+TempSpillResult ExecuteBoundedTempSpillRoute(
+    const TempSpillRequest& request) {
+  if (request.maximum_live_memory_bytes != 0) {
+    return Refuse(request, "ORH_SORT_SPILL_OWNERSHIP_REQUIRED",
+                  "bounded_route_requires_owned_input");
+  }
+  return ExecuteBoundedTempSpillRouteOwned(request);
+}
+
+TempSpillResult ExecuteBoundedTempSpillRoute(TempSpillRequest&& request) {
+  return ExecuteBoundedTempSpillRouteOwned(std::move(request));
 }
 
 }  // namespace scratchbird::engine::executor

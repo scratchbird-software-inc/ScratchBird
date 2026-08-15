@@ -46,6 +46,9 @@ struct TemporaryWorkRuntimeOptions {
   std::filesystem::path spill_directory;
   u64 runtime_generation = 1;
   u64 memory_quota_bytes = 0;
+  // Exact logical bytes available to executor-owned build/reopen buffers.
+  // Zero retains the legacy unbounded internal-buffer contract.
+  u64 maximum_executor_buffer_bytes = 0;
   std::string artifact_prefix = "scratchbird_temporary_work";
 };
 
@@ -114,6 +117,7 @@ struct TemporaryWorkRuntimeState {
   u64 peak_granted_bytes = 0;
   u64 total_granted_bytes = 0;
   u64 total_denied_bytes = 0;
+  u64 peak_executor_buffer_bytes = 0;
   u64 next_artifact_ordinal = 1;
   bool cancelled = false;
   std::vector<TemporaryWorkArtifactDescriptor> active_artifacts;
@@ -133,6 +137,7 @@ struct TemporaryWorkResult {
   std::vector<TemporaryBulkSortBufferEntry> bulk_sort_buffer;
   std::vector<std::string> evidence;
   std::vector<std::string> refusal_reasons;
+  u64 peak_executor_buffer_bytes = 0;
 
   bool ok() const { return status.ok() && !fail_closed; }
 };
@@ -158,13 +163,13 @@ const char* TemporaryWorkOpenClassName(TemporaryWorkOpenClass open_class);
 
 TemporaryWorkResult BuildTemporarySortRun(
     TemporaryWorkRuntimeState* runtime,
-    std::vector<TemporaryWorkRecord> rows,
+    std::vector<TemporaryWorkRecord>&& rows,
     const TemporaryWorkAuthorityProof& proof,
     bool spill_allowed = true);
 
 TemporaryWorkResult BuildTemporaryHashJoinTable(
     TemporaryWorkRuntimeState* runtime,
-    std::vector<TemporaryHashBuildRow> rows,
+    std::vector<TemporaryHashBuildRow>&& rows,
     const TemporaryWorkAuthorityProof& proof,
     bool spill_allowed = true);
 

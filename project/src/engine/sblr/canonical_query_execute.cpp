@@ -21136,17 +21136,6 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                     "live ordered-set aggregate state size overflowed");
     }
-    if (aggregate_function == exec::CanonicalAggregateFunction::mode) {
-      std::uint64_t mode_value_and_comparison_memory = 0;
-      if (!CheckedMultiply(input_memory, 13U,
-                           &mode_value_and_comparison_memory) ||
-          !CheckedAdd(aggregate_result_memory,
-                      mode_value_and_comparison_memory,
-                      &aggregate_result_memory)) {
-        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                      "live MODE state or comparison workspace overflowed");
-      }
-    }
   }
   if (approximate_expression) {
     std::uint64_t approximate_state_memory = 0;
@@ -21161,16 +21150,10 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
     if (aggregate_function ==
         exec::CanonicalAggregateFunction::approx_top_k) {
       std::uint64_t rendered_value_memory = 0;
-      std::uint64_t comparison_workspace_memory = 0;
       if (!CheckedMultiply(input_memory, 6U, &rendered_value_memory) ||
           !CheckedAdd(rendered_value_memory, row_overhead_memory,
                       &rendered_value_memory) ||
           !CheckedAdd(rendered_value_memory, 2U,
-                      &aggregate_result_memory) ||
-          !CheckedMultiply(input_memory, 12U,
-                           &comparison_workspace_memory) ||
-          !CheckedAdd(aggregate_result_memory,
-                      comparison_workspace_memory,
                       &aggregate_result_memory)) {
         return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                       "live approximate top-k result size overflowed");

@@ -12,6 +12,7 @@
 #include <array>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <set>
 #include <tuple>
 #include <utility>
@@ -246,9 +247,95 @@ bool ReadString(const std::vector<byte>& bytes,
   return true;
 }
 
+bool AddBufferBytes(u64* total, const u64 amount) {
+  if (total == nullptr || *total > std::numeric_limits<u64>::max() - amount) {
+    return false;
+  }
+  *total += amount;
+  return true;
+}
+
+template <typename Row>
+bool LogicalTemporaryRowsBytes(const std::vector<Row>& rows, u64* bytes) {
+  if (bytes == nullptr || rows.size() >
+                              std::numeric_limits<u64>::max() / sizeof(Row)) {
+    return false;
+  }
+  *bytes = static_cast<u64>(rows.size()) * sizeof(Row);
+  for (const auto& row : rows) {
+    if (!AddBufferBytes(bytes, row.key.size()) ||
+        !AddBufferBytes(bytes, row.payload.size())) {
+      return false;
+    }
+  }
+  return true;
+}
+
+template <typename Row>
+bool SerializedTemporaryRowsBytes(const std::vector<Row>& rows, u64* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = sizeof(u64);
+  for (const auto& row : rows) {
+    if (!AddBufferBytes(bytes, sizeof(u32)) ||
+        !AddBufferBytes(bytes, row.key.size()) ||
+        !AddBufferBytes(bytes, sizeof(u32)) ||
+        !AddBufferBytes(bytes, row.payload.size()) ||
+        !AddBufferBytes(bytes, sizeof(u64))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool PlanParsedTemporaryRowsBytes(const std::vector<byte>& payload,
+                                  const u64 row_size,
+                                  u64* bytes) {
+  if (bytes == nullptr) return false;
+  std::size_t offset = 0;
+  u64 count = 0;
+  if (!ReadU64(payload, &offset, &count) ||
+      count > std::numeric_limits<u64>::max() / row_size) {
+    return false;
+  }
+  *bytes = count * row_size;
+  for (u64 row = 0; row < count; ++row) {
+    for (std::size_t field = 0; field < 2; ++field) {
+      u32 size = 0;
+      if (!ReadU32(payload, &offset, &size) ||
+          size > payload.size() - offset ||
+          !AddBufferBytes(bytes, size)) {
+        return false;
+      }
+      offset += size;
+    }
+    u64 ordinal = 0;
+    if (!ReadU64(payload, &offset, &ordinal)) return false;
+  }
+  return offset == payload.size();
+}
+
+bool AdmitExecutorBufferPeak(TemporaryWorkRuntimeState* runtime,
+                             const u64 peak) {
+  if (runtime == nullptr ||
+      (runtime->options.maximum_executor_buffer_bytes != 0 &&
+       peak > runtime->options.maximum_executor_buffer_bytes)) {
+    if (runtime != nullptr) runtime->total_denied_bytes += peak;
+    return false;
+  }
+  runtime->peak_executor_buffer_bytes =
+      std::max(runtime->peak_executor_buffer_bytes, peak);
+  return true;
+}
+
 std::vector<byte> PayloadFromSortRows(
     const std::vector<TemporaryWorkRecord>& rows) {
   std::vector<byte> payload;
+  u64 planned_bytes = 0;
+  if (!SerializedTemporaryRowsBytes(rows, &planned_bytes) ||
+      planned_bytes > std::numeric_limits<std::size_t>::max()) {
+    return {};
+  }
+  payload.reserve(static_cast<std::size_t>(planned_bytes));
   AppendU64(&payload, static_cast<u64>(rows.size()));
   for (const auto& row : rows) {
     AppendString(&payload, row.key);
@@ -261,6 +348,12 @@ std::vector<byte> PayloadFromSortRows(
 std::vector<byte> PayloadFromHashRows(
     const std::vector<TemporaryHashBuildRow>& rows) {
   std::vector<byte> payload;
+  u64 planned_bytes = 0;
+  if (!SerializedTemporaryRowsBytes(rows, &planned_bytes) ||
+      planned_bytes > std::numeric_limits<std::size_t>::max()) {
+    return {};
+  }
+  payload.reserve(static_cast<std::size_t>(planned_bytes));
   AppendU64(&payload, static_cast<u64>(rows.size()));
   for (const auto& row : rows) {
     AppendString(&payload, row.key);
@@ -430,6 +523,10 @@ std::vector<byte> MakeArtifactBytes(TemporaryWorkFamily family,
                                     bool spilled,
                                     const std::vector<byte>& payload) {
   std::vector<byte> artifact;
+  if (payload.size() <=
+      std::numeric_limits<std::size_t>::max() - kHeaderBytes) {
+    artifact.reserve(kHeaderBytes + payload.size());
+  }
   artifact.insert(artifact.end(), kMagic.begin(), kMagic.end());
   AppendU32(&artifact, kTemporaryWorkIndexRuntimeFormatVersion);
   AppendU32(&artifact, static_cast<u32>(family));
@@ -523,7 +620,7 @@ TemporaryWorkResult FinishBuild(TemporaryWorkRuntimeState* runtime,
   descriptor.memory_grant_bytes = grant_bytes;
   descriptor.spilled = spilled;
   descriptor.path = path;
-  descriptor.artifact = artifact;
+  if (!spilled) descriptor.artifact = artifact;
   descriptor.evidence = BaseEvidence(family);
   descriptor.evidence.push_back(
       "temporary_work.artifact_format=SBTWID15");
@@ -569,10 +666,12 @@ bool ParseArtifact(const std::vector<byte>& artifact, ParsedArtifact* parsed) {
     return false;
   }
   const u64 stored_artifact_hash = LoadLittle64(artifact.data() + 72);
-  auto checksum_bytes = artifact;
-  StoreLittle64(checksum_bytes.data() + 72, 0);
-  if (ComputeHash(checksum_bytes) != stored_artifact_hash) {
-    return false;
+  {
+    auto checksum_bytes = artifact;
+    StoreLittle64(checksum_bytes.data() + 72, 0);
+    if (ComputeHash(checksum_bytes) != stored_artifact_hash) {
+      return false;
+    }
   }
   std::size_t offset = kMagic.size();
   u32 version = 0;
@@ -673,7 +772,7 @@ const char* TemporaryWorkOpenClassName(TemporaryWorkOpenClass open_class) {
 
 TemporaryWorkResult BuildTemporarySortRun(
     TemporaryWorkRuntimeState* runtime,
-    std::vector<TemporaryWorkRecord> rows,
+    std::vector<TemporaryWorkRecord>&& rows,
     const TemporaryWorkAuthorityProof& proof,
     bool spill_allowed) {
   auto admission =
@@ -687,8 +786,25 @@ TemporaryWorkResult BuildTemporarySortRun(
                   "index.temporary_work.empty_sort_run",
                   "temporary_sort_run_empty");
   }
-  std::stable_sort(rows.begin(), rows.end(), [](const auto& left,
-                                                const auto& right) {
+  u64 row_bytes = 0;
+  u64 payload_bytes = 0;
+  u64 build_peak = 0;
+  if (!LogicalTemporaryRowsBytes(rows, &row_bytes) ||
+      !SerializedTemporaryRowsBytes(rows, &payload_bytes) ||
+      !AddBufferBytes(&build_peak, row_bytes) ||
+      !AddBufferBytes(&build_peak, payload_bytes) ||
+      !AddBufferBytes(&build_peak, kHeaderBytes) ||
+      !AddBufferBytes(&build_peak, payload_bytes) ||
+      !AdmitExecutorBufferPeak(runtime, build_peak)) {
+    return Refuse(TemporaryWorkFamily::sort_run,
+                  TemporaryWorkOpenClass::memory_grant_denied,
+                  MemoryDeniedStatus(),
+                  "INDEX.TEMPORARY_WORK.EXECUTOR_BUFFER_DENIED",
+                  "index.temporary_work.executor_buffer_denied",
+                  "temporary_sort_executor_buffer_denied");
+  }
+  std::sort(rows.begin(), rows.end(), [](const auto& left,
+                                         const auto& right) {
     return std::tie(left.key, left.row_ordinal, left.payload) <
            std::tie(right.key, right.row_ordinal, right.payload);
   });
@@ -696,13 +812,14 @@ TemporaryWorkResult BuildTemporarySortRun(
                             EstimateSortRows(rows), rows.size(),
                             spill_allowed, PayloadFromSortRows(rows));
   result.sorted_rows = std::move(rows);
+  result.peak_executor_buffer_bytes = runtime->peak_executor_buffer_bytes;
   result.evidence.push_back("temporary_work.sort_run.sorted=true");
   return result;
 }
 
 TemporaryWorkResult BuildTemporaryHashJoinTable(
     TemporaryWorkRuntimeState* runtime,
-    std::vector<TemporaryHashBuildRow> rows,
+    std::vector<TemporaryHashBuildRow>&& rows,
     const TemporaryWorkAuthorityProof& proof,
     bool spill_allowed) {
   auto admission = ValidateBuildAdmission(
@@ -716,8 +833,25 @@ TemporaryWorkResult BuildTemporaryHashJoinTable(
                   "index.temporary_work.empty_hash_build",
                   "temporary_hash_build_empty");
   }
-  std::stable_sort(rows.begin(), rows.end(), [](const auto& left,
-                                                const auto& right) {
+  u64 row_bytes = 0;
+  u64 payload_bytes = 0;
+  u64 build_peak = 0;
+  if (!LogicalTemporaryRowsBytes(rows, &row_bytes) ||
+      !SerializedTemporaryRowsBytes(rows, &payload_bytes) ||
+      !AddBufferBytes(&build_peak, row_bytes) ||
+      !AddBufferBytes(&build_peak, payload_bytes) ||
+      !AddBufferBytes(&build_peak, kHeaderBytes) ||
+      !AddBufferBytes(&build_peak, payload_bytes) ||
+      !AdmitExecutorBufferPeak(runtime, build_peak)) {
+    return Refuse(TemporaryWorkFamily::hash_join_build_table,
+                  TemporaryWorkOpenClass::memory_grant_denied,
+                  MemoryDeniedStatus(),
+                  "INDEX.TEMPORARY_WORK.EXECUTOR_BUFFER_DENIED",
+                  "index.temporary_work.executor_buffer_denied",
+                  "temporary_hash_executor_buffer_denied");
+  }
+  std::sort(rows.begin(), rows.end(), [](const auto& left,
+                                         const auto& right) {
     return std::tie(left.key, left.row_ordinal, left.payload) <
            std::tie(right.key, right.row_ordinal, right.payload);
   });
@@ -726,6 +860,7 @@ TemporaryWorkResult BuildTemporaryHashJoinTable(
                   EstimateHashRows(rows), rows.size(), spill_allowed,
                   PayloadFromHashRows(rows));
   result.hash_build_rows = std::move(rows);
+  result.peak_executor_buffer_bytes = runtime->peak_executor_buffer_bytes;
   result.evidence.push_back("temporary_work.hash_join.build_table=true");
   return result;
 }
@@ -819,6 +954,23 @@ TemporaryWorkResult OpenTemporaryWorkArtifact(
                   "index.temporary_work.cleaned_artifact",
                   "temporary_work_artifact_cleaned");
   }
+  u64 artifact_size = descriptor.artifact.size();
+  if (descriptor.spilled) {
+    std::error_code size_error;
+    artifact_size = std::filesystem::file_size(descriptor.path, size_error);
+    if (size_error) artifact_size = 0;
+  }
+  u64 read_peak = 0;
+  if (artifact_size == 0 || !AddBufferBytes(&read_peak, artifact_size) ||
+      !AddBufferBytes(&read_peak, artifact_size) ||
+      !AdmitExecutorBufferPeak(runtime, read_peak)) {
+    return Refuse(expected_family,
+                  TemporaryWorkOpenClass::memory_grant_denied,
+                  MemoryDeniedStatus(),
+                  "INDEX.TEMPORARY_WORK.EXECUTOR_BUFFER_DENIED",
+                  "index.temporary_work.executor_buffer_denied",
+                  "temporary_reopen_read_buffer_denied");
+  }
   std::vector<byte> artifact;
   if (descriptor.spilled) {
     if (descriptor.path.empty()) {
@@ -870,11 +1022,37 @@ TemporaryWorkResult OpenTemporaryWorkArtifact(
                   "temporary_work_artifact_identity_mismatch");
   }
 
+  u64 parsed_row_bytes = 0;
+  const auto parsed_rows_planned =
+      expected_family == TemporaryWorkFamily::sort_run
+          ? PlanParsedTemporaryRowsBytes(
+                parsed.payload, sizeof(TemporaryWorkRecord),
+                &parsed_row_bytes)
+          : (expected_family ==
+                     TemporaryWorkFamily::hash_join_build_table
+                 ? PlanParsedTemporaryRowsBytes(
+                       parsed.payload, sizeof(TemporaryHashBuildRow),
+                       &parsed_row_bytes)
+                 : true);
+  u64 reopen_peak = 0;
+  if (!parsed_rows_planned ||
+      !AddBufferBytes(&reopen_peak, artifact.size()) ||
+      !AddBufferBytes(&reopen_peak, parsed.payload.size()) ||
+      !AddBufferBytes(&reopen_peak, parsed_row_bytes) ||
+      !AdmitExecutorBufferPeak(runtime, reopen_peak)) {
+    return Refuse(expected_family,
+                  TemporaryWorkOpenClass::memory_grant_denied,
+                  MemoryDeniedStatus(),
+                  "INDEX.TEMPORARY_WORK.EXECUTOR_BUFFER_DENIED",
+                  "index.temporary_work.executor_buffer_denied",
+                  "temporary_reopen_parse_buffer_denied");
+  }
+
   TemporaryWorkResult result;
   result.status = OkStatus();
   result.open_class = TemporaryWorkOpenClass::current;
   result.descriptor = descriptor;
-  result.descriptor.artifact = artifact;
+  if (!descriptor.spilled) result.descriptor.artifact = artifact;
   result.evidence = BaseEvidence(expected_family);
   result.evidence.push_back("temporary_work.spill_reopen=true");
   result.evidence.push_back("temporary_work.spill_payload_checksum=validated");
@@ -932,6 +1110,7 @@ TemporaryWorkResult OpenTemporaryWorkArtifact(
     }
     result.bitmap_candidate_set = std::move(decoded.output);
   }
+  result.peak_executor_buffer_bytes = runtime->peak_executor_buffer_bytes;
   return result;
 }
 

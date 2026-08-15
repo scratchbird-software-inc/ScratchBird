@@ -1585,10 +1585,21 @@ bool ValidateCanonicalAggregateInputType(
   }
   if (request.descriptor.function == CanonicalAggregateFunction::mode ||
       request.descriptor.function ==
-          CanonicalAggregateFunction::approx_count_distinct ||
-      request.descriptor.function ==
-          CanonicalAggregateFunction::approx_top_k) {
+          CanonicalAggregateFunction::approx_count_distinct) {
     return true;
+  }
+  if (request.descriptor.function ==
+      CanonicalAggregateFunction::approx_top_k) {
+    const auto& type =
+        request.input_batch.columns[request.value_columns.front()]
+            .descriptor.canonical_type_name;
+    if (type == "text" || type == "varchar" || type == "char") {
+      return true;
+    }
+    *diagnostic = Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-TYPE-V1",
+        "APPROX_TOP_K requires a canonical text input descriptor");
+    return false;
   }
   const auto& type = request.input_batch
                          .columns[request.value_columns.front()]
@@ -2322,6 +2333,9 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
   }
   if (function == CanonicalAggregateFunction::mode) {
     if (state.frequency_values.empty()) return AggregateNull(request.result_column);
+    // MODE is an ordered-set aggregate. Transitions reached this state in the
+    // validated WITHIN GROUP order, and worker merges preserve contiguous
+    // transition order, so the first maximum is the canonical typed tie.
     std::size_t selected = 0;
     for (std::size_t index = 1; index < state.frequency_values.size(); ++index) {
       bool replace = state.frequency_values[index].second >
@@ -3299,6 +3313,18 @@ class AggregateStateReader {
     return true;
   }
 
+  bool ReadStringView(std::string_view* value) {
+    std::size_t size = 0;
+    if (value == nullptr || !ReadSize(&size) || size > Remaining() ||
+        size > maximum_bytes_) {
+      return false;
+    }
+    *value = std::string_view(
+        reinterpret_cast<const char*>(bytes_.data() + offset_), size);
+    offset_ += size;
+    return true;
+  }
+
   bool ReadByte(std::uint8_t* value) {
     if (value == nullptr || Remaining() == 0) return false;
     *value = bytes_[offset_++];
@@ -3341,6 +3367,166 @@ class AggregateStateReader {
   std::size_t offset_ = 0;
 };
 
+bool PlanCanonicalAggregateCoreStateDeserialization(
+    const CanonicalAggregateRuntimeRequest& request,
+    const AggregateStateBytes& bytes,
+    const std::size_t maximum_serialized_bytes,
+    std::size_t* planned_state_bytes) {
+  if (planned_state_bytes == nullptr || bytes.empty() ||
+      bytes.size() > maximum_serialized_bytes) {
+    return false;
+  }
+  AggregateStateReader reader(bytes, maximum_serialized_bytes);
+  std::string_view text;
+  std::uint64_t abi_version = 0;
+  std::uint64_t function = 0;
+  std::uint8_t count_star = 0;
+  std::uint64_t strategy = 0;
+  std::size_t transition_count = 0;
+  std::size_t non_null_count = 0;
+  if (!reader.ReadStringView(&text) ||
+      text != "scratchbird.aggregate-state.v1" ||
+      !reader.ReadU64(&abi_version) ||
+      abi_version != request.descriptor.abi_version ||
+      !reader.ReadU64(&function) ||
+      function != static_cast<std::uint8_t>(request.descriptor.function) ||
+      !reader.ReadStringView(&text) || text != request.descriptor.builtin_id ||
+      !reader.ReadStringView(&text) || text != request.descriptor.function_uuid ||
+      !reader.ReadByte(&count_star) || count_star > 1 ||
+      (count_star != 0) != request.descriptor.count_star ||
+      !reader.ReadU64(&strategy) ||
+      strategy != static_cast<std::uint8_t>(request.forced_strategy) ||
+      !reader.ReadSize(&transition_count) ||
+      !reader.ReadSize(&non_null_count) || non_null_count > transition_count ||
+      !reader.ReadStringView(&text)) {
+    return false;
+  }
+  for (std::size_t index = 0; index < 8; ++index) {
+    if (!reader.ReadStringView(&text)) return false;
+  }
+
+  std::size_t element_bytes = 0;
+  const auto function_kind = request.descriptor.function;
+  if (function_kind == CanonicalAggregateFunction::array_agg) {
+    element_bytes = sizeof(EngineTypedValue);
+  } else if (function_kind == CanonicalAggregateFunction::json_agg ||
+             function_kind == CanonicalAggregateFunction::string_agg ||
+             function_kind == CanonicalAggregateFunction::listagg ||
+             function_kind ==
+                 CanonicalAggregateFunction::approx_count_distinct) {
+    element_bytes = sizeof(std::string);
+  } else if (function_kind ==
+             CanonicalAggregateFunction::json_object_agg) {
+    element_bytes = sizeof(std::pair<std::string, std::string>);
+  } else if (IsCanonicalHypotheticalSetFunction(function_kind) ||
+             IsCanonicalQuantileFunction(function_kind)) {
+    element_bytes = sizeof(long double);
+  } else if (function_kind == CanonicalAggregateFunction::mode ||
+             function_kind == CanonicalAggregateFunction::approx_top_k) {
+    element_bytes = sizeof(std::pair<EngineTypedValue, std::size_t>);
+  }
+  *planned_state_bytes = sizeof(CanonicalAggregateCoreState);
+  std::size_t structural_bytes = 0;
+  if (!CheckedAggregateFinalizationMultiply(transition_count, element_bytes,
+                                             &structural_bytes) ||
+      !CheckedAggregateFinalizationAdd(planned_state_bytes,
+                                       structural_bytes)) {
+    return false;
+  }
+  const auto add_dynamic_string = [&]() {
+    if (!reader.ReadStringView(&text)) return false;
+    return CheckedAggregateFinalizationAdd(planned_state_bytes,
+                                           text.size());
+  };
+  const auto read_value = [&]() {
+    for (std::size_t field = 0; field < 5; ++field) {
+      if (!add_dynamic_string()) return false;
+    }
+    std::size_t binary_size = 0;
+    if (!reader.ReadSize(&binary_size) || binary_size > reader.Remaining() ||
+        !CheckedAggregateFinalizationAdd(planned_state_bytes,
+                                         binary_size)) {
+      return false;
+    }
+    for (std::size_t byte = 0; byte < binary_size; ++byte) {
+      std::uint8_t ignored = 0;
+      if (!reader.ReadByte(&ignored)) return false;
+    }
+    std::uint8_t is_null = 0;
+    std::uint8_t state = 0;
+    return reader.ReadByte(&is_null) && is_null <= 1 &&
+           reader.ReadByte(&state) &&
+           state <= static_cast<std::uint8_t>(EngineValueState::protected_value);
+  };
+  std::uint8_t flag = 0;
+  if (!reader.ReadByte(&flag) || flag > 1 ||
+      !reader.ReadByte(&flag) || flag > 1) {
+    return false;
+  }
+  std::uint8_t has_extremum = 0;
+  if (!reader.ReadByte(&has_extremum) || has_extremum > 1 ||
+      (has_extremum != 0 && !read_value())) {
+    return false;
+  }
+  const auto read_count = [&](std::size_t* count, const bool admitted) {
+    return reader.ReadSize(count) && *count <= transition_count &&
+           (admitted || *count == 0);
+  };
+  std::size_t count = 0;
+  if (!read_count(&count,
+                  function_kind == CanonicalAggregateFunction::array_agg)) {
+    return false;
+  }
+  for (std::size_t index = 0; index < count; ++index) {
+    if (!read_value()) return false;
+  }
+  if (!read_count(&count,
+                  function_kind == CanonicalAggregateFunction::json_agg ||
+                      function_kind == CanonicalAggregateFunction::string_agg ||
+                      function_kind == CanonicalAggregateFunction::listagg)) {
+    return false;
+  }
+  for (std::size_t index = 0; index < count; ++index) {
+    if (!add_dynamic_string()) return false;
+  }
+  if (!read_count(
+          &count,
+          function_kind == CanonicalAggregateFunction::json_object_agg)) {
+    return false;
+  }
+  for (std::size_t index = 0; index < count; ++index) {
+    if (!add_dynamic_string() || !add_dynamic_string()) return false;
+  }
+  if (!read_count(&count,
+                  IsCanonicalHypotheticalSetFunction(function_kind) ||
+                      IsCanonicalQuantileFunction(function_kind))) {
+    return false;
+  }
+  for (std::size_t index = 0; index < count; ++index) {
+    if (!reader.ReadStringView(&text)) return false;
+  }
+  if (!read_count(
+          &count,
+          function_kind ==
+              CanonicalAggregateFunction::approx_count_distinct)) {
+    return false;
+  }
+  for (std::size_t index = 0; index < count; ++index) {
+    if (!add_dynamic_string()) return false;
+  }
+  if (!read_count(&count,
+                  function_kind == CanonicalAggregateFunction::mode ||
+                      function_kind ==
+                          CanonicalAggregateFunction::approx_top_k)) {
+    return false;
+  }
+  for (std::size_t index = 0; index < count; ++index) {
+    std::size_t ignored_count = 0;
+    if (!read_value() || !reader.ReadSize(&ignored_count)) return false;
+  }
+  return reader.Remaining() == 0;
+}
+
 bool ParseInt128StateText(const std::string_view text, __int128* value) {
   if (value == nullptr || text.empty()) return false;
   const bool negative = text.front() == '-';
@@ -3368,53 +3554,60 @@ bool ParseInt128StateText(const std::string_view text, __int128* value) {
   return true;
 }
 
-bool ParseLongDoubleStateText(const std::string& text, long double* value) {
+bool ParseLongDoubleStateText(const std::string_view text,
+                              long double* value) {
   if (value == nullptr || text.empty()) return false;
-  std::istringstream stream(text);
-  stream >> *value;
-  return stream && stream.peek() == std::char_traits<char>::eof() &&
-         std::isfinite(*value);
+  const auto parsed = std::from_chars(
+      text.data(), text.data() + text.size(), *value,
+      std::chars_format::scientific);
+  return parsed.ec == std::errc{} &&
+         parsed.ptr == text.data() + text.size() && std::isfinite(*value);
 }
 
 bool DeserializeCanonicalAggregateCoreState(
     const CanonicalAggregateRuntimeRequest& request,
     const AggregateStateBytes& bytes,
-    const std::size_t maximum_bytes,
+    const std::size_t maximum_serialized_bytes,
+    const std::size_t maximum_live_state_bytes,
     CanonicalAggregateCoreState* state) {
-  if (state == nullptr || bytes.empty() || bytes.size() > maximum_bytes) {
+  std::size_t planned_state_bytes = 0;
+  if (state == nullptr ||
+      !PlanCanonicalAggregateCoreStateDeserialization(
+          request, bytes, maximum_serialized_bytes,
+          &planned_state_bytes) ||
+      planned_state_bytes > maximum_live_state_bytes) {
     return false;
   }
   *state = {};
-  AggregateStateReader reader(bytes, maximum_bytes);
-  std::string text;
+  AggregateStateReader reader(bytes, maximum_serialized_bytes);
+  std::string_view text;
   std::uint64_t abi_version = 0;
   std::uint64_t function = 0;
-  std::string builtin_id;
-  std::string function_uuid;
   std::uint8_t count_star = 0;
   std::uint64_t strategy = 0;
-  if (!reader.ReadString(&text) || text != "scratchbird.aggregate-state.v1" ||
+  if (!reader.ReadStringView(&text) ||
+      text != "scratchbird.aggregate-state.v1" ||
       !reader.ReadU64(&abi_version) ||
       abi_version != request.descriptor.abi_version ||
       !reader.ReadU64(&function) ||
       function != static_cast<std::uint8_t>(request.descriptor.function) ||
-      !reader.ReadString(&builtin_id) ||
-      builtin_id != request.descriptor.builtin_id ||
-      !reader.ReadString(&function_uuid) ||
-      function_uuid != request.descriptor.function_uuid ||
+      !reader.ReadStringView(&text) || text != request.descriptor.builtin_id ||
+      !reader.ReadStringView(&text) ||
+      text != request.descriptor.function_uuid ||
       !reader.ReadByte(&count_star) || count_star > 1 ||
       (count_star != 0) != request.descriptor.count_star ||
       !reader.ReadU64(&strategy) ||
       strategy != static_cast<std::uint8_t>(request.forced_strategy) ||
       !reader.ReadSize(&state->transition_count) ||
       !reader.ReadSize(&state->non_null_count) ||
-      !reader.ReadString(&text) ||
+      !reader.ReadStringView(&text) ||
       !ParseInt128StateText(text, &state->int64_sum)) {
     return false;
   }
   DescriptorRuntimeDiagnostic capacity_diagnostic;
   if (!ReserveCanonicalAggregateCoreState(
-          request.descriptor, state->transition_count, maximum_bytes, state,
+          request.descriptor, state->transition_count,
+          maximum_live_state_bytes, state,
           &capacity_diagnostic)) {
     return false;
   }
@@ -3422,7 +3615,7 @@ bool DeserializeCanonicalAggregateCoreState(
        {&state->real_sum, &state->numeric_mean, &state->numeric_m2,
         &state->pair_mean_x, &state->pair_mean_y, &state->pair_m2_x,
         &state->pair_m2_y, &state->pair_comoment}) {
-    if (!reader.ReadString(&text) ||
+    if (!reader.ReadStringView(&text) ||
         !ParseLongDoubleStateText(text, value)) {
       return false;
     }
@@ -3445,7 +3638,7 @@ bool DeserializeCanonicalAggregateCoreState(
   const auto read_values = [&](std::vector<EngineTypedValue>* values,
                                const bool admitted) {
     std::size_t count = 0;
-    if (!reader.ReadSize(&count) || count > maximum_bytes ||
+    if (!reader.ReadSize(&count) || count > maximum_serialized_bytes ||
         count > state->transition_count || (!admitted && count != 0)) {
       return false;
     }
@@ -3465,7 +3658,7 @@ bool DeserializeCanonicalAggregateCoreState(
   const auto read_strings = [&](std::vector<std::string>* values,
                                 const bool admitted) {
     std::size_t count = 0;
-    if (!reader.ReadSize(&count) || count > maximum_bytes ||
+    if (!reader.ReadSize(&count) || count > maximum_serialized_bytes ||
         count > state->transition_count || (!admitted && count != 0)) {
       return false;
     }
@@ -3486,7 +3679,8 @@ bool DeserializeCanonicalAggregateCoreState(
     return false;
   }
   std::size_t json_count = 0;
-  if (!reader.ReadSize(&json_count) || json_count > maximum_bytes ||
+  if (!reader.ReadSize(&json_count) ||
+      json_count > maximum_serialized_bytes ||
       json_count > state->transition_count ||
       (request.descriptor.function !=
            CanonicalAggregateFunction::json_object_agg &&
@@ -3500,7 +3694,8 @@ bool DeserializeCanonicalAggregateCoreState(
     state->json_object_values.emplace_back(std::move(key), std::move(value));
   }
   std::size_t numeric_count = 0;
-  if (!reader.ReadSize(&numeric_count) || numeric_count > maximum_bytes) {
+  if (!reader.ReadSize(&numeric_count) ||
+      numeric_count > maximum_serialized_bytes) {
     return false;
   }
   if (numeric_count > state->transition_count ||
@@ -3511,7 +3706,7 @@ bool DeserializeCanonicalAggregateCoreState(
   }
   for (std::size_t index = 0; index < numeric_count; ++index) {
     long double value = 0.0L;
-    if (!reader.ReadString(&text) ||
+    if (!reader.ReadStringView(&text) ||
         !ParseLongDoubleStateText(text, &value)) {
       return false;
     }
@@ -3524,7 +3719,8 @@ bool DeserializeCanonicalAggregateCoreState(
     return false;
   }
   std::size_t frequency_count = 0;
-  if (!reader.ReadSize(&frequency_count) || frequency_count > maximum_bytes) {
+  if (!reader.ReadSize(&frequency_count) ||
+      frequency_count > maximum_serialized_bytes) {
     return false;
   }
   if (frequency_count > state->transition_count ||
@@ -3877,6 +4073,7 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   const auto node_memory_grant =
       AggregateNodeMemoryGrant(request.physical_dag, *aggregate_node);
   std::size_t input_payload_bytes = 0;
+  std::size_t filter_memory_bytes = 0;
   if (!node_memory_grant.has_value() ||
       request.retained_memory_bytes > *node_memory_grant ||
       memory_scope.retained_memory_bytes >
@@ -3890,14 +4087,23 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   if (!node_memory_grant.has_value() ||
       !AggregateBatchPayloadBytes(request.input_batch,
                                   &input_payload_bytes) ||
+      (request.filter_truth_values.has_value() &&
+       !CheckedAggregateFinalizationMultiply(
+           request.filter_truth_values->size(),
+           sizeof(scratchbird::engine::internal_api::EngineSqlTruthValue),
+           &filter_memory_bytes)) ||
       input_payload_bytes >
-          *node_memory_grant - retained_memory_bytes) {
+          *node_memory_grant - retained_memory_bytes ||
+      filter_memory_bytes >
+          *node_memory_grant - retained_memory_bytes -
+              input_payload_bytes) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
         "aggregate selected-node memory grant is invalid or exhausted"));
   }
   const auto memory_after_fixed_inputs =
-      *node_memory_grant - retained_memory_bytes - input_payload_bytes;
+      *node_memory_grant - retained_memory_bytes - input_payload_bytes -
+      filter_memory_bytes;
   const auto maximum_state_bytes =
       std::min(request.maximum_state_bytes, memory_after_fixed_inputs);
   auto maximum_final_output_bytes =
@@ -4020,6 +4226,18 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
     if (!validation.ok) return refuse(std::move(validation));
   }
   const auto function = request.descriptor.function;
+  if (function == CanonicalAggregateFunction::mode &&
+      (request.value_columns.size() != 1 ||
+       request.value_expression_descriptor_ids.size() != 1 ||
+       request.aggregate_order_terms.size() != 1 ||
+       request.aggregate_order_terms.front().column !=
+           request.value_columns.front() ||
+       request.aggregate_order_terms.front().expression_descriptor_id !=
+           request.value_expression_descriptor_ids.front())) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-ORDER-V1",
+        "MODE value and sole WITHIN GROUP order term are not identically bound"));
+  }
   const bool ordered_collection_required =
       function == CanonicalAggregateFunction::array_agg ||
       function == CanonicalAggregateFunction::json_agg ||
@@ -4235,9 +4453,23 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                   "aggregate spill retained memory size overflowed");
   }
-  const auto combined_retained_memory_bytes =
+  const auto enclosing_retained_memory_bytes =
       request.retained_memory_bytes +
       request.aggregate_request.retained_memory_bytes;
+  std::size_t filter_memory_bytes = 0;
+  if ((request.aggregate_request.filter_truth_values.has_value() &&
+       !CheckedAggregateFinalizationMultiply(
+           request.aggregate_request.filter_truth_values->size(),
+           sizeof(scratchbird::engine::internal_api::EngineSqlTruthValue),
+           &filter_memory_bytes)) ||
+      filter_memory_bytes >
+          std::numeric_limits<std::size_t>::max() -
+              enclosing_retained_memory_bytes) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "aggregate spill FILTER memory size overflowed");
+  }
+  const auto combined_retained_memory_bytes =
+      enclosing_retained_memory_bytes + filter_memory_bytes;
   std::size_t input_payload_bytes = 0;
   if (!node_memory_grant.has_value() ||
       !AggregateBatchPayloadBytes(request.aggregate_request.input_batch,
@@ -4434,15 +4666,23 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
     spill.rows.push_back(
         {std::move(key), payload, static_cast<std::uint64_t>(record + 1)});
   }
+  spill.expected_result_hash =
+      ComputeOrderedTempSpillSortResultHash(spill.rows);
+  if (spill.expected_result_hash.empty()) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "aggregate spill expected result hash could not be bound");
+  }
+  spill.maximum_live_memory_bytes = replay_state_limit;
+  spill.retained_memory_bytes = 0;
   AggregateStateBytes().swap(serialized);
 
-  auto spilled = ExecuteBoundedTempSpillRoute(spill);
+  auto spilled = ExecuteBoundedTempSpillRoute(std::move(spill));
   result.spilled = spilled.spilled;
   result.spill_reopened = spilled.reopen_recovery_proven;
   result.cleanup_proven = spilled.cleanup_proven;
   result.cancellation_observed = request.cancellation_requested;
   result.spill_evidence = spilled.evidence;
-  result.spilled_state_record_count = spill.rows.size();
+  result.spilled_state_record_count = record_count;
   if (has_owned_artifact()) {
     result.cleanup_proven =
         remove_owned_artifacts() && result.cleanup_proven;
@@ -4451,7 +4691,8 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
   }
   if (!spilled.ok || !spilled.spilled || !spilled.cleanup_proven ||
       !spilled.reopen_recovery_proven ||
-      spilled.output_rows.size() != record_count) {
+      spilled.output_rows.size() != record_count ||
+      spilled.peak_live_memory_bytes > replay_state_limit) {
     return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-V1",
                   spilled.diagnostic_code + ":" + spilled.fallback_reason);
   }
@@ -4515,9 +4756,14 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
   decltype(spill.rows)().swap(spill.rows);
   decltype(spilled.output_rows)().swap(spilled.output_rows);
   CanonicalAggregateCoreState restored_state;
+  if (reopened_bytes.size() > replay_state_limit) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "reopened aggregate state exhausted the selected-node grant");
+  }
   if (!DeserializeCanonicalAggregateCoreState(
           request.aggregate_request, reopened_bytes,
-          request.maximum_serialized_state_bytes, &restored_state)) {
+          request.maximum_serialized_state_bytes,
+          replay_state_limit - reopened_bytes.size(), &restored_state)) {
     return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-RESTORE-V1",
                   "reopened aggregate state cannot be decoded");
   }
@@ -4884,10 +5130,23 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
           "aggregate partial-state envelope identity is not coordinator-bound");
     }
     CanonicalAggregateCoreState restored_state;
+    const auto prior_merged_state_bytes =
+        EstimateCanonicalAggregateStateBytes(merged_state);
+    if (result.serialized_state_bytes >
+            *node_memory_grant - exchange_fixed_memory ||
+        prior_merged_state_bytes >
+            *node_memory_grant - exchange_fixed_memory -
+                result.serialized_state_bytes) {
+      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                    "aggregate exchange restore memory is exhausted");
+    }
+    const auto restore_live_state_limit =
+        *node_memory_grant - exchange_fixed_memory -
+        result.serialized_state_bytes - prior_merged_state_bytes;
     if (!DeserializeCanonicalAggregateCoreState(
             request.aggregate_request, envelope.bytes,
             request.maximum_serialized_state_bytes_per_worker,
-            &restored_state) ||
+            restore_live_state_limit, &restored_state) ||
         restored_state.transition_count !=
             result.worker_transition_counts[worker] ||
         EstimateCanonicalAggregateStateBytes(restored_state) !=
@@ -4899,8 +5158,6 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     ++result.restored_partial_state_count;
     const auto restored_state_bytes =
         EstimateCanonicalAggregateStateBytes(restored_state);
-    const auto prior_merged_state_bytes =
-        EstimateCanonicalAggregateStateBytes(merged_state);
     if (result.serialized_state_bytes >
             *node_memory_grant - exchange_fixed_memory ||
         restored_state_bytes >
@@ -5027,6 +5284,9 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   return result;
 }
 
+CanonicalAggregateRuntimeRequest CloneCanonicalAggregateRequestWithoutRows(
+    const CanonicalAggregateRuntimeRequest& source);
+
 // QOW-SOURCE-QRY-011-REGISTRY-MOVING-INVERSE-V1
 // Maintain one exact COUNT/SUM/AVG state across an ordered sequence of window
 // frames.  Additions use the canonical transition function, removals use an
@@ -5123,9 +5383,15 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
         return node.physical_node_id == aggregate.selected_physical_node_id;
       });
   std::size_t input_payload_bytes = 0;
+  std::size_t filter_memory_bytes = 0;
   if (aggregate_node == aggregate.physical_dag.nodes.end() ||
       !AggregateBatchPayloadBytes(aggregate.input_batch,
-                                  &input_payload_bytes)) {
+                                  &input_payload_bytes) ||
+      (aggregate.filter_truth_values.has_value() &&
+       !CheckedAggregateFinalizationMultiply(
+           aggregate.filter_truth_values->size(),
+           sizeof(scratchbird::engine::internal_api::EngineSqlTruthValue),
+           &filter_memory_bytes))) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
         "moving aggregate selected-node memory grant is unresolved"));
@@ -5135,13 +5401,17 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   if (!node_memory_grant.has_value() ||
       aggregate.retained_memory_bytes > *node_memory_grant ||
       input_payload_bytes >
-          *node_memory_grant - aggregate.retained_memory_bytes) {
+          *node_memory_grant - aggregate.retained_memory_bytes ||
+      filter_memory_bytes >
+          *node_memory_grant - aggregate.retained_memory_bytes -
+              input_payload_bytes) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
         "moving aggregate input exhausts the selected-node memory grant"));
   }
   const auto fixed_input_memory =
-      aggregate.retained_memory_bytes + input_payload_bytes;
+      aggregate.retained_memory_bytes + input_payload_bytes +
+      filter_memory_bytes;
   const auto maximum_combined_final_output_bytes =
       request.maximum_combined_final_output_bytes == 0
           ? *node_memory_grant
@@ -5167,14 +5437,11 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     }
   }
 
-  auto preflight_request = aggregate;
-  preflight_request.input_batch.rows.clear();
-  if (preflight_request.filter_truth_values.has_value()) {
-    preflight_request.filter_truth_values =
-        std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>{};
-  }
+  auto preflight_request =
+      CloneCanonicalAggregateRequestWithoutRows(aggregate);
   auto preflight = ExecuteCanonicalAggregateRuntimeSelected(
-      preflight_request, false, {input_payload_bytes, std::nullopt});
+      preflight_request, false,
+      {input_payload_bytes + filter_memory_bytes, std::nullopt});
   if (!preflight.diagnostic.ok) {
     return refuse(preflight.diagnostic);
   }
@@ -5567,7 +5834,9 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
     const std::size_t retained_memory_bytes = 0,
     const std::optional<std::size_t> maximum_combined_output_override =
         std::nullopt,
-    const DescriptorBatch* shared_input_batch = nullptr) {
+    const DescriptorBatch* shared_input_batch = nullptr,
+    const std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>*
+        shared_filter_truth_values = nullptr) {
   using scratchbird::engine::internal_api::EngineTypedValue;
   using scratchbird::engine::internal_api::EngineValueState;
 
@@ -5602,6 +5871,12 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   const auto& input_batch =
       shared_input_batch == nullptr ? aggregate.input_batch
                                     : *shared_input_batch;
+  const auto* filter_truth_values =
+      shared_filter_truth_values != nullptr
+          ? shared_filter_truth_values
+          : (aggregate.filter_truth_values.has_value()
+                 ? &*aggregate.filter_truth_values
+                 : nullptr);
   if (request.grouping_sets.empty() ||
       request.group_key_terms.size() > 64 ||
       request.group_result_columns.size() !=
@@ -5697,15 +5972,24 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   const auto node_memory_grant =
       AggregateNodeMemoryGrant(aggregate.physical_dag, *aggregate_node);
   std::size_t input_payload_bytes = 0;
+  std::size_t source_filter_bytes = 0;
   if (!node_memory_grant.has_value() ||
       !AggregateBatchPayloadBytes(input_batch,
                                   &input_payload_bytes) ||
+      (filter_truth_values != nullptr &&
+       !CheckedAggregateFinalizationMultiply(
+           filter_truth_values->size(),
+           sizeof(scratchbird::engine::internal_api::EngineSqlTruthValue),
+           &source_filter_bytes)) ||
       retained_memory_bytes > *node_memory_grant ||
       aggregate.retained_memory_bytes >
           *node_memory_grant - retained_memory_bytes ||
       input_payload_bytes >
           *node_memory_grant - retained_memory_bytes -
-              aggregate.retained_memory_bytes) {
+              aggregate.retained_memory_bytes ||
+      source_filter_bytes >
+          *node_memory_grant - retained_memory_bytes -
+              aggregate.retained_memory_bytes - input_payload_bytes) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
         "grouped aggregate selected-node memory grant is invalid or exhausted"));
@@ -5796,8 +6080,8 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   }
 
   const auto row_count = input_batch.rows.size();
-  if (aggregate.filter_truth_values.has_value() &&
-      aggregate.filter_truth_values->size() != row_count) {
+  if (filter_truth_values != nullptr &&
+      filter_truth_values->size() != row_count) {
     return refuse(Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
                           "grouped aggregate FILTER cardinality is not bound"));
   }
@@ -5833,7 +6117,8 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   }
   auto preflight = ExecuteCanonicalAggregateRuntimeSelected(
       preflight_request, false,
-      {retained_memory_bytes + input_payload_bytes, std::nullopt});
+      {retained_memory_bytes + input_payload_bytes + source_filter_bytes,
+       std::nullopt});
   if (!preflight.diagnostic.ok) {
     return refuse(preflight.diagnostic);
   }
@@ -5977,7 +6262,7 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
     group_request.input_batch.rows.clear();
     const auto copy_fixed_memory =
         retained_memory_bytes + aggregate.retained_memory_bytes +
-        input_payload_bytes;
+        input_payload_bytes + source_filter_bytes;
     std::size_t group_input_payload_bytes = 1;
     for (const auto row : group.source_rows) {
       for (const auto& value : input_batch.rows[row].values) {
@@ -5993,30 +6278,43 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
         }
       }
     }
+    std::size_t group_filter_bytes = 0;
+    if (filter_truth_values != nullptr &&
+        !CheckedAggregateFinalizationMultiply(
+            group.source_rows.size(),
+            sizeof(scratchbird::engine::internal_api::EngineSqlTruthValue),
+            &group_filter_bytes)) {
+      return refuse(Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "grouped aggregate FILTER workspace size overflowed"));
+    }
     if (retained_output_payload_bytes >
             *node_memory_grant - copy_fixed_memory ||
         group_input_payload_bytes >
             *node_memory_grant - copy_fixed_memory -
-                retained_output_payload_bytes) {
+                retained_output_payload_bytes ||
+        group_filter_bytes >
+            *node_memory_grant - copy_fixed_memory -
+                retained_output_payload_bytes - group_input_payload_bytes) {
       return refuse(Refusal(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-          "grouped aggregate input copy exceeds the selected-node grant"));
+          "grouped aggregate input or FILTER copy exceeds the selected-node grant"));
     }
     group_request.input_batch.rows.reserve(group.source_rows.size());
     for (const auto row : group.source_rows) {
       group_request.input_batch.rows.push_back(input_batch.rows[row]);
     }
-    if (aggregate.filter_truth_values.has_value()) {
+    if (filter_truth_values != nullptr) {
       std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>
           group_filter;
       group_filter.reserve(group.source_rows.size());
       for (const auto row : group.source_rows) {
-        group_filter.push_back((*aggregate.filter_truth_values)[row]);
+        group_filter.push_back((*filter_truth_values)[row]);
       }
       group_request.filter_truth_values = std::move(group_filter);
     }
     const auto scope_retained_memory =
-        retained_memory_bytes + input_payload_bytes;
+        retained_memory_bytes + input_payload_bytes + source_filter_bytes;
     const auto fixed_retained_memory =
         scope_retained_memory + aggregate.retained_memory_bytes;
     std::size_t group_key_payload_bytes = 0;
@@ -6357,6 +6655,34 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
                           "aggregate-set result order is not physically bound"));
   }
 
+  std::size_t total_source_filter_bytes = 0;
+  for (const auto* specification : aggregate_specs) {
+    if (!specification->filter_truth_values.has_value()) continue;
+    if (specification->filter_truth_values->size() !=
+        common.input_batch.rows.size()) {
+      return set_refusal(
+          "aggregate-set FILTER cardinality is not bound to the common input");
+    }
+    std::size_t filter_bytes = 0;
+    if (!CheckedAggregateFinalizationMultiply(
+            specification->filter_truth_values->size(),
+            sizeof(scratchbird::engine::internal_api::EngineSqlTruthValue),
+            &filter_bytes) ||
+        !CheckedAggregateFinalizationAdd(&total_source_filter_bytes,
+                                         filter_bytes)) {
+      return refuse(Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "aggregate-set FILTER memory size overflowed"));
+    }
+  }
+  if (total_source_filter_bytes >
+      *node_memory_grant - retained_memory_bytes -
+          common.retained_memory_bytes - input_payload_bytes) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "aggregate-set FILTER memory exceeds the selected-node grant"));
+  }
+
   const auto within_total = [](const std::size_t next,
                                const std::size_t current,
                                const std::size_t maximum) {
@@ -6390,8 +6716,10 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
     grouped_request.maximum_output_rows = first.maximum_output_rows;
     grouped_request.aggregate_request =
         CloneCanonicalAggregateRequestWithoutRows(*aggregate_specs[index]);
-    grouped_request.aggregate_request.filter_truth_values =
-        aggregate_specs[index]->filter_truth_values;
+    if (aggregate_specs[index]->filter_truth_values.has_value()) {
+      grouped_request.aggregate_request.filter_truth_values =
+          std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>{};
+    }
     grouped_request.aggregate_request.physical_dag = common.physical_dag;
     grouped_request.aggregate_request.selected_physical_node_id =
         common.selected_physical_node_id;
@@ -6403,6 +6731,16 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
     const auto remaining_final_output_bytes =
         maximum_combined_final_output_bytes -
         result.combined_final_output_bytes;
+    std::size_t current_source_filter_bytes = 0;
+    if (aggregate_specs[index]->filter_truth_values.has_value() &&
+        !CheckedAggregateFinalizationMultiply(
+            aggregate_specs[index]->filter_truth_values->size(),
+            sizeof(scratchbird::engine::internal_api::EngineSqlTruthValue),
+            &current_source_filter_bytes)) {
+      return refuse(Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "aggregate-set current FILTER memory size overflowed"));
+    }
     for (auto& node : grouped_request.aggregate_request.physical_dag.nodes) {
       if (node.physical_node_id == common.selected_physical_node_id) {
         node.output_descriptor_ids.clear();
@@ -6416,9 +6754,12 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
     }
     auto execution = ExecuteCanonicalGroupedAggregateRuntimeSelected(
         grouped_request, spill_execution_context,
-        retained_memory_bytes + input_payload_bytes +
-            retained_execution_payload_bytes,
-        remaining_final_output_bytes, &common.input_batch);
+        retained_memory_bytes + retained_execution_payload_bytes +
+            total_source_filter_bytes - current_source_filter_bytes,
+        remaining_final_output_bytes, &common.input_batch,
+        aggregate_specs[index]->filter_truth_values.has_value()
+            ? &*aggregate_specs[index]->filter_truth_values
+            : nullptr);
     if (!execution.diagnostic.ok) {
       return refuse(std::move(execution.diagnostic));
     }
@@ -6468,12 +6809,12 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
             std::numeric_limits<std::size_t>::max() -
                 execution_payload_bytes ||
         retained_memory_bytes + common.retained_memory_bytes +
-                input_payload_bytes >
+                input_payload_bytes + total_source_filter_bytes >
             *node_memory_grant ||
         retained_execution_payload_bytes + execution_payload_bytes >
             *node_memory_grant - retained_memory_bytes -
                 common.retained_memory_bytes -
-                input_payload_bytes) {
+                input_payload_bytes - total_source_filter_bytes) {
       return refuse(Refusal(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
           "aggregate-set retained output exhausted the selected-node grant"));
@@ -6658,23 +6999,11 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
                   "grouped aggregate state spill ownership, shape, or resource context is invalid");
   }
 
-  std::vector<CanonicalAggregateRuntimeRequest> aggregate_specs;
+  std::vector<const CanonicalAggregateRuntimeRequest*> aggregate_specs;
   aggregate_specs.reserve(baseline.aggregate_count);
-  aggregate_specs.push_back(common);
+  aggregate_specs.push_back(&common);
   for (const auto& additional : request.grouped_request.additional_aggregates) {
-    auto specification = additional;
-    specification.physical_dag = common.physical_dag;
-    specification.selected_physical_node_id =
-        common.selected_physical_node_id;
-    aggregate_specs.push_back(std::move(specification));
-  }
-  for (auto& specification : aggregate_specs) {
-    specification.physical_dag = common.physical_dag;
-    specification.selected_physical_node_id =
-        common.selected_physical_node_id;
-    specification.input_batch.columns = common.input_batch.columns;
-    specification.input_batch.rows.clear();
-    specification.retained_memory_bytes = common.retained_memory_bytes;
+    aggregate_specs.push_back(&additional);
   }
   if (aggregate_specs.size() != baseline.aggregate_count) {
     return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-EVIDENCE-V1",
@@ -6695,17 +7024,60 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
       baseline.peak_finalization_workspace_bytes;
   std::size_t baseline_output_payload_bytes = 0;
   std::size_t input_payload_bytes = 0;
+  std::size_t total_source_filter_bytes = 0;
   if (!AggregateBatchPayloadBytes(baseline.output_batch,
                                   &baseline_output_payload_bytes) ||
       !AggregateBatchPayloadBytes(common.input_batch,
-                                  &input_payload_bytes) ||
-      baseline_output_payload_bytes >
-          std::numeric_limits<std::size_t>::max() - input_payload_bytes) {
+                                  &input_payload_bytes)) {
+    return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-RESOURCE-V1",
+                  "grouped aggregate retained memory size overflowed");
+  }
+  for (const auto* specification : aggregate_specs) {
+    if (!specification->filter_truth_values.has_value()) continue;
+    if (specification->filter_truth_values->size() !=
+        common.input_batch.rows.size()) {
+      return refuse("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
+                    "grouped aggregate spill FILTER cardinality is not bound");
+    }
+    std::size_t filter_bytes = 0;
+    if (!CheckedAggregateFinalizationMultiply(
+            specification->filter_truth_values->size(),
+            sizeof(EngineSqlTruthValue), &filter_bytes) ||
+        !CheckedAggregateFinalizationAdd(&total_source_filter_bytes,
+                                         filter_bytes)) {
+      return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-RESOURCE-V1",
+                    "grouped aggregate FILTER memory size overflowed");
+    }
+  }
+  if (baseline_output_payload_bytes >
+          std::numeric_limits<std::size_t>::max() - input_payload_bytes ||
+      total_source_filter_bytes >
+          std::numeric_limits<std::size_t>::max() -
+              baseline_output_payload_bytes - input_payload_bytes) {
     return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-RESOURCE-V1",
                   "grouped aggregate retained memory size overflowed");
   }
   const auto replay_retained_memory_bytes =
-      baseline_output_payload_bytes + input_payload_bytes;
+      baseline_output_payload_bytes + input_payload_bytes +
+      total_source_filter_bytes;
+  const PhysicalNodeRecord* aggregate_node = nullptr;
+  for (const auto& node : common.physical_dag.nodes) {
+    if (node.physical_node_id == common.selected_physical_node_id) {
+      aggregate_node = &node;
+      break;
+    }
+  }
+  const auto node_memory_grant =
+      aggregate_node == nullptr
+          ? std::optional<std::size_t>{}
+          : AggregateNodeMemoryGrant(common.physical_dag, *aggregate_node);
+  if (!node_memory_grant.has_value() ||
+      replay_retained_memory_bytes > *node_memory_grant ||
+      common.retained_memory_bytes >
+          *node_memory_grant - replay_retained_memory_bytes) {
+    return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-RESOURCE-V1",
+                  "grouped aggregate replay retention exhausts the selected-node grant");
+  }
   auto restored = std::move(baseline);
   std::size_t aggregate_transition_count = 0;
   std::size_t distinct_tuple_count = 0;
@@ -6739,23 +7111,61 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
         return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-RESOURCE-V1",
                       "grouped aggregate state spill bound is exhausted");
       }
-      auto aggregate = aggregate_specs[aggregate_index];
-      const auto full_filter = aggregate.filter_truth_values;
-      aggregate.input_batch.rows.clear();
-      aggregate.input_batch.rows.reserve(group.source_row_indices.size());
+      const auto& source_aggregate = *aggregate_specs[aggregate_index];
+      const auto* full_filter =
+          source_aggregate.filter_truth_values.has_value()
+              ? &*source_aggregate.filter_truth_values
+              : nullptr;
+      std::size_t group_input_payload_bytes = 1;
       for (const auto row : group.source_row_indices) {
         if (row >= common.input_batch.rows.size()) {
           return refuse(
               "QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-EVIDENCE-V1",
               "grouped aggregate source-row identity is out of range");
         }
+        for (const auto& value : common.input_batch.rows[row].values) {
+          if (!CheckedAggregateFinalizationAdd(
+                  &group_input_payload_bytes,
+                  value.encoded_value.size()) ||
+              !CheckedAggregateFinalizationAdd(
+                  &group_input_payload_bytes,
+                  value.binary_value.size())) {
+            return refuse(
+                "QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-RESOURCE-V1",
+                "grouped aggregate replay input size overflowed");
+          }
+        }
+      }
+      std::size_t group_filter_bytes = 0;
+      if (full_filter != nullptr &&
+          !CheckedAggregateFinalizationMultiply(
+              group.source_row_indices.size(), sizeof(EngineSqlTruthValue),
+              &group_filter_bytes)) {
+        return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-RESOURCE-V1",
+                      "grouped aggregate replay FILTER size overflowed");
+      }
+      const auto replay_fixed_memory = replay_retained_memory_bytes +
+                                       common.retained_memory_bytes;
+      if (group_input_payload_bytes >
+              *node_memory_grant - replay_fixed_memory ||
+          group_filter_bytes >
+              *node_memory_grant - replay_fixed_memory -
+                  group_input_payload_bytes) {
+        return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-RESOURCE-V1",
+                      "grouped aggregate replay copy exceeds the selected-node grant");
+      }
+      auto aggregate =
+          CloneCanonicalAggregateRequestWithoutRows(source_aggregate);
+      aggregate.physical_dag = common.physical_dag;
+      aggregate.selected_physical_node_id =
+          common.selected_physical_node_id;
+      aggregate.input_batch.columns = common.input_batch.columns;
+      aggregate.retained_memory_bytes = common.retained_memory_bytes;
+      aggregate.input_batch.rows.reserve(group.source_row_indices.size());
+      for (const auto row : group.source_row_indices) {
         aggregate.input_batch.rows.push_back(common.input_batch.rows[row]);
       }
-      if (full_filter.has_value()) {
-        if (full_filter->size() != common.input_batch.rows.size()) {
-          return refuse("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
-                        "grouped aggregate spill FILTER cardinality is not bound");
-        }
+      if (full_filter != nullptr) {
         std::vector<EngineSqlTruthValue> group_filter;
         group_filter.reserve(group.source_row_indices.size());
         for (const auto row : group.source_row_indices) {

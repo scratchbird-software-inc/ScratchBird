@@ -50,6 +50,8 @@ struct TempSpillRequest {
   std::filesystem::path spill_directory;
   std::uint64_t runtime_generation = 1;
   std::uint64_t memory_quota_bytes = 0;
+  std::size_t retained_memory_bytes = 0;
+  std::size_t maximum_live_memory_bytes = 0;
   std::vector<TempSpillInputRow> rows;
   std::size_t top_n = 0;
   TempSpillAuthorityContext authority;
@@ -80,9 +82,13 @@ struct TempSpillResult {
   std::string result_hash;
   std::vector<std::string> output_rows;
   std::vector<std::string> evidence;
+  std::size_t peak_live_memory_bytes = 0;
 };
 
 TempSpillResult ExecuteBoundedTempSpillRoute(const TempSpillRequest& request);
+TempSpillResult ExecuteBoundedTempSpillRoute(TempSpillRequest&& request);
+std::string ComputeOrderedTempSpillSortResultHash(
+    const std::vector<TempSpillInputRow>& rows);
 const char* TempSpillRouteKindName(TempSpillRouteKind kind);
 
 }  // namespace scratchbird::engine::executor
