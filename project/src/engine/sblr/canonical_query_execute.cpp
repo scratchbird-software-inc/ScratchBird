@@ -31836,6 +31836,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
   source_input.object_uuid = object_uuid;
   source_input.key_value_request_order =
       std::move(key_value_request_order);
+  if (multi_get) {
+    source_input.maximum_key_value_request_count =
+        key_value_request.maximum_request_keys;
+    source_input.maximum_key_value_request_bytes =
+        key_value_request.maximum_request_bytes;
+  }
   source_input.physical_node_id =
       key_physical->physical_node_id;
   source_input.selected_alternative_uuid =
@@ -31898,8 +31904,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
   execution_request.current_mga_statement_context = mga;
   execution_request.execute_provider =
       [key_value_request, source_input, public_columns, property_uuid,
-       security_receipt_uuid](const exec::ModelSourceInputDescriptorV1&) mutable {
+       security_receipt_uuid](
+          const exec::ModelSourceInputDescriptorV1& runtime_input) mutable {
         exec::ModelProviderExecutionResultV1 provider;
+        if (runtime_input.key_value_request_order !=
+                source_input.key_value_request_order ||
+            runtime_input.maximum_key_value_request_count !=
+                source_input.maximum_key_value_request_count ||
+            runtime_input.maximum_key_value_request_bytes !=
+                source_input.maximum_key_value_request_bytes) {
+          provider.diagnostic_id = "SB_MODEL_TYPED_EXCHANGE_INVALID_V1";
+          provider.detail =
+              "key/value request-order binding was substituted";
+          return provider;
+        }
         const auto read = api::EngineBoundKeyValueReadV1(key_value_request);
         provider.data_access_observed = read.data_access_observed;
         provider.rows_examined = read.scanned_row_version_count;

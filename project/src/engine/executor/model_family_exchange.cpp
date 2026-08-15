@@ -505,16 +505,55 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
         return descriptor_id != 0 &&
                output_descriptor_ids.insert(descriptor_id).second;
       });
-  std::unordered_set<std::string> request_keys;
-  const bool exact_key_value_request_order =
-      input.operation_id == "KEY_VALUE_MULTI_GET"
-          ? !input.key_value_request_order.empty() &&
-                std::ranges::all_of(
-                    input.key_value_request_order, [&](const auto& key) {
-                      return WellFormedUtf8(key) &&
-                             request_keys.insert(key).second;
-                    })
-          : input.key_value_request_order.empty();
+  bool exact_key_value_request_order = true;
+  if (input.operation_id == "KEY_VALUE_MULTI_GET") {
+    std::uint64_t request_bytes = 0;
+    std::uint64_t carrier_bytes = 0;
+    exact_key_value_request_order =
+        !input.key_value_request_order.empty() &&
+        input.maximum_key_value_request_count != 0 &&
+        input.maximum_key_value_request_bytes != 0 &&
+        input.key_value_request_order.size() <=
+            input.maximum_key_value_request_count &&
+        input.key_value_request_order.size() <=
+            std::numeric_limits<std::uint64_t>::max() /
+                sizeof(std::string);
+    if (exact_key_value_request_order) {
+      carrier_bytes = static_cast<std::uint64_t>(
+          input.key_value_request_order.size() * sizeof(std::string));
+      exact_key_value_request_order =
+          carrier_bytes <= input.maximum_memory_bytes;
+    }
+    for (std::size_t index = 0;
+         exact_key_value_request_order &&
+         index < input.key_value_request_order.size(); ++index) {
+      const auto& key = input.key_value_request_order[index];
+      const auto duplicate = std::find(
+          input.key_value_request_order.begin(),
+          input.key_value_request_order.begin() + index, key);
+      exact_key_value_request_order =
+          WellFormedUtf8(key) &&
+          duplicate == input.key_value_request_order.begin() + index &&
+          key.size() <=
+              std::numeric_limits<std::uint64_t>::max() - request_bytes;
+      if (exact_key_value_request_order) {
+        request_bytes += static_cast<std::uint64_t>(key.size());
+        exact_key_value_request_order =
+            key.size() <= std::numeric_limits<std::uint64_t>::max() -
+                              carrier_bytes;
+      }
+      if (exact_key_value_request_order) {
+        carrier_bytes += static_cast<std::uint64_t>(key.size());
+        exact_key_value_request_order =
+            request_bytes <= input.maximum_key_value_request_bytes &&
+            carrier_bytes <= input.maximum_memory_bytes;
+      }
+    }
+  } else {
+    exact_key_value_request_order = input.key_value_request_order.empty() &&
+        input.maximum_key_value_request_count == 0 &&
+        input.maximum_key_value_request_bytes == 0;
+  }
   if (input.abi_version != 1 ||
       input.input_descriptor_id != "SB_MODEL_SOURCE_INPUT_DESCRIPTOR_V1" ||
       (!relational_family && !document_family && !graph_family && !key_value_family &&

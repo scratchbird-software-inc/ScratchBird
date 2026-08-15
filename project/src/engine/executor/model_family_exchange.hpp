@@ -79,6 +79,8 @@ struct ModelSourceInputDescriptorV1 {
   // the typed exchange can prove that the provider result is its ordered
   // subsequence. This remains empty for every other operation and family.
   std::vector<std::string> key_value_request_order;
+  std::size_t maximum_key_value_request_count{0};
+  std::uint64_t maximum_key_value_request_bytes{0};
   // RCP-079 spatial bindings are engine-resolved before provider access.
   // These remain empty for every non-spatial family.
   std::string spatial_geometry_descriptor_uuid;
