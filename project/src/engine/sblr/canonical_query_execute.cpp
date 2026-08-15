@@ -5570,27 +5570,12 @@ PreparedJoinRoot PrepareJoinRoot(
     result.detail = "join root output lineage is not admitted by this profile";
     return result;
   }
-  const auto columns_are_nullable = [](const exec::DescriptorBatch& batch) {
-    return std::ranges::all_of(batch.columns, [](const auto& column) {
-      return column.nullable &&
-             column.descriptor.encoded_descriptor.find(
-                 "nullability=nullable") != std::string::npos;
-    });
-  };
-  if ((join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
-       join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) &&
-      !columns_are_nullable(left.batch)) {
-    result.detail =
-        "outer join left NULL extension lacks nullable descriptor authority";
-    return result;
-  }
-  if ((join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
-       join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) &&
-      !columns_are_nullable(right.batch)) {
-    result.detail =
-        "outer join right NULL extension lacks nullable descriptor authority";
-    return result;
-  }
+  const bool left_null_extended =
+      join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
+      join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter;
+  const bool right_null_extended =
+      join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
+      join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter;
 
   if (join_kind != exec::CanonicalAcceptedJoinKind::kCross) {
     if (root.bound_expression_ids.size() != 1) {
@@ -5619,7 +5604,8 @@ PreparedJoinRoot PrepareJoinRoot(
   std::size_t published_ordinal = 0;
   const auto append_bindings =
       [&](const std::vector<exec::CanonicalResultColumnBinding>& bindings,
-          const std::size_t physical_base) {
+          const std::size_t physical_base,
+          const bool force_nullable) {
     for (const auto& source : bindings) {
       auto binding = source;
       binding.physical_column_ordinal += physical_base;
@@ -5627,14 +5613,19 @@ PreparedJoinRoot PrepareJoinRoot(
         if (!binding.published_descriptor.has_value()) return false;
         binding.published_descriptor->ordinal =
             static_cast<std::uint32_t>(published_ordinal++);
+        if (force_nullable) {
+          binding.published_descriptor->nullability =
+              exec::CanonicalResultNullability::kNullable;
+        }
       }
       result.result_bindings.push_back(std::move(binding));
     }
     return true;
   };
-  if (!append_bindings(left.result_bindings, 0) ||
+  if (!append_bindings(left.result_bindings, 0, left_null_extended) ||
       (!left_only &&
-       !append_bindings(right.result_bindings, left.batch.columns.size()))) {
+       !append_bindings(right.result_bindings, left.batch.columns.size(),
+                        right_null_extended))) {
     result.result_bindings.clear();
     result.detail = "join visible result binding is incomplete";
     return result;
@@ -10170,6 +10161,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           for (std::size_t column = inner_output_start;
                column < planning.values.batch.columns.size(); ++column) {
             planning.values.batch.columns[column].nullable = true;
+            if (!exec::DeriveCanonicalNullableDescriptorEncoding(
+                    &planning.values.batch.columns[column].descriptor)) {
+              planning.values.detail =
+                  "correlated NULL extension lacks a nullable descriptor carrier";
+              return planning;
+            }
           }
         }
         std::size_t visible_ordinal = 0;
@@ -10230,6 +10227,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               row.values.push_back(std::move(value));
             }
             planning.values.batch.rows.push_back(std::move(row));
+          }
+        }
+        if (null_extend) {
+          for (auto& row : planning.values.batch.rows) {
+            for (std::size_t column = inner_output_start;
+                 column < planning.values.batch.columns.size(); ++column) {
+              row.values[column].descriptor =
+                  planning.values.batch.columns[column].descriptor;
+            }
           }
         }
         const auto validated = exec::ValidateCanonicalDescriptorBatch(
@@ -10875,10 +10881,19 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                                  join_right_values->batch.columns.end());
     }
     const auto left_width = join_left_values->batch.columns.size();
+    std::vector<bool> derived_nullable_columns(state.batch.columns.size(),
+                                               false);
     if (*join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
         *join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) {
       for (std::size_t column = 0; column < left_width; ++column) {
         state.batch.columns[column].nullable = true;
+        if (!exec::DeriveCanonicalNullableDescriptorEncoding(
+                &state.batch.columns[column].descriptor)) {
+          return refuse(
+              std::string(kPayloadDiagnostic),
+              "outer join left result lacks a nullable descriptor carrier");
+        }
+        derived_nullable_columns[column] = true;
       }
     }
     if (*join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
@@ -10886,6 +10901,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       for (std::size_t column = left_width;
            column < state.batch.columns.size(); ++column) {
         state.batch.columns[column].nullable = true;
+        if (!exec::DeriveCanonicalNullableDescriptorEncoding(
+                &state.batch.columns[column].descriptor)) {
+          return refuse(
+              std::string(kPayloadDiagnostic),
+              "outer join right result lacks a nullable descriptor carrier");
+        }
+        derived_nullable_columns[column] = true;
       }
     }
     const auto append_joined = [&](const std::size_t left_ordinal,
@@ -10969,6 +10991,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     } else {
       for (const auto pair : accepted_pairs) {
         append_joined(pair / right_count, pair % right_count);
+      }
+    }
+    for (auto& row : state.batch.rows) {
+      for (std::size_t column = 0; column < state.batch.columns.size();
+           ++column) {
+        if (derived_nullable_columns[column]) {
+          row.values[column].descriptor =
+              state.batch.columns[column].descriptor;
+        }
       }
     }
     state.result_bindings = prepared_join->result_bindings;
