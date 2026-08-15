@@ -752,6 +752,16 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch
             "non-value sentinel or legacy NULL flag reached operator", row,
             column);
       }
+      if (!value.binary_value.empty() &&
+          (IsInt64Type(expected.descriptor) ||
+           IsBoolType(expected.descriptor) ||
+           IsReal64Type(expected.descriptor) ||
+           IsTextType(expected.descriptor))) {
+        return ErrorDiagnostic(
+            "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
+            "encoded scalar value carries an auxiliary binary payload", row,
+            column);
+      }
       if (IsInt64Type(expected.descriptor)) {
         std::int64_t ignored = 0;
         if (!ParseBoundedSignedIntegerStrict(expected.descriptor,
@@ -1549,10 +1559,12 @@ EngineTypedValue EvaluateDescriptorExpression(DescriptorExpressionOperator op,
       }
       if (left.state != EngineValueState::value ||
           right.state != EngineValueState::value || left.is_null ||
-          right.is_null) {
+          right.is_null || !left.binary_value.empty() ||
+          !right.binary_value.empty()) {
         SetDiagnostic(diagnostic, ErrorDiagnostic(
             "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
-            "text concatenation received a non-value sentinel"));
+            "text concatenation received a non-value sentinel or auxiliary "
+            "binary payload"));
         return {};
       }
       if (!IsTextType(left.descriptor) || !IsTextType(right.descriptor)) {
@@ -1581,10 +1593,12 @@ EngineTypedValue EvaluateDescriptorExpression(DescriptorExpressionOperator op,
       }
       if (left.state != EngineValueState::value ||
           right.state != EngineValueState::value || left.is_null ||
-          right.is_null) {
+          right.is_null || !left.binary_value.empty() ||
+          !right.binary_value.empty()) {
         SetDiagnostic(diagnostic, ErrorDiagnostic(
             "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
-            "text equality received a non-value sentinel"));
+            "text equality received a non-value sentinel or auxiliary binary "
+            "payload"));
         return {};
       }
       if (!IsTextType(left.descriptor) || !IsTextType(right.descriptor)) {
@@ -2013,10 +2027,11 @@ Int64DecodeResult DecodeInt64Value(const EngineTypedValue& value) {
   }
   if (value.state !=
           scratchbird::engine::internal_api::EngineValueState::value ||
-      value.is_null) {
+      value.is_null || !value.binary_value.empty()) {
     result.diagnostic = ErrorDiagnostic(
         "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
-        "int64 decode received a non-value sentinel");
+        "int64 decode received a non-value sentinel or auxiliary binary "
+        "payload");
     return result;
   }
   if (!IsInt64Type(value.descriptor)) {
@@ -2049,10 +2064,11 @@ BoolDecodeResult DecodeBoolValue(const EngineTypedValue& value) {
   }
   if (value.state !=
           scratchbird::engine::internal_api::EngineValueState::value ||
-      value.is_null) {
+      value.is_null || !value.binary_value.empty()) {
     result.diagnostic = ErrorDiagnostic(
         "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
-        "boolean decode received a non-value sentinel");
+        "boolean decode received a non-value sentinel or auxiliary binary "
+        "payload");
     return result;
   }
   if (!IsBoolType(value.descriptor)) {
@@ -2088,10 +2104,11 @@ Real64DecodeResult DecodeReal64Value(const EngineTypedValue& value) {
   }
   if (value.state !=
           scratchbird::engine::internal_api::EngineValueState::value ||
-      value.is_null) {
+      value.is_null || !value.binary_value.empty()) {
     result.diagnostic = ErrorDiagnostic(
         "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
-        "real64 decode received a non-value sentinel");
+        "real64 decode received a non-value sentinel or auxiliary binary "
+        "payload");
     return result;
   }
   if (!IsReal64Type(value.descriptor)) {
