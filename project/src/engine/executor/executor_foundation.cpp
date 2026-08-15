@@ -4227,6 +4227,12 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   }
 
   using RowKey = std::vector<std::string>;
+  const auto append_key_field = [](std::string* encoded,
+                                   const std::string_view field) {
+    encoded->append(std::to_string(field.size()));
+    encoded->push_back(':');
+    encoded->append(field);
+  };
   const auto typed_row_key = [&](const DescriptorTuple& row,
                                  RowKey* key,
                                  std::string* detail) {
@@ -4235,7 +4241,7 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     key->reserve(row.values.size());
     for (const auto& value : row.values) {
       if (value.state == api::sql_null) {
-        key->push_back("null");
+        key->push_back("state:null");
         continue;
       }
       const auto& type = value.descriptor.canonical_type_name;
@@ -4275,9 +4281,23 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
         key->push_back("real64:" +
                        std::string(buffer, encoded.ptr));
       } else {
-        std::string encoded = type + ":" + value.encoded_value + ":";
-        encoded.append(reinterpret_cast<const char*>(value.binary_value.data()),
-                       value.binary_value.size());
+        const auto binary = value.binary_value.empty()
+                                ? std::string_view{}
+                                : std::string_view(
+                                      reinterpret_cast<const char*>(
+                                          value.binary_value.data()),
+                                      value.binary_value.size());
+        std::string encoded = "value:";
+        append_key_field(&encoded, type);
+        if (type == "binary" || type == "blob" || type == "bytes") {
+          append_key_field(&encoded,
+                           value.binary_value.empty()
+                               ? std::string_view(value.encoded_value)
+                               : binary);
+        } else {
+          append_key_field(&encoded, value.encoded_value);
+          append_key_field(&encoded, binary);
+        }
         key->push_back(std::move(encoded));
       }
     }
