@@ -110,9 +110,15 @@ bool CompareOrderValues(
       dt::CanonicalTypeIdFromStableName(left.descriptor.canonical_type_name);
   if (type_id == dt::CanonicalTypeId::unknown ||
       left.descriptor.canonical_type_name !=
-          right.descriptor.canonical_type_name ||
-      !left.binary_value.empty() || !right.binary_value.empty()) {
+          right.descriptor.canonical_type_name) {
     *refusal_detail = "order operands do not share a supported scalar encoding";
+    return false;
+  }
+  const bool carries_binary_payload =
+      !left.binary_value.empty() || !right.binary_value.empty();
+  if (carries_binary_payload && type_id != dt::CanonicalTypeId::binary) {
+    *refusal_detail =
+        "order operand carries binary payload for a non-binary type";
     return false;
   }
   const auto null_ordering =
@@ -126,6 +132,18 @@ bool CompareOrderValues(
           scratchbird::engine::internal_api::EngineValueState::sql_null;
   std::string left_encoded = left.encoded_value;
   std::string right_encoded = right.encoded_value;
+  if (!has_null && type_id == dt::CanonicalTypeId::binary) {
+    if (!left.binary_value.empty()) {
+      left_encoded.assign(
+          reinterpret_cast<const char*>(left.binary_value.data()),
+          left.binary_value.size());
+    }
+    if (!right.binary_value.empty()) {
+      right_encoded.assign(
+          reinterpret_cast<const char*>(right.binary_value.data()),
+          right.binary_value.size());
+    }
+  }
   const auto timezone_profile = DescriptorField(
       left.descriptor.encoded_descriptor, "timezone_profile_id");
   bool timezone_normalized = false;
