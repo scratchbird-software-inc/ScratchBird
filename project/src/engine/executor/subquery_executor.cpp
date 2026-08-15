@@ -766,6 +766,7 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
 
   std::vector<CanonicalCorrelatedScopeResult> scopes;
   scopes.reserve(outer_count);
+  std::size_t comparison_count = 0;
   std::size_t result_row_count = 0;
   for (std::size_t outer_index = 0; outer_index < outer_count; ++outer_index) {
     CanonicalCorrelatedScopeResult scope;
@@ -784,6 +785,10 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
             request.inner_batch.rows[inner_index]
                 .values[request.inner_reference_column];
         if (inner_value.state == api::EngineValueState::sql_null) continue;
+        if (comparison_count == request.maximum_comparison_count) {
+          return refuse("correlated subquery comparison bound was exceeded");
+        }
+        ++comparison_count;
         int comparison = 0;
         std::string detail;
         if (!api::QowCompareCanonicalNonCollatedScalarsV1(
@@ -817,7 +822,7 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
   result.diagnostic = {};
   result.scopes = std::move(scopes);
   result.scope_execution_count = outer_count;
-  result.comparison_count = outer_count * inner_count;
+  result.comparison_count = comparison_count;
   result.result_row_count = result_row_count;
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
