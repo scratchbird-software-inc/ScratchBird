@@ -13275,13 +13275,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         const bool scalar =
             node.semantic_variant_id == "subquery.scalar.v1";
         if ((scalar && input_batch.columns.size() != 1) ||
-            input_batch.columns.empty() ||
-            std::ranges::any_of(input_batch.columns, [](const auto& column) {
-              return !column.nullable;
-            })) {
+            input_batch.columns.empty()) {
           return refuse(
               std::string(kPayloadDiagnostic),
-              "cardinality subquery result is not completely nullable");
+              "cardinality subquery result width is invalid");
         }
         if (input_row_count > 1) {
           return refuse(
@@ -13291,8 +13288,33 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         }
         exec::DescriptorBatch output;
         output.columns = input_batch.columns;
+        auto result_bindings = state.result_bindings;
+        for (std::size_t column = 0; column < output.columns.size(); ++column) {
+          if (!output.columns[column].nullable) {
+            output.columns[column].nullable = true;
+            if (!exec::DeriveCanonicalNullableDescriptorEncoding(
+                    &output.columns[column].descriptor)) {
+              return refuse(
+                  std::string(kPayloadDiagnostic),
+                  "cardinality subquery result lacks a nullable descriptor carrier");
+            }
+          }
+          if (result_bindings[column].visible) {
+            if (!result_bindings[column].published_descriptor.has_value()) {
+              return refuse(
+                  std::string(kPayloadDiagnostic),
+                  "cardinality subquery visible result binding is unresolved");
+            }
+            result_bindings[column].published_descriptor->nullability =
+                exec::CanonicalResultNullability::kNullable;
+          }
+        }
         if (input_row_count == 1) {
-          output.rows.push_back(input_batch.rows.front());
+          auto row = input_batch.rows.front();
+          for (std::size_t column = 0; column < row.values.size(); ++column) {
+            row.values[column].descriptor = output.columns[column].descriptor;
+          }
+          output.rows.push_back(std::move(row));
         } else {
           exec::DescriptorTuple row;
           row.values.reserve(output.columns.size());
@@ -13316,13 +13338,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         PreparedCardinalitySubqueryRoot prepared;
         prepared.kind = scalar ? LiveCardinalitySubqueryKind::kScalar
                                : LiveCardinalitySubqueryKind::kRow;
-        prepared.result_columns = input_batch.columns;
+        prepared.result_columns = output.columns;
         prepared.implementation_id =
             scalar ? "subquery.scalar.cardinality.typed.v1"
                    : "subquery.row.cardinality.typed.v1";
         cardinality_subquery_input_row_count = input_row_count;
         prepared_cardinality_subquery = std::move(prepared);
         state.batch = std::move(output);
+        state.result_bindings = std::move(result_bindings);
         implementation_id =
             prepared_cardinality_subquery->implementation_id;
         transformation_rule =
