@@ -22842,6 +22842,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   selected.mga_authority = heap_registration.mga_authority;
   selected.available_executors.push_back(
       std::move(*heap_registration.registration));
+  CanonicalRelationalExpressionRuntimeServices predicate_services;
+  predicate_services.comparison_evaluator =
+      [context = input.context](const api::EngineTypedValue& left,
+                                const api::EngineTypedValue& right,
+                                int* comparison,
+                                std::string* diagnostic_id,
+                                std::string* refusal_detail) {
+        return CompareCanonicalQueryScalarsV1(
+            context, left, right, comparison, diagnostic_id, refusal_detail);
+      };
   selected.available_executors.push_back(MakeLiveJoinRegistration(
       "join." + join_component + ".3vl.nested.v1",
       join_capability_uuid, {},
@@ -22849,7 +22859,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       join_kind, "object-backed heap " + join_operation,
       input.context, true,
       predicate_join ? join->bound_expression_ids.front() : 0,
-      std::move(predicate_row_binding), input.relational_dag));
+      std::move(predicate_row_binding), input.relational_dag,
+      std::move(predicate_services)));
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
       input.context.statement_uuid.canonical;
@@ -29318,6 +29329,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
   CanonicalObjectFreeValuesExecutionRequest canonical_planning_request{
       input.context, dag, canonical_admission.request,
       canonical_admission.admission};
+  canonical_planning_request.expression_services.comparison_evaluator =
+      [context = input.context](const api::EngineTypedValue& left,
+                                const api::EngineTypedValue& right,
+                                int* comparison,
+                                std::string* diagnostic_id,
+                                std::string* refusal_detail) {
+        return CompareCanonicalQueryScalarsV1(
+            context, left, right, comparison, diagnostic_id, refusal_detail);
+      };
 
   MaterializedValues composition_state;
   composition_state.ok = true;
@@ -43733,12 +43753,22 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   source_registration.executor_capability_uuid =
       shared_source_capability_uuid;
   selected.available_executors.push_back(std::move(source_registration));
+  CanonicalRelationalExpressionRuntimeServices predicate_services;
+  predicate_services.comparison_evaluator =
+      [context = input.context](const api::EngineTypedValue& left,
+                                const api::EngineTypedValue& right,
+                                int* comparison,
+                                std::string* diagnostic_id,
+                                std::string* refusal_detail) {
+        return CompareCanonicalQueryScalarsV1(
+            context, left, right, comparison, diagnostic_id, refusal_detail);
+      };
   selected.available_executors.push_back(MakeLiveJoinRegistration(
       "join." + join_component + ".3vl.nested.v1", join_capability_uuid, {},
       static_cast<std::size_t>(maximum_pairs_u64), maximum_rows, join_kind,
       "columnar model-family join", input.context, true,
       predicate_join ? join->bound_expression_ids.front() : 0,
-      std::move(predicate_binding), dag));
+      std::move(predicate_binding), dag, std::move(predicate_services)));
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
       input.context.statement_uuid.canonical;
