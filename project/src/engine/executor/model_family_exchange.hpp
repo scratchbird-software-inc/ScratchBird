@@ -75,6 +75,10 @@ struct ModelSourceInputDescriptorV1 {
   std::vector<std::string> operation_ids;
   std::string operation_id;
   std::string object_uuid;
+  // KEY_VALUE_MULTI_GET binds the first-distinct request sequence here so
+  // the typed exchange can prove that the provider result is its ordered
+  // subsequence. This remains empty for every other operation and family.
+  std::vector<std::string> key_value_request_order;
   // RCP-079 spatial bindings are engine-resolved before provider access.
   // These remain empty for every non-spatial family.
   std::string spatial_geometry_descriptor_uuid;

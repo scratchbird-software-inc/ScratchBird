@@ -31819,10 +31819,23 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
           ? input.context.query_cancellation_requested
           : std::function<bool()>([] { return false; });
 
+  std::vector<std::string> key_value_request_order;
+  if (multi_get) {
+    std::unordered_set<std::string> first_distinct_keys;
+    key_value_request_order.reserve(request_values.size());
+    for (const auto& value : request_values) {
+      if (first_distinct_keys.insert(value.encoded_value).second) {
+        key_value_request_order.push_back(value.encoded_value);
+      }
+    }
+  }
+
   exec::ModelSourceInputDescriptorV1 source_input;
   source_input.family_id = "key_value";
   source_input.operation_id = planning.operation_id;
   source_input.object_uuid = object_uuid;
+  source_input.key_value_request_order =
+      std::move(key_value_request_order);
   source_input.physical_node_id =
       key_physical->physical_node_id;
   source_input.selected_alternative_uuid =

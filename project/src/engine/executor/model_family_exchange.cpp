@@ -505,6 +505,16 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
         return descriptor_id != 0 &&
                output_descriptor_ids.insert(descriptor_id).second;
       });
+  std::unordered_set<std::string> request_keys;
+  const bool exact_key_value_request_order =
+      input.operation_id == "KEY_VALUE_MULTI_GET"
+          ? !input.key_value_request_order.empty() &&
+                std::ranges::all_of(
+                    input.key_value_request_order, [&](const auto& key) {
+                      return WellFormedUtf8(key) &&
+                             request_keys.insert(key).second;
+                    })
+          : input.key_value_request_order.empty();
   if (input.abi_version != 1 ||
       input.input_descriptor_id != "SB_MODEL_SOURCE_INPUT_DESCRIPTOR_V1" ||
       (!relational_family && !document_family && !graph_family && !key_value_family &&
@@ -521,7 +531,7 @@ ModelInputValidationResultV1 ValidateModelFamilySourceInputV1(
       input.descriptor_generation == 0 || input.security_generation == 0 ||
       input.policy_generation == 0 || input.resource_generation == 0 ||
       input.output_descriptor_ids.empty() || input.maximum_rows == 0 ||
-      !exact_output_descriptor_ids ||
+      !exact_output_descriptor_ids || !exact_key_value_request_order ||
       (vector_family && input.output_descriptor_ids.size() != 3) ||
       (search_family && input.output_descriptor_ids.size() != 5) ||
       (spatial_family &&
@@ -861,6 +871,7 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     std::unordered_set<std::string> document_uuids;
     std::unordered_set<std::string> row_uuids;
     std::unordered_set<std::string> path_uuids;
+    std::size_t key_value_request_cursor = 0;
     for (std::size_t identity_ordinal = 0;
          identity_ordinal < provider_batch.ordered_row_identities.size();
          ++identity_ordinal) {
@@ -1044,6 +1055,22 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
               kModelTypedExchangeInvalid,
               "key/value prefix identities do not satisfy UTF-8 byte order");
         }
+      }
+      if (key_value_family &&
+          input.operation_id == "KEY_VALUE_MULTI_GET") {
+        while (key_value_request_cursor <
+                   input.key_value_request_order.size() &&
+               input.key_value_request_order[key_value_request_cursor] !=
+                   identity.key) {
+          ++key_value_request_cursor;
+        }
+        if (key_value_request_cursor ==
+            input.key_value_request_order.size()) {
+          return Refuse(
+              kModelTypedExchangeInvalid,
+              "key/value multi-get identities are not an ordered request subsequence");
+        }
+        ++key_value_request_cursor;
       }
       if (time_series_family && identity_ordinal != 0) {
         const auto& previous =
