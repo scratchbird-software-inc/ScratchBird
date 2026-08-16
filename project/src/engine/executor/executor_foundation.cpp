@@ -5170,15 +5170,7 @@ CanonicalPivotResult ExecuteCanonicalPivot(
     }
   }
   const auto input_validation = ValidateCanonicalDescriptorBatch(
-      request.input_batch,
-      [&] {
-        std::vector<std::uint32_t> ids;
-        ids.reserve(request.input_batch.columns.size());
-        for (const auto& column : request.input_batch.columns) {
-          ids.push_back(column.descriptor_id);
-        }
-        return ids;
-      }());
+      request.input_batch, pivot_input_node->output_descriptor_ids);
   if (!input_validation.ok) {
     return refuse(input_validation.diagnostic_code,
                   input_validation.detail);
@@ -5697,6 +5689,23 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
     return refuse("QOW-DIAG-QRY-019-UNPIVOT-PHYSICAL-V1",
                   "UNPIVOT is not the exact selected unary physical root");
   }
+  const PhysicalNodeRecord* unpivot_input_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        unpivot_node->input_physical_node_ids.front()) {
+      unpivot_input_node = &node;
+      break;
+    }
+  }
+  if (unpivot_input_node == nullptr) {
+    return refuse("QOW-DIAG-QRY-019-UNPIVOT-PHYSICAL-V1",
+                  "UNPIVOT selected input physical node is absent");
+  }
+  if (request.null_policy != CanonicalPivotNullPolicy::kInclude &&
+      request.null_policy != CanonicalPivotNullPolicy::kExclude) {
+    return refuse("QOW-DIAG-QRY-019-UNPIVOT-BINDING-V1",
+                  "UNPIVOT NULL policy is not canonical");
+  }
   if (request.group_columns.empty() || request.in_items.empty() ||
       request.maximum_output_row_count == 0 ||
       request.maximum_output_cell_count == 0) {
@@ -5742,15 +5751,7 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
     }
   }
   const auto input_validation = ValidateCanonicalDescriptorBatch(
-      request.input_batch,
-      [&] {
-        std::vector<std::uint32_t> ids;
-        ids.reserve(request.input_batch.columns.size());
-        for (const auto& column : request.input_batch.columns) {
-          ids.push_back(column.descriptor_id);
-        }
-        return ids;
-      }());
+      request.input_batch, unpivot_input_node->output_descriptor_ids);
   if (!input_validation.ok) {
     return refuse(input_validation.diagnostic_code,
                   input_validation.detail);
