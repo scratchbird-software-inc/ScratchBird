@@ -11536,7 +11536,7 @@ MakeLiveRecursiveCteRegistration(
           recursive.cancellation_evidence_uuid =
               cancellation_evidence_uuid;
           recursive.recursive_step =
-              [term = prepared.term,
+              [term = &prepared.term,
                maximum_output_row_count =
                    prepared.maximum_term_output_row_count,
                recursive_memory_state,
@@ -11545,7 +11545,7 @@ MakeLiveRecursiveCteRegistration(
                   const exec::DescriptorBatch& current,
                   const std::size_t iteration) {
                 auto executed = ExecutePreparedRecursiveCteTerm(
-                    term, current, iteration,
+                    *term, current, iteration,
                     maximum_output_row_count,
                     recursive_cancellation_requested);
                 if (executed.cancellation_probe_failure) {
@@ -11614,7 +11614,7 @@ MakeLiveRecursiveCteRegistration(
           working.cancellation_evidence_uuid =
               cancellation_evidence_uuid;
           working.recursive_step =
-              [term = prepared.term,
+              [term = &prepared.term,
                maximum_output_row_count =
                    prepared.maximum_term_output_row_count,
                recursive_memory_state,
@@ -11623,7 +11623,7 @@ MakeLiveRecursiveCteRegistration(
                   const exec::DescriptorBatch& current,
                   const std::size_t iteration) {
                 auto executed = ExecutePreparedRecursiveCteTerm(
-                    term, current, iteration,
+                    *term, current, iteration,
                     maximum_output_row_count,
                     recursive_cancellation_requested);
                 if (executed.cancellation_probe_failure) {
