@@ -10181,8 +10181,17 @@ MakeLiveGroupedCountSumRegistration(
               "composed grouped COUNT/SUM input or projection is invalid";
           return step;
         }
-        exec::TypedPhysicalNodeDag execution_dag = dag;
+        const auto& input_batch =
+            *inputs.front().materialized_output_batch;
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id ||
+            !prepared.grouping_projection_columns.empty()) {
+          scoped_execution_dag.emplace(dag);
+          execution_dag = &*scoped_execution_dag;
+        }
         if (node.physical_node_id != dag.root_physical_node_id) {
+          auto& execution_view = *scoped_execution_dag;
           std::unordered_set<std::uint64_t> execution_view_nodes;
           std::vector<std::uint64_t> pending{node.physical_node_id};
           while (!pending.empty()) {
@@ -10207,17 +10216,18 @@ MakeLiveGroupedCountSumRegistration(
                            found->input_physical_node_ids.begin(),
                            found->input_physical_node_ids.end());
           }
-          std::erase_if(execution_dag.nodes, [&](const auto& candidate) {
+          std::erase_if(execution_view.nodes, [&](const auto& candidate) {
             return !execution_view_nodes.contains(candidate.physical_node_id);
           });
-          execution_dag.root_physical_node_id = node.physical_node_id;
+          execution_view.root_physical_node_id = node.physical_node_id;
         }
         if (!prepared.grouping_projection_columns.empty()) {
+          auto& execution_view = *scoped_execution_dag;
           const auto runtime_node = std::ranges::find_if(
-              execution_dag.nodes, [&](const auto& candidate) {
+              execution_view.nodes, [&](const auto& candidate) {
                 return candidate.physical_node_id == node.physical_node_id;
               });
-          if (runtime_node == execution_dag.nodes.end() ||
+          if (runtime_node == execution_view.nodes.end() ||
               runtime_node->output_descriptor_ids.size() !=
                   prepared.key_terms.size() + 2 +
                       prepared.grouping_projection_columns.size()) {
@@ -10274,14 +10284,11 @@ MakeLiveGroupedCountSumRegistration(
         exec::CanonicalGroupedAggregateSetRuntimeRequest grouped_request;
         auto& first = grouped_request.first_aggregate;
         first.aggregate_request = make_aggregate(prepared.count);
-        first.aggregate_request.physical_dag = std::move(execution_dag);
         first.aggregate_request.selected_physical_node_id =
             node.physical_node_id;
-        first.aggregate_request.input_batch =
-            *inputs.front().materialized_output_batch;
         first.aggregate_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
-                mga_context, first.aggregate_request.physical_dag);
+                mga_context, *execution_dag);
         first.group_key_terms = prepared.key_terms;
         first.group_result_columns = prepared.key_result_columns;
         first.grouping_sets = prepared.grouping_sets;
@@ -10294,8 +10301,8 @@ MakeLiveGroupedCountSumRegistration(
         grouped_request.additional_aggregates = {std::move(sum)};
         grouped_request.maximum_combined_final_output_bytes =
             *aggregate_memory_bound;
-        auto grouped =
-            exec::ExecuteCanonicalGroupedAggregateSetRuntime(grouped_request);
+        auto grouped = exec::ExecuteCanonicalGroupedAggregateSetRuntime(
+            grouped_request, *execution_dag, input_batch);
         if (!grouped.diagnostic.ok) {
           step.diagnostic = std::move(grouped.diagnostic);
           return step;
@@ -10408,8 +10415,7 @@ MakeLiveGroupedCountSumRegistration(
         }
         step.authority = grouped.authority;
         step.result_handle_id = node.physical_node_id;
-        step.input_row_count =
-            first.aggregate_request.input_batch.rows.size();
+        step.input_row_count = input_batch.rows.size();
         step.rows_examined = step.input_row_count;
         step.output_row_count = grouped.output_batch.rows.size();
         step.materialized_output_batch = std::move(grouped.output_batch);
@@ -20920,15 +20926,22 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         exec::CanonicalGroupedAggregateSetRuntimeRequest grouped_request;
         auto& first = grouped_request.first_aggregate;
         first.aggregate_request = make_aggregate(prepared_root.count);
-        auto grouped_runtime_dag = dag;
+        const exec::TypedPhysicalNodeDag* grouped_runtime_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_grouped_runtime_dag;
+        if (has_having ||
+            !prepared_root.grouping_projection_columns.empty()) {
+          scoped_grouped_runtime_dag.emplace(dag);
+          grouped_runtime_dag = &*scoped_grouped_runtime_dag;
+        }
         if (has_having) {
+          auto& execution_view = *scoped_grouped_runtime_dag;
           const auto physical_filter = std::ranges::find_if(
-              grouped_runtime_dag.nodes, [&](const auto& candidate) {
+              execution_view.nodes, [&](const auto& candidate) {
                 return candidate.physical_node_id ==
-                           grouped_runtime_dag.root_physical_node_id &&
+                           execution_view.root_physical_node_id &&
                        candidate.node_kind == exec::PhysicalNodeKind::kFilter;
               });
-          if (physical_filter == grouped_runtime_dag.nodes.end()) {
+          if (physical_filter == execution_view.nodes.end()) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
                 "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
@@ -20936,15 +20949,16 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
                 "grouped HAVING physical FILTER root is missing";
             return step;
           }
-          grouped_runtime_dag.nodes.erase(physical_filter);
-          grouped_runtime_dag.root_physical_node_id = node.physical_node_id;
+          execution_view.nodes.erase(physical_filter);
+          execution_view.root_physical_node_id = node.physical_node_id;
         }
         if (!prepared_root.grouping_projection_columns.empty()) {
+          auto& execution_view = *scoped_grouped_runtime_dag;
           const auto runtime_node = std::ranges::find_if(
-              grouped_runtime_dag.nodes, [&](const auto& candidate) {
+              execution_view.nodes, [&](const auto& candidate) {
                 return candidate.physical_node_id == node.physical_node_id;
               });
-          if (runtime_node == grouped_runtime_dag.nodes.end() ||
+          if (runtime_node == execution_view.nodes.end() ||
               runtime_node->output_descriptor_ids.size() !=
                   prepared_root.key_terms.size() + 2 +
                       prepared_root.grouping_projection_columns.size()) {
@@ -20958,13 +20972,11 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
           runtime_node->output_descriptor_ids.resize(
               prepared_root.key_terms.size() + 2);
         }
-        first.aggregate_request.physical_dag = std::move(grouped_runtime_dag);
         first.aggregate_request.selected_physical_node_id =
             node.physical_node_id;
-        first.aggregate_request.input_batch = input_batch;
         first.aggregate_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context,
-                                                first.aggregate_request.physical_dag);
+                                                *grouped_runtime_dag);
         first.group_key_terms = prepared_root.key_terms;
         first.group_result_columns = prepared_root.key_result_columns;
         first.grouping_sets = prepared_root.grouping_sets;
@@ -20973,17 +20985,17 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         first.maximum_combined_final_output_bytes =
             *aggregate_memory_bound;
         auto additional_sum = make_aggregate(prepared_root.sum);
-        // Grouped-set runtimes deliberately share the first aggregate's DAG,
-        // selected node, and input batch.  The additional specification still
-        // has to carry the exact same statement authority so it cannot become
-        // a stale or detached participant in that shared execution.
+        // Grouped-set runtimes deliberately share one borrowed execution DAG,
+        // selected node, and input batch. The additional specification still
+        // carries the same statement authority without shadow carriers.
         additional_sum.mga_authority = first.aggregate_request.mga_authority;
         grouped_request.additional_aggregates = {std::move(additional_sum)};
         grouped_request.maximum_combined_final_output_bytes =
             *aggregate_memory_bound;
 
         auto aggregate_result =
-            exec::ExecuteCanonicalGroupedAggregateSetRuntime(grouped_request);
+            exec::ExecuteCanonicalGroupedAggregateSetRuntime(
+                grouped_request, *grouped_runtime_dag, input_batch);
         if (!aggregate_result.diagnostic.ok) {
           step.diagnostic = std::move(aggregate_result.diagnostic);
           return step;

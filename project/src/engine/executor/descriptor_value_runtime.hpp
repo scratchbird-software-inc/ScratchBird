@@ -2846,9 +2846,24 @@ ComputeCanonicalAggregateGroupingMetadata(
     const CanonicalAggregateGroupingSet& grouping_set);
 CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
     const CanonicalGroupedAggregateRuntimeRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The aggregate request's owned DAG and input carriers must remain
+// in their exact default states.
+CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
+    const CanonicalGroupedAggregateRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalGroupedAggregateSetRuntimeResult
 ExecuteCanonicalGroupedAggregateSetRuntime(
     const CanonicalGroupedAggregateSetRuntimeRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The first aggregate request's owned DAG and input carriers must
+// remain in their exact default states.
+CanonicalGroupedAggregateSetRuntimeResult
+ExecuteCanonicalGroupedAggregateSetRuntime(
+    const CanonicalGroupedAggregateSetRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalPivotResult ExecuteCanonicalPivot(
     const CanonicalPivotRequest& request);
 CanonicalUnpivotResult ExecuteCanonicalUnpivot(
