@@ -290,6 +290,120 @@ bool ReserveRecursiveCteVector(std::vector<T>* values,
   return true;
 }
 
+bool CopyRecursiveCteColumnsExact(
+    const std::vector<ExecutorColumnDescriptor>& source,
+    std::vector<ExecutorColumnDescriptor>* destination,
+    const std::string_view label,
+    std::string* detail) {
+  if (destination == nullptr || detail == nullptr) {
+    if (detail != nullptr) {
+      *detail = "recursive CTE " + std::string(label) +
+                " destination is absent";
+    }
+    return false;
+  }
+  if (!destination->empty() || destination->capacity() != 0) {
+    *detail = "recursive CTE " + std::string(label) +
+              " destination is not fresh";
+    return false;
+  }
+  if (!ReserveRecursiveCteVector(
+          destination, source.size(), label, detail)) {
+    return false;
+  }
+  try {
+    for (const auto& column : source) destination->push_back(column);
+  } catch (const std::bad_alloc&) {
+    *detail = "recursive CTE " + std::string(label) +
+              " allocation was refused";
+    return false;
+  } catch (const std::length_error&) {
+    *detail = "recursive CTE " + std::string(label) +
+              " capacity exceeds the container limit";
+    return false;
+  }
+  if (destination->size() != source.size() ||
+      destination->capacity() != source.size()) {
+    *detail = "recursive CTE " + std::string(label) +
+              " capacity differs from its charged logical capacity";
+    return false;
+  }
+  return true;
+}
+
+bool AppendRecursiveCteValueExact(
+    const scratchbird::engine::internal_api::EngineTypedValue& source,
+    std::vector<scratchbird::engine::internal_api::EngineTypedValue>*
+        destination,
+    const std::string_view label,
+    std::string* detail) {
+  if (destination == nullptr || detail == nullptr) return false;
+  scratchbird::engine::internal_api::EngineTypedValue copied;
+  try {
+    copied.descriptor = source.descriptor;
+    copied.encoded_value = source.encoded_value;
+    copied.is_null = source.is_null;
+    copied.state = source.state;
+  } catch (const std::bad_alloc&) {
+    *detail = "recursive CTE " + std::string(label) +
+              " value allocation was refused";
+    return false;
+  } catch (const std::length_error&) {
+    *detail = "recursive CTE " + std::string(label) +
+              " value capacity exceeds the container limit";
+    return false;
+  }
+  if (!ReserveRecursiveCteVector(
+          &copied.binary_value, source.binary_value.size(), label, detail)) {
+    return false;
+  }
+  try {
+    copied.binary_value.insert(copied.binary_value.end(),
+                               source.binary_value.begin(),
+                               source.binary_value.end());
+    destination->push_back(std::move(copied));
+  } catch (const std::bad_alloc&) {
+    *detail = "recursive CTE " + std::string(label) +
+              " value allocation was refused";
+    return false;
+  } catch (const std::length_error&) {
+    *detail = "recursive CTE " + std::string(label) +
+              " value capacity exceeds the container limit";
+    return false;
+  }
+  const auto& appended = destination->back();
+  if (appended.binary_value.size() != source.binary_value.size() ||
+      appended.binary_value.capacity() != source.binary_value.size()) {
+    *detail = "recursive CTE " + std::string(label) +
+              " binary value capacity differs from its charged logical capacity";
+    return false;
+  }
+  return true;
+}
+
+bool AdmitOwnedRecursiveCteTupleCapacity(
+    const DescriptorTuple& tuple,
+    const std::size_t admitted_width,
+    const std::string_view label,
+    std::string* detail) {
+  if (detail == nullptr || tuple.values.size() != admitted_width ||
+      tuple.values.capacity() != admitted_width) {
+    if (detail != nullptr) {
+      *detail = "recursive CTE " + std::string(label) +
+                " value capacity differs from its charged logical capacity";
+    }
+    return false;
+  }
+  for (const auto& value : tuple.values) {
+    if (value.binary_value.capacity() != value.binary_value.size()) {
+      *detail = "recursive CTE " + std::string(label) +
+                " binary value capacity differs from its charged logical capacity";
+      return false;
+    }
+  }
+  return true;
+}
+
 bool AppendNormalizedRecursiveCteTuple(
     const DescriptorTuple& source,
     const std::size_t expected_width,
@@ -312,7 +426,14 @@ bool AppendNormalizedRecursiveCteTuple(
   }
   try {
     for (const auto& value : source.values) {
-      normalized.values.push_back(value);
+      if (!AppendRecursiveCteValueExact(
+              value, &normalized.values, label, detail)) {
+        return false;
+      }
+    }
+    if (!AdmitOwnedRecursiveCteTupleCapacity(
+            normalized, expected_width, label, detail)) {
+      return false;
     }
     destination->push_back(std::move(normalized));
   } catch (const std::bad_alloc&) {
@@ -939,6 +1060,7 @@ namespace {
 template <typename RecursiveStep>
 CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
     const CanonicalRecursiveCteWorkingRequest& request,
+    const CanonicalExecutionMgaAuthority& execution_authority,
     const DescriptorBatch& anchor_batch,
     const RecursiveStep& recursive_step,
     const bool recursive_step_bound,
@@ -980,7 +1102,7 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
   };
 
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      execution_authority, request.physical_dag);
   if (!authority_validation.ok) {
     return refuse(authority_validation.diagnostic_code + ":" +
                   authority_validation.detail);
@@ -1160,9 +1282,13 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
   std::vector<CanonicalRecursiveCteIteration> iterations;
   std::string capacity_detail;
   try {
-    accumulated.columns = anchor_batch.columns;
-    working.columns = anchor_batch.columns;
-    if (!ReserveRecursiveCteVector(
+    if (!CopyRecursiveCteColumnsExact(
+            anchor_batch.columns, &accumulated.columns,
+            "accumulated column", &capacity_detail) ||
+        !CopyRecursiveCteColumnsExact(
+            anchor_batch.columns, &working.columns,
+            "working column", &capacity_detail) ||
+        !ReserveRecursiveCteVector(
             &accumulated.rows, request.maximum_result_row_count,
             "accumulated row", &capacity_detail) ||
         !ReserveRecursiveCteVector(
@@ -1206,7 +1332,7 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
 
     DescriptorBatch intermediate;
     const auto pre_step_authority = RevalidateCanonicalExecutionMgaAuthority(
-        request.mga_authority, request.physical_dag);
+        execution_authority, request.physical_dag);
     if (!pre_step_authority.ok) {
       return refuse(pre_step_authority.diagnostic_code + ":" +
                     pre_step_authority.detail);
@@ -1235,7 +1361,7 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
       return refuse("recursive CTE step failed with an unknown exception");
     }
     const auto post_step_authority = RevalidateCanonicalExecutionMgaAuthority(
-        request.mga_authority, request.physical_dag);
+        execution_authority, request.physical_dag);
     if (!post_step_authority.ok) {
       return refuse(post_step_authority.diagnostic_code + ":" +
                     post_step_authority.detail);
@@ -1298,8 +1424,10 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
 
     DescriptorBatch normalized_working;
     try {
-      normalized_working.columns = anchor_batch.columns;
-      if (!ReserveRecursiveCteVector(
+      if (!CopyRecursiveCteColumnsExact(
+              anchor_batch.columns, &normalized_working.columns,
+              "next working column", &capacity_detail) ||
+          !ReserveRecursiveCteVector(
               &normalized_working.rows,
               request.maximum_working_row_count,
               "next working row", &capacity_detail)) {
@@ -1413,7 +1541,7 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
     return refuse_memory(memory_state->refusal_detail);
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      execution_authority, request.physical_dag);
   if (!result_authority.ok) {
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
@@ -1444,25 +1572,17 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
-  result.mga_statement_context = request.mga_authority.statement_context;
+  result.mga_statement_context = execution_authority.statement_context;
   return result;
 }
 
-CanonicalRecursiveCteWorkingResult
-ExecuteCanonicalRecursiveCteWorkingAdmitted(
-    const CanonicalRecursiveCteWorkingRequest& request) {
-  return ExecuteCanonicalRecursiveCteWorkingBound(
-      request, request.anchor_batch, request.recursive_step,
-      static_cast<bool>(request.recursive_step), false, true, nullptr,
-      "cte.recursive.working.typed.v1",
-      request.retained_input_payload_bytes, request.memory_state);
-}
 }  // namespace
 
 CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     const CanonicalRecursiveCteWorkingRequest& request) {
   return ExecuteCanonicalRecursiveCteWorkingBound(
-      request, request.anchor_batch, request.recursive_step,
+      request, request.mga_authority, request.anchor_batch,
+      request.recursive_step,
       static_cast<bool>(request.recursive_step), true, true, nullptr,
       "cte.recursive.working.typed.v1",
       request.retained_input_payload_bytes, request.memory_state);
@@ -1667,8 +1787,9 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
   std::vector<DescriptorTuple> seen_rows;
   if (!working.recursive_step) {
     working_result = ExecuteCanonicalRecursiveCteWorkingBound(
-        working, working.anchor_batch, working.recursive_step, false, false,
-        true, nullptr, selected_node->implementation_id,
+        working, working.mga_authority, working.anchor_batch,
+        working.recursive_step, false, false, true, nullptr,
+        selected_node->implementation_id,
         retained_payload_bytes,
         memory_state);
   } else if (request.union_mode ==
@@ -1898,14 +2019,10 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
         return true;
       };
     DescriptorBatch distinct_anchor;
-    try {
-      distinct_anchor.columns = working.anchor_batch.columns;
-    } catch (const std::bad_alloc&) {
-      return refuse_memory(
-          "recursive CTE UNION DISTINCT anchor column allocation was refused");
-    } catch (const std::length_error&) {
-      return refuse_memory(
-          "recursive CTE UNION DISTINCT anchor column capacity exceeds the container limit");
+    if (!CopyRecursiveCteColumnsExact(
+            working.anchor_batch.columns, &distinct_anchor.columns,
+            "UNION DISTINCT anchor column", &capacity_detail)) {
+      return refuse_memory(std::move(capacity_detail));
     }
     if (!ReserveRecursiveCteVector(
             &distinct_anchor.rows,
@@ -2010,15 +2127,10 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
           }
           DescriptorBatch distinct;
           std::string capacity_detail;
-          try {
-            distinct.columns = generated.columns;
-          } catch (const std::bad_alloc&) {
-            memory_state->refusal_detail =
-                "recursive CTE UNION DISTINCT output column allocation was refused";
-            throw std::runtime_error(memory_state->refusal_detail);
-          } catch (const std::length_error&) {
-            memory_state->refusal_detail =
-                "recursive CTE UNION DISTINCT output column capacity exceeds the container limit";
+          if (!CopyRecursiveCteColumnsExact(
+                  generated.columns, &distinct.columns,
+                  "UNION DISTINCT output column", &capacity_detail)) {
+            memory_state->refusal_detail = std::move(capacity_detail);
             throw std::runtime_error(memory_state->refusal_detail);
           }
           if (!ReserveRecursiveCteVector(
@@ -2073,14 +2185,16 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
           return distinct;
         };
     working_result = ExecuteCanonicalRecursiveCteWorkingBound(
-        working, distinct_anchor, distinct_recursive_step,
+        working, working.mga_authority, distinct_anchor,
+        distinct_recursive_step,
         static_cast<bool>(working.recursive_step), false,
         false, &recursive_output_capacity_failure,
         selected_node->implementation_id, retained_payload_bytes,
         memory_state);
   } else {
     working_result = ExecuteCanonicalRecursiveCteWorkingBound(
-        working, working.anchor_batch, working.recursive_step,
+        working, working.mga_authority, working.anchor_batch,
+        working.recursive_step,
         static_cast<bool>(working.recursive_step), false,
         true, nullptr, selected_node->implementation_id,
         retained_payload_bytes, memory_state);
@@ -2567,7 +2681,11 @@ ExecuteCanonicalRecursiveCteSearchCycle(
                           request.anchor_batch.columns.end());
     output.columns.push_back(request.search_sequence_column);
     output.columns.push_back(request.cycle_mark_column);
-    working.columns = request.anchor_batch.columns;
+    if (!CopyRecursiveCteColumnsExact(
+            request.anchor_batch.columns, &working.columns,
+            "SEARCH/CYCLE working column", &capacity_detail)) {
+      return refuse_memory(std::move(capacity_detail));
+    }
     for (const auto& row : request.anchor_batch.rows) {
       if (!AppendNormalizedRecursiveCteTuple(
               row, request.anchor_batch.columns.size(),
@@ -2621,10 +2739,22 @@ ExecuteCanonicalRecursiveCteSearchCycle(
         memory_state->refusal_detail = std::move(capacity_detail);
         throw std::runtime_error(memory_state->refusal_detail);
       }
-      projected.values.insert(projected.values.end(),
-                              row.values.begin(), row.values.end());
+      for (const auto& value : row.values) {
+        if (!AppendRecursiveCteValueExact(
+                value, &projected.values,
+                "SEARCH/CYCLE projected anchor value", &capacity_detail)) {
+          memory_state->refusal_detail = std::move(capacity_detail);
+          throw std::runtime_error(memory_state->refusal_detail);
+        }
+      }
       projected.values.push_back(sequence_value(sequence));
       projected.values.push_back(cycle_value(false));
+      if (!AdmitOwnedRecursiveCteTupleCapacity(
+              projected, request.anchor_batch.columns.size() + 2,
+              "SEARCH/CYCLE projected anchor", &capacity_detail)) {
+        memory_state->refusal_detail = std::move(capacity_detail);
+        throw std::runtime_error(memory_state->refusal_detail);
+      }
       output.rows.push_back(std::move(projected));
       output_payload_bytes += projected_payload_bytes;
       memory_state->kernel_live_payload_bytes =
@@ -2783,7 +2913,12 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     std::vector<std::size_t> next_working_path_node_indices;
     std::size_t next_working_payload_bytes = 0;
     try {
-      next_working.columns = request.anchor_batch.columns;
+      if (!CopyRecursiveCteColumnsExact(
+              request.anchor_batch.columns, &next_working.columns,
+              "SEARCH/CYCLE next working column", &capacity_detail)) {
+        memory_state->refusal_detail = std::move(capacity_detail);
+        throw std::runtime_error(memory_state->refusal_detail);
+      }
       const auto next_working_capacity =
           std::min(generated.batch.rows.size(),
                    request.maximum_working_row_count);
@@ -2902,11 +3037,23 @@ ExecuteCanonicalRecursiveCteSearchCycle(
           memory_state->refusal_detail = std::move(capacity_detail);
           throw std::runtime_error(memory_state->refusal_detail);
         }
-        projected.values.insert(projected.values.end(),
-                                generated_row.values.begin(),
-                                generated_row.values.end());
+        for (const auto& value : generated_row.values) {
+          if (!AppendRecursiveCteValueExact(
+                  value, &projected.values,
+                  "SEARCH/CYCLE projected recursive value",
+                  &capacity_detail)) {
+            memory_state->refusal_detail = std::move(capacity_detail);
+            throw std::runtime_error(memory_state->refusal_detail);
+          }
+        }
         projected.values.push_back(sequence_value(sequence));
         projected.values.push_back(cycle_value(cycle));
+        if (!AdmitOwnedRecursiveCteTupleCapacity(
+                projected, request.anchor_batch.columns.size() + 2,
+                "SEARCH/CYCLE projected recursive", &capacity_detail)) {
+          memory_state->refusal_detail = std::move(capacity_detail);
+          throw std::runtime_error(memory_state->refusal_detail);
+        }
         output.rows.push_back(std::move(projected));
         output_payload_bytes = prospective_output_payload;
         metadata.push_back(
@@ -3117,26 +3264,19 @@ CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
     return refuse("recursive CTE anchor exceeded the encoded-value byte grant");
   }
 
-  CanonicalRecursiveCteWorkingRequest working = request.working_request;
-  for (auto& node : working.physical_dag.nodes) {
-    if (node.physical_node_id == working.selected_physical_node_id) {
-      node.implementation_id = "cte.recursive.working.typed.v1";
-      break;
-    }
-  }
-  const auto recursive_step = working.recursive_step;
+  const auto* recursive_step = &request.working_request.recursive_step;
   const auto maximum_bytes = request.maximum_materialized_value_bytes;
   const auto maximum_recursive_output_row_count =
-      working.maximum_recursive_output_row_count == 0
-          ? working.maximum_working_row_count
-          : working.maximum_recursive_output_row_count;
-  working.recursive_step =
+      request.working_request.maximum_recursive_output_row_count == 0
+          ? request.working_request.maximum_working_row_count
+          : request.working_request.maximum_recursive_output_row_count;
+  const auto bounded_recursive_step =
       [recursive_step, materialized_bytes, maximum_bytes,
        maximum_recursive_output_row_count,
        admitted_column_count = selected_node->output_descriptor_ids.size(),
        batch_bytes](
           const DescriptorBatch& current, const std::size_t iteration) {
-        auto intermediate = recursive_step(current, iteration);
+        auto intermediate = (*recursive_step)(current, iteration);
         if (intermediate.rows.size() >
             maximum_recursive_output_row_count) {
           return intermediate;
@@ -3157,7 +3297,13 @@ CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
         return intermediate;
       };
 
-  auto working_result = ExecuteCanonicalRecursiveCteWorkingAdmitted(working);
+  auto working_result = ExecuteCanonicalRecursiveCteWorkingBound(
+      request.working_request, request.working_request.mga_authority,
+      request.working_request.anchor_batch, bounded_recursive_step,
+      static_cast<bool>(request.working_request.recursive_step), false, true,
+      nullptr, selected_node->implementation_id,
+      request.working_request.retained_input_payload_bytes,
+      request.working_request.memory_state);
   if (!working_result.diagnostic.ok) {
     return refuse(working_result.diagnostic.diagnostic_code + ":" +
                   working_result.diagnostic.detail);
@@ -3281,18 +3427,11 @@ ExecuteCanonicalRecursiveCteCancellation(
     return refuse_memory(std::move(foreign_anchor_capacity_detail));
   }
 
-  CanonicalRecursiveCteWorkingRequest working = request.working_request;
-  for (auto& node : working.physical_dag.nodes) {
-    if (node.physical_node_id == working.selected_physical_node_id) {
-      node.implementation_id = "cte.recursive.working.typed.v1";
-      break;
-    }
-  }
-  const auto recursive_step = working.recursive_step;
+  const auto* recursive_step = &request.working_request.recursive_step;
   const auto cancellation_probe = request.cancellation_requested;
   auto cancelled = std::make_shared<bool>(false);
   auto cancellation_ordinal = std::make_shared<std::size_t>(0);
-  working.recursive_step =
+  const auto cancellable_recursive_step =
       [recursive_step, cancellation_probe, cancelled, cancellation_ordinal](
           const DescriptorBatch& current, const std::size_t iteration) {
         if (cancellation_probe(iteration)) {
@@ -3300,10 +3439,16 @@ ExecuteCanonicalRecursiveCteCancellation(
           *cancellation_ordinal = iteration;
           throw std::runtime_error("recursive CTE cancellation observed");
         }
-        return recursive_step(current, iteration);
+        return (*recursive_step)(current, iteration);
       };
 
-  auto working_result = ExecuteCanonicalRecursiveCteWorkingAdmitted(working);
+  auto working_result = ExecuteCanonicalRecursiveCteWorkingBound(
+      request.working_request, request.working_request.mga_authority,
+      request.working_request.anchor_batch, cancellable_recursive_step,
+      static_cast<bool>(request.working_request.recursive_step), false, true,
+      nullptr, selected_node->implementation_id,
+      request.working_request.retained_input_payload_bytes,
+      request.working_request.memory_state);
   if (*cancelled) {
     return refuse("recursive CTE cancellation observed", true,
                   *cancellation_ordinal);
@@ -3461,15 +3606,14 @@ CanonicalRecursiveCteMgaResult ExecuteCanonicalRecursiveCteMgaBoundary(
     return refuse_memory(std::move(foreign_anchor_capacity_detail));
   }
 
-  CanonicalRecursiveCteWorkingRequest working = request.working_request;
-  working.mga_authority = request.mga_authority;
-  for (auto& node : working.physical_dag.nodes) {
-    if (node.physical_node_id == working.selected_physical_node_id) {
-      node.implementation_id = "cte.recursive.working.typed.v1";
-      break;
-    }
-  }
-  auto working_result = ExecuteCanonicalRecursiveCteWorkingAdmitted(working);
+  auto working_result = ExecuteCanonicalRecursiveCteWorkingBound(
+      request.working_request, request.mga_authority,
+      request.working_request.anchor_batch,
+      request.working_request.recursive_step,
+      static_cast<bool>(request.working_request.recursive_step), false, true,
+      nullptr, selected_node->implementation_id,
+      request.working_request.retained_input_payload_bytes,
+      request.working_request.memory_state);
   if (!working_result.diagnostic.ok) {
     if (working_result.diagnostic.diagnostic_code ==
         "QOW-DIAG-QRY-014-RESOURCE-REFUSAL-V1") {
