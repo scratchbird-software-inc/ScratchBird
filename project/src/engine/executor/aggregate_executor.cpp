@@ -3816,10 +3816,11 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
   }
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kAggregate ||
+      selected_node->implementation_id != "aggregate.count-star.v1" ||
       selected_node->input_physical_node_ids.size() != 1) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-AGGREGATE-PHYSICAL-ROUTE-V1",
-        "COUNT(*) requires one selected aggregate node"));
+        "COUNT(*) requires its selected canonical aggregate implementation"));
   }
   for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
