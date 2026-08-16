@@ -4452,6 +4452,17 @@ ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
       {0, exact_final_output_ceiling});
 }
 
+CanonicalAggregateRuntimeResult
+ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
+    const CanonicalAggregateRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::size_t exact_final_output_ceiling) {
+  return ExecuteCanonicalAggregateRuntimeSelected(
+      request, borrowed_execution_dag, borrowed_input_batch, true, false,
+      {0, exact_final_output_ceiling});
+}
+
 // QOW-SOURCE-QRY-011-REGISTRY-STATE-SPILL-V1
 // Serialize the complete versioned aggregate transition state, spill and
 // reopen it through engine-owned temporary work, restore the state, and run

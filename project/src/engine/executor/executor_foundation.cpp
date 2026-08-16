@@ -101,12 +101,15 @@ bool FoundationBatchPayloadBytes(const DescriptorBatch& batch,
 
 CanonicalAggregateRuntimeRequest
 CloneFoundationAggregateRequestWithoutRowsOrFilter(
-    const CanonicalAggregateRuntimeRequest& source) {
+    const CanonicalAggregateRuntimeRequest& source,
+    const bool copy_execution_carriers = true) {
   CanonicalAggregateRuntimeRequest clone;
-  clone.physical_dag = source.physical_dag;
+  if (copy_execution_carriers) {
+    clone.physical_dag = source.physical_dag;
+    clone.input_batch.columns = source.input_batch.columns;
+  }
   clone.selected_physical_node_id = source.selected_physical_node_id;
   clone.descriptor = source.descriptor;
-  clone.input_batch.columns = source.input_batch.columns;
   clone.value_columns = source.value_columns;
   clone.value_expression_descriptor_ids =
       source.value_expression_descriptor_ids;
@@ -5581,13 +5584,12 @@ CanonicalPivotResult ExecuteCanonicalPivot(
         }
         auto aggregate_request =
             CloneFoundationAggregateRequestWithoutRowsOrFilter(
-                binding.aggregate_template);
-        aggregate_request.input_batch.columns = request.input_batch.columns;
-        aggregate_request.input_batch.rows.reserve(
-            group.item_rows[item].size());
+                binding.aggregate_template, false);
+        DescriptorBatch aggregate_input;
+        aggregate_input.columns = request.input_batch.columns;
+        aggregate_input.rows.reserve(group.item_rows[item].size());
         for (const auto row : group.item_rows[item]) {
-          aggregate_request.input_batch.rows.push_back(
-              request.input_batch.rows[row]);
+          aggregate_input.rows.push_back(request.input_batch.rows[row]);
         }
         aggregate_request.result_column =
             binding.result_columns_by_item[item];
@@ -5640,7 +5642,7 @@ CanonicalPivotResult ExecuteCanonicalPivot(
         input_node.implementation_id = "values.materialize.canonical.v1";
         input_node.input_physical_node_ids.clear();
         input_node.output_descriptor_ids.clear();
-        for (const auto& column : aggregate_request.input_batch.columns) {
+        for (const auto& column : aggregate_input.columns) {
           input_node.output_descriptor_ids.push_back(column.descriptor_id);
         }
         PhysicalNodeRecord aggregate_node = *pivot_node;
@@ -5655,11 +5657,11 @@ CanonicalPivotResult ExecuteCanonicalPivot(
         aggregate_dag.nodes = {std::move(input_node),
                                std::move(aggregate_node)};
         aggregate_dag.root_physical_node_id = 2;
-        aggregate_request.physical_dag = std::move(aggregate_dag);
         aggregate_request.selected_physical_node_id = 2;
         auto aggregated =
             ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
-                aggregate_request, remaining_finalization_bytes);
+                aggregate_request, aggregate_dag, aggregate_input,
+                remaining_finalization_bytes);
         if (!aggregated.diagnostic.ok ||
             aggregated.output_batch.rows.size() != 1 ||
             aggregated.output_batch.rows.front().values.size() != 1) {
@@ -7860,20 +7862,28 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
       aggregate_template.retained_memory_bytes + input_payload_bytes +
       source_filter_bytes;
 
-  const auto make_frame_request = [&]() {
+  const auto make_owned_frame_request = [&]() {
     auto aggregate =
         CloneFoundationAggregateRequestWithoutRowsOrFilter(
             aggregate_template);
     aggregate.input_batch.columns = request.frames.ordered_batch.columns;
     return aggregate;
   };
-  auto preflight_request = make_frame_request();
+  const auto make_borrowed_frame_request = [&]() {
+    return CloneFoundationAggregateRequestWithoutRowsOrFilter(
+        aggregate_template, false);
+  };
+  auto preflight_request = make_borrowed_frame_request();
   preflight_request.retained_memory_bytes = base_retained_memory_bytes;
   if (preflight_request.filter_truth_values.has_value()) {
     preflight_request.filter_truth_values =
         std::vector<api::EngineSqlTruthValue>{};
   }
-  auto preflight = ExecuteCanonicalAggregateRuntime(preflight_request);
+  DescriptorBatch preflight_input_batch;
+  preflight_input_batch.columns = request.frames.ordered_batch.columns;
+  auto preflight = ExecuteCanonicalAggregateRuntime(
+      preflight_request, aggregate_template.physical_dag,
+      preflight_input_batch);
   if (!preflight.diagnostic.ok) {
     return refuse(preflight.diagnostic.diagnostic_code,
                   preflight.diagnostic.detail);
@@ -7953,7 +7963,7 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
                     "moving aggregate input or FILTER copy exceeds its selected-node grant");
     }
     CanonicalAggregateMovingRuntimeRequest moving_request;
-    moving_request.aggregate_request = make_frame_request();
+    moving_request.aggregate_request = make_owned_frame_request();
     moving_request.aggregate_request.input_batch.rows =
         request.frames.ordered_batch.rows;
     if (template_filter_truth_values != nullptr) {
@@ -8010,7 +8020,9 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
   } else {
     std::size_t retained_output_payload_bytes = 0;
     for (const auto& frame : request.frames.effective_frames) {
-      auto aggregate = make_frame_request();
+      auto aggregate = make_borrowed_frame_request();
+      DescriptorBatch frame_input_batch;
+      frame_input_batch.columns = request.frames.ordered_batch.columns;
       const auto remaining_finalization_bytes =
           maximum_combined_final_output_bytes -
           result.combined_final_output_bytes;
@@ -8055,9 +8067,9 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
         return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
                       "aggregate window frame input or FILTER exceeds its selected-node grant");
       }
-      aggregate.input_batch.rows.reserve(frame.effective_row_indices.size());
+      frame_input_batch.rows.reserve(frame.effective_row_indices.size());
       for (const auto row : frame.effective_row_indices) {
-        aggregate.input_batch.rows.push_back(
+        frame_input_batch.rows.push_back(
             request.frames.ordered_batch.rows[row]);
       }
       if (template_filter_truth_values != nullptr) {
@@ -8070,7 +8082,8 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
       }
       auto frame_result =
           ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
-              aggregate, remaining_finalization_bytes);
+              aggregate, aggregate_template.physical_dag,
+              frame_input_batch, remaining_finalization_bytes);
       if (!frame_result.diagnostic.ok) {
         return refuse(frame_result.diagnostic.diagnostic_code,
                       frame_result.diagnostic.detail);
