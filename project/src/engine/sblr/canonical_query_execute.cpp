@@ -22226,10 +22226,73 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
                        &maximum_output_cells) ||
       !AddBatchMemoryBytes(input.batch, &input_memory) ||
       !CheckedMultiply(maximum_output_cells, 64U, &output_memory) ||
-      !CheckedAdd(input_memory, output_memory, &total_memory) ||
-      total_memory > request.optimizer_request.resource.memory_budget_bytes ||
       maximum_output_rows > std::numeric_limits<std::size_t>::max() ||
       maximum_output_cells > std::numeric_limits<std::size_t>::max()) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "UNPIVOT live cost or resource bound is invalid");
+  }
+  if (!CheckedAdd(input_memory, output_memory, &total_memory) ||
+      total_memory > request.optimizer_request.resource.memory_budget_bytes) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "UNPIVOT live cost or resource bound is invalid");
+  }
+  std::uint64_t exact_output_payload_bytes = 0;
+  std::string exact_output_detail;
+  const auto account_cast_output = [&](const api::EngineTypedValue& source,
+                                       const api::EngineDescriptor& target) {
+    exec::DescriptorRuntimeDiagnostic cast_diagnostic;
+    const auto casted = exec::CastDescriptorValue(
+        source, target, &cast_diagnostic);
+    if (!cast_diagnostic.ok) {
+      exact_output_detail = cast_diagnostic.diagnostic_code + ":" +
+                            cast_diagnostic.detail;
+      return false;
+    }
+    if (!CheckedAdd(exact_output_payload_bytes,
+                    casted.encoded_value.size(),
+                    &exact_output_payload_bytes) ||
+        !CheckedAdd(exact_output_payload_bytes,
+                    casted.binary_value.size(),
+                    &exact_output_payload_bytes)) {
+      exact_output_detail = "UNPIVOT exact output payload overflowed";
+      return false;
+    }
+    return true;
+  };
+  for (const auto& input_row : input.batch.rows) {
+    for (const auto& item : in_items) {
+      const bool all_null = std::ranges::all_of(
+          item.source_columns, [&](const auto column) {
+            return input_row.values[column].state ==
+                   api::EngineValueState::sql_null;
+          });
+      if (exclude_nulls && all_null) continue;
+      for (std::size_t group = 0; group < group_count; ++group) {
+        if (!account_cast_output(
+                input_row.values[group_columns[group]],
+                result_columns[group].descriptor)) {
+          return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                        exact_output_detail);
+        }
+      }
+      if (!account_cast_output(
+              item.pivot_value, result_columns[group_count].descriptor)) {
+        return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                      exact_output_detail);
+      }
+      for (std::size_t value = 0; value < value_count; ++value) {
+        if (!account_cast_output(
+                input_row.values[item.source_columns[value]],
+                result_columns[group_count + 1 + value].descriptor)) {
+          return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                        exact_output_detail);
+        }
+      }
+    }
+  }
+  output_memory = std::max(output_memory, exact_output_payload_bytes);
+  if (!CheckedAdd(input_memory, output_memory, &total_memory) ||
+      total_memory > request.optimizer_request.resource.memory_budget_bytes) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                   "UNPIVOT live cost or resource bound is invalid");
   }

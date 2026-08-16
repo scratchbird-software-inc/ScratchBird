@@ -5756,6 +5756,17 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
     return refuse(input_validation.diagnostic_code,
                   input_validation.detail);
   }
+  const auto node_memory_grant = FoundationNodeMemoryGrant(
+      request.physical_dag, request.selected_physical_node_id);
+  std::size_t input_payload_bytes = 0;
+  if (!node_memory_grant.has_value() ||
+      !FoundationBatchPayloadBytes(request.input_batch,
+                                   &input_payload_bytes) ||
+      input_payload_bytes > *node_memory_grant) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "UNPIVOT selected-node memory grant is invalid or "
+                  "exhausted");
+  }
   if (request.input_batch.rows.size() != 0 &&
       request.in_items.size() >
           request.maximum_output_row_count / request.input_batch.rows.size()) {
@@ -5773,6 +5784,23 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
   DescriptorBatch output;
   output.columns = request.result_columns;
   std::size_t excluded = 0;
+  std::size_t retained_output_payload_bytes = 0;
+  const auto charge_output_value = [&](const auto& value) {
+    if (retained_output_payload_bytes >
+        std::numeric_limits<std::size_t>::max() -
+            value.encoded_value.size()) {
+      return false;
+    }
+    retained_output_payload_bytes += value.encoded_value.size();
+    if (retained_output_payload_bytes >
+        std::numeric_limits<std::size_t>::max() -
+            value.binary_value.size()) {
+      return false;
+    }
+    retained_output_payload_bytes += value.binary_value.size();
+    return retained_output_payload_bytes <=
+           *node_memory_grant - input_payload_bytes;
+  };
   for (const auto& input_row : request.input_batch.rows) {
     for (const auto& item : request.in_items) {
       const bool all_null = std::ranges::all_of(
@@ -5798,6 +5826,11 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
                         cast_diagnostic.diagnostic_code + ":" +
                             cast_diagnostic.detail);
         }
+        if (!charge_output_value(value)) {
+          return refuse(
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+              "UNPIVOT retained output exhausted the selected-node grant");
+        }
         output_row.values.push_back(std::move(value));
       }
       DescriptorRuntimeDiagnostic label_diagnostic;
@@ -5809,6 +5842,11 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
         return refuse("QOW-DIAG-QRY-019-UNPIVOT-IN-V1",
                       label_diagnostic.diagnostic_code + ":" +
                           label_diagnostic.detail);
+      }
+      if (!charge_output_value(label)) {
+        return refuse(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "UNPIVOT retained output exhausted the selected-node grant");
       }
       output_row.values.push_back(std::move(label));
       for (std::size_t value = 0; value < value_column_count; ++value) {
@@ -5822,6 +5860,11 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
           return refuse("QOW-DIAG-QRY-019-UNPIVOT-DESCRIPTOR-V1",
                         cast_diagnostic.diagnostic_code + ":" +
                             cast_diagnostic.detail);
+        }
+        if (!charge_output_value(reshaped)) {
+          return refuse(
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+              "UNPIVOT retained output exhausted the selected-node grant");
         }
         output_row.values.push_back(std::move(reshaped));
       }
