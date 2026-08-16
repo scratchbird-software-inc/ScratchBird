@@ -103,9 +103,12 @@ CanonicalDescriptorInnerJoinResult ExecuteCanonicalDescriptorInnerJoin(
   }
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kJoin ||
-      selected_node->input_physical_node_ids.size() != 2) {
+      selected_node->input_physical_node_ids.size() != 2 ||
+      selected_node->input_physical_node_ids[0] ==
+          selected_node->input_physical_node_ids[1]) {
     return refuse(Refusal("QOW-DIAG-QRY-007-JOIN-PHYSICAL-ROUTE-V1",
-                          "inner join requires one selected two-input node"));
+                          "inner join requires one selected node with two "
+                          "distinct physical inputs"));
   }
   for (const auto& node : request.physical_dag.nodes) {
     if (node.physical_node_id ==
