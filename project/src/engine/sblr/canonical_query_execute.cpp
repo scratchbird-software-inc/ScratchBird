@@ -10794,7 +10794,7 @@ MakeLiveTableSubqueryRegistration(
             std::max<std::size_t>(1, maximum_input_row_count);
         subquery_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        const auto materialized =
+        auto materialized =
             exec::ExecuteCanonicalTableSubquery(
                 subquery_request, dag, node.physical_node_id);
         if (!materialized.diagnostic.ok) {
@@ -10805,7 +10805,8 @@ MakeLiveTableSubqueryRegistration(
         step.input_row_count = subquery_request.input_batch.rows.size();
         step.rows_examined = subquery_request.input_batch.rows.size();
         step.output_row_count = materialized.output_batch.rows.size();
-        step.materialized_output_batch = materialized.output_batch;
+        step.materialized_output_batch =
+            std::move(materialized.output_batch);
         step.mga_statement_context = materialized.mga_statement_context;
         return step;
       };
