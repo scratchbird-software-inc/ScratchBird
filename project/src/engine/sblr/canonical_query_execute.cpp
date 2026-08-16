@@ -7088,13 +7088,24 @@ class CanonicalDescriptorFilterPredicateReceiptIssuer {
     }
 
     std::uint64_t truth_memory_bytes = 0;
+    std::uint64_t input_memory_bytes = 0;
     if (!CheckedMultiply(input_batch.rows.size(),
                          sizeof(api::EngineSqlTruthValue),
                          &truth_memory_bytes) ||
-        truth_memory_bytes > physical_dag.memory_budget_bytes) {
+        !RuntimeMaterializedBatchMemoryBytes(input_batch,
+                                             &input_memory_bytes) ||
+        selected_node->memory_bytes_required == 0 ||
+        selected_node->memory_bytes_required >
+            physical_dag.memory_budget_bytes ||
+        selected_node->memory_bytes_required >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::size_t>::max()) ||
+        input_memory_bytes > selected_node->memory_bytes_required ||
+        truth_memory_bytes >
+            selected_node->memory_bytes_required - input_memory_bytes) {
       return refuse(
-          "predicate truth materialization exceeds the selected memory "
-          "ceiling");
+          "predicate input and truth materialization exceed the selected "
+          "filter-node memory grant");
     }
 
     CanonicalRelationalExpressionRuntime expression_runtime(
@@ -15994,6 +16005,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                     "composition node exceeds the admitted memory budget");
     }
+    if (physical_kind == exec::PhysicalNodeKind::kFilter &&
+        !planning_values_exact) {
+      // The preceding complex aggregate owns its live result values.  The
+      // planning batch is only a schema/cardinality placeholder, so bind the
+      // FILTER to the full selected budget and let its issuer/executor charge
+      // the exact retained input, truth vector, and copied output at runtime.
+      operator_memory =
+          request.optimizer_request.resource.memory_budget_bytes;
+    }
     profiles.push_back(
         {node.logical_node_id, implementation_id, capability_uuid,
          node.node_kind, physical_kind, transformation_rule,
@@ -18372,7 +18392,7 @@ ExecuteCanonicalObjectFreeFilterQuery(
   std::vector<api::EngineSqlTruthValue> predicate_truth_values;
   predicate_truth_values.reserve(input_row_count);
   std::size_t output_row_bound = 0;
-  std::uint64_t output_memory = 0;
+  std::uint64_t output_memory = 1;
   for (const auto& row : input.batch.rows) {
     api::EngineSqlTruthValue predicate_truth =
         api::EngineSqlTruthValue::unknown;
@@ -18390,10 +18410,6 @@ ExecuteCanonicalObjectFreeFilterQuery(
     predicate_truth_values.push_back(predicate_truth);
     if (predicate_truth != api::EngineSqlTruthValue::true_value) continue;
     ++output_row_bound;
-    if (!CheckedAdd(output_memory, 1, &output_memory)) {
-      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                    "live FILTER output row count overflowed");
-    }
     for (const auto& value : row.values) {
       if (!CheckedAdd(output_memory, value.encoded_value.size(),
                       &output_memory) ||
@@ -20864,17 +20880,15 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
                                "filter.having-not-sum-gt-int64-literal.v1"
                            ? "canonical.filter.having-not-sum-gt-int64-literal.v1"
                            : "canonical.filter.having-sum-gt-int64-literal.v1")),
-         output_row_bound, filter_memory, 1, 1});
+         output_row_bound,
+         request.optimizer_request.resource.memory_budget_bytes, 1, 1});
+    profiles.back().runtime_peak_from_callback_batches = true;
   }
   std::vector<std::pair<std::uint32_t, std::uint64_t>> runtime_auxiliary;
   runtime_auxiliary.emplace_back(aggregate_root->logical_node_id,
                                  per_group_memory);
   runtime_auxiliary.emplace_back(aggregate_root->logical_node_id,
                                  projection_memory);
-  if (has_having) {
-    runtime_auxiliary.emplace_back(root->logical_node_id,
-                                   filter_truth_memory);
-  }
   if (!CompleteLiveRuntimeMemoryReceipts(&profiles,
                                          runtime_auxiliary)) {
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
@@ -26895,6 +26909,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         profile.physical_node_kind = exec::PhysicalNodeKind::kFilter;
         profile.transformation_rule_id =
             "canonical.time-series.filter.3vl.v1";
+        profile.memory_bytes_required = planning.memory_budget_bytes;
       } else if (consumer->node_kind ==
                  api::RelationalDagNodeKind::kProject) {
         if (consumer->semantic_variant_id != "project.select-list.v1" ||
@@ -31382,6 +31397,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kFilter;
       consumer_profile.transformation_rule_id =
           "canonical.search.filter.3vl.v1";
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kProject) {
       if (consumer->semantic_variant_id != "project.select-list.v1" ||
           consumer->bound_expression_ids.empty()) {
@@ -33568,6 +33584,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kFilter;
       consumer_profile.transformation_rule_id =
           "canonical.key-value.filter.3vl.v1";
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind ==
                api::RelationalDagNodeKind::kProject) {
       if (consumer->semantic_variant_id != "project.select-list.v1" ||
@@ -35719,6 +35736,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kFilter;
       consumer_profile.transformation_rule_id =
           "canonical.graph.filter.3vl.v1";
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kProject) {
       if (consumer->semantic_variant_id != "project.select-list.v1" ||
           consumer->bound_expression_ids.empty()) {
@@ -38312,6 +38330,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
           consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kFilter;
           consumer_profile.transformation_rule_id =
               "canonical.document-unnest.filter.3vl.v1";
+          consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
           break;
         }
         case api::RelationalDagNodeKind::kProject: {
@@ -47431,7 +47450,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          plan::CanonicalLogicalRelationalNodeKind::kFilter,
          exec::PhysicalNodeKind::kFilter,
          "canonical.heap.filter.catalog-column-numeric-comparison.v1",
-         1, 1024, 1, 1});
+         1, planning_request.optimizer_request.resource.memory_budget_bytes,
+         1, 1});
   }
   PreparedGlobalAggregateRoot prepared_heap_aggregate;
   std::string aggregate_capability_uuid;

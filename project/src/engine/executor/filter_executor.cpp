@@ -8,6 +8,7 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include <limits>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -60,6 +61,40 @@ bool CanonicalExecutionMgaAuthorityCarrierIsExactDefault(
          context.in_doubt_excluded_local_transaction_ids.empty() &&
          context.in_doubt_excluded_local_transaction_ids.capacity() ==
              empty_context.in_doubt_excluded_local_transaction_ids.capacity();
+}
+
+bool FilterBatchPayloadBytes(const DescriptorBatch& batch,
+                             std::size_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = 1;
+  for (const auto& row : batch.rows) {
+    for (const auto& value : row.values) {
+      if (value.encoded_value.size() >
+          std::numeric_limits<std::size_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.encoded_value.size();
+      if (value.binary_value.size() >
+          std::numeric_limits<std::size_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.binary_value.size();
+    }
+  }
+  return true;
+}
+
+bool FilterTruthPayloadBytes(const std::size_t row_count,
+                             std::size_t* bytes) {
+  if (bytes == nullptr ||
+      row_count > std::numeric_limits<std::size_t>::max() /
+                      sizeof(scratchbird::engine::internal_api::
+                                 EngineSqlTruthValue)) {
+    return false;
+  }
+  *bytes = row_count * sizeof(
+      scratchbird::engine::internal_api::EngineSqlTruthValue);
+  return true;
 }
 
 }  // namespace
@@ -191,6 +226,41 @@ CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilterBound(
       execution_input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
 
+  if (execution_dag.memory_budget_bytes == 0 ||
+      selected_node->memory_bytes_required == 0 ||
+      selected_node->memory_bytes_required >
+          execution_dag.memory_budget_bytes ||
+      selected_node->memory_bytes_required >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max())) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "filter selected-node memory grant is invalid"));
+  }
+  const auto node_memory_grant =
+      static_cast<std::size_t>(selected_node->memory_bytes_required);
+  std::size_t input_payload_bytes = 0;
+  std::size_t truth_payload_bytes = 0;
+  if (!FilterBatchPayloadBytes(execution_input_batch,
+                               &input_payload_bytes) ||
+      !FilterTruthPayloadBytes(receipt.row_truth_values_.size(),
+                               &truth_payload_bytes) ||
+      input_payload_bytes > node_memory_grant ||
+      truth_payload_bytes > node_memory_grant - input_payload_bytes) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "filter retained input and truth state exceed the selected-node grant"));
+  }
+  const auto retained_payload_bytes =
+      input_payload_bytes + truth_payload_bytes;
+  std::size_t output_payload_bytes = 1;
+  if (output_payload_bytes >
+      node_memory_grant - retained_payload_bytes) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "filter output payload exceeds the selected-node grant"));
+  }
+
   result.output_batch.columns = execution_input_batch.columns;
   result.output_batch.rows.reserve(execution_input_batch.rows.size());
   for (std::size_t row = 0; row < execution_input_batch.rows.size(); ++row) {
@@ -203,6 +273,29 @@ CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilterBound(
                             std::move(refusal_detail), row));
     }
     if (passes) {
+      std::size_t row_payload_bytes = 0;
+      for (const auto& value : execution_input_batch.rows[row].values) {
+        if (value.encoded_value.size() >
+                std::numeric_limits<std::size_t>::max() -
+                    row_payload_bytes ||
+            value.binary_value.size() >
+                std::numeric_limits<std::size_t>::max() -
+                    row_payload_bytes - value.encoded_value.size()) {
+          return refuse(Refusal(
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+              "filter output payload accounting overflowed", row));
+        }
+        row_payload_bytes += value.encoded_value.size();
+        row_payload_bytes += value.binary_value.size();
+      }
+      if (row_payload_bytes >
+          node_memory_grant - retained_payload_bytes -
+              output_payload_bytes) {
+        return refuse(Refusal(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "filter output payload exceeds the selected-node grant", row));
+      }
+      output_payload_bytes += row_payload_bytes;
       result.output_batch.rows.push_back(execution_input_batch.rows[row]);
     }
   }
