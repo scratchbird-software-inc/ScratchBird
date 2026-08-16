@@ -604,6 +604,9 @@ struct CanonicalRecursiveCteMemoryState {
   std::size_t auxiliary_live_payload_bytes = 0;
   std::size_t current_live_payload_bytes = 0;
   std::size_t peak_live_payload_bytes = 0;
+  std::size_t resident_structural_bytes = 0;
+  std::size_t current_live_memory_bytes = 0;
+  std::size_t peak_live_memory_bytes = 0;
   std::string selected_plan_uuid;
   std::uint64_t selected_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
@@ -622,6 +625,7 @@ struct CanonicalRecursiveCteWorkingRequest {
   CanonicalRecursiveCteStep recursive_step;
   std::size_t maximum_iteration_count = 0;
   std::size_t maximum_working_row_count = 0;
+  std::size_t maximum_recursive_output_row_count = 0;
   std::size_t maximum_result_row_count = 0;
   CanonicalRecursiveCteCancellationProbe cancellation_requested;
   std::string cancellation_evidence_uuid;
@@ -654,6 +658,9 @@ struct CanonicalRecursiveCteWorkingResult {
   PhysicalMgaStatementContext mga_statement_context;
   std::size_t output_payload_bytes = 0;
   std::size_t peak_live_payload_bytes = 0;
+  std::size_t resident_structural_bytes = 0;
+  std::size_t current_live_memory_bytes = 0;
+  std::size_t peak_live_memory_bytes = 0;
   std::size_t memory_grant_bytes = 0;
   std::string memory_grant_evidence_uuid;
 };
@@ -734,6 +741,7 @@ struct CanonicalRecursiveCteSearchCycleRequest {
   ExecutorColumnDescriptor cycle_mark_column;
   std::size_t maximum_iteration_count = 0;
   std::size_t maximum_working_row_count = 0;
+  std::size_t maximum_recursive_output_row_count = 0;
   std::size_t maximum_result_row_count = 0;
   CanonicalRecursiveCteCancellationProbe cancellation_requested;
   std::string cancellation_evidence_uuid;
@@ -749,6 +757,34 @@ struct CanonicalRecursiveCteSearchCycleMetadata {
   std::uint64_t breadth_first_sequence = 0;
   bool cycle = false;
 };
+
+enum class CanonicalRecursiveCteStructuralProfile : std::uint8_t {
+  kWorking = 1,
+  kUnionAll,
+  kUnionDistinctInt64,
+  kUnionDistinctTyped,
+  kSearchCycle,
+};
+
+struct CanonicalRecursiveCteStructuralCapacity {
+  CanonicalRecursiveCteStructuralProfile profile =
+      CanonicalRecursiveCteStructuralProfile::kWorking;
+  std::size_t maximum_anchor_row_count = 0;
+  std::size_t maximum_iteration_count = 0;
+  std::size_t maximum_working_row_count = 0;
+  std::size_t maximum_recursive_output_row_count = 0;
+  std::size_t maximum_result_row_count = 0;
+  std::size_t equality_term_count = 0;
+};
+
+bool BoundCanonicalRecursiveCteStructuralBytes(
+    const std::vector<ExecutorColumnDescriptor>& base_columns,
+    const ExecutorColumnDescriptor* search_sequence_column,
+    const ExecutorColumnDescriptor* cycle_mark_column,
+    const std::vector<CanonicalDescriptorOrderTerm>* equality_terms,
+    const CanonicalRecursiveCteStructuralCapacity& capacity,
+    std::size_t* structural_bytes,
+    std::string* detail);
 
 struct CanonicalRecursiveCteSearchCycleResult {
   DescriptorRuntimeDiagnostic diagnostic;
@@ -767,6 +803,9 @@ struct CanonicalRecursiveCteSearchCycleResult {
   PhysicalMgaStatementContext mga_statement_context;
   std::size_t output_payload_bytes = 0;
   std::size_t peak_live_payload_bytes = 0;
+  std::size_t resident_structural_bytes = 0;
+  std::size_t current_live_memory_bytes = 0;
+  std::size_t peak_live_memory_bytes = 0;
   std::size_t memory_grant_bytes = 0;
   std::string memory_grant_evidence_uuid;
 };
