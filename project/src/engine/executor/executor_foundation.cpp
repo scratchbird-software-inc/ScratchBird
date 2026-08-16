@@ -6698,13 +6698,26 @@ bool CanonicalWindowDefaultFrameEvidenceValid(
 bool CanonicalWindowFrameEvidenceValid(
     const CanonicalWindowFrameResult& frames) {
   const auto row_count = frames.ordered_batch.rows.size();
-  std::vector<std::uint32_t> descriptor_ids;
-  descriptor_ids.reserve(frames.ordered_batch.columns.size());
-  for (const auto& column : frames.ordered_batch.columns) {
-    descriptor_ids.push_back(column.descriptor_id);
+  const PhysicalNodeRecord* selected_node = nullptr;
+  for (const auto& node : frames.physical_dag.nodes) {
+    if (node.physical_node_id == frames.executed_physical_node_id) {
+      selected_node = &node;
+      break;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kWindow ||
+      selected_node->implementation_id !=
+          "window.partition-order-peer.v1" ||
+      selected_node->input_physical_node_ids.size() != 1 ||
+      selected_node->physical_node_id !=
+          frames.physical_dag.root_physical_node_id ||
+      frames.selected_plan_uuid != frames.physical_dag.selected_plan_uuid ||
+      frames.causal_counter_id != selected_node->causal_counter_id) {
+    return false;
   }
   const auto batch_diagnostic = ValidateCanonicalDescriptorBatch(
-      frames.ordered_batch, descriptor_ids);
+      frames.ordered_batch, selected_node->output_descriptor_ids);
   if (!frames.diagnostic.ok || !frames.every_frame_operand_consumed ||
       !frames.empty_state_uses_optional_bounds ||
       !frames.base_frame_constructed_before_exclusion ||
