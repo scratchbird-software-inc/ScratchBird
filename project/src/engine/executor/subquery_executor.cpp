@@ -748,8 +748,12 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
 // and deterministic inner order without granting the parser execution
 // authority. The legacy int64 implementation identity remains an exact alias
 // of the shared non-collated typed comparison route.
-CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
-    const CanonicalCorrelatedSubqueryRequest& request) {
+namespace {
+CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubqueryBound(
+    const CanonicalCorrelatedSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const bool borrowed_execution_dag) {
   namespace api = scratchbird::engine::internal_api;
 
   CanonicalCorrelatedSubqueryResult result;
@@ -785,26 +789,31 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     return PollCorrelatedCancellation(request.cancellation_requested, phase);
   };
 
+  if (borrowed_execution_dag &&
+      !TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag)) {
+    return refuse(
+        "correlated subquery request carries conflicting physical DAG authority");
+  }
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!authority_validation.ok)
     return refuse(authority_validation.diagnostic_code + ":" +
                   authority_validation.detail);
   if (!CorrelatedCancellationEvidenceBound(
-          request.physical_dag, request.cancellation_requested,
+          execution_dag, request.cancellation_requested,
           request.cancellation_evidence_uuid)) {
     return refuse("correlated cancellation evidence is not bound");
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id) {
+          scoped_root_physical_node_id) {
     return refuse("selected correlated subquery is not the physical root");
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;
   const PhysicalNodeRecord* outer_node = nullptr;
   const PhysicalNodeRecord* inner_node = nullptr;
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == request.selected_physical_node_id) {
       selected_node = &node;
       break;
@@ -822,7 +831,7 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
       selected_node->input_physical_node_ids.size() != 2) {
     return refuse("correlated subquery physical profile is not bound");
   }
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
         selected_node->input_physical_node_ids[0]) {
       outer_node = &node;
@@ -1014,7 +1023,7 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     return refuse_poll(std::move(cancellation));
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
@@ -1028,11 +1037,27 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
   if (request.cancellation_requested) {
     result.cancellation_evidence_uuid = request.cancellation_evidence_uuid;
   }
-  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
   result.mga_statement_context = request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
+    const CanonicalCorrelatedSubqueryRequest& request) {
+  return ExecuteCanonicalCorrelatedSubqueryBound(
+      request, request.physical_dag,
+      request.physical_dag.root_physical_node_id, false);
+}
+
+CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
+    const CanonicalCorrelatedSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id) {
+  return ExecuteCanonicalCorrelatedSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id, true);
 }
 
 // QOW-SOURCE-QRY-013-LATERAL-V1

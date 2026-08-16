@@ -9301,30 +9301,20 @@ MakeLiveCorrelatedSubqueryRegistration(
               "correlated subquery did not receive its exact two inputs";
           return step;
         }
-        exec::TypedPhysicalNodeDag operator_dag;
-        std::string detail;
-        if (!BuildOperatorLocalPhysicalDag(
-                dag, node.physical_node_id, &operator_dag, &detail)) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
-          step.diagnostic.detail = std::move(detail);
-          return step;
-        }
         const auto cancellation_policy = std::ranges::find_if(
-            operator_dag.admission_evidence,
+            dag.admission_evidence,
             [](const exec::PhysicalAdmissionEvidence& evidence) {
               return evidence.stage ==
                      exec::PhysicalAdmissionStage::kPolicyCapability;
             });
         const auto cancellation_policy_count = std::ranges::count_if(
-            operator_dag.admission_evidence,
+            dag.admission_evidence,
             [](const exec::PhysicalAdmissionEvidence& evidence) {
               return evidence.stage ==
                      exec::PhysicalAdmissionStage::kPolicyCapability;
             });
         if (cancellation_policy_count != 1 ||
-            cancellation_policy == operator_dag.admission_evidence.end() ||
+            cancellation_policy == dag.admission_evidence.end() ||
             cancellation_policy->evidence_uuid.empty()) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
@@ -9373,7 +9363,6 @@ MakeLiveCorrelatedSubqueryRegistration(
           }
         };
         exec::CanonicalCorrelatedSubqueryRequest correlated_request;
-        correlated_request.physical_dag = std::move(operator_dag);
         correlated_request.selected_physical_node_id = node.physical_node_id;
         correlated_request.borrowed_outer_batch =
             &*inputs[0].materialized_output_batch;
@@ -9399,9 +9388,10 @@ MakeLiveCorrelatedSubqueryRegistration(
             cancellation_evidence_uuid;
         correlated_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
-                mga_context, correlated_request.physical_dag);
+                mga_context, dag);
         auto correlated =
-            exec::ExecuteCanonicalCorrelatedSubquery(correlated_request);
+            exec::ExecuteCanonicalCorrelatedSubquery(
+                correlated_request, dag, node.physical_node_id);
         if (!correlated.diagnostic.ok) {
           step.diagnostic = std::move(correlated.diagnostic);
           step.cancellation_observed =

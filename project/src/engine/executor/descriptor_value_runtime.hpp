@@ -2709,6 +2709,12 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     const CanonicalQuantifiedSubqueryRequest& request);
 CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     const CanonicalCorrelatedSubqueryRequest& request);
+// The borrowed DAG is consumed synchronously and is never retained. The
+// request's owned DAG carrier must remain in its exact default state.
+CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
+    const CanonicalCorrelatedSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id);
 CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     const CanonicalLateralSubqueryRequest& request);
 CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
