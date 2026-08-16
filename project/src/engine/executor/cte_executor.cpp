@@ -219,6 +219,13 @@ struct RecursiveCteBatchValidation {
   std::optional<RecursiveCteCancellationPoll> cancellation;
 };
 
+bool RecursiveCteEncodedValueCapacityCharged(
+    const std::string& encoded_value) {
+  static const auto default_string_capacity = std::string{}.capacity();
+  return encoded_value.capacity() <=
+         std::max(encoded_value.size(), default_string_capacity);
+}
+
 bool AdmitForeignRecursiveCteBatchCapacity(
     const DescriptorBatch& batch,
     const std::size_t admitted_column_count,
@@ -247,6 +254,12 @@ bool AdmitForeignRecursiveCteBatchCapacity(
       return false;
     }
     for (const auto& value : row.values) {
+      if (!RecursiveCteEncodedValueCapacityCharged(
+              value.encoded_value)) {
+        *detail = "recursive CTE " + std::string(label) +
+                  " encoded value capacity exceeds its charged logical capacity";
+        return false;
+      }
       if (value.binary_value.capacity() > value.binary_value.size()) {
         *detail = "recursive CTE " + std::string(label) +
                   " binary value capacity exceeds its charged logical capacity";
@@ -549,7 +562,8 @@ bool AppendRecursiveCteValueExact(
   scratchbird::engine::internal_api::EngineTypedValue copied;
   try {
     copied.descriptor = source.descriptor;
-    copied.encoded_value = source.encoded_value;
+    copied.encoded_value = std::string(source.encoded_value.data(),
+                                       source.encoded_value.size());
     copied.is_null = source.is_null;
     copied.state = source.state;
   } catch (const std::bad_alloc&) {
@@ -559,6 +573,11 @@ bool AppendRecursiveCteValueExact(
   } catch (const std::length_error&) {
     *detail = "recursive CTE " + std::string(label) +
               " value capacity exceeds the container limit";
+    return false;
+  }
+  if (!RecursiveCteEncodedValueCapacityCharged(copied.encoded_value)) {
+    *detail = "recursive CTE " + std::string(label) +
+              " encoded value capacity differs from its charged logical capacity";
     return false;
   }
   if (!ReserveRecursiveCteVector(
@@ -580,6 +599,12 @@ bool AppendRecursiveCteValueExact(
     return false;
   }
   const auto& appended = destination->back();
+  if (!RecursiveCteEncodedValueCapacityCharged(
+          appended.encoded_value)) {
+    *detail = "recursive CTE " + std::string(label) +
+              " encoded value capacity differs from its charged logical capacity";
+    return false;
+  }
   if (appended.binary_value.size() != source.binary_value.size() ||
       appended.binary_value.capacity() != source.binary_value.size()) {
     *detail = "recursive CTE " + std::string(label) +
@@ -603,6 +628,12 @@ bool AdmitOwnedRecursiveCteTupleCapacity(
     return false;
   }
   for (const auto& value : tuple.values) {
+    if (!RecursiveCteEncodedValueCapacityCharged(
+            value.encoded_value)) {
+      *detail = "recursive CTE " + std::string(label) +
+                " encoded value capacity differs from its charged logical capacity";
+      return false;
+    }
     if (value.binary_value.capacity() != value.binary_value.size()) {
       *detail = "recursive CTE " + std::string(label) +
                 " binary value capacity differs from its charged logical capacity";
