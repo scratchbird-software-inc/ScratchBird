@@ -803,6 +803,9 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
 
   const PhysicalNodeRecord* selected_node = nullptr;
   const PhysicalNodeRecord* input_node = nullptr;
+  const std::string_view expected_implementation_id =
+      separate_order_key_batch ? "sort.typed.expression-row.v1"
+                               : "sort.typed.terms.v1";
   for (const auto& node : physical_dag->nodes) {
     if (node.physical_node_id == selected_physical_node_id) {
       selected_node = &node;
@@ -812,9 +815,11 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
       selected_physical_node_id != physical_dag->root_physical_node_id ||
       selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kSort ||
+      selected_node->implementation_id != expected_implementation_id ||
       selected_node->input_physical_node_ids.size() != 1) {
     return order_refusal(
-        "descriptor order requires one selected root sort node");
+        "descriptor order requires one selected root canonical sort "
+        "implementation");
   }
   for (const auto& node : physical_dag->nodes) {
     if (node.physical_node_id ==
