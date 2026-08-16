@@ -220,6 +220,155 @@ std::size_t RecursiveCteUnsignedDecimalWidth(std::uint64_t value) {
   return width;
 }
 
+template <typename T>
+bool ReserveRecursiveCteVector(std::vector<T>* values,
+                               const std::size_t capacity,
+                               const std::string_view label,
+                               std::string* detail) {
+  if (values == nullptr || detail == nullptr ||
+      capacity > values->max_size()) {
+    if (detail != nullptr) {
+      *detail = "recursive CTE " + std::string(label) +
+                " capacity exceeds the container limit";
+    }
+    return false;
+  }
+  try {
+    values->reserve(capacity);
+  } catch (const std::bad_alloc&) {
+    *detail = "recursive CTE " + std::string(label) +
+              " capacity allocation was refused";
+    return false;
+  } catch (const std::length_error&) {
+    *detail = "recursive CTE " + std::string(label) +
+              " capacity exceeds the container limit";
+    return false;
+  }
+  return true;
+}
+
+bool AppendNormalizedRecursiveCteTuple(
+    const DescriptorTuple& source,
+    const std::size_t expected_width,
+    std::vector<DescriptorTuple>* destination,
+    const std::string_view label,
+    std::string* detail) {
+  if (destination == nullptr || detail == nullptr ||
+      source.values.size() != expected_width ||
+      expected_width > source.values.max_size()) {
+    if (detail != nullptr) {
+      *detail = "recursive CTE " + std::string(label) +
+                " row width is invalid";
+    }
+    return false;
+  }
+  try {
+    DescriptorTuple normalized;
+    normalized.values.reserve(expected_width);
+    for (const auto& value : source.values) {
+      normalized.values.push_back(value);
+    }
+    destination->push_back(std::move(normalized));
+  } catch (const std::bad_alloc&) {
+    *detail = "recursive CTE " + std::string(label) +
+              " row allocation was refused";
+    return false;
+  } catch (const std::length_error&) {
+    *detail = "recursive CTE " + std::string(label) +
+              " row capacity exceeds the container limit";
+    return false;
+  }
+  return true;
+}
+
+class RecursiveCteInt64IdentitySet {
+ public:
+  bool Initialize(const std::size_t maximum_identity_count,
+                  std::string* detail) {
+    if (detail == nullptr || maximum_identity_count == 0 ||
+        maximum_identity_count >
+            std::numeric_limits<std::size_t>::max() / 2) {
+      if (detail != nullptr) {
+        *detail = "recursive CTE UNION DISTINCT identity capacity "
+                  "overflowed";
+      }
+      return false;
+    }
+    const auto minimum_slots = maximum_identity_count * 2;
+    std::size_t slot_count = 1;
+    while (slot_count < minimum_slots) {
+      if (slot_count >
+          std::numeric_limits<std::size_t>::max() / 2) {
+        *detail = "recursive CTE UNION DISTINCT identity capacity "
+                  "overflowed";
+        return false;
+      }
+      slot_count *= 2;
+    }
+    if (slot_count > slots_.max_size() ||
+        slot_count > occupied_.max_size()) {
+      *detail = "recursive CTE UNION DISTINCT identity capacity exceeds "
+                "the container limit";
+      return false;
+    }
+    try {
+      slots_.resize(slot_count);
+      occupied_.resize(slot_count, 0);
+    } catch (const std::bad_alloc&) {
+      *detail = "recursive CTE UNION DISTINCT identity allocation was "
+                "refused";
+      return false;
+    } catch (const std::length_error&) {
+      *detail = "recursive CTE UNION DISTINCT identity capacity exceeds "
+                "the container limit";
+      return false;
+    }
+    mask_ = slot_count - 1;
+    maximum_identity_count_ = maximum_identity_count;
+    return true;
+  }
+
+  enum class InsertResult : std::uint8_t {
+    inserted = 1,
+    duplicate,
+    full,
+  };
+
+  InsertResult Insert(const std::int64_t value, const bool allow_new) {
+    if (slots_.empty()) {
+      return InsertResult::full;
+    }
+    auto hash = static_cast<std::uint64_t>(value);
+    hash ^= hash >> 30;
+    hash *= UINT64_C(0xbf58476d1ce4e5b9);
+    hash ^= hash >> 27;
+    hash *= UINT64_C(0x94d049bb133111eb);
+    hash ^= hash >> 31;
+    auto slot = static_cast<std::size_t>(hash) & mask_;
+    for (std::size_t probe = 0; probe < slots_.size(); ++probe) {
+      if (occupied_[slot] == 0) {
+        if (!allow_new || size_ == maximum_identity_count_) {
+          return InsertResult::full;
+        }
+        occupied_[slot] = 1;
+        slots_[slot] = value;
+        ++size_;
+        return InsertResult::inserted;
+      }
+      if (slots_[slot] == value) return InsertResult::duplicate;
+      slot = (slot + 1) & mask_;
+    }
+    return InsertResult::full;
+  }
+
+ private:
+  std::vector<std::int64_t> slots_;
+  std::vector<std::uint8_t> occupied_;
+  std::size_t mask_ = 0;
+  std::size_t maximum_identity_count_ = 0;
+  std::size_t size_ = 0;
+};
+
 RecursiveCtePayloadMeasurement MeasureRecursiveCtePayload(
     const DescriptorBatch& batch,
     const CanonicalRecursiveCteCancellationProbe& cancellation_requested,
@@ -551,9 +700,42 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
           memory_state, {}, "while retaining the recursive anchor")) {
     return refuse_memory(memory_state->refusal_detail);
   }
-  DescriptorBatch accumulated = request.anchor_batch;
-  DescriptorBatch working = request.anchor_batch;
+  DescriptorBatch accumulated;
+  DescriptorBatch working;
   std::vector<CanonicalRecursiveCteIteration> iterations;
+  std::string capacity_detail;
+  try {
+    accumulated.columns = request.anchor_batch.columns;
+    working.columns = request.anchor_batch.columns;
+    if (!ReserveRecursiveCteVector(
+            &accumulated.rows, request.maximum_result_row_count,
+            "accumulated row", &capacity_detail) ||
+        !ReserveRecursiveCteVector(
+            &working.rows, request.maximum_working_row_count,
+            "working row", &capacity_detail) ||
+        !ReserveRecursiveCteVector(
+            &iterations, request.maximum_iteration_count,
+            "iteration receipt", &capacity_detail)) {
+      return refuse_memory(std::move(capacity_detail));
+    }
+    for (const auto& row : request.anchor_batch.rows) {
+      if (!AppendNormalizedRecursiveCteTuple(
+              row, request.anchor_batch.columns.size(),
+              &accumulated.rows, "accumulated anchor",
+              &capacity_detail) ||
+          !AppendNormalizedRecursiveCteTuple(
+              row, request.anchor_batch.columns.size(),
+              &working.rows, "working anchor", &capacity_detail)) {
+        return refuse_memory(std::move(capacity_detail));
+      }
+    }
+  } catch (const std::bad_alloc&) {
+    return refuse_memory(
+        "recursive CTE retained container allocation was refused");
+  } catch (const std::length_error&) {
+    return refuse_memory(
+        "recursive CTE retained container capacity exceeds the container limit");
+  }
   std::size_t maximum_working = working.rows.size();
   std::size_t iteration_ordinal = 0;
   while (!working.rows.empty()) {
@@ -576,6 +758,16 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     }
     try {
       intermediate = request.recursive_step(working, iteration_ordinal);
+    } catch (const std::bad_alloc&) {
+      return refuse_memory(
+          memory_state && !memory_state->refusal_detail.empty()
+              ? memory_state->refusal_detail
+              : "recursive CTE step allocation was refused");
+    } catch (const std::length_error&) {
+      return refuse_memory(
+          memory_state && !memory_state->refusal_detail.empty()
+              ? memory_state->refusal_detail
+              : "recursive CTE step capacity exceeds the container limit");
     } catch (const std::exception& error) {
       if (memory_state && !memory_state->refusal_detail.empty()) {
         return refuse_memory(memory_state->refusal_detail);
@@ -631,20 +823,55 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
       return refuse("recursive CTE working or result row bound was exceeded");
     }
 
-    iterations.push_back({iteration_ordinal, working.rows.size(),
-                          intermediate.rows.size()});
+    DescriptorBatch normalized_working;
+    try {
+      normalized_working.columns = request.anchor_batch.columns;
+      if (!ReserveRecursiveCteVector(
+              &normalized_working.rows,
+              request.maximum_working_row_count,
+              "next working row", &capacity_detail)) {
+        return refuse_memory(std::move(capacity_detail));
+      }
+    } catch (const std::bad_alloc&) {
+      return refuse_memory(
+          "recursive CTE retained container allocation was refused");
+    } catch (const std::length_error&) {
+      return refuse_memory(
+          "recursive CTE retained container capacity exceeds the container limit");
+    }
     maximum_working =
         std::max(maximum_working, intermediate.rows.size());
     if (!ObserveRecursiveCtePayload(
             memory_state,
-            {intermediate_payload_bytes, intermediate_payload_bytes},
+            {intermediate_payload_bytes, intermediate_payload_bytes,
+             intermediate_payload_bytes},
             "before retaining recursive output")) {
       return refuse_memory(memory_state->refusal_detail);
     }
-    accumulated.rows.insert(accumulated.rows.end(),
-                            intermediate.rows.begin(),
-                            intermediate.rows.end());
-    working = std::move(intermediate);
+    try {
+      for (const auto& row : intermediate.rows) {
+        if (!AppendNormalizedRecursiveCteTuple(
+                row, request.anchor_batch.columns.size(),
+                &accumulated.rows, "accumulated recursive",
+                &capacity_detail) ||
+            !AppendNormalizedRecursiveCteTuple(
+                row, request.anchor_batch.columns.size(),
+                &normalized_working.rows, "next working",
+                &capacity_detail)) {
+          return refuse_memory(std::move(capacity_detail));
+        }
+      }
+      iterations.push_back({iteration_ordinal, working.rows.size(),
+                            normalized_working.rows.size()});
+    } catch (const std::bad_alloc&) {
+      return refuse_memory(
+          "recursive CTE retained row allocation was refused");
+    } catch (const std::length_error&) {
+      return refuse_memory(
+          "recursive CTE retained row capacity exceeds the container limit");
+    }
+    working = std::move(normalized_working);
+    intermediate = {};
     std::size_t accumulated_payload_bytes = 0;
     std::size_t working_payload_bytes = 0;
     if (auto failure = measure_payload(
@@ -765,6 +992,14 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
     result.duplicate_row_count = 0;
     return result;
   };
+  const auto refuse_memory = [&](std::string detail) {
+    result = {};
+    result.working_result.diagnostic =
+        RecursiveCteMemoryRefusal(std::move(detail));
+    result.working_result.working_state_cleaned = true;
+    result.union_mode = request.union_mode;
+    return result;
+  };
   const auto refuse_poll = [&](RecursiveCteCancellationPoll poll) {
     result = {};
     result.working_result.diagnostic = std::move(poll.diagnostic);
@@ -783,6 +1018,14 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
   if (request.union_mode != CanonicalRecursiveCteUnionMode::kAll &&
       request.union_mode != CanonicalRecursiveCteUnionMode::kDistinct) {
     return refuse("recursive CTE UNION mode is not bound");
+  }
+  if (request.working_request.maximum_working_row_count == 0 ||
+      request.working_request.maximum_result_row_count == 0 ||
+      request.working_request.anchor_batch.rows.size() >
+          request.working_request.maximum_working_row_count ||
+      request.working_request.anchor_batch.rows.size() >
+          request.working_request.maximum_result_row_count) {
+    return refuse("recursive CTE UNION row bounds are invalid");
   }
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
       request.working_request.mga_authority,
@@ -913,7 +1156,22 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
           "recursive CTE UNION DISTINCT requires one bounded equality term "
           "per output column");
     }
-    std::vector<bool> covered(working.anchor_batch.columns.size(), false);
+    std::vector<std::uint8_t> covered;
+    std::string capacity_detail;
+    if (!ReserveRecursiveCteVector(
+            &covered, working.anchor_batch.columns.size(),
+            "UNION DISTINCT equality coverage", &capacity_detail)) {
+      return refuse_memory(std::move(capacity_detail));
+    }
+    try {
+      covered.assign(working.anchor_batch.columns.size(), 0);
+    } catch (const std::bad_alloc&) {
+      return refuse_memory(
+          "recursive CTE UNION DISTINCT equality coverage allocation was refused");
+    } catch (const std::length_error&) {
+      return refuse_memory(
+          "recursive CTE UNION DISTINCT equality coverage capacity exceeds the container limit");
+    }
     for (const auto& term : equality_terms) {
       if (term.column >= working.anchor_batch.columns.size() ||
           covered[term.column] ||
@@ -940,11 +1198,24 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
     std::function<bool(const DescriptorTuple&, std::size_t)> admit;
     if (legacy_int64_profile) {
       auto identity_count = std::make_shared<std::size_t>(0);
-      auto seen_values =
-          std::make_shared<std::unordered_set<std::int64_t>>();
+      auto representative_count = std::make_shared<std::size_t>(0);
+      std::shared_ptr<RecursiveCteInt64IdentitySet> seen_values;
+      try {
+        seen_values =
+            std::make_shared<RecursiveCteInt64IdentitySet>();
+      } catch (const std::bad_alloc&) {
+        return refuse_memory(
+            "recursive CTE UNION DISTINCT identity allocation was refused");
+      }
+      if (!seen_values->Initialize(
+              working.maximum_result_row_count, &capacity_detail)) {
+        return refuse_memory(std::move(capacity_detail));
+      }
       auto seen_null = std::make_shared<bool>(false);
       admit = [identity_count, maximum =
                                    request.maximum_value_comparison_count,
+               representative_count,
+               maximum_representatives = working.maximum_result_row_count,
                seen_values, seen_null, duplicate_count, poll_distinct](
                   const DescriptorTuple& row, const std::size_t iteration) {
         poll_distinct(iteration,
@@ -965,7 +1236,12 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
             ++*duplicate_count;
             return false;
           }
+          if (*representative_count == maximum_representatives) {
+            throw std::runtime_error(
+                "recursive CTE UNION DISTINCT result row bound was exceeded");
+          }
           *seen_null = true;
+          ++*representative_count;
           return true;
         }
         const auto decoded = DecodeInt64Value(value);
@@ -973,10 +1249,18 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
           throw std::runtime_error(decoded.diagnostic.diagnostic_code + ":" +
                                    decoded.diagnostic.detail);
         }
-        if (!seen_values->insert(decoded.value).second) {
+        const auto inserted = seen_values->Insert(
+            decoded.value,
+            *representative_count < maximum_representatives);
+        if (inserted == RecursiveCteInt64IdentitySet::InsertResult::duplicate) {
           ++*duplicate_count;
           return false;
         }
+        if (inserted == RecursiveCteInt64IdentitySet::InsertResult::full) {
+          throw std::runtime_error(
+              "recursive CTE UNION DISTINCT result row bound was exceeded");
+        }
+        ++*representative_count;
         return true;
       };
     } else {
@@ -1011,10 +1295,22 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
             }
             return true;
           };
-      auto seen = std::make_shared<std::vector<DescriptorTuple>>();
+      std::shared_ptr<std::vector<DescriptorTuple>> seen;
+      try {
+        seen = std::make_shared<std::vector<DescriptorTuple>>();
+      } catch (const std::bad_alloc&) {
+        return refuse_memory(
+            "recursive CTE UNION DISTINCT representative allocation was refused");
+      }
+      if (!ReserveRecursiveCteVector(
+              seen.get(), working.maximum_result_row_count,
+              "UNION DISTINCT representative", &capacity_detail)) {
+        return refuse_memory(std::move(capacity_detail));
+      }
       admit = [seen, duplicate_count, equal_rows, memory_state,
                raw_generated_payload_bytes,
-               admitted_output_payload_bytes](
+               admitted_output_payload_bytes,
+               maximum_representatives = working.maximum_result_row_count](
                   const DescriptorTuple& row, const std::size_t iteration) {
         if (!equal_rows(row, row, iteration)) {
           throw std::runtime_error(
@@ -1025,6 +1321,10 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
             ++*duplicate_count;
             return false;
           }
+        }
+        if (seen->size() == maximum_representatives) {
+          throw std::runtime_error(
+              "recursive CTE UNION DISTINCT result row bound was exceeded");
         }
         std::size_t row_payload_bytes = 0;
         if (!AddRecursiveCteTuplePayload(row, &row_payload_bytes) ||
@@ -1051,12 +1351,35 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
               previous_seen_payload;
           throw std::runtime_error(memory_state->refusal_detail);
         }
-        seen->push_back(row);
+        std::string capacity_detail;
+        if (!AppendNormalizedRecursiveCteTuple(
+                row, row.values.size(), seen.get(),
+                "UNION DISTINCT representative", &capacity_detail)) {
+          memory_state->auxiliary_live_payload_bytes =
+              previous_seen_payload;
+          memory_state->refusal_detail = std::move(capacity_detail);
+          throw std::runtime_error(memory_state->refusal_detail);
+        }
         return true;
       };
     }
     DescriptorBatch distinct_anchor;
-    distinct_anchor.columns = working.anchor_batch.columns;
+    try {
+      distinct_anchor.columns = working.anchor_batch.columns;
+    } catch (const std::bad_alloc&) {
+      return refuse_memory(
+          "recursive CTE UNION DISTINCT anchor column allocation was refused");
+    } catch (const std::length_error&) {
+      return refuse_memory(
+          "recursive CTE UNION DISTINCT anchor column capacity exceeds the container limit");
+    }
+    if (!ReserveRecursiveCteVector(
+            &distinct_anchor.rows,
+            std::min(working.anchor_batch.rows.size(),
+                     working.maximum_working_row_count),
+            "UNION DISTINCT anchor row", &capacity_detail)) {
+      return refuse_memory(std::move(capacity_detail));
+    }
     std::size_t distinct_anchor_payload_bytes = 0;
     try {
       for (const auto& row : working.anchor_batch.rows) {
@@ -1080,7 +1403,13 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
                   "before retaining the UNION DISTINCT anchor")) {
             throw std::runtime_error(memory_state->refusal_detail);
           }
-          distinct_anchor.rows.push_back(row);
+          if (!AppendNormalizedRecursiveCteTuple(
+                  row, working.anchor_batch.columns.size(),
+                  &distinct_anchor.rows, "UNION DISTINCT anchor",
+                  &capacity_detail)) {
+            memory_state->refusal_detail = std::move(capacity_detail);
+            throw std::runtime_error(memory_state->refusal_detail);
+          }
           distinct_anchor_payload_bytes = prospective_anchor_payload;
           *admitted_output_payload_bytes =
               distinct_anchor_payload_bytes;
@@ -1107,6 +1436,7 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
         [recursive_step, admit, memory_state,
          raw_generated_payload_bytes,
          admitted_output_payload_bytes, cancellation_failure,
+         maximum_working_row_count = working.maximum_working_row_count,
          cancellation_requested = working.cancellation_requested](
             const DescriptorBatch& current, const std::size_t iteration) {
           auto generated = recursive_step(current, iteration);
@@ -1131,13 +1461,36 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
             throw std::runtime_error(memory_state->refusal_detail);
           }
           DescriptorBatch distinct;
-          distinct.columns = generated.columns;
+          std::string capacity_detail;
+          try {
+            distinct.columns = generated.columns;
+          } catch (const std::bad_alloc&) {
+            memory_state->refusal_detail =
+                "recursive CTE UNION DISTINCT output column allocation was refused";
+            throw std::runtime_error(memory_state->refusal_detail);
+          } catch (const std::length_error&) {
+            memory_state->refusal_detail =
+                "recursive CTE UNION DISTINCT output column capacity exceeds the container limit";
+            throw std::runtime_error(memory_state->refusal_detail);
+          }
+          if (!ReserveRecursiveCteVector(
+                  &distinct.rows,
+                  std::min(generated.rows.size(),
+                           maximum_working_row_count),
+                  "UNION DISTINCT output row", &capacity_detail)) {
+            memory_state->refusal_detail = std::move(capacity_detail);
+            throw std::runtime_error(memory_state->refusal_detail);
+          }
           std::size_t distinct_payload_bytes = 0;
           *admitted_output_payload_bytes = 0;
           for (const auto& row : generated.rows) {
             *admitted_output_payload_bytes =
                 distinct_payload_bytes;
             if (admit(row, iteration)) {
+              if (distinct.rows.size() == maximum_working_row_count) {
+                throw std::runtime_error(
+                    "recursive CTE UNION DISTINCT working row bound was exceeded");
+              }
               std::size_t row_payload_bytes = 0;
               if (!AddRecursiveCteTuplePayload(row, &row_payload_bytes) ||
                   row_payload_bytes >
@@ -1157,7 +1510,13 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
                       "before retaining UNION DISTINCT output")) {
                 throw std::runtime_error(memory_state->refusal_detail);
               }
-              distinct.rows.push_back(row);
+              if (!AppendNormalizedRecursiveCteTuple(
+                      row, generated.columns.size(), &distinct.rows,
+                      "UNION DISTINCT output", &capacity_detail)) {
+                memory_state->refusal_detail =
+                    std::move(capacity_detail);
+                throw std::runtime_error(memory_state->refusal_detail);
+              }
               distinct_payload_bytes = prospective_distinct_payload;
               *admitted_output_payload_bytes =
                   distinct_payload_bytes;
@@ -1371,7 +1730,22 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     return refuse(
         "recursive CTE SEARCH/CYCLE requires bounded typed cycle keys");
   }
-  std::vector<bool> covered(request.anchor_batch.columns.size(), false);
+  std::vector<std::uint8_t> covered;
+  std::string capacity_detail;
+  if (!ReserveRecursiveCteVector(
+          &covered, request.anchor_batch.columns.size(),
+          "SEARCH/CYCLE key coverage", &capacity_detail)) {
+    return refuse_memory(std::move(capacity_detail));
+  }
+  try {
+    covered.assign(request.anchor_batch.columns.size(), 0);
+  } catch (const std::bad_alloc&) {
+    return refuse_memory(
+        "recursive CTE SEARCH/CYCLE key coverage allocation was refused");
+  } catch (const std::length_error&) {
+    return refuse_memory(
+        "recursive CTE SEARCH/CYCLE key coverage capacity exceeds the container limit");
+  }
   for (const auto& term : cycle_key_terms) {
     if (term.column >= request.anchor_batch.columns.size() ||
         covered[term.column] ||
@@ -1508,10 +1882,7 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     return refuse_memory(memory_state->refusal_detail);
   }
   DescriptorBatch output;
-  output.columns = request.anchor_batch.columns;
-  output.columns.push_back(request.search_sequence_column);
-  output.columns.push_back(request.cycle_mark_column);
-  DescriptorBatch working = request.anchor_batch;
+  DescriptorBatch working;
   constexpr auto kNoParent = std::numeric_limits<std::size_t>::max();
   struct RetainedPathNode {
     std::size_t output_row_index;
@@ -1521,9 +1892,62 @@ ExecuteCanonicalRecursiveCteSearchCycle(
   std::vector<std::size_t> working_path_node_indices;
   std::vector<std::size_t> ancestor_node_indices;
   std::vector<CanonicalRecursiveCteSearchCycleMetadata> metadata;
+  const auto ancestor_capacity = std::min(
+      request.maximum_result_row_count,
+      request.maximum_iteration_count);
+  try {
+    if (request.anchor_batch.columns.size() >
+        output.columns.max_size() - 2) {
+      return refuse_memory(
+          "recursive CTE SEARCH/CYCLE projected column capacity exceeds the container limit");
+    }
+    if (!ReserveRecursiveCteVector(
+            &output.columns, request.anchor_batch.columns.size() + 2,
+            "SEARCH/CYCLE output column", &capacity_detail) ||
+        !ReserveRecursiveCteVector(
+            &output.rows, request.maximum_result_row_count,
+            "SEARCH/CYCLE output row", &capacity_detail) ||
+        !ReserveRecursiveCteVector(
+            &working.rows, request.maximum_working_row_count,
+            "SEARCH/CYCLE working row", &capacity_detail) ||
+        !ReserveRecursiveCteVector(
+            &path_nodes, request.maximum_result_row_count,
+            "SEARCH/CYCLE retained path", &capacity_detail) ||
+        !ReserveRecursiveCteVector(
+            &working_path_node_indices,
+            request.maximum_working_row_count,
+            "SEARCH/CYCLE working path index", &capacity_detail) ||
+        !ReserveRecursiveCteVector(
+            &ancestor_node_indices, ancestor_capacity,
+            "SEARCH/CYCLE ancestry", &capacity_detail) ||
+        !ReserveRecursiveCteVector(
+            &metadata, request.maximum_result_row_count,
+            "SEARCH/CYCLE metadata", &capacity_detail)) {
+      return refuse_memory(std::move(capacity_detail));
+    }
+    output.columns.insert(output.columns.end(),
+                          request.anchor_batch.columns.begin(),
+                          request.anchor_batch.columns.end());
+    output.columns.push_back(request.search_sequence_column);
+    output.columns.push_back(request.cycle_mark_column);
+    working.columns = request.anchor_batch.columns;
+    for (const auto& row : request.anchor_batch.rows) {
+      if (!AppendNormalizedRecursiveCteTuple(
+              row, request.anchor_batch.columns.size(),
+              &working.rows, "SEARCH/CYCLE working anchor",
+              &capacity_detail)) {
+        return refuse_memory(std::move(capacity_detail));
+      }
+    }
+  } catch (const std::bad_alloc&) {
+    return refuse_memory(
+        "recursive CTE SEARCH/CYCLE retained container allocation was refused");
+  } catch (const std::length_error&) {
+    return refuse_memory(
+        "recursive CTE SEARCH/CYCLE retained container capacity exceeds the container limit");
+  }
   std::uint64_t sequence = 0;
   try {
-    working_path_node_indices.reserve(working.rows.size());
     for (const auto& row : working.rows) {
       cancellation = poll_cancellation(0, "while binding anchor rows");
       if (!cancellation.diagnostic.ok) {
@@ -1552,7 +1976,16 @@ ExecuteCanonicalRecursiveCteSearchCycle(
         throw std::runtime_error(memory_state->refusal_detail);
       }
       ++sequence;
-      DescriptorTuple projected = row;
+      DescriptorTuple projected;
+      if (!ReserveRecursiveCteVector(
+              &projected.values,
+              request.anchor_batch.columns.size() + 2,
+              "SEARCH/CYCLE projected value", &capacity_detail)) {
+        memory_state->refusal_detail = std::move(capacity_detail);
+        throw std::runtime_error(memory_state->refusal_detail);
+      }
+      projected.values.insert(projected.values.end(),
+                              row.values.begin(), row.values.end());
       projected.values.push_back(sequence_value(sequence));
       projected.values.push_back(cycle_value(false));
       output.rows.push_back(std::move(projected));
@@ -1570,6 +2003,12 @@ ExecuteCanonicalRecursiveCteSearchCycle(
       path_nodes.push_back({output.rows.size() - 1, kNoParent});
       working_path_node_indices.push_back(path_nodes.size() - 1);
     }
+  } catch (const std::bad_alloc&) {
+    return refuse_memory(
+        "recursive CTE SEARCH/CYCLE projected anchor allocation was refused");
+  } catch (const std::length_error&) {
+    return refuse_memory(
+        "recursive CTE SEARCH/CYCLE projected anchor capacity exceeds the container limit");
   } catch (const std::exception& error) {
     if (!memory_state->refusal_detail.empty()) {
       return refuse_memory(memory_state->refusal_detail);
@@ -1597,10 +2036,26 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     }
     try {
       generated = request.recursive_step(working, iteration);
+    } catch (const std::bad_alloc&) {
+      return refuse_memory(
+          memory_state && !memory_state->refusal_detail.empty()
+              ? memory_state->refusal_detail
+              : "recursive CTE SEARCH/CYCLE step allocation was refused");
+    } catch (const std::length_error&) {
+      return refuse_memory(
+          memory_state && !memory_state->refusal_detail.empty()
+              ? memory_state->refusal_detail
+              : "recursive CTE SEARCH/CYCLE step capacity exceeds the container limit");
     } catch (const std::exception& error) {
+      if (memory_state && !memory_state->refusal_detail.empty()) {
+        return refuse_memory(memory_state->refusal_detail);
+      }
       return refuse(std::string("recursive CTE SEARCH/CYCLE step failed:") +
                     error.what());
     } catch (...) {
+      if (memory_state && !memory_state->refusal_detail.empty()) {
+        return refuse_memory(memory_state->refusal_detail);
+      }
       return refuse("recursive CTE SEARCH/CYCLE step failed");
     }
     const auto post_step_authority = RevalidateCanonicalExecutionMgaAuthority(
@@ -1666,11 +2121,23 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     }
 
     DescriptorBatch next_working;
-    next_working.columns = request.anchor_batch.columns;
     std::vector<std::size_t> next_working_path_node_indices;
-    next_working_path_node_indices.reserve(generated.batch.rows.size());
     std::size_t next_working_payload_bytes = 0;
     try {
+      next_working.columns = request.anchor_batch.columns;
+      const auto next_working_capacity =
+          std::min(generated.batch.rows.size(),
+                   request.maximum_working_row_count);
+      if (!ReserveRecursiveCteVector(
+              &next_working.rows, next_working_capacity,
+              "SEARCH/CYCLE next working row", &capacity_detail) ||
+          !ReserveRecursiveCteVector(
+              &next_working_path_node_indices,
+              next_working_capacity,
+              "SEARCH/CYCLE next working path index", &capacity_detail)) {
+        memory_state->refusal_detail = std::move(capacity_detail);
+        throw std::runtime_error(memory_state->refusal_detail);
+      }
       for (std::size_t row_index = 0;
            row_index < generated.batch.rows.size(); ++row_index) {
         cancellation =
@@ -1768,7 +2235,17 @@ ExecuteCanonicalRecursiveCteSearchCycle(
           throw std::runtime_error(memory_state->refusal_detail);
         }
         ++sequence;
-        DescriptorTuple projected = generated_row;
+        DescriptorTuple projected;
+        if (!ReserveRecursiveCteVector(
+                &projected.values,
+                request.anchor_batch.columns.size() + 2,
+                "SEARCH/CYCLE projected value", &capacity_detail)) {
+          memory_state->refusal_detail = std::move(capacity_detail);
+          throw std::runtime_error(memory_state->refusal_detail);
+        }
+        projected.values.insert(projected.values.end(),
+                                generated_row.values.begin(),
+                                generated_row.values.end());
         projected.values.push_back(sequence_value(sequence));
         projected.values.push_back(cycle_value(cycle));
         output.rows.push_back(std::move(projected));
@@ -1783,13 +2260,25 @@ ExecuteCanonicalRecursiveCteSearchCycle(
             request.maximum_working_row_count) {
           return refuse("recursive CTE SEARCH/CYCLE working bound exceeded");
         }
-        next_working.rows.push_back(generated_row);
+        if (!AppendNormalizedRecursiveCteTuple(
+                generated_row, request.anchor_batch.columns.size(),
+                &next_working.rows, "SEARCH/CYCLE next working",
+                &capacity_detail)) {
+          memory_state->refusal_detail = std::move(capacity_detail);
+          throw std::runtime_error(memory_state->refusal_detail);
+        }
         next_working_payload_bytes =
             prospective_next_working_payload;
         path_nodes.push_back(
             {output.rows.size() - 1, parent_path_node_index});
         next_working_path_node_indices.push_back(path_nodes.size() - 1);
       }
+    } catch (const std::bad_alloc&) {
+      return refuse_memory(
+          "recursive CTE SEARCH/CYCLE retained row allocation was refused");
+    } catch (const std::length_error&) {
+      return refuse_memory(
+          "recursive CTE SEARCH/CYCLE retained row capacity exceeds the container limit");
     } catch (const std::exception& error) {
       if (!memory_state->refusal_detail.empty()) {
         return refuse_memory(memory_state->refusal_detail);

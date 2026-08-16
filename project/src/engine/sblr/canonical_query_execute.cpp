@@ -1737,6 +1737,7 @@ struct PreparedRecursiveCteTerm {
 struct LiveRecursiveCteTermExecution {
   exec::CanonicalRecursiveCteGeneratedBatch generated;
   bool ok{false};
+  bool resource_refused{false};
   bool cancellation_observed{false};
   std::exception_ptr cancellation_probe_failure;
   std::string detail;
@@ -1790,10 +1791,14 @@ LiveRecursiveCteTermExecution ExecutePreparedRecursiveCteTerm(
     const exec::CanonicalRecursiveCteCancellationProbe&
         cancellation_requested) {
   LiveRecursiveCteTermExecution result;
-  result.generated.batch.columns = prepared.columns;
   const auto refuse = [&](std::string detail) {
     result = {};
-    result.generated.batch.columns = prepared.columns;
+    result.detail = std::move(detail);
+    return result;
+  };
+  const auto refuse_resource = [&](std::string detail) {
+    result = {};
+    result.resource_refused = true;
     result.detail = std::move(detail);
     return result;
   };
@@ -1819,86 +1824,100 @@ LiveRecursiveCteTermExecution ExecutePreparedRecursiveCteTerm(
       return refuse("recursive CTE term input descriptor drifted");
     }
   }
-  const auto poll_cancellation = [&]() {
-    if (!cancellation_requested) return false;
-    try {
-      return cancellation_requested(iteration);
-    } catch (...) {
-      result.cancellation_probe_failure = std::current_exception();
-      return true;
-    }
-  };
-  const auto append = [&](exec::DescriptorTuple row,
-                          const std::size_t parent_row) {
-    if (result.generated.batch.rows.size() == maximum_output_row_count) {
-      result.detail = "recursive CTE term output row bound was exceeded";
-      return false;
-    }
-    result.generated.batch.rows.push_back(std::move(row));
+  try {
+    result.generated.batch.columns = prepared.columns;
+    result.generated.batch.rows.reserve(maximum_output_row_count);
     if (prepared.mode == LiveRecursiveCteTermMode::kIncrementWrapToOne) {
-      result.generated.parent_working_row_indices.push_back(parent_row);
+      result.generated.parent_working_row_indices.reserve(
+          maximum_output_row_count);
     }
-    return true;
-  };
+    const auto poll_cancellation = [&]() {
+      if (!cancellation_requested) return false;
+      try {
+        return cancellation_requested(iteration);
+      } catch (...) {
+        result.cancellation_probe_failure = std::current_exception();
+        return true;
+      }
+    };
+    const auto append = [&](exec::DescriptorTuple row,
+                            const std::size_t parent_row) {
+      if (result.generated.batch.rows.size() == maximum_output_row_count) {
+        result.detail = "recursive CTE term output row bound was exceeded";
+        return false;
+      }
+      result.generated.batch.rows.push_back(std::move(row));
+      if (prepared.mode == LiveRecursiveCteTermMode::kIncrementWrapToOne) {
+        result.generated.parent_working_row_indices.push_back(parent_row);
+      }
+      return true;
+    };
 
-  for (std::size_t row = 0; row < current.rows.size(); ++row) {
+    for (std::size_t row = 0; row < current.rows.size(); ++row) {
+      if (poll_cancellation()) {
+        result.cancellation_observed =
+            result.cancellation_probe_failure == nullptr;
+        return result;
+      }
+      if (current.rows[row].values.size() != 1) {
+        return refuse("recursive CTE term received a ragged row");
+      }
+      const auto& value = current.rows[row].values.front();
+      if (prepared.mode ==
+              LiveRecursiveCteTermMode::kBoundedIncrementWithCurrent &&
+          !append(current.rows[row], row)) {
+        return result;
+      }
+      if (value.state == api::EngineValueState::sql_null || value.is_null) {
+        continue;
+      }
+      const auto decoded = exec::DecodeInt64Value(value);
+      if (!decoded.ok()) {
+        return refuse(decoded.diagnostic.diagnostic_code + ":" +
+                      decoded.diagnostic.detail);
+      }
+      if (prepared.mode != LiveRecursiveCteTermMode::kIncrementWrapToOne &&
+          decoded.value >= prepared.upper_bound) {
+        continue;
+      }
+      api::EngineTypedValue next;
+      next.descriptor = value.descriptor;
+      next.encoded_value = std::to_string(
+          prepared.mode == LiveRecursiveCteTermMode::kIncrementWrapToOne &&
+                  decoded.value >= prepared.upper_bound
+              ? 1
+              : decoded.value + 1);
+      next.state = api::EngineValueState::value;
+      if (!append({{std::move(next)}}, row)) return result;
+    }
     if (poll_cancellation()) {
       result.cancellation_observed =
           result.cancellation_probe_failure == nullptr;
       return result;
     }
-    if (current.rows[row].values.size() != 1) {
-      return refuse("recursive CTE term received a ragged row");
+    std::vector<std::uint32_t> descriptor_ids;
+    descriptor_ids.reserve(prepared.columns.size());
+    for (const auto& column : prepared.columns) {
+      descriptor_ids.push_back(column.descriptor_id);
     }
-    const auto& value = current.rows[row].values.front();
-    if (prepared.mode ==
-            LiveRecursiveCteTermMode::kBoundedIncrementWithCurrent &&
-        !append(current.rows[row], row)) {
+    bool validation_cancelled = false;
+    const auto validated = exec::ValidateCanonicalDescriptorBatch(
+        result.generated.batch, descriptor_ids, poll_cancellation,
+        &validation_cancelled);
+    if (validation_cancelled || result.cancellation_probe_failure) {
+      result.cancellation_observed =
+          result.cancellation_probe_failure == nullptr;
       return result;
     }
-    if (value.state == api::EngineValueState::sql_null || value.is_null) {
-      continue;
+    if (!validated.ok) {
+      return refuse(validated.diagnostic_code + ":" + validated.detail);
     }
-    const auto decoded = exec::DecodeInt64Value(value);
-    if (!decoded.ok()) {
-      return refuse(decoded.diagnostic.diagnostic_code + ":" +
-                    decoded.diagnostic.detail);
-    }
-    if (prepared.mode != LiveRecursiveCteTermMode::kIncrementWrapToOne &&
-        decoded.value >= prepared.upper_bound) {
-      continue;
-    }
-    api::EngineTypedValue next;
-    next.descriptor = value.descriptor;
-    next.encoded_value = std::to_string(
-        prepared.mode == LiveRecursiveCteTermMode::kIncrementWrapToOne &&
-                decoded.value >= prepared.upper_bound
-            ? 1
-            : decoded.value + 1);
-    next.state = api::EngineValueState::value;
-    if (!append({{std::move(next)}}, row)) return result;
-  }
-  if (poll_cancellation()) {
-    result.cancellation_observed =
-        result.cancellation_probe_failure == nullptr;
-    return result;
-  }
-  std::vector<std::uint32_t> descriptor_ids;
-  descriptor_ids.reserve(prepared.columns.size());
-  for (const auto& column : prepared.columns) {
-    descriptor_ids.push_back(column.descriptor_id);
-  }
-  bool validation_cancelled = false;
-  const auto validated = exec::ValidateCanonicalDescriptorBatch(
-      result.generated.batch, descriptor_ids, poll_cancellation,
-      &validation_cancelled);
-  if (validation_cancelled || result.cancellation_probe_failure) {
-    result.cancellation_observed =
-        result.cancellation_probe_failure == nullptr;
-    return result;
-  }
-  if (!validated.ok) {
-    return refuse(validated.diagnostic_code + ":" + validated.detail);
+  } catch (const std::bad_alloc&) {
+    return refuse_resource(
+        "recursive CTE term retained allocation was refused");
+  } catch (const std::length_error&) {
+    return refuse_resource(
+        "recursive CTE term retained capacity exceeds the container limit");
   }
   result.ok = true;
   return result;
@@ -1985,13 +2004,14 @@ bool BoundPreparedRecursiveCtePeakPayload(
   std::uint64_t peak = 1;
   // Dispatcher anchor + outer UNION request anchor + inner Working request
   // anchor + accumulated result + typed DISTINCT representatives + current
-  // working + raw/admitted output overlap.
+  // working + raw/admitted output overlap + the normalized retained copy.
   if (!CheckedAdd(peak, anchor_payload, &peak) ||
       !CheckedAdd(peak, anchor_payload, &peak) ||
       !CheckedAdd(peak, anchor_payload, &peak) ||
       !CheckedAdd(peak, result_payload, &peak) ||
       !CheckedAdd(peak, result_payload, &peak) ||
       !CheckedAdd(peak, working_payload, &peak) ||
+      !CheckedAdd(peak, generated_payload, &peak) ||
       !CheckedAdd(peak, generated_payload, &peak) ||
       !CheckedAdd(peak, generated_payload, &peak) ||
       peak > std::numeric_limits<std::size_t>::max()) {
@@ -11429,6 +11449,8 @@ MakeLiveRecursiveCteRegistration(
                   return recursive_cancellation_state
                       ->cancellation_observed;
                 };
+        const auto recursive_memory_state =
+            std::make_shared<exec::CanonicalRecursiveCteMemoryState>();
 
         exec::DescriptorBatch output;
         exec::DescriptorRuntimeDiagnostic diagnostic;
@@ -11459,6 +11481,7 @@ MakeLiveRecursiveCteRegistration(
           recursive.maximum_result_row_count =
               std::max<std::size_t>(1, prepared.maximum_result_row_count);
           recursive.enforce_payload_memory_grant = true;
+          recursive.memory_state = recursive_memory_state;
           recursive.retained_input_payload_bytes =
               static_cast<std::size_t>(retained_input_payload_bytes);
           recursive.cancellation_requested =
@@ -11469,6 +11492,7 @@ MakeLiveRecursiveCteRegistration(
               [term = prepared.term,
                maximum_output_row_count =
                    prepared.maximum_term_output_row_count,
+               recursive_memory_state,
                recursive_cancellation_state,
                recursive_cancellation_requested](
                   const exec::DescriptorBatch& current,
@@ -11485,6 +11509,10 @@ MakeLiveRecursiveCteRegistration(
                 if (executed.cancellation_observed) {
                   recursive_cancellation_state->cancellation_observed = true;
                   return exec::CanonicalRecursiveCteGeneratedBatch{};
+                }
+                if (executed.resource_refused) {
+                  recursive_memory_state->refusal_detail = executed.detail;
+                  throw std::runtime_error(executed.detail);
                 }
                 if (!executed.ok) {
                   throw std::runtime_error(executed.detail);
@@ -11523,6 +11551,7 @@ MakeLiveRecursiveCteRegistration(
           working.maximum_result_row_count =
               std::max<std::size_t>(1, prepared.maximum_result_row_count);
           working.enforce_payload_memory_grant = true;
+          working.memory_state = recursive_memory_state;
           working.retained_input_payload_bytes =
               static_cast<std::size_t>(retained_input_payload_bytes);
           working.cancellation_requested =
@@ -11533,6 +11562,7 @@ MakeLiveRecursiveCteRegistration(
               [term = prepared.term,
                maximum_output_row_count =
                    prepared.maximum_term_output_row_count,
+               recursive_memory_state,
                recursive_cancellation_state,
                recursive_cancellation_requested](
                   const exec::DescriptorBatch& current,
@@ -11549,6 +11579,10 @@ MakeLiveRecursiveCteRegistration(
                 if (executed.cancellation_observed) {
                   recursive_cancellation_state->cancellation_observed = true;
                   return exec::DescriptorBatch{};
+                }
+                if (executed.resource_refused) {
+                  recursive_memory_state->refusal_detail = executed.detail;
+                  throw std::runtime_error(executed.detail);
                 }
                 if (!executed.ok) {
                   throw std::runtime_error(executed.detail);
