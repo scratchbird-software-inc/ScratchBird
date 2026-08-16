@@ -1008,6 +1008,10 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
       anchor_batch.rows.size() > request.maximum_result_row_count) {
     return refuse("recursive CTE working resource contract is invalid");
   }
+  const auto maximum_recursive_output_row_count =
+      request.maximum_recursive_output_row_count == 0
+          ? request.maximum_working_row_count
+          : request.maximum_recursive_output_row_count;
   CanonicalRecursiveCteStructuralCapacity structural_capacity;
   structural_capacity.profile =
       CanonicalRecursiveCteStructuralProfile::kWorking;
@@ -1018,9 +1022,7 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
   structural_capacity.maximum_working_row_count =
       request.maximum_working_row_count;
   structural_capacity.maximum_recursive_output_row_count =
-      request.maximum_recursive_output_row_count == 0
-          ? request.maximum_working_row_count
-          : request.maximum_recursive_output_row_count;
+      maximum_recursive_output_row_count;
   structural_capacity.maximum_result_row_count =
       request.maximum_result_row_count;
   std::size_t structural_bytes = 0;
@@ -1170,6 +1172,11 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
         poll_cancellation(iteration_ordinal, "after a recursive step");
     if (!cancellation.diagnostic.ok) {
       return refuse_poll(std::move(cancellation));
+    }
+    if (intermediate.rows.size() >
+        maximum_recursive_output_row_count) {
+      return refuse_memory(
+          "recursive CTE recursive output row bound was exceeded");
     }
     std::size_t intermediate_payload_bytes = 0;
     if (auto failure = measure_payload(
@@ -1855,9 +1862,15 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
          &raw_generated_payload_bytes,
          &admitted_output_payload_bytes, &cancellation_failure,
          maximum_working_row_count = working.maximum_working_row_count,
+         maximum_recursive_output_row_count =
+             structural_capacity.maximum_recursive_output_row_count,
          cancellation_requested = working.cancellation_requested](
             const DescriptorBatch& current, const std::size_t iteration) {
           auto generated = (*recursive_step)(current, iteration);
+          if (generated.rows.size() >
+              maximum_recursive_output_row_count) {
+            return generated;
+          }
           auto generated_measurement = MeasureRecursiveCtePayload(
               generated, cancellation_requested, iteration,
               "while measuring raw UNION DISTINCT output");
@@ -2117,6 +2130,10 @@ ExecuteCanonicalRecursiveCteSearchCycle(
       request.anchor_batch.rows.size() > request.maximum_result_row_count) {
     return refuse("recursive CTE SEARCH/CYCLE resource contract is invalid");
   }
+  const auto maximum_recursive_output_row_count =
+      request.maximum_recursive_output_row_count == 0
+          ? request.maximum_working_row_count
+          : request.maximum_recursive_output_row_count;
   CanonicalRecursiveCteStructuralCapacity structural_capacity;
   structural_capacity.profile =
       CanonicalRecursiveCteStructuralProfile::kSearchCycle;
@@ -2127,9 +2144,7 @@ ExecuteCanonicalRecursiveCteSearchCycle(
   structural_capacity.maximum_working_row_count =
       request.maximum_working_row_count;
   structural_capacity.maximum_recursive_output_row_count =
-      request.maximum_recursive_output_row_count == 0
-          ? request.maximum_working_row_count
-          : request.maximum_recursive_output_row_count;
+      maximum_recursive_output_row_count;
   structural_capacity.maximum_result_row_count =
       request.maximum_result_row_count;
   structural_capacity.equality_term_count =
@@ -2561,6 +2576,16 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     if (!cancellation.diagnostic.ok) {
       return refuse_poll(std::move(cancellation));
     }
+    if (generated.batch.rows.size() >
+        maximum_recursive_output_row_count) {
+      return refuse_memory(
+          "recursive CTE SEARCH/CYCLE recursive output row bound was exceeded");
+    }
+    if (generated.parent_working_row_indices.size() >
+        maximum_recursive_output_row_count) {
+      return refuse_memory(
+          "recursive CTE SEARCH/CYCLE parent carrier row bound was exceeded");
+    }
     std::size_t generated_payload_bytes = 0;
     if (auto failure = measure_payload(
             generated.batch, iteration,
@@ -2608,11 +2633,11 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     if (generated.parent_working_row_indices.size() !=
             generated.batch.rows.size() ||
         working_path_node_indices.size() != working.rows.size() ||
-        generated.batch.rows.size() > request.maximum_result_row_count -
-                                          output.rows.size()) {
+        output.rows.size() > request.maximum_result_row_count ||
+        generated.batch.rows.size() >
+            request.maximum_result_row_count - output.rows.size()) {
       return refuse("recursive CTE SEARCH/CYCLE parent or result bound failed");
     }
-
     DescriptorBatch next_working;
     std::vector<std::size_t> next_working_path_node_indices;
     std::size_t next_working_payload_bytes = 0;
@@ -2944,10 +2969,19 @@ CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
   }
   const auto recursive_step = working.recursive_step;
   const auto maximum_bytes = request.maximum_materialized_value_bytes;
+  const auto maximum_recursive_output_row_count =
+      working.maximum_recursive_output_row_count == 0
+          ? working.maximum_working_row_count
+          : working.maximum_recursive_output_row_count;
   working.recursive_step =
-      [recursive_step, materialized_bytes, maximum_bytes, batch_bytes](
+      [recursive_step, materialized_bytes, maximum_bytes,
+       maximum_recursive_output_row_count, batch_bytes](
           const DescriptorBatch& current, const std::size_t iteration) {
         auto intermediate = recursive_step(current, iteration);
+        if (intermediate.rows.size() >
+            maximum_recursive_output_row_count) {
+          return intermediate;
+        }
         const auto bytes = batch_bytes(intermediate);
         if (bytes > maximum_bytes - *materialized_bytes) {
           throw std::runtime_error(
