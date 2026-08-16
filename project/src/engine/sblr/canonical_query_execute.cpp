@@ -8299,14 +8299,11 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
           return step;
         }
         exec::CanonicalDescriptorProjectionRequest project_request;
-        project_request.physical_dag = dag;
         project_request.selected_physical_node_id = node.physical_node_id;
-        project_request.input_batch = input_batch;
-        project_request.projected_columns = projected_columns;
         project_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        auto project_result =
-            exec::ExecuteCanonicalDescriptorProjection(project_request);
+        auto project_result = exec::ExecuteCanonicalDescriptorProjection(
+            project_request, dag, input_batch, projected_columns);
         if (!project_result.diagnostic.ok) {
           step.diagnostic = std::move(project_result.diagnostic);
           return step;
@@ -8451,14 +8448,11 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
           return step;
         }
         exec::CanonicalDescriptorProjectionRequest project_request;
-        project_request.physical_dag = dag;
         project_request.selected_physical_node_id = node.physical_node_id;
-        project_request.input_batch = input_batch;
-        project_request.projected_columns = projected_columns;
         project_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        auto project_result =
-            exec::ExecuteCanonicalDescriptorProjection(project_request);
+        auto project_result = exec::ExecuteCanonicalDescriptorProjection(
+            project_request, dag, input_batch, projected_columns);
         if (!project_result.diagnostic.ok) {
           step.diagnostic = std::move(project_result.diagnostic);
           return step;

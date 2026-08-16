@@ -2686,6 +2686,14 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     bool* cancellation_observed = nullptr);
 CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
     const CanonicalDescriptorProjectionRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG, input-batch, and projected-column
+// carriers must remain in their exact default states.
+CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
+    const CanonicalDescriptorProjectionRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::vector<std::size_t>& borrowed_projected_columns);
 CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
     const CanonicalDescriptorFilterRequest& request);
 // Borrowed execution carriers are consumed synchronously and are never

@@ -26,14 +26,33 @@ DescriptorRuntimeDiagnostic Refusal(std::string code,
   return diagnostic;
 }
 
+bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
+  const DescriptorBatch empty;
+  return batch.columns.empty() &&
+         batch.columns.capacity() == empty.columns.capacity() &&
+         batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
+}
+
+bool ProjectionColumnCarrierIsExactDefault(
+    const std::vector<std::size_t>& projected_columns) {
+  const std::vector<std::size_t> empty;
+  return projected_columns.empty() &&
+         projected_columns.capacity() == empty.capacity();
+}
+
 }  // namespace
 
 // QOW-SOURCE-QRY-007-PROJECTION-V1
 // Canonical typed project-node implementation.  The physical DAG retains the
 // engine MGA statement context and immutable descriptor handles; only after
 // they validate does this operator consume reusable descriptor mechanics.
-CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
-    const CanonicalDescriptorProjectionRequest& request) {
+namespace {
+CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjectionBound(
+    const CanonicalDescriptorProjectionRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const std::vector<std::size_t>& execution_projected_columns,
+    const bool borrowed_execution_carriers) {
   CanonicalDescriptorProjectionResult result;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
     result.diagnostic = std::move(diagnostic);
@@ -41,21 +60,32 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
     return result;
   };
 
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(request.input_batch) ||
+       !ProjectionColumnCarrierIsExactDefault(
+           request.projected_columns))) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-029-CANONICAL-PHYSICAL-ROUTE-V1",
+        "descriptor projection request carries conflicting owned execution "
+        "carriers"));
+  }
+
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
   const PhysicalNodeRecord* selected_node = nullptr;
   const PhysicalNodeRecord* input_node = nullptr;
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == request.selected_physical_node_id) {
       selected_node = &node;
     }
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id ||
+          execution_dag.root_physical_node_id ||
       selected_node == nullptr) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "selected projection node is not the physical root"));
@@ -66,7 +96,7 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
         "QOW-DIAG-QRY-029-CANONICAL-PHYSICAL-ROUTE-V1",
         "descriptor projection requires one selected project node"));
   }
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
         selected_node->input_physical_node_ids.front()) {
       input_node = &node;
@@ -77,20 +107,20 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "project input node is unresolved"));
   }
-  if (request.projected_columns.size() !=
+  if (execution_projected_columns.size() !=
       selected_node->output_descriptor_ids.size()) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "project output handle width mismatch"));
   }
 
   auto input_validation = ValidateCanonicalDescriptorBatch(
-      request.input_batch, input_node->output_descriptor_ids);
+      execution_input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
   for (std::size_t ordinal = 0;
-       ordinal < request.projected_columns.size(); ++ordinal) {
-    const auto source_column = request.projected_columns[ordinal];
-    if (source_column >= request.input_batch.columns.size() ||
-        request.input_batch.columns[source_column].descriptor_id !=
+       ordinal < execution_projected_columns.size(); ++ordinal) {
+    const auto source_column = execution_projected_columns[ordinal];
+    if (source_column >= execution_input_batch.columns.size() ||
+        execution_input_batch.columns[source_column].descriptor_id !=
             selected_node->output_descriptor_ids[ordinal]) {
       return refuse(Refusal(
           "SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -99,8 +129,8 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
     }
   }
 
-  result.output_batch =
-      ProjectDescriptorBatch(request.input_batch, request.projected_columns);
+  result.output_batch = ProjectDescriptorBatch(
+      execution_input_batch, execution_projected_columns);
   for (std::size_t row = 0; row < result.output_batch.rows.size(); ++row) {
     for (std::size_t column = 0;
          column < result.output_batch.columns.size(); ++column) {
@@ -132,14 +162,32 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
       result.output_batch, selected_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!result_authority.ok) return refuse(result_authority);
   result.diagnostic = {};
-  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
   result.mga_statement_context = request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
+    const CanonicalDescriptorProjectionRequest& request) {
+  return ExecuteCanonicalDescriptorProjectionBound(
+      request, request.physical_dag, request.input_batch,
+      request.projected_columns, false);
+}
+
+CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
+    const CanonicalDescriptorProjectionRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::vector<std::size_t>& borrowed_projected_columns) {
+  return ExecuteCanonicalDescriptorProjectionBound(
+      request, borrowed_execution_dag, borrowed_input_batch,
+      borrowed_projected_columns, true);
 }
 
 }  // namespace scratchbird::engine::executor
