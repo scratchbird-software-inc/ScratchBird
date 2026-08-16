@@ -13636,7 +13636,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   for (std::size_t index = 1; index < reverse_chain.size(); ++index) {
     const auto& node = *reverse_chain[index];
     const auto& input_node = *reverse_chain[index - 1];
-    const auto input_batch = state.batch;
+    const auto& input_batch = state.batch;
     const auto input_bindings = state.result_bindings;
     const auto input_row_count = input_batch.rows.size();
     std::uint64_t input_memory = 1;
