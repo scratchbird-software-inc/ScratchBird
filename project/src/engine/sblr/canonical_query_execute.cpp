@@ -11380,23 +11380,13 @@ MakeLiveRecursiveCteRegistration(
           return step;
         }
 
-        exec::TypedPhysicalNodeDag operator_dag;
-        std::string detail;
-        if (!BuildOperatorLocalPhysicalDag(
-                dag, node.physical_node_id, &operator_dag, &detail)) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-RECURSIVE-CTE-INPUT-V1";
-          step.diagnostic.detail = std::move(detail);
-          return step;
-        }
         const auto recursive_term_node = std::ranges::find_if(
-            operator_dag.nodes, [&](const auto& candidate) {
+            dag.nodes, [&](const auto& candidate) {
               return node.input_physical_node_ids.size() == 2 &&
                      candidate.physical_node_id ==
                          node.input_physical_node_ids[1];
             });
-        if (recursive_term_node == operator_dag.nodes.end() ||
+        if (recursive_term_node == dag.nodes.end() ||
             !LiveRecursiveCteTermNodeBound(
                 prepared.term, *recursive_term_node,
                 recursive_term_capability_uuid)) {
@@ -11408,19 +11398,19 @@ MakeLiveRecursiveCteRegistration(
           return step;
         }
         const auto cancellation_policy = std::ranges::find_if(
-            operator_dag.admission_evidence,
+            dag.admission_evidence,
             [](const exec::PhysicalAdmissionEvidence& evidence) {
               return evidence.stage ==
                      exec::PhysicalAdmissionStage::kPolicyCapability;
             });
         const auto cancellation_policy_count = std::ranges::count_if(
-            operator_dag.admission_evidence,
+            dag.admission_evidence,
             [](const exec::PhysicalAdmissionEvidence& evidence) {
               return evidence.stage ==
                      exec::PhysicalAdmissionStage::kPolicyCapability;
             });
         if (cancellation_policy_count != 1 ||
-            cancellation_policy == operator_dag.admission_evidence.end() ||
+            cancellation_policy == dag.admission_evidence.end() ||
             cancellation_policy->evidence_uuid.empty()) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
@@ -11430,25 +11420,25 @@ MakeLiveRecursiveCteRegistration(
           return step;
         }
         const auto resource_evidence = std::ranges::find_if(
-            operator_dag.admission_evidence,
+            dag.admission_evidence,
             [](const exec::PhysicalAdmissionEvidence& evidence) {
               return evidence.stage ==
                      exec::PhysicalAdmissionStage::kResource;
             });
         const auto resource_evidence_count = std::ranges::count_if(
-            operator_dag.admission_evidence,
+            dag.admission_evidence,
             [](const exec::PhysicalAdmissionEvidence& evidence) {
               return evidence.stage ==
                      exec::PhysicalAdmissionStage::kResource;
             });
         if (resource_evidence_count != 1 ||
-            resource_evidence == operator_dag.admission_evidence.end() ||
+            resource_evidence == dag.admission_evidence.end() ||
             resource_evidence->evidence_uuid.empty() ||
             prepared.planned_peak_memory_bytes == 0 ||
             prepared.planned_resident_structural_bytes == 0 ||
             node.memory_bytes_required !=
                 prepared.planned_peak_memory_bytes ||
-            node.memory_bytes_required > operator_dag.memory_budget_bytes ||
+            node.memory_bytes_required > dag.memory_budget_bytes ||
             retained_input_payload_bytes >
                 node.memory_bytes_required ||
             anchor_input_payload_bytes >
@@ -11517,7 +11507,6 @@ MakeLiveRecursiveCteRegistration(
         std::string result_memory_grant_evidence_uuid;
         if (prepared.profile.search_cycle) {
           exec::CanonicalRecursiveCteSearchCycleRequest recursive;
-          recursive.physical_dag = std::move(operator_dag);
           recursive.selected_physical_node_id = node.physical_node_id;
           recursive.anchor_batch =
               *inputs[0].materialized_output_batch;
@@ -11578,9 +11567,10 @@ MakeLiveRecursiveCteRegistration(
                 return std::move(executed.generated);
               };
           recursive.mga_authority = BuildCanonicalExecutionMgaAuthority(
-              mga_context, recursive.physical_dag);
+              mga_context, dag);
           auto result =
-              exec::ExecuteCanonicalRecursiveCteSearchCycle(recursive);
+              exec::ExecuteCanonicalRecursiveCteSearchCycle(
+                  recursive, dag, node.physical_node_id);
           diagnostic = std::move(result.diagnostic);
           output = std::move(result.output_batch);
           result_mga = std::move(result.mga_statement_context);
@@ -11604,7 +11594,6 @@ MakeLiveRecursiveCteRegistration(
           exec::CanonicalRecursiveCteUnionRequest recursive;
           recursive.union_mode = prepared.profile.union_mode;
           auto& working = recursive.working_request;
-          working.physical_dag = std::move(operator_dag);
           working.selected_physical_node_id = node.physical_node_id;
           working.anchor_batch = *inputs[0].materialized_output_batch;
           working.maximum_iteration_count =
@@ -11656,9 +11645,10 @@ MakeLiveRecursiveCteRegistration(
                 return std::move(executed.generated.batch);
               };
           working.mga_authority = BuildCanonicalExecutionMgaAuthority(
-              mga_context, working.physical_dag);
+              mga_context, dag);
           auto result =
-              exec::ExecuteCanonicalRecursiveCteUnion(recursive);
+              exec::ExecuteCanonicalRecursiveCteUnion(
+                  recursive, dag, node.physical_node_id);
           diagnostic = std::move(result.working_result.diagnostic);
           output = std::move(result.working_result.output_batch);
           result_mga = std::move(result.mga_statement_context);

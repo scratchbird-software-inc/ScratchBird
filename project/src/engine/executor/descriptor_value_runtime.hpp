@@ -2701,9 +2701,20 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     const CanonicalRecursiveCteWorkingRequest& request);
 CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
     const CanonicalRecursiveCteUnionRequest& request);
+// Borrowed-DAG entry points execute synchronously and never retain the DAG.
+// The request's owned DAG carrier must remain in its exact default state.
+CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
+    const CanonicalRecursiveCteUnionRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id);
 CanonicalRecursiveCteSearchCycleResult
 ExecuteCanonicalRecursiveCteSearchCycle(
     const CanonicalRecursiveCteSearchCycleRequest& request);
+CanonicalRecursiveCteSearchCycleResult
+ExecuteCanonicalRecursiveCteSearchCycle(
+    const CanonicalRecursiveCteSearchCycleRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id);
 CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
     const CanonicalRecursiveCteResourceRequest& request);
 CanonicalRecursiveCteCancellationResult
