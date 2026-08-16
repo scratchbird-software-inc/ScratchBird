@@ -2842,6 +2842,14 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
     const DescriptorBatch& borrowed_input_batch);
 CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     const CanonicalAggregateStateExchangeRequest& request);
+// Borrowed execution carriers are consumed synchronously through worker-state
+// serialization, restore, deterministic merge, and finalization and are never
+// retained. The nested aggregate request's owned DAG and input carriers must
+// remain exact-default.
+CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
+    const CanonicalAggregateStateExchangeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     const CanonicalAggregateMovingRuntimeRequest& request);
 // Borrowed execution carriers are consumed synchronously and are never

@@ -4966,8 +4966,12 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
 // authority used by serial, local-combine, spill, grouped, and window routes.
 // The exchange carries no transaction-finality, recovery, visibility, or
 // parser-execution authority of its own.
-CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
-    const CanonicalAggregateStateExchangeRequest& request) {
+static CanonicalAggregateStateExchangeResult
+ExecuteCanonicalAggregateStateExchangeSelected(
+    const CanonicalAggregateStateExchangeRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   CanonicalAggregateStateExchangeResult result;
   const auto refuse = [&](std::string code, std::string detail) {
     result.diagnostic.ok = false;
@@ -4981,9 +4985,18 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     return result;
   };
 
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(
+           request.aggregate_request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(
+           request.aggregate_request.input_batch))) {
+    return refuse(
+        "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-AUTHORITY-V1",
+        "aggregate exchange request carries conflicting owned execution carriers");
+  }
+
   const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.aggregate_request.mga_authority,
-      request.aggregate_request.physical_dag);
+      request.aggregate_request.mga_authority, execution_dag);
   if (!entry_authority.ok) {
     return refuse(entry_authority.diagnostic_code, entry_authority.detail);
   }
@@ -5026,8 +5039,8 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   }
 
   auto baseline = ExecuteCanonicalAggregateRuntimeSelected(
-      request.aggregate_request, request.aggregate_request.physical_dag,
-      request.aggregate_request.input_batch, false, true, {});
+      request.aggregate_request, execution_dag, execution_input_batch,
+      borrowed_execution_carriers, true, {});
   if (!baseline.diagnostic.ok) {
     return refuse(baseline.diagnostic.diagnostic_code,
                   baseline.diagnostic.detail);
@@ -5040,48 +5053,60 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   }
 
   const auto selected_node = std::ranges::find_if(
-      request.aggregate_request.physical_dag.nodes,
+      execution_dag.nodes,
       [&](const auto& node) {
         return node.physical_node_id ==
                request.aggregate_request.selected_physical_node_id;
       });
   std::size_t input_payload_bytes = 0;
-  if (selected_node == request.aggregate_request.physical_dag.nodes.end() ||
-      !AggregateBatchPayloadBytes(request.aggregate_request.input_batch,
-                                  &input_payload_bytes)) {
+  std::size_t filter_memory_bytes = 0;
+  std::size_t transition_ordinal_memory_bytes = 0;
+  if (selected_node == execution_dag.nodes.end() ||
+      !AggregateBatchPayloadBytes(execution_input_batch,
+                                  &input_payload_bytes) ||
+      (request.aggregate_request.filter_truth_values.has_value() &&
+       !CheckedAggregateFinalizationMultiply(
+           request.aggregate_request.filter_truth_values->size(),
+           sizeof(scratchbird::engine::internal_api::EngineSqlTruthValue),
+           &filter_memory_bytes)) ||
+      !CheckedAggregateFinalizationMultiply(
+          baseline.transition_row_indices.capacity(), sizeof(std::size_t),
+          &transition_ordinal_memory_bytes)) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                   "aggregate exchange selected-node grant is unresolved");
   }
   const auto node_memory_grant = AggregateNodeMemoryGrant(
-      request.aggregate_request.physical_dag, *selected_node);
+      execution_dag, *selected_node);
   if (!node_memory_grant.has_value() ||
       request.aggregate_request.retained_memory_bytes >
           *node_memory_grant ||
       input_payload_bytes >
           *node_memory_grant -
               request.aggregate_request.retained_memory_bytes ||
+      filter_memory_bytes >
+          *node_memory_grant -
+              request.aggregate_request.retained_memory_bytes -
+              input_payload_bytes ||
       baseline.final_output_bytes >
           *node_memory_grant -
               request.aggregate_request.retained_memory_bytes -
-              input_payload_bytes) {
+              input_payload_bytes - filter_memory_bytes ||
+      transition_ordinal_memory_bytes >
+          *node_memory_grant -
+              request.aggregate_request.retained_memory_bytes -
+              input_payload_bytes - filter_memory_bytes -
+              baseline.final_output_bytes) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                   "aggregate exchange selected-node grant is exhausted");
   }
   const auto exchange_fixed_memory =
       request.aggregate_request.retained_memory_bytes +
-      input_payload_bytes + baseline.final_output_bytes;
-  PreparedAggregateTransitions prepared;
+      input_payload_bytes + filter_memory_bytes + baseline.final_output_bytes +
+      transition_ordinal_memory_bytes;
   DescriptorRuntimeDiagnostic state_diagnostic;
-  if (!PrepareCanonicalAggregateTransitions(
-          request.aggregate_request,
-          request.aggregate_request.input_batch,
-          *node_memory_grant - exchange_fixed_memory,
-          &prepared, &state_diagnostic)) {
-    return refuse(state_diagnostic.diagnostic_code, state_diagnostic.detail);
-  }
   const auto maximum_state_bytes = std::min(
       request.aggregate_request.maximum_state_bytes,
-      *node_memory_grant - exchange_fixed_memory - prepared.retained_bytes);
+      *node_memory_grant - exchange_fixed_memory);
 
   struct ExchangedPartialState {
     std::uint64_t generation = 0;
@@ -5095,8 +5120,9 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   result.worker_state_bytes.reserve(worker_count);
   result.worker_serialized_state_bytes.reserve(worker_count);
 
-  const auto base_partition_size = prepared.transitions.size() / worker_count;
-  const auto extra_partition_count = prepared.transitions.size() % worker_count;
+  const auto& canonical_transitions = baseline.transition_row_indices;
+  const auto base_partition_size = canonical_transitions.size() / worker_count;
+  const auto extra_partition_count = canonical_transitions.size() % worker_count;
   std::size_t partition_begin = 0;
   for (std::size_t worker = 0; worker < worker_count; ++worker) {
     const auto partition_size =
@@ -5105,7 +5131,7 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     CanonicalAggregateCoreState partial_state;
     const auto live_partial_capacity_limit =
         *node_memory_grant - exchange_fixed_memory -
-        prepared.retained_bytes - result.serialized_state_bytes;
+        result.serialized_state_bytes;
     if (!ReserveCanonicalAggregateCoreState(
             request.aggregate_request.descriptor, partition_size,
             std::min(maximum_state_bytes, live_partial_capacity_limit),
@@ -5117,24 +5143,19 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
          transition < partition_end; ++transition) {
       const auto live_partial_state_limit =
           *node_memory_grant - exchange_fixed_memory -
-          prepared.retained_bytes - result.serialized_state_bytes;
+          result.serialized_state_bytes;
       if (!TransitionCanonicalAggregateCoreBounded(
               request.aggregate_request.descriptor,
               BindAggregateTransitionValues(
-                  request.aggregate_request,
-                  request.aggregate_request.input_batch,
-                  prepared.transitions[transition]),
+                  request.aggregate_request, execution_input_batch,
+                  canonical_transitions[transition]),
               live_partial_state_limit, &partial_state,
               &state_diagnostic)) {
         return refuse(state_diagnostic.diagnostic_code,
                       state_diagnostic.detail);
       }
-      if (prepared.retained_bytes >
-              *node_memory_grant - exchange_fixed_memory ||
-          EstimateCanonicalAggregateStateBytes(partial_state) >
-              std::min(maximum_state_bytes,
-                       *node_memory_grant - exchange_fixed_memory -
-                           prepared.retained_bytes)) {
+      if (EstimateCanonicalAggregateStateBytes(partial_state) >
+          maximum_state_bytes) {
         return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                       "aggregate exchange partial-state byte bound is exceeded");
       }
@@ -5145,11 +5166,10 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     const auto partial_state_bytes =
         EstimateCanonicalAggregateStateBytes(partial_state);
     if (result.serialized_state_bytes >
-            *node_memory_grant - exchange_fixed_memory -
-                prepared.retained_bytes ||
+            *node_memory_grant - exchange_fixed_memory ||
         partial_state_bytes >
             *node_memory_grant - exchange_fixed_memory -
-                prepared.retained_bytes - result.serialized_state_bytes) {
+                result.serialized_state_bytes) {
       return refuse(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
           "aggregate exchange worker state exhausted the selected-node grant");
@@ -5157,7 +5177,7 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     const auto live_serialized_state_limit = std::min(
         request.maximum_serialized_state_bytes_per_worker,
         *node_memory_grant - exchange_fixed_memory -
-            prepared.retained_bytes - result.serialized_state_bytes -
+            result.serialized_state_bytes -
             partial_state_bytes);
     if (!SerializeCanonicalAggregateCoreState(
             request.aggregate_request, partial_state,
@@ -5177,15 +5197,12 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
           "combined aggregate exchange state byte bound is exceeded");
     }
     if (result.serialized_state_bytes >
-            *node_memory_grant - exchange_fixed_memory -
-                prepared.retained_bytes ||
+            *node_memory_grant - exchange_fixed_memory ||
         serialized.size() >
             *node_memory_grant - exchange_fixed_memory -
-                prepared.retained_bytes -
                 result.serialized_state_bytes ||
         partial_state_bytes >
             *node_memory_grant - exchange_fixed_memory -
-                prepared.retained_bytes -
                 result.serialized_state_bytes - serialized.size()) {
       return refuse(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
@@ -5201,13 +5218,11 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
                          request.aggregate_request.descriptor.function,
                          std::move(serialized)});
   }
-  if (partition_begin != prepared.transitions.size()) {
+  if (partition_begin != canonical_transitions.size()) {
     return refuse(
         "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-PARTITION-V1",
         "aggregate exchange partitions do not cover the prepared transitions");
   }
-  std::vector<std::size_t>().swap(prepared.transitions);
-  prepared.retained_bytes = 0;
   result.partial_state_count = exchanged.size();
   result.states_serialized = true;
 
@@ -5318,7 +5333,6 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   }
   const auto merged_state_bytes =
       EstimateCanonicalAggregateStateBytes(merged_state);
-  std::vector<std::size_t>().swap(prepared.transitions);
   decltype(exchanged)().swap(exchanged);
   if (merged_state_bytes >
       *node_memory_grant - exchange_fixed_memory) {
@@ -5377,8 +5391,7 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   merged.peak_finalization_workspace_bytes =
       finalization_receipt.peak_workspace_bytes;
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.aggregate_request.mga_authority,
-      request.aggregate_request.physical_dag);
+      request.aggregate_request.mga_authority, execution_dag);
   if (!result_authority.ok) {
     return refuse(result_authority.diagnostic_code, result_authority.detail);
   }
@@ -5389,6 +5402,21 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   result.mga_statement_context =
       request.aggregate_request.mga_authority.statement_context;
   return result;
+}
+
+CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
+    const CanonicalAggregateStateExchangeRequest& request) {
+  return ExecuteCanonicalAggregateStateExchangeSelected(
+      request, request.aggregate_request.physical_dag,
+      request.aggregate_request.input_batch, false);
+}
+
+CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
+    const CanonicalAggregateStateExchangeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalAggregateStateExchangeSelected(
+      request, borrowed_execution_dag, borrowed_input_batch, true);
 }
 
 CanonicalAggregateRuntimeRequest CloneCanonicalAggregateRequestWithoutRows(
