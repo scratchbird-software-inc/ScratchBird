@@ -244,6 +244,11 @@ bool ReserveRecursiveCteVector(std::vector<T>* values,
               " capacity exceeds the container limit";
     return false;
   }
+  if (values->capacity() != capacity) {
+    *detail = "recursive CTE " + std::string(label) +
+              " capacity differs from its charged logical capacity";
+    return false;
+  }
   return true;
 }
 
@@ -262,9 +267,12 @@ bool AppendNormalizedRecursiveCteTuple(
     }
     return false;
   }
+  DescriptorTuple normalized;
+  if (!ReserveRecursiveCteVector(
+          &normalized.values, expected_width, label, detail)) {
+    return false;
+  }
   try {
-    DescriptorTuple normalized;
-    normalized.values.reserve(expected_width);
     for (const auto& value : source.values) {
       normalized.values.push_back(value);
     }
@@ -311,6 +319,13 @@ class RecursiveCteInt64IdentitySet {
                 "the container limit";
       return false;
     }
+    if (!ReserveRecursiveCteVector(
+            &slots_, slot_count, "UNION DISTINCT identity slot", detail) ||
+        !ReserveRecursiveCteVector(
+            &occupied_, slot_count,
+            "UNION DISTINCT identity occupancy", detail)) {
+      return false;
+    }
     try {
       slots_.resize(slot_count);
       occupied_.resize(slot_count, 0);
@@ -321,6 +336,13 @@ class RecursiveCteInt64IdentitySet {
     } catch (const std::length_error&) {
       *detail = "recursive CTE UNION DISTINCT identity capacity exceeds "
                 "the container limit";
+      return false;
+    }
+    if (slots_.size() != slot_count || slots_.capacity() != slot_count ||
+        occupied_.size() != slot_count ||
+        occupied_.capacity() != slot_count) {
+      *detail = "recursive CTE UNION DISTINCT identity capacity differs "
+                "from its charged logical capacity";
       return false;
     }
     mask_ = slot_count - 1;
@@ -2173,14 +2195,18 @@ ExecuteCanonicalRecursiveCteSearchCycle(
   }
   std::vector<std::uint32_t> output_descriptor_ids;
   std::string capacity_detail;
+  if (anchor_node->output_descriptor_ids.size() >
+      output_descriptor_ids.max_size() - 2) {
+    return refuse_memory(
+        "recursive CTE SEARCH/CYCLE output descriptor capacity exceeds the container limit");
+  }
+  if (!ReserveRecursiveCteVector(
+          &output_descriptor_ids,
+          anchor_node->output_descriptor_ids.size() + 2,
+          "SEARCH/CYCLE output descriptor", &capacity_detail)) {
+    return refuse_memory(std::move(capacity_detail));
+  }
   try {
-    if (anchor_node->output_descriptor_ids.size() >
-        output_descriptor_ids.max_size() - 2) {
-      return refuse_memory(
-          "recursive CTE SEARCH/CYCLE output descriptor capacity exceeds the container limit");
-    }
-    output_descriptor_ids.reserve(
-        anchor_node->output_descriptor_ids.size() + 2);
     output_descriptor_ids.insert(
         output_descriptor_ids.end(),
         anchor_node->output_descriptor_ids.begin(),
