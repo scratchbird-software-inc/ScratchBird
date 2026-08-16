@@ -8078,7 +8078,7 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
       DerivedCanonicalUuid(identity_scope, selected_plan_purpose);
   publication_identity.first_causal_counter_id = 1;
   publication_identity.engine_owned = true;
-  const auto publication = opt::PublishCanonicalPhysicalDag(
+  auto publication = opt::PublishCanonicalPhysicalDag(
       request.optimizer_request, request.optimizer_admission,
       inventory.catalog,
       search, capabilities, publication_identity);
@@ -8095,7 +8095,7 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
     return result;
   }
   result.ok = true;
-  result.physical_dag = publication.physical_dag;
+  result.physical_dag = std::move(publication.physical_dag);
   for (const auto& physical_node : result.physical_dag.nodes) {
     const auto profile = std::ranges::find_if(
         profiles, [&](const LivePhysicalNodeProfile& candidate) {
@@ -24250,7 +24250,7 @@ ExecuteCanonicalObjectFreeValuesQuery(
       DerivedCanonicalUuid(identity_scope, "values.selected-plan");
   publication_identity.first_causal_counter_id = 1;
   publication_identity.engine_owned = true;
-  const auto publication = opt::PublishCanonicalPhysicalDag(
+  auto publication = opt::PublishCanonicalPhysicalDag(
       request.optimizer_request, request.optimizer_admission,
       inventory.catalog,
       search, capabilities, publication_identity);
@@ -24303,7 +24303,6 @@ ExecuteCanonicalObjectFreeValuesQuery(
       };
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = publication.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       publication.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
@@ -24347,6 +24346,8 @@ ExecuteCanonicalObjectFreeValuesQuery(
   producer_memory.non_accessing_proven = true;
   producer_memory_receipts.emplace(producer_memory.physical_node_id,
                                    std::move(producer_memory));
+  execution_request.selected_physical_dag =
+      std::move(publication.physical_dag);
   const auto execution =
       ExecuteSelectedWithMgaGuard(request.context, execution_request,
                                   producer_memory_receipts);
