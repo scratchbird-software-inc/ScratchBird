@@ -7313,15 +7313,15 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
                       "grouped aggregate replay copy exceeds the selected-node grant");
       }
       auto aggregate =
-          CloneCanonicalAggregateRequestWithoutRows(source_aggregate);
-      aggregate.physical_dag = common.physical_dag;
+          CloneCanonicalAggregateRequestWithoutRows(source_aggregate, false);
       aggregate.selected_physical_node_id =
           common.selected_physical_node_id;
-      aggregate.input_batch.columns = common.input_batch.columns;
       aggregate.retained_memory_bytes = common.retained_memory_bytes;
-      aggregate.input_batch.rows.reserve(group.source_row_indices.size());
+      DescriptorBatch group_input_batch;
+      group_input_batch.columns = common.input_batch.columns;
+      group_input_batch.rows.reserve(group.source_row_indices.size());
       for (const auto row : group.source_row_indices) {
-        aggregate.input_batch.rows.push_back(common.input_batch.rows[row]);
+        group_input_batch.rows.push_back(common.input_batch.rows[row]);
       }
       if (full_filter != nullptr) {
         std::vector<EngineSqlTruthValue> group_filter;
@@ -7331,7 +7331,8 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
         }
         aggregate.filter_truth_values = std::move(group_filter);
       }
-      for (auto& node : aggregate.physical_dag.nodes) {
+      auto replay_execution_dag = common.physical_dag;
+      for (auto& node : replay_execution_dag.nodes) {
         if (node.physical_node_id == aggregate.selected_physical_node_id) {
           node.output_descriptor_ids = {
               aggregate.result_column.descriptor_id};
@@ -7359,7 +7360,8 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
           request.cleanup_after_cancellation;
       state_request.restart_recovery_proof_available =
           request.restart_recovery_proof_available;
-      auto state = ExecuteCanonicalAggregateStateSpill(state_request);
+      auto state = ExecuteCanonicalAggregateStateSpill(
+          state_request, replay_execution_dag, group_input_batch);
 
       result.spilled = result.spilled || state.spilled;
       result.spill_reopened = result.spill_reopened || state.spill_reopened;
