@@ -54,6 +54,27 @@ bool IsCanonicalUuid(const std::string_view value) {
   return true;
 }
 
+std::string_view CanonicalBoundJoinImplementationId(
+    const CanonicalAcceptedJoinKind kind) {
+  switch (kind) {
+    case CanonicalAcceptedJoinKind::kCross:
+      return "join.cross.3vl.nested.v1";
+    case CanonicalAcceptedJoinKind::kInner:
+      return "join.inner.3vl.nested.v1";
+    case CanonicalAcceptedJoinKind::kLeftOuter:
+      return "join.left-outer.3vl.nested.v1";
+    case CanonicalAcceptedJoinKind::kRightOuter:
+      return "join.right-outer.3vl.nested.v1";
+    case CanonicalAcceptedJoinKind::kFullOuter:
+      return "join.full-outer.3vl.nested.v1";
+    case CanonicalAcceptedJoinKind::kLeftSemi:
+      return "join.left-semi.3vl.nested.v1";
+    case CanonicalAcceptedJoinKind::kLeftAnti:
+      return "join.left-anti.3vl.nested.v1";
+  }
+  return {};
+}
+
 std::optional<std::size_t> FoundationNodeMemoryGrant(
     const TypedPhysicalNodeDag& dag, const std::uint64_t node_id) {
   const auto node = std::ranges::find_if(
@@ -1933,6 +1954,8 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
         selected_node->physical_node_id !=
             key_request.physical_dag.root_physical_node_id ||
         selected_node->node_kind != PhysicalNodeKind::kJoin ||
+        selected_node->implementation_id !=
+            CanonicalBoundJoinImplementationId(request.join_kind) ||
         selected_node->input_physical_node_ids.size() != 2 ||
         selected_node->input_physical_node_ids[0] ==
             selected_node->input_physical_node_ids[1]) {
