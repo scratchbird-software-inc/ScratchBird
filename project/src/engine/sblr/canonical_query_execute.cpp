@@ -8248,7 +8248,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
         project_request.projected_columns = projected_columns;
         project_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        const auto project_result =
+        auto project_result =
             exec::ExecuteCanonicalDescriptorProjection(project_request);
         if (!project_result.diagnostic.ok) {
           step.diagnostic = project_result.diagnostic;
@@ -8258,7 +8258,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = project_result.output_batch.rows.size();
-        step.materialized_output_batch = project_result.output_batch;
+        step.materialized_output_batch =
+            std::move(project_result.output_batch);
         step.mga_statement_context = project_result.mga_statement_context;
         return step;
       };
@@ -8345,7 +8346,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
         }
         exec::CanonicalDescriptorFilterRequest filter_request;
         filter_request.predicate_receipt = std::move(issued.receipt);
-        const auto filter_result =
+        auto filter_result =
             exec::ExecuteCanonicalDescriptorFilter(filter_request);
         if (!filter_result.diagnostic.ok) {
           step.diagnostic = filter_result.diagnostic;
@@ -8355,7 +8356,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = filter_result.output_batch.rows.size();
-        step.materialized_output_batch = filter_result.output_batch;
+        step.materialized_output_batch =
+            std::move(filter_result.output_batch);
         step.mga_statement_context = filter_result.mga_statement_context;
         return step;
       };
@@ -8413,7 +8415,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
         project_request.projected_columns = projected_columns;
         project_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        const auto project_result =
+        auto project_result =
             exec::ExecuteCanonicalDescriptorProjection(project_request);
         if (!project_result.diagnostic.ok) {
           step.diagnostic = project_result.diagnostic;
@@ -8423,7 +8425,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = project_result.output_batch.rows.size();
-        step.materialized_output_batch = project_result.output_batch;
+        step.materialized_output_batch =
+            std::move(project_result.output_batch);
         step.mga_statement_context = project_result.mga_statement_context;
         return step;
       };
@@ -8570,7 +8573,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
             deterministic_order_evidence_uuid;
         request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        const auto window =
+        auto window =
             exec::ExecuteCanonicalDescriptorRowNumber(request);
         if (!window.diagnostic.ok) {
           step.diagnostic = window.diagnostic;
@@ -8580,7 +8583,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = window.output_batch.rows.size();
-        step.materialized_output_batch = window.output_batch;
+        step.materialized_output_batch = std::move(window.output_batch);
         step.mga_statement_context = window.mga_statement_context;
         return step;
       };
@@ -9827,7 +9830,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
             std::max<std::size_t>(1, config.maximum_output_row_count);
         set_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
             mga_context, set_request.physical_dag);
-        const auto set_result =
+        auto set_result =
             config.profile.quantifier ==
                     exec::CanonicalSetOperationQuantifier::kAll
                 ? exec::ExecuteCanonicalSetOperationAll(set_request)
@@ -9841,7 +9844,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
                                set_result.right_input_row_count;
         step.rows_examined = step.input_row_count;
         step.output_row_count = set_result.output_batch.rows.size();
-        step.materialized_output_batch = set_result.output_batch;
+        step.materialized_output_batch = std::move(set_result.output_batch);
         step.mga_statement_context = set_result.mga_statement_context;
         return step;
       };
@@ -9897,7 +9900,7 @@ MakeLiveQueryDistinctRegistration(
             maximum_value_comparisons;
         distinct_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        const auto distinct_result =
+        auto distinct_result =
             exec::ExecuteCanonicalDescriptorDistinct(distinct_request);
         if (!distinct_result.diagnostic.ok) {
           step.diagnostic = distinct_result.diagnostic;
@@ -9907,7 +9910,8 @@ MakeLiveQueryDistinctRegistration(
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = distinct_result.output_batch.rows.size();
-        step.materialized_output_batch = distinct_result.output_batch;
+        step.materialized_output_batch =
+            std::move(distinct_result.output_batch);
         step.mga_statement_context = distinct_result.mga_statement_context;
         return step;
       };
@@ -9994,7 +9998,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
         aggregate_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, aggregate_request.physical_dag);
-        const auto aggregate_result =
+        auto aggregate_result =
             exec::ExecuteCanonicalDescriptorCountStar(aggregate_request);
         if (!aggregate_result.diagnostic.ok) {
           step.diagnostic = aggregate_result.diagnostic;
@@ -10004,7 +10008,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
         step.input_row_count = aggregate_request.input_batch.rows.size();
         step.rows_examined = step.input_row_count;
         step.output_row_count = aggregate_result.output_batch.rows.size();
-        step.materialized_output_batch = aggregate_result.output_batch;
+        step.materialized_output_batch =
+            std::move(aggregate_result.output_batch);
         step.mga_statement_context =
             aggregate_request.mga_authority.statement_context;
         return step;
@@ -10146,7 +10151,7 @@ MakeLiveAggregateRegistryRegistration(
         aggregate_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, aggregate_request.physical_dag);
-        const auto aggregate_result =
+        auto aggregate_result =
             exec::ExecuteCanonicalAggregateRuntime(aggregate_request);
         if (!aggregate_result.diagnostic.ok) {
           step.diagnostic = aggregate_result.diagnostic;
@@ -10157,7 +10162,8 @@ MakeLiveAggregateRegistryRegistration(
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = aggregate_result.output_batch.rows.size();
-        step.materialized_output_batch = aggregate_result.output_batch;
+        step.materialized_output_batch =
+            std::move(aggregate_result.output_batch);
         step.mga_statement_context =
             aggregate_request.mga_authority.statement_context;
         return step;
@@ -10434,7 +10440,7 @@ MakeLiveGroupedCountSumRegistration(
             first.aggregate_request.input_batch.rows.size();
         step.rows_examined = step.input_row_count;
         step.output_row_count = grouped.output_batch.rows.size();
-        step.materialized_output_batch = grouped.output_batch;
+        step.materialized_output_batch = std::move(grouped.output_batch);
         step.mga_statement_context = grouped.mga_statement_context;
         return step;
       };
@@ -10493,7 +10499,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
         sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
         sort_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        const auto sort_result =
+        auto sort_result =
             exec::ExecuteCanonicalDescriptorSort(sort_request);
         if (!sort_result.diagnostic.ok) {
           step.diagnostic = sort_result.diagnostic;
@@ -10503,7 +10509,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = sort_result.output_batch.rows.size();
-        step.materialized_output_batch = sort_result.output_batch;
+        step.materialized_output_batch = std::move(sort_result.output_batch);
         step.mga_statement_context = sort_result.mga_statement_context;
         return step;
       };
@@ -10591,7 +10597,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
         sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
         sort_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        const auto sorted = exec::ExecuteCanonicalDescriptorSort(sort_request);
+        auto sorted = exec::ExecuteCanonicalDescriptorSort(sort_request);
         if (!sorted.diagnostic.ok) {
           step.diagnostic = sorted.diagnostic;
           return step;
@@ -10600,7 +10606,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = sorted.output_batch.rows.size();
-        step.materialized_output_batch = sorted.output_batch;
+        step.materialized_output_batch = std::move(sorted.output_batch);
         step.mga_statement_context = sorted.mga_statement_context;
         return step;
       };
@@ -10688,7 +10694,7 @@ MakeLiveExpressionSortRegistration(
 
         exec::CanonicalDescriptorSortRequest sort_request;
         sort_request.order_key_receipt = std::move(issued.receipt);
-        const auto sorted = exec::ExecuteCanonicalDescriptorSort(sort_request);
+        auto sorted = exec::ExecuteCanonicalDescriptorSort(sort_request);
         if (!sorted.diagnostic.ok) {
           step.diagnostic = sorted.diagnostic;
           return step;
@@ -10704,7 +10710,7 @@ MakeLiveExpressionSortRegistration(
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = sorted.output_batch.rows.size();
-        step.materialized_output_batch = sorted.output_batch;
+        step.materialized_output_batch = std::move(sorted.output_batch);
         step.mga_statement_context = sorted.mga_statement_context;
         return step;
       };
@@ -11210,7 +11216,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = limited.output_batch.rows.size();
-        step.materialized_output_batch = limited.output_batch;
+        step.materialized_output_batch = std::move(limited.output_batch);
         step.mga_statement_context = limited.mga_statement_context;
         return step;
       };
@@ -16432,7 +16438,7 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
             std::max<std::size_t>(1, set_output_row_bound);
         set_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        const auto set_result =
+        auto set_result =
             set_profile.quantifier ==
                     exec::CanonicalSetOperationQuantifier::kAll
                 ? exec::ExecuteCanonicalSetOperationAll(set_request)
@@ -16446,7 +16452,7 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
                                set_result.right_input_row_count;
         step.rows_examined = step.input_row_count;
         step.output_row_count = set_result.output_batch.rows.size();
-        step.materialized_output_batch = set_result.output_batch;
+        step.materialized_output_batch = std::move(set_result.output_batch);
         step.mga_statement_context = set_result.mga_statement_context;
         return step;
       };
@@ -16896,7 +16902,7 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
               std::max<std::size_t>(1, config.maximum_output_row_count);
           set_request.mga_authority =
               BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-          const auto set_result =
+          auto set_result =
               config.profile.quantifier ==
                       exec::CanonicalSetOperationQuantifier::kAll
                   ? exec::ExecuteCanonicalSetOperationAll(set_request)
@@ -16910,7 +16916,8 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
                                  set_result.right_input_row_count;
           step.rows_examined = step.input_row_count;
           step.output_row_count = set_result.output_batch.rows.size();
-          step.materialized_output_batch = set_result.output_batch;
+          step.materialized_output_batch =
+              std::move(set_result.output_batch);
           step.mga_statement_context = set_result.mga_statement_context;
           return step;
         };
@@ -21070,7 +21077,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = aggregate_result.output_batch.rows.size();
-        step.materialized_output_batch = aggregate_result.output_batch;
+        step.materialized_output_batch =
+            std::move(aggregate_result.output_batch);
         step.mga_statement_context = aggregate_result.mga_statement_context;
         return step;
       };
@@ -21160,7 +21168,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
 
           exec::CanonicalDescriptorFilterRequest filter_request;
           filter_request.predicate_receipt = std::move(issued.receipt);
-          const auto filter_result =
+          auto filter_result =
               exec::ExecuteCanonicalDescriptorFilter(filter_request);
           if (!filter_result.diagnostic.ok) {
             step.diagnostic = filter_result.diagnostic;
@@ -21170,7 +21178,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
           step.input_row_count = input_batch.rows.size();
           step.rows_examined = input_batch.rows.size();
           step.output_row_count = filter_result.output_batch.rows.size();
-          step.materialized_output_batch = filter_result.output_batch;
+          step.materialized_output_batch =
+              std::move(filter_result.output_batch);
           step.mga_statement_context = filter_result.mga_statement_context;
           return step;
         };
@@ -21754,7 +21763,7 @@ ExecuteCanonicalObjectFreePivotQuery(
             maximum_state_bytes;
         pivot_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        const auto pivot = exec::ExecuteCanonicalPivot(pivot_request);
+        auto pivot = exec::ExecuteCanonicalPivot(pivot_request);
         if (!pivot.diagnostic.ok) {
           step.diagnostic = pivot.diagnostic;
           return step;
@@ -21763,7 +21772,7 @@ ExecuteCanonicalObjectFreePivotQuery(
         step.input_row_count = input_row_count;
         step.rows_examined = input_row_count;
         step.output_row_count = pivot.output_batch.rows.size();
-        step.materialized_output_batch = pivot.output_batch;
+        step.materialized_output_batch = std::move(pivot.output_batch);
         step.mga_statement_context = pivot.mga_statement_context;
         return step;
       };
@@ -22250,7 +22259,7 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
         unpivot_request.maximum_output_cell_count = maximum_output_cells;
         unpivot_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        const auto unpivot = exec::ExecuteCanonicalUnpivot(unpivot_request);
+        auto unpivot = exec::ExecuteCanonicalUnpivot(unpivot_request);
         if (!unpivot.diagnostic.ok) {
           step.diagnostic = unpivot.diagnostic;
           return step;
@@ -22259,7 +22268,7 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
         step.input_row_count = input_row_count;
         step.rows_examined = input_row_count;
         step.output_row_count = unpivot.output_batch.rows.size();
-        step.materialized_output_batch = unpivot.output_batch;
+        step.materialized_output_batch = std::move(unpivot.output_batch);
         step.mga_statement_context = unpivot.mga_statement_context;
         return step;
       };
@@ -23161,7 +23170,7 @@ ExecuteCanonicalObjectFreeLimitQuery(
         limit_request.offset = 0;
         limit_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        const auto limit_result =
+        auto limit_result =
             exec::ExecuteCanonicalDescriptorLimit(limit_request);
         if (!limit_result.diagnostic.ok) {
           step.diagnostic = limit_result.diagnostic;
@@ -23171,7 +23180,7 @@ ExecuteCanonicalObjectFreeLimitQuery(
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = limit_result.output_batch.rows.size();
         step.output_row_count = limit_result.output_batch.rows.size();
-        step.materialized_output_batch = limit_result.output_batch;
+        step.materialized_output_batch = std::move(limit_result.output_batch);
         step.mga_statement_context = limit_result.mga_statement_context;
         return step;
       };
