@@ -4382,8 +4382,12 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   }
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kSetOperation ||
-      selected_node->input_physical_node_ids.size() != 2) {
-    return refuse("set operation requires one selected binary physical node");
+      selected_node->input_physical_node_ids.size() != 2 ||
+      selected_node->input_physical_node_ids[0] ==
+          selected_node->input_physical_node_ids[1]) {
+    return refuse(
+        "set operation requires one selected binary physical node with "
+        "two distinct inputs");
   }
 
   const std::string expected_implementation = [&] {
