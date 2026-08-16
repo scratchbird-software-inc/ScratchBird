@@ -122,9 +122,12 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
   }
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kWindow ||
+      selected_node->implementation_id !=
+          "window.partition-order-peer.v1" ||
       selected_node->input_physical_node_ids.size() != 1) {
     return refuse("QOW-DIAG-WINDOW-PEER",
-                  "selected physical node is not a unary window stage");
+                  "selected physical node is not the canonical unary "
+                  "partition/order/peer window stage");
   }
   for (const auto& node : request.physical_dag.nodes) {
     if (node.physical_node_id ==
