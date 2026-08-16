@@ -122,10 +122,39 @@ CorrelatedBatchValidation ValidateCorrelatedBatch(
 // consulted here. Validation and the resource bound complete before any
 // result batch is published.
 namespace {
+enum class TableSubqueryExecutionRoute : std::uint8_t {
+  table = 1,
+  scalar,
+  row,
+  exists,
+  quantified,
+};
+
+bool TableSubqueryImplementationMatches(
+    const TableSubqueryExecutionRoute route,
+    const std::string_view implementation_id) {
+  switch (route) {
+    case TableSubqueryExecutionRoute::table:
+      return implementation_id == "subquery.table.materialize.typed.v1";
+    case TableSubqueryExecutionRoute::scalar:
+      return implementation_id == "subquery.scalar.cardinality.typed.v1";
+    case TableSubqueryExecutionRoute::row:
+      return implementation_id == "subquery.row.cardinality.typed.v1";
+    case TableSubqueryExecutionRoute::exists:
+      return implementation_id == "subquery.exists.typed.v1";
+    case TableSubqueryExecutionRoute::quantified:
+      return implementation_id == "subquery.quantified.typed.v1" ||
+             implementation_id ==
+                 "subquery.quantified.int64.typed.v1";
+  }
+  return false;
+}
+
 CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
     const CanonicalTableSubqueryRequest& request,
     const TypedPhysicalNodeDag& execution_dag,
     const std::uint64_t scoped_root_physical_node_id,
+    const TableSubqueryExecutionRoute execution_route,
     const bool borrowed_execution_dag,
     const DescriptorBatch& execution_input_batch,
     const bool borrowed_input_batch) {
@@ -171,8 +200,11 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
   }
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kSubquery ||
+      !TableSubqueryImplementationMatches(
+          execution_route, selected_node->implementation_id) ||
       selected_node->input_physical_node_ids.size() != 1) {
-    return refuse("table subquery requires one selected subquery node");
+    return refuse(
+        "table subquery requires its selected canonical implementation");
   }
 
   const auto input_id = selected_node->input_physical_node_ids.front();
@@ -231,7 +263,8 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
     const CanonicalTableSubqueryRequest& request) {
   return ExecuteCanonicalTableSubqueryBound(
       request, request.physical_dag,
-      request.physical_dag.root_physical_node_id, false,
+      request.physical_dag.root_physical_node_id,
+      TableSubqueryExecutionRoute::table, false,
       request.input_batch, false);
 }
 
@@ -240,7 +273,8 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const std::uint64_t scoped_root_physical_node_id) {
   return ExecuteCanonicalTableSubqueryBound(
-      request, borrowed_execution_dag, scoped_root_physical_node_id, true,
+      request, borrowed_execution_dag, scoped_root_physical_node_id,
+      TableSubqueryExecutionRoute::table, true,
       request.input_batch, false);
 }
 
@@ -250,7 +284,8 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
     const std::uint64_t scoped_root_physical_node_id,
     const DescriptorBatch& borrowed_input_batch) {
   return ExecuteCanonicalTableSubqueryBound(
-      request, borrowed_execution_dag, scoped_root_physical_node_id, true,
+      request, borrowed_execution_dag, scoped_root_physical_node_id,
+      TableSubqueryExecutionRoute::table, true,
       borrowed_input_batch, true);
 }
 
@@ -283,12 +318,10 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubqueryBound(
     return result;
   };
 
-  auto table = borrowed_execution_carriers
-                   ? ExecuteCanonicalTableSubquery(
-                         request.table_request, execution_dag,
-                         scoped_root_physical_node_id,
-                         execution_input_batch)
-                   : ExecuteCanonicalTableSubquery(request.table_request);
+  auto table = ExecuteCanonicalTableSubqueryBound(
+      request.table_request, execution_dag, scoped_root_physical_node_id,
+      TableSubqueryExecutionRoute::scalar, borrowed_execution_carriers,
+      execution_input_batch, borrowed_execution_carriers);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
@@ -389,12 +422,10 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubqueryBound(
     return result;
   };
 
-  auto table = borrowed_execution_carriers
-                   ? ExecuteCanonicalTableSubquery(
-                         request.table_request, execution_dag,
-                         scoped_root_physical_node_id,
-                         execution_input_batch)
-                   : ExecuteCanonicalTableSubquery(request.table_request);
+  auto table = ExecuteCanonicalTableSubqueryBound(
+      request.table_request, execution_dag, scoped_root_physical_node_id,
+      TableSubqueryExecutionRoute::row, borrowed_execution_carriers,
+      execution_input_batch, borrowed_execution_carriers);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
@@ -544,7 +575,11 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
     return result;
   };
 
-  auto table = ExecuteCanonicalTableSubquery(request.table_request);
+  auto table = ExecuteCanonicalTableSubqueryBound(
+      request.table_request, request.table_request.physical_dag,
+      request.table_request.physical_dag.root_physical_node_id,
+      TableSubqueryExecutionRoute::exists, false,
+      request.table_request.input_batch, false);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
@@ -630,7 +665,11 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     return result;
   };
 
-  auto table = ExecuteCanonicalTableSubquery(request.table_request);
+  auto table = ExecuteCanonicalTableSubqueryBound(
+      request.table_request, request.table_request.physical_dag,
+      request.table_request.physical_dag.root_physical_node_id,
+      TableSubqueryExecutionRoute::quantified, false,
+      request.table_request.input_batch, false);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
