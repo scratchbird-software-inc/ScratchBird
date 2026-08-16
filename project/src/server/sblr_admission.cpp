@@ -9,6 +9,8 @@
 // SEARCH_KEY: SB_SERVER_SBLR_ADMISSION_VALIDATOR
 
 #include "sblr_admission.hpp"
+#include "sblr_local_gateway.hpp"
+#include "../server_engine_bridge/statement_context.hpp"
 
 #include "../engine/sblr/sblr_opcode_registry.hpp"
 #include "hash_digest.hpp"
@@ -23,6 +25,16 @@
 #include <string_view>
 
 namespace scratchbird::server {
+
+void BindServerSblrGatewayReceiptObservation(
+    const scratchbird::server_engine_bridge::StatementContextReceiptView& view,
+    ServerSblrAdmissionRequest* request) {
+  if (request == nullptr) return;
+  request->cluster_authority_active = view.cluster_context_active;
+  request->cluster_transaction_active = view.cluster_transaction_active;
+  request->route_fence_present = view.route_fence_present;
+}
+
 namespace {
 
 struct FamilyRule {
@@ -1687,37 +1699,70 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
   }
   scratchbird::engine::SblrExecutionEnvelopeSemanticView ingress_view;
   if (!scratchbird::engine::SblrValidateExecutionEnvelopeFields(
-          ingress.envelope, &ingress_view) ||
-      ingress_view.payload_kind != scratchbird::engine::SblrPayloadKind::operation_envelope ||
-      ingress_view.operation_ref_kind != 1 ||
-      ingress_view.operation_inline_data == nullptr) {
+          ingress.envelope, &ingress_view)) {
     return Reject("SBLR.ENVELOPE.PAYLOAD_KIND_INVALID",
-                  "SBOP admission requires one inline operation_ref and no opcode stream.",
-                  "operation_ref_required");
+                  "Ingress must select one canonical inline operation or opcode stream.",
+                  "inline_payload_required");
+  }
+  const bool opcode_stream =
+      ingress_view.payload_kind == scratchbird::engine::SblrPayloadKind::opcode_stream;
+  const auto* payload_data = opcode_stream ? ingress_view.opcode_inline_data
+                                           : ingress_view.operation_inline_data;
+  const auto payload_size = opcode_stream ? ingress_view.opcode_inline_size
+                                           : ingress_view.operation_inline_size;
+  const auto payload_ref_kind = opcode_stream ? ingress_view.opcode_ref_kind
+                                               : ingress_view.operation_ref_kind;
+  if (payload_ref_kind != 1 || payload_data == nullptr) {
+    return Reject("SBLR.ENVELOPE.PAYLOAD_KIND_INVALID",
+                  "Selected ingress payload must be carried by one inline reference.",
+                  "selected_inline_payload_required");
   }
   const auto outer_kind = static_cast<scratchbird::engine::SblrPayloadKind>(
       scratchbird::engine::SblrReadU16(
           container.container.canonical_anchor.data() + 100));
   if (outer_kind != ingress_view.payload_kind ||
-      container.container.operation_payload.size() != ingress_view.operation_inline_size ||
+      container.container.operation_payload.size() != payload_size ||
       !std::equal(container.container.operation_payload.begin(),
                   container.container.operation_payload.end(),
-                  ingress_view.operation_inline_data)) {
+                  payload_data)) {
     return Reject("SBLR.ENVELOPE.CHECKSUM_MISMATCH",
-                  "Outer SBLR and SBEE must select the same exact SBOP bytes.",
+                  "Outer SBLR and SBEE must select the same exact payload bytes.",
                   "outer_ingress_payload_mismatch");
   }
 
   const std::string_view operation_bytes(
-      reinterpret_cast<const char*>(ingress_view.operation_inline_data),
-      static_cast<std::size_t>(ingress_view.operation_inline_size));
-  const auto operation = scratchbird::engine::sblr::DecodeSblrEnvelope(operation_bytes);
+      reinterpret_cast<const char*>(payload_data),
+      static_cast<std::size_t>(payload_size));
+  scratchbird::engine::sblr::SblrOpcodeStreamResult decoded_stream;
+  scratchbird::engine::sblr::SblrDecodeResult operation;
+  if (opcode_stream) {
+    decoded_stream = scratchbird::engine::sblr::DecodeSblrOpcodeStream(operation_bytes);
+    if (decoded_stream.ok) {
+      operation.ok = true;
+      operation.envelope = decoded_stream.stream.operations.front();
+      operation.canonical_bytes.assign(operation_bytes.begin(), operation_bytes.end());
+    }
+  } else {
+    operation = scratchbird::engine::sblr::DecodeSblrEnvelope(operation_bytes);
+  }
   if (!operation.ok) {
-    const std::string code = operation.diagnostics.empty()
-                                 ? "SBLR.OPERATION.INVALID"
-                                 : operation.diagnostics.front().code;
-    return Reject(code, "The canonical SBOP operation failed validation.",
-                  "sbop_refused_before_context_binding");
+    const std::string code = opcode_stream
+                                 ? (decoded_stream.diagnostic_id.empty()
+                                        ? "SBLR.OPERAND_INVALID"
+                                        : decoded_stream.diagnostic_id)
+                                 : (operation.diagnostics.empty()
+                                        ? "SBLR.OPERATION.INVALID"
+                                        : operation.diagnostics.front().code);
+    auto rejected = Reject(
+        code, "The canonical SBLR payload failed validation.",
+        opcode_stream ? "sbos_refused_before_context_binding"
+                      : "sbop_refused_before_context_binding");
+    if (opcode_stream && !decoded_stream.detail.empty() &&
+        !rejected.diagnostics.empty()) {
+      rejected.diagnostics.front().internal_audit_key =
+          "sbos_refused_before_context_binding:" + decoded_stream.detail;
+    }
+    return rejected;
   }
   const auto* opcode = scratchbird::engine::sblr::LookupSblrOpcodeCode(
       operation.envelope.opcode_code);
@@ -1761,6 +1806,23 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
     return Reject("SBLR.INGRESS_REVALIDATION_FAILED",
                   "Parser, registry, dialect, or authenticated identity binding is stale or contradictory.",
                   "ingress_identity_cross_check_failed");
+  }
+  if (opcode_stream) {
+    for (const auto& member : decoded_stream.stream.operations) {
+      if (member.parser_package_uuid != outer_parser_uuid ||
+          member.parser_package_version_major !=
+              request.admitted_parser_package_version_major ||
+          member.parser_package_version_minor !=
+              request.admitted_parser_package_version_minor ||
+          member.parser_package_version_patch !=
+              request.admitted_parser_package_version_patch ||
+          member.registry_snapshot_uuid !=
+              request.admitted_registry_snapshot_uuid) {
+        return Reject("SBLR.INGRESS_REVALIDATION_FAILED",
+                      "An SBOS member differs from admitted producer or registry identity.",
+                      "sbos_member_provenance_mismatch");
+      }
+    }
   }
   if (!container.container.lowering_metadata.empty() &&
       ingress_view.source_artifact_present) {
@@ -1815,6 +1877,8 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
       request.encoded_execution_envelope.end());
   token->canonical_operation_bytes = operation.canonical_bytes;
   token->operation = operation.envelope;
+  token->opcode_stream = opcode_stream;
+  if (opcode_stream) token->stream = decoded_stream.stream;
   token->operation.requires_security_context = true;
   token->operation.requires_transaction_context = opcode->requires_transaction_context;
   token->operation.requires_cluster_authority = opcode->requires_cluster_authority;
@@ -1835,6 +1899,100 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
     return Reject("SBLR.INGRESS_REVALIDATION_FAILED",
                   "Admission evidence hashing failed.", "sha256_unavailable");
   }
+  if (opcode_stream) {
+    if (request.package_reservation_handle == 0 ||
+        request.reserved_payload_kind != ServerSblrPayloadKind::opcode_stream ||
+        request.reserved_payload_size != token->canonical_operation_bytes.size() ||
+        request.reserved_record_count != decoded_stream.stream.operations.size() ||
+        request.reserved_resource_policy_generation != request.resource_epoch ||
+        request.reserved_payload_sha256 != token->operation_sha256) {
+      return Reject("SBLR.INGRESS_REVALIDATION_FAILED",
+                    "Engine-owned package reservation evidence differs.",
+                    "package_reservation_binding_mismatch");
+    }
+    token->package_reservation_handle = request.package_reservation_handle;
+    token->reserved_payload_kind = request.reserved_payload_kind;
+    token->reserved_payload_size = request.reserved_payload_size;
+    token->reserved_record_count = request.reserved_record_count;
+    token->reserved_resource_policy_generation =
+        request.reserved_resource_policy_generation;
+    const auto* begin = scratchbird::engine::sblr::LookupSblrOpcodeCode(0x0001u);
+    const auto* end = scratchbird::engine::sblr::LookupSblrOpcodeCode(0x0002u);
+    if (begin == nullptr || end == nullptr ||
+        begin->opcode != "SBLR_PACKAGE_BEGIN" ||
+        end->opcode != "SBLR_PACKAGE_END" ||
+        begin->executor_id != "engine.op.package_begin" ||
+        end->executor_id != "engine.op.package_end" ||
+        begin->family != "core-envelope" || end->family != "core-envelope" ||
+        begin->requires_cluster_authority || end->requires_cluster_authority ||
+        !begin->executor_evidence_required ||
+        !end->executor_evidence_required ||
+        !begin->executor_evidence_accepted ||
+        !end->executor_evidence_accepted) {
+      return Reject("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+                    "Exact package framing executor evidence is required.",
+                    "package_executor_evidence_missing_or_stale");
+    }
+    LocalSblrGatewayRequest gateway_request;
+    gateway_request.canonical_sbos = token->canonical_operation_bytes;
+    gateway_request.root_opcode_code = decoded_stream.stream.operations[1].opcode_code;
+    gateway_request.root_opcode = decoded_stream.stream.operations[1].opcode;
+    gateway_request.root_operation_id =
+        decoded_stream.stream.operations[1].operation_id;
+    gateway_request.route_snapshot_uuid = request.route_snapshot_uuid;
+    gateway_request.route_epoch = request.route_epoch;
+    gateway_request.route_generation = request.route_generation;
+    gateway_request.security_snapshot_uuid = request.security_snapshot_uuid;
+    gateway_request.security_epoch = request.security_epoch;
+    gateway_request.security_observation_generation =
+        request.security_observation_generation;
+    gateway_request.route_snapshot_engine_owned =
+        request.route_snapshot_engine_owned;
+    gateway_request.security_snapshot_engine_owned =
+        request.security_snapshot_engine_owned;
+    gateway_request.cluster_context_active = request.cluster_authority_active;
+    gateway_request.cluster_transaction_active =
+        request.cluster_transaction_active;
+    gateway_request.route_fence_present = request.route_fence_present;
+    const auto gateway = AdmitLocalNoClusterSblrGateway(gateway_request);
+    if (!gateway.ok ||
+        gateway.disposition != LocalSblrGatewayDisposition::kPassThrough) {
+      return Reject(gateway.diagnostic_id.empty()
+                        ? "PROCESS.CLUSTER_PATH_ABSENT"
+                        : gateway.diagnostic_id,
+                    "Cluster SBLR Gateway refused the contained root.",
+                    "package_root_gateway_refused");
+    }
+    token->gateway_evidence.source =
+        ServerSblrGatewayEvidenceSource::local_observed;
+    token->gateway_evidence.disposition =
+        ServerSblrGatewayDisposition::pass_through;
+    token->gateway_evidence.provider_observation_generation =
+        gateway.gateway_observation_generation;
+    token->gateway_evidence.canonical_payload_sha256 =
+        gateway.canonical_payload_sha256;
+    token->gateway_evidence.route_snapshot_uuid = gateway.route_snapshot_uuid;
+    token->gateway_evidence.route_epoch = gateway.route_epoch;
+    token->gateway_evidence.route_generation = gateway.route_generation;
+    token->gateway_evidence.security_snapshot_uuid =
+        gateway.security_snapshot_uuid;
+    token->gateway_evidence.security_epoch = gateway.security_epoch;
+    token->gateway_evidence.security_observation_generation =
+        gateway.security_observation_generation;
+    token->gateway_evidence.cluster_context_active =
+        gateway.cluster_context_active;
+    token->gateway_evidence.cluster_transaction_active =
+        gateway.cluster_transaction_active;
+    token->gateway_evidence.route_fence_present = gateway.route_fence_present;
+    token->package_executor_evidence.begin_executor_id = begin->executor_id;
+    token->package_executor_evidence.end_executor_id = end->executor_id;
+    token->package_executor_evidence.registry_snapshot_uuid =
+        request.admitted_registry_snapshot_uuid;
+    token->package_executor_evidence.executor_evidence_generation =
+        kServerSblrPackageExecutorRegistryGenerationV1;
+    token->package_executor_evidence.canonical_payload_sha256 =
+        token->operation_sha256;
+  }
   std::vector<std::uint8_t> binding;
   constexpr std::string_view kDomain = "ScratchBird.SBLR.AdmissionToken.V1";
   binding.insert(binding.end(), kDomain.begin(), kDomain.end());
@@ -1852,6 +2010,60 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
   scratchbird::engine::SblrAppendU64(binding, token->catalog_epoch);
   scratchbird::engine::SblrAppendU64(binding, token->security_epoch);
   scratchbird::engine::SblrAppendU64(binding, token->resource_epoch);
+  if (opcode_stream) {
+    scratchbird::engine::SblrAppendU64(
+        binding, token->package_reservation_handle);
+    binding.push_back(static_cast<std::uint8_t>(token->reserved_payload_kind));
+    scratchbird::engine::SblrAppendU64(binding, token->reserved_payload_size);
+    scratchbird::engine::SblrAppendU32(binding, token->reserved_record_count);
+    scratchbird::engine::SblrAppendU64(
+        binding, token->reserved_resource_policy_generation);
+    binding.push_back(
+        static_cast<std::uint8_t>(token->gateway_evidence.source));
+    binding.push_back(
+        static_cast<std::uint8_t>(token->gateway_evidence.disposition));
+    scratchbird::engine::SblrAppendU64(
+        binding, token->gateway_evidence.provider_observation_generation);
+    binding.insert(binding.end(),
+                   token->gateway_evidence.canonical_payload_sha256.begin(),
+                   token->gateway_evidence.canonical_payload_sha256.end());
+    for (const auto* value : {
+             &token->gateway_evidence.route_snapshot_uuid,
+             &token->gateway_evidence.security_snapshot_uuid}) {
+      binding.insert(binding.end(), value->begin(), value->end());
+      binding.push_back(0);
+    }
+    scratchbird::engine::SblrAppendU64(
+        binding, token->gateway_evidence.route_epoch);
+    scratchbird::engine::SblrAppendU64(
+        binding, token->gateway_evidence.route_generation);
+    scratchbird::engine::SblrAppendU64(
+        binding, token->gateway_evidence.security_epoch);
+    scratchbird::engine::SblrAppendU64(
+        binding,
+        token->gateway_evidence.security_observation_generation);
+    binding.push_back(token->gateway_evidence.cluster_context_active ? 1 : 0);
+    binding.push_back(token->gateway_evidence.cluster_transaction_active ? 1 : 0);
+    binding.push_back(token->gateway_evidence.route_fence_present ? 1 : 0);
+    for (const auto* value : {
+             &token->package_executor_evidence.begin_executor_id,
+             &token->package_executor_evidence.end_executor_id,
+             &token->package_executor_evidence.registry_snapshot_uuid}) {
+      binding.insert(binding.end(), value->begin(), value->end());
+      binding.push_back(0);
+    }
+    scratchbird::engine::SblrAppendU64(
+        binding,
+        token->package_executor_evidence.executor_evidence_generation);
+    binding.insert(
+        binding.end(),
+        token->package_executor_evidence.canonical_payload_sha256.begin(),
+        token->package_executor_evidence.canonical_payload_sha256.end());
+  } else {
+    // Preserve the version-1 non-stream binding byte. It is not gateway
+    // evidence and cannot authorize package execution.
+    binding.push_back(0);
+  }
   if (!hash_bytes(binding.data(), binding.size(), &token->admission_binding_sha256)) {
     return Reject("SBLR.INGRESS_REVALIDATION_FAILED",
                   "Admission binding hashing failed.", "sha256_unavailable");
@@ -1860,7 +2072,7 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
   ServerSblrAdmissionResult result;
   result.admitted = true;
   result.requires_public_abi_dispatch =
-      operation.envelope.operation_id == "query.execute";
+      opcode_stream || operation.envelope.operation_id == "query.execute";
   result.operation_family = opcode->family;
   result.operation_id = opcode->operation_id;
   result.admission_token = std::move(token);

@@ -35,14 +35,10 @@ using scratchbird::core::platform::UuidKind;
 constexpr scratchbird::core::platform::u64 kDriverFixtureCreationMillis = 1767225600000ull;
 constexpr scratchbird::core::platform::u32 kDriverFixturePageSize = 16384;
 constexpr std::string_view kAlicePrincipalUuid = "019f0a11-ce00-7000-8000-000000000001";
-constexpr std::string_view kSysarchRoleUuid = "019f0a11-ce00-7000-8000-00000000f001";
-constexpr std::string_view kPublicGroupUuid = "019f0a11-ce00-7000-8000-00000000f101";
-constexpr std::string_view kAliceSysarchMembershipUuid = "019f0a11-ce00-7000-8000-00000000f201";
-constexpr std::string_view kAlicePublicMembershipUuid = "019f0a11-ce00-7000-8000-00000000f202";
-constexpr std::string_view kAliceVerifier =
-    "089e32c34d07ddd119e129bbae2686a6416acab332b050f1e6a352d856a22d2c";
-constexpr std::string_view kAliceVerifierFingerprint =
-    "local-password-verifier:v1:sha256:dff18f8159477ed5c5de86a0378a8d6a4826d026ad9be6962d87c2e851b369d2";
+constexpr std::string_view kAliceBootstrapCredentialFingerprint =
+    "local-password-pbkdf2-sha256:v1:iterations=600000:"
+    "salt=0123456789abcdef0123456789abcdef:"
+    "verifier=58a793aad0bd6840ad8d92f6627a23f6142c4ce58210c5f135ea3e2134d43142";
 constexpr std::string_view kAppSchemaUuid = "018f0a2b-0000-7000-9000-000000000100";
 
 struct CreatedDatabaseFixture {
@@ -224,30 +220,6 @@ scratchbird::core::platform::TypedUuid MakeIdentity(UuidKind kind,
   return generated.value;
 }
 
-std::string HexText(std::string_view value) {
-  constexpr char kDigits[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(value.size() * 2);
-  for (const unsigned char ch : value) {
-    out.push_back(kDigits[(ch >> 4) & 0x0f]);
-    out.push_back(kDigits[ch & 0x0f]);
-  }
-  return out;
-}
-
-std::string StableGrantUuid(std::size_t index) {
-  std::string suffix = "000000000000";
-  std::string hex;
-  std::size_t value = 0x1000 + index + 1;
-  do {
-    const int digit = static_cast<int>(value & 0x0f);
-    hex.insert(hex.begin(), "0123456789abcdef"[digit]);
-    value >>= 4;
-  } while (value != 0);
-  suffix.replace(suffix.size() - hex.size(), hex.size(), hex);
-  return "019f0a11-ce00-7000-8000-" + suffix;
-}
-
 std::string JsonString(std::string_view value) {
   std::string out;
   out.reserve(value.size() + 2);
@@ -342,7 +314,14 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name, std:
   column.names.push_back(Name(name, name));
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(type);
-  column.descriptor.encoded_descriptor = "type=" + column.descriptor.canonical_type_name;
+  if (column.descriptor.canonical_type_name == "bigint") {
+    column.descriptor.encoded_descriptor =
+        "type=bigint;nullable=true;"
+        "type_uuid=019d0000-0000-7000-8000-00000000d712";
+  } else {
+    column.descriptor.encoded_descriptor =
+        "type=" + column.descriptor.canonical_type_name;
+  }
   return column;
 }
 
@@ -445,6 +424,11 @@ CreatedDatabaseFixture CreateDatabase(const Args& args) {
   create.resource_seed_pack_root = args.resource_seed_pack_root.string();
   create.require_resource_seed_pack = true;
   create.allow_minimal_resource_bootstrap = false;
+  create.bootstrap_principal_name = "alice";
+  create.bootstrap_credential_fingerprint =
+      std::string(kAliceBootstrapCredentialFingerprint);
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
   create.allow_overwrite = false;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -502,6 +486,10 @@ api::EngineObjectReference CreateTable(const api::EngineRequestContext& context,
   const auto result = api::EngineCreateTable(request);
   if (!result.ok) {
     std::cerr << "table_create_failed=" << fixture.path << '\n';
+    for (const auto& diagnostic : result.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+                << diagnostic.detail << '\n';
+    }
     Fail("driver test database table create failed");
   }
   return result.table_object;
@@ -574,41 +562,6 @@ void SeedFixtureObjects(const api::EngineRequestContext& context) {
     }
     const auto table = CreateTable(context, fixture, schema_uuid);
     InsertRows(context, table, fixture);
-  }
-}
-
-void WriteAuthStore(const Args& args) {
-  std::ofstream local(args.output.string() + ".sb.local_password_auth", std::ios::trunc);
-  local << "alice\tlocal_password\t" << kAliceVerifier << '\n';
-  if (!local) {
-    Fail("driver test database local password auth store write failed");
-  }
-
-  std::ofstream events(args.output.string() + ".sb.security_principal_events", std::ios::trunc);
-  events << "SBSECPL1\tPRINCIPAL\t0\t" << kAlicePrincipalUuid << '\t'
-         << HexText("alice") << "\tuser\tactive\t"
-         << HexText(kAliceVerifierFingerprint) << "\t1\t0\n";
-  events << "SBSECPL1\tROLE\t0\t" << kSysarchRoleUuid << '\t'
-         << HexText("sysarch") << '\t' << kAlicePrincipalUuid
-         << "\tactive\t2\t0\n";
-  events << "SBSECPL1\tGROUP\t0\t" << kPublicGroupUuid << '\t'
-         << HexText("PUBLIC") << "\t\tactive\t3\t0\n";
-  events << "SBSECPL1\tMEMBERSHIP\t0\t" << kAliceSysarchMembershipUuid << '\t'
-         << kAlicePrincipalUuid << '\t' << kSysarchRoleUuid
-         << "\trole\t" << kAlicePrincipalUuid << "\t4\t0\n";
-  events << "SBSECPL1\tMEMBERSHIP\t0\t" << kAlicePublicMembershipUuid << '\t'
-         << kAlicePrincipalUuid << '\t' << kPublicGroupUuid
-         << "\tgroup\t" << kAlicePrincipalUuid << "\t5\t0\n";
-  std::size_t generation = 6;
-  for (std::size_t index = 0; index < SysarchRights().size(); ++index, ++generation) {
-    events << "SBSECPL1\tGRANT\t0\t" << StableGrantUuid(index) << '\t'
-           << kSysarchRoleUuid << "\trole\t\t\t"
-           << SysarchRights()[index] << '\t'
-           << kAlicePrincipalUuid << "\tallow\t"
-           << generation << "\t0\n";
-  }
-  if (!events) {
-    Fail("driver test database security principal event store write failed");
   }
 }
 
@@ -746,7 +699,17 @@ int main(int argc, char** argv) {
   const auto context = Begin(BaseContext(args, fixture.database_uuid));
   SeedFixtureObjects(context);
   Commit(context);
-  WriteAuthStore(args);
+  const auto bootstrap_security = db::ReadDatabaseBootstrapSecurityCatalog(
+      args.output.string());
+  if (!bootstrap_security.ok() || !bootstrap_security.state.present ||
+      !bootstrap_security.state.committed_by_inventory ||
+      bootstrap_security.state.principal_name != "alice" ||
+      bootstrap_security.state.credential_fingerprint !=
+          kAliceBootstrapCredentialFingerprint ||
+      uuid::UuidToString(bootstrap_security.state.sysarch_role_uuid.value) !=
+          db::kCanonicalSysarchRoleObjectUuid) {
+    Fail("driver test database durable bootstrap security verification failed");
+  }
   WriteManifest(args, fixture.database_uuid, fixture.state);
 
   std::cout << "public_driver_test_database_seed=passed database="

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "canonical_relational_expression.hpp"
+#include "hash_digest.hpp"
 
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
@@ -141,13 +142,17 @@ std::string BoundLiteralType(
     const api::RelationalTypeDescriptor& descriptor,
     const std::optional<std::string_view> expected_type) {
   if (!expression.literal_kind.has_value() ||
-      !expression.literal_or_parameter_ref.has_value()) {
+      (!expression.literal_or_parameter_ref.has_value() &&
+       !expression.literal_typed_value_v1.has_value())) {
     return {};
   }
   const auto kind = *expression.literal_kind;
   if (expected_type.has_value() &&
       LiteralKindAdmitsType(kind, *expected_type)) {
     return std::string(*expected_type);
+  }
+  if(expression.literal_typed_value_v1.has_value()){
+    return kind==api::RelationalLiteralKind::kNumeric?"bigint":std::string{};
   }
   const auto& payload = *expression.literal_or_parameter_ref;
   switch (kind) {
@@ -719,11 +724,13 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
     const bool has_literal = record.literal_kind.has_value();
     const bool has_operator = record.operator_name.has_value();
     const bool has_payload = record.literal_or_parameter_ref.has_value();
+    const bool has_typed_literal=record.literal_typed_value_v1.has_value();
+    const bool has_typed_parameter=record.parameter_typed_value_v1.has_value();
     bool exact_shape = false;
     switch (record.expression_kind) {
       case api::RelationalExpressionKind::kLiteral:
         exact_shape = record.child_expression_ids.empty() && has_literal &&
-                      has_payload && !has_function && !has_name &&
+                      (has_payload!=has_typed_literal) && !has_function && !has_name &&
                       !has_operator;
         break;
       case api::RelationalExpressionKind::kParenthesized:
@@ -742,6 +749,10 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
                       !has_literal && !has_payload;
         break;
       case api::RelationalExpressionKind::kParameter:
+        exact_shape = record.child_expression_ids.empty() &&
+                      (has_payload != has_typed_parameter) && !has_literal &&
+                      !has_function && !has_name && !has_operator;
+        break;
       case api::RelationalExpressionKind::kIdentifier:
       case api::RelationalExpressionKind::kFunctionCall:
         exact_shape = false;
@@ -899,7 +910,8 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
   switch (expression.expression_kind) {
     case api::RelationalExpressionKind::kLiteral: {
       if (!expression.literal_kind.has_value() ||
-          !expression.literal_or_parameter_ref.has_value()) {
+          (expression.literal_or_parameter_ref.has_value() ==
+           expression.literal_typed_value_v1.has_value())) {
         *refusal_detail = "literal expression payload is incomplete";
         return leave(false);
       }
@@ -1495,6 +1507,20 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
       return finish(std::move(literal));
     }
     literal.setState(api::EngineValueState::value);
+    if(expression.literal_typed_value_v1.has_value()){
+      const auto& typed=*expression.literal_typed_value_v1;
+      const auto digest=scratchbird::core::hash::ComputeSha256Digest(
+          typed.canonical_value_bytes);
+      if(typed.value_state!="value"||typed.descriptor_generation==0||
+         typed.descriptor_uuid!=result_descriptor.descriptor_uuid.canonical||
+         !digest.ok()||digest.digest!=typed.canonical_value_sha256||
+         typed.canonical_value_bytes.size()!=8){
+        *refusal_detail="typed_value_v1 descriptor, state, bytes, or SHA differs";
+        return false;
+      }
+      literal.binary_value=typed.canonical_value_bytes;
+      return finish(std::move(literal));
+    }
     std::string payload = *expression.literal_or_parameter_ref;
     if (*expression.literal_kind == api::RelationalLiteralKind::kBoolean) {
       payload = UpperAscii(payload) == "TRUE" ? "true" : "false";
@@ -1505,6 +1531,34 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
       return false;
     }
     return finish(std::move(literal));
+  }
+
+  if (expression.expression_kind == api::RelationalExpressionKind::kParameter &&
+      expression.parameter_typed_value_v1.has_value()) {
+    const auto& typed = *expression.parameter_typed_value_v1;
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+        typed.canonical_value_bytes);
+    if ((typed.value_state != "value" && typed.value_state != "null") ||
+        typed.descriptor_generation == 0 ||
+        typed.descriptor_uuid != result_descriptor.descriptor_uuid.canonical ||
+        !digest.ok() || digest.digest != typed.canonical_value_sha256 ||
+        (typed.value_state == "value" &&
+         typed.canonical_value_bytes.size() != 8) ||
+        (typed.value_state == "null" &&
+         !typed.canonical_value_bytes.empty())) {
+      *refusal_detail =
+          "parameter typed_value_v1 descriptor, state, bytes, or SHA differs";
+      return false;
+    }
+    api::EngineTypedValue parameter;
+    parameter.descriptor = result_descriptor;
+    if (typed.value_state == "null") {
+      parameter.setState(api::EngineValueState::sql_null);
+    } else {
+      parameter.setState(api::EngineValueState::value);
+      parameter.binary_value = typed.canonical_value_bytes;
+    }
+    return finish(std::move(parameter));
   }
 
   if (expression.expression_kind ==

@@ -437,6 +437,47 @@ SblrOpcodeEntry Entry(std::string operation_id,
   return entry;
 }
 
+void ApplyIa01SemanticContract(SblrOpcodeEntry* entry) {
+  struct Contract {
+    std::string_view opcode;
+    std::string_view operand;
+    std::string_view result;
+    std::string_view executor;
+  };
+  static constexpr Contract contracts[] = {
+      {"SBLR_PACKAGE_BEGIN", "package_header", "void", "engine.op.package_begin"},
+      {"SBLR_PACKAGE_END", "package_footer", "void", "engine.op.package_end"},
+      {"SBLR_LITERAL", "typed_literal", "typed_value", "engine.op.literal"},
+      {"SBLR_PARAMETER", "parameter_descriptor_ref", "typed_value", "engine.op.parameter"},
+      {"SBLR_VARIABLE", "variable_descriptor_ref", "typed_value", "engine.op.variable"},
+      {"SBLR_SOURCE_MAP", "source_map_entry_vector", "void", "engine.op.source_map"},
+      {"SBLR_ERROR_VECTOR", "diagnostic_vector", "void", "engine.op.error_vector"},
+      {"SBLR_PROJECT", "projection_descriptor", "rowset_descriptor", "engine.op.project"},
+      {"SBLR_AGGREGATE", "aggregate_descriptor", "rowset_descriptor", "engine.op.aggregate"},
+      {"SBLR_GROUP", "group_descriptor", "rowset_descriptor", "engine.op.group"},
+      {"SBLR_SORT", "sort_descriptor", "rowset_descriptor", "engine.op.sort"},
+      {"SBLR_LIMIT", "limit_descriptor", "rowset_descriptor", "engine.op.limit"},
+      {"SBLR_WINDOW", "window_descriptor", "rowset_descriptor", "engine.op.window"},
+      {"SBLR_RETURN_RESULT_SET", "result_set_return_descriptor", "result_set_handle", "engine.op.return_result_set"},
+      {"SBLR_DIAGNOSTIC_REFUSAL", "diagnostic_refusal_descriptor", "diagnostic_refusal_result", "engine.op.diagnostic_refusal"},
+      {"SBLR_DIAGNOSTIC_RESET", "diagnostic_reset_descriptor", "diagnostic_reset_result", "engine.op.diagnostic_reset"},
+      {"SBLR_DESCRIPTOR_TRANSFORM", "descriptor_transform_descriptor", "descriptor_transform_result", "engine.op.descriptor_transform"},
+  };
+  for (const auto& contract : contracts) {
+    if (entry->opcode != contract.opcode) continue;
+    entry->operation_id = contract.executor;
+    entry->operand_contract = contract.operand;
+    entry->result_contract = contract.result;
+    entry->executor_id = contract.executor;
+    entry->executor_evidence_required = true;
+    entry->executor_evidence_accepted =
+        entry->opcode == "SBLR_PACKAGE_BEGIN" ||
+        entry->opcode == "SBLR_PACKAGE_END";
+    entry->missing_executor_evidence_diagnostic = "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
+    return;
+  }
+}
+
 SblrOpcodeEntry CanonicalEntry(std::string operation_id,
                                std::string opcode,
                                std::string family,
@@ -459,6 +500,7 @@ SblrOpcodeEntry CanonicalEntry(std::string operation_id,
   entry.transaction_effect = transaction_effect;
   entry.security_class = security_class;
   entry.cluster_private = requires_cluster_authority;
+  ApplyIa01SemanticContract(&entry);
   return entry;
 }
 
@@ -1411,6 +1453,11 @@ SblrOpcodeValidationResult ValidateSblrOpcodeForEnvelope(const SblrOperationEnve
   if (entry->opcode != envelope.opcode) {
     result.diagnostic_id = "SB_DIAG_SBLR_OPCODE_MISMATCH";
     result.detail = "expected=" + entry->opcode + "; actual=" + envelope.opcode;
+    return result;
+  }
+  if (entry->executor_evidence_required && !entry->executor_evidence_accepted) {
+    result.diagnostic_id = entry->missing_executor_evidence_diagnostic;
+    result.detail = "executor_evidence_not_accepted:" + entry->executor_id;
     return result;
   }
   if (entry->support != SblrOpcodeSupport::implemented) {

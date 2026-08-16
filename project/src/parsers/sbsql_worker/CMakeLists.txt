@@ -72,6 +72,7 @@ function(sbsql_configure_parser_worker_core target_name)
     sbl_listener_control_plane
     sb_core_datatypes
     sb_core_uuid
+    sb_sblr_parameter_wire_codec
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
@@ -90,6 +91,8 @@ function(sbsql_assert_standalone_parser_link_closure target_name)
     sbl_sbsql_parser_pipeline
     sbl_sbsql_parser_worker_core
     sbp_sbsql
+    sb_sblr_parameter_wire_codec
+    sb_core_hash
   )
   while(_pending)
     list(POP_FRONT _pending _candidate)

@@ -73,6 +73,7 @@ constexpr std::uint32_t kSchemaPrepareResultV2 = 4010;
 constexpr std::uint32_t kSchemaExecuteSblrV2 = 4011;
 constexpr std::uint32_t kSchemaExecuteResultV2 = 4012;
 constexpr std::uint32_t kSchemaExecuteCanonicalSblrV1 = 4015;
+constexpr std::uint32_t kSchemaExecuteCanonicalSblrLiteralV1 = 4016;
 constexpr std::uint32_t kSchemaClosePreparedSblrV1 = 4013;
 constexpr std::uint32_t kSchemaClosePreparedSblrResultV1 = 4014;
 constexpr std::uint32_t kSchemaManagementRequestV1 = 6001;
@@ -103,6 +104,22 @@ constexpr std::uint32_t kSchemaAcquireStatementContextRequestV9 = 7027;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV9 = 7028;
 constexpr std::uint32_t kSchemaAcquireStatementContextRequestV10 = 7029;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV10 = 7030;
+constexpr std::uint32_t kSchemaAcquireStatementContextRequestV11 = 7031;
+constexpr std::uint32_t kSchemaAcquireStatementContextResultV11 = 7032;
+constexpr std::uint32_t kSchemaNegotiateLiteralDescriptorsRequestV1 = 7033;
+constexpr std::uint32_t kSchemaNegotiateLiteralDescriptorsResultV1 = 7034;
+constexpr std::uint32_t kSchemaFinalizeLiteralBindingRequestV1 = 7035;
+constexpr std::uint32_t kSchemaFinalizeLiteralBindingResultV1 = 7036;
+constexpr std::uint32_t kSchemaNegotiateParameterDescriptorsRequestV1 = 7037;
+constexpr std::uint32_t kSchemaNegotiateParameterDescriptorsResultV1 = 7038;
+constexpr std::uint32_t kSchemaFinalizeParameterBindingRequestV1 = 7039;
+constexpr std::uint32_t kSchemaFinalizeParameterBindingResultV1 = 7040;
+constexpr std::uint32_t kSchemaBeginParameterCoordinationRequestV1 = 7041;
+constexpr std::uint32_t kSchemaBeginParameterCoordinationResultV1 = 7042;
+constexpr std::uint32_t kSchemaAcquireParameterStatementContextRequestV1 = 7043;
+constexpr std::uint32_t kSchemaFinalizePreparedParameterRequestV1 = 7044;
+constexpr std::uint32_t kSchemaFinalizePreparedParameterResultV1 = 7045;
+constexpr std::uint32_t kSchemaExecuteCanonicalSblrParameterV1 = 4017;
 constexpr std::uint16_t kMessageHello = 1;
 constexpr std::uint16_t kMessageHelloAccept = 2;
 constexpr std::uint16_t kMessageAuthHandoff = 10;
@@ -110,6 +127,16 @@ constexpr std::uint16_t kMessageAuthResult = 11;
 constexpr std::uint16_t kMessageAttachDatabase = 20;
 constexpr std::uint16_t kMessageAttachResult = 21;
 constexpr std::uint16_t kMessageManagementRequest = 30;
+constexpr std::uint16_t kMessageNegotiateLiteralDescriptorsRequest = 38;
+constexpr std::uint16_t kMessageNegotiateLiteralDescriptorsResult = 39;
+constexpr std::uint16_t kMessageFinalizeLiteralBindingRequest = 40;
+constexpr std::uint16_t kMessageFinalizeLiteralBindingResult = 41;
+constexpr std::uint16_t kMessageNegotiateParameterDescriptorsRequest = 42;
+constexpr std::uint16_t kMessageNegotiateParameterDescriptorsResult = 43;
+constexpr std::uint16_t kMessageFinalizeParameterBindingRequest = 44;
+constexpr std::uint16_t kMessageFinalizeParameterBindingResult = 45;
+constexpr std::uint16_t kMessageBeginParameterCoordinationRequest = 50;
+constexpr std::uint16_t kMessageBeginParameterCoordinationResult = 51;
 constexpr std::uint16_t kMessageManagementResult = 31;
 constexpr std::uint16_t kMessageResolveNameRequest = 32;
 constexpr std::uint16_t kMessageResolveNameResult = 33;
@@ -510,9 +537,9 @@ bool ReadTransactionSelector(const std::vector<std::uint8_t>& payload,
   return ReadString(payload, offset, &selector->transaction_uuid);
 }
 
-bool DecodeExecuteResultPayloadV2(const Frame& response,
-                                  ServerExecutionResult* result,
-                                  MessageVectorSet* messages) {
+bool DecodeExecuteResultPayloadV2Base(const Frame& response,
+                                      ServerExecutionResult* result,
+                                      MessageVectorSet* messages) {
   if (result == nullptr) return false;
   std::size_t offset = 0;
   std::string outcome;
@@ -629,7 +656,9 @@ bool DecodeExecuteResultPayloadV2(const Frame& response,
     if (offset + 8 > response.payload.size()) {
       AddDiagnostic(messages,
                     "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID",
-                    "The server V2 typed diagnostic trailer is malformed.");
+                    "The server V2 typed diagnostic trailer is malformed at offset " +
+                        std::to_string(offset) + " of " +
+                        std::to_string(response.payload.size()) + ".");
       return false;
     }
     const std::uint64_t diagnostic_bytes = GetU64(response.payload, offset);
@@ -641,7 +670,10 @@ bool DecodeExecuteResultPayloadV2(const Frame& response,
             response.payload.size()) {
       AddDiagnostic(messages,
                     "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID",
-                    "The server V2 typed diagnostic trailer is malformed.");
+                    "The server V2 typed diagnostic trailer is malformed: offset=" +
+                        std::to_string(offset) + ", bytes=" +
+                        std::to_string(diagnostic_bytes) + ", total=" +
+                        std::to_string(response.payload.size()) + ".");
       return false;
     }
     encoded_diagnostics.assign(
@@ -766,6 +798,70 @@ bool DecodeExecuteResultPayloadV2(const Frame& response,
                                                  : legacy_detail)
                         : result->transaction_outcome_detail);
     }
+  }
+  return true;
+}
+
+bool DecodeExecuteResultPayloadV2(const Frame& response,
+                                  ServerExecutionResult* result,
+                                  MessageVectorSet* messages) {
+  constexpr std::size_t kPresentDescriptorBytes =
+      1 + 16 + 2 + 8 + 16 * 5 + 8 + 8;
+  if (result == nullptr || response.payload.empty()) return false;
+  Frame base = response;
+  CursorStreamDescriptorV1 descriptor;
+  if (response.payload.size() >= kPresentDescriptorBytes &&
+      response.payload[response.payload.size() - kPresentDescriptorBytes] == 1) {
+    std::size_t offset = response.payload.size() - kPresentDescriptorBytes + 1;
+    const auto descriptor_uuid = GetUuid(response.payload, offset);
+    offset += 16;
+    descriptor.descriptor_version = GetU16(response.payload, offset);
+    offset += 2;
+    descriptor.descriptor_generation = GetU64(response.payload, offset);
+    offset += 8;
+    const auto cursor_uuid = GetUuid(response.payload, offset);
+    offset += 16;
+    const auto execution_uuid = GetUuid(response.payload, offset);
+    offset += 16;
+    const auto result_set_uuid = GetUuid(response.payload, offset);
+    offset += 16;
+    const auto row_descriptor_uuid = GetUuid(response.payload, offset);
+    offset += 16;
+    const auto snapshot_uuid = GetUuid(response.payload, offset);
+    offset += 16;
+    descriptor.max_chunk_rows = GetU64(response.payload, offset);
+    offset += 8;
+    descriptor.max_chunk_bytes = GetU64(response.payload, offset);
+    descriptor.present = true;
+    descriptor.stream_descriptor_uuid = OptionalUuidToText(descriptor_uuid);
+    descriptor.cursor_uuid = OptionalUuidToText(cursor_uuid);
+    descriptor.execution_uuid = OptionalUuidToText(execution_uuid);
+    descriptor.result_set_uuid = OptionalUuidToText(result_set_uuid);
+    descriptor.row_descriptor_uuid = OptionalUuidToText(row_descriptor_uuid);
+    descriptor.snapshot_uuid = OptionalUuidToText(snapshot_uuid);
+    base.payload.resize(response.payload.size() - kPresentDescriptorBytes);
+  } else if (response.payload.back() == 0) {
+    base.payload.pop_back();
+  } else {
+    AddDiagnostic(messages,
+                  "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID",
+                  "The server V2 cursor stream descriptor trailer is malformed.");
+    return false;
+  }
+  if (!DecodeExecuteResultPayloadV2Base(base, result, messages)) return false;
+  if (!result->cursor_uuid.empty()) {
+    if (!descriptor.complete() || descriptor.cursor_uuid != result->cursor_uuid) {
+      AddDiagnostic(messages,
+                    "SERVER.STREAM.DESCRIPTOR_INVALID",
+                    "The server cursor result lacks its exact versioned stream descriptor.");
+      return false;
+    }
+    result->cursor_stream_descriptor = std::move(descriptor);
+  } else if (descriptor.present) {
+    AddDiagnostic(messages,
+                  "SERVER.STREAM.DESCRIPTOR_INVALID",
+                  "A cursor stream descriptor was returned without a cursor.");
+    return false;
   }
   return true;
 }
@@ -938,6 +1034,14 @@ std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV10(
   return out;
 }
 
+std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV11(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction) {
+  auto out = EncodeAcquireStatementContextPayloadV1(session, transaction);
+  out[0] = 11;
+  return out;
+}
+
 bool IsCanonicalStatementTimestamp(std::string_view value) {
   if (value.size() != 20 &&
       (value.size() < 22 || value.size() > 30)) {
@@ -1041,7 +1145,8 @@ bool DecodeAcquireStatementContextPayloadNative(
     const std::uint8_t maximum_profile_kind,
     const bool has_statement_timestamp,
     const std::uint8_t exact_descriptor_cohort_version,
-    ParserStatementContext* context) {
+    ParserStatementContext* context,
+    std::size_t* consumed_bytes = nullptr) {
   constexpr std::size_t kBaseBytes = 2 + 1 + (6 * 16) + (2 * 8);
   constexpr std::size_t kProfileBytes = 1 + 2 + (3 * 16) + 1 + (3 * 4);
   const bool exact_v8_descriptor_cohort =
@@ -1170,9 +1275,13 @@ bool DecodeAcquireStatementContextPayloadNative(
       (exact_v8_descriptor_cohort && profile_count != 322) ||
       (exact_v9_descriptor_cohort && profile_count != 326) ||
       (exact_v10_descriptor_cohort && profile_count != 646) ||
-      payload.size() != offset +
-                            static_cast<std::size_t>(profile_count) *
-                                kProfileBytes) {
+      (consumed_bytes == nullptr
+           ? payload.size() != offset +
+                                 static_cast<std::size_t>(profile_count) *
+                                     kProfileBytes
+           : payload.size() < offset +
+                                 static_cast<std::size_t>(profile_count) *
+                                     kProfileBytes)) {
     return false;
   }
 
@@ -1260,7 +1369,7 @@ bool DecodeAcquireStatementContextPayloadNative(
     }
     decoded.descriptor_profiles.push_back(std::move(profile));
   }
-  if (offset != payload.size()) return false;
+  if (consumed_bytes == nullptr && offset != payload.size()) return false;
   for (std::size_t kind = 1; kind <= maximum_profile_kind; ++kind) {
     if (expected_slots[kind] == 0 ||
         (exact_descriptor_cohort &&
@@ -1319,6 +1428,7 @@ bool DecodeAcquireStatementContextPayloadNative(
   if (exact_v10_descriptor_cohort && !decoded.native_v10_complete()) {
     return false;
   }
+  if (consumed_bytes != nullptr) *consumed_bytes = offset;
   *context = std::move(decoded);
   return true;
 }
@@ -1393,6 +1503,88 @@ bool DecodeAcquireStatementContextPayloadV10(
   return DecodeAcquireStatementContextPayloadNative(payload, 10, true, true,
                                                      true, 23, true, 10,
                                                      context);
+}
+
+bool DecodeAcquireStatementContextPayloadV11(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  std::size_t offset = 0;
+  if (!DecodeAcquireStatementContextPayloadNative(
+          payload, 11, true, true, true, 23, true, 10, context, &offset) ||
+      (payload.size() != offset + 76 && payload.size() != offset + 156) ||
+      GetU16(payload, offset + 2) != 0) {
+    return false;
+  }
+  const auto extension_version = GetU16(payload, offset);
+  if ((payload.size() == offset + 76 && extension_version != 2) ||
+      (payload.size() == offset + 156 && extension_version != 3)) {
+    return false;
+  }
+  const auto preliminary_receipt_uuid = GetUuid(payload, offset + 4);
+  const auto catalog_snapshot_uuid = GetUuid(payload, offset + 20);
+  const auto catalog_generation = GetU64(payload, offset + 36);
+  const auto security_epoch = GetU64(payload, offset + 44);
+  const auto resource_epoch = GetU64(payload, offset + 52);
+  const auto mga_snapshot_uuid = GetUuid(payload, offset + 60);
+  if (!UuidPresent(preliminary_receipt_uuid) ||
+      !UuidPresent(catalog_snapshot_uuid) || catalog_generation == 0 ||
+      security_epoch == 0 || resource_epoch == 0 ||
+      !UuidPresent(mga_snapshot_uuid)) {
+    return false;
+  }
+  context->literal_statement_descriptor_profiles.clear();
+  context->preliminary_receipt_uuid = UuidToText(preliminary_receipt_uuid);
+  context->preliminary_catalog_snapshot_uuid = UuidToText(catalog_snapshot_uuid);
+  context->preliminary_catalog_generation = catalog_generation;
+  context->preliminary_security_epoch = security_epoch;
+  context->preliminary_resource_epoch = resource_epoch;
+  context->preliminary_mga_snapshot_uuid = UuidToText(mga_snapshot_uuid);
+  context->preliminary_extension_version = extension_version;
+  context->preliminary_prepared_statement_uuid.clear();
+  context->preliminary_prepared_generation = 0;
+  context->preliminary_batch_uuid.clear();
+  context->preliminary_batch_generation = 0;
+  context->preliminary_dynamic_package_uuid.clear();
+  context->preliminary_dynamic_generation = 0;
+  context->preliminary_parameter_executor_availability_generation = 0;
+  if (extension_version == 3) {
+    const auto prepared_uuid = GetUuid(payload, offset + 76);
+    const auto prepared_generation = GetU64(payload, offset + 92);
+    const auto batch_uuid = GetUuid(payload, offset + 100);
+    const auto batch_generation = GetU64(payload, offset + 116);
+    const auto dynamic_uuid = GetUuid(payload, offset + 124);
+    const auto dynamic_generation = GetU64(payload, offset + 140);
+    const auto parameter_executor_availability_generation =
+        GetU64(payload, offset + 148);
+    const auto exact_pair = [](const auto& uuid, std::uint64_t generation) {
+      return UuidPresent(uuid) == (generation != 0);
+    };
+    if (!exact_pair(prepared_uuid, prepared_generation) ||
+        !exact_pair(batch_uuid, batch_generation) ||
+        !exact_pair(dynamic_uuid, dynamic_generation) ||
+        parameter_executor_availability_generation == 0) {
+      return false;
+    }
+    if (UuidPresent(prepared_uuid))
+      context->preliminary_prepared_statement_uuid = UuidToText(prepared_uuid);
+    context->preliminary_prepared_generation = prepared_generation;
+    if (UuidPresent(batch_uuid))
+      context->preliminary_batch_uuid = UuidToText(batch_uuid);
+    context->preliminary_batch_generation = batch_generation;
+    if (UuidPresent(dynamic_uuid))
+      context->preliminary_dynamic_package_uuid = UuidToText(dynamic_uuid);
+    context->preliminary_dynamic_generation = dynamic_generation;
+    context->preliminary_parameter_executor_availability_generation =
+        parameter_executor_availability_generation;
+  }
+  context->literal_preliminary_receipt_uuid =
+      UuidToText(preliminary_receipt_uuid);
+  context->literal_catalog_snapshot_uuid = UuidToText(catalog_snapshot_uuid);
+  context->literal_catalog_generation = catalog_generation;
+  context->literal_security_epoch = security_epoch;
+  context->literal_resource_epoch = resource_epoch;
+  context->literal_mga_snapshot_uuid = UuidToText(mga_snapshot_uuid);
+  return true;
 }
 
 bool IsCanonicalNonzeroUuidText(std::string_view text) {
@@ -2789,6 +2981,52 @@ std::vector<std::uint8_t> EncodeCanonicalExecutePayloadV1(
   return out;
 }
 
+std::vector<std::uint8_t> EncodeCanonicalExecuteLiteralPayloadV1(
+    const ParserSessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ParserCanonicalSblrSubmission& submission,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) {
+  auto out = EncodeCanonicalExecutePayloadV1(
+      session, statement_context, submission, data_packet, cursor_requested);
+  PutU32(&out, 176);
+  out.insert(out.end(), {'S', 'B', 'E', 'L'});
+  PutU16(&out, 1);
+  PutU16(&out, 176);
+  PutU32(&out, 176);
+  PutU32(&out, 0);
+  PutUuid(&out, TextToUuid(submission.literal_final_receipt_uuid));
+  PutUuid(&out, TextToUuid(submission.literal_admission_token_uuid));
+  out.insert(out.end(), submission.literal_token_binding_sha256.begin(),
+             submission.literal_token_binding_sha256.end());
+  out.insert(out.end(), submission.literal_bound_ast_sha256.begin(),
+             submission.literal_bound_ast_sha256.end());
+  out.insert(out.end(), submission.literal_sbxn_sha256.begin(),
+             submission.literal_sbxn_sha256.end());
+  out.insert(out.end(), submission.literal_sbos_sha256.begin(),
+             submission.literal_sbos_sha256.end());
+  return out;
+}
+
+std::vector<std::uint8_t> EncodeCanonicalExecuteParameterPayloadV1(
+    const ParserSessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ParserCanonicalSblrSubmission& submission,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) {
+  auto out = EncodeCanonicalExecutePayloadV1(
+      session, statement_context, submission, data_packet, cursor_requested);
+  PutU32(&out, static_cast<std::uint32_t>(
+                   submission.parameter_execution_extension_bytes.size()));
+  out.insert(out.end(), submission.parameter_execution_extension_bytes.begin(),
+             submission.parameter_execution_extension_bytes.end());
+  PutU32(&out,
+         static_cast<std::uint32_t>(submission.parameter_value_set_bytes.size()));
+  out.insert(out.end(), submission.parameter_value_set_bytes.begin(),
+             submission.parameter_value_set_bytes.end());
+  return out;
+}
+
 std::vector<std::uint8_t> EncodePreparePayload(const ParserSessionContext& session,
                                                const std::array<std::uint8_t, 16>& session_uuid,
                                                std::string_view encoded_sblr_envelope) {
@@ -2846,6 +3084,7 @@ std::vector<std::uint8_t> EncodeClosePreparedSblrPayload(
 
 std::vector<std::uint8_t> EncodeCursorPayload(const std::array<std::uint8_t, 16>& session_uuid,
                                               std::string_view cursor_uuid,
+                                              const CursorStreamDescriptorV1* stream_descriptor,
                                               std::uint64_t max_rows = 1,
                                               std::uint64_t max_bytes = 0,
                                               std::uint32_t fetch_flags = 0) {
@@ -2855,6 +3094,11 @@ std::vector<std::uint8_t> EncodeCursorPayload(const std::array<std::uint8_t, 16>
   PutU64(&out, max_rows);
   PutU64(&out, max_bytes);
   PutU32(&out, fetch_flags);
+  if (stream_descriptor != nullptr) {
+    PutUuid(&out, TextToUuid(stream_descriptor->stream_descriptor_uuid));
+    PutU16(&out, stream_descriptor->descriptor_version);
+    PutU64(&out, stream_descriptor->descriptor_generation);
+  }
   return out;
 }
 
@@ -3573,6 +3817,18 @@ void ReleaseDedicatedV2Channel(SbpsClientChannelState* state) {
 }
 
 }  // namespace
+
+std::vector<std::uint8_t> EncodePreparedParameterSchema4015Template(
+    const ParserSessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ParserCanonicalSblrSubmission& submission) {
+  if (!submission.complete() || submission.literal_finalized() ||
+      submission.parameter_finalized()) {
+    return {};
+  }
+  return EncodeCanonicalExecutePayloadV1(session, statement_context,
+                                         submission, {}, false);
+}
 
 bool DecodeExecuteResultPayloadV2ForTest(
     const std::vector<std::uint8_t>& payload,
@@ -4551,10 +4807,10 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   if (!SendRequest(
           endpoint_,
           BaseHeader(kMessageAcquireStatementContextRequest,
-                     kSchemaAcquireStatementContextRequestV10,
+                     kSchemaAcquireStatementContextRequestV11,
                      session_uuid,
                      connection_uuid),
-          EncodeAcquireStatementContextPayloadV10(session, transaction),
+          EncodeAcquireStatementContextPayloadV11(session, transaction),
           &response,
           &messages,
           ActiveSocketCacheKey())) {
@@ -4563,19 +4819,19 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   }
   if (response.header.message_type !=
           kMessageAcquireStatementContextResult ||
-      response.header.schema_id != kSchemaAcquireStatementContextResultV10 ||
+      response.header.schema_id != kSchemaAcquireStatementContextResultV11 ||
       IsErrorFrame(response)) {
     AddFrameDiagnostics(response, &messages);
     if (!IsErrorFrame(response)) {
       AddDiagnostic(
           &messages,
           "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_SCHEMA_MISMATCH",
-          "The server did not return the native statement-context V10 result schema.");
+          "The server did not return the native statement-context V11 result schema.");
     }
     result.messages = std::move(messages);
     return result;
   }
-  if (!DecodeAcquireStatementContextPayloadV10(response.payload,
+  if (!DecodeAcquireStatementContextPayloadV11(response.payload,
                                                &result.context) ||
       result.context.transaction.local_transaction_id !=
           transaction.local_transaction_id ||
@@ -4588,6 +4844,364 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
     result.context = {};
     return result;
   }
+  result.accepted = true;
+  return result;
+}
+
+ServerParameterCoordinationResult
+SbpsClient::BeginParameterExecutionCoordination(
+    const ParserSessionContext& session,
+    ParameterExecutionMode mode,
+    std::string_view operation_uuid,
+    std::string_view public_prepared_uuid,
+    std::string_view public_dynamic_package_uuid) const {
+  ServerParameterCoordinationResult result;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  const auto operation = TextToUuid(operation_uuid);
+  const auto prepared = TextToUuid(public_prepared_uuid);
+  const auto dynamic = TextToUuid(public_dynamic_package_uuid);
+  const auto mode_code = static_cast<std::uint8_t>(mode);
+  const bool prepared_present = UuidPresent(prepared);
+  const bool dynamic_present = UuidPresent(dynamic);
+  const bool matrix_valid =
+      (mode == ParameterExecutionMode::kDirect && !prepared_present &&
+       !dynamic_present) ||
+      (mode == ParameterExecutionMode::kPrepared && !dynamic_present) ||
+      (mode == ParameterExecutionMode::kBatch && !dynamic_present) ||
+      (mode == ParameterExecutionMode::kDynamic && !prepared_present &&
+       dynamic_present);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || !UuidPresent(operation) ||
+      mode_code > static_cast<std::uint8_t>(ParameterExecutionMode::kDynamic) ||
+      !matrix_valid) {
+    AddDiagnostic(&result.messages,
+                  "SBLR.OPERAND_INVALID",
+                  "The parameter execution coordination request is malformed.");
+    return result;
+  }
+  std::vector<std::uint8_t> payload;
+  PutU16(&payload, 1);
+  PutU8(&payload, mode_code);
+  PutU8(&payload, 0);
+  PutUuid(&payload, session_uuid);
+  PutUuid(&payload, operation);
+  PutUuid(&payload, prepared);
+  PutUuid(&payload, dynamic);
+  PutU32(&payload, 0);
+  Frame response;
+  MessageVectorSet messages;
+  if (payload.size() != 72 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageBeginParameterCoordinationRequest,
+                              kSchemaBeginParameterCoordinationRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type !=
+          kMessageBeginParameterCoordinationResult ||
+      response.header.schema_id !=
+          kSchemaBeginParameterCoordinationResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.payload.size() != 48 || GetU16(response.payload, 0) != 1 ||
+      response.payload[2] != mode_code || response.payload[3] != 0 ||
+      GetUuid(response.payload, 20) != operation ||
+      GetU64(response.payload, 36) == 0 ||
+      GetU32(response.payload, 44) != 0 ||
+      !UuidPresent(GetUuid(response.payload, 4))) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.PARAMETER_COORDINATION_RESULT_INVALID",
+                  "The parameter execution coordination result was malformed or mismatched.");
+    return result;
+  }
+  result.coordination.mode = mode;
+  result.coordination.public_coordination_uuid =
+      UuidToText(GetUuid(response.payload, 4));
+  result.coordination.operation_uuid = UuidToText(operation);
+  result.coordination.coordinator_generation = GetU64(response.payload, 36);
+  result.accepted = true;
+  return result;
+}
+
+ServerStatementContextResult SbpsClient::AcquireParameterStatementContext(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction,
+    const ParameterExecutionCoordination& coordination) const {
+  ServerStatementContextResult result;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  const auto coordination_uuid =
+      TextToUuid(coordination.public_coordination_uuid);
+  const auto operation_uuid = TextToUuid(coordination.operation_uuid);
+  const auto mode_code = static_cast<std::uint8_t>(coordination.mode);
+  if (!session.authenticated || !transaction.present() ||
+      !coordination.present() || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || !UuidPresent(coordination_uuid) ||
+      !UuidPresent(operation_uuid) ||
+      mode_code > static_cast<std::uint8_t>(ParameterExecutionMode::kDynamic)) {
+    AddDiagnostic(&result.messages,
+                  "SBLR.OPERAND_INVALID",
+                  "The parameter statement-context selection is malformed.");
+    return result;
+  }
+  auto payload = EncodeAcquireStatementContextPayloadV11(session, transaction);
+  PutU16(&payload, 1);
+  PutU8(&payload, mode_code);
+  PutU8(&payload, 0);
+  PutUuid(&payload, coordination_uuid);
+  PutUuid(&payload, operation_uuid);
+  Frame response;
+  MessageVectorSet messages;
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageAcquireStatementContextRequest,
+                              kSchemaAcquireParameterStatementContextRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageAcquireStatementContextResult ||
+      response.header.schema_id != kSchemaAcquireStatementContextResultV11 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!DecodeAcquireStatementContextPayloadV11(response.payload,
+                                               &result.context) ||
+      result.context.preliminary_extension_version != 3 ||
+      result.context.transaction.local_transaction_id !=
+          transaction.local_transaction_id ||
+      result.context.transaction.transaction_uuid !=
+          transaction.transaction_uuid) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_INVALID",
+                  "The coordinated parameter statement context was malformed or mismatched.");
+    result.context = {};
+    return result;
+  }
+  result.accepted = true;
+  return result;
+}
+
+ServerLiteralBindingResult SbpsClient::NegotiateLiteralDescriptors(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbln) const {
+  ServerLiteralBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_sbln.size() < 128 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageNegotiateLiteralDescriptorsRequest,
+                              kSchemaNegotiateLiteralDescriptorsRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sbln, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type !=
+          kMessageNegotiateLiteralDescriptorsResult ||
+      response.header.schema_id !=
+          kSchemaNegotiateLiteralDescriptorsResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerLiteralBindingResult SbpsClient::FinalizeLiteralBinding(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sblf) const {
+  ServerLiteralBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_sblf.size() < 208 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageFinalizeLiteralBindingRequest,
+                              kSchemaFinalizeLiteralBindingRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sblf, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageFinalizeLiteralBindingResult ||
+      response.header.schema_id != kSchemaFinalizeLiteralBindingResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerParameterBindingResult SbpsClient::NegotiateParameterDescriptors(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbpr) const {
+  ServerParameterBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_sbpr.size() < 136 ||
+      canonical_sbpr.size() > 98416 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageNegotiateParameterDescriptorsRequest,
+                              kSchemaNegotiateParameterDescriptorsRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sbpr, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type !=
+          kMessageNegotiateParameterDescriptorsResult ||
+      response.header.schema_id !=
+          kSchemaNegotiateParameterDescriptorsResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerParameterBindingResult SbpsClient::FinalizeParameterBinding(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbpf) const {
+  ServerParameterBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_sbpf.size() < 280 ||
+      canonical_sbpf.size() > 426192 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageFinalizeParameterBindingRequest,
+                              kSchemaFinalizeParameterBindingRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sbpf, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageFinalizeParameterBindingResult ||
+      response.header.schema_id != kSchemaFinalizeParameterBindingResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerPreparedParameterFinalizeResult
+SbpsClient::FinalizePreparedParameterSubmission(
+    const ParserSessionContext& session,
+    const ParameterExecutionCoordination& coordination,
+    const std::vector<std::uint8_t>& canonical_sbpt,
+    const ParserStatementContext& preliminary_context) const {
+  ServerPreparedParameterFinalizeResult result;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  const auto coordination_uuid =
+      TextToUuid(coordination.public_coordination_uuid);
+  const auto operation_uuid = TextToUuid(coordination.operation_uuid);
+  const auto provisional_prepared =
+      TextToUuid(preliminary_context.preliminary_prepared_statement_uuid);
+  if (!session.authenticated ||
+      coordination.mode != ParameterExecutionMode::kPrepared ||
+      !coordination.present() || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || !UuidPresent(coordination_uuid) ||
+      !UuidPresent(operation_uuid) ||
+      preliminary_context.preliminary_extension_version != 3 ||
+      !UuidPresent(provisional_prepared) ||
+      preliminary_context.preliminary_prepared_generation == 0 ||
+      canonical_sbpt.size() < 280 + 192 ||
+      canonical_sbpt.size() > std::numeric_limits<std::uint32_t>::max() ||
+      canonical_sbpt[0] != 'S' || canonical_sbpt[1] != 'B' ||
+      canonical_sbpt[2] != 'P' || canonical_sbpt[3] != 'T' ||
+      GetU16(canonical_sbpt, 4) != 1 || GetU16(canonical_sbpt, 6) != 280 ||
+      GetU32(canonical_sbpt, 8) != canonical_sbpt.size() ||
+      GetU32(canonical_sbpt, 12) != 0 ||
+      GetUuid(canonical_sbpt, 16) != coordination_uuid ||
+      GetUuid(canonical_sbpt, 32) != operation_uuid ||
+      GetUuid(canonical_sbpt, 48) != provisional_prepared ||
+      GetU64(canonical_sbpt, 64) !=
+          preliminary_context.preliminary_prepared_generation ||
+      GetU32(canonical_sbpt, 96) == 0 ||
+      GetU32(canonical_sbpt, 100) != 192 ||
+      static_cast<std::uint64_t>(280) + GetU32(canonical_sbpt, 96) +
+              GetU32(canonical_sbpt, 100) !=
+          canonical_sbpt.size()) {
+    AddDiagnostic(&result.messages,
+                  "SBLR.OPERAND_INVALID",
+                  "The prepared parameter finalization request is malformed.");
+    return result;
+  }
+  Frame response;
+  MessageVectorSet messages;
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessagePrepareSblr,
+                              kSchemaFinalizePreparedParameterRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sbpt, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessagePrepareResult ||
+      response.header.schema_id != kSchemaFinalizePreparedParameterResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.payload.size() != 56 || GetU16(response.payload, 0) != 1 ||
+      GetU16(response.payload, 2) != 0 ||
+      !UuidPresent(GetUuid(response.payload, 4)) ||
+      GetUuid(response.payload, 4) != provisional_prepared ||
+      GetU64(response.payload, 20) !=
+          preliminary_context.preliminary_prepared_generation ||
+      GetUuid(response.payload, 28) != operation_uuid ||
+      GetU64(response.payload, 44) != coordination.coordinator_generation ||
+      GetU32(response.payload, 52) != 0) {
+    AddDiagnostic(
+        &result.messages,
+        "PARSER_SERVER_IPC.PREPARED_PARAMETER_FINALIZE_RESULT_INVALID",
+        "The prepared parameter reference did not exactly seal the provisional engine binding.");
+    return result;
+  }
+  result.prepared.prepared_statement_uuid =
+      UuidToText(GetUuid(response.payload, 4));
+  result.prepared.prepared_generation = GetU64(response.payload, 20);
+  result.prepared.operation_uuid = UuidToText(operation_uuid);
+  result.prepared.coordination_generation = GetU64(response.payload, 44);
   result.accepted = true;
   return result;
 }
@@ -4754,7 +5368,8 @@ ServerExecutionResult SbpsClient::ExecuteCanonicalSblrWithDataPacket(
   MessageVectorSet messages;
   if (!RequireTransactionRoutingV2(session, &messages) ||
       !statement_context.complete() || !submission.complete() ||
-      submission.statement_uuid != statement_context.statement_uuid) {
+      submission.statement_uuid != statement_context.statement_uuid ||
+      (submission.literal_finalized() && submission.parameter_finalized())) {
     if (messages.diagnostics.empty()) {
       AddDiagnostic(&messages,
                     "PARSER_SERVER_IPC.CANONICAL_STATEMENT_CONTEXT_INVALID",
@@ -4774,18 +5389,36 @@ ServerExecutionResult SbpsClient::ExecuteCanonicalSblrWithDataPacket(
     result.messages = std::move(messages);
     return result;
   }
+  const auto request_payload =
+      submission.parameter_finalized()
+          ? EncodeCanonicalExecuteParameterPayloadV1(
+                session, statement_context, submission, data_packet,
+                cursor_requested)
+          : (submission.literal_finalized()
+                 ? EncodeCanonicalExecuteLiteralPayloadV1(
+                       session, statement_context, submission, data_packet,
+                       cursor_requested)
+                 : EncodeCanonicalExecutePayloadV1(
+                       session, statement_context, submission, data_packet,
+                       cursor_requested));
+  if (submission.parameter_finalized() && request_payload.size() > 33554432) {
+    AddDiagnostic(&messages, "RESOURCE.BUDGET_EXCEEDED",
+                  "Canonical parameter execution exceeds the admitted combined transport maximum.");
+    result.messages = std::move(messages);
+    return result;
+  }
   Frame response;
   if (!SendRequest(
           endpoint_,
           BaseHeader(kMessageExecuteSblr,
-                     kSchemaExecuteCanonicalSblrV1,
+                     submission.parameter_finalized()
+                         ? kSchemaExecuteCanonicalSblrParameterV1
+                         : (submission.literal_finalized()
+                                ? kSchemaExecuteCanonicalSblrLiteralV1
+                                : kSchemaExecuteCanonicalSblrV1),
                      session_uuid,
                      connection_uuid),
-          EncodeCanonicalExecutePayloadV1(session,
-                                          statement_context,
-                                          submission,
-                                          data_packet,
-                                          cursor_requested),
+          request_payload,
           &response,
           &messages,
           ActiveSocketCacheKey())) {
@@ -5144,6 +5777,7 @@ ServerClosePreparedSblrResult SbpsClient::ClosePreparedSblr(
 
 ServerFetchResult SbpsClient::FetchCursor(const ParserSessionContext& session,
                                           std::string_view cursor_uuid,
+                                          const CursorStreamDescriptorV1& stream_descriptor,
                                           std::uint64_t max_rows,
                                           std::uint64_t max_bytes,
                                           std::uint32_t fetch_flags) const {
@@ -5151,10 +5785,22 @@ ServerFetchResult SbpsClient::FetchCursor(const ParserSessionContext& session,
   const auto session_uuid = TextToUuid(session.session_uuid);
   const auto connection_uuid = TextToUuid(session.connection_uuid);
   MessageVectorSet messages;
+  if (!stream_descriptor.complete() ||
+      stream_descriptor.cursor_uuid != cursor_uuid || max_rows == 0 ||
+      max_bytes == 0 || max_rows > stream_descriptor.max_chunk_rows ||
+      max_bytes > stream_descriptor.max_chunk_bytes) {
+    AddDiagnostic(&messages,
+                  "SERVER.STREAM.DESCRIPTOR_INVALID",
+                  "Fetch requires the exact live cursor stream descriptor and bounded positive limits.");
+    result.messages = std::move(messages);
+    return result;
+  }
   Frame response;
   if (!SendRequest(endpoint_,
                    BaseHeader(kMessageFetch, kSchemaFetchV1, session_uuid, connection_uuid),
-                   EncodeCursorPayload(session_uuid, cursor_uuid, max_rows, max_bytes, fetch_flags),
+                   EncodeCursorPayload(session_uuid, cursor_uuid,
+                                       &stream_descriptor, max_rows,
+                                       max_bytes, fetch_flags),
                    &response,
                    &messages,
                    ActiveSocketCacheKey())) {
@@ -5203,7 +5849,7 @@ ServerCloseCursorResult SbpsClient::CloseCursor(const ParserSessionContext& sess
                               kSchemaCloseCursorV1,
                               session_uuid,
                               connection_uuid),
-                   EncodeCursorPayload(session_uuid, cursor_uuid, 1, 0, 0),
+                   EncodeCursorPayload(session_uuid, cursor_uuid, nullptr, 1, 0, 0),
                    &response,
                    &messages,
                    ActiveSocketCacheKey())) {
@@ -5243,7 +5889,7 @@ ServerCloseCursorResult SbpsClient::CancelCursor(const ParserSessionContext& ses
                               kSchemaCloseCursorV1,
                               session_uuid,
                               connection_uuid),
-                   EncodeCursorPayload(session_uuid, cursor_uuid, 1, 0, kCursorCloseFlagCancel),
+                   EncodeCursorPayload(session_uuid, cursor_uuid, nullptr, 1, 0, kCursorCloseFlagCancel),
                    &response,
                    &messages,
                    ActiveSocketCacheKey())) {

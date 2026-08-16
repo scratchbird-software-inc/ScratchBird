@@ -3320,6 +3320,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kResolveNameRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kRenderUuidRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kAcquireStatementContextRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kNegotiateLiteralDescriptorsRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kPrepareSblr) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kFetch) ||
@@ -3731,6 +3732,50 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
                      session_registry, engine_state, frame)));
     return true;
   }
+  if (frame.header.message_type == static_cast<std::uint16_t>(
+          sbps::MessageType::kNegotiateLiteralDescriptorsRequest) &&
+      frame.header.payload_schema_id ==
+          sbps::kSchemaNegotiateLiteralDescriptorsRequestV1) {
+    WriteAll(client_fd,SessionOperationFrame(
+        frame,HandleNegotiateLiteralDescriptors(session_registry,frame)));
+    return true;
+  }
+  if (frame.header.message_type == 40 &&
+      frame.header.payload_schema_id ==
+          sbps::kSchemaFinalizeLiteralBindingRequestV1) {
+    WriteAll(client_fd,SessionOperationFrame(
+        frame,HandleFinalizeLiteralBinding(session_registry,frame)));
+    return true;
+  }
+  if (frame.header.message_type == 42 &&
+      frame.header.payload_schema_id ==
+          sbps::kSchemaNegotiateParameterDescriptorsRequestV1) {
+    WriteAll(client_fd, SessionOperationFrame(
+        frame, HandleNegotiateParameterDescriptors(session_registry, frame)));
+    return true;
+  }
+  if (frame.header.message_type == 50 &&
+      frame.header.payload_schema_id ==
+          sbps::kSchemaBeginParameterExecutionCoordinationRequestV1) {
+    WriteAll(client_fd, SessionOperationFrame(
+        frame, HandleBeginParameterExecutionCoordination(
+                   session_registry, engine_state, frame)));
+    return true;
+  }
+  if (frame.header.message_type == 44 &&
+      frame.header.payload_schema_id ==
+          sbps::kSchemaFinalizeParameterBindingRequestV1) {
+    WriteAll(client_fd, SessionOperationFrame(
+        frame, HandleFinalizeParameterBinding(session_registry, frame)));
+    return true;
+  }
+  if (frame.header.message_type == 40 &&
+      frame.header.payload_schema_id ==
+          sbps::kSchemaFinalizePreparedSblrParameterRequestV1) {
+    WriteAll(client_fd, SessionOperationFrame(
+        frame, HandleFinalizePreparedSblrParameter(session_registry, frame)));
+    return true;
+  }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kRenderUuidRequest)) {
     WriteAll(client_fd, RenderUuidPublicFrame(frame, session_registry));
@@ -3795,10 +3840,16 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
                           "sys.metrics.ipc.parser_server.sblr.execute_microseconds",
                           1,
                           {{"operation_family", "sblr"}, {"outcome", operation.accepted ? "accepted" : "rejected"}});
+    std::string execute_audit_detail = "SBLR execute processed";
+    if (!operation.accepted && !operation.diagnostics.empty() &&
+        !operation.diagnostics.front().internal_audit_key.empty()) {
+      execute_audit_detail += ":" +
+          operation.diagnostics.front().internal_audit_key;
+    }
     RecordServerAuditEvent(observability,
                            "server.sblr.execute",
                            operation.accepted ? "completed" : "rejected",
-                           "SBLR execute processed",
+                           execute_audit_detail,
                            operation.diagnostics.empty() ? "" : operation.diagnostics.front().code);
     WriteAll(client_fd, SessionOperationFrame(frame, operation));
     if (operation.accepted) {

@@ -9,7 +9,9 @@
 #include "sblr_dispatch.hpp"
 
 #include "canonical_query_execute.hpp"
+#include "hash_digest.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "sblr_literal_runtime.hpp"
 #include "engine/optimizer/optimizer_catalog_backed_planning.hpp"
 #include "query/canonical_relational_bridge.hpp"
 #include "query/plan_api.hpp"
@@ -146,9 +148,15 @@ namespace {
 struct TypedPlanOperationDecodeResult {
   bool ok{false};
   api::EngineTypedRelationalPlanRequest request;
+  std::vector<api::EngineEvidenceReference> literal_evidence;
+  std::vector<api::EngineEvidenceReference> parameter_evidence;
   std::string diagnostic_id;
   std::string detail;
 };
+
+void WriteSblrLiteralEvidenceTrace(
+    const std::vector<api::EngineEvidenceReference>& evidence,
+    std::size_t begin);
 
 enum class BoundedModelFamilyV1 : std::uint8_t {
   kNone = 0,
@@ -969,7 +977,77 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
   bool statement_timestamp_present = false;
   bool local_transaction_id_present = false;
   bool snapshot_visible_through_local_transaction_id_present = false;
+  std::optional<SblrExpressionNodeTableCodecResultV1> literal_node_table;
+  std::vector<std::pair<std::uint32_t, SblrExpressionNodeReferenceV1>>
+      literal_references;
+  std::optional<SblrParameterNodeTableCodecResultV1> parameter_node_table;
+  std::vector<std::pair<std::uint32_t, SblrParameterNodeReferenceV1>>
+      parameter_references;
   for (const auto& operand : dispatch_request.envelope.operands) {
+    if (operand.value_kind == SblrValueKind::parameter_node_table) {
+      if (parameter_node_table.has_value()) {
+        decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+        decoded.detail = "duplicate SBPN parameter table";
+        return decoded;
+      }
+      parameter_node_table = DecodeSblrParameterNodeTableV1(
+          operand.value_body.data(), operand.value_body.size());
+      if (!parameter_node_table->ok) {
+        decoded.diagnostic_id = parameter_node_table->diagnostic_id;
+        decoded.detail = parameter_node_table->detail;
+        return decoded;
+      }
+      continue;
+    }
+    if (operand.value_kind == SblrValueKind::parameter_node_ref) {
+      std::uint64_t expression_id = 0;
+      SblrParameterNodeReferenceV1 reference;
+      if (operand.type != "relational_expression_v1" ||
+          !ParseCanonicalUnsigned(operand.name,
+              std::numeric_limits<std::uint32_t>::max(), &expression_id) ||
+          !DecodeSblrParameterNodeReferenceV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &reference)) {
+        decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+        decoded.detail = "malformed relational parameter reference";
+        return decoded;
+      }
+      parameter_references.emplace_back(
+          static_cast<std::uint32_t>(expression_id), reference);
+      continue;
+    }
+    if (operand.value_kind == SblrValueKind::expression_node_table) {
+      if (literal_node_table.has_value()) {
+        decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+        decoded.detail = "duplicate SBXN literal table";
+        return decoded;
+      }
+      literal_node_table = DecodeSblrExpressionNodeTableV1(
+          operand.value_body.data(), operand.value_body.size());
+      if (!literal_node_table->ok) {
+        decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+        decoded.detail = literal_node_table->detail;
+        return decoded;
+      }
+      continue;
+    }
+    if (operand.value_kind == SblrValueKind::expression_node_ref) {
+      std::uint64_t expression_id = 0;
+      SblrExpressionNodeReferenceV1 reference;
+      if (operand.type != "relational_expression_v1" ||
+          !ParseCanonicalUnsigned(operand.name,
+              std::numeric_limits<std::uint32_t>::max(), &expression_id) ||
+          !DecodeSblrExpressionNodeReferenceV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &reference)) {
+        decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+        decoded.detail = "malformed relational literal reference";
+        return decoded;
+      }
+      literal_references.emplace_back(
+          static_cast<std::uint32_t>(expression_id), reference);
+      continue;
+    }
     if (operand.type == "uint16" &&
         operand.name == "relational_wire_version") {
       if (wire_version_present) {
@@ -1592,6 +1670,201 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
     return decoded;
   }
 
+  if(literal_node_table.has_value()){
+    std::vector<SblrExpressionNodeReferenceV1> refs;refs.reserve(literal_references.size());
+    for(const auto& item:literal_references)refs.push_back(item.second);
+    if(!ValidateSblrLiteralReferenceBijectionV1(*literal_node_table,refs)){
+      decoded.diagnostic_id="SBLR.OPERAND_INVALID";
+      decoded.detail="SBXN literal reference bijection failed";return decoded;
+    }
+    const auto uuid_text=[](const std::array<std::uint8_t,16>& bytes){
+      constexpr char hex[]="0123456789abcdef";std::string out;out.reserve(36);
+      for(std::size_t i=0;i<bytes.size();++i){if(i==4||i==6||i==8||i==10)out.push_back('-');out.push_back(hex[bytes[i]>>4]);out.push_back(hex[bytes[i]&15]);}return out;};
+    for(const auto& [expression_id,reference]:literal_references){
+      if (dispatch_request.context.query_cancellation_requested &&
+          dispatch_request.context.query_cancellation_requested()) {
+        decoded.diagnostic_id = "PROCESS.CANCELLED";
+        decoded.detail = "literal evaluation cancelled before node entry";
+        return decoded;
+      }
+      if(std::ranges::any_of(decoded.request.relational_dag.expressions,
+          [&](const auto& existing){return existing.expression_id==expression_id;})){
+        decoded.diagnostic_id="SBLR.OPERAND_INVALID";
+        decoded.detail="SBXN literal has duplicate embedded relational authority";return decoded;
+      }
+      const auto node=std::ranges::find_if(literal_node_table->table.nodes,
+          [&](const auto& candidate){return candidate.node_id==reference.node_id;});
+      const auto descriptor_uuid=uuid_text(reference.descriptor_uuid);
+      const auto descriptor=std::ranges::find_if(decoded.request.relational_dag.descriptors,
+          [&](const auto& candidate){return candidate.descriptor_uuid==descriptor_uuid;});
+      const auto value=node==literal_node_table->table.nodes.end()?std::nullopt:
+          DecodeSblrLiteralInt64LeV1(node->literal_body.data(),node->literal_body.size());
+      if(node==literal_node_table->table.nodes.end()||
+         descriptor==decoded.request.relational_dag.descriptors.end()||!value.has_value()){
+        decoded.diagnostic_id="DATATYPE.DESCRIPTOR_INVALID";
+        decoded.detail="SBXN literal descriptor or canonical bigint codec is invalid";return decoded;
+      }
+      const auto body_sha = scratchbird::core::hash::ComputeSha256Digest(
+          node->literal_body);
+      if (!body_sha.ok()) {
+        decoded.diagnostic_id = "DATATYPE.DESCRIPTOR_INVALID";
+        decoded.detail = "SBXN literal canonical body hash failed";
+        return decoded;
+      }
+      const std::string body_sha_text =
+          scratchbird::core::hash::HexLower(body_sha.digest);
+      api::RelationalExpressionRecord::LiteralTypedValueV1 typed_value;
+      typed_value.descriptor_uuid = descriptor_uuid;
+      typed_value.descriptor_generation = reference.descriptor_generation;
+      typed_value.value_state = "value";
+      typed_value.canonical_value_bytes = node->literal_body;
+      typed_value.canonical_value_sha256 = body_sha.digest;
+      SblrLiteralExecutorEvidenceV1 executor_evidence;
+      executor_evidence.descriptor_uuid=reference.descriptor_uuid;
+      executor_evidence.descriptor_generation=reference.descriptor_generation;
+      executor_evidence.canonical_value_sha256=body_sha.digest;
+      const auto executor_evidence_sha=
+          ComputeSblrLiteralExecutorEvidenceSha256V1(executor_evidence);
+      if(!executor_evidence_sha.has_value()){
+        decoded.diagnostic_id="SBLR.OPERAND_INVALID";
+        decoded.detail="literal executor evidence schema is invalid";return decoded;
+      }
+      decoded.literal_evidence.insert(decoded.literal_evidence.end(), {
+          {"executor_id", "engine.op.literal"},
+          {"opcode_code", "3"},
+          {"opcode_version", "1.0"},
+          {"operand_descriptor_id", "typed_literal"},
+          {"literal_occurrence_ordinal",
+           std::to_string(reference.occurrence_ordinal)},
+          {"literal_node_id", std::to_string(reference.node_id)},
+          {"literal_parent_expression_id", std::to_string(expression_id)},
+          {"descriptor_uuid", descriptor_uuid},
+          {"descriptor_generation",
+           std::to_string(reference.descriptor_generation)},
+          {"canonical_value_sha256", body_sha_text},
+          {"result_descriptor_id", "typed_value"},
+          {"result_descriptor_version", "1"},
+          {"executor_evidence_sha256",
+           scratchbird::core::hash::HexLower(*executor_evidence_sha)}});
+      if (dispatch_request.context.query_cancellation_requested &&
+          dispatch_request.context.query_cancellation_requested()) {
+        decoded.literal_evidence.clear();
+        decoded.diagnostic_id = "PROCESS.CANCELLED";
+        decoded.detail = "literal evaluation cancelled before parent consumption";
+        return decoded;
+      }
+      api::RelationalExpressionRecord expression;
+      expression.expression_id=expression_id;
+      expression.expression_kind=api::RelationalExpressionKind::kLiteral;
+      expression.result_descriptor_id=descriptor->descriptor_id;
+      expression.literal_kind=api::RelationalLiteralKind::kNumeric;
+      expression.literal_typed_value_v1=std::move(typed_value);
+      decoded.request.relational_dag.expressions.push_back(std::move(expression));
+    }
+  }else if(!literal_references.empty()){
+    decoded.diagnostic_id="SBLR.OPERAND_INVALID";
+    decoded.detail="literal references require one SBXN table";return decoded;
+  }
+
+  if (parameter_node_table.has_value()) {
+    std::vector<SblrParameterNodeReferenceV1> refs;
+    refs.reserve(parameter_references.size());
+    for (const auto& item : parameter_references) refs.push_back(item.second);
+    if (!ValidateSblrParameterReferenceBijectionV1(*parameter_node_table,
+                                                    refs) ||
+        !dispatch_request.parameter_value_set.has_value()) {
+      decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+      decoded.detail = "SBPN parameter reference/value-set bijection failed";
+      return decoded;
+    }
+    const auto uuid_text = [](const std::array<std::uint8_t,16>& bytes) {
+      constexpr char hex[] = "0123456789abcdef";
+      std::string out;
+      out.reserve(36);
+      for (std::size_t i = 0; i < bytes.size(); ++i) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) out.push_back('-');
+        out.push_back(hex[bytes[i] >> 4]);
+        out.push_back(hex[bytes[i] & 15]);
+      }
+      return out;
+    };
+    for (const auto& [expression_id, reference] : parameter_references) {
+      if (dispatch_request.context.query_cancellation_requested &&
+          dispatch_request.context.query_cancellation_requested()) {
+        decoded.parameter_evidence.clear();
+        decoded.diagnostic_id = "PROCESS.CANCELLED";
+        decoded.detail = "parameter evaluation cancelled before slot entry";
+        return decoded;
+      }
+      const auto node = std::ranges::find_if(
+          parameter_node_table->table.nodes,
+          [&](const auto& candidate) {
+            return candidate.node_id == reference.node_id;
+          });
+      if (node == parameter_node_table->table.nodes.end() ||
+          reference.slot_ordinal >=
+              dispatch_request.parameter_value_set->records.size()) {
+        decoded.diagnostic_id = "SBLR.PARAMETER.STALE";
+        decoded.detail = "parameter node or slot is absent";
+        return decoded;
+      }
+      const auto& value =
+          dispatch_request.parameter_value_set->records[reference.slot_ordinal];
+      const auto descriptor_uuid = uuid_text(node->datatype_descriptor_uuid);
+      const auto descriptor = std::ranges::find_if(
+          decoded.request.relational_dag.descriptors,
+          [&](const auto& candidate) {
+            return candidate.descriptor_uuid == descriptor_uuid;
+          });
+      const auto value_sha = scratchbird::core::hash::ComputeSha256Digest(
+          value.canonical_value_bytes);
+      if (descriptor == decoded.request.relational_dag.descriptors.end() ||
+          value.slot_ordinal != reference.slot_ordinal || !value_sha.ok()) {
+        decoded.diagnostic_id = "DATATYPE.DESCRIPTOR_INVALID";
+        decoded.detail = "parameter descriptor or canonical value is invalid";
+        return decoded;
+      }
+      api::RelationalExpressionRecord expression;
+      expression.expression_id = expression_id;
+      expression.expression_kind = api::RelationalExpressionKind::kParameter;
+      expression.result_descriptor_id = descriptor->descriptor_id;
+      api::RelationalExpressionRecord::ParameterTypedValueV1 typed;
+      typed.descriptor_uuid = descriptor_uuid;
+      typed.descriptor_generation = value.datatype_descriptor_generation;
+      typed.value_state =
+          value.state == SblrParameterValueStateV1::null_value ? "null" : "value";
+      typed.canonical_value_bytes = value.canonical_value_bytes;
+      typed.canonical_value_sha256 = value_sha.digest;
+      expression.parameter_typed_value_v1 = std::move(typed);
+      decoded.request.relational_dag.expressions.push_back(std::move(expression));
+      decoded.parameter_evidence.insert(decoded.parameter_evidence.end(), {
+          {"executor_id", "engine.op.parameter"},
+          {"opcode_code", "4"},
+          {"opcode_version", "1.0"},
+          {"operand_descriptor_id", "parameter_descriptor_ref"},
+          {"parameter_set_descriptor_uuid",
+           uuid_text(reference.parameter_set_descriptor_uuid)},
+          {"parameter_set_generation",
+           std::to_string(reference.parameter_set_generation)},
+          {"slot_ordinal", std::to_string(reference.slot_ordinal)},
+          {"slot_uuid", uuid_text(value.slot_uuid)},
+          {"descriptor_uuid", descriptor_uuid},
+          {"descriptor_generation",
+           std::to_string(value.datatype_descriptor_generation)},
+          {"value_state", value.state == SblrParameterValueStateV1::null_value
+                              ? "null" : "value"},
+          {"canonical_value_sha256",
+           scratchbird::core::hash::HexLower(value_sha.digest)},
+          {"result_descriptor_id", "typed_value"},
+          {"result_descriptor_version", "1"}});
+    }
+  } else if (!parameter_references.empty() ||
+             dispatch_request.parameter_value_set.has_value()) {
+    decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+    decoded.detail = "parameter values/references require one SBPN table";
+    return decoded;
+  }
+
   if (!wire_version_present) {
     decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_VERSION";
     decoded.detail = "relational_wire_version operand is required";
@@ -2105,6 +2378,15 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
     routed.selected_plan_uuid = values_execution.selected_plan_uuid;
     routed.canonical_result_bytes = values_execution.canonical_result_bytes;
     routed.api_result = values_execution.api_result;
+    if(routed.api_result.ok&&routed.canonical_result_published){
+      WriteSblrLiteralEvidenceTrace(decoded.literal_evidence,0);
+      routed.api_result.evidence.insert(routed.api_result.evidence.end(),
+                                        decoded.literal_evidence.begin(),
+                                        decoded.literal_evidence.end());
+      routed.api_result.evidence.insert(routed.api_result.evidence.end(),
+                                        decoded.parameter_evidence.begin(),
+                                        decoded.parameter_evidence.end());
+    }
     return routed;
   }
   routed.api_result = QueryRouteFailure(
@@ -2392,6 +2674,22 @@ void WriteSblrDispatchPhaseTrace(
     out << '\t' << phase << "_us=" << micros;
   }
   out << "\ttotal_us=" << total << '\n';
+}
+
+void WriteSblrLiteralEvidenceTrace(
+    const std::vector<api::EngineEvidenceReference>& evidence,
+    const std::size_t begin) {
+  const char* trace_path =
+      std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
+  if (trace_path == nullptr || *trace_path == '\0') return;
+  std::ofstream out(trace_path, std::ios::app | std::ios::binary);
+  if (!out) return;
+  out << "layer=literal_executor";
+  for (std::size_t index = begin; index < evidence.size(); ++index) {
+    out << '\t' << evidence[index].evidence_kind << '='
+        << evidence[index].evidence_id;
+  }
+  out << "\tparent_success_barrier=passed\n";
 }
 
 std::string LowerAscii(std::string value) {
@@ -9202,6 +9500,152 @@ std::string JsonEscape(std::string_view input) {
 
 }  // namespace
 
+SblrQueryPreflightResult PreflightSblrQueryOperation(
+    SblrDispatchRequest request) {
+  SblrQueryPreflightResult result;
+  if (request.envelope.operation_id != "query.execute") {
+    result.diagnostic_id = "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH";
+    result.detail = "package root preflight admits query.execute only";
+    return result;
+  }
+  const auto envelope_validation = ValidateSblrEnvelope(request.envelope);
+  if (!envelope_validation.ok) {
+    result.diagnostic_id = envelope_validation.diagnostics.empty()
+        ? "SBLR.OPERATION.OPERAND_INVALID"
+        : envelope_validation.diagnostics.front().code;
+    result.detail = envelope_validation.diagnostics.empty()
+        ? "canonical query envelope validation failed"
+        : envelope_validation.diagnostics.front().message;
+    return result;
+  }
+  for (auto& operand : request.envelope.operands) {
+    if (operand.value_kind == SblrValueKind::expression_node_table ||
+        operand.value_kind == SblrValueKind::expression_node_ref) {
+      continue;
+    }
+    if (operand.value_kind != SblrValueKind::literal_typed ||
+        operand.value_body.size() < 24) {
+      result.diagnostic_id = "SBLR.OPERATION.OPERAND_INVALID";
+      result.detail =
+          "query.execute operands must use canonical literal_typed bodies";
+      return result;
+    }
+    std::uint64_t value_size = 0;
+    for (unsigned byte = 0; byte < 8; ++byte) {
+      value_size |= static_cast<std::uint64_t>(operand.value_body[16 + byte])
+                    << (byte * 8);
+    }
+    if (value_size != operand.value_body.size() - 24) {
+      result.diagnostic_id = "SBLR.OPERATION.OPERAND_INVALID";
+      result.detail = "typed operand byte count differs";
+      return result;
+    }
+    operand.value.assign(
+        reinterpret_cast<const char*>(operand.value_body.data() + 24),
+        static_cast<std::size_t>(value_size));
+    if (operand.name.rfind("slot_", 0) == 0 && operand.name.size() > 5 &&
+        std::all_of(operand.name.begin() + 5, operand.name.end(),
+                    [](unsigned char ch) { return ch >= '0' && ch <= '9'; })) {
+      operand.name.erase(0, 5);
+    } else if (operand.type == "relational_property_v1" &&
+               operand.name.rfind("property_", 0) == 0 &&
+               operand.name.size() == 41 &&
+               std::all_of(operand.name.begin() + 9, operand.name.end(),
+                           [](unsigned char ch) {
+                             return (ch >= '0' && ch <= '9') ||
+                                    (ch >= 'a' && ch <= 'f');
+                           })) {
+      const std::string hex = operand.name.substr(9);
+      operand.name = hex.substr(0, 8) + "-" + hex.substr(8, 4) + "-" +
+                     hex.substr(12, 4) + "-" + hex.substr(16, 4) + "-" +
+                     hex.substr(20, 12);
+    }
+  }
+  const auto opcode_validation =
+      ValidateSblrOpcodeForEnvelope(request.envelope);
+  if (!opcode_validation.ok) {
+    result.diagnostic_id = opcode_validation.diagnostic_id;
+    result.detail = opcode_validation.detail;
+    return result;
+  }
+  const auto decoded = TypedPlanOperationRequest(request);
+  if (!decoded.ok) {
+    result.diagnostic_id = decoded.diagnostic_id;
+    result.detail = decoded.detail;
+    return result;
+  }
+  const auto dag_validation =
+      api::ValidateTypedRelationalDag(decoded.request.relational_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    result.diagnostic_id = issue.diagnostic_id;
+    result.detail = issue.field_id + ":node_id=" +
+                    std::to_string(issue.node_id);
+    return result;
+  }
+  result.ok = true;
+  result.materialized_envelope = std::move(request.envelope);
+  return result;
+}
+
+QueryExecuteResultHandleValidationV1 ValidateQueryExecuteResultHandleV1(
+    std::string_view result_shape_id,
+    std::uint32_t result_shape_version,
+    const std::vector<QueryExecuteResultHandleFieldV1>& fields) {
+  QueryExecuteResultHandleValidationV1 result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic_id = "DATATYPE.DESCRIPTOR_INVALID";
+    result.detail = std::move(detail);
+    return result;
+  };
+  if (result_shape_id != "query_execute_result" || result_shape_version != 1) {
+    return refuse("query_execute_result_registry_identity_mismatch");
+  }
+  static constexpr std::array<std::string_view, 4> kNames{
+      "execution_uuid", "result_set_uuid", "row_descriptor_uuid",
+      "snapshot_uuid"};
+  static constexpr std::string_view kDescriptor = "desc.uuid";
+  if (fields.size() != kNames.size()) {
+    return refuse("query_execute_result_exact_cardinality_invalid");
+  }
+  const auto canonical_nonzero_uuid = [](std::string_view value) {
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-') return false;
+    bool nonzero = false;
+    for (std::size_t index = 0; index != value.size(); ++index) {
+      if (value[index] == '-') continue;
+      const auto ch = value[index];
+      if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+        return false;
+      }
+      nonzero = nonzero || ch != '0';
+    }
+    return nonzero;
+  };
+  std::array<std::string, 4> values;
+  for (std::size_t index = 0; index != fields.size(); ++index) {
+    if (fields[index].name != kNames[index] ||
+        fields[index].descriptor != kDescriptor ||
+        !canonical_nonzero_uuid(fields[index].value)) {
+      return refuse("query_execute_result_field_contract_invalid");
+    }
+    values[index] = fields[index].value;
+  }
+  for (std::size_t left = 0; left != values.size(); ++left) {
+    for (std::size_t right = left + 1; right != values.size(); ++right) {
+      if (values[left] == values[right]) {
+        return refuse("query_execute_result_identity_roles_duplicated");
+      }
+    }
+  }
+  result.handle.execution_uuid = std::move(values[0]);
+  result.handle.result_set_uuid = std::move(values[1]);
+  result.handle.row_descriptor_uuid = std::move(values[2]);
+  result.handle.snapshot_uuid = std::move(values[3]);
+  result.ok = true;
+  return result;
+}
+
 bool IsClusterOperationId(std::string_view operation_id) {
   return operation_id.starts_with("cluster.") || operation_id.starts_with("replication.") ||
          operation_id.starts_with("op.cluster.") ||
@@ -9287,6 +9731,11 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
           "query.evaluate_advanced_datatype_family";
   if (materialize_query_slots || materialize_typed_options) {
     for (auto& operand : request.envelope.operands) {
+      if (materialize_query_slots &&
+          (operand.value_kind == SblrValueKind::expression_node_table ||
+           operand.value_kind == SblrValueKind::expression_node_ref)) {
+        continue;
+      }
       if (operand.value_kind != SblrValueKind::literal_typed ||
           operand.value_body.size() < 24) {
         const std::string detail =

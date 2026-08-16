@@ -12,6 +12,7 @@
 
 #include "config_policy_security_lifecycle.hpp"
 #include "engine_host.hpp"
+#include "sblr_parameter_runtime.hpp"
 #include "security/authentication_api.hpp"
 #include "security/authorization_api.hpp"
 #include "security/security_crypto_policy.hpp"
@@ -2607,6 +2608,8 @@ bool ReleaseAndClearServerCursorResources(
   cursor->total_row_count = 0;
   cursor->next_row_index = 0;
   cursor->fetch_count = 0;
+  cursor->stream_descriptor_live = false;
+  cursor->stream_descriptor_receipt_binding_sha256.fill(0);
   return released_engine_result;
 }
 
@@ -2953,14 +2956,24 @@ SessionOperationResult HandleAcquireStatementContext(
           sbps::kSchemaAcquireStatementContextRequestV9;
   const bool native_projection_v10 =
       request.header.payload_schema_id ==
-          sbps::kSchemaAcquireStatementContextRequestV10;
+          sbps::kSchemaAcquireStatementContextRequestV10 ||
+      request.header.payload_schema_id ==
+          sbps::kSchemaAcquireStatementContextRequestV11;
+  const bool native_projection_v11 =
+      request.header.payload_schema_id ==
+          sbps::kSchemaAcquireStatementContextRequestV11 ||
+      request.header.payload_schema_id ==
+          sbps::kSchemaAcquireParameterStatementContextRequestV1;
   const bool native_projection =
       native_projection_v2 || native_projection_v3 || native_projection_v4 ||
       native_projection_v5 || native_projection_v6 || native_projection_v7 ||
       native_projection_v8 || native_projection_v9 || native_projection_v10;
   std::uint16_t projection_version = 1;
   result.response_schema_id = sbps::kSchemaAcquireStatementContextResultV1;
-  if (native_projection_v2) {
+  if (native_projection_v11) {
+    projection_version = 11;
+    result.response_schema_id = sbps::kSchemaAcquireStatementContextResultV11;
+  } else if (native_projection_v2) {
     projection_version = 2;
     result.response_schema_id = sbps::kSchemaAcquireStatementContextResultV2;
   } else if (native_projection_v3) {
@@ -3002,11 +3015,16 @@ SessionOperationResult HandleAcquireStatementContext(
   };
 
   constexpr std::size_t kRequestBytes = 2 + 16 + 8 + 16;
+  const bool parameter_prepared_acquire =
+      request.header.payload_schema_id ==
+          sbps::kSchemaAcquireParameterStatementContextRequestV1;
+  const std::size_t expected_request_bytes =
+      kRequestBytes + (parameter_prepared_acquire ? 36 : 0);
   if (registry == nullptr ||
       (request.header.payload_schema_id !=
            sbps::kSchemaAcquireStatementContextRequestV1 &&
        !native_projection) ||
-      request.payload.size() != kRequestBytes ||
+      request.payload.size() != expected_request_bytes ||
       GetU16(request.payload, 0) != projection_version) {
     return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_REQUEST_INVALID",
                   "schema_version_or_size_invalid");
@@ -3080,6 +3098,40 @@ SessionOperationResult HandleAcquireStatementContext(
   engine_bridge::StatementContextAcquireRequest acquire_request;
   acquire_request.engine_context = &engine_context;
   acquire_request.exact_transaction_uuid = transaction.transaction_uuid;
+  if (parameter_prepared_acquire) {
+    constexpr std::size_t kSuffix = kRequestBytes;
+    if (GetU16(request.payload, kSuffix) != 1 ||
+        request.payload[kSuffix + 2] != 1 ||
+        request.payload[kSuffix + 3] != 0 ||
+        sbps::IsZeroUuid(GetUuid(request.payload, kSuffix + 4)) ||
+        sbps::IsZeroUuid(GetUuid(request.payload, kSuffix + 20))) {
+      return refuse("SBLR.OPERAND_INVALID",
+                    "parameter_execution_selector_invalid");
+    }
+    const auto coordination_uuid =
+        UuidBytesToText(GetUuid(request.payload, kSuffix + 4));
+    const auto operation_uuid =
+        UuidBytesToText(GetUuid(request.payload, kSuffix + 20));
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    const auto found =
+        registry->parameter_coordinations_by_uuid.find(coordination_uuid);
+    if (found == registry->parameter_coordinations_by_uuid.end() ||
+        found->second.session_uuid != UuidBytesToText(session.session_uuid) ||
+        found->second.operation_uuid != operation_uuid) {
+      return refuse("SECURITY.ACCESS_DENIED",
+                    "parameter_execution_coordination_hidden");
+    }
+    if (found->second.sealed || found->second.private_handle == 0) {
+      return refuse("SBLR.PARAMETER.STALE",
+                    "parameter_execution_coordination_stale");
+    }
+    acquire_request.parameter_execution_selector.version = 1;
+    acquire_request.parameter_execution_selector.mode =
+        engine_bridge::StatementParameterExecutionMode::kPrepared;
+    acquire_request.parameter_execution_selector.reserved = 0;
+    acquire_request.parameter_execution_selector.prepared_binding_handle =
+        found->second.private_handle;
+  }
   engine_bridge::StatementContextReceiptHandle receipt;
   engine_bridge::StatementContextReceiptView view;
   sb_engine_result_t engine_result = nullptr;
@@ -3213,9 +3265,325 @@ SessionOperationResult HandleAcquireStatementContext(
       PutU32(&result.payload, profile.scale);
     }
   }
+  if (native_projection_v11) {
+    // Unified literal/parameter preliminary bootstrap extension v3. Parameter
+    // lifecycle pairs come only from the immutable engine receipt view.
+    PutU16(&result.payload, 3);
+    PutU16(&result.payload, 0);
+    PutUuid(&result.payload, TextToUuid(view.receipt_uuid));
+    PutUuid(&result.payload,
+            TextToUuid(view.literal_catalog_snapshot_uuid));
+    PutU64(&result.payload, view.literal_catalog_generation);
+    PutU64(&result.payload, view.security_epoch);
+    PutU64(&result.payload, view.resource_epoch);
+    PutUuid(&result.payload, TextToUuid(view.statement_snapshot_uuid));
+    PutUuid(&result.payload,
+            TextToUuid(view.parameter_prepared_statement_uuid));
+    PutU64(&result.payload, view.parameter_prepared_generation);
+    PutUuid(&result.payload, TextToUuid(view.parameter_batch_uuid));
+    PutU64(&result.payload, view.parameter_batch_generation);
+    PutUuid(&result.payload,
+            TextToUuid(view.parameter_dynamic_package_uuid));
+    PutU64(&result.payload, view.parameter_dynamic_generation);
+    PutU64(&result.payload,
+           view.parameter_executor_availability_generation);
+  }
   result.accepted = true;
   ++public_context->reuse_count;
   return result;
+}
+
+SessionOperationResult HandleNegotiateLiteralDescriptors(
+    ServerSessionRegistry* registry,const sbps::Frame& request){
+  SessionOperationResult result;
+  result.response_message_type=static_cast<std::uint16_t>(
+      sbps::MessageType::kNegotiateLiteralDescriptorsResult);
+  result.response_schema_id=sbps::kSchemaNegotiateLiteralDescriptorsResultV1;
+  result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;
+  result.session_uuid=request.header.session_uuid;
+  const auto refuse=[&](std::string code,std::string detail){
+    result.accepted=false;result.frame_flags|=sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code),"parser_server_ipc.literal_prebind_refused",
+        "Literal descriptor negotiation was refused.",
+        {{"detail",std::move(detail)}}));return result;};
+  if(registry==nullptr||request.header.payload_schema_id!=
+       sbps::kSchemaNegotiateLiteralDescriptorsRequestV1||
+     request.payload.size()<128||request.payload[0]!='S'||request.payload[1]!='B'||
+     request.payload[2]!='L'||request.payload[3]!='N')
+    return refuse("SBLR.OPERAND_INVALID","literal_prebind_frame_invalid");
+  const auto preliminary_uuid=UuidBytesToText(GetUuid(request.payload,16));
+  engine_bridge::StatementContextReceiptHandle receipt;
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    const auto found=std::find_if(
+        registry->statement_contexts_by_statement_uuid.begin(),
+        registry->statement_contexts_by_statement_uuid.end(),
+        [&](const auto& entry){return entry.second.view.receipt_uuid==preliminary_uuid&&
+            entry.second.session_uuid==request.header.session_uuid;});
+    if(found==registry->statement_contexts_by_statement_uuid.end())
+      return refuse("DATATYPE.DESCRIPTOR_INVALID","preliminary_receipt_not_live");
+    receipt=found->second.receipt;
+  }
+  sb_engine_result_t engine_result=nullptr;
+  const auto status=engine_bridge::NegotiateStatementLiteralDescriptorsV1(
+      receipt,request.payload,&result.payload,&engine_result);
+  if(engine_result!=nullptr)(void)sb_engine_result_release(engine_result);
+  if(status!=SB_ENGINE_STATUS_OK)
+    return refuse(status==SB_ENGINE_STATUS_UNSUPPORTED?
+                      "DATATYPE.DESCRIPTOR_INVALID":"DATATYPE.DESCRIPTOR_INVALID",
+                  std::string("engine_status=")+sb_engine_status_name(status));
+  result.accepted=true;return result;
+}
+
+SessionOperationResult HandleFinalizeLiteralBinding(
+    ServerSessionRegistry* registry,const sbps::Frame& request){
+  SessionOperationResult result;result.response_message_type=41;result.response_schema_id=sbps::kSchemaFinalizeLiteralBindingResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;
+  const auto refuse=[&](std::string code,std::string detail){result.accepted=false;result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(code),"parser_server_ipc.literal_finalize_refused","Literal binding finalization was refused.",{{"detail",std::move(detail)}}));return result;};
+  if(registry==nullptr||request.header.payload_schema_id!=sbps::kSchemaFinalizeLiteralBindingRequestV1||request.payload.size()<208||request.payload.size()>1036600||request.payload[0]!='S'||request.payload[1]!='B'||request.payload[2]!='L'||request.payload[3]!='F')return refuse("SBLR.OPERAND_INVALID","literal_finalize_frame_invalid");
+  const auto preliminary_uuid=UuidBytesToText(GetUuid(request.payload,16));engine_bridge::StatementContextReceiptHandle receipt;
+  {std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);const auto found=std::find_if(registry->statement_contexts_by_statement_uuid.begin(),registry->statement_contexts_by_statement_uuid.end(),[&](const auto& entry){return entry.second.view.receipt_uuid==preliminary_uuid&&entry.second.session_uuid==request.header.session_uuid;});if(found==registry->statement_contexts_by_statement_uuid.end())return refuse("DATATYPE.DESCRIPTOR_INVALID","preliminary_receipt_not_live");receipt=found->second.receipt;}
+  sb_engine_result_t engine_result=nullptr;const auto status=engine_bridge::FinalizeStatementLiteralBindingV1(receipt,request.payload,&result.payload,&engine_result);if(engine_result)(void)sb_engine_result_release(engine_result);if(status!=SB_ENGINE_STATUS_OK)return refuse("DATATYPE.DESCRIPTOR_INVALID",std::string("engine_status=")+sb_engine_status_name(status));result.accepted=true;return result;
+}
+
+SessionOperationResult HandleNegotiateParameterDescriptors(
+    ServerSessionRegistry* registry, const sbps::Frame& request) {
+  SessionOperationResult result;
+  result.response_message_type = 43;
+  result.response_schema_id = sbps::kSchemaNegotiateParameterDescriptorsResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false; result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code), "parser_server_ipc.parameter_prebind_refused",
+        "Parameter descriptor negotiation was refused.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  if (registry == nullptr || request.header.payload_schema_id !=
+          sbps::kSchemaNegotiateParameterDescriptorsRequestV1 ||
+      request.payload.size() < 112 || request.payload.size() > 98416 ||
+      !std::equal(request.payload.begin(), request.payload.begin() + 4,
+                  "SBPR")) {
+    return refuse("SBLR.OPERAND_INVALID", "parameter_prebind_frame_invalid");
+  }
+  const auto preliminary_uuid = UuidBytesToText(GetUuid(request.payload, 16));
+  engine_bridge::StatementContextReceiptHandle receipt;
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    const auto found = std::find_if(
+        registry->statement_contexts_by_statement_uuid.begin(),
+        registry->statement_contexts_by_statement_uuid.end(),
+        [&](const auto& entry) {
+          return entry.second.view.receipt_uuid == preliminary_uuid &&
+                 entry.second.session_uuid == request.header.session_uuid;
+        });
+    if (found == registry->statement_contexts_by_statement_uuid.end())
+      return refuse("DATATYPE.DESCRIPTOR_INVALID", "preliminary_receipt_not_live");
+    receipt = found->second.receipt;
+  }
+  sb_engine_result_t engine_result = nullptr;
+  const auto status = engine_bridge::NegotiateStatementParameterDescriptorsV1(
+      receipt, request.payload, &result.payload, &engine_result);
+  if (engine_result) (void)sb_engine_result_release(engine_result);
+  if (status != SB_ENGINE_STATUS_OK)
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  std::string("engine_status=") + sb_engine_status_name(status));
+  result.accepted = true; return result;
+}
+
+SessionOperationResult HandleBeginParameterExecutionCoordination(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  SessionOperationResult result;
+  result.response_message_type = 51;
+  result.response_schema_id =
+      sbps::kSchemaBeginParameterExecutionCoordinationResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code), "parser_server_ipc.parameter_coordination_refused",
+        "Parameter execution coordination was refused.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  if (registry == nullptr || request.header.payload_schema_id !=
+          sbps::kSchemaBeginParameterExecutionCoordinationRequestV1 ||
+      request.payload.size() != 72 || GetU16(request.payload, 0) != 1 ||
+      request.payload[2] != 1 || request.payload[3] != 0 ||
+      GetUuid(request.payload, 4) != request.header.session_uuid ||
+      sbps::IsZeroUuid(GetUuid(request.payload, 20)) ||
+      !sbps::IsZeroUuid(GetUuid(request.payload, 36)) ||
+      !sbps::IsZeroUuid(GetUuid(request.payload, 52)) ||
+      request.payload[68] != 0 || request.payload[69] != 0 ||
+      request.payload[70] != 0 || request.payload[71] != 0) {
+    return refuse("SBLR.OPERAND_INVALID", "prepared_begin_frame_invalid");
+  }
+  const auto session_it = registry->sessions_by_uuid.find(
+      UuidBytesToText(request.header.session_uuid));
+  if (session_it == registry->sessions_by_uuid.end())
+    return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
+  std::string ensure_detail;
+  auto* public_context = EnsureServerPublicAbiSessionForContext(
+      registry, session_it->second, &ensure_detail);
+  if (public_context == nullptr || public_context->engine_session == nullptr)
+    return refuse("SECURITY.ACCESS_DENIED", "engine_session_hidden");
+  auto engine_context =
+      EngineContextForSession(session_it->second, engine_state, request);
+  engine_bridge::StatementParameterCoordinationBeginRequestV1 begin;
+  begin.engine_session = public_context->engine_session;
+  begin.engine_context = &engine_context;
+  begin.mode = engine_bridge::StatementParameterExecutionMode::kPrepared;
+  begin.operation_uuid = UuidBytesToText(GetUuid(request.payload, 20));
+  engine_bridge::StatementParameterCoordinationViewV1 view;
+  sb_engine_result_t engine_result = nullptr;
+  const auto status = engine_bridge::BeginStatementParameterExecutionCoordinationV1(
+      &begin, &view, &engine_result);
+  if (engine_result) (void)sb_engine_result_release(engine_result);
+  if (status != SB_ENGINE_STATUS_OK)
+    return refuse(status == SB_ENGINE_STATUS_SECURITY_DENIED
+                      ? "SECURITY.ACCESS_DENIED"
+                      : "SBLR.PARAMETER.STALE",
+                  std::string("engine_status=") + sb_engine_status_name(status));
+  ServerParameterExecutionCoordinationRecord record;
+  record.session_uuid = UuidBytesToText(request.header.session_uuid);
+  record.operation_uuid = view.operation_uuid;
+  record.mode = engine_bridge::StatementParameterExecutionMode::kPrepared;
+  record.private_handle = view.private_handle;
+  record.generation = view.coordinator_generation;
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    if (!registry->parameter_coordinations_by_uuid
+             .emplace(view.public_coordination_uuid, std::move(record)).second)
+      return refuse("SBLR.PARAMETER.STALE", "coordination_collision");
+  }
+  PutU16(&result.payload, 1);
+  result.payload.push_back(1);
+  result.payload.push_back(0);
+  PutUuid(&result.payload, TextToUuid(view.public_coordination_uuid));
+  PutUuid(&result.payload, TextToUuid(view.operation_uuid));
+  PutU64(&result.payload, view.coordinator_generation);
+  PutU32(&result.payload, 0);
+  result.accepted = true;
+  return result;
+}
+
+SessionOperationResult HandleFinalizePreparedSblrParameter(
+    ServerSessionRegistry* registry, const sbps::Frame& request) {
+  SessionOperationResult result;
+  result.response_message_type = 41;
+  result.response_schema_id =
+      sbps::kSchemaFinalizePreparedSblrParameterResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code), "parser_server_ipc.prepared_parameter_seal_refused",
+        "Prepared parameter template sealing was refused.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  if (registry == nullptr || request.header.payload_schema_id !=
+          sbps::kSchemaFinalizePreparedSblrParameterRequestV1) {
+    return refuse("SBLR.OPERAND_INVALID", "SBPT schema invalid");
+  }
+  const auto decoded = scratchbird::engine::sblr::
+      DecodeSblrPreparedParameterTemplateV1(request.payload.data(),
+                                            request.payload.size());
+  if (!decoded.ok) return refuse(decoded.diagnostic_id, decoded.detail);
+  const auto coordination_uuid =
+      UuidBytesToText(decoded.value.public_coordination_uuid);
+  const auto operation_uuid = UuidBytesToText(decoded.value.operation_uuid);
+  std::uint64_t private_handle = 0;
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    const auto found =
+        registry->parameter_coordinations_by_uuid.find(coordination_uuid);
+    if (found == registry->parameter_coordinations_by_uuid.end() ||
+        found->second.session_uuid != UuidBytesToText(request.header.session_uuid) ||
+        found->second.operation_uuid != operation_uuid) {
+      return refuse("SECURITY.ACCESS_DENIED", "coordination hidden");
+    }
+    if (found->second.sealed || found->second.private_handle == 0)
+      return refuse("SBLR.PARAMETER.STALE", "coordination stale");
+    private_handle = found->second.private_handle;
+  }
+  engine_bridge::StatementParameterCoordinationViewV1 view;
+  sb_engine_result_t engine_result = nullptr;
+  const auto status = engine_bridge::SealPreparedStatementParameterTemplateV1(
+      private_handle, request.payload, &view, &engine_result);
+  if (engine_result) (void)sb_engine_result_release(engine_result);
+  if (status != SB_ENGINE_STATUS_OK)
+    return refuse(status == SB_ENGINE_STATUS_SECURITY_DENIED
+                      ? "SECURITY.ACCESS_DENIED"
+                      : status == SB_ENGINE_STATUS_CONFLICT
+                            ? "SBLR.PARAMETER.STALE"
+                            : "SBLR.OPERAND_INVALID",
+                  std::string("engine_status=") + sb_engine_status_name(status));
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    auto found = registry->parameter_coordinations_by_uuid.find(coordination_uuid);
+    if (found == registry->parameter_coordinations_by_uuid.end() ||
+        found->second.sealed) return refuse("SBLR.PARAMETER.STALE", "seal race");
+    found->second.sealed = true;
+    found->second.generation = view.coordinator_generation;
+  }
+  PutU16(&result.payload, 1); PutU16(&result.payload, 0);
+  PutUuid(&result.payload, TextToUuid(view.prepared_statement_uuid));
+  PutU64(&result.payload, view.prepared_generation);
+  PutUuid(&result.payload, TextToUuid(view.operation_uuid));
+  PutU64(&result.payload, view.coordinator_generation); PutU32(&result.payload, 0);
+  result.accepted = true;
+  return result;
+}
+
+SessionOperationResult HandleFinalizeParameterBinding(
+    ServerSessionRegistry* registry, const sbps::Frame& request) {
+  SessionOperationResult result;
+  result.response_message_type = 45;
+  result.response_schema_id = sbps::kSchemaFinalizeParameterBindingResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false; result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code), "parser_server_ipc.parameter_finalize_refused",
+        "Parameter binding finalization was refused.",
+        {{"detail", std::move(detail)}})); return result;
+  };
+  if (registry == nullptr || request.header.payload_schema_id !=
+          sbps::kSchemaFinalizeParameterBindingRequestV1 ||
+      request.payload.size() < 176 || request.payload.size() > 426192 ||
+      !std::equal(request.payload.begin(), request.payload.begin() + 4,
+                  "SBPF"))
+    return refuse("SBLR.OPERAND_INVALID", "parameter_finalize_frame_invalid");
+  const auto preliminary_uuid = UuidBytesToText(GetUuid(request.payload, 16));
+  engine_bridge::StatementContextReceiptHandle receipt;
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    const auto found = std::find_if(
+        registry->statement_contexts_by_statement_uuid.begin(),
+        registry->statement_contexts_by_statement_uuid.end(),
+        [&](const auto& entry) { return entry.second.view.receipt_uuid == preliminary_uuid &&
+          entry.second.session_uuid == request.header.session_uuid; });
+    if (found == registry->statement_contexts_by_statement_uuid.end())
+      return refuse("DATATYPE.DESCRIPTOR_INVALID", "preliminary_receipt_not_live");
+    receipt = found->second.receipt;
+  }
+  sb_engine_result_t engine_result = nullptr;
+  const auto status = engine_bridge::FinalizeStatementParameterBindingV1(
+      receipt, request.payload, &result.payload, &engine_result);
+  if (engine_result) (void)sb_engine_result_release(engine_result);
+  if (status != SB_ENGINE_STATUS_OK)
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  std::string("engine_status=") + sb_engine_status_name(status));
+  result.accepted = true; return result;
 }
 
 namespace {

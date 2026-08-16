@@ -327,6 +327,13 @@ struct NativeExpressionAstNode {
   std::string spelling;
   std::string operator_name;
   SourceRange range;
+  // Parser-assigned, source-order identity for literal descriptor negotiation.
+  // It is independent of expression handles and remains stable if expression
+  // records are reordered by later canonicalization.
+  std::uint64_t structural_literal_occurrence_id{0};
+  // Parser-assigned, source-order identity for parameter-set negotiation.
+  // This is structural only; it does not choose a slot or descriptor.
+  std::uint64_t structural_parameter_occurrence_id{0};
 };
 
 struct NativeValuesRowAstNode {

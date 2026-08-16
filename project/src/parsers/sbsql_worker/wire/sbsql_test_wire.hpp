@@ -61,7 +61,24 @@ class SbsqlTestWireSession {
                              bool submit,
                              bool cursor_requested = false,
                              std::uint64_t stream_row_count = 0,
-                             bool autocommit_emulation = false);
+                             bool autocommit_emulation = false,
+                             const std::vector<std::optional<std::string>>&
+                                 parameter_values = {},
+                             const ipc::ParameterExecutionCoordination*
+                                 parameter_coordination = nullptr,
+                             bool parameter_prepare_only = false,
+                             ipc::PreparedParameterReference*
+                                 prepared_parameter_output = nullptr,
+                             std::string_view expected_prepared_uuid = {},
+                             std::uint64_t expected_prepared_generation = 0);
+  ipc::ServerPreparedParameterFinalizeResult PrepareParameterizedForWire(
+      std::string_view sql);
+  PipelineResult RunPreparedParameterizedForWire(
+      std::string_view sql,
+      std::string_view prepared_statement_uuid,
+      std::uint64_t prepared_generation,
+      const std::vector<std::optional<std::string>>& parameter_values,
+      bool cursor_requested = false);
   PipelineResult RunSblrEnvelope(std::string_view encoded_sblr_envelope,
                                  bool cursor_requested = false);
   PipelineResult RunSblrEnvelopeWithDataPacket(
@@ -98,6 +115,7 @@ class SbsqlTestWireSession {
   std::deque<std::string> name_resolution_lru_;
   std::map<std::string, StableCachedPublicNameResolution>
       stable_relation_name_resolution_cache_;
+  std::map<std::string, ipc::CursorStreamDescriptorV1> cursor_stream_descriptors_;
   std::deque<std::string> stable_relation_name_resolution_lru_;
 
   bool HasExecutionRoute() const;

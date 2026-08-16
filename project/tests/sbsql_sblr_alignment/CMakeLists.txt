@@ -1,0 +1,254 @@
+# Copyright (c) 2026 ScratchBird Software Inc.
+# SPDX-License-Identifier: MPL-2.0
+
+add_executable(sbsql_sblr_alignment_ia01_package_server_admission
+  ia01_package_server_admission_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_package_server_admission
+  PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_ia01_package_server_admission
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia01_package_server_admission
+  PRIVATE sb_server_core sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_ia01_package_server_admission
+  COMMAND sbsql_sblr_alignment_ia01_package_server_admission)
+set_tests_properties(sbsql_sblr_alignment_ia01_package_server_admission PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_integration;IA-01;SBLR_PACKAGE_BEGIN_END;integration")
+
+add_executable(sbsql_sblr_alignment_ia01_literal_runtime
+  ia01_literal_runtime_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_literal_runtime PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_ia01_literal_runtime
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia01_literal_runtime PRIVATE sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_ia01_literal_runtime
+  COMMAND sbsql_sblr_alignment_ia01_literal_runtime)
+set_tests_properties(sbsql_sblr_alignment_ia01_literal_runtime PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-01;SBLR_LITERAL;CSC-TEST-002326;malformed_operand;contract"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia01_literal_protocol_fuzz
+  ia01_literal_protocol_fuzz_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_literal_protocol_fuzz PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_ia01_literal_protocol_fuzz
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia01_literal_protocol_fuzz PRIVATE sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_ia01_literal_protocol_fuzz
+  COMMAND sbsql_sblr_alignment_ia01_literal_protocol_fuzz)
+set_tests_properties(sbsql_sblr_alignment_ia01_literal_protocol_fuzz PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fuzz;IA-01;SBLR_LITERAL;protocol_binary;property;mutation;fuzz"
+  TIMEOUT 15)
+
+add_executable(sbsql_sblr_alignment_ia01_executor_availability_state_fuzz
+  ia01_executor_availability_state_fuzz_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_executor_availability_state_fuzz PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_ia01_executor_availability_state_fuzz
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+          ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_ia01_executor_availability_state_fuzz
+  PRIVATE sb_engine_internal_api sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_ia01_executor_availability_state_fuzz
+  COMMAND sbsql_sblr_alignment_ia01_executor_availability_state_fuzz)
+set_tests_properties(sbsql_sblr_alignment_ia01_executor_availability_state_fuzz PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fuzz;IA-01;SBLR_LITERAL;executor_availability_registry;state_machine;mutation;fuzz"
+  TIMEOUT 15)
+
+add_executable(sbsql_sblr_alignment_ia01_parameter_runtime
+  ia01_parameter_runtime_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_parameter_runtime PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_ia01_parameter_runtime
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia01_parameter_runtime PRIVATE sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_ia01_parameter_runtime
+  COMMAND sbsql_sblr_alignment_ia01_parameter_runtime)
+set_tests_properties(sbsql_sblr_alignment_ia01_parameter_runtime PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-01;SBLR_PARAMETER;CSC-TEST-002330;malformed_operand;contract"
+  TIMEOUT 30)
+
+add_executable(sbsql_sblr_alignment_ia01_literal_missing_executor_integration
+  ia01_literal_missing_executor_integration_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_literal_missing_executor_integration PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_ia01_literal_missing_executor_integration PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia01_literal_missing_executor_integration PRIVATE sb_server_core sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_ia01_literal_missing_executor_integration COMMAND sbsql_sblr_alignment_ia01_literal_missing_executor_integration)
+set_tests_properties(sbsql_sblr_alignment_ia01_literal_missing_executor_integration PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_integration;IA-01;SBLR_LITERAL;CSC-TEST-002327;missing_executor_evidence;integration" TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia01_literal_cancellation_fault
+  ia01_literal_cancellation_fault_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_literal_cancellation_fault PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_ia01_literal_cancellation_fault PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia01_literal_cancellation_fault PRIVATE sb_server_core sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_ia01_literal_cancellation_fault COMMAND sbsql_sblr_alignment_ia01_literal_cancellation_fault)
+set_tests_properties(sbsql_sblr_alignment_ia01_literal_cancellation_fault PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-01;SBLR_LITERAL;CSC-TEST-002328;cancellation;fault" TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia01_query_execute_result_contract
+  ia01_query_execute_result_contract_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_query_execute_result_contract
+  PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_ia01_query_execute_result_contract
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia01_query_execute_result_contract
+  PRIVATE sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_ia01_query_execute_result_contract
+  COMMAND sbsql_sblr_alignment_ia01_query_execute_result_contract)
+set_tests_properties(sbsql_sblr_alignment_ia01_query_execute_result_contract PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-01;SBLR_QUERY_EXECUTE;result_shape")
+
+add_executable(sbsql_sblr_alignment_ia01_package_cancellation_fault
+  ia01_package_cancellation_fault_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_package_cancellation_fault
+  PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_ia01_package_cancellation_fault
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia01_package_cancellation_fault
+  PRIVATE sb_server_core sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_ia01_package_cancellation_fault
+  COMMAND sbsql_sblr_alignment_ia01_package_cancellation_fault)
+set_tests_properties(sbsql_sblr_alignment_ia01_package_cancellation_fault PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-01;SBLR_PACKAGE_BEGIN_END;fault"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia01_bigint_identity_migration
+  ia01_bigint_identity_migration_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_bigint_identity_migration
+  PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_ia01_bigint_identity_migration
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+          ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_ia01_bigint_identity_migration
+  PRIVATE sb_engine_internal_api sb_storage_database sb_transaction_mga
+          sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_ia01_bigint_identity_migration
+  COMMAND sbsql_sblr_alignment_ia01_bigint_identity_migration)
+set_tests_properties(sbsql_sblr_alignment_ia01_bigint_identity_migration PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_integration;sbsql_sblr_alignment_fault;sbsql_sblr_alignment_recovery;IA-01;SBLR_LITERAL;integration"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia01_executor_availability_registry
+  ia01_executor_availability_registry_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_executor_availability_registry PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_ia01_executor_availability_registry
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+          ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_ia01_executor_availability_registry
+  PRIVATE sb_engine_internal_api sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_ia01_executor_availability_registry
+  COMMAND sbsql_sblr_alignment_ia01_executor_availability_registry)
+set_tests_properties(sbsql_sblr_alignment_ia01_executor_availability_registry PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_integration;sbsql_sblr_alignment_fault;sbsql_sblr_alignment_recovery;IA-01;SBLR_LITERAL;executor_availability_registry"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia01_package_resource_governance
+  ia01_package_resource_governance_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_package_resource_governance
+  PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_ia01_package_resource_governance
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+          ${CMAKE_SOURCE_DIR}/src/server_engine_bridge
+          ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_ia01_package_resource_governance
+  PRIVATE sb_core_agents)
+add_test(NAME sbsql_sblr_alignment_ia01_package_resource_governance
+  COMMAND sbsql_sblr_alignment_ia01_package_resource_governance)
+set_tests_properties(sbsql_sblr_alignment_ia01_package_resource_governance PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-01;SBLR_PACKAGE_BEGIN_END;resource_governance;fault"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia01_parameter_set_registry
+  ia01_parameter_set_registry_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_parameter_set_registry
+  PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_ia01_parameter_set_registry
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+          ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_ia01_parameter_set_registry
+  PRIVATE sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia01_parameter_set_registry
+  COMMAND sbsql_sblr_alignment_ia01_parameter_set_registry)
+set_tests_properties(sbsql_sblr_alignment_ia01_parameter_set_registry PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;sbsql_sblr_alignment_recovery;IA-01;SBLR_PARAMETER"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia01_prepared_coordination_registry
+  ia01_prepared_coordination_registry_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia01_prepared_coordination_registry PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia01_prepared_coordination_registry PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia01_prepared_coordination_registry PRIVATE
+  sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia01_prepared_coordination_registry
+  COMMAND sbsql_sblr_alignment_ia01_prepared_coordination_registry)
+set_tests_properties(
+  sbsql_sblr_alignment_ia01_prepared_coordination_registry PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;sbsql_sblr_alignment_integration;sbsql_sblr_alignment_recovery;IA-01;SBLR_PARAMETER;prepared_coordination"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia01_package_missing_executor_integration
+  ia01_package_missing_executor_integration_test.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_package_missing_executor_integration
+  PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_ia01_package_missing_executor_integration
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia01_package_missing_executor_integration
+  PRIVATE sb_server_core sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_ia01_package_missing_executor_integration
+  COMMAND sbsql_sblr_alignment_ia01_package_missing_executor_integration)
+set_tests_properties(sbsql_sblr_alignment_ia01_package_missing_executor_integration PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_integration;IA-01;SBLR_PACKAGE_BEGIN_END;missing_executor_evidence;integration"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_ia01_cursor_stream_descriptor_integration
+  ia01_cursor_stream_descriptor_integration_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia01_cursor_stream_descriptor_integration
+  PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia01_cursor_stream_descriptor_integration
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia01_cursor_stream_descriptor_integration
+  PRIVATE sb_server_core sb_engine_sblr)
+add_test(
+  NAME sbsql_sblr_alignment_ia01_cursor_stream_descriptor_integration
+  COMMAND sbsql_sblr_alignment_ia01_cursor_stream_descriptor_integration)
+set_tests_properties(
+  sbsql_sblr_alignment_ia01_cursor_stream_descriptor_integration PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_integration;IA-01;SBLR_PACKAGE_BEGIN_END;cursor_stream_descriptor;integration"
+  TIMEOUT 60)
+
+function(sbsql_sblr_alignment_register_ia01_literal_process_e2e)
+  if(TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql AND TARGET sb_isql)
+    add_test(
+      NAME sbsql_sblr_alignment_ia01_literal_process_e2e
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_package_process_e2e.py"
+              --server $<TARGET_FILE:sb_server>
+              --listener $<TARGET_FILE:sb_listener>
+              --parser-worker $<TARGET_FILE:sbp_sbsql>
+              --sb-isql $<TARGET_FILE:sb_isql>
+              --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia01_literal_e2e")
+    set_tests_properties(
+      sbsql_sblr_alignment_ia01_literal_process_e2e
+      PROPERTIES
+        LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;IA-01;SBLR_PACKAGE_BEGIN_END;SBLR_LITERAL;CSC-TEST-002325;e2e"
+        TIMEOUT 240)
+  endif()
+endfunction()
+
+# Parser-worker and CLI targets are declared after this directory. Register at
+# the end of the product root, when all four real process dependencies exist.
+cmake_language(
+  DEFER DIRECTORY "${CMAKE_SOURCE_DIR}"
+  CALL sbsql_sblr_alignment_register_ia01_literal_process_e2e)
+
+add_executable(sbsql_sblr_alignment_ia01_parameter_process_client
+  ia01_parameter_process_client.cpp)
+target_compile_features(sbsql_sblr_alignment_ia01_parameter_process_client
+  PRIVATE cxx_std_20)
+target_link_libraries(sbsql_sblr_alignment_ia01_parameter_process_client
+  PRIVATE scratchbird_client)

@@ -10,9 +10,13 @@
 
 #include "api_types.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_parameter_runtime.hpp"
 
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::engine::sblr {
@@ -21,6 +25,7 @@ struct SblrDispatchRequest {
   scratchbird::engine::internal_api::EngineRequestContext context;
   SblrOperationEnvelope envelope;
   scratchbird::engine::internal_api::EngineApiRequest api_request;
+  std::optional<SblrParameterValueSetV1> parameter_value_set;
 };
 
 struct SblrDispatchResult {
@@ -49,7 +54,40 @@ struct SblrDispatchResult {
   std::vector<SblrEnvelopeDiagnostic> diagnostics;
 };
 
+struct SblrQueryPreflightResult {
+  bool ok = false;
+  SblrOperationEnvelope materialized_envelope;
+  std::string diagnostic_id;
+  std::string detail;
+};
+
+struct QueryExecuteResultHandleFieldV1 {
+  std::string name;
+  std::string descriptor;
+  std::string value;
+};
+
+struct QueryExecuteResultHandleV1 {
+  std::string execution_uuid;
+  std::string result_set_uuid;
+  std::string row_descriptor_uuid;
+  std::string snapshot_uuid;
+};
+
+struct QueryExecuteResultHandleValidationV1 {
+  bool ok = false;
+  QueryExecuteResultHandleV1 handle;
+  std::string diagnostic_id;
+  std::string detail;
+};
+
 bool IsClusterOperationId(std::string_view operation_id);
+SblrQueryPreflightResult PreflightSblrQueryOperation(
+    SblrDispatchRequest request);
+QueryExecuteResultHandleValidationV1 ValidateQueryExecuteResultHandleV1(
+    std::string_view result_shape_id,
+    std::uint32_t result_shape_version,
+    const std::vector<QueryExecuteResultHandleFieldV1>& fields);
 SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request);
 SblrDispatchResult DecodeAndDispatchSblrOperation(
     std::string_view encoded_envelope,

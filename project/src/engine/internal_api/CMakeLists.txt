@@ -375,6 +375,9 @@ add_library(sb_engine_internal_api
   transaction/transaction_api.cpp
   ../sblr/sblr_runtime.cpp
   ../sblr/sblr_sequence_runtime.cpp
+  sblr_executor_availability_registry.cpp
+  sblr_parameter_set_registry.cpp
+  sblr_prepared_coordination_registry.cpp
 )
 
 if(NOT TARGET sb_cluster_provider)

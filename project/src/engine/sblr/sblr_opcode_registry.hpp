@@ -85,6 +85,12 @@ struct SblrOpcodeEntry {
   bool requires_cluster_authority = false;
   bool cluster_private = false;
   std::string refusal_diagnostic;
+  std::string operand_contract;
+  std::string result_contract;
+  std::string executor_id;
+  bool executor_evidence_required = false;
+  bool executor_evidence_accepted = false;
+  std::string missing_executor_evidence_diagnostic;
 };
 
 struct SblrOpcodeValidationResult {

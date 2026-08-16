@@ -6677,7 +6677,31 @@ class NativeRelationalParser final {
 
 // QOW-SOURCE-QRY-001-AST-V1
 NativeRelationalAstDocument ParseNativeRelationalAst(const CstDocument& cst) {
-  return NativeRelationalParser(cst).Parse();
+  auto document = NativeRelationalParser(cst).Parse();
+  std::vector<NativeExpressionAstNode*> literals;
+  std::vector<NativeExpressionAstNode*> parameters;
+  for (auto& expression : document.expressions) {
+    if (expression.expression_kind == NativeExpressionAstKind::kLiteral) {
+      literals.push_back(&expression);
+    } else if (expression.expression_kind == NativeExpressionAstKind::kParameter) {
+      parameters.push_back(&expression);
+    }
+  }
+  std::ranges::sort(literals, {}, [](const auto* expression) {
+    return expression->range.offset;
+  });
+  std::uint64_t occurrence_id = 1;
+  for (auto* expression : literals) {
+    expression->structural_literal_occurrence_id = occurrence_id++;
+  }
+  std::ranges::sort(parameters, {}, [](const auto* expression) {
+    return expression->range.offset;
+  });
+  occurrence_id = 1;
+  for (auto* expression : parameters) {
+    expression->structural_parameter_occurrence_id = occurrence_id++;
+  }
+  return document;
 }
 
 } // namespace scratchbird::parser::sbsql

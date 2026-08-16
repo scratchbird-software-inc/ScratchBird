@@ -356,6 +356,10 @@ struct EngineRequestContext {
   bool deterministic_random_u64_present = false;
   bool security_context_present = false;
   bool cluster_authority_available = false;
+  // Engine/MGA/cluster-route observations only. Parser, client, SBOP, and
+  // SBOS values must never populate these authority fields.
+  bool cluster_transaction_active = false;
+  bool route_fence_present = false;
   bool read_only_mode = false;
   EngineLanguageContext language_context;
   EngineUuid default_root_uuid;

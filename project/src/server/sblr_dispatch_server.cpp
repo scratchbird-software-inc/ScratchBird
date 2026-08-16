@@ -9,6 +9,7 @@
 // SEARCH_KEY: SB_SERVER_SBLR_DISPATCH_RESULTS
 
 #include "sblr_dispatch_server.hpp"
+#include "hash_digest.hpp"
 
 #include "sblr_admission.hpp"
 
@@ -862,6 +863,10 @@ struct ExecutePayload {
   std::string statement_uuid;
   std::string encoded_sblr_container;
   std::string encoded_execution_envelope;
+  std::vector<std::uint8_t> literal_execution_binding;
+  std::vector<std::uint8_t> parameter_execution_binding;
+  std::vector<std::uint8_t> parameter_value_set;
+  bool parameter_transport_budget_exceeded = false;
 };
 
 struct CursorPayload {
@@ -870,6 +875,11 @@ struct CursorPayload {
   std::uint64_t max_rows = 1;
   std::uint64_t max_bytes = 0;
   std::uint32_t fetch_flags = 0;
+  bool stream_descriptor_present = false;
+  bool stream_descriptor_malformed = false;
+  std::array<std::uint8_t, 16> stream_descriptor_uuid{};
+  std::uint16_t stream_descriptor_version = 0;
+  std::uint64_t stream_descriptor_generation = 0;
 };
 
 struct ClosePreparedSblrPayload {
@@ -914,7 +924,8 @@ std::optional<ExecutePayload> DecodeExecutePayload(
   out.session_uuid = GetUuid(payload, offset); offset += 16;
   out.prepared_statement_uuid = GetUuid(payload, offset); offset += 16;
   out.cursor_requested = payload[offset++] != 0;
-  if (schema_id == kSchemaExecuteCanonicalSblrTestV1) {
+  if (schema_id == kSchemaExecuteCanonicalSblrTestV1 || schema_id == 4016 ||
+      schema_id == sbps::kSchemaExecuteCanonicalSblrParameterV1) {
     if (offset + 1 + 8 + 16 + 16 > payload.size() ||
         !sbps::IsZeroUuid(out.prepared_statement_uuid)) {
       return std::nullopt;
@@ -950,6 +961,50 @@ std::optional<ExecutePayload> DecodeExecutePayload(
     }
     out.encoded_sblr_container.assign(container.begin(), container.end());
     out.encoded_execution_envelope.assign(execution.begin(), execution.end());
+    if (schema_id == 4016) {
+      constexpr std::uint32_t kSbelBytes = 176;
+      if (offset > payload.size() || payload.size() - offset < 4 ||
+          GetU32(payload, offset) != kSbelBytes) {
+        return std::nullopt;
+      }
+      offset += 4;
+      if (offset > payload.size() ||
+          payload.size() - offset != kSbelBytes) {
+        return std::nullopt;
+      }
+      out.literal_execution_binding.assign(
+          payload.begin() + static_cast<std::ptrdiff_t>(offset),
+          payload.end());
+      offset += kSbelBytes;
+    } else if (schema_id == sbps::kSchemaExecuteCanonicalSblrParameterV1) {
+      constexpr std::uint32_t kSbpeBytes = 176;
+      constexpr std::uint32_t kMaxSbpvBytes = 33'554'432;
+      if (offset > payload.size() || payload.size() - offset < 4 ||
+          GetU32(payload, offset) != kSbpeBytes) {
+        return std::nullopt;
+      }
+      offset += 4;
+      if (payload.size() - offset < kSbpeBytes + 4) {
+        return std::nullopt;
+      }
+      out.parameter_execution_binding.assign(
+          payload.begin() + static_cast<std::ptrdiff_t>(offset),
+          payload.begin() + static_cast<std::ptrdiff_t>(offset + kSbpeBytes));
+      offset += kSbpeBytes;
+      const auto sbpv_bytes = GetU32(payload, offset);
+      offset += 4;
+      if (sbpv_bytes == 0 || payload.size() - offset != sbpv_bytes) {
+        return std::nullopt;
+      }
+      if (sbpv_bytes > kMaxSbpvBytes || payload.size() > kMaxSbpvBytes) {
+        out.parameter_transport_budget_exceeded = true;
+        offset += sbpv_bytes;
+        return out;
+      }
+      out.parameter_value_set.assign(
+          payload.begin() + static_cast<std::ptrdiff_t>(offset), payload.end());
+      offset += sbpv_bytes;
+    }
   } else if (schema_id == kSchemaExecuteSblrTestV2) {
     if (offset + 1 + 8 > payload.size()) return std::nullopt;
     out.transaction_routed = true;
@@ -975,7 +1030,7 @@ std::optional<ExecutePayload> DecodeExecutePayload(
   } else if (schema_id != kSchemaExecuteSblrTestV1) {
     return std::nullopt;
   }
-  if (schema_id != kSchemaExecuteCanonicalSblrTestV1 &&
+  if (schema_id != kSchemaExecuteCanonicalSblrTestV1 && schema_id != 4016 &&
       !ReadString(payload, &offset, &out.encoded_sblr_envelope)) {
     return std::nullopt;
   }
@@ -1002,6 +1057,21 @@ std::optional<CursorPayload> DecodeCursorPayload(const std::vector<std::uint8_t>
   }
   if (payload.size() >= 52) {
     out.fetch_flags = GetU32(payload, 48);
+  }
+  if (payload.size() > 52) {
+    out.stream_descriptor_present = true;
+    if (payload.size() != 78) {
+      out.stream_descriptor_malformed = true;
+    } else {
+      out.stream_descriptor_uuid = GetUuid(payload, 52);
+      out.stream_descriptor_version = GetU16(payload, 68);
+      out.stream_descriptor_generation = GetU64(payload, 70);
+      out.stream_descriptor_malformed =
+          sbps::IsZeroUuid(out.stream_descriptor_uuid) ||
+          out.stream_descriptor_version != 1 ||
+          out.stream_descriptor_generation == 0 || out.max_rows == 0 ||
+          out.max_bytes == 0;
+    }
   }
   if (out.max_rows == 0) out.max_rows = 1;
   return out;
@@ -1048,6 +1118,23 @@ std::vector<std::uint8_t> EncodeExecuteResult(const std::string& outcome,
   PutString(&out, row_packet);
   PutString(&out, detail);
   return out;
+}
+
+void AppendCursorStreamDescriptor(
+    std::vector<std::uint8_t>* out,
+    const ServerCursorRecord* cursor) {
+  PutU8(out, cursor == nullptr ? 0 : 1);
+  if (cursor == nullptr) return;
+  PutUuid(out, cursor->stream_descriptor_uuid);
+  PutU16(out, cursor->stream_descriptor_version);
+  PutU64(out, cursor->stream_descriptor_generation);
+  PutUuid(out, cursor->cursor_uuid);
+  PutUuid(out, cursor->execution_uuid);
+  PutUuid(out, cursor->result_set_uuid);
+  PutUuid(out, cursor->row_descriptor_uuid);
+  PutUuid(out, cursor->snapshot_uuid);
+  PutU64(out, cursor->max_chunk_rows);
+  PutU64(out, cursor->max_chunk_bytes);
 }
 
 void PutTransactionSelector(std::vector<std::uint8_t>* out,
@@ -7521,6 +7608,16 @@ std::string FirstEngineDiagnosticDetail(sb_engine_result_t result) {
   return StringViewToString(diagnostics.diagnostics[0].safe_detail);
 }
 
+std::string FirstEngineDiagnosticAuditKey(sb_engine_result_t result) {
+  if (result == nullptr) return {};
+  sb_engine_diagnostic_set_view_t diagnostics{};
+  if (sb_engine_result_diagnostics(result, &diagnostics) != SB_ENGINE_STATUS_OK ||
+      diagnostics.diagnostic_count == 0 || diagnostics.diagnostics == nullptr) {
+    return {};
+  }
+  return StringViewToString(diagnostics.diagnostics[0].message_key);
+}
+
 bool IsWellFormedUtf8(std::string_view text) {
   std::size_t offset = 0;
   while (offset < text.size()) {
@@ -7637,6 +7734,7 @@ struct PublicAbiDispatchResult {
   std::string payload;
   std::string diagnostic_code;
   std::string diagnostic_detail;
+  std::string audit_detail;
   std::vector<ServerDiagnosticField> diagnostic_fields;
   sb_engine_result_t result_handle = nullptr;
 };
@@ -7662,6 +7760,11 @@ ServerDiagnostic PublicAbiFailureDiagnostic(
     diagnostic.fields.insert(diagnostic.fields.end(),
                              result.diagnostic_fields.begin(),
                              result.diagnostic_fields.end());
+  }
+  diagnostic.internal_audit_key = result.audit_detail;
+  if (result.audit_detail == "sblr.opcode_stream.member_preflight_refused" &&
+      !result.diagnostic_detail.empty()) {
+    diagnostic.internal_audit_key += ":" + result.diagnostic_detail;
   }
   return diagnostic;
 }
@@ -8088,11 +8191,86 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry
   return dispatch_result;
 }
 
+struct PreAdmissionOpcodeStreamView {
+  const std::uint8_t* data = nullptr;
+  std::size_t size = 0;
+};
+
+// Performs only fixed-width/header, bounded field-walk, and CRC validation.
+// It deliberately does not construct the semantic execution envelope or SBOS.
+bool LocatePreAdmissionOpcodeStream(
+    const std::string& encoded,
+    PreAdmissionOpcodeStreamView* output) {
+  if (output == nullptr ||
+      encoded.size() < scratchbird::engine::kSblrExecutionEnvelopeHeaderSize ||
+      encoded.size() > scratchbird::engine::kSblrMaxEnvelopeBytes) return false;
+  const auto* data = reinterpret_cast<const std::uint8_t*>(encoded.data());
+  const auto size = encoded.size();
+  if (scratchbird::engine::SblrReadU32(data) !=
+          scratchbird::engine::kSblrExecutionEnvelopeMagic ||
+      scratchbird::engine::SblrReadU16(data + 4) != 1 ||
+      scratchbird::engine::SblrReadU16(data + 6) != 0 ||
+      scratchbird::engine::SblrReadU16(data + 8) !=
+          scratchbird::engine::kSblrExecutionEnvelopeHeaderSize ||
+      scratchbird::engine::SblrReadU16(data + 10) !=
+          scratchbird::engine::kSblrExecutionEnvelopeFieldCount ||
+      (scratchbird::engine::SblrReadU32(data + 12) & ~0x0fu) != 0 ||
+      scratchbird::engine::SblrReadU32(data + 28) != 0 ||
+      scratchbird::engine::SblrReadU64(data + 40) != 0) return false;
+  const auto field_size = scratchbird::engine::SblrReadU64(data + 16);
+  if (field_size == 0 ||
+      field_size != size - scratchbird::engine::kSblrExecutionEnvelopeHeaderSize ||
+      scratchbird::engine::SblrReadU64(data + 32) != size ||
+      scratchbird::engine::SblrReadU32(data + 24) !=
+          scratchbird::engine::SblrCrc32c(
+              data + scratchbird::engine::kSblrExecutionEnvelopeHeaderSize,
+              static_cast<std::size_t>(field_size))) return false;
+
+  scratchbird::engine::SblrFieldReader reader(
+      data + scratchbird::engine::kSblrExecutionEnvelopeHeaderSize,
+      static_cast<std::size_t>(field_size));
+  std::uint16_t payload_kind = 0;
+  const std::uint8_t* opcode_data = nullptr;
+  std::uint64_t opcode_size = 0;
+  for (std::size_t ordinal = 1;
+       ordinal <= scratchbird::engine::kSblrExecutionEnvelopeFieldCount;
+       ++ordinal) {
+    if (ordinal == 5) {
+      if (!reader.U16(&payload_kind)) return false;
+    } else if (ordinal == 6) {
+      std::uint8_t reference_kind = 0;
+      if (!scratchbird::engine::SblrConsumeReference(
+              &reader, &reference_kind, &opcode_data, &opcode_size)) return false;
+      if (payload_kind == static_cast<std::uint16_t>(
+                              scratchbird::engine::SblrPayloadKind::opcode_stream) &&
+          reference_kind != 1) return false;
+    } else if (!scratchbird::engine::SblrConsumeExecutionField(ordinal,
+                                                               &reader)) {
+      return false;
+    }
+  }
+  if (reader.remaining() != 0) return false;
+  if (payload_kind == static_cast<std::uint16_t>(
+                          scratchbird::engine::SblrPayloadKind::operation_envelope)) {
+    return true;
+  }
+  if (payload_kind != static_cast<std::uint16_t>(
+                          scratchbird::engine::SblrPayloadKind::opcode_stream) ||
+      opcode_data == nullptr || opcode_size == 0 ||
+      opcode_size > std::numeric_limits<std::size_t>::max()) return false;
+  output->data = opcode_data;
+  output->size = static_cast<std::size_t>(opcode_size);
+  return true;
+}
+
 PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
     const ServerStatementContextRecord& statement_context,
     const ServerSblrAdmissionToken& admission_token,
     const std::vector<std::uint8_t>& data_packet,
-    bool retain_result_handle) {
+    bool retain_result_handle,
+    const std::vector<std::uint8_t>& literal_execution_binding = {},
+    const std::vector<std::uint8_t>& parameter_execution_binding = {},
+    const std::vector<std::uint8_t>& parameter_value_set = {}) {
   PublicAbiDispatchResult dispatch_result;
   dispatch_result.attempted = true;
   if (!statement_context.receipt || admission_token == nullptr) {
@@ -8125,6 +8303,88 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
   request.catalog_epoch = admission_token->catalog_epoch;
   request.security_epoch = admission_token->security_epoch;
   request.resource_epoch = admission_token->resource_epoch;
+  request.literal_execution_binding = literal_execution_binding;
+  request.parameter_execution_binding = parameter_execution_binding;
+  request.parameter_value_set = parameter_value_set;
+  request.package_admission_reservation.opaque_id =
+      admission_token->package_reservation_handle;
+  request.admitted_payload_kind = admission_token->reserved_payload_kind ==
+          ServerSblrPayloadKind::opcode_stream
+      ? engine_bridge::StatementSblrPayloadKind::kOpcodeStream
+      : engine_bridge::StatementSblrPayloadKind::kInvalid;
+  switch (admission_token->gateway_evidence.source) {
+    case ServerSblrGatewayEvidenceSource::invalid:
+      request.gateway_evidence.source =
+          engine_bridge::StatementGatewayEvidenceSource::kInvalid;
+      break;
+    case ServerSblrGatewayEvidenceSource::local_observed:
+      request.gateway_evidence.source =
+          engine_bridge::StatementGatewayEvidenceSource::kLocalObserved;
+      break;
+    default:
+      dispatch_result.diagnostic_code = "SBLR.INGRESS_REVALIDATION_FAILED";
+      dispatch_result.diagnostic_detail = "gateway_evidence_source_invalid";
+      return dispatch_result;
+  }
+  switch (admission_token->gateway_evidence.disposition) {
+    case ServerSblrGatewayDisposition::invalid:
+      request.gateway_evidence.disposition =
+          engine_bridge::StatementGatewayDisposition::kInvalid;
+      break;
+    case ServerSblrGatewayDisposition::pass_through:
+      request.gateway_evidence.disposition =
+          engine_bridge::StatementGatewayDisposition::kPassThrough;
+      break;
+    case ServerSblrGatewayDisposition::handled:
+      request.gateway_evidence.disposition =
+          engine_bridge::StatementGatewayDisposition::kHandled;
+      break;
+    case ServerSblrGatewayDisposition::async_accepted:
+      request.gateway_evidence.disposition =
+          engine_bridge::StatementGatewayDisposition::kAsyncAccepted;
+      break;
+    case ServerSblrGatewayDisposition::refused:
+      request.gateway_evidence.disposition =
+          engine_bridge::StatementGatewayDisposition::kRefused;
+      break;
+    default:
+      dispatch_result.diagnostic_code = "SBLR.INGRESS_REVALIDATION_FAILED";
+      dispatch_result.diagnostic_detail =
+          "gateway_evidence_disposition_invalid";
+      return dispatch_result;
+  }
+  request.gateway_evidence.provider_observation_generation =
+      admission_token->gateway_evidence.provider_observation_generation;
+  request.gateway_evidence.canonical_payload_sha256 =
+      admission_token->gateway_evidence.canonical_payload_sha256;
+  request.gateway_evidence.route_snapshot_uuid =
+      admission_token->gateway_evidence.route_snapshot_uuid;
+  request.gateway_evidence.route_epoch =
+      admission_token->gateway_evidence.route_epoch;
+  request.gateway_evidence.route_generation =
+      admission_token->gateway_evidence.route_generation;
+  request.gateway_evidence.security_snapshot_uuid =
+      admission_token->gateway_evidence.security_snapshot_uuid;
+  request.gateway_evidence.security_epoch =
+      admission_token->gateway_evidence.security_epoch;
+  request.gateway_evidence.security_observation_generation =
+      admission_token->gateway_evidence.security_observation_generation;
+  request.gateway_evidence.cluster_context_active =
+      admission_token->gateway_evidence.cluster_context_active;
+  request.gateway_evidence.cluster_transaction_active =
+      admission_token->gateway_evidence.cluster_transaction_active;
+  request.gateway_evidence.route_fence_present =
+      admission_token->gateway_evidence.route_fence_present;
+  request.package_executor_evidence.begin_executor_id =
+      admission_token->package_executor_evidence.begin_executor_id;
+  request.package_executor_evidence.end_executor_id =
+      admission_token->package_executor_evidence.end_executor_id;
+  request.package_executor_evidence.registry_snapshot_uuid =
+      admission_token->package_executor_evidence.registry_snapshot_uuid;
+  request.package_executor_evidence.executor_evidence_generation =
+      admission_token->package_executor_evidence.executor_evidence_generation;
+  request.package_executor_evidence.canonical_payload_sha256 =
+      admission_token->package_executor_evidence.canonical_payload_sha256;
   request.data_packet = data_packet;
 
   sb_engine_result_t engine_result = nullptr;
@@ -8154,6 +8414,8 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
           FirstEngineDiagnosticCode(engine_result);
       dispatch_result.diagnostic_detail =
           FirstEngineDiagnosticDetail(engine_result);
+      dispatch_result.audit_detail =
+          FirstEngineDiagnosticAuditKey(engine_result);
       dispatch_result.diagnostic_fields =
           FirstRegisteredEngineDiagnosticFields(
               engine_result, dispatch_result.diagnostic_code);
@@ -8179,6 +8441,9 @@ struct EngineCursorBatch {
   bool end_of_stream = true;
   std::string diagnostic_detail;
 };
+
+std::optional<std::array<std::uint8_t, 16>> ParseUuidTextForDispatch(
+    std::string_view text);
 
 EngineCursorBatch FetchEngineCursorBatch(sb_engine_result_t result,
                                          std::uint64_t max_rows,
@@ -8209,6 +8474,106 @@ EngineCursorBatch FetchEngineCursorBatch(sb_engine_result_t result,
   out.row_packet = StringViewToString(payload);
   out.end_of_stream = batch.end_of_stream != 0;
   return out;
+}
+
+bool ReadQueryExecuteHandleFromEngineResult(
+    sb_engine_result_t result,
+    ServerCursorRecord* cursor) {
+  if (result == nullptr || cursor == nullptr) return false;
+  engine_bridge::StatementQueryExecuteResultHandleView handle;
+  if (engine_bridge::ReadStatementQueryExecuteResultHandle(result, &handle) !=
+      SB_ENGINE_STATUS_OK) {
+    return false;
+  }
+  const auto read = [&](std::string_view text,
+                        std::array<std::uint8_t, 16>* output) {
+    const auto parsed = ParseUuidTextForDispatch(text);
+    if (!parsed || sbps::IsZeroUuid(*parsed)) return false;
+    *output = *parsed;
+    return true;
+  };
+  return read(handle.execution_uuid, &cursor->execution_uuid) &&
+         read(handle.result_set_uuid, &cursor->result_set_uuid) &&
+         read(handle.row_descriptor_uuid, &cursor->row_descriptor_uuid) &&
+         read(handle.snapshot_uuid, &cursor->snapshot_uuid);
+}
+
+bool IssueCursorStreamDescriptor(
+    const ServerStatementContextRecord* statement_context,
+    ServerCursorRecord* cursor) {
+  if (statement_context == nullptr || !statement_context->receipt ||
+      cursor == nullptr || sbps::IsZeroUuid(cursor->cursor_uuid) ||
+      !ReadQueryExecuteHandleFromEngineResult(cursor->engine_result, cursor) ||
+      cursor->max_chunk_rows == 0 || cursor->max_chunk_bytes == 0) {
+    return false;
+  }
+  cursor->stream_descriptor_uuid = sbps::MakeUuidV7Bytes();
+  cursor->stream_descriptor_version = 1;
+  cursor->stream_descriptor_generation = 1;
+  if (sbps::IsZeroUuid(cursor->stream_descriptor_uuid)) return false;
+  std::vector<std::uint8_t> binding;
+  constexpr std::string_view kDomain =
+      "ScratchBird.CursorStreamDescriptor.ReceiptBinding.V1";
+  binding.insert(binding.end(), kDomain.begin(), kDomain.end());
+  PutU64(&binding, statement_context->receipt.opaque_id);
+  PutUuid(&binding, cursor->stream_descriptor_uuid);
+  PutU16(&binding, cursor->stream_descriptor_version);
+  PutU64(&binding, cursor->stream_descriptor_generation);
+  PutUuid(&binding, cursor->cursor_uuid);
+  PutUuid(&binding, cursor->execution_uuid);
+  PutUuid(&binding, cursor->result_set_uuid);
+  PutUuid(&binding, cursor->row_descriptor_uuid);
+  PutUuid(&binding, cursor->snapshot_uuid);
+  PutU64(&binding, cursor->max_chunk_rows);
+  PutU64(&binding, cursor->max_chunk_bytes);
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(binding);
+  if (!digest.ok()) return false;
+  cursor->stream_descriptor_receipt_binding_sha256 = digest.digest;
+  cursor->stream_descriptor_live = true;
+  return true;
+}
+
+bool RevalidateCursorStreamDescriptorReceipt(
+    ServerSessionRegistry* registry,
+    const ServerCursorRecord& cursor) {
+  if (registry == nullptr || registry->statement_context_mutex == nullptr ||
+      cursor.statement_context_statement_uuid.empty()) {
+    return false;
+  }
+  ServerStatementContextRecord receipt_record;
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    const auto found = registry->statement_contexts_by_statement_uuid.find(
+        cursor.statement_context_statement_uuid);
+    if (found == registry->statement_contexts_by_statement_uuid.end() ||
+        found->second.released || !found->second.receipt ||
+        found->second.session_uuid != cursor.session_uuid) {
+      return false;
+    }
+    receipt_record = found->second;
+  }
+  std::vector<std::uint8_t> binding;
+  constexpr std::string_view kDomain =
+      "ScratchBird.CursorStreamDescriptor.ReceiptBinding.V1";
+  binding.insert(binding.end(), kDomain.begin(), kDomain.end());
+  PutU64(&binding, receipt_record.receipt.opaque_id);
+  PutUuid(&binding, cursor.stream_descriptor_uuid);
+  PutU16(&binding, cursor.stream_descriptor_version);
+  PutU64(&binding, cursor.stream_descriptor_generation);
+  PutUuid(&binding, cursor.cursor_uuid);
+  PutUuid(&binding, cursor.execution_uuid);
+  PutUuid(&binding, cursor.result_set_uuid);
+  PutUuid(&binding, cursor.row_descriptor_uuid);
+  PutUuid(&binding, cursor.snapshot_uuid);
+  PutU64(&binding, cursor.max_chunk_rows);
+  PutU64(&binding, cursor.max_chunk_bytes);
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(binding);
+  if (!digest.ok()) return false;
+  const auto computed = scratchbird::core::hash::DigestVector(digest.digest);
+  const std::vector<std::uint8_t> admitted(
+      cursor.stream_descriptor_receipt_binding_sha256.begin(),
+      cursor.stream_descriptor_receipt_binding_sha256.end());
+  return scratchbird::core::hash::ConstantTimeEqual(computed, admitted);
 }
 
 std::string CursorMetadataDetail(const ServerCursorRecord& cursor) {
@@ -8713,7 +9078,8 @@ SessionOperationResult HandleExecuteSblrImpl(
     ServerSessionRegistry* registry,
     const HostedEngineState& engine_state,
     const sbps::Frame& request,
-    const ServerIparProjectionSourceFactory* ipar_source_factory) {
+    const ServerIparProjectionSourceFactory* ipar_source_factory,
+    bool* cursor_stream_descriptor_trailer_required) {
   auto execute_phase_last = ServerSteadyClock::now();
   std::vector<std::pair<std::string, std::uint64_t>> execute_phase_micros;
   execute_phase_micros.reserve(24);
@@ -8724,7 +9090,13 @@ SessionOperationResult HandleExecuteSblrImpl(
     execute_phase_last = now;
   };
   const bool canonical_ingress =
-      request.header.payload_schema_id == kSchemaExecuteCanonicalSblrTestV1;
+      request.header.payload_schema_id == kSchemaExecuteCanonicalSblrTestV1 ||
+      request.header.payload_schema_id == 4016 ||
+      request.header.payload_schema_id ==
+          sbps::kSchemaExecuteCanonicalSblrParameterV1;
+  if (cursor_stream_descriptor_trailer_required != nullptr) {
+    *cursor_stream_descriptor_trailer_required = canonical_ingress;
+  }
   const bool v2 =
       request.header.payload_schema_id == kSchemaExecuteSblrTestV2 ||
       canonical_ingress;
@@ -8740,6 +9112,13 @@ SessionOperationResult HandleExecuteSblrImpl(
                    "PARSER_SERVER_IPC.EXECUTE_INVALID",
                    "The SBLR execute payload is invalid.",
                    "execute_invalid");
+  }
+  if (decoded->parameter_transport_budget_exceeded) {
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                   response_schema,
+                   request.header.session_uuid,
+                   "RESOURCE.BUDGET_EXCEEDED",
+                   "The canonical parameter execution transport exceeds the admitted resource budget.");
   }
   ServerSessionRecord* session = FindMutableSession(registry, decoded->session_uuid);
   mark_execute_phase("find_session");
@@ -9121,6 +9500,19 @@ SessionOperationResult HandleExecuteSblrImpl(
   encoded = StripDispatchAuthorityCacheMetadata(encoded);
   mark_execute_phase("strip_authority_cache_metadata");
   ServerSblrAdmissionResult admission;
+  engine_bridge::StatementPackageAdmissionReservationHandle
+      package_reservation_handle;
+  struct PackagePreAdmissionReservationGuard {
+    engine_bridge::StatementPackageAdmissionReservationHandle* handle;
+    ~PackagePreAdmissionReservationGuard() {
+      if (handle != nullptr && *handle) {
+        (void)engine_bridge::ReleaseStatementPackageAdmissionReservation(
+            *handle,
+            engine_bridge::StatementPackageReservationReleaseReason::kRelease);
+        *handle = {};
+      }
+    }
+  } package_reservation_guard{&package_reservation_handle};
   const bool prepared_operation_matches =
       prepared_statement != nullptr &&
       !prepared_statement->operation_id.empty() &&
@@ -9164,6 +9556,58 @@ SessionOperationResult HandleExecuteSblrImpl(
         TextLineU64(encoded, "estimated_row_count").value_or(prepared_statement->row_count_hint);
     mark_execute_phase("prepared_admission_reuse");
   } else if (canonical_ingress) {
+    PreAdmissionOpcodeStreamView pre_admission_stream;
+    if (!LocatePreAdmissionOpcodeStream(decoded->encoded_execution_envelope,
+                                        &pre_admission_stream)) {
+      CompleteServerRequestLifecycle(
+          registry, request_record.request_uuid,
+          ServerRequestLifecycleState::kFailed,
+          "allocation_safe_payload_classification_failed");
+      return Failure(
+          static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+          response_schema, decoded->session_uuid,
+          "SBLR.INGRESS_REVALIDATION_FAILED",
+          "The canonical payload failed allocation-safe pre-admission classification.",
+          "allocation_safe_payload_classification_failed");
+    }
+    engine_bridge::StatementPackageAdmissionReservationView reservation_view;
+    if (pre_admission_stream.data != nullptr) {
+      engine_bridge::StatementPackageAdmissionReservationRequest
+          reservation_request;
+      reservation_request.receipt = live_statement_context->receipt;
+      reservation_request.canonical_payload_bytes = pre_admission_stream.data;
+      reservation_request.canonical_payload_size = pre_admission_stream.size;
+      reservation_request.payload_kind =
+          engine_bridge::StatementSblrPayloadKind::kOpcodeStream;
+      sb_engine_result_t reservation_result = nullptr;
+      const auto reservation_status =
+          engine_bridge::AcquireStatementPackageAdmissionReservation(
+              &reservation_request, &package_reservation_handle,
+              &reservation_view, &reservation_result);
+      if (reservation_status != SB_ENGINE_STATUS_OK) {
+        const std::string diagnostic_code =
+            FirstEngineDiagnosticCode(reservation_result);
+        const std::string diagnostic_detail =
+            FirstEngineDiagnosticDetail(reservation_result);
+        if (reservation_result != nullptr)
+          (void)sb_engine_result_release(reservation_result);
+        CompleteServerRequestLifecycle(
+            registry, request_record.request_uuid,
+            ServerRequestLifecycleState::kFailed,
+            diagnostic_detail.empty() ? "package_reservation_refused"
+                                      : diagnostic_detail);
+        return Failure(
+            static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+            response_schema, decoded->session_uuid,
+            diagnostic_code.empty() ? "RESOURCE.BUDGET_EXCEEDED"
+                                    : diagnostic_code,
+            "The engine refused the package pre-admission reservation.",
+            diagnostic_detail.empty() ? "package_reservation_refused"
+                                      : diagnostic_detail);
+      }
+      if (reservation_result != nullptr)
+        (void)sb_engine_result_release(reservation_result);
+    }
     ServerSblrAdmissionRequest canonical_request;
     canonical_request.encoded_sblr_container =
         decoded->encoded_sblr_container;
@@ -9193,9 +9637,41 @@ SessionOperationResult HandleExecuteSblrImpl(
         live_statement_context->view.security_epoch;
     canonical_request.resource_epoch =
         live_statement_context->view.resource_epoch;
+    canonical_request.route_snapshot_uuid =
+        live_statement_context->view.optimizer_route_snapshot_uuid;
+    canonical_request.route_epoch =
+        live_statement_context->view.optimizer_route_epoch;
+    canonical_request.route_generation =
+        live_statement_context->view.optimizer_route_generation;
+    canonical_request.security_snapshot_uuid =
+        live_statement_context->view.security_context_uuid;
+    canonical_request.security_observation_generation =
+        live_statement_context->view.security_epoch;
+    canonical_request.route_snapshot_engine_owned = true;
+    canonical_request.security_snapshot_engine_owned = true;
+    if (package_reservation_handle) {
+      canonical_request.package_reservation_handle =
+          package_reservation_handle.opaque_id;
+      canonical_request.reserved_payload_kind =
+          ServerSblrPayloadKind::opcode_stream;
+      canonical_request.reserved_payload_size = reservation_view.payload_size;
+      canonical_request.reserved_record_count = reservation_view.record_count;
+      canonical_request.reserved_resource_policy_generation =
+          reservation_view.resource_policy_generation;
+      canonical_request.reserved_payload_sha256 =
+          reservation_view.payload_sha256;
+    }
+    BindServerSblrGatewayReceiptObservation(live_statement_context->view,
+                                            &canonical_request);
     admission = AdmitServerSblrEnvelope(canonical_request);
     mark_execute_phase("admit_canonical_server_sblr_envelope");
     if (!admission.admitted) {
+      if (package_reservation_handle) {
+        (void)engine_bridge::ReleaseStatementPackageAdmissionReservation(
+            package_reservation_handle,
+            engine_bridge::StatementPackageReservationReleaseReason::kRelease);
+        package_reservation_handle = {};
+      }
       CompleteServerRequestLifecycle(
           registry,
           request_record.request_uuid,
@@ -11109,7 +11585,10 @@ SessionOperationResult HandleExecuteSblrImpl(
                                   *live_statement_context,
                                   admission.admission_token,
                                   decoded->data_packet,
-                                  retain_engine_result)
+                                  retain_engine_result,
+                                  decoded->literal_execution_binding,
+                                  decoded->parameter_execution_binding,
+                                  decoded->parameter_value_set)
                         : use_server_live_catalog_projection
                             ? DispatchServerLiveIparCatalogProjection(dispatch_session,
                                                                       encoded,
@@ -11127,8 +11606,20 @@ SessionOperationResult HandleExecuteSblrImpl(
                                                            ? prepared_statement
                                                                  ->prepared_metadata_binding
                                                            : nullptr);
+      // Dispatch consumes the opaque handle before any contained operation.
+      // If a pre-dispatch mapping refusal left it unconsumed, this releases it;
+      // after successful consumption the repeated release is a no-op refusal.
+      if (package_reservation_handle) {
+        (void)engine_bridge::ReleaseStatementPackageAdmissionReservation(
+            package_reservation_handle,
+            engine_bridge::StatementPackageReservationReleaseReason::kRelease);
+        package_reservation_handle = {};
+      }
       mark_execute_phase("public_abi_dispatch");
       if (!public_abi.ok) {
+        if (!public_abi.audit_detail.empty()) {
+          mark_execute_phase("public_abi_refusal:" + public_abi.audit_detail);
+        }
         if (autocommit_emulation) {
           const auto autocommit = FinalizeAutocommitBoundaryForSession(session,
                                                                        engine_state,
@@ -11155,9 +11646,9 @@ SessionOperationResult HandleExecuteSblrImpl(
           CompleteServerRequestLifecycle(registry,
                                          request_record.request_uuid,
                                          ServerRequestLifecycleState::kFailed,
-                                         public_abi.diagnostic_detail.empty()
+                                         public_abi.audit_detail.empty()
                                              ? "engine_dispatch_rejected_autocommit_rolled_back"
-                                             : public_abi.diagnostic_detail);
+                                             : public_abi.audit_detail);
           const std::string detail =
               (public_abi.diagnostic_detail.empty()
                    ? "engine_dispatch_rejected"
@@ -11176,9 +11667,9 @@ SessionOperationResult HandleExecuteSblrImpl(
         CompleteServerRequestLifecycle(registry,
                                        request_record.request_uuid,
                                        ServerRequestLifecycleState::kFailed,
-                                       public_abi.diagnostic_detail.empty()
+                                       public_abi.audit_detail.empty()
                                            ? "engine_dispatch_rejected"
-                                           : public_abi.diagnostic_detail);
+                                           : public_abi.audit_detail);
         const std::string detail = public_abi.diagnostic_detail.empty()
                                        ? "engine_dispatch_rejected"
                                        : public_abi.diagnostic_detail;
@@ -11383,6 +11874,21 @@ SessionOperationResult HandleExecuteSblrImpl(
     }
     cursor.exhausted = row_count == 0;
     if (canonical_ingress) {
+      if (!IssueCursorStreamDescriptor(
+              live_statement_context ? &*live_statement_context : nullptr,
+              &cursor)) {
+        (void)ReleaseAndClearServerCursorResources(registry, &cursor);
+        CompleteServerRequestLifecycle(
+            registry, request_record.request_uuid,
+            ServerRequestLifecycleState::kFailed,
+            "cursor_stream_descriptor_issuance_failed");
+        return Failure(
+            static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+            response_schema, decoded->session_uuid,
+            "SERVER.STREAM.DESCRIPTOR_INVALID",
+            "The server could not issue the required cursor stream descriptor.",
+            "cursor_stream_descriptor_issuance_failed");
+      }
       // QOW-SOURCE-PACKET7-CANONICAL-CURSOR-RECEIPT-TRANSFER-V1
       // Cursor execution becomes the sole owner of the private statement
       // receipt until EOS, close, cancellation, disconnect, or failure.
@@ -11425,6 +11931,17 @@ SessionOperationResult HandleExecuteSblrImpl(
                                          admission.operation_id,
                                          cursor_requested ? "" : row_packet);
   }
+  const auto published_cursor = cursor_requested
+      ? registry->cursors_by_uuid.find(UuidBytesToText(cursor_uuid))
+      : registry->cursors_by_uuid.end();
+  if (canonical_ingress) {
+    AppendCursorStreamDescriptor(
+        &result.payload,
+        published_cursor != registry->cursors_by_uuid.end() &&
+                published_cursor->second.stream_descriptor_live
+            ? &published_cursor->second
+            : nullptr);
+  }
   mark_execute_phase("encode_execute_result");
   WriteServerPhaseTrace("SCRATCHBIRD_SERVER_EXECUTE_PHASE_TRACE_FILE",
                         "handle_execute_sblr_total",
@@ -11439,12 +11956,24 @@ SessionOperationResult HandleExecuteSblr(
     const HostedEngineState& engine_state,
     const sbps::Frame& request,
     const ServerIparProjectionSourceFactory* ipar_source_factory) {
-  auto result = HandleExecuteSblrImpl(registry,
-                                      engine_state,
-                                      request,
-                                      ipar_source_factory);
+  bool cursor_stream_descriptor_trailer_required = false;
+  auto result = HandleExecuteSblrImpl(
+      registry,
+      engine_state,
+      request,
+      ipar_source_factory,
+      &cursor_stream_descriptor_trailer_required);
+  result.cursor_stream_descriptor_trailer_required =
+      cursor_stream_descriptor_trailer_required;
   if (request.header.payload_schema_id != kSchemaExecuteSblrTestV2 ||
       result.transaction_state.has_value()) {
+    // Canonical ingress success appends the negotiated descriptor in the
+    // implementation. A canonical refusal still owes the exact one-byte
+    // absent-descriptor trailer before returning through this early path.
+    if (!result.accepted &&
+        result.cursor_stream_descriptor_trailer_required) {
+      AppendCursorStreamDescriptor(&result.payload, nullptr);
+    }
     return result;
   }
 
@@ -11554,15 +12083,21 @@ SessionOperationResult HandleExecuteSblr(
     }
     transaction_state.diagnostic_code = result.diagnostics.front().code;
   }
-  return V2TransactionOutcome(false,
-                              decoded ? decoded->session_uuid
-                                      : request.header.session_uuid,
-                              request.header.request_uuid,
-                              operation_id,
-                              {},
-                              detail,
-                              transaction_state,
-                              std::move(result.diagnostics));
+  auto rejection=V2TransactionOutcome(false,
+                                      decoded ? decoded->session_uuid
+                                              : request.header.session_uuid,
+                                      request.header.request_uuid,
+                                      operation_id,
+                                      {},
+                                      detail,
+                                      transaction_state,
+                                      std::move(result.diagnostics));
+  rejection.cursor_stream_descriptor_trailer_required =
+      result.cursor_stream_descriptor_trailer_required;
+  if (rejection.cursor_stream_descriptor_trailer_required) {
+    AppendCursorStreamDescriptor(&rejection.payload, nullptr);
+  }
+  return rejection;
 }
 
 SessionOperationResult RejectPrepareSblrBeforeEngine(
@@ -11657,14 +12192,28 @@ SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
                    "The fetch payload is invalid.",
                    "fetch_invalid");
   }
+  if (!decoded->stream_descriptor_present) {
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kFetchResult),
+                   kSchemaFetchResultTestV1, decoded->session_uuid,
+                   "SERVER.STREAM.DESCRIPTOR_REQUIRED",
+                   "Fetch requires the issued cursor stream descriptor.",
+                   "stream_descriptor_required");
+  }
+  if (decoded->stream_descriptor_malformed) {
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kFetchResult),
+                   kSchemaFetchResultTestV1, decoded->session_uuid,
+                   "SERVER.STREAM.DESCRIPTOR_INVALID",
+                   "The cursor stream descriptor request is malformed.",
+                   "stream_descriptor_invalid");
+  }
   auto* session = FindMutableSession(registry, decoded->session_uuid);
   if (session == nullptr) {
     return Failure(static_cast<std::uint16_t>(sbps::MessageType::kFetchResult),
                    kSchemaFetchResultTestV1,
                    decoded->session_uuid,
-                   "PARSER_SERVER_IPC.SESSION_REQUIRED",
-                   "Fetch requires a bound session.",
-                   "session_required");
+                   "SERVER.STREAM.DESCRIPTOR_STALE",
+                   "The cursor stream descriptor is no longer live.",
+                   "stream_descriptor_session_stale");
   }
   std::unique_lock<std::mutex> transaction_lock;
   if (session->transaction_mutex != nullptr) {
@@ -11675,18 +12224,46 @@ SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
     return Failure(static_cast<std::uint16_t>(sbps::MessageType::kFetchResult),
                    kSchemaFetchResultTestV1,
                    decoded->session_uuid,
-                   "PARSER_SERVER_IPC.CURSOR_NOT_FOUND",
-                   "The requested cursor does not exist.",
-                   "cursor_not_found");
+                   "SERVER.STREAM.DESCRIPTOR_STALE",
+                   "The cursor stream descriptor is no longer live.",
+                   "stream_descriptor_cursor_stale");
   }
   auto& cursor = it->second;
   if (cursor.session_uuid != decoded->session_uuid) {
     return Failure(static_cast<std::uint16_t>(sbps::MessageType::kFetchResult),
                    kSchemaFetchResultTestV1,
                    decoded->session_uuid,
-                   "PARSER_SERVER_IPC.CURSOR_NOT_FOUND",
-                   "The requested cursor does not exist.",
-                   "cursor_not_found");
+                   "SERVER.STREAM.DESCRIPTOR_STALE",
+                   "The cursor stream descriptor is no longer live.",
+                   "stream_descriptor_session_binding_stale");
+  }
+  if (!cursor.stream_descriptor_live &&
+      decoded->stream_descriptor_present) {
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kFetchResult),
+                   kSchemaFetchResultTestV1, decoded->session_uuid,
+                   "SERVER.STREAM.DESCRIPTOR_STALE",
+                   "The cursor stream descriptor is no longer live.",
+                   "stream_descriptor_revoked");
+  }
+  if (cursor.stream_descriptor_live &&
+      (cursor.stream_descriptor_uuid != decoded->stream_descriptor_uuid ||
+      cursor.stream_descriptor_version != decoded->stream_descriptor_version ||
+      cursor.stream_descriptor_generation !=
+          decoded->stream_descriptor_generation ||
+      cursor.statement_context_statement_uuid.empty() ||
+      std::all_of(cursor.stream_descriptor_receipt_binding_sha256.begin(),
+                  cursor.stream_descriptor_receipt_binding_sha256.end(),
+                  [](std::uint8_t value) { return value == 0; }) ||
+      sbps::IsZeroUuid(cursor.execution_uuid) ||
+      sbps::IsZeroUuid(cursor.result_set_uuid) ||
+      sbps::IsZeroUuid(cursor.row_descriptor_uuid) ||
+      sbps::IsZeroUuid(cursor.snapshot_uuid) ||
+      !RevalidateCursorStreamDescriptorReceipt(registry, cursor))) {
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kFetchResult),
+                   kSchemaFetchResultTestV1, decoded->session_uuid,
+                   "SERVER.STREAM.DESCRIPTOR_STALE",
+                   "The cursor stream descriptor is no longer live.",
+                   "stream_descriptor_binding_stale");
   }
   const ServerTransactionState* cursor_transaction = nullptr;
   if (cursor.owning_local_transaction_id != 0) {
@@ -11698,12 +12275,14 @@ SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
         found->second.transaction_uuid != cursor.owning_transaction_uuid ||
         found->second.snapshot_visible_through_local_transaction_id !=
             cursor.owning_snapshot_visible_through_local_transaction_id) {
+      (void)ReleaseAndClearServerCursorResources(registry, &cursor);
+      cursor.closed = true;
       return Failure(static_cast<std::uint16_t>(sbps::MessageType::kFetchResult),
                      kSchemaFetchResultTestV1,
                      decoded->session_uuid,
-                     "PARSER_SERVER_IPC.CURSOR_TRANSACTION_RETIRED",
-                     "The cursor's owning transaction is no longer active.",
-                     "cursor_transaction_retired");
+                     "SERVER.STREAM.DESCRIPTOR_STALE",
+                     "The cursor stream descriptor is no longer live.",
+                     "stream_descriptor_transaction_stale");
     }
     cursor_transaction = &found->second;
   }

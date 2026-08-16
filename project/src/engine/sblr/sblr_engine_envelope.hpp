@@ -49,6 +49,10 @@ enum class SblrValueKind : std::uint16_t {
   list = 13,
   map = 14,
   null_value = 15,
+  expression_node_table = 16,
+  expression_node_ref = 17,
+  parameter_node_table = 18,
+  parameter_node_ref = 19,
 };
 
 struct SblrOperand {

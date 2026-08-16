@@ -39,6 +39,8 @@ struct ServerDiagnostic {
   std::string request_uuid;
   std::string session_uuid;
   std::string database_uuid;
+  // Server-only deterministic branch identity. Never serialized to clients.
+  std::string internal_audit_key;
 };
 
 const char* SeverityName(ServerDiagnosticSeverity severity);

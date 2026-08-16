@@ -82,6 +82,33 @@ std::string ComputeMgaConstraintMutationBatchHash(
     std::uint64_t creator_local_transaction_id,
     std::uint64_t metadata_event_sequence);
 
+// DATATYPE-BIGINT-CANONICAL-IDENTITY-MIGRATION-V1.  This is an MGA catalog
+// migration record, not a runtime alias. Each requested row is matched against
+// an exact visible metadata generation before the single sealed record is
+// appended.
+struct MgaBigintIdentityMigrationRow {
+  std::string object_uuid;
+  std::string column_uuid;
+  std::uint64_t old_row_generation{0};
+};
+
+struct MgaBigintIdentityMigrationRequest {
+  std::string migration_id{"core.datatype.bigint.identity.v1"};
+  std::string prior_catalog_snapshot_uuid;
+  std::string new_catalog_snapshot_uuid;
+  std::uint64_t prior_catalog_generation{0};
+  std::uint64_t new_catalog_generation{0};
+  std::vector<MgaBigintIdentityMigrationRow> rows;
+};
+
+struct MgaBigintIdentityMigrationResult {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  std::string decision_sha256;
+  std::uint64_t migrated_row_count{0};
+  std::vector<EngineEvidenceReference> evidence;
+};
+
 struct MgaRelationStoreResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
@@ -580,6 +607,9 @@ EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
 EngineApiDiagnostic AppendMgaConstraintMutationBatch(
     const EngineRequestContext& context,
     const MgaConstraintMutationBatch& batch);
+MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
+    const EngineRequestContext& context,
+    const MgaBigintIdentityMigrationRequest& request);
 EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
                                            const CrudIndexRecord& index);
 

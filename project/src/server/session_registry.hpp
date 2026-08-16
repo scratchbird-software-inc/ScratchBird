@@ -515,6 +515,15 @@ struct ServerCursorRecord {
   std::uint64_t next_row_index = 0;
   std::uint64_t max_chunk_rows = 4;
   std::uint64_t max_chunk_bytes = 65536;
+  std::array<std::uint8_t, 16> stream_descriptor_uuid{};
+  std::uint16_t stream_descriptor_version = 0;
+  std::uint64_t stream_descriptor_generation = 0;
+  std::array<std::uint8_t, 16> execution_uuid{};
+  std::array<std::uint8_t, 16> result_set_uuid{};
+  std::array<std::uint8_t, 16> row_descriptor_uuid{};
+  std::array<std::uint8_t, 16> snapshot_uuid{};
+  std::array<std::uint8_t, 32> stream_descriptor_receipt_binding_sha256{};
+  bool stream_descriptor_live = false;
   std::uint64_t fetch_count = 0;
   bool exhausted = false;
   bool closed = false;
@@ -565,6 +574,16 @@ struct ServerStatementContextRecord {
   bool released = false;
 };
 
+struct ServerParameterExecutionCoordinationRecord {
+  std::string session_uuid;
+  std::string operation_uuid;
+  scratchbird::server_engine_bridge::StatementParameterExecutionMode mode =
+      scratchbird::server_engine_bridge::StatementParameterExecutionMode::kDirect;
+  std::uint64_t private_handle = 0;
+  std::uint64_t generation = 0;
+  bool sealed = false;
+};
+
 struct ServerAdmittedParserChannelIdentity {
   std::array<std::uint8_t, 16> parser_package_uuid{};
   std::array<std::uint8_t, 16> dialect_profile_uuid{};
@@ -601,6 +620,8 @@ struct ServerSessionRegistry {
       public_abi_sessions_by_session_uuid;
   std::map<std::string, ServerStatementContextRecord>
       statement_contexts_by_statement_uuid;
+  std::map<std::string, ServerParameterExecutionCoordinationRecord>
+      parameter_coordinations_by_uuid;
   std::shared_ptr<std::mutex> statement_context_mutex =
       std::make_shared<std::mutex>();
   std::map<std::string, ServerLanguageBundleRecord> language_bundles_by_uuid;
@@ -668,6 +689,10 @@ struct ServerTransactionResponseState {
 
 struct SessionOperationResult {
   bool accepted = false;
+  // Set by the authoritative execute ingress handler. Serializers use this
+  // typed decision instead of attempting to recover the request schema after
+  // routing or V2 result adaptation.
+  bool cursor_stream_descriptor_trailer_required = false;
   std::uint16_t response_message_type = 0;
   std::uint32_t response_schema_id = 0;
   std::uint32_t frame_flags = 0;
@@ -924,6 +949,25 @@ ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
 SessionOperationResult HandleAcquireStatementContext(
     ServerSessionRegistry* registry,
     const HostedEngineState& engine_state,
+    const sbps::Frame& request);
+SessionOperationResult HandleNegotiateLiteralDescriptors(
+    ServerSessionRegistry* registry,
+    const sbps::Frame& request);
+SessionOperationResult HandleFinalizeLiteralBinding(
+    ServerSessionRegistry* registry,
+    const sbps::Frame& request);
+SessionOperationResult HandleNegotiateParameterDescriptors(
+    ServerSessionRegistry* registry,
+    const sbps::Frame& request);
+SessionOperationResult HandleFinalizeParameterBinding(
+    ServerSessionRegistry* registry,
+    const sbps::Frame& request);
+SessionOperationResult HandleBeginParameterExecutionCoordination(
+    ServerSessionRegistry* registry,
+    const HostedEngineState& engine_state,
+    const sbps::Frame& request);
+SessionOperationResult HandleFinalizePreparedSblrParameter(
+    ServerSessionRegistry* registry,
     const sbps::Frame& request);
 std::uint64_t ReleaseServerStatementContextsForSession(
     ServerSessionRegistry* registry,

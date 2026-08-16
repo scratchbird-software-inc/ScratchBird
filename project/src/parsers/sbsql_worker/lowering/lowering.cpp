@@ -36280,8 +36280,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             expression.bound_name_uuid.has_value() ||
         (operator_expression || functionless_model_operation) !=
             expression.canonical_operator_name.has_value() ||
-        (literal || parameter) !=
-            expression.literal_or_parameter_ref.has_value()) {
+        literal != expression.literal_or_parameter_ref.has_value() ||
+        (parameter && expression.literal_or_parameter_ref.has_value())) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed scalar expression fields are incomplete or contradictory");
@@ -36604,9 +36604,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         identifier_descriptor == native.descriptors.end() ||
         literal_descriptor == native.descriptors.end() ||
         predicate_descriptor == native.descriptors.end() ||
-        identifier_descriptor->descriptor_id !=
-            literal_descriptor->descriptor_id ||
         identifier_descriptor->type_uuid != literal_descriptor->type_uuid ||
+        literal->structural_literal_occurrence_id == 0 ||
         predicate_descriptor->nullability != BoundNullability::kNullable ||
         identifier_descriptor->collation_uuid.has_value() ||
         literal_descriptor->collation_uuid.has_value() ||
@@ -37548,6 +37547,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     if (native.descriptors.size() !=
         width + aggregate_descriptor_count + numeric_descriptor_count +
                 filter_descriptor_count + aggregate_direct_descriptor_count +
+                (catalog_filter_relation != nullptr ? 1 : 0) +
                 window_expression_count + qualify_expression_count ||
         native.expressions.size() !=
             width + aggregate_descriptor_count +

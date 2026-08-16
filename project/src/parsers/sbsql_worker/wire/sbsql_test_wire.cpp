@@ -18,6 +18,7 @@
 
 #include "scratchbird/engine/sblr/lowering.hpp"
 #include "scratchbird/engine/sblr_envelope.hpp"
+#include "engine/sblr/sblr_parameter_runtime.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
 #include "uuid.hpp"
@@ -5993,6 +5994,10 @@ BuildEngineProjectedNativeBindingContext(
         selected = metadata;
       } else if (expression.expression_kind == NativeExpressionAstKind::kLiteral) {
         selected = ensure(&threshold_descriptor, 1);
+      } else if (expression.expression_kind == NativeExpressionAstKind::kParameter) {
+        // This descriptor is a temporary engine-projected slot. The exact
+        // SBPG occurrence mapping replaces it before BindAst.
+        selected = ensure(&threshold_descriptor, 1);
       } else if (expression.expression_kind == NativeExpressionAstKind::kUnary ||
                  expression.expression_kind == NativeExpressionAstKind::kBinary) {
         selected = ensure(&boolean_descriptor, 6);
@@ -6013,7 +6018,9 @@ BuildEngineProjectedNativeBindingContext(
     }
     context.expressions.push_back(
         {expression.expression_id, descriptor->second,
-         std::move(function_uuid), std::move(bound_name_uuid)});
+         std::move(function_uuid), std::move(bound_name_uuid),
+         expression.structural_literal_occurrence_id,
+         expression.structural_parameter_occurrence_id});
   }
 
   std::uint32_t output_id = 1;
@@ -6169,10 +6176,883 @@ std::optional<std::array<std::uint8_t, 32>> CanonicalSha256(
   return digest;
 }
 
-std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
-    const SblrEnvelope& lowered,
+struct LiteralPrebindState {
+  std::uint64_t occurrence_id{0};
+  std::array<std::uint8_t, 32> lexical_sha256{};
+  std::array<std::uint8_t, 32> demand_sha256{};
+  std::array<std::uint8_t, 32> ordered_profiles_sha256{};
+};
+
+struct ParameterPrebindState {
+  scratchbird::engine::sblr::SblrParameterNegotiateRequestV1 demand;
+  scratchbird::engine::sblr::SblrParameterNegotiateResultV1 mapping;
+};
+
+std::optional<std::pair<CanonicalBytes, ParameterPrebindState>>
+EncodeParameterPrebindRequest(const NativeRelationalAstDocument& ast,
+                              const ParserStatementContext& context) {
+  std::vector<const NativeExpressionAstNode*> parameters;
+  for (const auto& expression : ast.expressions) {
+    if (expression.expression_kind == NativeExpressionAstKind::kParameter) {
+      parameters.push_back(&expression);
+    }
+  }
+  if (parameters.empty() || parameters.size() > 4096) return std::nullopt;
+  std::ranges::sort(parameters, {}, [](const auto* expression) {
+    return expression->structural_parameter_occurrence_id;
+  });
+  const auto receipt = CanonicalUuidBytes(context.preliminary_receipt_uuid);
+  const auto mga = CanonicalUuidBytes(context.preliminary_mga_snapshot_uuid);
+  if (!receipt || !mga || context.preliminary_catalog_generation == 0 ||
+      context.preliminary_extension_version != 3 ||
+      context.preliminary_security_epoch == 0 ||
+      context.preliminary_resource_epoch == 0) {
+    return std::nullopt;
+  }
+  ParameterPrebindState state;
+  state.demand.preliminary_receipt_uuid = *receipt;
+  state.demand.mga_snapshot_uuid = *mga;
+  state.demand.catalog_generation = context.preliminary_catalog_generation;
+  state.demand.security_epoch = context.preliminary_security_epoch;
+  state.demand.resource_epoch = context.preliminary_resource_epoch;
+  std::uint32_t marker_ordinal = 1;
+  for (const auto* parameter : parameters) {
+    if (parameter->structural_parameter_occurrence_id != marker_ordinal ||
+        !parameter->child_expression_ids.empty()) {
+      return std::nullopt;
+    }
+    scratchbird::engine::sblr::SblrParameterDemandV1 demand;
+    demand.occurrence_id = parameter->structural_parameter_occurrence_id;
+    demand.marker_ordinal = marker_ordinal++;
+    demand.context_code = 1;       // scalar_predicate_bigint_v1
+    demand.requested_direction = 1;  // IN
+    demand.nullable_demand = 0;
+    state.demand.demands.push_back(demand);
+  }
+  state.demand.demand_sha256 =
+      scratchbird::engine::sblr::ComputeSblrParameterDemandSha256V1(
+          state.demand.demands);
+  auto bytes =
+      scratchbird::engine::sblr::EncodeSblrParameterNegotiateRequestV1(
+          state.demand);
+  if (bytes.size() < 136 || bytes.size() > 98416) return std::nullopt;
+  return std::pair{std::move(bytes), std::move(state)};
+}
+
+bool ConsumeParameterPrebindResult(const CanonicalBytes& response,
+                                   ParameterPrebindState* state) {
+  if (state == nullptr) return false;
+  scratchbird::engine::sblr::SblrParameterNegotiateResultV1 mapping;
+  std::string detail;
+  if (!scratchbird::engine::sblr::DecodeSblrParameterNegotiateResultV1(
+          response.data(), response.size(), &mapping, &detail) ||
+      mapping.preliminary_receipt_uuid !=
+          state->demand.preliminary_receipt_uuid ||
+      mapping.mappings.size() != state->demand.demands.size() ||
+      mapping.mappings.empty()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < mapping.mappings.size(); ++index) {
+    const auto& demand = state->demand.demands[index];
+    const auto& mapped = mapping.mappings[index];
+    if (mapped.occurrence_id != demand.occurrence_id ||
+        mapped.slot_ordinal != index || mapped.datatype_descriptor_generation == 0 ||
+        mapped.direction != demand.requested_direction ||
+        mapped.nullable != demand.nullable_demand) {
+      return false;
+    }
+  }
+  state->mapping = std::move(mapping);
+  return true;
+}
+
+std::uint16_t LiteralReadU16(const CanonicalBytes& bytes,std::size_t o){
+  return static_cast<std::uint16_t>(bytes[o])|
+         static_cast<std::uint16_t>(bytes[o+1])<<8;
+}
+std::uint32_t LiteralReadU32(const CanonicalBytes& bytes,std::size_t o){
+  std::uint32_t v=0;for(unsigned i=0;i<4;++i)v|=std::uint32_t(bytes[o+i])<<(8*i);return v;
+}
+std::uint64_t LiteralReadU64(const CanonicalBytes& bytes,std::size_t o){
+  std::uint64_t v=0;for(unsigned i=0;i<8;++i)v|=std::uint64_t(bytes[o+i])<<(8*i);return v;
+}
+std::string LiteralReadUuid(const CanonicalBytes& bytes,std::size_t o){
+  static constexpr char h[]="0123456789abcdef";std::string s;s.reserve(36);
+  for(std::size_t i=0;i<16;++i){if(i==4||i==6||i==8||i==10)s.push_back('-');s.push_back(h[bytes[o+i]>>4]);s.push_back(h[bytes[o+i]&15]);}return s;
+}
+
+std::optional<std::pair<CanonicalBytes, LiteralPrebindState>>
+EncodeLiteralPrebindRequest(const NativeRelationalAstDocument& ast,
+                            const ParserStatementContext& context) {
+  const auto literal = std::ranges::find_if(ast.expressions, [](const auto& item) {
+    return item.expression_kind == NativeExpressionAstKind::kLiteral &&
+           item.literal_kind == NativeLiteralAstKind::kNumeric &&
+           !item.spelling.empty();
+  });
+  if (literal == ast.expressions.end() || literal->expression_id == 0)
+    return std::nullopt;
+  CanonicalBytes token(literal->spelling.begin(), literal->spelling.end());
+  const auto token_hash = CanonicalSha256(token);
+  const auto receipt = CanonicalUuidBytes(context.literal_preliminary_receipt_uuid);
+  const auto catalog = CanonicalUuidBytes(context.literal_catalog_snapshot_uuid);
+  const auto mga = CanonicalUuidBytes(context.literal_mga_snapshot_uuid);
+  if (!token_hash || !receipt || !catalog || !mga ||
+      context.literal_catalog_generation == 0 ||
+      context.literal_security_epoch == 0 || context.literal_resource_epoch == 0)
+    return std::nullopt;
+  CanonicalBytes record(48, 0);
+  CanonicalStoreU64(&record, 0, 1);
+  CanonicalStoreU16(&record, 8, 1);
+  CanonicalStoreU16(&record, 10, 1);
+  std::copy(token_hash->begin(), token_hash->end(), record.begin() + 16);
+  CanonicalBytes hash_input;
+  constexpr std::string_view domain =
+      "ScratchBird.SblrLiteralDemandSequence.V1";
+  hash_input.insert(hash_input.end(), domain.begin(), domain.end());
+  CanonicalAppendU32(&hash_input, 1);
+  hash_input.insert(hash_input.end(), record.begin(), record.end());
+  const auto demand_hash = CanonicalSha256(hash_input);
+  if (!demand_hash) return std::nullopt;
+  CanonicalBytes request(128, 0);
+  request[0]='S'; request[1]='B'; request[2]='L'; request[3]='N';
+  CanonicalStoreU16(&request,4,1); CanonicalStoreU16(&request,6,128);
+  CanonicalStoreU32(&request,8,176);
+  std::copy(receipt->begin(),receipt->end(),request.begin()+16);
+  std::copy(catalog->begin(),catalog->end(),request.begin()+32);
+  CanonicalStoreU64(&request,48,context.literal_catalog_generation);
+  CanonicalStoreU64(&request,56,context.literal_security_epoch);
+  CanonicalStoreU64(&request,64,context.literal_resource_epoch);
+  std::copy(mga->begin(),mga->end(),request.begin()+72);
+  CanonicalStoreU32(&request,88,1); CanonicalStoreU32(&request,92,48);
+  std::copy(demand_hash->begin(),demand_hash->end(),request.begin()+96);
+  request.insert(request.end(),record.begin(),record.end());
+  return std::pair{std::move(request),
+                   LiteralPrebindState{1,*token_hash,
+                                       *demand_hash,{}}};
+}
+
+bool ConsumeLiteralPrebindResult(const CanonicalBytes& response,
+                                 LiteralPrebindState* state,
+                                 ParserStatementContext* context) {
+  if (!state || !context || response.size()!=356 || response[0]!='S' ||
+      response[1]!='B'||response[2]!='L'||response[3]!='Q'||
+      LiteralReadU16(response,4)!=1||LiteralReadU16(response,6)!=160||
+      LiteralReadU32(response,8)!=response.size()||LiteralReadU32(response,12)!=0||
+      LiteralReadU32(response,120)!=1||LiteralReadU32(response,124)!=196||
+      LiteralReadU64(response,160)!=state->occurrence_id||LiteralReadU32(response,168)!=184)
+    return false;
+  const std::size_t sblp=172;
+  if(response[sblp]!='S'||response[sblp+1]!='B'||response[sblp+2]!='L'||
+     response[sblp+3]!='P'||LiteralReadU16(response,sblp+4)!=1||
+     LiteralReadU16(response,sblp+6)!=164||LiteralReadU32(response,sblp+8)!=184||
+     LiteralReadU16(response,sblp+112)!=20||LiteralReadU16(response,sblp+114)!=1)
+    return false;
+  ParserStatementContext::LiteralStatementDescriptorProfileV1 profile;
+  profile.profile_version=1;
+  profile.profile_uuid=LiteralReadUuid(response,sblp+16);
+  profile.statement_receipt_uuid=LiteralReadUuid(response,sblp+32);
+  profile.catalog_snapshot_uuid=LiteralReadUuid(response,sblp+48);
+  profile.catalog_generation=LiteralReadU64(response,sblp+64);
+  profile.descriptor_uuid=LiteralReadUuid(response,sblp+72);
+  profile.descriptor_generation=LiteralReadU64(response,sblp+88);
+  profile.type_uuid=LiteralReadUuid(response,sblp+96);
+  profile.codec_version=LiteralReadU16(response,sblp+114);
+  profile.codec_generation=LiteralReadU64(response,sblp+116);
+  profile.nullable=response[sblp+124]!=0;
+  std::copy_n(response.begin()+static_cast<std::ptrdiff_t>(sblp+132),32,
+              profile.profile_binding_sha256.begin());
+  profile.codec_id.assign(reinterpret_cast<const char*>(response.data()+sblp+164),20);
+  profile.opaque_projection.assign(response.begin()+static_cast<std::ptrdiff_t>(sblp),response.end());
+  if(profile.codec_id!="datatype.int64.le.v1"||profile.nullable||
+     profile.descriptor_generation==0||profile.codec_generation==0)
+    return false;
+  std::copy_n(response.begin()+128,32,state->ordered_profiles_sha256.begin());
+  context->literal_statement_descriptor_profiles={profile};
+  const auto numeric=std::ranges::find_if(context->descriptor_profiles,[](const auto& p){
+    return p.profile_kind==1&&p.slot==0&&!p.nullable;
+  });
+  if(numeric==context->descriptor_profiles.end()) return false;
+  numeric->descriptor_uuid=profile.descriptor_uuid;
+  numeric->type_uuid=profile.type_uuid;
+  return true;
+}
+
+std::optional<CanonicalBytes> EncodePackageFrameOperationBinary(
+    bool begin,
+    const std::array<std::uint8_t, 16>& package_descriptor_uuid,
     const ParserStatementContext& statement_context,
     const SessionContext& session) {
+  constexpr std::uint16_t kSectionCount = 9;
+  constexpr std::uint16_t kHeaderSize = 64;
+  constexpr std::uint32_t kSectionTableSize = 216;
+  constexpr std::uint32_t kPayloadOffset = 280;
+  constexpr std::array<std::uint16_t, kSectionCount> kTags{1,2,3,4,5,6,7,8,9};
+  const auto parser_uuid = CanonicalUuidBytes(session.admitted_parser_package_uuid);
+  const auto registry_uuid = CanonicalUuidBytes(statement_context.catalog_epoch_uuid);
+  if (!parser_uuid.has_value() || !registry_uuid.has_value()) return std::nullopt;
+  const std::uint16_t opcode = begin ? 0x0001 : 0x0002;
+  const std::string_view operation_id =
+      begin ? "engine.op.package_begin" : "engine.op.package_end";
+  const std::string_view mnemonic =
+      begin ? "SBLR_PACKAGE_BEGIN" : "SBLR_PACKAGE_END";
+  std::array<CanonicalBytes, kSectionCount> sections;
+  CanonicalAppendText(&sections[0], operation_id);
+  CanonicalAppendText(&sections[1], mnemonic);
+  sections[2].insert(sections[2].end(), parser_uuid->begin(), parser_uuid->end());
+  CanonicalAppendU32(&sections[2], session.admitted_parser_package_version_major);
+  CanonicalAppendU32(&sections[2], session.admitted_parser_package_version_minor);
+  CanonicalAppendU32(&sections[2], session.admitted_parser_package_version_patch);
+  sections[3].insert(sections[3].end(), registry_uuid->begin(), registry_uuid->end());
+  CanonicalAppendU32(&sections[4], 1);
+  CanonicalAppendU32(&sections[4], 1);
+  CanonicalAppendText(&sections[4], begin ? "package.header" : "package.footer");
+  CanonicalAppendText(&sections[4], "package_descriptor");
+  CanonicalAppendU16(&sections[4], 2);
+  CanonicalAppendU16(&sections[4], 0);
+  CanonicalAppendU64(&sections[4], package_descriptor_uuid.size());
+  sections[4].insert(sections[4].end(), package_descriptor_uuid.begin(),
+                     package_descriptor_uuid.end());
+  CanonicalAppendText(&sections[5], "void");
+  CanonicalAppendText(&sections[6], "diagnostic_vector");
+  CanonicalAppendText(&sections[7], begin ? "package.begin.native" : "package.end.native");
+  CanonicalBytes provenance;
+  constexpr char kDomain[] = "ScratchBird.SBOP.ProducerProvenance.V1\0";
+  provenance.insert(provenance.end(), std::begin(kDomain), std::end(kDomain) - 1);
+  provenance.insert(provenance.end(), sections[2].begin(), sections[2].end());
+  provenance.insert(provenance.end(), sections[3].begin(), sections[3].end());
+  CanonicalAppendU16(&provenance, opcode);
+  CanonicalAppendU16(&provenance, 1);
+  CanonicalAppendU16(&provenance, 0);
+  provenance.insert(provenance.end(), sections[0].begin(), sections[0].end());
+  provenance.insert(provenance.end(), sections[1].begin(), sections[1].end());
+  const auto digest = CanonicalSha256(provenance);
+  if (!digest.has_value()) return std::nullopt;
+  sections[8].assign(digest->begin(), digest->end());
+  std::uint64_t payload_size = 0;
+  for (const auto& section : sections) payload_size += section.size();
+  const std::uint64_t total_size = kPayloadOffset + payload_size + 16;
+  if (total_size > scratchbird::engine::kSblrMaxPayloadBytes) return std::nullopt;
+  CanonicalBytes encoded(static_cast<std::size_t>(total_size), 0);
+  CanonicalStoreU32(&encoded, 0, 0x504f4253u);
+  CanonicalStoreU16(&encoded, 4, 1); CanonicalStoreU16(&encoded, 6, 0);
+  CanonicalStoreU16(&encoded, 8, kHeaderSize);
+  CanonicalStoreU16(&encoded, 10, kSectionCount);
+  CanonicalStoreU16(&encoded, 16, opcode);
+  CanonicalStoreU16(&encoded, 18, 1); CanonicalStoreU16(&encoded, 20, 0);
+  CanonicalStoreU32(&encoded, 24, kHeaderSize);
+  CanonicalStoreU32(&encoded, 28, kSectionTableSize);
+  CanonicalStoreU32(&encoded, 32, kPayloadOffset);
+  CanonicalStoreU64(&encoded, 40, payload_size);
+  CanonicalStoreU64(&encoded, 48, total_size);
+  std::uint64_t section_offset = kPayloadOffset;
+  for (std::size_t index = 0; index < sections.size(); ++index) {
+    const auto table = kHeaderSize + index * 24;
+    CanonicalStoreU16(&encoded, table, kTags[index]);
+    CanonicalStoreU16(&encoded, table + 2, 1);
+    CanonicalStoreU32(&encoded, table + 4, 1);
+    CanonicalStoreU64(&encoded, table + 8, section_offset);
+    CanonicalStoreU64(&encoded, table + 16, sections[index].size());
+    std::copy(sections[index].begin(), sections[index].end(),
+              encoded.begin() + static_cast<std::ptrdiff_t>(section_offset));
+    section_offset += sections[index].size();
+  }
+  const auto trailer = encoded.size() - 16;
+  CanonicalStoreU32(&encoded, trailer, 0x544f4253u);
+  CanonicalStoreU32(&encoded, trailer + 4,
+                    scratchbird::engine::SblrCrc32c(encoded.data(), trailer));
+  CanonicalStoreU64(&encoded, trailer + 8, total_size);
+  return encoded;
+}
+
+std::optional<CanonicalBytes> EncodeNativeOpcodeStreamBinary(
+    const CanonicalBytes& operation,
+    const ParserStatementContext& statement_context,
+    const SessionContext& session) {
+  const auto package_uuid = CanonicalUuidBytes(statement_context.bound_ast_uuid);
+  const auto registry_uuid = CanonicalUuidBytes(statement_context.catalog_epoch_uuid);
+  if (!package_uuid.has_value() || !registry_uuid.has_value()) return std::nullopt;
+  const auto begin = EncodePackageFrameOperationBinary(
+      true, *package_uuid, statement_context, session);
+  const auto end = EncodePackageFrameOperationBinary(
+      false, *package_uuid, statement_context, session);
+  if (!begin.has_value() || !end.has_value()) return std::nullopt;
+  const std::array<const CanonicalBytes*, 3> records{&*begin, &operation, &*end};
+  std::uint64_t records_size = 0;
+  for (const auto* record : records) {
+    if (record->size() > scratchbird::engine::kSblrMaxPayloadBytes - 8 ||
+        records_size > scratchbird::engine::kSblrMaxPayloadBytes - 8 - record->size())
+      return std::nullopt;
+    records_size += 8 + record->size();
+  }
+  if (records_size > scratchbird::engine::kSblrMaxPayloadBytes - 80)
+    return std::nullopt;
+  CanonicalBytes stream(64, 0);
+  CanonicalStoreU32(&stream, 0, 0x534f4253u);
+  CanonicalStoreU16(&stream, 4, 1); CanonicalStoreU16(&stream, 6, 0);
+  CanonicalStoreU16(&stream, 8, 64); CanonicalStoreU32(&stream, 16, 3);
+  std::copy(package_uuid->begin(), package_uuid->end(), stream.begin() + 24);
+  std::copy(registry_uuid->begin(), registry_uuid->end(), stream.begin() + 40);
+  CanonicalStoreU64(&stream, 56, records_size);
+  for (const auto* record : records) {
+    CanonicalAppendU64(&stream, record->size());
+    stream.insert(stream.end(), record->begin(), record->end());
+  }
+  CanonicalAppendU32(&stream, 0x54534253u);
+  CanonicalAppendU32(&stream,
+      scratchbird::engine::SblrCrc32c(stream.data(), stream.size()));
+  CanonicalAppendU64(&stream, stream.size() + 8);
+  return stream;
+}
+
+std::vector<std::string_view> SplitCanonicalFields(std::string_view value) {
+  std::vector<std::string_view> fields;
+  std::size_t begin = 0;
+  for (;;) {
+    const auto end = value.find('|', begin);
+    fields.push_back(value.substr(begin, end == std::string_view::npos
+                                            ? value.size() - begin
+                                            : end - begin));
+    if (end == std::string_view::npos) return fields;
+    begin = end + 1;
+  }
+}
+
+std::optional<std::string> DecodeCanonicalHexBytes(std::string_view encoded) {
+  if (encoded == "-" || (encoded.size() & 1u) != 0) return std::nullopt;
+  const auto nibble = [](char ch) -> int {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    return -1;
+  };
+  std::string decoded;
+  decoded.reserve(encoded.size() / 2);
+  for (std::size_t index = 0; index < encoded.size(); index += 2) {
+    const int high = nibble(encoded[index]);
+    const int low = nibble(encoded[index + 1]);
+    if (high < 0 || low < 0) return std::nullopt;
+    decoded.push_back(static_cast<char>((high << 4) | low));
+  }
+  return decoded;
+}
+
+struct EncodedLiteralExpressionNodeTable {
+  struct Reference {
+    std::uint32_t occurrence_ordinal{0};
+    std::uint64_t node_id{0};
+    std::array<std::uint8_t, 16> descriptor_uuid{};
+    std::uint64_t descriptor_generation{0};
+  };
+  CanonicalBytes bytes;
+  std::map<std::string, Reference> references;
+};
+
+struct EncodedParameterExpressionNodeTable {
+  struct Reference {
+    std::uint32_t occurrence_ordinal{0};
+    scratchbird::engine::sblr::SblrParameterNodeReferenceV1 value;
+  };
+  CanonicalBytes bytes;
+  std::map<std::string, Reference> references;
+};
+
+std::optional<EncodedParameterExpressionNodeTable>
+EncodeParameterExpressionNodeTable(
+    const BoundStatement& bound, const ParameterPrebindState& prebind) {
+  if (prebind.mapping.mappings.empty() ||
+      prebind.mapping.mappings.size() > 4096) {
+    return std::nullopt;
+  }
+  std::map<std::uint64_t,
+           const scratchbird::engine::sblr::SblrParameterMappingV1*>
+      mappings;
+  for (const auto& mapping : prebind.mapping.mappings) {
+    if (!mappings.emplace(mapping.occurrence_id, &mapping).second)
+      return std::nullopt;
+  }
+  struct Pending {
+    const BoundExpressionAstRecord* expression{nullptr};
+    const scratchbird::engine::sblr::SblrParameterMappingV1* mapping{nullptr};
+  };
+  std::vector<Pending> pending;
+  for (const auto& expression : bound.native_relational.expressions) {
+    if (expression.expression_kind != NativeExpressionAstKind::kParameter)
+      continue;
+    const auto mapping = mappings.find(
+        expression.structural_parameter_occurrence_id);
+    if (mapping == mappings.end() || expression.expression_id == 0 ||
+        expression.literal_or_parameter_ref.has_value() ||
+        !expression.child_expression_ids.empty()) {
+      return std::nullopt;
+    }
+    pending.push_back({&expression, mapping->second});
+  }
+  if (pending.size() != mappings.size()) return std::nullopt;
+  std::ranges::sort(pending, {}, [](const Pending& item) {
+    return item.expression->expression_id;
+  });
+  scratchbird::engine::sblr::SblrParameterNodeTableV1 table;
+  std::uint32_t parent_ordinal = 1;
+  for (const auto& item : pending) {
+    scratchbird::engine::sblr::SblrParameterNodeV1 node;
+    node.node_id = item.expression->expression_id;
+    node.parent_operand_ordinal = parent_ordinal++;
+    node.slot_ordinal = item.mapping->slot_ordinal;
+    node.parameter_set_descriptor_uuid =
+        prebind.mapping.parameter_set_descriptor_uuid;
+    node.parameter_set_generation = prebind.mapping.descriptor_generation;
+    node.datatype_descriptor_uuid =
+        item.mapping->datatype_descriptor_uuid;
+    node.datatype_descriptor_generation =
+        item.mapping->datatype_descriptor_generation;
+    table.nodes.push_back(node);
+  }
+  EncodedParameterExpressionNodeTable encoded;
+  encoded.bytes =
+      scratchbird::engine::sblr::EncodeSblrParameterNodeTableV1(table);
+  if (encoded.bytes.empty() || encoded.bytes.size() > 426016)
+    return std::nullopt;
+  const auto table_sha = CanonicalSha256(encoded.bytes);
+  if (!table_sha) return std::nullopt;
+  for (std::size_t index = 0; index < pending.size(); ++index) {
+    scratchbird::engine::sblr::SblrParameterNodeReferenceV1 reference;
+    reference.occurrence_ordinal = static_cast<std::uint32_t>(index + 1);
+    reference.node_id = pending[index].expression->expression_id;
+    reference.table_sha256 = *table_sha;
+    reference.parameter_set_descriptor_uuid =
+        prebind.mapping.parameter_set_descriptor_uuid;
+    reference.parameter_set_generation = prebind.mapping.descriptor_generation;
+    reference.slot_ordinal = pending[index].mapping->slot_ordinal;
+    encoded.references.emplace(
+        std::to_string(pending[index].expression->expression_id),
+        EncodedParameterExpressionNodeTable::Reference{
+            static_cast<std::uint32_t>(index + 1), reference});
+  }
+  return encoded;
+}
+
+std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTable(
+    const SblrEnvelope& lowered,
+    const ParserStatementContext& statement_context) {
+  struct LiteralNode {
+    std::uint64_t node_id{0};
+    std::array<std::uint8_t, 16> descriptor_uuid{};
+    std::uint64_t descriptor_generation{0};
+    CanonicalBytes body;
+  };
+  struct DescriptorBinding {
+    std::array<std::uint8_t, 16> descriptor_uuid{};
+    std::string descriptor_uuid_text;
+    std::string type_uuid;
+  };
+  std::map<std::string, DescriptorBinding> descriptors;
+  for (const auto& operand : lowered.operands) {
+    if (operand.type != "relational_descriptor_v1") continue;
+    const auto fields = SplitCanonicalFields(operand.value);
+    if (fields.size() != 8) return std::nullopt;
+    const auto uuid = CanonicalUuidBytes(fields[0]);
+    if (!uuid.has_value() ||
+        !descriptors.emplace(
+            operand.name,
+            DescriptorBinding{*uuid, std::string(fields[0]),
+                              std::string(fields[1])}).second)
+      return std::nullopt;
+  }
+  std::vector<LiteralNode> nodes;
+  for (const auto& operand : lowered.operands) {
+    if (operand.type != "relational_expression_v1") continue;
+    const auto fields = SplitCanonicalFields(operand.value);
+    if (fields.size() != 8 || fields[0] != "1") continue;
+    if (fields[1] != "-" || fields[5] != "1") return std::nullopt;
+    std::uint64_t node_id = 0;
+    const auto [node_end, node_error] = std::from_chars(
+        operand.name.data(), operand.name.data() + operand.name.size(), node_id);
+    const auto literal = DecodeCanonicalHexBytes(fields[7]);
+    const auto descriptor = descriptors.find(std::string(fields[2]));
+    const auto literal_profile =
+        descriptor == descriptors.end()
+            ? statement_context.literal_statement_descriptor_profiles.end()
+            : std::ranges::find_if(
+                  statement_context.literal_statement_descriptor_profiles,
+                  [&](const auto& profile) {
+                    return profile.descriptor_uuid ==
+                               descriptor->second.descriptor_uuid_text &&
+                           profile.type_uuid == descriptor->second.type_uuid;
+                  });
+    if (node_error != std::errc{} || node_end != operand.name.data() + operand.name.size() ||
+        node_id == 0 || !literal.has_value() || descriptor == descriptors.end() ||
+        literal_profile ==
+            statement_context.literal_statement_descriptor_profiles.end() ||
+        literal_profile->profile_version != 1 ||
+        literal_profile->descriptor_generation == 0 ||
+        literal_profile->codec_id != "datatype.int64.le.v1" ||
+        literal_profile->codec_version != 1 ||
+        literal_profile->codec_generation == 0 || literal_profile->nullable)
+      return std::nullopt;
+    std::int64_t numeric = 0;
+    const auto [value_end, value_error] = std::from_chars(
+        literal->data(), literal->data() + literal->size(), numeric);
+    if (value_error != std::errc{} || value_end != literal->data() + literal->size())
+      return std::nullopt;
+    LiteralNode node;
+    node.node_id = node_id;
+    node.descriptor_uuid = descriptor->second.descriptor_uuid;
+    node.descriptor_generation = literal_profile->descriptor_generation;
+    for (unsigned shift = 0; shift != 64; shift += 8) {
+      node.body.push_back(static_cast<std::uint8_t>(
+          static_cast<std::uint64_t>(numeric) >> shift));
+    }
+    nodes.push_back(std::move(node));
+  }
+  if (nodes.empty() || lowered.descriptor_epoch == 0) return std::nullopt;
+  std::ranges::sort(nodes, {}, &LiteralNode::node_id);
+  if (std::ranges::adjacent_find(nodes, {}, &LiteralNode::node_id) != nodes.end())
+    return std::nullopt;
+
+  EncodedLiteralExpressionNodeTable encoded;
+  auto& table = encoded.bytes;
+  table.assign(32, 0);
+  table[0] = 'S'; table[1] = 'B'; table[2] = 'X'; table[3] = 'N';
+  CanonicalStoreU16(&table, 4, 1);
+  CanonicalStoreU16(&table, 6, 32);
+  CanonicalStoreU32(&table, 8, static_cast<std::uint32_t>(nodes.size()));
+  CanonicalStoreU64(&table, 24, 32);
+  std::uint32_t ordinal = 1;
+  for (const auto& node : nodes) {
+    encoded.references.emplace(
+        std::to_string(node.node_id),
+        EncodedLiteralExpressionNodeTable::Reference{
+            ordinal, node.node_id, node.descriptor_uuid,
+            node.descriptor_generation});
+    const auto record_offset = table.size();
+    CanonicalAppendU32(&table, 0);
+    CanonicalAppendU64(&table, node.node_id);
+    CanonicalAppendU64(&table, 0);
+    CanonicalAppendU32(&table, ordinal++);
+    CanonicalAppendU16(&table, 3);
+    CanonicalAppendU16(&table, 1);
+    CanonicalAppendU16(&table, 0);
+    CanonicalAppendU64(&table, node.descriptor_generation);
+    table.insert(table.end(), node.descriptor_uuid.begin(), node.descriptor_uuid.end());
+    CanonicalAppendU64(&table, node.body.size());
+    CanonicalAppendU16(&table, 12); table.insert(table.end(), {'S','B','L','R','_','L','I','T','E','R','A','L'});
+    CanonicalAppendU16(&table, 13); table.insert(table.end(), {'t','y','p','e','d','_','l','i','t','e','r','a','l'});
+    table.insert(table.end(), node.body.begin(), node.body.end());
+    CanonicalAppendU16(&table, 17); table.insert(table.end(), {'e','n','g','i','n','e','.','o','p','.','l','i','t','e','r','a','l'});
+    CanonicalAppendU16(&table, 11); table.insert(table.end(), {'t','y','p','e','d','_','v','a','l','u','e'});
+    CanonicalAppendU16(&table, 1);
+    CanonicalStoreU32(&table, record_offset,
+                      static_cast<std::uint32_t>(table.size() - record_offset));
+  }
+  CanonicalStoreU64(&table, 16, table.size());
+  return encoded;
+}
+
+bool FinalizeLiteralSubmission(
+    const BoundStatement& bound, const SblrEnvelope& lowered,
+    const ParserStatementContext& context, const SessionContext& session,
+    const LiteralPrebindState& prebind, SbpsClient* client,
+    ParserCanonicalSblrSubmission* submission, MessageVectorSet* messages) {
+  if (!client || !submission || context.literal_statement_descriptor_profiles.size()!=1)
+    return false;
+  const auto& profile=context.literal_statement_descriptor_profiles.front();
+  const auto expression=std::ranges::find_if(bound.native_relational.expressions,[&](const auto& e){
+    return e.expression_kind==NativeExpressionAstKind::kLiteral&&
+           e.literal_kind==NativeLiteralAstKind::kNumeric;
+  });
+  if(expression==bound.native_relational.expressions.end())return false;
+  const auto descriptor=std::ranges::find_if(bound.native_relational.descriptors,[&](const auto& d){
+    return d.descriptor_id==expression->result_descriptor_id;
+  });
+  const auto receipt=CanonicalUuidBytes(context.literal_preliminary_receipt_uuid);
+  const auto descriptor_uuid=CanonicalUuidBytes(profile.descriptor_uuid);
+  const auto type_uuid=CanonicalUuidBytes(profile.type_uuid);
+  const auto profile_uuid=CanonicalUuidBytes(profile.profile_uuid);
+  const auto mga=CanonicalUuidBytes(context.literal_mga_snapshot_uuid);
+  if(descriptor==bound.native_relational.descriptors.end()||
+     descriptor->descriptor_uuid!=profile.descriptor_uuid||
+     descriptor->type_uuid!=profile.type_uuid||!receipt||!descriptor_uuid||
+     !type_uuid||!profile_uuid||!mga)return false;
+  CanonicalBytes sbba(72,0);sbba[0]='S';sbba[1]='B';sbba[2]='B';sbba[3]='A';
+  CanonicalStoreU16(&sbba,4,1);CanonicalStoreU16(&sbba,6,72);
+  CanonicalStoreU32(&sbba,8,192);CanonicalStoreU32(&sbba,16,1);
+  CanonicalStoreU32(&sbba,20,120);std::copy(receipt->begin(),receipt->end(),sbba.begin()+24);
+  std::copy(prebind.demand_sha256.begin(),prebind.demand_sha256.end(),sbba.begin()+40);
+  CanonicalBytes record(120,0);CanonicalStoreU32(&record,0,120);
+  CanonicalStoreU32(&record,4,1);CanonicalStoreU64(&record,8,expression->expression_id);
+  std::copy(descriptor_uuid->begin(),descriptor_uuid->end(),record.begin()+16);
+  CanonicalStoreU64(&record,32,profile.descriptor_generation);
+  std::copy(type_uuid->begin(),type_uuid->end(),record.begin()+40);
+  std::copy(profile_uuid->begin(),profile_uuid->end(),record.begin()+56);
+  CanonicalStoreU64(&record,72,prebind.occurrence_id);
+  std::copy(prebind.lexical_sha256.begin(),prebind.lexical_sha256.end(),record.begin()+80);
+  sbba.insert(sbba.end(),record.begin(),record.end());
+  CanonicalBytes bound_hash_input;
+  constexpr std::string_view bound_domain="ScratchBird.SblrLiteralBoundAst.V1";
+  bound_hash_input.insert(bound_hash_input.end(),bound_domain.begin(),bound_domain.end());
+  bound_hash_input.insert(bound_hash_input.end(),sbba.begin(),sbba.end());
+  const auto bound_hash=CanonicalSha256(bound_hash_input);
+  const auto sbxn=EncodeLiteralExpressionNodeTable(lowered,context);
+  if(!bound_hash||!sbxn)return false;
+  const auto sbxn_hash=CanonicalSha256(sbxn->bytes);
+  const auto sbos_hash=CanonicalSha256(submission->canonical_operation_bytes);
+  if(!sbxn_hash||!sbos_hash)return false;
+  CanonicalBytes sblf(208,0);sblf[0]='S';sblf[1]='B';sblf[2]='L';sblf[3]='F';
+  CanonicalStoreU16(&sblf,4,1);CanonicalStoreU16(&sblf,6,208);
+  CanonicalStoreU32(&sblf,8,208+sbba.size()+sbxn->bytes.size());
+  std::copy(receipt->begin(),receipt->end(),sblf.begin()+16);
+  std::copy(prebind.demand_sha256.begin(),prebind.demand_sha256.end(),sblf.begin()+32);
+  std::copy(prebind.ordered_profiles_sha256.begin(),prebind.ordered_profiles_sha256.end(),sblf.begin()+64);
+  std::copy(bound_hash->begin(),bound_hash->end(),sblf.begin()+96);
+  std::copy(sbxn_hash->begin(),sbxn_hash->end(),sblf.begin()+128);
+  CanonicalStoreU64(&sblf,160,context.literal_catalog_generation);
+  CanonicalStoreU64(&sblf,168,context.literal_security_epoch);
+  CanonicalStoreU64(&sblf,176,context.literal_resource_epoch);
+  std::copy(mga->begin(),mga->end(),sblf.begin()+184);
+  CanonicalStoreU32(&sblf,200,sbba.size());
+  CanonicalStoreU32(&sblf,204,sbxn->bytes.size());
+  sblf.insert(sblf.end(),sbba.begin(),sbba.end());
+  sblf.insert(sblf.end(),sbxn->bytes.begin(),sbxn->bytes.end());
+  auto finalized=client->FinalizeLiteralBinding(session,sblf);
+  if(!finalized.accepted){if(messages)*messages=std::move(finalized.messages);return false;}
+  const auto& sbla=finalized.canonical_payload;
+  if(sbla.size()!=264||sbla[0]!='S'||sbla[1]!='B'||sbla[2]!='L'||sbla[3]!='A'||
+     LiteralReadU16(sbla,4)!=1||LiteralReadU16(sbla,6)!=264||LiteralReadU32(sbla,8)!=264)
+    return false;
+  submission->literal_final_receipt_uuid=LiteralReadUuid(sbla,32);
+  submission->literal_admission_token_uuid=LiteralReadUuid(sbla,48);
+  std::copy_n(sbla.begin()+232,32,submission->literal_token_binding_sha256.begin());
+  submission->literal_bound_ast_sha256=*bound_hash;
+  submission->literal_sbxn_sha256=*sbxn_hash;
+  submission->literal_sbos_sha256=*sbos_hash;
+  return true;
+}
+
+std::optional<CanonicalBytes> EncodePreparedParameterTemplate(
+    const SessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ipc::ParameterExecutionCoordination& coordination,
+    const ParserCanonicalSblrSubmission& value_free_submission,
+    const scratchbird::engine::sblr::SblrParameterAdmissionV1& admission,
+    const CanonicalBytes& canonical_sbpa,
+    const std::array<std::uint8_t, 32>& sbpn_sha256);
+
+bool FinalizeParameterSubmission(
+    const BoundStatement& bound, const ParameterPrebindState& prebind,
+    const std::vector<std::optional<std::string>>& parameter_values,
+    const ParserStatementContext& statement_context,
+    const SessionContext& session, SbpsClient* client,
+    ParserCanonicalSblrSubmission* submission,
+    MessageVectorSet* messages,
+    const ipc::ParameterExecutionCoordination* coordination,
+    bool prepare_only,
+    ipc::PreparedParameterReference* prepared_output) {
+  if (client == nullptr || submission == nullptr ||
+      (prepare_only
+           ? (coordination == nullptr || prepared_output == nullptr ||
+              !parameter_values.empty())
+           : parameter_values.size() != prebind.mapping.mappings.size())) {
+    return false;
+  }
+  const auto sbpn = EncodeParameterExpressionNodeTable(bound, prebind);
+  if (!sbpn) return false;
+  scratchbird::engine::sblr::SblrParameterFinalizeRequestV1 request;
+  request.preliminary_receipt_uuid = prebind.demand.preliminary_receipt_uuid;
+  request.parameter_set_descriptor_uuid =
+      prebind.mapping.parameter_set_descriptor_uuid;
+  request.descriptor_generation = prebind.mapping.descriptor_generation;
+  request.execution_uuid = prebind.mapping.execution_uuid;
+  request.demand_sha256 = prebind.demand.demand_sha256;
+  request.mapping_sha256 = prebind.mapping.mapping_sha256;
+  const auto sbpn_sha = CanonicalSha256(sbpn->bytes);
+  if (!sbpn_sha) return false;
+  request.sbpn_sha256 = *sbpn_sha;
+  request.canonical_sbpn = sbpn->bytes;
+  const auto sbpf =
+      scratchbird::engine::sblr::EncodeSblrParameterFinalizeRequestV1(request);
+  if (sbpf.size() < 280 || sbpf.size() > 426192) return false;
+  auto finalized = client->FinalizeParameterBinding(session, sbpf);
+  if (!finalized.accepted) {
+    if (messages) *messages = std::move(finalized.messages);
+    return false;
+  }
+  scratchbird::engine::sblr::SblrParameterAdmissionV1 admission;
+  std::string detail;
+  const auto projected_uuid = [](const std::string& text)
+      -> std::optional<std::array<std::uint8_t, 16>> {
+    if (text.empty()) return std::array<std::uint8_t, 16>{};
+    return CanonicalUuidBytes(text);
+  };
+  const auto prepared_uuid = projected_uuid(
+      statement_context.preliminary_prepared_statement_uuid);
+  const auto batch_uuid = projected_uuid(
+      statement_context.preliminary_batch_uuid);
+  const auto dynamic_uuid = projected_uuid(
+      statement_context.preliminary_dynamic_package_uuid);
+  if (!prepared_uuid || !batch_uuid || !dynamic_uuid ||
+      !scratchbird::engine::sblr::DecodeSblrParameterAdmissionV1(
+          finalized.canonical_payload.data(), finalized.canonical_payload.size(),
+          &admission, &detail) ||
+      admission.parameter_set_descriptor_uuid !=
+          prebind.mapping.parameter_set_descriptor_uuid ||
+      admission.descriptor_generation != prebind.mapping.descriptor_generation ||
+      admission.execution_uuid != prebind.mapping.execution_uuid ||
+      admission.prepared_uuid != *prepared_uuid ||
+      admission.prepared_generation !=
+          statement_context.preliminary_prepared_generation ||
+      admission.batch_uuid != *batch_uuid ||
+      admission.batch_generation !=
+          statement_context.preliminary_batch_generation ||
+      admission.dynamic_uuid != *dynamic_uuid ||
+      admission.dynamic_generation !=
+          statement_context.preliminary_dynamic_generation) {
+    return false;
+  }
+  if (prepare_only) {
+    const auto sbpt = EncodePreparedParameterTemplate(
+        session, statement_context, *coordination, *submission, admission,
+        finalized.canonical_payload, *sbpn_sha);
+    if (!sbpt) return false;
+    auto sealed = client->FinalizePreparedParameterSubmission(
+        session, *coordination, *sbpt, statement_context);
+    if (!sealed.accepted) {
+      if (messages) *messages = std::move(sealed.messages);
+      return false;
+    }
+    *prepared_output = std::move(sealed.prepared);
+    return true;
+  }
+  scratchbird::engine::sblr::SblrParameterValueSetV1 value_set;
+  value_set.parameter_set_descriptor_uuid =
+      admission.parameter_set_descriptor_uuid;
+  value_set.descriptor_generation = admission.descriptor_generation;
+  value_set.execution_uuid = admission.execution_uuid;
+  value_set.statement_receipt_uuid = admission.final_receipt_uuid;
+  for (std::size_t index = 0; index < prebind.mapping.mappings.size(); ++index) {
+    const auto& mapping = prebind.mapping.mappings[index];
+    scratchbird::engine::sblr::SblrParameterValueRecordV1 record;
+    record.slot_ordinal = mapping.slot_ordinal;
+    record.slot_uuid = mapping.slot_uuid;
+    record.datatype_descriptor_uuid = mapping.datatype_descriptor_uuid;
+    record.datatype_descriptor_generation =
+        mapping.datatype_descriptor_generation;
+    record.direction = static_cast<
+        scratchbird::engine::sblr::SblrParameterDirectionV1>(mapping.direction);
+    if (!parameter_values[index].has_value()) {
+      if (mapping.nullable == 0) return false;
+      record.state =
+          scratchbird::engine::sblr::SblrParameterValueStateV1::null_value;
+    } else {
+      std::int64_t numeric = 0;
+      const auto& text = *parameter_values[index];
+      const auto [end, error] =
+          std::from_chars(text.data(), text.data() + text.size(), numeric);
+      if (error != std::errc{} || end != text.data() + text.size()) return false;
+      record.state =
+          scratchbird::engine::sblr::SblrParameterValueStateV1::value;
+      for (unsigned shift = 0; shift != 64; shift += 8) {
+        record.canonical_value_bytes.push_back(static_cast<std::uint8_t>(
+            static_cast<std::uint64_t>(numeric) >> shift));
+      }
+    }
+    value_set.records.push_back(std::move(record));
+  }
+  auto sbpv = scratchbird::engine::sblr::EncodeSblrParameterValueSetV1(value_set);
+  const auto sbpv_sha = CanonicalSha256(sbpv);
+  if (sbpv.empty() || sbpv.size() > 33554432 || !sbpv_sha) return false;
+  CanonicalBytes sbpe(176, 0);
+  sbpe[0]='S'; sbpe[1]='B'; sbpe[2]='P'; sbpe[3]='E';
+  CanonicalStoreU16(&sbpe,4,1); CanonicalStoreU16(&sbpe,6,176);
+  CanonicalStoreU32(&sbpe,8,176);
+  std::copy(admission.execution_uuid.begin(), admission.execution_uuid.end(),
+            sbpe.begin()+16);
+  std::copy(admission.final_receipt_uuid.begin(), admission.final_receipt_uuid.end(),
+            sbpe.begin()+32);
+  std::copy(admission.parameter_set_descriptor_uuid.begin(),
+            admission.parameter_set_descriptor_uuid.end(), sbpe.begin()+48);
+  CanonicalStoreU64(&sbpe,64,admission.descriptor_generation);
+  std::copy(admission.prepared_uuid.begin(), admission.prepared_uuid.end(),
+            sbpe.begin()+72);
+  CanonicalStoreU64(&sbpe,88,admission.prepared_generation);
+  std::copy(admission.batch_uuid.begin(), admission.batch_uuid.end(),
+            sbpe.begin()+96);
+  CanonicalStoreU64(&sbpe,112,admission.batch_generation);
+  std::copy(admission.dynamic_uuid.begin(), admission.dynamic_uuid.end(),
+            sbpe.begin()+120);
+  CanonicalStoreU64(&sbpe,136,admission.dynamic_generation);
+  std::copy(sbpv_sha->begin(), sbpv_sha->end(), sbpe.begin()+144);
+  submission->parameter_execution_extension_bytes = std::move(sbpe);
+  submission->parameter_value_set_bytes = std::move(sbpv);
+  return true;
+}
+
+std::optional<CanonicalBytes> EncodePreparedParameterTemplate(
+    const SessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ipc::ParameterExecutionCoordination& coordination,
+    const ParserCanonicalSblrSubmission& value_free_submission,
+    const scratchbird::engine::sblr::SblrParameterAdmissionV1& admission,
+    const CanonicalBytes& canonical_sbpa,
+    const std::array<std::uint8_t, 32>& sbpn_sha256) {
+  if (coordination.mode != ipc::ParameterExecutionMode::kPrepared ||
+      !coordination.present() || canonical_sbpa.size() != 192 ||
+      statement_context.preliminary_extension_version != 3 ||
+      statement_context.preliminary_parameter_executor_availability_generation ==
+          0 ||
+      value_free_submission.parameter_finalized() ||
+      value_free_submission.literal_finalized()) {
+    return std::nullopt;
+  }
+  const auto coordination_uuid =
+      CanonicalUuidBytes(coordination.public_coordination_uuid);
+  const auto operation_uuid = CanonicalUuidBytes(coordination.operation_uuid);
+  const auto prepared_uuid = CanonicalUuidBytes(
+      statement_context.preliminary_prepared_statement_uuid);
+  const auto mga_uuid = CanonicalUuidBytes(
+      statement_context.preliminary_mga_snapshot_uuid);
+  const auto schema4015 = ipc::EncodePreparedParameterSchema4015Template(
+      session, statement_context, value_free_submission);
+  if (!coordination_uuid || !operation_uuid || !prepared_uuid || !mga_uuid ||
+      schema4015.empty() || admission.prepared_uuid != *prepared_uuid ||
+      admission.prepared_generation !=
+          statement_context.preliminary_prepared_generation ||
+      admission.execution_uuid != *operation_uuid) {
+    return std::nullopt;
+  }
+  scratchbird::engine::sblr::SblrPreparedParameterTemplateV1 value;
+  value.public_coordination_uuid = *coordination_uuid;
+  value.operation_uuid = *operation_uuid;
+  value.provisional_prepared_uuid = *prepared_uuid;
+  value.provisional_prepared_generation =
+      statement_context.preliminary_prepared_generation;
+  value.parameter_set_descriptor_uuid =
+      admission.parameter_set_descriptor_uuid;
+  value.descriptor_generation = admission.descriptor_generation;
+  value.canonical_schema4015 = schema4015;
+  value.canonical_sbpa = canonical_sbpa;
+  value.sbpn_sha256 = sbpn_sha256;
+  value.executor_availability_generation =
+      statement_context.preliminary_parameter_executor_availability_generation;
+  value.catalog_generation = statement_context.preliminary_catalog_generation;
+  value.security_epoch = statement_context.preliminary_security_epoch;
+  value.resource_epoch = statement_context.preliminary_resource_epoch;
+  value.mga_snapshot_uuid = *mga_uuid;
+  auto encoded =
+      scratchbird::engine::sblr::EncodeSblrPreparedParameterTemplateV1(&value);
+  const auto decoded =
+      scratchbird::engine::sblr::DecodeSblrPreparedParameterTemplateV1(
+          encoded.data(), encoded.size());
+  if (!decoded.ok || decoded.canonical_bytes != encoded ||
+      encoded.size() < 472) {
+    return std::nullopt;
+  }
+  return encoded;
+}
+
+std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
+    const BoundStatement& bound, const SblrEnvelope& lowered,
+    const ParserStatementContext& statement_context,
+    const SessionContext& session,
+    const ParameterPrebindState* parameter_prebind) {
   constexpr std::uint16_t kSectionCount = 9;
   constexpr std::uint16_t kHeaderSize = 64;
   constexpr std::uint32_t kSectionTableSize = 216;
@@ -6192,7 +7072,16 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
   }
   const auto value_type_uuid = CanonicalUuidBytes(
       statement_context.descriptor_profiles.front().type_uuid);
-  if (!value_type_uuid.has_value()) return std::nullopt;
+  const auto expression_nodes =
+      EncodeLiteralExpressionNodeTable(lowered, statement_context);
+  const auto parameter_nodes = parameter_prebind == nullptr
+      ? std::optional<EncodedParameterExpressionNodeTable>{}
+      : EncodeParameterExpressionNodeTable(bound, *parameter_prebind);
+  if (!value_type_uuid.has_value() ||
+      (parameter_prebind != nullptr && !parameter_nodes.has_value()) ||
+      (!expression_nodes.has_value() && !parameter_nodes.has_value())) {
+    return std::nullopt;
+  }
 
   std::array<CanonicalBytes, kSectionCount> sections;
   CanonicalAppendText(&sections[0], lowered.operation_id);
@@ -6208,8 +7097,14 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
   sections[3].insert(sections[3].end(), registry_uuid->begin(),
                      registry_uuid->end());
   CanonicalAppendU32(&sections[4],
-                     static_cast<std::uint32_t>(lowered.operands.size()));
+                     static_cast<std::uint32_t>(
+                         lowered.operands.size() +
+                         (expression_nodes.has_value() ? 1 : 0) +
+                         (parameter_nodes.has_value() ? 1 : 0)));
   std::uint32_t ordinal = 1;
+  const auto node_table_sha256 = expression_nodes.has_value()
+      ? CanonicalSha256(expression_nodes->bytes)
+      : std::optional<std::array<std::uint8_t, 32>>{};
   for (const auto& operand : lowered.operands) {
     CanonicalAppendU32(&sections[4], ordinal++);
     CanonicalAppendText(&sections[4], operand.type);
@@ -6221,8 +7116,24 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
         operand.type == "relational_property_v1"
             ? CanonicalUuidBytes(operand.name)
             : std::optional<std::array<std::uint8_t, 16>>{};
+    const auto literal_reference =
+        operand.type == "relational_expression_v1" && expression_nodes.has_value()
+            ? expression_nodes->references.find(operand.name)
+            : (expression_nodes.has_value() ? expression_nodes->references.end()
+                                            : decltype(expression_nodes->references.end()){});
+    const bool is_literal_reference =
+        expression_nodes.has_value() &&
+        literal_reference != expression_nodes->references.end();
+    const auto parameter_reference =
+        operand.type == "relational_expression_v1" && parameter_nodes.has_value()
+            ? parameter_nodes->references.find(operand.name)
+            : (parameter_nodes.has_value() ? parameter_nodes->references.end()
+                                           : decltype(parameter_nodes->references.end()){});
+    const bool is_parameter_reference =
+        parameter_nodes.has_value() &&
+        parameter_reference != parameter_nodes->references.end();
     std::string encoded_name;
-    if (numeric_name) {
+    if (numeric_name && !is_literal_reference) {
       encoded_name = "slot_" + operand.name;
     } else if (property_uuid.has_value()) {
       static constexpr char kHex[] = "0123456789abcdef";
@@ -6236,14 +7147,60 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
       encoded_name = operand.name;
     }
     CanonicalAppendText(&sections[4], encoded_name);
-    CanonicalAppendU16(&sections[4], 5);  // literal_typed
+    CanonicalAppendU16(&sections[4], is_literal_reference
+                                        ? 17
+                                        : (is_parameter_reference ? 19 : 5));
     CanonicalAppendU16(&sections[4], 0);
-    CanonicalAppendU64(&sections[4], 24 + operand.value.size());
-    sections[4].insert(sections[4].end(), value_type_uuid->begin(),
-                       value_type_uuid->end());
-    CanonicalAppendU64(&sections[4], operand.value.size());
-    sections[4].insert(sections[4].end(), operand.value.begin(),
-                       operand.value.end());
+    if (is_literal_reference) {
+      CanonicalAppendU64(&sections[4], 72);
+      CanonicalAppendU16(&sections[4], 1);
+      CanonicalAppendU16(&sections[4], 0);
+      CanonicalAppendU32(&sections[4],
+                         literal_reference->second.occurrence_ordinal);
+      CanonicalAppendU64(&sections[4], literal_reference->second.node_id);
+      sections[4].insert(sections[4].end(), node_table_sha256->begin(),
+                         node_table_sha256->end());
+      sections[4].insert(sections[4].end(),
+                         literal_reference->second.descriptor_uuid.begin(),
+                         literal_reference->second.descriptor_uuid.end());
+      CanonicalAppendU64(&sections[4],
+                         literal_reference->second.descriptor_generation);
+    } else if (is_parameter_reference) {
+      const auto encoded_reference =
+          scratchbird::engine::sblr::EncodeSblrParameterNodeReferenceV1(
+              parameter_reference->second.value);
+      if (encoded_reference.size() != 80) return std::nullopt;
+      CanonicalAppendU64(&sections[4], encoded_reference.size());
+      sections[4].insert(sections[4].end(), encoded_reference.begin(),
+                         encoded_reference.end());
+    } else {
+      CanonicalAppendU64(&sections[4], 24 + operand.value.size());
+      sections[4].insert(sections[4].end(), value_type_uuid->begin(),
+                         value_type_uuid->end());
+      CanonicalAppendU64(&sections[4], operand.value.size());
+      sections[4].insert(sections[4].end(), operand.value.begin(),
+                         operand.value.end());
+    }
+  }
+  if (expression_nodes.has_value()) {
+    CanonicalAppendU32(&sections[4], ordinal++);
+    CanonicalAppendText(&sections[4], "expression.node_table.v1");
+    CanonicalAppendText(&sections[4], "expression_nodes");
+    CanonicalAppendU16(&sections[4], 16);
+    CanonicalAppendU16(&sections[4], 0);
+    CanonicalAppendU64(&sections[4], expression_nodes->bytes.size());
+    sections[4].insert(sections[4].end(), expression_nodes->bytes.begin(),
+                       expression_nodes->bytes.end());
+  }
+  if (parameter_nodes.has_value()) {
+    CanonicalAppendU32(&sections[4], ordinal++);
+    CanonicalAppendText(&sections[4], "expression.parameter_node_table.v1");
+    CanonicalAppendText(&sections[4], "parameter_nodes");
+    CanonicalAppendU16(&sections[4], 18);
+    CanonicalAppendU16(&sections[4], 0);
+    CanonicalAppendU64(&sections[4], parameter_nodes->bytes.size());
+    sections[4].insert(sections[4].end(), parameter_nodes->bytes.begin(),
+                       parameter_nodes->bytes.end());
   }
   CanonicalAppendText(&sections[5], lowered.result_shape_key);
   CanonicalAppendText(&sections[6], lowered.diagnostic_shape_key);
@@ -6345,11 +7302,16 @@ CanonicalBytes CanonicalStruct(std::uint32_t format,
 }
 
 std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
-    const SblrEnvelope& lowered,
+    const BoundStatement& bound, const SblrEnvelope& lowered,
     const ParserStatementContext& statement_context,
-    const SessionContext& session) {
+    const SessionContext& session,
+    const ParameterPrebindState* parameter_prebind) {
   const auto operation = EncodeNativeQueryOperationBinary(
-      lowered, statement_context, session);
+      bound, lowered, statement_context, session, parameter_prebind);
+  const auto opcode_stream = operation.has_value()
+      ? EncodeNativeOpcodeStreamBinary(
+            *operation, statement_context, session)
+      : std::optional<CanonicalBytes>{};
   const auto database_uuid = CanonicalUuidBytes(session.database_uuid);
   const auto dialect_uuid =
       CanonicalUuidBytes(session.admitted_dialect_profile_uuid);
@@ -6360,7 +7322,8 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
   const auto statement_uuid =
       CanonicalUuidBytes(statement_context.statement_uuid);
   const auto user_uuid = CanonicalUuidBytes(session.authenticated_user_uuid);
-  if (!operation.has_value() || !database_uuid.has_value() ||
+  if (!operation.has_value() || !opcode_stream.has_value() ||
+      !database_uuid.has_value() ||
       !dialect_uuid.has_value() || !parser_uuid.has_value() ||
       !registry_uuid.has_value() || !statement_uuid.has_value() ||
       !user_uuid.has_value()) {
@@ -6398,10 +7361,10 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
   std::copy(registry_uuid->begin(), registry_uuid->end(),
             container.canonical_anchor.begin() + 76);
   anchor_u64(92, 1);
-  anchor_u16(100, 2);
+  anchor_u16(100, 1);
   std::copy(statement_uuid->begin(), statement_uuid->end(),
             container.canonical_anchor.begin() + 116);
-  container.operation_payload = *operation;
+  container.operation_payload = *opcode_stream;
   auto container_bytes = scratchbird::engine::EncodeSblrContainer(container);
 
   scratchbird::engine::SblrExecutionEnvelopeV1 ingress;
@@ -6410,16 +7373,18 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
   fields[1] = CanonicalU16(1);
   fields[2] = CanonicalU16(0);
   fields[3] = CanonicalU32(0x00010001);
-  fields[4] = CanonicalU16(2);
-  fields[5] = {0};
-  fields[6] = {1};
-  CanonicalAppendU64(&fields[6], operation->size());
-  fields[6].insert(fields[6].end(), operation->begin(), operation->end());
+  fields[4] = CanonicalU16(1);
+  fields[5] = {1};
+  CanonicalAppendU64(&fields[5], opcode_stream->size());
+  fields[5].insert(fields[5].end(), opcode_stream->begin(),
+                   opcode_stream->end());
+  fields[6] = {0};
   fields[7] = {1};
   CanonicalAppendU32(
       &fields[7],
-      scratchbird::engine::SblrCrc32c(operation->data(), operation->size()));
-  fields[8] = CanonicalU64(operation->size());
+      scratchbird::engine::SblrCrc32c(opcode_stream->data(),
+                                      opcode_stream->size()));
+  fields[8] = CanonicalU64(opcode_stream->size());
   fields[9] = CanonicalU16(1);
   fields[10] = CanonicalOptionalUuid(*dialect_uuid);
   fields[11] = CanonicalOptionalUuid(*user_uuid);
@@ -6446,6 +7411,7 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
   ParserCanonicalSblrSubmission submission;
   submission.statement_uuid = statement_context.statement_uuid;
   submission.canonical_container_bytes = std::move(container_bytes);
+  submission.canonical_operation_bytes = *opcode_stream;
   submission.canonical_execution_envelope_bytes = std::move(ingress_bytes);
   return submission;
 }
@@ -11604,25 +12570,53 @@ ServerFetchResult SbsqlTestWireSession::FetchCursorOnRoute(std::string_view curs
                                                            std::uint64_t max_rows,
                                                            std::uint64_t max_bytes,
                                                            std::uint32_t fetch_flags) {
-  if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
-    return embedded_client_->FetchCursor(session_, cursor_uuid, max_rows, max_bytes, fetch_flags);
+  const auto descriptor = cursor_stream_descriptors_.find(std::string(cursor_uuid));
+  if (descriptor == cursor_stream_descriptors_.end() ||
+      !descriptor->second.complete()) {
+    ServerFetchResult refused;
+    refused.messages.diagnostics.push_back(MakeDiagnostic(
+        "SERVER.STREAM.DESCRIPTOR_REQUIRED", "ERROR",
+        "cursor fetch requires the server-issued stream descriptor",
+        "sbp_sbsql.wire"));
+    return refused;
   }
-  return server_client_->FetchCursor(
-      session_, cursor_uuid, max_rows, max_bytes, fetch_flags);
+  const auto& authority = descriptor->second;
+  const std::uint64_t requested_rows =
+      std::min(max_rows == 0 ? authority.max_chunk_rows : max_rows,
+               authority.max_chunk_rows);
+  const std::uint64_t requested_bytes =
+      std::min(max_bytes == 0 ? authority.max_chunk_bytes : max_bytes,
+               authority.max_chunk_bytes);
+  if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
+    return embedded_client_->FetchCursor(session_, cursor_uuid, authority,
+                                         requested_rows, requested_bytes,
+                                         fetch_flags);
+  }
+  return server_client_->FetchCursor(session_, cursor_uuid, authority,
+                                     requested_rows, requested_bytes,
+                                     fetch_flags);
 }
 
 ServerCloseCursorResult SbsqlTestWireSession::CloseCursorOnRoute(std::string_view cursor_uuid) {
+  ServerCloseCursorResult result;
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
-    return embedded_client_->CloseCursor(session_, cursor_uuid);
+    result = embedded_client_->CloseCursor(session_, cursor_uuid);
+  } else {
+    result = server_client_->CloseCursor(session_, cursor_uuid);
   }
-  return server_client_->CloseCursor(session_, cursor_uuid);
+  if (result.accepted) cursor_stream_descriptors_.erase(std::string(cursor_uuid));
+  return result;
 }
 
 ServerCloseCursorResult SbsqlTestWireSession::CancelCursorOnRoute(std::string_view cursor_uuid) {
+  ServerCloseCursorResult result;
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
-    return embedded_client_->CancelCursor(session_, cursor_uuid);
+    result = embedded_client_->CancelCursor(session_, cursor_uuid);
+  } else {
+    result = server_client_->CancelCursor(session_, cursor_uuid);
   }
-  return server_client_->CancelCursor(session_, cursor_uuid);
+  if (result.accepted) cursor_stream_descriptors_.erase(std::string(cursor_uuid));
+  return result;
 }
 
 void SbsqlTestWireSession::ClearNameResolutionCache(
@@ -11976,7 +12970,16 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                                  bool submit,
                                                  bool cursor_requested,
                                                  std::uint64_t stream_row_count,
-                                                 bool autocommit_emulation) {
+                                                 bool autocommit_emulation,
+                                                 const std::vector<std::optional<std::string>>&
+                                                     parameter_values,
+                                                 const ipc::ParameterExecutionCoordination*
+                                                     parameter_coordination,
+                                                 bool parameter_prepare_only,
+                                                 ipc::PreparedParameterReference*
+                                                     prepared_parameter_output,
+                                                 std::string_view expected_prepared_uuid,
+                                                 std::uint64_t expected_prepared_generation) {
   const bool phase_trace =
       std::getenv("SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE") != nullptr;
   std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
@@ -12065,6 +13068,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         result.accepted = true;
         result.server_operation_id = executed.operation_id;
         result.server_cursor_uuid = executed.cursor_uuid;
+        if (executed.cursor_stream_descriptor.complete())
+          cursor_stream_descriptors_[executed.cursor_uuid] =
+              executed.cursor_stream_descriptor;
         result.server_row_count = executed.row_count;
         result.server_affected_rows = executed.affected_rows;
         result.server_affected_rows_present = executed.affected_rows_present;
@@ -12136,6 +13142,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           result.accepted = true;
           result.server_operation_id = executed.operation_id;
           result.server_cursor_uuid = executed.cursor_uuid;
+          if (executed.cursor_stream_descriptor.complete())
+            cursor_stream_descriptors_[executed.cursor_uuid] =
+                executed.cursor_stream_descriptor;
           result.server_row_count = executed.row_count;
           result.server_affected_rows = executed.affected_rows;
           result.server_affected_rows_present = executed.affected_rows_present;
@@ -12194,6 +13203,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           } else {
             result.server_operation_id = executed.operation_id;
             result.server_cursor_uuid = executed.cursor_uuid;
+            if (executed.cursor_stream_descriptor.complete())
+              cursor_stream_descriptors_[executed.cursor_uuid] =
+                  executed.cursor_stream_descriptor;
             result.server_row_count = executed.row_count;
             result.server_affected_rows = executed.affected_rows;
             result.server_affected_rows_present = executed.affected_rows_present;
@@ -12352,6 +13364,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   }
   std::optional<ParserStatementContext> native_statement_context;
   std::optional<NativeRelationalBindingContext> native_binding_context;
+  std::optional<LiteralPrebindState> literal_prebind_state;
+  std::optional<ParameterPrebindState> parameter_prebind_state;
   if (submit && ast.native_relational.recognized()) {
     if (config_.embedded_engine_direct || server_client_ == nullptr) {
       result.messages.diagnostics.push_back(MakeDiagnostic(
@@ -12362,17 +13376,220 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       ParserTransactionSelector selector;
       selector.local_transaction_id = session_.local_transaction_id;
       selector.transaction_uuid = session_.transaction_uuid;
-      auto acquired =
-          server_client_->AcquireNativeStatementContext(session_, selector);
+      auto acquired = parameter_coordination == nullptr
+          ? server_client_->AcquireNativeStatementContext(session_, selector)
+          : server_client_->AcquireParameterStatementContext(
+                session_, selector, *parameter_coordination);
       mark_phase("acquire_native_statement_context");
       if (!acquired.accepted) {
         result.messages = std::move(acquired.messages);
       } else {
         native_statement_context = std::move(acquired.context);
+        if (!expected_prepared_uuid.empty() &&
+            (native_statement_context->preliminary_prepared_statement_uuid !=
+                 expected_prepared_uuid ||
+             native_statement_context->preliminary_prepared_generation !=
+                 expected_prepared_generation)) {
+          result.messages.diagnostics.push_back(MakeDiagnostic(
+              "SBLR.PARAMETER.STALE", "ERROR",
+              "The engine-selected prepared binding generation changed before acquisition.",
+              "sbp_sbsql.wire"));
+          result.accepted = false;
+          WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+          return result;
+        }
+        if (const auto prebind = EncodeLiteralPrebindRequest(
+                ast.native_relational, *native_statement_context);
+            prebind.has_value()) {
+          auto negotiated = server_client_->NegotiateLiteralDescriptors(
+              session_, prebind->first);
+          if (!negotiated.accepted) {
+            result.messages = std::move(negotiated.messages);
+          } else {
+            literal_prebind_state = prebind->second;
+            if (!ConsumeLiteralPrebindResult(
+                    negotiated.canonical_payload, &*literal_prebind_state,
+                    &*native_statement_context)) {
+              result.messages.diagnostics.push_back(MakeDiagnostic(
+                  "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                  "The engine literal descriptor negotiation result was malformed.",
+                  "sbp_sbsql.wire"));
+            }
+          }
+        }
+        const auto parameter_count = std::ranges::count_if(
+            ast.native_relational.expressions, [](const auto& expression) {
+              return expression.expression_kind ==
+                     NativeExpressionAstKind::kParameter;
+            });
+        if ((parameter_count == 0) != (parameter_coordination == nullptr) ||
+            (parameter_prepare_only &&
+             (parameter_coordination == nullptr ||
+              parameter_coordination->mode !=
+                  ipc::ParameterExecutionMode::kPrepared ||
+              prepared_parameter_output == nullptr))) {
+          result.messages.diagnostics.push_back(MakeDiagnostic(
+              "SBLR.OPERAND_INVALID", "ERROR",
+              "The parameter coordination mode does not match the parsed statement.",
+              "sbp_sbsql.wire"));
+        } else if (parameter_count > 4096) {
+          result.messages.diagnostics.push_back(MakeDiagnostic(
+              "RESOURCE.BUDGET_EXCEEDED", "ERROR",
+              "The parameter occurrence count exceeds the admitted maximum.",
+              "sbp_sbsql.wire"));
+        } else if (parameter_count != 0) {
+          const auto prebind = EncodeParameterPrebindRequest(
+              ast.native_relational, *native_statement_context);
+          if (!prebind.has_value()) {
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                "SBLR.OPERAND_INVALID", "ERROR",
+                "The structural parameter demand sequence was malformed.",
+                "sbp_sbsql.wire"));
+          } else {
+            auto negotiated = server_client_->NegotiateParameterDescriptors(
+                session_, prebind->first);
+            if (!negotiated.accepted) {
+              result.messages = std::move(negotiated.messages);
+            } else {
+              parameter_prebind_state = prebind->second;
+              if (!ConsumeParameterPrebindResult(
+                      negotiated.canonical_payload,
+                      &*parameter_prebind_state)) {
+                result.messages.diagnostics.push_back(MakeDiagnostic(
+                    "SBLR.OPERAND_INVALID", "ERROR",
+                    "The engine parameter descriptor negotiation result was malformed.",
+                    "sbp_sbsql.wire"));
+              }
+            }
+          }
+        }
+        if (result.messages.has_errors()) {
+          mark_phase("negotiate_literal_descriptors");
+          result.accepted = false;
+          WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+          return result;
+        }
         native_binding_context = BuildEngineProjectedNativeBindingContext(
             ast.native_relational, *native_statement_context,
             resolved_object_reference_seeds,
             &result.messages);
+        if (native_binding_context.has_value() &&
+            literal_prebind_state.has_value() &&
+            native_statement_context->literal_statement_descriptor_profiles.size()==1) {
+          const auto ast_literal=std::ranges::find_if(
+              ast.native_relational.expressions,[&](const auto& item){
+                return item.structural_literal_occurrence_id ==
+                       literal_prebind_state->occurrence_id;
+              });
+          const auto expression = ast_literal == ast.native_relational.expressions.end()
+              ? native_binding_context->expressions.end()
+              : std::ranges::find_if(native_binding_context->expressions,
+                    [&](const auto& item) {
+                      return item.expression_id == ast_literal->expression_id &&
+                             item.structural_literal_occurrence_id ==
+                                 literal_prebind_state->occurrence_id;
+                    });
+          if(expression==native_binding_context->expressions.end()) {
+            if (ast_literal == ast.native_relational.expressions.end()) {
+              result.messages.diagnostics.push_back(MakeDiagnostic(
+                  "DATATYPE.DESCRIPTOR_INVALID","ERROR",
+                  "The negotiated literal occurrence was absent from the typed AST.",
+                  "sbp_sbsql.wire"));
+            } else {
+              const auto& profile =
+                  native_statement_context->literal_statement_descriptor_profiles.front();
+              NativeDescriptorBindingInput literal_descriptor;
+              literal_descriptor.descriptor_id = static_cast<std::uint32_t>(
+                  native_binding_context->descriptors.size() + 1);
+              literal_descriptor.descriptor_uuid = profile.descriptor_uuid;
+              literal_descriptor.type_uuid = profile.type_uuid;
+              literal_descriptor.nullability = BoundNullability::kNonNull;
+              const auto literal_descriptor_id = literal_descriptor.descriptor_id;
+              native_binding_context->descriptors.push_back(
+                  std::move(literal_descriptor));
+              native_binding_context->expressions.push_back(
+                  {ast_literal->expression_id, literal_descriptor_id,
+                   std::nullopt, std::nullopt,
+                   ast_literal->structural_literal_occurrence_id,
+                   ast_literal->structural_parameter_occurrence_id});
+            }
+          } else {
+            const auto descriptor=std::ranges::find_if(
+                native_binding_context->descriptors,[&](const auto& item){
+                  return item.descriptor_id==expression->descriptor_id;
+                });
+            if(descriptor==native_binding_context->descriptors.end()) {
+              result.messages.diagnostics.push_back(MakeDiagnostic(
+                  "DATATYPE.DESCRIPTOR_INVALID","ERROR",
+                  "The negotiated literal descriptor binding was absent.",
+                  "sbp_sbsql.wire"));
+            } else {
+              const auto& profile=native_statement_context->literal_statement_descriptor_profiles.front();
+              descriptor->descriptor_uuid=profile.descriptor_uuid;
+              descriptor->type_uuid=profile.type_uuid;
+              descriptor->nullability=BoundNullability::kNonNull;
+            }
+          }
+        }
+        if (native_binding_context.has_value() &&
+            parameter_prebind_state.has_value()) {
+          for (const auto& mapping :
+               parameter_prebind_state->mapping.mappings) {
+            const auto ast_parameter = std::ranges::find_if(
+                ast.native_relational.expressions, [&](const auto& item) {
+                  return item.expression_kind ==
+                             NativeExpressionAstKind::kParameter &&
+                         item.structural_parameter_occurrence_id ==
+                             mapping.occurrence_id;
+                });
+            const auto bound_input =
+                ast_parameter == ast.native_relational.expressions.end()
+                    ? native_binding_context->expressions.end()
+                    : std::ranges::find_if(
+                          native_binding_context->expressions,
+                          [&](const auto& item) {
+                            return item.expression_id ==
+                                       ast_parameter->expression_id &&
+                                   item.structural_parameter_occurrence_id ==
+                                       mapping.occurrence_id;
+                          });
+            CanonicalBytes descriptor_uuid_bytes(
+                mapping.datatype_descriptor_uuid.begin(),
+                mapping.datatype_descriptor_uuid.end());
+            const auto descriptor_uuid =
+                LiteralReadUuid(descriptor_uuid_bytes, 0);
+            const auto profile = std::ranges::find_if(
+                native_statement_context->descriptor_profiles,
+                [&](const auto& item) {
+                  return item.descriptor_uuid == descriptor_uuid;
+                });
+            const auto descriptor =
+                bound_input == native_binding_context->expressions.end()
+                    ? native_binding_context->descriptors.end()
+                    : std::ranges::find_if(
+                          native_binding_context->descriptors,
+                          [&](const auto& item) {
+                            return item.descriptor_id ==
+                                   bound_input->descriptor_id;
+                          });
+            if (ast_parameter == ast.native_relational.expressions.end() ||
+                bound_input == native_binding_context->expressions.end() ||
+                profile == native_statement_context->descriptor_profiles.end() ||
+                descriptor == native_binding_context->descriptors.end() ||
+                mapping.datatype_descriptor_generation == 0) {
+              result.messages.diagnostics.push_back(MakeDiagnostic(
+                  "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                  "The engine parameter occurrence mapping lacked its exact descriptor projection.",
+                  "sbp_sbsql.wire"));
+              break;
+            }
+            descriptor->descriptor_uuid = descriptor_uuid;
+            descriptor->type_uuid = profile->type_uuid;
+            descriptor->nullability = mapping.nullable != 0
+                                          ? BoundNullability::kNullable
+                                          : BoundNullability::kNonNull;
+          }
+        }
         mark_phase("build_native_binding_context");
       }
     }
@@ -12416,13 +13633,41 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   std::optional<ParserCanonicalSblrSubmission> native_submission;
   if (submit && result.accepted && native_statement_context.has_value()) {
     native_submission = BuildCanonicalNativeSubmission(
-        lowered, *native_statement_context, session_);
+        bound, lowered, *native_statement_context, session_,
+        parameter_prebind_state.has_value() ? &*parameter_prebind_state
+                                            : nullptr);
     if (!native_submission.has_value()) {
       result.accepted = false;
       result.messages.diagnostics.push_back(MakeDiagnostic(
           "SBSQL.NATIVE_SBLR.CANONICAL_ENCODING_FAILED", "ERROR",
           "The native relational operation could not be encoded as canonical SBLR/SBEE/SBOP.",
           "sbp_sbsql.wire"));
+    } else if (literal_prebind_state.has_value() &&
+               !FinalizeLiteralSubmission(
+                   bound, lowered, *native_statement_context, session_,
+                   *literal_prebind_state, server_client_.get(),
+                   &*native_submission, &result.messages)) {
+      result.accepted = false;
+      if (!result.messages.has_errors()) {
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+            "The engine refused or malformed literal binding finalization.",
+            "sbp_sbsql.wire"));
+      }
+    } else if (parameter_prebind_state.has_value() &&
+               !FinalizeParameterSubmission(
+                   bound, *parameter_prebind_state, parameter_values,
+                   *native_statement_context, session_,
+                   server_client_.get(), &*native_submission,
+                   &result.messages, parameter_coordination,
+                   parameter_prepare_only, prepared_parameter_output)) {
+      result.accepted = false;
+      if (!result.messages.has_errors()) {
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            "SBLR.PARAMETER.UNBOUND", "ERROR",
+            "The engine refused or malformed parameter binding finalization.",
+            "sbp_sbsql.wire"));
+      }
     }
     mark_phase("encode_native_canonical_submission");
   }
@@ -12482,7 +13727,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       }
     }
   };
-  if (submit && result.accepted) {
+  if (submit && result.accepted && !parameter_prepare_only) {
     if (!HasExecutionRoute()) {
       result.accepted = false;
       result.messages.diagnostics.push_back(MakeDiagnostic(
@@ -12515,6 +13760,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       } else {
         result.server_operation_id = executed.operation_id;
         result.server_cursor_uuid = executed.cursor_uuid;
+        if (executed.cursor_stream_descriptor.complete())
+          cursor_stream_descriptors_[executed.cursor_uuid] =
+              executed.cursor_stream_descriptor;
         result.server_row_count = executed.row_count;
         result.server_affected_rows = executed.affected_rows;
         result.server_affected_rows_present = executed.affected_rows_present;
@@ -12535,6 +13783,70 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   }
   WriteParserPipelinePhaseTrace(sql, result, phase_micros);
   return result;
+}
+
+ipc::ServerPreparedParameterFinalizeResult
+SbsqlTestWireSession::PrepareParameterizedForWire(std::string_view sql) {
+  ipc::ServerPreparedParameterFinalizeResult result;
+  if (server_client_ == nullptr || !session_.authenticated) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "PARSER_SERVER_IPC.AUTH.REQUIRED", "ERROR",
+        "Prepared parameter coordination requires an authenticated server route.",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  const auto operation_uuid = NewCreatedObjectUuid("OBJECT");
+  auto begun = server_client_->BeginParameterExecutionCoordination(
+      session_, ipc::ParameterExecutionMode::kPrepared, operation_uuid);
+  if (!begun.accepted) {
+    result.messages = std::move(begun.messages);
+    return result;
+  }
+  ipc::PreparedParameterReference prepared;
+  auto pipeline = RunPipeline(sql, true, false, 0, false, {},
+                              &begun.coordination, true, &prepared);
+  if (!pipeline.accepted || pipeline.messages.has_errors() ||
+      !prepared.present()) {
+    result.messages = std::move(pipeline.messages);
+    if (!result.messages.has_errors()) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBLR.PARAMETER.UNBOUND", "ERROR",
+          "The prepared parameter template was not sealed.",
+          "sbp_sbsql.wire"));
+    }
+    return result;
+  }
+  result.accepted = true;
+  result.prepared = std::move(prepared);
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunPreparedParameterizedForWire(
+    std::string_view sql, std::string_view prepared_statement_uuid,
+    std::uint64_t prepared_generation,
+    const std::vector<std::optional<std::string>>& parameter_values,
+    bool cursor_requested) {
+  PipelineResult result;
+  if (server_client_ == nullptr || !session_.authenticated ||
+      prepared_generation == 0 ||
+      !CanonicalUuidBytes(prepared_statement_uuid)) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR",
+        "Prepared parameter execution requires an exact published prepared reference.",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  const auto operation_uuid = NewCreatedObjectUuid("OBJECT");
+  auto begun = server_client_->BeginParameterExecutionCoordination(
+      session_, ipc::ParameterExecutionMode::kPrepared, operation_uuid,
+      prepared_statement_uuid);
+  if (!begun.accepted) {
+    result.messages = std::move(begun.messages);
+    return result;
+  }
+  return RunPipeline(sql, true, cursor_requested, 0, false,
+                     parameter_values, &begun.coordination, false, nullptr,
+                     prepared_statement_uuid, prepared_generation);
 }
 
 PipelineResult SbsqlTestWireSession::RunSblrEnvelope(std::string_view encoded_sblr_envelope,
@@ -12569,6 +13881,9 @@ PipelineResult SbsqlTestWireSession::RunSblrEnvelopeWithDataPacket(
   result.accepted = true;
   result.server_operation_id = executed.operation_id;
   result.server_cursor_uuid = executed.cursor_uuid;
+  if (executed.cursor_stream_descriptor.complete())
+    cursor_stream_descriptors_[executed.cursor_uuid] =
+        executed.cursor_stream_descriptor;
   result.server_row_count = executed.row_count;
   result.server_affected_rows = executed.affected_rows;
   result.server_affected_rows_present = executed.affected_rows_present;
@@ -12644,6 +13959,9 @@ PipelineResult SbsqlTestWireSession::RunPreparedSblrEnvelopeForWire(
   result.accepted = true;
   result.server_operation_id = executed.operation_id;
   result.server_cursor_uuid = executed.cursor_uuid;
+  if (executed.cursor_stream_descriptor.complete())
+    cursor_stream_descriptors_[executed.cursor_uuid] =
+        executed.cursor_stream_descriptor;
   result.server_row_count = executed.row_count;
   result.server_affected_rows = executed.affected_rows;
   result.server_affected_rows_present = executed.affected_rows_present;

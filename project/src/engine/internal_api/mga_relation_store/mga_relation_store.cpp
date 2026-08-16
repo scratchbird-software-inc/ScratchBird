@@ -62,6 +62,23 @@ constexpr const char* kDescriptorMagic = "SBMGADESC1";
 constexpr const char* kEventSequenceAllocatorMagic = "SBMGAEVSEQ1";
 constexpr std::string_view kLineHexFieldPrefix = "SBHEX:";
 constexpr std::size_t kMgaLargeValueChunkBytes = 2048;
+constexpr std::string_view kBigintMigrationFormat =
+    "datatype_bigint_identity_migration_v1";
+constexpr std::string_view kBigintMigrationId =
+    "core.datatype.bigint.identity.v1";
+constexpr std::string_view kLegacyBigintTypeUuid =
+    "67000000-696e-7436-b400-000000000000";
+constexpr std::string_view kCanonicalBigintTypeUuid =
+    "019d0000-0000-7000-8000-00000000d712";
+
+std::string CanonicalBigintMigrationPayload(
+    const MgaBigintIdentityMigrationRequest& request,
+    std::uint64_t creator_tx,
+    std::uint64_t event_sequence,
+    std::string_view transaction_uuid,
+    const std::vector<CrudTableRecord>& tables,
+    const std::vector<std::string>& decision_hashes);
+std::string Sha256Tagged(std::string_view payload);
 
 using scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase;
 using scratchbird::transaction::mga::LookupLocalTransaction;
@@ -2803,7 +2820,8 @@ std::uint64_t ScanNextMetadataEventSequence(const EngineRequestContext& context)
     const auto fields = SplitTabs(line);
     if (fields.size() >= 4 && fields[0] == kRowStoreMagic &&
         (fields[1] == "TABLE_METADATA" || fields[1] == "INDEX_METADATA" ||
-         fields[1] == "CONSTRAINT_MUTATION_BATCH")) {
+         fields[1] == "CONSTRAINT_MUTATION_BATCH" ||
+         fields[1] == "BIGINT_IDENTITY_MIGRATION_BATCH")) {
       max_sequence = std::max(max_sequence, ParseU64(fields[3]));
     }
   }
@@ -2918,6 +2936,82 @@ std::string ConstraintMutationBatchSha256(
     return {};
   }
   return "sha256:" + scratchbird::core::hash::HexLower(digest.digest);
+}
+
+std::string CanonicalBigintMigrationPayload(
+    const MgaBigintIdentityMigrationRequest& request,
+    std::uint64_t creator_tx,
+    std::uint64_t event_sequence,
+    std::string_view transaction_uuid,
+    const std::vector<CrudTableRecord>& tables,
+    const std::vector<std::string>& decision_hashes) {
+  std::string payload;
+  auto field = [&](std::string_view key, std::string_view value) {
+    AppendCanonicalBatchField(&payload, key, value);
+  };
+  field("format_version", kBigintMigrationFormat);
+  field("seal_state", "sealed");
+  field("migration_id", request.migration_id);
+  field("creator_tx", std::to_string(creator_tx));
+  field("event_sequence", std::to_string(event_sequence));
+  field("transaction_uuid", transaction_uuid);
+  field("prior_catalog_snapshot_uuid", request.prior_catalog_snapshot_uuid);
+  field("new_catalog_snapshot_uuid", request.new_catalog_snapshot_uuid);
+  field("prior_catalog_generation",
+        std::to_string(request.prior_catalog_generation));
+  field("new_catalog_generation",
+        std::to_string(request.new_catalog_generation));
+  field("mutation_count", std::to_string(request.rows.size()));
+  for (std::size_t i = 0; i < request.rows.size(); ++i) {
+    const auto& row = request.rows[i];
+    const auto& table = tables[i];
+    field("object_uuid", row.object_uuid);
+    field("column_uuid", row.column_uuid);
+    field("old_type_uuid", kLegacyBigintTypeUuid);
+    field("new_type_uuid", kCanonicalBigintTypeUuid);
+    field("old_row_generation", std::to_string(row.old_row_generation));
+    field("new_row_generation", std::to_string(table.event_sequence));
+    field("decision_sha256", decision_hashes[i]);
+    field("table_default_name", table.default_name);
+    field("table_columns", EncodeCrudPairs(table.columns));
+  }
+  return payload;
+}
+
+std::string Sha256Tagged(std::string_view payload) {
+  const auto* bytes = reinterpret_cast<const scratchbird::core::platform::byte*>(
+      payload.data());
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+      bytes, payload.size());
+  if (!digest.ok() ||
+      digest.digest_bytes != scratchbird::core::hash::kSha256DigestBytes) {
+    return {};
+  }
+  return "sha256:" + scratchbird::core::hash::HexLower(digest.digest);
+}
+
+std::string BigintMigrationDecisionHash(
+    const MgaBigintIdentityMigrationRequest& request,
+    const MgaBigintIdentityMigrationRow& row,
+    std::uint64_t new_row_generation,
+    std::string_view transaction_uuid) {
+  std::string payload;
+  auto field = [&](std::string_view key, std::string_view value) {
+    AppendCanonicalBatchField(&payload, key, value);
+  };
+  field("migration_id", request.migration_id);
+  field("transaction_uuid", transaction_uuid);
+  field("prior_catalog_snapshot_uuid", request.prior_catalog_snapshot_uuid);
+  field("new_catalog_snapshot_uuid", request.new_catalog_snapshot_uuid);
+  field("prior_catalog_generation", std::to_string(request.prior_catalog_generation));
+  field("new_catalog_generation", std::to_string(request.new_catalog_generation));
+  field("object_uuid", row.object_uuid);
+  field("column_uuid", row.column_uuid);
+  field("old_type_uuid", kLegacyBigintTypeUuid);
+  field("new_type_uuid", kCanonicalBigintTypeUuid);
+  field("old_row_generation", std::to_string(row.old_row_generation));
+  field("new_row_generation", std::to_string(new_row_generation));
+  return Sha256Tagged(payload);
 }
 
 bool ValidConstraintBatchUuid(
@@ -4946,6 +5040,99 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
       decoded.max_event_sequence =
           std::max(decoded.max_event_sequence, table.event_sequence);
       decoded.tables.push_back(std::move(table));
+    } else if (fields[1] == "BIGINT_IDENTITY_MIGRATION_BATCH") {
+      constexpr std::size_t kHeaderFields = 14;
+      constexpr std::size_t kFieldsPerRow = 13;
+      // A torn append has no authority and is ignored. A complete-looking
+      // record with a bad seal or digest is a catalog contradiction.
+      if (fields.size() < kHeaderFields) continue;
+      const std::uint64_t creator_tx = ParseU64(fields[2]);
+      const std::uint64_t event_sequence = ParseU64(fields[3]);
+      const std::uint64_t mutation_count = ParseU64(fields[13]);
+      if (mutation_count == 0 ||
+          fields.size() != kHeaderFields + mutation_count * kFieldsPerRow) {
+        continue;
+      }
+      if (creator_tx == 0 || event_sequence == 0 ||
+          fields[4] != kBigintMigrationFormat || fields[5] != "sealed" ||
+          fields[6].size() != 71 || !fields[6].starts_with("sha256:") ||
+          fields[7] != kBigintMigrationId || fields[8].empty() ||
+          ParseU64(fields[11]) == 0 ||
+          ParseU64(fields[12]) != ParseU64(fields[11]) + 1) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "bigint_migration_batch_invalid");
+      }
+      MgaBigintIdentityMigrationRequest request;
+      request.migration_id = fields[7];
+      request.prior_catalog_snapshot_uuid = fields[9];
+      request.new_catalog_snapshot_uuid = fields[10];
+      request.prior_catalog_generation = ParseU64(fields[11]);
+      request.new_catalog_generation = ParseU64(fields[12]);
+      std::vector<CrudTableRecord> tables;
+      std::vector<std::string> decisions;
+      std::set<std::pair<std::string, std::string>> identities;
+      for (std::size_t i = 0; i < mutation_count; ++i) {
+        const std::size_t base = kHeaderFields + i * kFieldsPerRow;
+        MgaBigintIdentityMigrationRow row;
+        row.object_uuid = fields[base];
+        row.column_uuid = fields[base + 1];
+        row.old_row_generation = ParseU64(fields[base + 4]);
+        if (fields[base + 2] != kLegacyBigintTypeUuid ||
+            fields[base + 3] != kCanonicalBigintTypeUuid ||
+            row.old_row_generation == 0 ||
+            ParseU64(fields[base + 5]) != event_sequence ||
+            fields[base + 6].size() != 71 ||
+            !fields[base + 6].starts_with("sha256:") ||
+            !identities.emplace(row.object_uuid, row.column_uuid).second) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "bigint_migration_batch_conflict");
+        }
+        CrudTableRecord table;
+        table.creator_tx = creator_tx;
+        table.event_sequence = event_sequence;
+        table.table_uuid = row.object_uuid;
+        table.default_name = DecodeCrudTextLocal(fields[base + 7]);
+        table.columns = DecodeCrudPairs(fields[base + 8]);
+        table.temporary = fields[base + 9] == "1";
+        table.temporary_scope = fields[base + 10];
+        table.temporary_session_uuid = fields[base + 11];
+        table.on_commit_action = fields[base + 12];
+        if (table.temporary || !table.temporary_scope.empty() ||
+            !table.temporary_session_uuid.empty() ||
+            !table.on_commit_action.empty()) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata", "bigint_migration_temporary_unsupported");
+        }
+        request.rows.push_back(std::move(row));
+        decisions.push_back(fields[base + 6]);
+        tables.push_back(std::move(table));
+      }
+      for (std::size_t i = 0; i < request.rows.size(); ++i) {
+        const std::string expected_decision = BigintMigrationDecisionHash(
+            request, request.rows[i], tables[i].event_sequence, fields[8]);
+        if (!scratchbird::core::hash::ConstantTimeEqual(
+                expected_decision, decisions[i])) {
+          return MakeInvalidRequestDiagnostic(
+              "mga.relation_metadata",
+              "bigint_migration_decision_hash_mismatch");
+        }
+      }
+      const std::string payload = CanonicalBigintMigrationPayload(
+          request, creator_tx, event_sequence, fields[8], tables, decisions);
+      if (!scratchbird::core::hash::ConstantTimeEqual(
+              Sha256Tagged(payload), fields[6])) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "bigint_migration_batch_hash_mismatch");
+      }
+      if (MetadataEventRolledBackBySavepoint(savepoints, creator_tx,
+                                             event_sequence)) {
+        continue;
+      }
+      decoded.max_event_sequence =
+          std::max(decoded.max_event_sequence, event_sequence);
+      decoded.tables.insert(decoded.tables.end(),
+                            std::make_move_iterator(tables.begin()),
+                            std::make_move_iterator(tables.end()));
     } else if (fields[1] == "INDEX_METADATA") {
       if (fields.size() < 17) {
         return MakeInvalidRequestDiagnostic("mga.relation_metadata", "index_metadata_invalid");
@@ -8678,6 +8865,224 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
                                         "sealed_batch_append_failed");
   }
   return OkDiagnostic();
+}
+
+MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
+    const EngineRequestContext& context,
+    const MgaBigintIdentityMigrationRequest& request) {
+  constexpr const char* kOperation = "mga.bigint_identity_migration";
+  MgaBigintIdentityMigrationResult result;
+  auto refuse = [&](std::string code, std::string key, std::string detail) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        std::move(code), std::move(key), std::move(detail));
+    return result;
+  };
+  if (context.database_path.empty() || context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty()) {
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  "bigint_identity_migration_context_invalid",
+                  "active MGA transaction and database path required");
+  }
+  const auto authority = ValidateMgaMutatingTransactionAuthority(
+      context, kOperation);
+  if (authority.error) {
+    result.diagnostic = authority;
+    return result;
+  }
+  if (request.migration_id != kBigintMigrationId || request.rows.empty() ||
+      request.prior_catalog_snapshot_uuid.empty() ||
+      request.new_catalog_snapshot_uuid.empty() ||
+      request.prior_catalog_snapshot_uuid == request.new_catalog_snapshot_uuid ||
+      request.prior_catalog_generation == 0 ||
+      request.new_catalog_generation != request.prior_catalog_generation + 1 ||
+      (!context.statement_metadata_snapshot_uuid.canonical.empty() &&
+       context.statement_metadata_snapshot_uuid.canonical !=
+           request.prior_catalog_snapshot_uuid)) {
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  "bigint_identity_migration_snapshot_stale",
+                  "exact prior snapshot and consecutive catalog generation required");
+  }
+
+  const auto current = LoadMgaRelationStoreState(context);
+  if (!current.ok) {
+    result.diagnostic = current.diagnostic;
+    return result;
+  }
+  std::set<std::pair<std::string, std::string>> identities;
+  std::set<std::string> objects;
+  std::vector<CrudTableRecord> tables;
+  tables.reserve(request.rows.size());
+  for (const auto& requested : request.rows) {
+    if (requested.object_uuid.empty() || requested.column_uuid.empty() ||
+        requested.old_row_generation == 0 ||
+        !identities.emplace(requested.object_uuid,
+                            requested.column_uuid).second ||
+        !objects.emplace(requested.object_uuid).second) {
+      return refuse("CORE.AUTHORITY.CONFLICT",
+                    "bigint_identity_migration_multiple_mapping",
+                    "each object and column identity must occur exactly once");
+    }
+    const CrudTableRecord* exact = nullptr;
+    std::uint64_t newest_visible_generation = 0;
+    for (const auto& table : current.state.crud_metadata.tables) {
+      if (table.table_uuid != requested.object_uuid ||
+          !CrudCreatorVisible(current.state.crud_metadata,
+                              table.creator_tx,
+                              table.event_sequence,
+                              context.local_transaction_id)) {
+        continue;
+      }
+      newest_visible_generation =
+          std::max(newest_visible_generation, table.event_sequence);
+      if (table.event_sequence != requested.old_row_generation) continue;
+      if (exact != nullptr) {
+        return refuse("CORE.AUTHORITY.CONFLICT",
+                      "bigint_identity_migration_multiple_mapping",
+                      "multiple visible rows share the expected generation");
+      }
+      exact = &table;
+    }
+    if (exact == nullptr ||
+        newest_visible_generation != requested.old_row_generation) {
+      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                    "bigint_identity_migration_row_generation_stale",
+                    requested.object_uuid);
+    }
+    CrudTableRecord updated = *exact;
+    if (updated.temporary || !updated.temporary_scope.empty() ||
+        !updated.temporary_session_uuid.empty() ||
+        !updated.on_commit_action.empty()) {
+      return refuse("CORE.AUTHORITY.CONFLICT",
+                    "bigint_identity_migration_temporary_unsupported",
+                    requested.object_uuid);
+    }
+    std::size_t matched_columns = 0;
+    for (auto& [column_name, descriptor] : updated.columns) {
+      (void)column_name;
+      const auto descriptor_fields = StrictRelationDescriptorFields(descriptor);
+      if (!descriptor_fields) {
+        return refuse("CORE.AUTHORITY.CONFLICT",
+                      "bigint_identity_migration_descriptor_contradiction",
+                      requested.object_uuid);
+      }
+      const auto column = descriptor_fields->find("column_uuid");
+      if (column == descriptor_fields->end() ||
+          column->second != requested.column_uuid) {
+        continue;
+      }
+      ++matched_columns;
+      const auto type = descriptor_fields->find("type_uuid");
+      if (type == descriptor_fields->end() ||
+          type->second != kLegacyBigintTypeUuid) {
+        return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                      "bigint_identity_migration_legacy_identity_required",
+                      requested.column_uuid);
+      }
+      const auto first = descriptor.find(kLegacyBigintTypeUuid);
+      if (first == std::string::npos ||
+          descriptor.find(kLegacyBigintTypeUuid,
+                          first + kLegacyBigintTypeUuid.size()) !=
+              std::string::npos) {
+        return refuse("CORE.AUTHORITY.CONFLICT",
+                      "bigint_identity_migration_multiple_mapping",
+                      requested.column_uuid);
+      }
+      descriptor.replace(first, kLegacyBigintTypeUuid.size(),
+                         kCanonicalBigintTypeUuid);
+    }
+    if (matched_columns != 1) {
+      return refuse("CORE.AUTHORITY.CONFLICT",
+                    "bigint_identity_migration_column_mapping_conflict",
+                    requested.column_uuid);
+    }
+    tables.push_back(std::move(updated));
+  }
+
+  const auto reservation = ReserveEventSequenceRange(
+      context, "relation_metadata", MetadataStorePath(context), 1,
+      [&context]() { return ScanNextMetadataEventSequence(context); });
+  if (!reservation.ok) {
+    result.diagnostic = reservation.diagnostic;
+    return result;
+  }
+  for (std::size_t i = 0; i < tables.size(); ++i) {
+    if (reservation.first <= request.rows[i].old_row_generation) {
+      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                    "bigint_identity_migration_generation_not_advanced",
+                    request.rows[i].object_uuid);
+    }
+    tables[i].creator_tx = context.local_transaction_id;
+    tables[i].event_sequence = reservation.first;
+  }
+  std::vector<std::string> decisions;
+  decisions.reserve(request.rows.size());
+  for (std::size_t i = 0; i < request.rows.size(); ++i) {
+    decisions.push_back(BigintMigrationDecisionHash(
+        request, request.rows[i], tables[i].event_sequence,
+        context.transaction_uuid.canonical));
+    if (decisions.back().empty()) {
+      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                    "bigint_identity_migration_hash_failed", "sha256");
+    }
+  }
+  const std::string payload = CanonicalBigintMigrationPayload(
+      request, context.local_transaction_id, reservation.first,
+      context.transaction_uuid.canonical, tables,
+      decisions);
+  result.decision_sha256 = Sha256Tagged(payload);
+  if (result.decision_sha256.empty()) {
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  "bigint_identity_migration_hash_failed", "batch");
+  }
+  std::vector<std::string> fields{
+      kRowStoreMagic,
+      "BIGINT_IDENTITY_MIGRATION_BATCH",
+      std::to_string(context.local_transaction_id),
+      std::to_string(reservation.first),
+      std::string(kBigintMigrationFormat),
+      "sealed",
+      result.decision_sha256,
+      request.migration_id,
+      context.transaction_uuid.canonical,
+      request.prior_catalog_snapshot_uuid,
+      request.new_catalog_snapshot_uuid,
+      std::to_string(request.prior_catalog_generation),
+      std::to_string(request.new_catalog_generation),
+      std::to_string(request.rows.size())};
+  for (std::size_t i = 0; i < request.rows.size(); ++i) {
+    const auto& row = request.rows[i];
+    const auto& table = tables[i];
+    fields.insert(fields.end(), {
+        row.object_uuid,
+        row.column_uuid,
+        std::string(kLegacyBigintTypeUuid),
+        std::string(kCanonicalBigintTypeUuid),
+        std::to_string(row.old_row_generation),
+        std::to_string(table.event_sequence),
+        decisions[i],
+        EncodeCrudText(table.default_name),
+        EncodeCrudPairs(table.columns),
+        "0", "", "", ""});
+  }
+  // Publication is this single append. MGA visibility subsequently admits it
+  // only for its creator or after the owning transaction commits.
+  if (!AppendLine(MetadataStorePath(context), JoinLine(fields))) {
+    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+                  "bigint_identity_migration_append_failed",
+                  "sealed batch was not published");
+  }
+  result.ok = true;
+  result.migrated_row_count = request.rows.size();
+  result.diagnostic = OkDiagnostic();
+  result.evidence = {
+      {"migration_id", request.migration_id},
+      {"transaction_uuid", context.transaction_uuid.canonical},
+      {"prior_catalog_snapshot_uuid", request.prior_catalog_snapshot_uuid},
+      {"new_catalog_snapshot_uuid", request.new_catalog_snapshot_uuid},
+      {"prior_catalog_generation", std::to_string(request.prior_catalog_generation)},
+      {"new_catalog_generation", std::to_string(request.new_catalog_generation)},
+      {"decision_sha256", result.decision_sha256}};
+  return result;
 }
 
 EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,

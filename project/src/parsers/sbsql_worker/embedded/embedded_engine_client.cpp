@@ -107,6 +107,12 @@ void PutU16(std::vector<std::uint8_t>* out, std::uint16_t value) {
   out->push_back(static_cast<std::uint8_t>((value >> 8u) & 0xffu));
 }
 
+void PutU32(std::vector<std::uint8_t>* out, std::uint32_t value) {
+  for (std::size_t i = 0; i < sizeof(value); ++i) {
+    out->push_back(static_cast<std::uint8_t>((value >> (i * 8U)) & 0xffU));
+  }
+}
+
 void PutU64(std::vector<std::uint8_t>* out, std::uint64_t value) {
   for (int shift = 0; shift < 64; shift += 8) {
     out->push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
@@ -392,6 +398,76 @@ ServerExecutionResult DecodeExecutePayload(
         "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID",
         "ERROR",
         "The embedded execute result payload is malformed.",
+        "sbp_sbsql.embedded"));
+    return result;
+  }
+  std::string detail;
+  if (!ReadString(operation.payload, &offset, &detail) ||
+      offset >= operation.payload.size()) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID", "ERROR",
+        "The embedded execute cursor descriptor trailer is absent.",
+        "sbp_sbsql.embedded"));
+    return result;
+  }
+  const bool cursor_present =
+      result.cursor_uuid != "00000000-0000-0000-0000-000000000000";
+  const std::uint8_t descriptor_present = operation.payload[offset++];
+  if (descriptor_present != (cursor_present ? 1 : 0)) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SERVER.STREAM.DESCRIPTOR_INVALID", "ERROR",
+        "The embedded cursor result descriptor presence is inconsistent.",
+        "sbp_sbsql.embedded"));
+    return result;
+  }
+  if (descriptor_present != 0) {
+    if (offset + 16 + 2 + 8 + 16 * 5 + 8 + 8 != operation.payload.size()) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          "SERVER.STREAM.DESCRIPTOR_INVALID", "ERROR",
+          "The embedded cursor stream descriptor is malformed.",
+          "sbp_sbsql.embedded"));
+      return result;
+    }
+    auto& descriptor = result.cursor_stream_descriptor;
+    descriptor.present = true;
+    descriptor.stream_descriptor_uuid =
+        scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+    offset += 16;
+    descriptor.descriptor_version = GetU16(operation.payload, offset);
+    offset += 2;
+    descriptor.descriptor_generation = GetU64(operation.payload, offset);
+    offset += 8;
+    descriptor.cursor_uuid =
+        scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+    offset += 16;
+    descriptor.execution_uuid =
+        scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+    offset += 16;
+    descriptor.result_set_uuid =
+        scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+    offset += 16;
+    descriptor.row_descriptor_uuid =
+        scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+    offset += 16;
+    descriptor.snapshot_uuid =
+        scratchbird::server::UuidBytesToText(GetUuid(operation.payload, offset));
+    offset += 16;
+    descriptor.max_chunk_rows = GetU64(operation.payload, offset);
+    offset += 8;
+    descriptor.max_chunk_bytes = GetU64(operation.payload, offset);
+    offset += 8;
+    if (!descriptor.complete() || descriptor.cursor_uuid != result.cursor_uuid) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          "SERVER.STREAM.DESCRIPTOR_INVALID", "ERROR",
+          "The embedded cursor stream descriptor does not bind the cursor.",
+          "sbp_sbsql.embedded"));
+      return result;
+    }
+  }
+  if (offset != operation.payload.size()) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID", "ERROR",
+        "The embedded execute result contains trailing bytes.",
         "sbp_sbsql.embedded"));
     return result;
   }
@@ -883,16 +959,33 @@ ServerExecutionResult EmbeddedEngineClient::ExecuteSblrWithDataPacket(
 
 ServerFetchResult EmbeddedEngineClient::FetchCursor(const SessionContext& session,
                                                     std::string_view cursor_uuid,
+                                                    const ipc::CursorStreamDescriptorV1& stream_descriptor,
                                                     std::uint64_t max_rows,
                                                     std::uint64_t max_bytes,
                                                     std::uint32_t fetch_flags) {
   ServerFetchResult result;
 #if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  if (!stream_descriptor.complete() ||
+      stream_descriptor.cursor_uuid != cursor_uuid || max_rows == 0 ||
+      max_bytes == 0 || max_rows > stream_descriptor.max_chunk_rows ||
+      max_bytes > stream_descriptor.max_chunk_bytes) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SERVER.STREAM.DESCRIPTOR_INVALID", "ERROR",
+        "embedded fetch requires the exact live cursor stream descriptor",
+        "sbp_sbsql.embedded"));
+    return result;
+  }
   auto frame = BaseFrame(static_cast<std::uint16_t>(
                              scratchbird::server::sbps::MessageType::kFetch),
                          session);
-  frame.payload = scratchbird::server::EncodeFetchPayloadForTest(
-      TextToUuid(session.session_uuid), TextToUuid(cursor_uuid), max_rows, max_bytes, fetch_flags);
+  PutUuid(&frame.payload, TextToUuid(session.session_uuid));
+  PutUuid(&frame.payload, TextToUuid(cursor_uuid));
+  PutU64(&frame.payload, max_rows);
+  PutU64(&frame.payload, max_bytes);
+  PutU32(&frame.payload, fetch_flags);
+  PutUuid(&frame.payload, TextToUuid(stream_descriptor.stream_descriptor_uuid));
+  PutU16(&frame.payload, stream_descriptor.descriptor_version);
+  PutU64(&frame.payload, stream_descriptor.descriptor_generation);
   auto operation = scratchbird::server::HandleFetch(&impl_->registry, frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);

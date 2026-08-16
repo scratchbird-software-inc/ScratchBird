@@ -2737,6 +2737,9 @@ endif()
 
 if(SB_BUILD_SERVER OR SB_BUILD_SERVER_EVENT_NOTIFICATIONS)
   add_subdirectory(src/server)
+  if(BUILD_TESTING)
+    add_subdirectory(tests/sbsql_sblr_alignment)
+  endif()
 endif()
 if(SB_BUILD_SERVER_BOUNDARY_GUARD)
   add_subdirectory(tools/sb_server_boundary_guard)
@@ -2936,7 +2939,8 @@ foreach(sb_engine_internal_module_target IN ITEMS
     sb_engine_planner
     sb_engine_optimizer
     sb_engine_executor
-    sb_engine_functions)
+    sb_engine_functions
+    sb_core_resource_governance)
   if(TARGET ${sb_engine_internal_module_target})
     target_link_libraries(sb_engine PRIVATE ${sb_engine_internal_module_target})
     if(TARGET sb_engine_shared)

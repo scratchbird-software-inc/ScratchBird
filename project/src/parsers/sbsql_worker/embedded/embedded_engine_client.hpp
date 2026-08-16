@@ -49,6 +49,7 @@ class EmbeddedEngineClient {
       bool cursor_requested = false);
   ServerFetchResult FetchCursor(const SessionContext& session,
                                 std::string_view cursor_uuid,
+                                const ipc::CursorStreamDescriptorV1& stream_descriptor,
                                 std::uint64_t max_rows = 1,
                                 std::uint64_t max_bytes = 0,
                                 std::uint32_t fetch_flags = 0);

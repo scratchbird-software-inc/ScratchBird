@@ -73,6 +73,32 @@ target_link_libraries(sb_server_resource_governance PUBLIC
   sb_core_resource_governance
 )
 
+add_library(sb_server_sblr_local_gateway
+  sblr_local_gateway.cpp
+)
+target_include_directories(sb_server_sblr_local_gateway PUBLIC
+  ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_features(sb_server_sblr_local_gateway PUBLIC cxx_std_20)
+target_link_libraries(sb_server_sblr_local_gateway PUBLIC
+  sb_core_hash
+  sb_engine_sblr
+)
+
+if(BUILD_TESTING)
+  add_executable(sbsql_sblr_alignment_ia01_local_gateway_contract
+    ${CMAKE_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_local_gateway_contract_test.cpp
+  )
+  target_compile_features(sbsql_sblr_alignment_ia01_local_gateway_contract PRIVATE cxx_std_20)
+  target_link_libraries(sbsql_sblr_alignment_ia01_local_gateway_contract PRIVATE
+    sb_server_sblr_local_gateway
+  )
+  add_test(NAME sbsql_sblr_alignment_ia01_local_gateway_contract
+    COMMAND sbsql_sblr_alignment_ia01_local_gateway_contract)
+  set_tests_properties(sbsql_sblr_alignment_ia01_local_gateway_contract PROPERTIES
+    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-01;SBLR_PACKAGE_BEGIN_END;cluster_gateway")
+endif()
+
 add_library(sb_local_parser_shared_memory_transport
   local_parser_shared_memory_transport.cpp
 )
@@ -150,6 +176,7 @@ if(SB_BUILD_SERVER)
     sb_core_agents
     sb_core_memory
     sb_server_resource_governance
+    sb_server_sblr_local_gateway
     sb_engine
     sb_server_engine_bridge
     sb_server_event_notifications

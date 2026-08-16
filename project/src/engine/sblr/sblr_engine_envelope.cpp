@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_engine_envelope.hpp"
+#include "sblr_literal_runtime.hpp"
+#include "sblr_parameter_runtime.hpp"
 
 #include "hash_digest.hpp"
 #include "sblr_opcode_registry.hpp"
@@ -203,6 +205,30 @@ bool IsOperationKey(std::string_view value, std::size_t maximum) {
     }
   }
   return true;
+}
+
+bool IsCanonicalOperandName(const SblrOperand& operand) {
+  if (operand.value_kind != SblrValueKind::expression_node_ref &&
+      operand.value_kind != SblrValueKind::parameter_node_ref) {
+    return IsOperationKey(operand.name, 256);
+  }
+  // SBLR-RELATIONAL-EXPRESSION-LITERAL-REFERENCE-V1 binds the reference to
+  // the relational DAG's numeric expression identity.  Its canonical text is
+  // unsigned decimal without sign, leading zero, whitespace, or overflow.
+  if (operand.name.empty() || operand.name.size() > 20 ||
+      operand.name.front() < '1' || operand.name.front() > '9') {
+    return false;
+  }
+  std::uint64_t value = 0;
+  for (const char ch : operand.name) {
+    if (ch < '0' || ch > '9') return false;
+    const auto digit = static_cast<std::uint64_t>(ch - '0');
+    if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10) {
+      return false;
+    }
+    value = value * 10 + digit;
+  }
+  return value != 0;
 }
 
 bool IsOpcodeMnemonic(std::string_view value) {
@@ -402,6 +428,18 @@ bool ValidateValueBody(SblrValueKind kind,
     }
     case SblrValueKind::null_value:
       return size == 0;
+    case SblrValueKind::expression_node_table:
+      return DecodeSblrExpressionNodeTableV1(data, size).ok;
+    case SblrValueKind::expression_node_ref: {
+      SblrExpressionNodeReferenceV1 reference;
+      return DecodeSblrExpressionNodeReferenceV1(data, size, &reference);
+    }
+    case SblrValueKind::parameter_node_table:
+      return DecodeSblrParameterNodeTableV1(data, size).ok;
+    case SblrValueKind::parameter_node_ref: {
+      SblrParameterNodeReferenceV1 reference;
+      return DecodeSblrParameterNodeReferenceV1(data, size, &reference);
+    }
   }
   return false;
 }
@@ -455,13 +493,14 @@ bool DecodeOperandVector(const std::uint8_t* data,
     }
     if (!reader.Take(slot_size, &text_data)) return false;
     operand.name.assign(reinterpret_cast<const char*>(text_data), slot_size);
-    if (!IsValidUtf8(operand.name) || !IsOperationKey(operand.name, 256) ||
+    if (!IsValidUtf8(operand.name) ||
         !reader.Read16(&raw_kind) || !reader.Read16(&operand.value_flags) ||
         !reader.Read64(&value_size) || operand.value_flags != 0 ||
         value_size > reader.remaining()) {
       return false;
     }
     operand.value_kind = static_cast<SblrValueKind>(raw_kind);
+    if (!IsCanonicalOperandName(operand)) return false;
     const std::uint8_t* value_data = nullptr;
     if (!reader.Take(static_cast<std::size_t>(value_size), &value_data) ||
         !ValidateValueBody(operand.value_kind, value_data,
@@ -605,12 +644,18 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
     fail("SBLR.OPERATION.LIMIT_EXCEEDED", "operand count exceeds the v1 limit");
   }
   std::uint64_t value_count = 0;
+  std::size_t expression_node_table_count = 0;
+  std::optional<SblrExpressionNodeTableCodecResultV1> expression_node_table;
+  std::vector<SblrExpressionNodeReferenceV1> expression_node_references;
+  std::size_t parameter_node_table_count = 0;
+  std::optional<SblrParameterNodeTableCodecResultV1> parameter_node_table;
+  std::vector<SblrParameterNodeReferenceV1> parameter_node_references;
   for (std::size_t i = 0; i < envelope.operands.size(); ++i) {
     const auto& operand = envelope.operands[i];
     bool limit_exceeded = false;
     if (operand.ordinal != i + 1 || !operand.value.empty() ||
         operand.value_flags != 0 || !IsOperationKey(operand.type, 256) ||
-        !IsOperationKey(operand.name, 256) ||
+        !IsCanonicalOperandName(operand) ||
         !ValidateValueBody(operand.value_kind, operand.value_body.data(),
                            operand.value_body.size(), 1, &value_count,
                            &limit_exceeded)) {
@@ -619,6 +664,92 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
            "operand vector is not canonical typed SBOP data");
       break;
     }
+    if (operand.value_kind == SblrValueKind::expression_node_table) {
+      ++expression_node_table_count;
+      if (envelope.operation_id != "query.execute" ||
+          envelope.opcode != "SBLR_QUERY_EXECUTE" ||
+          operand.type != "expression.node_table.v1" ||
+          operand.name != "expression_nodes" ||
+          expression_node_table_count != 1) {
+        fail("SBLR.OPERAND_INVALID",
+             "SBXN v1 is admitted only as the unique query.execute expression_nodes carrier");
+        break;
+      }
+      expression_node_table = DecodeSblrExpressionNodeTableV1(
+          operand.value_body.data(), operand.value_body.size());
+    }
+    if (operand.value_kind == SblrValueKind::expression_node_ref) {
+      SblrExpressionNodeReferenceV1 reference;
+      if (envelope.operation_id != "query.execute" ||
+          envelope.opcode != "SBLR_QUERY_EXECUTE" ||
+          operand.type != "relational_expression_v1" ||
+          !DecodeSblrExpressionNodeReferenceV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &reference)) {
+        fail("SBLR.OPERAND_INVALID",
+             "expression_node_ref is not an exact query relational literal reference");
+        break;
+      }
+      expression_node_references.push_back(reference);
+    }
+    if (operand.value_kind == SblrValueKind::parameter_node_table) {
+      ++parameter_node_table_count;
+      if (envelope.operation_id != "query.execute" ||
+          envelope.opcode != "SBLR_QUERY_EXECUTE" ||
+          operand.type != "expression.parameter_node_table.v1" ||
+          operand.name != "parameter_nodes" ||
+          parameter_node_table_count != 1) {
+        fail("SBLR.OPERAND_INVALID",
+             "SBPN v1 is admitted only as the unique query.execute parameter_nodes carrier");
+        break;
+      }
+      parameter_node_table = DecodeSblrParameterNodeTableV1(
+          operand.value_body.data(), operand.value_body.size());
+    }
+    if (operand.value_kind == SblrValueKind::parameter_node_ref) {
+      SblrParameterNodeReferenceV1 reference;
+      if (envelope.operation_id != "query.execute" ||
+          envelope.opcode != "SBLR_QUERY_EXECUTE" ||
+          operand.type != "relational_expression_v1" ||
+          !DecodeSblrParameterNodeReferenceV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &reference)) {
+        fail("SBLR.OPERAND_INVALID",
+             "parameter_node_ref is not an exact query relational parameter reference");
+        break;
+      }
+      parameter_node_references.push_back(reference);
+    }
+  }
+  if (expression_node_table.has_value()) {
+    if (!ValidateSblrLiteralReferenceBijectionV1(
+            *expression_node_table, expression_node_references)) {
+      fail("SBLR.OPERAND_INVALID",
+           "SBXN nodes and relational literal references are not bijective");
+    }
+  } else if (!expression_node_references.empty()) {
+    fail("SBLR.OPERAND_INVALID",
+         "relational literal reference requires the exact SBXN table");
+  }
+  if (parameter_node_table.has_value()) {
+    if (!ValidateSblrParameterReferenceBijectionV1(
+            *parameter_node_table, parameter_node_references)) {
+      fail("SBLR.OPERAND_INVALID",
+           "SBPN nodes and relational parameter references are not bijective");
+    }
+  } else if (!parameter_node_references.empty()) {
+    fail("SBLR.OPERAND_INVALID",
+         "relational parameter reference requires the exact SBPN table");
+  }
+  if (envelope.opcode_code == 3 || envelope.opcode == "SBLR_LITERAL" ||
+      envelope.operation_id == "engine.op.literal") {
+    fail("SBLR.OPERAND_INVALID",
+         "SBLR_LITERAL is forbidden as a top-level operation root");
+  }
+  if (envelope.opcode_code == 4 || envelope.opcode == "SBLR_PARAMETER" ||
+      envelope.operation_id == "engine.op.parameter") {
+    fail("SBLR.OPERAND_INVALID",
+         "SBLR_PARAMETER is forbidden as a top-level operation root");
   }
   return result;
 }

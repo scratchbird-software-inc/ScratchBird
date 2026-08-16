@@ -100,6 +100,22 @@ struct RelationalExpressionRecord {
   std::optional<RelationalLiteralKind> literal_kind;
   std::optional<std::string> operator_name;
   std::optional<std::string> literal_or_parameter_ref;
+  struct LiteralTypedValueV1 {
+    std::string descriptor_uuid;
+    std::uint64_t descriptor_generation{0};
+    std::string value_state;
+    std::vector<std::uint8_t> canonical_value_bytes;
+    std::array<std::uint8_t,32> canonical_value_sha256{};
+  };
+  std::optional<LiteralTypedValueV1> literal_typed_value_v1;
+  struct ParameterTypedValueV1 {
+    std::string descriptor_uuid;
+    std::uint64_t descriptor_generation{0};
+    std::string value_state;
+    std::vector<std::uint8_t> canonical_value_bytes;
+    std::array<std::uint8_t,32> canonical_value_sha256{};
+  };
+  std::optional<ParameterTypedValueV1> parameter_typed_value_v1;
 };
 
 struct RelationalOutputRecord {

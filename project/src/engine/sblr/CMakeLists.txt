@@ -39,6 +39,20 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   return()
 endif()
 
+# Pure canonical parameter wire codecs shared by parser producers and by the
+# server/engine's independent revalidation path. This target contains no
+# catalog, MGA, admission, executor, or optimizer authority.
+add_library(sb_sblr_parameter_wire_codec STATIC
+  sblr_parameter_runtime.cpp
+  sblr_parameter_negotiation.cpp
+)
+target_compile_features(sb_sblr_parameter_wire_codec PUBLIC cxx_std_20)
+target_include_directories(sb_sblr_parameter_wire_codec PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(sb_sblr_parameter_wire_codec PUBLIC sb_core_hash)
+
 add_library(sb_engine_sblr
   aggregates/sblr_aggregate_family_landing_zone.cpp
   canonical_relational_expression.cpp
@@ -67,9 +81,11 @@ add_library(sb_engine_sblr
   sblr_dispatch.cpp
   sblr_hot_path_execution.cpp
   sblr_llvm_seam.cpp
+  sblr_literal_runtime.cpp
   sblr_native_specialization.cpp
   sblr_operator_runtime.cpp
   sblr_opcode_registry.cpp
+  sblr_opcode_stream.cpp
   sblr_parser_memory_handoff.cpp
   sblr_parser_authority_guards.cpp
   sblr_parser_projection.cpp
@@ -85,6 +101,8 @@ add_library(sb_engine_sblr
   sblr_transaction_hooks.cpp
   window/sblr_window_family_landing_zone.cpp
 )
+
+target_link_libraries(sb_engine_sblr PUBLIC sb_sblr_parameter_wire_codec)
 
 if(NOT TARGET sb_engine_functions)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../functions ${CMAKE_CURRENT_BINARY_DIR}/engine_functions)
@@ -140,4 +158,16 @@ if(TARGET sb_engine_functions)
 endif()
 if(TARGET sb_cluster_provider)
   target_link_libraries(sb_engine_sblr PRIVATE sb_cluster_provider)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(sbsql_sblr_alignment_ia01_opcode_contract
+    ${CMAKE_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_opcode_contract_test.cpp
+  )
+  target_compile_features(sbsql_sblr_alignment_ia01_opcode_contract PRIVATE cxx_std_20)
+  target_link_libraries(sbsql_sblr_alignment_ia01_opcode_contract PRIVATE sb_engine_sblr)
+  add_test(NAME sbsql_sblr_alignment_ia01_opcode_contract
+    COMMAND sbsql_sblr_alignment_ia01_opcode_contract)
+  set_tests_properties(sbsql_sblr_alignment_ia01_opcode_contract PROPERTIES
+    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-01;SBLR_PACKAGE_BEGIN_END;contract")
 endif()
