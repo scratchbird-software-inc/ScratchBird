@@ -923,7 +923,9 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubqueryBound(
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kSubquery ||
       !correlated_implementation ||
-      selected_node->input_physical_node_ids.size() != 2) {
+      selected_node->input_physical_node_ids.size() != 2 ||
+      selected_node->input_physical_node_ids[0] ==
+          selected_node->input_physical_node_ids[1]) {
     return refuse("correlated subquery physical profile is not bound");
   }
   for (const auto& node : execution_dag.nodes) {
@@ -1279,7 +1281,9 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kJoin ||
       selected_node->implementation_id != expected_implementation ||
-      selected_node->input_physical_node_ids.size() != 2) {
+      selected_node->input_physical_node_ids.size() != 2 ||
+      selected_node->input_physical_node_ids[0] ==
+          selected_node->input_physical_node_ids[1]) {
     return refuse("LATERAL/APPLY physical profile is not exactly bound");
   }
   for (const auto& node : request.physical_dag.nodes) {
