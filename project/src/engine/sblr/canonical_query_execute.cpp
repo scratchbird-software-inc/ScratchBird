@@ -16000,7 +16000,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "composition runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "node-composition.selected-plan",
       "node-driven composition");
   if (!planning.ok) return refuse(planning.diagnostic_id, planning.detail);
@@ -16047,11 +16047,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   }
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
       request.context, planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       MakeLiveValuesRegistration(
           std::move(values_batches), values_capability_uuid,
@@ -16432,7 +16433,7 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "set runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles,
       "set." + set_profile.identity_component + ".selected-plan",
       set_profile.operation_name);
@@ -16524,12 +16525,13 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
       };
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
       BuildCanonicalExecutionMgaAuthority(request.context,
                                           planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(std::move(set_registration));
@@ -16841,7 +16843,7 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "nested set runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, graph_identity + ".selected-plan",
       "NESTED SET OPERATION");
   if (!planning.ok) {
@@ -16857,11 +16859,12 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
       "QOW-DIAG-RELATIONAL-LIVE-SET-VALUES-V1",
       "NESTED SET OPERATION");
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
       request.context, planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
 
@@ -17429,7 +17432,7 @@ ExecuteCanonicalObjectFreeJoinQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "join runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "join." + join_component + ".selected-plan",
       operation_name);
   if (!planning.ok) {
@@ -17453,12 +17456,13 @@ ExecuteCanonicalObjectFreeJoinQuery(
       *join_kind, operation_name, request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
       BuildCanonicalExecutionMgaAuthority(request.context,
                                           planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(std::move(join_registration));
@@ -18080,7 +18084,7 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "JOIN SQL-tail runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles,
       fetch_first_rows_only
           ? "inner-join-filter-project-distinct-sort-fetch.selected-plan"
@@ -18128,11 +18132,12 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
       request.expression_services, request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
       request.context, planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -18431,7 +18436,7 @@ ExecuteCanonicalObjectFreeFilterQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "FILTER runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "filter.selected-plan", "FILTER");
   if (!planning.ok) {
     return refuse(planning.diagnostic_id, planning.detail);
@@ -18455,12 +18460,13 @@ ExecuteCanonicalObjectFreeFilterQuery(
       request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
       BuildCanonicalExecutionMgaAuthority(request.context,
                                           planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -18652,7 +18658,7 @@ ExecuteCanonicalObjectFreeProjectQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "PROJECT runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "project.selected-plan", "PROJECT");
   if (!planning.ok) {
     return refuse(planning.diagnostic_id, planning.detail);
@@ -18674,12 +18680,13 @@ ExecuteCanonicalObjectFreeProjectQuery(
       request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
       BuildCanonicalExecutionMgaAuthority(request.context,
                                           planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -18948,7 +18955,7 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "FILTER/PROJECT runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "filter-project.selected-plan", "FILTER/PROJECT");
   if (!planning.ok) {
     return refuse(planning.diagnostic_id, planning.detail);
@@ -18976,12 +18983,13 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
       request.expression_services, request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
       BuildCanonicalExecutionMgaAuthority(request.context,
                                           planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -19228,7 +19236,7 @@ ExecuteCanonicalObjectFreeProjectSortQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "PROJECT/SORT runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "project-sort.selected-plan", "PROJECT/SORT");
   if (!planning.ok) {
     return refuse(planning.diagnostic_id, planning.detail);
@@ -19255,12 +19263,13 @@ ExecuteCanonicalObjectFreeProjectSortQuery(
       request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
       BuildCanonicalExecutionMgaAuthority(request.context,
                                           planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -19593,7 +19602,7 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "FILTER/PROJECT/SORT runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "filter-project-sort.selected-plan",
       "FILTER/PROJECT/SORT");
   if (!planning.ok) {
@@ -19629,12 +19638,13 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
       request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
       BuildCanonicalExecutionMgaAuthority(request.context,
                                           planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -20019,7 +20029,7 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "FILTER/PROJECT/SORT/LIMIT runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "filter-project-sort-limit.selected-plan",
       "FILTER/PROJECT/SORT/LIMIT");
   if (!planning.ok) {
@@ -20058,12 +20068,13 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
       filtered_row_count, request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
       BuildCanonicalExecutionMgaAuthority(request.context,
                                           planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -20496,7 +20507,7 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "full SQL-tail runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles,
       fetch_first_rows_only
           ? "filter-project-distinct-sort-fetch.selected-plan"
@@ -20543,12 +20554,13 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
       fetch_first_rows_only, filtered_row_count, request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
       BuildCanonicalExecutionMgaAuthority(request.context,
                                           planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -20858,7 +20870,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "grouped aggregate runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles,
       has_having ? "grouped-having.selected-plan"
                  : "grouped-aggregate.selected-plan",
@@ -21236,12 +21248,13 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   }
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
       BuildCanonicalExecutionMgaAuthority(request.context,
                                           planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -21724,7 +21737,7 @@ ExecuteCanonicalObjectFreePivotQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "PIVOT runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "pivot.selected-plan", "PIVOT");
   if (!planning.ok) return refuse(planning.diagnostic_id, planning.detail);
   result.optimizer_selected = true;
@@ -21829,11 +21842,12 @@ ExecuteCanonicalObjectFreePivotQuery(
       };
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
       request.context, planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -22245,7 +22259,7 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "UNPIVOT runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "unpivot.selected-plan", "UNPIVOT");
   if (!planning.ok) return refuse(planning.diagnostic_id, planning.detail);
   result.optimizer_selected = true;
@@ -22326,11 +22340,12 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
       };
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
       request.context, planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -22808,7 +22823,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "AGGREGATE runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "aggregate.selected-plan", "AGGREGATE");
   if (!planning.ok) {
     return refuse(planning.diagnostic_id, planning.detail);
@@ -22969,12 +22984,13 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       };
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
       BuildCanonicalExecutionMgaAuthority(request.context,
                                           planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -23161,7 +23177,7 @@ ExecuteCanonicalObjectFreeLimitQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "LIMIT runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "limit.selected-plan", "LIMIT");
   if (!planning.ok) {
     return refuse(planning.diagnostic_id, planning.detail);
@@ -23239,12 +23255,13 @@ ExecuteCanonicalObjectFreeLimitQuery(
       };
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
       BuildCanonicalExecutionMgaAuthority(request.context,
                                           planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -23468,7 +23485,7 @@ ExecuteCanonicalObjectFreeSortQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "SORT runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles, "sort.selected-plan", "SORT");
   if (!planning.ok) {
     return refuse(planning.diagnostic_id, planning.detail);
@@ -23591,12 +23608,13 @@ ExecuteCanonicalObjectFreeSortQuery(
       };
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority =
       BuildCanonicalExecutionMgaAuthority(request.context,
                                           planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -23905,7 +23923,7 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "DISTINCT/SORT/LIMIT runtime memory receipts are incomplete");
   }
-  const auto planning = PlanAndPublishLivePhysicalDag(
+  auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles,
       fetch_first_rows_only ? "fetch-distinct-sort.selected-plan"
                             : "limit-distinct-sort.selected-plan",
@@ -23943,11 +23961,12 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
       fetch_first_rows_only, input_row_count, request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
   execution_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
       request.context, planning.physical_dag);
+  execution_request.selected_physical_dag =
+      std::move(planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
