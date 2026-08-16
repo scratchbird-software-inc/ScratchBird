@@ -2890,6 +2890,13 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
     const DescriptorBatch& borrowed_input_batch);
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request);
+// Borrowed ordinary-order execution carriers are consumed synchronously and
+// never retained. The request's owned DAG and input carriers must remain in
+// their exact default states, and no expression order-key receipt may be set.
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
     const CanonicalDescriptorOrderTerm& term,
     const ExecutorColumnDescriptor& column);

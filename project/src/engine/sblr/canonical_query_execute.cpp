@@ -10502,17 +10502,15 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
         exec::CanonicalDescriptorSortRequest sort_request;
-        sort_request.physical_dag = dag;
         sort_request.selected_physical_node_id = node.physical_node_id;
-        sort_request.input_batch = input_batch;
         sort_request.order_terms = order_terms;
         sort_request.deterministic_tie_evidence_uuid =
             deterministic_tie_evidence_uuid;
         sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
         sort_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        auto sort_result =
-            exec::ExecuteCanonicalDescriptorSort(sort_request);
+        auto sort_result = exec::ExecuteCanonicalDescriptorSort(
+            sort_request, dag, input_batch);
         if (!sort_result.diagnostic.ok) {
           step.diagnostic = std::move(sort_result.diagnostic);
           return step;
@@ -10601,16 +10599,15 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
           order_terms.push_back(std::move(term));
         }
         exec::CanonicalDescriptorSortRequest sort_request;
-        sort_request.physical_dag = dag;
         sort_request.selected_physical_node_id = node.physical_node_id;
-        sort_request.input_batch = input_batch;
         sort_request.order_terms = std::move(order_terms);
         sort_request.deterministic_tie_evidence_uuid =
             deterministic_tie_evidence_uuid;
         sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
         sort_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        auto sorted = exec::ExecuteCanonicalDescriptorSort(sort_request);
+        auto sorted = exec::ExecuteCanonicalDescriptorSort(
+            sort_request, dag, input_batch);
         if (!sorted.diagnostic.ok) {
           step.diagnostic = std::move(sorted.diagnostic);
           return step;
@@ -23562,9 +23559,7 @@ ExecuteCanonicalObjectFreeSortQuery(
           }
           sort_request.order_key_receipt = std::move(issued.receipt);
         } else {
-          sort_request.physical_dag = dag;
           sort_request.selected_physical_node_id = node.physical_node_id;
-          sort_request.input_batch = input_batch;
           sort_request.order_terms = order_terms;
           sort_request.deterministic_tie_evidence_uuid =
               deterministic_tie_evidence_uuid;
@@ -23572,7 +23567,10 @@ ExecuteCanonicalObjectFreeSortQuery(
           sort_request.mga_authority = mga_authority;
         }
         auto sort_result =
-            exec::ExecuteCanonicalDescriptorSort(sort_request);
+            expression_ordering
+                ? exec::ExecuteCanonicalDescriptorSort(sort_request)
+                : exec::ExecuteCanonicalDescriptorSort(
+                      sort_request, dag, input_batch);
         if (!sort_result.diagnostic.ok) {
           step.diagnostic = std::move(sort_result.diagnostic);
           return step;

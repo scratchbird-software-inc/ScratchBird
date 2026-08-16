@@ -705,8 +705,17 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
 // Execute an already-bound physical ORDER BY node.  Every descriptor handle,
 // collation authority, operand encoding, and row-pair comparison is validated
 // before the first output row is materialized.
-CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
-    const CanonicalDescriptorSortRequest& request) {
+namespace {
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
+    const TypedPhysicalNodeDag& execution_dag,
+    const CanonicalExecutionMgaAuthority& execution_mga_authority,
+    const std::uint64_t selected_physical_node_id,
+    const std::size_t maximum_pair_comparisons,
+    const DescriptorBatch& execution_input_batch,
+    const DescriptorBatch& execution_order_batch,
+    const std::vector<CanonicalDescriptorOrderTerm>& execution_order_terms,
+    const std::string& execution_deterministic_tie_evidence_uuid,
+    const bool separate_order_key_batch) {
   CanonicalDescriptorSortResult result;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
     result.diagnostic = std::move(diagnostic);
@@ -718,48 +727,15 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
                           std::move(detail)));
   };
 
-  const TypedPhysicalNodeDag* physical_dag = &request.physical_dag;
+  const TypedPhysicalNodeDag* physical_dag = &execution_dag;
   const CanonicalExecutionMgaAuthority* mga_authority =
-      &request.mga_authority;
-  std::uint64_t selected_physical_node_id =
-      request.selected_physical_node_id;
-  std::size_t maximum_pair_comparisons =
-      request.maximum_pair_comparisons;
-  const DescriptorBatch* input_batch = &request.input_batch;
-  const DescriptorBatch* order_batch = &request.input_batch;
+      &execution_mga_authority;
+  const DescriptorBatch* input_batch = &execution_input_batch;
+  const DescriptorBatch* order_batch = &execution_order_batch;
   const std::vector<CanonicalDescriptorOrderTerm>* order_terms =
-      &request.order_terms;
+      &execution_order_terms;
   const std::string* deterministic_tie_evidence_uuid =
-      &request.deterministic_tie_evidence_uuid;
-  if (request.order_key_receipt != nullptr) {
-    const auto& receipt = *request.order_key_receipt;
-    if (!request.physical_dag.nodes.empty() ||
-        !request.physical_dag.selected_plan_uuid.empty() ||
-        request.selected_physical_node_id != 0 ||
-        !request.input_batch.columns.empty() ||
-        !request.input_batch.rows.empty() || !request.order_terms.empty() ||
-        !request.deterministic_tie_evidence_uuid.empty() ||
-        !receipt.exact_current_revalidated_before_issue_ ||
-        receipt.physical_dag_.nodes.empty() ||
-        receipt.selected_physical_node_id_ == 0 ||
-        receipt.maximum_pair_comparisons_ == 0 ||
-        receipt.maximum_order_key_batch_bytes_ == 0 ||
-        receipt.ordering_property_uuid_.empty() ||
-        request.mga_authority.origin != CanonicalMgaAuthorityOrigin::kMissing ||
-        static_cast<bool>(request.mga_authority.resolve_current)) {
-      return order_refusal(
-          "expression order-key receipt does not bind this execution");
-    }
-    physical_dag = &receipt.physical_dag_;
-    mga_authority = &receipt.mga_authority_;
-    selected_physical_node_id = receipt.selected_physical_node_id_;
-    maximum_pair_comparisons = receipt.maximum_pair_comparisons_;
-    input_batch = &receipt.input_batch_;
-    order_batch = &receipt.order_key_batch_;
-    order_terms = &receipt.order_terms_;
-    deterministic_tie_evidence_uuid =
-        &receipt.deterministic_tie_evidence_uuid_;
-  }
+      &execution_deterministic_tie_evidence_uuid;
 
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
       *mga_authority, *physical_dag);
@@ -798,7 +774,7 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
   auto input_validation = ValidateCanonicalDescriptorBatch(
       *input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
-  if (request.order_key_receipt != nullptr) {
+  if (separate_order_key_batch) {
     if (order_batch->rows.size() != input_batch->rows.size()) {
       return order_refusal(
           "materialized order-key cardinality differs from the input");
@@ -905,6 +881,82 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
   result.causal_counter_id = selected_node->causal_counter_id;
   result.mga_statement_context = mga_authority->statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request) {
+  const TypedPhysicalNodeDag* physical_dag = &request.physical_dag;
+  const CanonicalExecutionMgaAuthority* mga_authority =
+      &request.mga_authority;
+  std::uint64_t selected_physical_node_id =
+      request.selected_physical_node_id;
+  std::size_t maximum_pair_comparisons =
+      request.maximum_pair_comparisons;
+  const DescriptorBatch* input_batch = &request.input_batch;
+  const DescriptorBatch* order_batch = &request.input_batch;
+  const std::vector<CanonicalDescriptorOrderTerm>* order_terms =
+      &request.order_terms;
+  const std::string* deterministic_tie_evidence_uuid =
+      &request.deterministic_tie_evidence_uuid;
+  bool separate_order_key_batch = false;
+  if (request.order_key_receipt != nullptr) {
+    const auto& receipt = *request.order_key_receipt;
+    if (!request.physical_dag.nodes.empty() ||
+        !request.physical_dag.selected_plan_uuid.empty() ||
+        request.selected_physical_node_id != 0 ||
+        !request.input_batch.columns.empty() ||
+        !request.input_batch.rows.empty() || !request.order_terms.empty() ||
+        !request.deterministic_tie_evidence_uuid.empty() ||
+        !receipt.exact_current_revalidated_before_issue_ ||
+        receipt.physical_dag_.nodes.empty() ||
+        receipt.selected_physical_node_id_ == 0 ||
+        receipt.maximum_pair_comparisons_ == 0 ||
+        receipt.maximum_order_key_batch_bytes_ == 0 ||
+        receipt.ordering_property_uuid_.empty() ||
+        request.mga_authority.origin != CanonicalMgaAuthorityOrigin::kMissing ||
+        static_cast<bool>(request.mga_authority.resolve_current)) {
+      CanonicalDescriptorSortResult result;
+      result.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
+          "expression order-key receipt does not bind this execution");
+      return result;
+    }
+    physical_dag = &receipt.physical_dag_;
+    mga_authority = &receipt.mga_authority_;
+    selected_physical_node_id = receipt.selected_physical_node_id_;
+    maximum_pair_comparisons = receipt.maximum_pair_comparisons_;
+    input_batch = &receipt.input_batch_;
+    order_batch = &receipt.order_key_batch_;
+    order_terms = &receipt.order_terms_;
+    deterministic_tie_evidence_uuid =
+        &receipt.deterministic_tie_evidence_uuid_;
+    separate_order_key_batch = true;
+  }
+  return ExecuteCanonicalDescriptorSortBound(
+      *physical_dag, *mga_authority, selected_physical_node_id,
+      maximum_pair_comparisons, *input_batch, *order_batch, *order_terms,
+      *deterministic_tie_evidence_uuid, separate_order_key_batch);
+}
+
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  if (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+      !DescriptorBatchCarrierIsExactDefault(request.input_batch) ||
+      request.order_key_receipt != nullptr) {
+    CanonicalDescriptorSortResult result;
+    result.diagnostic = Refusal(
+        "QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
+        "descriptor order request carries conflicting owned execution carriers");
+    return result;
+  }
+  return ExecuteCanonicalDescriptorSortBound(
+      borrowed_execution_dag, request.mga_authority,
+      request.selected_physical_node_id, request.maximum_pair_comparisons,
+      borrowed_input_batch, borrowed_input_batch, request.order_terms,
+      request.deterministic_tie_evidence_uuid, false);
 }
 
 }  // namespace scratchbird::engine::executor
