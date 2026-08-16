@@ -6927,6 +6927,59 @@ class CanonicalDescriptorFilterPredicateReceiptIssuer {
       const std::uint64_t selected_physical_node_id,
       const std::size_t maximum_input_row_count,
       const exec::CanonicalExecutionMgaAuthority& mga_authority) {
+    return IssueBound(
+        relational_dag, predicate_expression_id, predicate_row_binding,
+        input_batch, expression_services, expression_consumer,
+        predicate_consumer, physical_dag, selected_physical_node_id,
+        physical_dag.root_physical_node_id, maximum_input_row_count,
+        mga_authority, false);
+  }
+
+  static exec::CanonicalDescriptorFilterResult IssueAndExecuteBorrowed(
+      const api::TypedRelationalDag& relational_dag,
+      const std::uint32_t predicate_expression_id,
+      const CanonicalRelationalExpressionRowBinding& predicate_row_binding,
+      const exec::DescriptorBatch& input_batch,
+      const CanonicalRelationalExpressionRuntimeServices& expression_services,
+      const api::EngineCanonicalExpressionConsumer expression_consumer,
+      const api::EnginePredicateConsumer predicate_consumer,
+      const exec::TypedPhysicalNodeDag& physical_dag,
+      const std::uint64_t selected_physical_node_id,
+      const std::uint64_t scoped_root_physical_node_id,
+      const std::size_t maximum_input_row_count,
+      const exec::CanonicalExecutionMgaAuthority& mga_authority) {
+    auto issued = IssueBound(
+        relational_dag, predicate_expression_id, predicate_row_binding,
+        input_batch, expression_services, expression_consumer,
+        predicate_consumer, physical_dag, selected_physical_node_id,
+        scoped_root_physical_node_id, maximum_input_row_count, mga_authority,
+        true);
+    if (!issued.diagnostic.ok || !issued.receipt) {
+      exec::CanonicalDescriptorFilterResult result;
+      result.diagnostic = std::move(issued.diagnostic);
+      return result;
+    }
+    exec::CanonicalDescriptorFilterRequest request;
+    request.predicate_receipt = std::move(issued.receipt);
+    return exec::ExecuteCanonicalDescriptorFilter(
+        request, physical_dag, scoped_root_physical_node_id, input_batch);
+  }
+
+ private:
+  static FilterPredicateReceiptIssueResult IssueBound(
+      const api::TypedRelationalDag& relational_dag,
+      const std::uint32_t predicate_expression_id,
+      const CanonicalRelationalExpressionRowBinding& predicate_row_binding,
+      const exec::DescriptorBatch& input_batch,
+      const CanonicalRelationalExpressionRuntimeServices& expression_services,
+      const api::EngineCanonicalExpressionConsumer expression_consumer,
+      const api::EnginePredicateConsumer predicate_consumer,
+      const exec::TypedPhysicalNodeDag& physical_dag,
+      const std::uint64_t selected_physical_node_id,
+      const std::uint64_t scoped_root_physical_node_id,
+      const std::size_t maximum_input_row_count,
+      const exec::CanonicalExecutionMgaAuthority& mga_authority,
+      const bool borrowed_execution_carriers) {
     FilterPredicateReceiptIssueResult result;
     const auto refuse = [&](std::string detail) {
       result.diagnostic.ok = false;
@@ -6966,7 +7019,7 @@ class CanonicalDescriptorFilterPredicateReceiptIssuer {
         });
     if (selected_node == physical_dag.nodes.end() ||
         selected_physical_node_id == 0 ||
-        selected_physical_node_id != physical_dag.root_physical_node_id ||
+        selected_physical_node_id != scoped_root_physical_node_id ||
         selected_node->node_kind != exec::PhysicalNodeKind::kFilter ||
         selected_node->implementation_id != "filter.3vl.row.v1" ||
         selected_node->input_physical_node_ids.size() != 1 ||
@@ -7075,9 +7128,11 @@ class CanonicalDescriptorFilterPredicateReceiptIssuer {
       auto receipt = std::shared_ptr<
           exec::CanonicalDescriptorFilterPredicateReceipt>(
           new exec::CanonicalDescriptorFilterPredicateReceipt());
-      receipt->physical_dag_ = physical_dag;
+      if (!borrowed_execution_carriers) {
+        receipt->physical_dag_ = physical_dag;
+        receipt->input_batch_ = input_batch;
+      }
       receipt->selected_physical_node_id_ = selected_physical_node_id;
-      receipt->input_batch_ = input_batch;
       receipt->row_truth_values_ = std::move(row_truth_values);
       receipt->consumer_ = predicate_consumer;
       receipt->expression_consumer_ = expression_consumer;
@@ -7090,6 +7145,8 @@ class CanonicalDescriptorFilterPredicateReceiptIssuer {
       receipt->maximum_input_row_count_ = maximum_input_row_count;
       receipt->mga_authority_ = mga_authority;
       receipt->exact_current_revalidated_before_issue_ = true;
+      receipt->borrowed_execution_carriers_ =
+          borrowed_execution_carriers;
       result.receipt = std::move(receipt);
     } catch (const std::bad_alloc&) {
       return refuse("predicate receipt allocation failed");
@@ -8321,35 +8378,18 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
               "FILTER input cardinality differs from its selected cost";
           return step;
         }
-        exec::TypedPhysicalNodeDag operator_dag;
-        std::string operator_dag_detail;
-        if (!BuildOperatorLocalPhysicalDag(
-                dag, node.physical_node_id, &operator_dag,
-                &operator_dag_detail)) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-FILTER-INPUT-V1";
-          step.diagnostic.detail = std::move(operator_dag_detail);
-          return step;
-        }
         const auto mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, operator_dag);
-        auto issued = CanonicalDescriptorFilterPredicateReceiptIssuer::Issue(
-            relational_dag, predicate_expression_id, predicate_row_binding,
-            input_batch, expression_services,
-            api::EngineCanonicalExpressionConsumer::filter,
-            api::EnginePredicateConsumer::filter, operator_dag,
-            node.physical_node_id, expected_input_row_count, mga_authority);
-        if (!issued.diagnostic.ok || !issued.receipt) {
-          step.diagnostic = std::move(issued.diagnostic);
-          return step;
-        }
-        exec::CanonicalDescriptorFilterRequest filter_request;
-        filter_request.predicate_receipt = std::move(issued.receipt);
-        auto filter_result =
-            exec::ExecuteCanonicalDescriptorFilter(filter_request);
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        auto filter_result = CanonicalDescriptorFilterPredicateReceiptIssuer::
+            IssueAndExecuteBorrowed(
+                relational_dag, predicate_expression_id,
+                predicate_row_binding, input_batch, expression_services,
+                api::EngineCanonicalExpressionConsumer::filter,
+                api::EnginePredicateConsumer::filter, dag,
+                node.physical_node_id, node.physical_node_id,
+                expected_input_row_count, mga_authority);
         if (!filter_result.diagnostic.ok) {
-          step.diagnostic = filter_result.diagnostic;
+          step.diagnostic = std::move(filter_result.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -8358,7 +8398,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
         step.output_row_count = filter_result.output_batch.rows.size();
         step.materialized_output_batch =
             std::move(filter_result.output_batch);
-        step.mga_statement_context = filter_result.mga_statement_context;
+        step.mga_statement_context =
+            std::move(filter_result.mga_statement_context);
         return step;
       };
   return registration;
@@ -8482,35 +8523,18 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
           step.diagnostic = input_validation;
           return step;
         }
-        exec::TypedPhysicalNodeDag operator_dag;
-        std::string operator_dag_detail;
-        if (!BuildOperatorLocalPhysicalDag(
-                dag, node.physical_node_id, &operator_dag,
-                &operator_dag_detail)) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-INPUT-V1";
-          step.diagnostic.detail = std::move(operator_dag_detail);
-          return step;
-        }
         const auto mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, operator_dag);
-        auto issued = CanonicalDescriptorFilterPredicateReceiptIssuer::Issue(
-            relational_dag, predicate_expression_id, predicate_row_binding,
-            input_batch, expression_services,
-            api::EngineCanonicalExpressionConsumer::filter,
-            api::EnginePredicateConsumer::filter, operator_dag,
-            node.physical_node_id, maximum_input_row_count, mga_authority);
-        if (!issued.diagnostic.ok || !issued.receipt) {
-          step.diagnostic = std::move(issued.diagnostic);
-          return step;
-        }
-        exec::CanonicalDescriptorFilterRequest filter_request;
-        filter_request.predicate_receipt = std::move(issued.receipt);
-        const auto filtered =
-            exec::ExecuteCanonicalDescriptorFilter(filter_request);
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        auto filtered = CanonicalDescriptorFilterPredicateReceiptIssuer::
+            IssueAndExecuteBorrowed(
+                relational_dag, predicate_expression_id,
+                predicate_row_binding, input_batch, expression_services,
+                api::EngineCanonicalExpressionConsumer::filter,
+                api::EnginePredicateConsumer::filter, dag,
+                node.physical_node_id, node.physical_node_id,
+                maximum_input_row_count, mga_authority);
         if (!filtered.diagnostic.ok) {
-          step.diagnostic = filtered.diagnostic;
+          step.diagnostic = std::move(filtered.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -8518,7 +8542,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = filtered.output_batch.rows.size();
         step.materialized_output_batch = std::move(filtered.output_batch);
-        step.mga_statement_context = filtered.mga_statement_context;
+        step.mga_statement_context =
+            std::move(filtered.mga_statement_context);
         return step;
       };
   return registration;
@@ -21119,38 +21144,19 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
             return step;
           }
 
-          exec::TypedPhysicalNodeDag operator_dag;
-          std::string operator_dag_detail;
-          if (!BuildOperatorLocalPhysicalDag(
-                  dag, node.physical_node_id, &operator_dag,
-                  &operator_dag_detail)) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
-            step.diagnostic.detail = std::move(operator_dag_detail);
-            return step;
-          }
           const auto mga_authority =
-              BuildCanonicalExecutionMgaAuthority(mga_context, operator_dag);
-          auto issued =
-              CanonicalDescriptorFilterPredicateReceiptIssuer::Issue(
+              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+          auto filter_result = CanonicalDescriptorFilterPredicateReceiptIssuer::
+              IssueAndExecuteBorrowed(
                   relational_dag, prepared_having.predicate_expression_id,
                   prepared_having.row_binding, input_batch,
                   expression_services,
                   api::EngineCanonicalExpressionConsumer::aggregate,
-                  api::EnginePredicateConsumer::having, operator_dag,
-                  node.physical_node_id, maximum_output_rows, mga_authority);
-          if (!issued.diagnostic.ok || !issued.receipt) {
-            step.diagnostic = std::move(issued.diagnostic);
-            return step;
-          }
-
-          exec::CanonicalDescriptorFilterRequest filter_request;
-          filter_request.predicate_receipt = std::move(issued.receipt);
-          auto filter_result =
-              exec::ExecuteCanonicalDescriptorFilter(filter_request);
+                  api::EnginePredicateConsumer::having, dag,
+                  node.physical_node_id, node.physical_node_id,
+                  maximum_output_rows, mga_authority);
           if (!filter_result.diagnostic.ok) {
-            step.diagnostic = filter_result.diagnostic;
+            step.diagnostic = std::move(filter_result.diagnostic);
             return step;
           }
           step.result_handle_id = node.physical_node_id;
@@ -21159,7 +21165,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
           step.output_row_count = filter_result.output_batch.rows.size();
           step.materialized_output_batch =
               std::move(filter_result.output_batch);
-          step.mga_statement_context = filter_result.mga_statement_context;
+          step.mga_statement_context =
+              std::move(filter_result.mga_statement_context);
           return step;
         };
   }

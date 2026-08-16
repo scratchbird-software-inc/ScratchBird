@@ -344,6 +344,12 @@ class CanonicalDescriptorFilterPredicateReceipt {
       CanonicalDescriptorFilterPredicateReceiptIssuer;
   friend CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
       const CanonicalDescriptorFilterRequest& request);
+  friend CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilterBound(
+      const CanonicalDescriptorFilterRequest& request,
+      const TypedPhysicalNodeDag& borrowed_execution_dag,
+      std::uint64_t scoped_root_physical_node_id,
+      const DescriptorBatch& borrowed_input_batch,
+      bool borrowed_execution_carriers);
 
   CanonicalDescriptorFilterPredicateReceipt() = default;
 
@@ -363,6 +369,7 @@ class CanonicalDescriptorFilterPredicateReceipt {
   std::size_t maximum_input_row_count_ = 0;
   CanonicalExecutionMgaAuthority mga_authority_;
   bool exact_current_revalidated_before_issue_ = false;
+  bool borrowed_execution_carriers_ = false;
 };
 
 struct CanonicalDescriptorFilterRequest {
@@ -2681,6 +2688,14 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
     const CanonicalDescriptorProjectionRequest& request);
 CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
     const CanonicalDescriptorFilterRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. They are accepted only with an engine-issued receipt whose owned
+// DAG and input-batch carriers remain exact-default.
+CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
+    const CanonicalDescriptorFilterRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
     const CanonicalDescriptorLimitRequest& request);
 CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
