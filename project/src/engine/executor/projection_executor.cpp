@@ -8,6 +8,7 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include <string_view>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -38,6 +39,12 @@ bool ProjectionColumnCarrierIsExactDefault(
   const std::vector<std::size_t> empty;
   return projected_columns.empty() &&
          projected_columns.capacity() == empty.capacity();
+}
+
+bool IsCanonicalDescriptorProjectionImplementation(
+    const std::string_view implementation_id) {
+  return implementation_id == "project.typed.row.v1" ||
+         implementation_id == "project.descriptor-direct.v1";
 }
 
 }  // namespace
@@ -91,10 +98,13 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjectionBound(
                           "selected projection node is not the physical root"));
   }
   if (selected_node->node_kind != PhysicalNodeKind::kProject ||
+      !IsCanonicalDescriptorProjectionImplementation(
+          selected_node->implementation_id) ||
       selected_node->input_physical_node_ids.size() != 1) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-029-CANONICAL-PHYSICAL-ROUTE-V1",
-        "descriptor projection requires one selected project node"));
+        "descriptor projection requires one selected canonical direct "
+        "project implementation"));
   }
   for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
