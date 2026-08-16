@@ -5365,7 +5365,8 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
 }
 
 CanonicalAggregateRuntimeRequest CloneCanonicalAggregateRequestWithoutRows(
-    const CanonicalAggregateRuntimeRequest& source);
+    const CanonicalAggregateRuntimeRequest& source,
+    bool copy_execution_carriers = true);
 
 // QOW-SOURCE-QRY-011-REGISTRY-MOVING-INVERSE-V1
 // Maintain one exact COUNT/SUM/AVG state across an ordered sequence of window
@@ -5862,12 +5863,15 @@ ComputeCanonicalAggregateGroupingMetadata(
 }
 
 CanonicalAggregateRuntimeRequest CloneCanonicalAggregateRequestWithoutRows(
-    const CanonicalAggregateRuntimeRequest& source) {
+    const CanonicalAggregateRuntimeRequest& source,
+    const bool copy_execution_carriers) {
   CanonicalAggregateRuntimeRequest clone;
-  clone.physical_dag = source.physical_dag;
+  if (copy_execution_carriers) {
+    clone.physical_dag = source.physical_dag;
+    clone.input_batch.columns = source.input_batch.columns;
+  }
   clone.selected_physical_node_id = source.selected_physical_node_id;
   clone.descriptor = source.descriptor;
-  clone.input_batch.columns = source.input_batch.columns;
   clone.value_columns = source.value_columns;
   clone.value_expression_descriptor_ids =
       source.value_expression_descriptor_ids;
@@ -6176,30 +6180,28 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   result.grouping_set_transition_count =
       row_count * request.grouping_sets.size();
 
-  const auto make_kernel_request = [&]() {
-    auto kernel_request =
-        CloneCanonicalAggregateRequestWithoutRows(aggregate);
-    // The grouped node's complete output was validated above.  Its internal
-    // registry-state kernel publishes only the aggregate field, so project
-    // that already-bound field while retaining the exact plan/node/MGA IDs.
-    for (auto& node : kernel_request.physical_dag.nodes) {
-      if (node.physical_node_id == kernel_request.selected_physical_node_id) {
-        node.output_descriptor_ids = {
-            kernel_request.result_column.descriptor_id};
-        break;
-      }
+  // The grouped node's complete output was validated above. Its internal
+  // registry-state kernel publishes only the aggregate field, so derive that
+  // physical view once and borrow it across synchronous preflight/group calls.
+  auto kernel_dag = aggregate.physical_dag;
+  for (auto& node : kernel_dag.nodes) {
+    if (node.physical_node_id == aggregate.selected_physical_node_id) {
+      node.output_descriptor_ids = {aggregate.result_column.descriptor_id};
+      break;
     }
-    return kernel_request;
+  }
+  const auto make_kernel_request = [&]() {
+    return CloneCanonicalAggregateRequestWithoutRows(aggregate, false);
   };
   auto preflight_request = make_kernel_request();
-  preflight_request.input_batch.rows.clear();
+  DescriptorBatch preflight_input_batch;
+  preflight_input_batch.columns = input_batch.columns;
   if (preflight_request.filter_truth_values.has_value()) {
     preflight_request.filter_truth_values =
         std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>{};
   }
   auto preflight = ExecuteCanonicalAggregateRuntimeSelected(
-      preflight_request, preflight_request.physical_dag,
-      preflight_request.input_batch, false, false,
+      preflight_request, kernel_dag, preflight_input_batch, true, false,
       {retained_memory_bytes + input_payload_bytes + source_filter_bytes,
        std::nullopt});
   if (!preflight.diagnostic.ok) {
@@ -6339,10 +6341,11 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   std::size_t retained_output_payload_bytes = 0;
   for (const auto& group : working_groups) {
     auto group_request = make_kernel_request();
+    DescriptorBatch group_input_batch;
+    group_input_batch.columns = input_batch.columns;
     const auto remaining_finalization_bytes =
         maximum_combined_final_output_bytes -
         result.combined_final_output_bytes;
-    group_request.input_batch.rows.clear();
     const auto copy_fixed_memory =
         retained_memory_bytes + aggregate.retained_memory_bytes +
         input_payload_bytes + source_filter_bytes;
@@ -6383,9 +6386,9 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
           "grouped aggregate input or FILTER copy exceeds the selected-node grant"));
     }
-    group_request.input_batch.rows.reserve(group.source_rows.size());
+    group_input_batch.rows.reserve(group.source_rows.size());
     for (const auto row : group.source_rows) {
-      group_request.input_batch.rows.push_back(input_batch.rows[row]);
+      group_input_batch.rows.push_back(input_batch.rows[row]);
     }
     if (filter_truth_values != nullptr) {
       std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>
@@ -6428,8 +6431,7 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
           "grouped aggregate retained output exhausted the selected-node grant"));
     }
     auto aggregate_result = ExecuteCanonicalAggregateRuntimeSelected(
-        group_request, group_request.physical_dag,
-        group_request.input_batch, false, false,
+        group_request, kernel_dag, group_input_batch, true, false,
         {scope_retained_memory + retained_output_payload_bytes +
              group_key_payload_bytes,
          remaining_finalization_bytes});
@@ -6676,29 +6678,11 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
       &common};
   aggregate_specs.reserve(aggregate_count);
   const auto has_shadow_authority = [](const auto& specification) {
-    const auto& dag = specification.physical_dag;
     return specification.selected_physical_node_id != 0 ||
            specification.retained_memory_bytes != 0 ||
-           !specification.input_batch.columns.empty() ||
-           !specification.input_batch.rows.empty() || dag.abi_version != 1 ||
-           !dag.selected_plan_uuid.empty() || dag.root_physical_node_id != 0 ||
-           dag.local_transaction_id != 0 || dag.statement_snapshot_id != 0 ||
-           !dag.admission_evidence.empty() || !dag.nodes.empty() ||
-           !dag.bound_sblr_tree_uuid.empty() ||
-           !dag.catalog_epoch_uuid.empty() ||
-           !dag.security_context_uuid.empty() ||
-           !dag.capability_snapshot_uuid.empty() ||
-           !dag.resource_snapshot_uuid.empty() ||
-           !dag.statistics_snapshot_uuid.empty() ||
-           !dag.route_snapshot_uuid.empty() || dag.catalog_generation != 0 ||
-           dag.security_epoch != 0 || dag.policy_epoch != 0 ||
-           dag.resource_epoch != 0 || dag.statistics_generation != 0 ||
-           dag.route_epoch != 0 || dag.route_generation != 0 ||
-           dag.memory_budget_bytes != 0 || dag.spill_allowed ||
-           dag.optimizer_published || dag.immutable_node_identity_validated ||
-           dag.capability_validated_before_access || dag.data_access_observed ||
-           dag.parser_execution_authority_claimed ||
-           dag.transaction_finality_authority_claimed;
+           !TypedPhysicalNodeDagCarrierIsExactDefault(
+               specification.physical_dag) ||
+           !DescriptorBatchCarrierIsExactDefault(specification.input_batch);
   };
   for (const auto& specification : request.additional_aggregates) {
     if (has_shadow_authority(specification)) {
