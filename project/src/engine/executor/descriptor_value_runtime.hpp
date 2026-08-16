@@ -2336,6 +2336,10 @@ class CanonicalDescriptorSortKeyReceipt {
       CanonicalDescriptorSortKeyReceiptIssuer;
   friend CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
       const CanonicalDescriptorSortRequest& request);
+  friend CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+      const CanonicalDescriptorSortRequest& request,
+      const TypedPhysicalNodeDag& borrowed_execution_dag,
+      const DescriptorBatch& borrowed_input_batch);
 
   CanonicalDescriptorSortKeyReceipt() = default;
 
@@ -2352,6 +2356,7 @@ class CanonicalDescriptorSortKeyReceipt {
   std::uint64_t maximum_order_key_batch_bytes_ = 0;
   CanonicalExecutionMgaAuthority mga_authority_;
   bool exact_current_revalidated_before_issue_ = false;
+  bool borrowed_execution_carriers_ = false;
 };
 
 struct CanonicalDescriptorSortRequest {
@@ -2359,7 +2364,8 @@ struct CanonicalDescriptorSortRequest {
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch input_batch;
   // Expression ordering uses only an engine-issued receipt that owns the
-  // exact payload/key pair. Ordinary input-column ordering leaves this null.
+  // exact materialized key sidecar and either owns or synchronously binds the
+  // execution payload. Ordinary input-column ordering leaves this null.
   std::shared_ptr<const CanonicalDescriptorSortKeyReceipt> order_key_receipt;
   std::vector<CanonicalDescriptorOrderTerm> order_terms;
   std::string deterministic_tie_evidence_uuid;
@@ -2950,9 +2956,11 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
     const DescriptorBatch& borrowed_input_batch);
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request);
-// Borrowed ordinary-order execution carriers are consumed synchronously and
-// never retained. The request's owned DAG and input carriers must remain in
-// their exact default states, and no expression order-key receipt may be set.
+// Borrowed execution carriers are consumed synchronously and never retained.
+// The request's owned DAG and input carriers must remain in their exact
+// default states. An expression order-key receipt, when present, must be the
+// borrowed-execution form and continues to own its derived key sidecar and
+// ordering semantics.
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,

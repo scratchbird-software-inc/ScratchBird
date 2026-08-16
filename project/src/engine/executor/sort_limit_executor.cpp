@@ -45,6 +45,53 @@ bool StringCarrierIsExactDefault(const std::string& value) {
   return value.empty() && value.capacity() == empty.capacity();
 }
 
+bool CanonicalExecutionMgaAuthorityCarrierIsExactDefault(
+    const CanonicalExecutionMgaAuthority& authority) {
+  const CanonicalExecutionMgaAuthority empty;
+  const auto exact_empty_string = [](const std::string& value,
+                                     const std::string& baseline) {
+    return value.empty() && value.capacity() == baseline.capacity();
+  };
+  const auto& context = authority.statement_context;
+  const auto& empty_context = empty.statement_context;
+  return authority.origin == empty.origin && !authority.resolve_current &&
+         PhysicalMgaStatementContextEqual(context, empty_context) &&
+         exact_empty_string(context.statement_uuid,
+                            empty_context.statement_uuid) &&
+         exact_empty_string(context.owning_transaction_uuid,
+                            empty_context.owning_transaction_uuid) &&
+         exact_empty_string(context.statement_snapshot_uuid,
+                            empty_context.statement_snapshot_uuid) &&
+         exact_empty_string(context.statement_metadata_snapshot_uuid,
+                            empty_context.statement_metadata_snapshot_uuid) &&
+         exact_empty_string(context.snapshot_kind,
+                            empty_context.snapshot_kind) &&
+         exact_empty_string(context.statement_timestamp,
+                            empty_context.statement_timestamp) &&
+         context.active_excluded_local_transaction_ids.empty() &&
+         context.active_excluded_local_transaction_ids.capacity() ==
+             empty_context.active_excluded_local_transaction_ids.capacity() &&
+         context.in_doubt_excluded_local_transaction_ids.empty() &&
+         context.in_doubt_excluded_local_transaction_ids.capacity() ==
+             empty_context.in_doubt_excluded_local_transaction_ids.capacity();
+}
+
+bool SortReceiptRequestCarriersAreExactDefault(
+    const CanonicalDescriptorSortRequest& request) {
+  const CanonicalDescriptorSortRequest empty;
+  return TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) &&
+         request.selected_physical_node_id ==
+             empty.selected_physical_node_id &&
+         DescriptorBatchCarrierIsExactDefault(request.input_batch) &&
+         DescriptorOrderTermsCarrierIsExactDefault(request.order_terms) &&
+         StringCarrierIsExactDefault(
+             request.deterministic_tie_evidence_uuid) &&
+         request.maximum_pair_comparisons ==
+             empty.maximum_pair_comparisons &&
+         CanonicalExecutionMgaAuthorityCarrierIsExactDefault(
+             request.mga_authority);
+}
+
 bool IsCanonicalUuid(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
       value[18] != '-' || value[23] != '-') {
@@ -913,20 +960,14 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
   bool separate_order_key_batch = false;
   if (request.order_key_receipt != nullptr) {
     const auto& receipt = *request.order_key_receipt;
-    if (!request.physical_dag.nodes.empty() ||
-        !request.physical_dag.selected_plan_uuid.empty() ||
-        request.selected_physical_node_id != 0 ||
-        !request.input_batch.columns.empty() ||
-        !request.input_batch.rows.empty() || !request.order_terms.empty() ||
-        !request.deterministic_tie_evidence_uuid.empty() ||
+    if (!SortReceiptRequestCarriersAreExactDefault(request) ||
         !receipt.exact_current_revalidated_before_issue_ ||
+        receipt.borrowed_execution_carriers_ ||
         receipt.physical_dag_.nodes.empty() ||
         receipt.selected_physical_node_id_ == 0 ||
         receipt.maximum_pair_comparisons_ == 0 ||
         receipt.maximum_order_key_batch_bytes_ == 0 ||
-        receipt.ordering_property_uuid_.empty() ||
-        request.mga_authority.origin != CanonicalMgaAuthorityOrigin::kMissing ||
-        static_cast<bool>(request.mga_authority.resolve_current)) {
+        receipt.ordering_property_uuid_.empty()) {
       CanonicalDescriptorSortResult result;
       result.diagnostic = Refusal(
           "QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
@@ -954,6 +995,30 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch) {
+  if (request.order_key_receipt != nullptr) {
+    const auto& receipt = *request.order_key_receipt;
+    if (!SortReceiptRequestCarriersAreExactDefault(request) ||
+        !receipt.exact_current_revalidated_before_issue_ ||
+        !receipt.borrowed_execution_carriers_ ||
+        !TypedPhysicalNodeDagCarrierIsExactDefault(receipt.physical_dag_) ||
+        !DescriptorBatchCarrierIsExactDefault(receipt.input_batch_) ||
+        receipt.selected_physical_node_id_ == 0 ||
+        receipt.maximum_pair_comparisons_ == 0 ||
+        receipt.maximum_order_key_batch_bytes_ == 0 ||
+        receipt.ordering_property_uuid_.empty()) {
+      CanonicalDescriptorSortResult result;
+      result.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
+          "borrowed expression order-key receipt does not bind this execution");
+      return result;
+    }
+    return ExecuteCanonicalDescriptorSortBound(
+        borrowed_execution_dag, receipt.mga_authority_,
+        receipt.selected_physical_node_id_,
+        receipt.maximum_pair_comparisons_, borrowed_input_batch,
+        receipt.order_key_batch_, receipt.order_terms_,
+        receipt.deterministic_tie_evidence_uuid_, true);
+  }
   if (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
       !DescriptorBatchCarrierIsExactDefault(request.input_batch) ||
       request.order_key_receipt != nullptr) {

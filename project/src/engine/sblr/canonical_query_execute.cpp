@@ -7171,6 +7171,59 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       const std::size_t maximum_pair_comparisons,
       const std::uint64_t maximum_order_key_batch_bytes,
       const exec::CanonicalExecutionMgaAuthority& mga_authority) {
+    return IssueBound(
+        relational_dag, expressions, input_batch, expression_services,
+        physical_dag, selected_physical_node_id, order_terms,
+        ordering_property_uuid, deterministic_tie_evidence_uuid,
+        maximum_pair_comparisons, maximum_order_key_batch_bytes,
+        mga_authority, false);
+  }
+
+  static exec::CanonicalDescriptorSortResult IssueAndExecuteBorrowed(
+      const api::TypedRelationalDag& relational_dag,
+      const std::vector<PreparedSortExpression>& expressions,
+      const exec::DescriptorBatch& input_batch,
+      const CanonicalRelationalExpressionRuntimeServices& expression_services,
+      const exec::TypedPhysicalNodeDag& physical_dag,
+      const std::uint64_t selected_physical_node_id,
+      const std::vector<exec::CanonicalDescriptorOrderTerm>& order_terms,
+      const std::string& ordering_property_uuid,
+      const std::string& deterministic_tie_evidence_uuid,
+      const std::size_t maximum_pair_comparisons,
+      const std::uint64_t maximum_order_key_batch_bytes,
+      const exec::CanonicalExecutionMgaAuthority& mga_authority) {
+    auto issued = IssueBound(
+        relational_dag, expressions, input_batch, expression_services,
+        physical_dag, selected_physical_node_id, order_terms,
+        ordering_property_uuid, deterministic_tie_evidence_uuid,
+        maximum_pair_comparisons, maximum_order_key_batch_bytes,
+        mga_authority, true);
+    if (!issued.diagnostic.ok || issued.receipt == nullptr) {
+      exec::CanonicalDescriptorSortResult result;
+      result.diagnostic = std::move(issued.diagnostic);
+      return result;
+    }
+    exec::CanonicalDescriptorSortRequest request;
+    request.order_key_receipt = std::move(issued.receipt);
+    return exec::ExecuteCanonicalDescriptorSort(
+        request, physical_dag, input_batch);
+  }
+
+ private:
+  static ExpressionSortKeyReceiptIssueResult IssueBound(
+      const api::TypedRelationalDag& relational_dag,
+      const std::vector<PreparedSortExpression>& expressions,
+      const exec::DescriptorBatch& input_batch,
+      const CanonicalRelationalExpressionRuntimeServices& expression_services,
+      const exec::TypedPhysicalNodeDag& physical_dag,
+      const std::uint64_t selected_physical_node_id,
+      const std::vector<exec::CanonicalDescriptorOrderTerm>& order_terms,
+      const std::string& ordering_property_uuid,
+      const std::string& deterministic_tie_evidence_uuid,
+      const std::size_t maximum_pair_comparisons,
+      const std::uint64_t maximum_order_key_batch_bytes,
+      const exec::CanonicalExecutionMgaAuthority& mga_authority,
+      const bool borrowed_execution_carriers) {
     ExpressionSortKeyReceiptIssueResult result;
     const auto refuse = [&](std::string detail) {
       result.diagnostic.ok = false;
@@ -7335,9 +7388,11 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       auto receipt =
           std::shared_ptr<exec::CanonicalDescriptorSortKeyReceipt>(
               new exec::CanonicalDescriptorSortKeyReceipt());
-      receipt->physical_dag_ = physical_dag;
+      if (!borrowed_execution_carriers) {
+        receipt->physical_dag_ = physical_dag;
+        receipt->input_batch_ = input_batch;
+      }
       receipt->selected_physical_node_id_ = selected_physical_node_id;
-      receipt->input_batch_ = input_batch;
       receipt->order_key_batch_ = std::move(order_key_batch);
       receipt->order_terms_ = order_terms;
       receipt->expression_ids_ = std::move(expression_ids);
@@ -7351,6 +7406,8 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
           maximum_order_key_batch_bytes;
       receipt->mga_authority_ = mga_authority;
       receipt->exact_current_revalidated_before_issue_ = true;
+      receipt->borrowed_execution_carriers_ =
+          borrowed_execution_carriers;
       result.receipt = std::move(receipt);
     } catch (const std::bad_alloc&) {
       return refuse("expression order-key receipt allocation failed");
@@ -10655,20 +10712,13 @@ MakeLiveExpressionSortRegistration(
         }
         const auto mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        auto issued = CanonicalDescriptorSortKeyReceiptIssuer::Issue(
-            relational_dag, expressions, input_batch, expression_services,
-            dag, node.physical_node_id, order_terms,
-            ordering_property_uuid, deterministic_tie_evidence_uuid,
-            maximum_pair_comparisons, maximum_order_key_batch_bytes,
-            mga_authority);
-        if (!issued.diagnostic.ok || issued.receipt == nullptr) {
-          step.diagnostic = std::move(issued.diagnostic);
-          return step;
-        }
-
-        exec::CanonicalDescriptorSortRequest sort_request;
-        sort_request.order_key_receipt = std::move(issued.receipt);
-        auto sorted = exec::ExecuteCanonicalDescriptorSort(sort_request);
+        auto sorted = CanonicalDescriptorSortKeyReceiptIssuer::
+            IssueAndExecuteBorrowed(
+                relational_dag, expressions, input_batch,
+                expression_services, dag, node.physical_node_id,
+                order_terms, ordering_property_uuid,
+                deterministic_tie_evidence_uuid, maximum_pair_comparisons,
+                maximum_order_key_batch_bytes, mga_authority);
         if (!sorted.diagnostic.ok) {
           step.diagnostic = std::move(sorted.diagnostic);
           return step;
@@ -23504,7 +23554,7 @@ ExecuteCanonicalObjectFreeSortQuery(
         const auto mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
 
-        exec::CanonicalDescriptorSortRequest sort_request;
+        exec::CanonicalDescriptorSortResult sort_result;
         if (expression_ordering) {
           const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
               input_batch, inputs.front().output_descriptor_ids);
@@ -23512,28 +23562,22 @@ ExecuteCanonicalObjectFreeSortQuery(
             step.diagnostic = input_validation;
             return step;
           }
-          auto issued = CanonicalDescriptorSortKeyReceiptIssuer::Issue(
-              relational_dag, expressions, input_batch,
-              expression_services, dag, node.physical_node_id, order_terms,
-              ordering_property_uuid, deterministic_tie_evidence_uuid,
-              maximum_pair_comparisons, maximum_order_key_batch_bytes,
-              mga_authority);
-          if (!issued.diagnostic.ok || issued.receipt == nullptr) {
-            step.diagnostic = std::move(issued.diagnostic);
-            return step;
-          }
-          sort_request.order_key_receipt = std::move(issued.receipt);
+          sort_result = CanonicalDescriptorSortKeyReceiptIssuer::
+              IssueAndExecuteBorrowed(
+                  relational_dag, expressions, input_batch,
+                  expression_services, dag, node.physical_node_id,
+                  order_terms, ordering_property_uuid,
+                  deterministic_tie_evidence_uuid, maximum_pair_comparisons,
+                  maximum_order_key_batch_bytes, mga_authority);
         } else {
+          exec::CanonicalDescriptorSortRequest sort_request;
           sort_request.selected_physical_node_id = node.physical_node_id;
           sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
           sort_request.mga_authority = mga_authority;
+          sort_result = exec::ExecuteCanonicalDescriptorSort(
+              sort_request, dag, input_batch, order_terms,
+              deterministic_tie_evidence_uuid);
         }
-        auto sort_result =
-            expression_ordering
-                ? exec::ExecuteCanonicalDescriptorSort(sort_request)
-                : exec::ExecuteCanonicalDescriptorSort(
-                      sort_request, dag, input_batch, order_terms,
-                      deterministic_tie_evidence_uuid);
         if (!sort_result.diagnostic.ok) {
           step.diagnostic = std::move(sort_result.diagnostic);
           return step;
