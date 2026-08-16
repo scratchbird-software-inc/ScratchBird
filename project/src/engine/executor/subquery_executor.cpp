@@ -259,8 +259,13 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
 // table-subquery result. Zero rows produce one typed SQL NULL, one row
 // preserves its value, and more than one row fails before any scalar result is
 // published.
-CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
-    const CanonicalScalarSubqueryRequest& request) {
+namespace {
+CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubqueryBound(
+    const CanonicalScalarSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   using scratchbird::engine::internal_api::EngineTypedValue;
   using scratchbird::engine::internal_api::EngineValueState;
 
@@ -278,7 +283,12 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
     return result;
   };
 
-  auto table = ExecuteCanonicalTableSubquery(request.table_request);
+  auto table = borrowed_execution_carriers
+                   ? ExecuteCanonicalTableSubquery(
+                         request.table_request, execution_dag,
+                         scoped_root_physical_node_id,
+                         execution_input_batch)
+                   : ExecuteCanonicalTableSubquery(request.table_request);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
@@ -336,7 +346,7 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.table_request.mga_authority,
-      request.table_request.physical_dag);
+      execution_dag);
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
@@ -356,8 +366,12 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
 // Enforce the row-subquery cardinality contract over the canonical table
 // result. Zero rows produce one typed all-NULL row, one row preserves every
 // field, and more than one row fails before any row value is published.
-CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
-    const CanonicalRowSubqueryRequest& request) {
+CanonicalRowSubqueryResult ExecuteCanonicalRowSubqueryBound(
+    const CanonicalRowSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   using scratchbird::engine::internal_api::EngineTypedValue;
   using scratchbird::engine::internal_api::EngineValueState;
 
@@ -375,7 +389,12 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
     return result;
   };
 
-  auto table = ExecuteCanonicalTableSubquery(request.table_request);
+  auto table = borrowed_execution_carriers
+                   ? ExecuteCanonicalTableSubquery(
+                         request.table_request, execution_dag,
+                         scoped_root_physical_node_id,
+                         execution_input_batch)
+                   : ExecuteCanonicalTableSubquery(request.table_request);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
@@ -448,7 +467,7 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.table_request.mga_authority,
-      request.table_request.physical_dag);
+      execution_dag);
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
@@ -462,6 +481,43 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
   result.mga_statement_context =
       request.table_request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
+    const CanonicalScalarSubqueryRequest& request) {
+  return ExecuteCanonicalScalarSubqueryBound(
+      request, request.table_request.physical_dag,
+      request.table_request.physical_dag.root_physical_node_id,
+      request.table_request.input_batch, false);
+}
+
+CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
+    const CanonicalScalarSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalScalarSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id,
+      borrowed_input_batch, true);
+}
+
+CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
+    const CanonicalRowSubqueryRequest& request) {
+  return ExecuteCanonicalRowSubqueryBound(
+      request, request.table_request.physical_dag,
+      request.table_request.physical_dag.root_physical_node_id,
+      request.table_request.input_batch, false);
+}
+
+CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
+    const CanonicalRowSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalRowSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id,
+      borrowed_input_batch, true);
 }
 
 // QOW-SOURCE-QRY-013-EXISTS-V1

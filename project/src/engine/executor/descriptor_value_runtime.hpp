@@ -2701,8 +2701,21 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
     const DescriptorBatch& borrowed_input_batch);
 CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
     const CanonicalScalarSubqueryRequest& request);
+// Borrowed scalar/row carriers are consumed synchronously and never retained.
+// Their nested table request must keep its owned DAG and input batch exact
+// default.
+CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
+    const CanonicalScalarSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
     const CanonicalRowSubqueryRequest& request);
+CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
+    const CanonicalRowSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
     const CanonicalExistsSubqueryRequest& request);
 CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(

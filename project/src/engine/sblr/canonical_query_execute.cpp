@@ -10846,26 +10846,15 @@ MakeLiveCardinalitySubqueryRegistration(
               "cardinality subquery did not receive its bounded typed input";
           return step;
         }
-        exec::TypedPhysicalNodeDag operator_dag;
-        std::string detail;
-        if (!BuildOperatorLocalPhysicalDag(
-                dag, node.physical_node_id, &operator_dag, &detail)) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
-          step.diagnostic.detail = std::move(detail);
-          return step;
-        }
-        exec::CanonicalTableSubqueryRequest table_request;
-        table_request.physical_dag = std::move(operator_dag);
-        table_request.selected_physical_node_id = node.physical_node_id;
-        table_request.input_batch =
+        const auto& input_batch =
             *inputs.front().materialized_output_batch;
+        exec::CanonicalTableSubqueryRequest table_request;
+        table_request.selected_physical_node_id = node.physical_node_id;
         table_request.maximum_materialized_row_count =
             std::max<std::size_t>(1, maximum_input_row_count);
         table_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
-                mga_context, table_request.physical_dag);
+                mga_context, dag);
 
         exec::DescriptorBatch output;
         exec::DescriptorRuntimeDiagnostic diagnostic;
@@ -10876,11 +10865,11 @@ MakeLiveCardinalitySubqueryRegistration(
           scalar_request.value_expression_descriptor_id =
               prepared.result_columns.front().descriptor_id;
           scalar_request.result_column = prepared.result_columns.front();
-          const auto scalar =
-              exec::ExecuteCanonicalScalarSubquery(scalar_request);
-          diagnostic = scalar.diagnostic;
-          output = scalar.output_batch;
-          result_mga = scalar.mga_statement_context;
+          auto scalar = exec::ExecuteCanonicalScalarSubquery(
+              scalar_request, dag, node.physical_node_id, input_batch);
+          diagnostic = std::move(scalar.diagnostic);
+          output = std::move(scalar.output_batch);
+          result_mga = std::move(scalar.mga_statement_context);
         } else {
           exec::CanonicalRowSubqueryRequest row_request;
           row_request.table_request = std::move(table_request);
@@ -10889,18 +10878,18 @@ MakeLiveCardinalitySubqueryRegistration(
             row_request.row_expression_descriptor_ids.push_back(
                 column.descriptor_id);
           }
-          const auto row = exec::ExecuteCanonicalRowSubquery(row_request);
-          diagnostic = row.diagnostic;
-          output = row.output_batch;
-          result_mga = row.mga_statement_context;
+          auto row = exec::ExecuteCanonicalRowSubquery(
+              row_request, dag, node.physical_node_id, input_batch);
+          diagnostic = std::move(row.diagnostic);
+          output = std::move(row.output_batch);
+          result_mga = std::move(row.mga_statement_context);
         }
         if (!diagnostic.ok) {
           step.diagnostic = std::move(diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
-        step.input_row_count =
-            inputs.front().materialized_output_batch->rows.size();
+        step.input_row_count = input_batch.rows.size();
         step.rows_examined = step.input_row_count;
         step.output_row_count = output.rows.size();
         step.materialized_output_batch = std::move(output);
