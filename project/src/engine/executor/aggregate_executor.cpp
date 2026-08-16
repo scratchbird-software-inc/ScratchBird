@@ -5558,10 +5558,17 @@ ExecuteCanonicalAggregateMovingRuntimeSelected(
       execution_dag.nodes, [&](const auto& node) {
         return node.physical_node_id == aggregate.selected_physical_node_id;
       });
+  if (aggregate_node == execution_dag.nodes.end() ||
+      aggregate_node->node_kind != PhysicalNodeKind::kAggregate ||
+      aggregate_node->implementation_id !=
+          "window.aggregate-registry-moving-inverse.v1") {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-INVERSE-AUTHORITY-V1",
+        "moving aggregate selected physical implementation is not exact"));
+  }
   std::size_t input_payload_bytes = 0;
   std::size_t filter_memory_bytes = 0;
-  if (aggregate_node == execution_dag.nodes.end() ||
-      !AggregateBatchPayloadBytes(execution_input_batch,
+  if (!AggregateBatchPayloadBytes(execution_input_batch,
                                   &input_payload_bytes) ||
       (aggregate.filter_truth_values.has_value() &&
        !CheckedAggregateFinalizationMultiply(
