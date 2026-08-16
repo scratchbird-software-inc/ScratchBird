@@ -2802,6 +2802,13 @@ CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const DescriptorBatch& borrowed_input_batch);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG and input carriers must remain in their
+// exact default states.
+CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
+    const CanonicalDescriptorCountRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request);
 CanonicalAggregateRuntimeResult

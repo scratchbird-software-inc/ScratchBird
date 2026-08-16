@@ -9965,58 +9965,38 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
               "COUNT(*) did not receive its bounded typed input batch";
           return step;
         }
+        const auto& input_batch = *inputs.front().materialized_output_batch;
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
         exec::CanonicalDescriptorCountRequest aggregate_request;
-        aggregate_request.physical_dag = dag;
         if (node.physical_node_id != dag.root_physical_node_id) {
-          std::unordered_set<std::uint64_t> execution_view_nodes;
-          std::vector<std::uint64_t> execution_view_pending{
-              node.physical_node_id};
-          while (!execution_view_pending.empty()) {
-            const auto physical_node_id = execution_view_pending.back();
-            execution_view_pending.pop_back();
-            if (!execution_view_nodes.insert(physical_node_id).second) {
-              continue;
-            }
-            const auto found = std::ranges::find_if(
-                dag.nodes, [&](const auto& candidate) {
-                  return candidate.physical_node_id == physical_node_id;
-                });
-            if (found == dag.nodes.end()) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
-              step.diagnostic.detail =
-                  "COUNT(*) execution view is unresolved";
-              return step;
-            }
-            execution_view_pending.insert(
-                execution_view_pending.end(),
-                found->input_physical_node_ids.begin(),
-                found->input_physical_node_ids.end());
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id,
+                  &*scoped_execution_dag, &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+            step.diagnostic.detail =
+                "COUNT(*) execution view is unresolved";
+            return step;
           }
-          std::erase_if(aggregate_request.physical_dag.nodes,
-                        [&](const auto& candidate) {
-                          return !execution_view_nodes.contains(
-                              candidate.physical_node_id);
-                        });
-          aggregate_request.physical_dag.root_physical_node_id =
-              node.physical_node_id;
+          execution_dag = &*scoped_execution_dag;
         }
         aggregate_request.selected_physical_node_id = node.physical_node_id;
-        aggregate_request.input_batch =
-            *inputs.front().materialized_output_batch;
         aggregate_request.count_column = result_column;
         aggregate_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
-                mga_context, aggregate_request.physical_dag);
-        auto aggregate_result =
-            exec::ExecuteCanonicalDescriptorCountStar(aggregate_request);
+                mga_context, *execution_dag);
+        auto aggregate_result = exec::ExecuteCanonicalDescriptorCountStar(
+            aggregate_request, *execution_dag, input_batch);
         if (!aggregate_result.diagnostic.ok) {
           step.diagnostic = std::move(aggregate_result.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
-        step.input_row_count = aggregate_request.input_batch.rows.size();
+        step.input_row_count = input_batch.rows.size();
         step.rows_examined = step.input_row_count;
         step.output_row_count = aggregate_result.output_batch.rows.size();
         step.materialized_output_batch =
@@ -22904,13 +22884,11 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         if (count_star) {
           exec::CanonicalDescriptorCountRequest aggregate_request;
-          aggregate_request.physical_dag = dag;
           aggregate_request.selected_physical_node_id = node.physical_node_id;
-          aggregate_request.input_batch = input_batch;
           aggregate_request.count_column = result_column;
           aggregate_request.mga_authority = mga_authority;
-          auto aggregate_result =
-              exec::ExecuteCanonicalDescriptorCountStar(aggregate_request);
+          auto aggregate_result = exec::ExecuteCanonicalDescriptorCountStar(
+              aggregate_request, dag, input_batch);
           if (!aggregate_result.diagnostic.ok) {
             step.diagnostic = std::move(aggregate_result.diagnostic);
             return step;

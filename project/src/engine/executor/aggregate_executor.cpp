@@ -42,6 +42,13 @@ DescriptorRuntimeDiagnostic Refusal(std::string code,
   return diagnostic;
 }
 
+bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
+  const DescriptorBatch empty;
+  return batch.columns.empty() &&
+         batch.columns.capacity() == empty.columns.capacity() &&
+         batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
+}
+
 using scratchbird::engine::internal_api::EngineTypedValue;
 using scratchbird::engine::internal_api::EngineValueState;
 
@@ -3759,8 +3766,12 @@ bool IsCanonicalAggregateStateSpillUuid(const std::string_view value) {
 // First canonical implementation in this module: global COUNT(*).  It counts
 // physical input rows (including rows containing SQL NULL), returns one row on
 // empty input, and uses the bound non-null int64 descriptor for its result.
-CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
-    const CanonicalDescriptorCountRequest& request) {
+namespace {
+CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
+    const CanonicalDescriptorCountRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   using scratchbird::engine::internal_api::EngineTypedValue;
   using scratchbird::engine::internal_api::EngineValueState;
 
@@ -3770,21 +3781,28 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     result.output_batch = {};
     return result;
   };
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(request.input_batch))) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-AGGREGATE-PHYSICAL-ROUTE-V1",
+        "COUNT(*) request carries conflicting owned execution carriers"));
+  }
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id) {
+          execution_dag.root_physical_node_id) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "selected aggregate node is not the root"));
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;
   const PhysicalNodeRecord* input_node = nullptr;
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == request.selected_physical_node_id) {
       selected_node = &node;
     }
@@ -3796,7 +3814,7 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
         "QOW-DIAG-QRY-007-AGGREGATE-PHYSICAL-ROUTE-V1",
         "COUNT(*) requires one selected aggregate node"));
   }
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
         selected_node->input_physical_node_ids.front()) {
       input_node = &node;
@@ -3813,10 +3831,10 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
                           "COUNT(*) output descriptor is not bound int64"));
   }
   auto input_validation = ValidateCanonicalDescriptorBatch(
-      request.input_batch, input_node->output_descriptor_ids);
+      execution_input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
 
-  if (request.input_batch.rows.size() >
+  if (execution_input_batch.rows.size() >
       static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
     return refuse(Refusal("QOW-DIAG-QRY-007-AGGREGATE-OVERFLOW-V1",
                           "COUNT(*) exceeds int64 result width"));
@@ -3825,7 +3843,7 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
   EngineTypedValue count_value;
   count_value.descriptor = request.count_column.descriptor;
   count_value.encoded_value =
-      std::to_string(request.input_batch.rows.size());
+      std::to_string(execution_input_batch.rows.size());
   count_value.state = EngineValueState::value;
   result.output_batch.columns = {request.count_column};
   result.output_batch.rows = {{{std::move(count_value)}}};
@@ -3833,15 +3851,30 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
       result.output_batch, selected_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
-  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
   result.mga_statement_context = request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
+    const CanonicalDescriptorCountRequest& request) {
+  return ExecuteCanonicalDescriptorCountStarBound(
+      request, request.physical_dag, request.input_batch, false);
+}
+
+CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
+    const CanonicalDescriptorCountRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalDescriptorCountStarBound(
+      request, borrowed_execution_dag, borrowed_input_batch, true);
 }
 
 // QOW-SOURCE-QRY-011-REGISTRY-V1
