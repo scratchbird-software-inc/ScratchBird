@@ -114,8 +114,12 @@ CorrelatedBatchValidation ValidateCorrelatedBatch(
 // context and immutable descriptor handles; parser or donor syntax is never
 // consulted here. Validation and the resource bound complete before any
 // result batch is published.
-CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
-    const CanonicalTableSubqueryRequest& request) {
+namespace {
+CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
+    const CanonicalTableSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const bool borrowed_execution_dag) {
   CanonicalTableSubqueryResult result;
   const auto refuse = [&](std::string detail) {
     result.diagnostic = TableSubqueryRefusal(std::move(detail));
@@ -127,19 +131,25 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
     return result;
   };
 
+  if (borrowed_execution_dag &&
+      !TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag)) {
+    return refuse(
+        "table subquery request carries conflicting physical DAG authority");
+  }
+
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!authority_validation.ok)
     return refuse(authority_validation.diagnostic_code + ":" +
                   authority_validation.detail);
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id) {
+          scoped_root_physical_node_id) {
     return refuse("selected table-subquery node is not the physical root");
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == request.selected_physical_node_id) {
       selected_node = &node;
       break;
@@ -153,7 +163,7 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
 
   const auto input_id = selected_node->input_physical_node_ids.front();
   const PhysicalNodeRecord* input_node = nullptr;
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == input_id) {
       input_node = &node;
       break;
@@ -187,7 +197,7 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
                   output_validation.detail);
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
@@ -195,11 +205,27 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
   result.diagnostic = {};
   result.output_batch = std::move(materialized);
   result.materialized_row_count = result.output_batch.rows.size();
-  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
   result.mga_statement_context = request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
+    const CanonicalTableSubqueryRequest& request) {
+  return ExecuteCanonicalTableSubqueryBound(
+      request, request.physical_dag,
+      request.physical_dag.root_physical_node_id, false);
+}
+
+CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
+    const CanonicalTableSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id) {
+  return ExecuteCanonicalTableSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id, true);
 }
 
 // QOW-SOURCE-QRY-013-SCALAR-V1

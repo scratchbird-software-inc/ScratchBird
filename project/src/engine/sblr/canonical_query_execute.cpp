@@ -10786,28 +10786,17 @@ MakeLiveTableSubqueryRegistration(
               "table subquery did not receive its bounded typed input";
           return step;
         }
-        exec::TypedPhysicalNodeDag operator_dag;
-        std::string detail;
-        if (!BuildOperatorLocalPhysicalDag(
-                dag, node.physical_node_id, &operator_dag, &detail)) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
-          step.diagnostic.detail = std::move(detail);
-          return step;
-        }
         exec::CanonicalTableSubqueryRequest subquery_request;
-        subquery_request.physical_dag = std::move(operator_dag);
         subquery_request.selected_physical_node_id = node.physical_node_id;
         subquery_request.input_batch =
             *inputs.front().materialized_output_batch;
         subquery_request.maximum_materialized_row_count =
             std::max<std::size_t>(1, maximum_input_row_count);
         subquery_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(
-                mga_context, subquery_request.physical_dag);
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         const auto materialized =
-            exec::ExecuteCanonicalTableSubquery(subquery_request);
+            exec::ExecuteCanonicalTableSubquery(
+                subquery_request, dag, node.physical_node_id);
         if (!materialized.diagnostic.ok) {
           step.diagnostic = materialized.diagnostic;
           return step;

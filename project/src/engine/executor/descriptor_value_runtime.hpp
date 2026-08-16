@@ -2685,6 +2685,12 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
     const CanonicalDescriptorLimitRequest& request);
 CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
     const CanonicalTableSubqueryRequest& request);
+// The borrowed DAG is consumed synchronously and is never retained. The
+// request's owned DAG carrier must remain in its exact default state.
+CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
+    const CanonicalTableSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id);
 CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
     const CanonicalScalarSubqueryRequest& request);
 CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
