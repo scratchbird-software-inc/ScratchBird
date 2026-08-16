@@ -8308,7 +8308,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
         auto project_result =
             exec::ExecuteCanonicalDescriptorProjection(project_request);
         if (!project_result.diagnostic.ok) {
-          step.diagnostic = project_result.diagnostic;
+          step.diagnostic = std::move(project_result.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -8317,7 +8317,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
         step.output_row_count = project_result.output_batch.rows.size();
         step.materialized_output_batch =
             std::move(project_result.output_batch);
-        step.mga_statement_context = project_result.mga_statement_context;
+        step.mga_statement_context =
+            std::move(project_result.mga_statement_context);
         return step;
       };
   return registration;
@@ -8459,7 +8460,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
         auto project_result =
             exec::ExecuteCanonicalDescriptorProjection(project_request);
         if (!project_result.diagnostic.ok) {
-          step.diagnostic = project_result.diagnostic;
+          step.diagnostic = std::move(project_result.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -8468,7 +8469,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
         step.output_row_count = project_result.output_batch.rows.size();
         step.materialized_output_batch =
             std::move(project_result.output_batch);
-        step.mga_statement_context = project_result.mga_statement_context;
+        step.mga_statement_context =
+            std::move(project_result.mga_statement_context);
         return step;
       };
   return registration;
@@ -8601,7 +8603,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
         auto window =
             exec::ExecuteCanonicalDescriptorRowNumber(request);
         if (!window.diagnostic.ok) {
-          step.diagnostic = window.diagnostic;
+          step.diagnostic = std::move(window.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -8609,7 +8611,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = window.output_batch.rows.size();
         step.materialized_output_batch = std::move(window.output_batch);
-        step.mga_statement_context = window.mga_statement_context;
+        step.mga_statement_context =
+            std::move(window.mga_statement_context);
         return step;
       };
   return registration;
@@ -8977,7 +8980,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
         auto join_result =
             exec::ExecuteCanonicalJoinKind(join_request);
         if (join_result.cancellation_observed) {
-          step.diagnostic = join_result.diagnostic;
+          step.diagnostic = std::move(join_result.diagnostic);
           step.cancellation_observed = true;
           step.transient_state_cleanup_proven =
               join_result.transient_state_cleanup_proven;
@@ -8986,7 +8989,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
           return step;
         }
         if (!join_result.diagnostic.ok) {
-          step.diagnostic = join_result.diagnostic;
+          step.diagnostic = std::move(join_result.diagnostic);
           if (step.diagnostic.diagnostic_code ==
               "QOW-DIAG-QRY-012-CANCELLATION-PROBE-V1") {
             step.diagnostic.diagnostic_code =
@@ -9002,7 +9005,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
                                                     : pair_count;
         step.output_row_count = join_result.output_batch.rows.size();
         step.materialized_output_batch = std::move(join_result.output_batch);
-        step.mga_statement_context = join_result.mga_statement_context;
+        step.mga_statement_context =
+            std::move(join_result.mga_statement_context);
         return step;
       };
   return registration;
@@ -9851,7 +9855,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
                 ? exec::ExecuteCanonicalSetOperationAll(set_request)
                 : exec::ExecuteCanonicalSetOperationDistinct(set_request);
         if (!set_result.diagnostic.ok) {
-          step.diagnostic = set_result.diagnostic;
+          step.diagnostic = std::move(set_result.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -9860,7 +9864,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
         step.rows_examined = step.input_row_count;
         step.output_row_count = set_result.output_batch.rows.size();
         step.materialized_output_batch = std::move(set_result.output_batch);
-        step.mga_statement_context = set_result.mga_statement_context;
+        step.mga_statement_context =
+            std::move(set_result.mga_statement_context);
         return step;
       };
   return registration;
@@ -9918,7 +9923,7 @@ MakeLiveQueryDistinctRegistration(
         auto distinct_result =
             exec::ExecuteCanonicalDescriptorDistinct(distinct_request);
         if (!distinct_result.diagnostic.ok) {
-          step.diagnostic = distinct_result.diagnostic;
+          step.diagnostic = std::move(distinct_result.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -9927,7 +9932,8 @@ MakeLiveQueryDistinctRegistration(
         step.output_row_count = distinct_result.output_batch.rows.size();
         step.materialized_output_batch =
             std::move(distinct_result.output_batch);
-        step.mga_statement_context = distinct_result.mga_statement_context;
+        step.mga_statement_context =
+            std::move(distinct_result.mga_statement_context);
         return step;
       };
   return registration;
@@ -10016,7 +10022,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
         auto aggregate_result =
             exec::ExecuteCanonicalDescriptorCountStar(aggregate_request);
         if (!aggregate_result.diagnostic.ok) {
-          step.diagnostic = aggregate_result.diagnostic;
+          step.diagnostic = std::move(aggregate_result.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -10169,7 +10175,7 @@ MakeLiveAggregateRegistryRegistration(
         auto aggregate_result =
             exec::ExecuteCanonicalAggregateRuntime(aggregate_request);
         if (!aggregate_result.diagnostic.ok) {
-          step.diagnostic = aggregate_result.diagnostic;
+          step.diagnostic = std::move(aggregate_result.diagnostic);
           return step;
         }
         step.authority = aggregate_result.authority;
@@ -10340,7 +10346,7 @@ MakeLiveGroupedCountSumRegistration(
         auto grouped =
             exec::ExecuteCanonicalGroupedAggregateSetRuntime(grouped_request);
         if (!grouped.diagnostic.ok) {
-          step.diagnostic = grouped.diagnostic;
+          step.diagnostic = std::move(grouped.diagnostic);
           return step;
         }
         if (!grouped.group_identity_proven ||
@@ -10456,7 +10462,8 @@ MakeLiveGroupedCountSumRegistration(
         step.rows_examined = step.input_row_count;
         step.output_row_count = grouped.output_batch.rows.size();
         step.materialized_output_batch = std::move(grouped.output_batch);
-        step.mga_statement_context = grouped.mga_statement_context;
+        step.mga_statement_context =
+            std::move(grouped.mga_statement_context);
         return step;
       };
   return registration;
@@ -10517,7 +10524,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
         auto sort_result =
             exec::ExecuteCanonicalDescriptorSort(sort_request);
         if (!sort_result.diagnostic.ok) {
-          step.diagnostic = sort_result.diagnostic;
+          step.diagnostic = std::move(sort_result.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -10525,7 +10532,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = sort_result.output_batch.rows.size();
         step.materialized_output_batch = std::move(sort_result.output_batch);
-        step.mga_statement_context = sort_result.mga_statement_context;
+        step.mga_statement_context =
+            std::move(sort_result.mga_statement_context);
         return step;
       };
   return registration;
@@ -10614,7 +10622,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         auto sorted = exec::ExecuteCanonicalDescriptorSort(sort_request);
         if (!sorted.diagnostic.ok) {
-          step.diagnostic = sorted.diagnostic;
+          step.diagnostic = std::move(sorted.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -10622,7 +10630,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = sorted.output_batch.rows.size();
         step.materialized_output_batch = std::move(sorted.output_batch);
-        step.mga_statement_context = sorted.mga_statement_context;
+        step.mga_statement_context =
+            std::move(sorted.mga_statement_context);
         return step;
       };
   return registration;
@@ -10703,7 +10712,7 @@ MakeLiveExpressionSortRegistration(
             maximum_pair_comparisons, maximum_order_key_batch_bytes,
             mga_authority);
         if (!issued.diagnostic.ok || issued.receipt == nullptr) {
-          step.diagnostic = issued.diagnostic;
+          step.diagnostic = std::move(issued.diagnostic);
           return step;
         }
 
@@ -10711,7 +10720,7 @@ MakeLiveExpressionSortRegistration(
         sort_request.order_key_receipt = std::move(issued.receipt);
         auto sorted = exec::ExecuteCanonicalDescriptorSort(sort_request);
         if (!sorted.diagnostic.ok) {
-          step.diagnostic = sorted.diagnostic;
+          step.diagnostic = std::move(sorted.diagnostic);
           return step;
         }
         const auto output_validation =
@@ -10726,7 +10735,8 @@ MakeLiveExpressionSortRegistration(
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = sorted.output_batch.rows.size();
         step.materialized_output_batch = std::move(sorted.output_batch);
-        step.mga_statement_context = sorted.mga_statement_context;
+        step.mga_statement_context =
+            std::move(sorted.mga_statement_context);
         return step;
       };
   return registration;
@@ -10819,7 +10829,7 @@ MakeLiveTableSubqueryRegistration(
             exec::ExecuteCanonicalTableSubquery(
                 subquery_request, dag, node.physical_node_id, input_batch);
         if (!materialized.diagnostic.ok) {
-          step.diagnostic = materialized.diagnostic;
+          step.diagnostic = std::move(materialized.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -10828,7 +10838,8 @@ MakeLiveTableSubqueryRegistration(
         step.output_row_count = materialized.output_batch.rows.size();
         step.materialized_output_batch =
             std::move(materialized.output_batch);
-        step.mga_statement_context = materialized.mga_statement_context;
+        step.mga_statement_context =
+            std::move(materialized.mga_statement_context);
         return step;
       };
   return registration;
@@ -11026,11 +11037,11 @@ MakeLivePredicateSubqueryRegistration(
           exists_request.exists_expression_descriptor_id =
               prepared.result_column.descriptor_id;
           exists_request.result_column = prepared.result_column;
-          const auto exists =
+          auto exists =
               exec::ExecuteCanonicalExistsSubquery(exists_request);
-          diagnostic = exists.diagnostic;
-          output = exists.output_batch;
-          result_mga = exists.mga_statement_context;
+          diagnostic = std::move(exists.diagnostic);
+          output = std::move(exists.output_batch);
+          result_mga = std::move(exists.mga_statement_context);
         } else {
           exec::CanonicalQuantifiedSubqueryRequest quantified_request;
           quantified_request.table_request = std::move(table_request);
@@ -11047,11 +11058,11 @@ MakeLivePredicateSubqueryRegistration(
           quantified_request.result_column = prepared.result_column;
           quantified_request.maximum_comparison_count =
               std::max<std::size_t>(1, maximum_input_row_count);
-          const auto quantified =
+          auto quantified =
               exec::ExecuteCanonicalQuantifiedSubquery(quantified_request);
-          diagnostic = quantified.diagnostic;
-          output = quantified.output_batch;
-          result_mga = quantified.mga_statement_context;
+          diagnostic = std::move(quantified.diagnostic);
+          output = std::move(quantified.output_batch);
+          result_mga = std::move(quantified.mga_statement_context);
           comparison_count = quantified.comparison_count;
         }
         if (!diagnostic.ok) {
@@ -11194,13 +11205,15 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
               BuildCanonicalExecutionMgaAuthority(mga_context, dag);
           auto fetched =
               exec::ExecuteCanonicalDescriptorFetchProfile(fetch_request);
-          limited.diagnostic = fetched.diagnostic;
+          limited.diagnostic = std::move(fetched.diagnostic);
           limited.output_batch = std::move(fetched.output_batch);
-          limited.selected_plan_uuid = fetched.selected_plan_uuid;
+          limited.selected_plan_uuid =
+              std::move(fetched.selected_plan_uuid);
           limited.executed_physical_node_id =
               fetched.executed_physical_node_id;
           limited.causal_counter_id = fetched.causal_counter_id;
-          limited.mga_statement_context = fetched.mga_statement_context;
+          limited.mga_statement_context =
+              std::move(fetched.mga_statement_context);
         } else {
           exec::CanonicalDescriptorLimitRequest limit_request;
           limit_request.physical_dag = dag;
@@ -11213,7 +11226,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
           limited = exec::ExecuteCanonicalDescriptorLimit(limit_request);
         }
         if (!limited.diagnostic.ok) {
-          step.diagnostic = limited.diagnostic;
+          step.diagnostic = std::move(limited.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -11221,7 +11234,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = limited.output_batch.rows.size();
         step.materialized_output_batch = std::move(limited.output_batch);
-        step.mga_statement_context = limited.mga_statement_context;
+        step.mga_statement_context =
+            std::move(limited.mga_statement_context);
         return step;
       };
   return registration;
@@ -16448,7 +16462,7 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
                 ? exec::ExecuteCanonicalSetOperationAll(set_request)
                 : exec::ExecuteCanonicalSetOperationDistinct(set_request);
         if (!set_result.diagnostic.ok) {
-          step.diagnostic = set_result.diagnostic;
+          step.diagnostic = std::move(set_result.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -16457,7 +16471,8 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
         step.rows_examined = step.input_row_count;
         step.output_row_count = set_result.output_batch.rows.size();
         step.materialized_output_batch = std::move(set_result.output_batch);
-        step.mga_statement_context = set_result.mga_statement_context;
+        step.mga_statement_context =
+            std::move(set_result.mga_statement_context);
         return step;
       };
 
@@ -16912,7 +16927,7 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
                   ? exec::ExecuteCanonicalSetOperationAll(set_request)
                   : exec::ExecuteCanonicalSetOperationDistinct(set_request);
           if (!set_result.diagnostic.ok) {
-            step.diagnostic = set_result.diagnostic;
+            step.diagnostic = std::move(set_result.diagnostic);
             return step;
           }
           step.result_handle_id = node.physical_node_id;
@@ -16922,7 +16937,8 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
           step.output_row_count = set_result.output_batch.rows.size();
           step.materialized_output_batch =
               std::move(set_result.output_batch);
-          step.mga_statement_context = set_result.mga_statement_context;
+          step.mga_statement_context =
+              std::move(set_result.mga_statement_context);
           return step;
         };
     execution_request.available_executors.push_back(std::move(registration));
@@ -20959,7 +20975,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         auto aggregate_result =
             exec::ExecuteCanonicalGroupedAggregateSetRuntime(grouped_request);
         if (!aggregate_result.diagnostic.ok) {
-          step.diagnostic = aggregate_result.diagnostic;
+          step.diagnostic = std::move(aggregate_result.diagnostic);
           return step;
         }
         if (!aggregate_result.group_identity_proven ||
@@ -21083,7 +21099,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         step.output_row_count = aggregate_result.output_batch.rows.size();
         step.materialized_output_batch =
             std::move(aggregate_result.output_batch);
-        step.mga_statement_context = aggregate_result.mga_statement_context;
+        step.mga_statement_context =
+            std::move(aggregate_result.mga_statement_context);
         return step;
       };
 
@@ -21751,7 +21768,7 @@ ExecuteCanonicalObjectFreePivotQuery(
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         auto pivot = exec::ExecuteCanonicalPivot(pivot_request);
         if (!pivot.diagnostic.ok) {
-          step.diagnostic = pivot.diagnostic;
+          step.diagnostic = std::move(pivot.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -21759,7 +21776,8 @@ ExecuteCanonicalObjectFreePivotQuery(
         step.rows_examined = input_row_count;
         step.output_row_count = pivot.output_batch.rows.size();
         step.materialized_output_batch = std::move(pivot.output_batch);
-        step.mga_statement_context = pivot.mga_statement_context;
+        step.mga_statement_context =
+            std::move(pivot.mga_statement_context);
         return step;
       };
 
@@ -22247,7 +22265,7 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         auto unpivot = exec::ExecuteCanonicalUnpivot(unpivot_request);
         if (!unpivot.diagnostic.ok) {
-          step.diagnostic = unpivot.diagnostic;
+          step.diagnostic = std::move(unpivot.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -22255,7 +22273,8 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
         step.rows_examined = input_row_count;
         step.output_row_count = unpivot.output_batch.rows.size();
         step.materialized_output_batch = std::move(unpivot.output_batch);
-        step.mga_statement_context = unpivot.mga_statement_context;
+        step.mga_statement_context =
+            std::move(unpivot.mga_statement_context);
         return step;
       };
 
@@ -22841,7 +22860,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           auto aggregate_result =
               exec::ExecuteCanonicalDescriptorCountStar(aggregate_request);
           if (!aggregate_result.diagnostic.ok) {
-            step.diagnostic = aggregate_result.diagnostic;
+            step.diagnostic = std::move(aggregate_result.diagnostic);
             return step;
           }
           output_batch = std::move(aggregate_result.output_batch);
@@ -22887,7 +22906,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           auto aggregate_result =
               exec::ExecuteCanonicalAggregateRuntime(aggregate_request);
           if (!aggregate_result.diagnostic.ok) {
-            step.diagnostic = aggregate_result.diagnostic;
+            step.diagnostic = std::move(aggregate_result.diagnostic);
             return step;
           }
           step.authority = aggregate_result.authority;
@@ -23159,7 +23178,7 @@ ExecuteCanonicalObjectFreeLimitQuery(
         auto limit_result =
             exec::ExecuteCanonicalDescriptorLimit(limit_request);
         if (!limit_result.diagnostic.ok) {
-          step.diagnostic = limit_result.diagnostic;
+          step.diagnostic = std::move(limit_result.diagnostic);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -23167,7 +23186,8 @@ ExecuteCanonicalObjectFreeLimitQuery(
         step.rows_examined = limit_result.output_batch.rows.size();
         step.output_row_count = limit_result.output_batch.rows.size();
         step.materialized_output_batch = std::move(limit_result.output_batch);
-        step.mga_statement_context = limit_result.mga_statement_context;
+        step.mga_statement_context =
+            std::move(limit_result.mga_statement_context);
         return step;
       };
 
@@ -23482,7 +23502,7 @@ ExecuteCanonicalObjectFreeSortQuery(
               maximum_pair_comparisons, maximum_order_key_batch_bytes,
               mga_authority);
           if (!issued.diagnostic.ok || issued.receipt == nullptr) {
-            step.diagnostic = issued.diagnostic;
+            step.diagnostic = std::move(issued.diagnostic);
             return step;
           }
           sort_request.order_key_receipt = std::move(issued.receipt);
@@ -23499,7 +23519,7 @@ ExecuteCanonicalObjectFreeSortQuery(
         auto sort_result =
             exec::ExecuteCanonicalDescriptorSort(sort_request);
         if (!sort_result.diagnostic.ok) {
-          step.diagnostic = sort_result.diagnostic;
+          step.diagnostic = std::move(sort_result.diagnostic);
           return step;
         }
         exec::DescriptorBatch output_batch =
@@ -23518,7 +23538,8 @@ ExecuteCanonicalObjectFreeSortQuery(
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = output_batch.rows.size();
         step.materialized_output_batch = std::move(output_batch);
-        step.mga_statement_context = sort_result.mga_statement_context;
+        step.mga_statement_context =
+            std::move(sort_result.mga_statement_context);
         return step;
       };
 
