@@ -10766,11 +10766,64 @@ bool BuildOperatorLocalPhysicalDag(
     pending.insert(pending.end(), found->input_physical_node_ids.begin(),
                    found->input_physical_node_ids.end());
   }
-  *operator_dag = dag;
-  std::erase_if(operator_dag->nodes, [&](const auto& candidate) {
-    return !retained.contains(candidate.physical_node_id);
-  });
-  operator_dag->root_physical_node_id = root_physical_node_id;
+  exec::TypedPhysicalNodeDag local;
+  local.abi_version = dag.abi_version;
+  local.selected_plan_uuid = dag.selected_plan_uuid;
+  local.root_physical_node_id = root_physical_node_id;
+  local.local_transaction_id = dag.local_transaction_id;
+  local.statement_snapshot_id = dag.statement_snapshot_id;
+  local.mga_statement_context = dag.mga_statement_context;
+  local.admission_evidence = dag.admission_evidence;
+  local.nodes.reserve(retained.size());
+  for (const auto& candidate : dag.nodes) {
+    if (retained.contains(candidate.physical_node_id)) {
+      local.nodes.push_back(candidate);
+    }
+  }
+  if (local.nodes.size() != retained.size()) {
+    *operator_dag = {};
+    *detail = "operator-local physical DAG node identity is not unique";
+    return false;
+  }
+  local.bound_sblr_tree_uuid = dag.bound_sblr_tree_uuid;
+  local.catalog_epoch_uuid = dag.catalog_epoch_uuid;
+  local.security_context_uuid = dag.security_context_uuid;
+  local.capability_snapshot_uuid = dag.capability_snapshot_uuid;
+  local.resource_snapshot_uuid = dag.resource_snapshot_uuid;
+  local.statistics_snapshot_uuid = dag.statistics_snapshot_uuid;
+  local.route_snapshot_uuid = dag.route_snapshot_uuid;
+  local.catalog_generation = dag.catalog_generation;
+  local.security_epoch = dag.security_epoch;
+  local.policy_epoch = dag.policy_epoch;
+  local.resource_epoch = dag.resource_epoch;
+  local.statistics_generation = dag.statistics_generation;
+  local.route_epoch = dag.route_epoch;
+  local.route_generation = dag.route_generation;
+  local.memory_budget_bytes = dag.memory_budget_bytes;
+  local.spill_allowed = dag.spill_allowed;
+  local.optimizer_published = dag.optimizer_published;
+  local.immutable_node_identity_validated =
+      dag.immutable_node_identity_validated;
+  local.capability_validated_before_access =
+      dag.capability_validated_before_access;
+  local.data_access_observed = dag.data_access_observed;
+  local.parser_execution_authority_claimed =
+      dag.parser_execution_authority_claimed;
+  local.transaction_finality_authority_claimed =
+      dag.transaction_finality_authority_claimed;
+  local.publication_contract_version = dag.publication_contract_version;
+  local.selected_plan_signature = dag.selected_plan_signature;
+  local.selected_scalar_score = dag.selected_scalar_score;
+  local.published_node_count = dag.published_node_count;
+  local.first_causal_counter_id = dag.first_causal_counter_id;
+  local.complete_cost_vectors_retained = dag.complete_cost_vectors_retained;
+  local.descriptor_contract_validated = dag.descriptor_contract_validated;
+  local.property_contract_validated = dag.property_contract_validated;
+  local.dependency_contract_validated = dag.dependency_contract_validated;
+  local.resource_contract_validated = dag.resource_contract_validated;
+  local.mga_contract_validated = dag.mga_contract_validated;
+  local.causal_identity_validated = dag.causal_identity_validated;
+  *operator_dag = std::move(local);
   detail->clear();
   return true;
 }
