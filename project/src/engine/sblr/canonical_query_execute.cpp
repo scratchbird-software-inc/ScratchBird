@@ -11188,10 +11188,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
           fetch_request.row_count_is_bound = true;
           fetch_request.mga_authority =
               BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-          const auto fetched =
+          auto fetched =
               exec::ExecuteCanonicalDescriptorFetchProfile(fetch_request);
           limited.diagnostic = fetched.diagnostic;
-          limited.output_batch = fetched.output_batch;
+          limited.output_batch = std::move(fetched.output_batch);
           limited.selected_plan_uuid = fetched.selected_plan_uuid;
           limited.executed_physical_node_id =
               fetched.executed_physical_node_id;
@@ -22852,13 +22852,13 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           aggregate_request.input_batch = input_batch;
           aggregate_request.count_column = result_column;
           aggregate_request.mga_authority = mga_authority;
-          const auto aggregate_result =
+          auto aggregate_result =
               exec::ExecuteCanonicalDescriptorCountStar(aggregate_request);
           if (!aggregate_result.diagnostic.ok) {
             step.diagnostic = aggregate_result.diagnostic;
             return step;
           }
-          output_batch = aggregate_result.output_batch;
+          output_batch = std::move(aggregate_result.output_batch);
         } else {
           const auto aggregate_memory_bound =
               SelectedNodeAggregateMemoryBound(dag, node);
@@ -22898,14 +22898,14 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           aggregate_request.maximum_finalization_workspace_bytes =
               *aggregate_memory_bound;
           aggregate_request.mga_authority = mga_authority;
-          const auto aggregate_result =
+          auto aggregate_result =
               exec::ExecuteCanonicalAggregateRuntime(aggregate_request);
           if (!aggregate_result.diagnostic.ok) {
             step.diagnostic = aggregate_result.diagnostic;
             return step;
           }
           step.authority = aggregate_result.authority;
-          output_batch = aggregate_result.output_batch;
+          output_batch = std::move(aggregate_result.output_batch);
         }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
@@ -23510,13 +23510,14 @@ ExecuteCanonicalObjectFreeSortQuery(
           sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
           sort_request.mga_authority = mga_authority;
         }
-        const auto sort_result =
+        auto sort_result =
             exec::ExecuteCanonicalDescriptorSort(sort_request);
         if (!sort_result.diagnostic.ok) {
           step.diagnostic = sort_result.diagnostic;
           return step;
         }
-        exec::DescriptorBatch output_batch = sort_result.output_batch;
+        exec::DescriptorBatch output_batch =
+            std::move(sort_result.output_batch);
         if (expression_ordering) {
           const auto output_validation =
               exec::ValidateCanonicalDescriptorBatch(
