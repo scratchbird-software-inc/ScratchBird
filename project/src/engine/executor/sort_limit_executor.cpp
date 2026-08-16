@@ -463,10 +463,27 @@ CanonicalDescriptorOrderComparisonResult CompareCanonicalDescriptorOrderValues(
 // Typed ORDER BY terms are deliberately left to QRY-010; this entry does not
 // fall back to the legacy one-integer-key sorter.
 namespace {
+enum class DescriptorLimitExecutionRoute : std::uint8_t {
+  limit = 1,
+  fetch_first_rows_only,
+};
+
+constexpr std::string_view DescriptorLimitImplementationId(
+    const DescriptorLimitExecutionRoute route) {
+  switch (route) {
+    case DescriptorLimitExecutionRoute::limit:
+      return "limit.typed.v1";
+    case DescriptorLimitExecutionRoute::fetch_first_rows_only:
+      return "fetch.native.rows-only.v1";
+  }
+  return {};
+}
+
 CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimitBound(
     const CanonicalDescriptorLimitRequest& request,
     const TypedPhysicalNodeDag& execution_dag,
     const DescriptorBatch& execution_input_batch,
+    const DescriptorLimitExecutionRoute execution_route,
     const bool borrowed_execution_carriers) {
   CanonicalDescriptorLimitResult result;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
@@ -489,6 +506,8 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimitBound(
 
   const PhysicalNodeRecord* selected_node = nullptr;
   const PhysicalNodeRecord* input_node = nullptr;
+  const auto expected_implementation_id =
+      DescriptorLimitImplementationId(execution_route);
   for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == request.selected_physical_node_id) {
       selected_node = &node;
@@ -499,10 +518,12 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimitBound(
           execution_dag.root_physical_node_id ||
       selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kLimit ||
+      selected_node->implementation_id != expected_implementation_id ||
       selected_node->input_physical_node_ids.size() != 1) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-SORT-LIMIT-PHYSICAL-ROUTE-V1",
-        "descriptor limit requires one selected root limit node"));
+        "descriptor LIMIT/FETCH requires its selected root canonical "
+        "implementation"));
   }
   for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
@@ -556,7 +577,8 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimitBound(
 CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
     const CanonicalDescriptorLimitRequest& request) {
   return ExecuteCanonicalDescriptorLimitBound(
-      request, request.physical_dag, request.input_batch, false);
+      request, request.physical_dag, request.input_batch,
+      DescriptorLimitExecutionRoute::limit, false);
 }
 
 CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
@@ -564,6 +586,100 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch) {
   return ExecuteCanonicalDescriptorLimitBound(
+      request, borrowed_execution_dag, borrowed_input_batch,
+      DescriptorLimitExecutionRoute::limit, true);
+}
+
+// QOW-SOURCE-QRY-010-FETCH-TOP-PROFILE-V1
+// The native SBSQL development profile admits only FETCH FIRST <bound count>
+// ROWS ONLY.  WITH TIES and donor TOP variants stay explicit refusals rather
+// than silently degrading to an ordinary limit.
+namespace {
+CanonicalDescriptorFetchProfileResult
+ExecuteCanonicalDescriptorFetchProfileBound(
+    const CanonicalDescriptorFetchProfileRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
+  CanonicalDescriptorFetchProfileResult result;
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(request.input_batch))) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-010-FETCH-TOP-PROFILE-REFUSAL-V1";
+    result.diagnostic.detail =
+        "FETCH request carries conflicting owned execution carriers";
+    return result;
+  }
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, execution_dag);
+  if (!entry_authority.ok) {
+    result.diagnostic = entry_authority;
+    return result;
+  }
+  if (request.form !=
+          CanonicalFetchTopProfileForm::fetch_first_rows_only ||
+      !request.row_count_is_bound) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-010-FETCH-TOP-PROFILE-REFUSAL-V1";
+    result.diagnostic.detail =
+        "only bound native FETCH FIRST ROWS ONLY is admitted";
+    return result;
+  }
+
+  CanonicalDescriptorLimitRequest limit_request;
+  limit_request.selected_physical_node_id =
+      request.selected_physical_node_id;
+  limit_request.limit = request.row_count;
+  limit_request.offset = request.offset;
+  limit_request.mga_authority = request.mga_authority;
+  auto limited = ExecuteCanonicalDescriptorLimitBound(
+      limit_request, execution_dag, execution_input_batch,
+      DescriptorLimitExecutionRoute::fetch_first_rows_only, true);
+  if (limited.diagnostic.ok &&
+      !PhysicalMgaStatementContextEqual(
+          limited.mga_statement_context,
+          request.mga_authority.statement_context)) {
+    limited.diagnostic.ok = false;
+    limited.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-010-FETCH-TOP-MGA-V1";
+    limited.diagnostic.detail =
+        "FETCH nested limit returned a different MGA statement context";
+  }
+  if (limited.diagnostic.ok) {
+    const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+        request.mga_authority, execution_dag);
+    if (!result_authority.ok) limited.diagnostic = result_authority;
+  }
+  if (!limited.diagnostic.ok) {
+    result.diagnostic = std::move(limited.diagnostic);
+    return result;
+  }
+  result.diagnostic = std::move(limited.diagnostic);
+  result.output_batch = std::move(limited.output_batch);
+  result.selected_plan_uuid = std::move(limited.selected_plan_uuid);
+  result.executed_physical_node_id = limited.executed_physical_node_id;
+  result.causal_counter_id = limited.causal_counter_id;
+  if (result.diagnostic.ok) {
+    result.mga_statement_context = request.mga_authority.statement_context;
+  }
+  return result;
+}
+}  // namespace
+
+CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
+    const CanonicalDescriptorFetchProfileRequest& request) {
+  return ExecuteCanonicalDescriptorFetchProfileBound(
+      request, request.physical_dag, request.input_batch, false);
+}
+
+CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
+    const CanonicalDescriptorFetchProfileRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalDescriptorFetchProfileBound(
       request, borrowed_execution_dag, borrowed_input_batch, true);
 }
 
