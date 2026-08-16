@@ -331,6 +331,121 @@ bool CopyRecursiveCteColumnsExact(
   return true;
 }
 
+bool AdmitForeignRecursiveCteOrderTermCapacity(
+    const std::vector<CanonicalDescriptorOrderTerm>& terms,
+    const std::size_t admitted_term_count,
+    const std::string_view label,
+    std::string* detail) {
+  if (detail == nullptr || terms.size() > admitted_term_count ||
+      terms.capacity() > admitted_term_count) {
+    if (detail != nullptr) {
+      *detail = "recursive CTE " + std::string(label) +
+                " term capacity differs from its charged logical capacity";
+    }
+    return false;
+  }
+  for (const auto& term : terms) {
+    const auto& names = term.timezone_seed.timezone_names;
+    if (names.capacity() != names.size()) {
+      *detail = "recursive CTE " + std::string(label) +
+                " timezone-name capacity differs from its charged logical capacity";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool CopyRecursiveCteOrderTermsExact(
+    const std::vector<CanonicalDescriptorOrderTerm>& source,
+    const std::size_t target_capacity,
+    std::vector<CanonicalDescriptorOrderTerm>* destination,
+    const std::string_view label,
+    std::string* detail) {
+  if (destination == nullptr || detail == nullptr ||
+      target_capacity < source.size()) {
+    if (detail != nullptr) {
+      *detail = "recursive CTE " + std::string(label) +
+                " target capacity is invalid";
+    }
+    return false;
+  }
+  if (!destination->empty() || destination->capacity() != 0) {
+    *detail = "recursive CTE " + std::string(label) +
+              " destination is not fresh";
+    return false;
+  }
+  if (!ReserveRecursiveCteVector(
+          destination, target_capacity, label, detail)) {
+    return false;
+  }
+  try {
+    for (const auto& term : source) {
+      CanonicalDescriptorOrderTerm copied;
+      copied.column = term.column;
+      copied.expression_descriptor_id = term.expression_descriptor_id;
+      copied.direction = term.direction;
+      copied.null_placement = term.null_placement;
+      copied.collation_uuid = term.collation_uuid;
+      copied.resource_epoch = term.resource_epoch;
+      copied.collation_epoch = term.collation_epoch;
+      copied.text_seed.active = term.text_seed.active;
+      copied.text_seed.seed_pack_name = term.text_seed.seed_pack_name;
+      copied.text_seed.seed_pack_version = term.text_seed.seed_pack_version;
+      copied.text_seed.charset_name = term.text_seed.charset_name;
+      copied.text_seed.collation_name = term.text_seed.collation_name;
+      copied.text_seed.collation_case_insensitive =
+          term.text_seed.collation_case_insensitive;
+      copied.text_seed.collation_accent_insensitive =
+          term.text_seed.collation_accent_insensitive;
+      copied.timezone_epoch = term.timezone_epoch;
+      copied.timezone_seed.active = term.timezone_seed.active;
+      copied.timezone_seed.seed_pack_name =
+          term.timezone_seed.seed_pack_name;
+      copied.timezone_seed.seed_pack_version =
+          term.timezone_seed.seed_pack_version;
+      copied.timezone_seed.content_hash = term.timezone_seed.content_hash;
+      copied.timezone_seed.timezone_records =
+          term.timezone_seed.timezone_records;
+      copied.timezone_seed.timezone_transition_records =
+          term.timezone_seed.timezone_transition_records;
+      copied.timezone_seed.timezone_leap_second_records =
+          term.timezone_seed.timezone_leap_second_records;
+      if (!ReserveRecursiveCteVector(
+              &copied.timezone_seed.timezone_names,
+              term.timezone_seed.timezone_names.size(), label, detail)) {
+        return false;
+      }
+      for (const auto& name : term.timezone_seed.timezone_names) {
+        copied.timezone_seed.timezone_names.push_back(name);
+      }
+      destination->push_back(std::move(copied));
+    }
+  } catch (const std::bad_alloc&) {
+    *detail = "recursive CTE " + std::string(label) +
+              " allocation was refused";
+    return false;
+  } catch (const std::length_error&) {
+    *detail = "recursive CTE " + std::string(label) +
+              " capacity exceeds the container limit";
+    return false;
+  }
+  if (destination->size() != source.size() ||
+      destination->capacity() != target_capacity) {
+    *detail = "recursive CTE " + std::string(label) +
+              " capacity differs from its charged logical capacity";
+    return false;
+  }
+  for (const auto& term : *destination) {
+    if (term.timezone_seed.timezone_names.capacity() !=
+        term.timezone_seed.timezone_names.size()) {
+      *detail = "recursive CTE " + std::string(label) +
+                " timezone-name capacity differs from its charged logical capacity";
+      return false;
+    }
+  }
+  return true;
+}
+
 bool AppendRecursiveCteValueExact(
     const scratchbird::engine::internal_api::EngineTypedValue& source,
     std::vector<scratchbird::engine::internal_api::EngineTypedValue>*
@@ -1684,6 +1799,18 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
           "UNION anchor", &foreign_anchor_capacity_detail)) {
     return refuse_memory(std::move(foreign_anchor_capacity_detail));
   }
+  const auto admitted_equality_term_count =
+      request.union_mode == CanonicalRecursiveCteUnionMode::kDistinct
+          ? (request.equality_terms.empty()
+                 ? request.working_request.anchor_batch.columns.size()
+                 : request.equality_terms.size())
+          : 0;
+  std::string foreign_term_capacity_detail;
+  if (!AdmitForeignRecursiveCteOrderTermCapacity(
+          request.equality_terms, admitted_equality_term_count,
+          "UNION equality", &foreign_term_capacity_detail)) {
+    return refuse_memory(std::move(foreign_term_capacity_detail));
+  }
 
   auto anchor_measurement = MeasureRecursiveCtePayload(
       request.working_request.anchor_batch,
@@ -1744,11 +1871,7 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
   structural_capacity.maximum_result_row_count =
       request.working_request.maximum_result_row_count;
   structural_capacity.equality_term_count =
-      request.union_mode == CanonicalRecursiveCteUnionMode::kDistinct
-          ? (request.equality_terms.empty()
-                 ? request.working_request.anchor_batch.columns.size()
-                 : request.equality_terms.size())
-          : 0;
+      admitted_equality_term_count;
   std::size_t structural_bytes = 0;
   std::string structural_detail;
   if (!BoundCanonicalRecursiveCteStructuralBytes(
@@ -1813,16 +1936,48 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
                  .descriptor.canonical_type_name != "int64")) {
       return refuse("recursive CTE UNION DISTINCT requires one int64 column");
     }
-    std::vector<CanonicalDescriptorOrderTerm> equality_terms =
-        request.equality_terms;
-    if (legacy_int64_profile && equality_terms.empty()) {
+    const bool synthesize_legacy_equality_term =
+        legacy_int64_profile && request.equality_terms.empty();
+    const auto equality_term_capacity =
+        synthesize_legacy_equality_term
+            ? std::size_t{1}
+            : request.equality_terms.size();
+    std::vector<CanonicalDescriptorOrderTerm> equality_terms;
+    std::string equality_term_capacity_detail;
+    if (!CopyRecursiveCteOrderTermsExact(
+            request.equality_terms, equality_term_capacity,
+            &equality_terms, "UNION equality copy",
+            &equality_term_capacity_detail)) {
+      return refuse_memory(std::move(equality_term_capacity_detail));
+    }
+    if (synthesize_legacy_equality_term) {
       CanonicalDescriptorOrderTerm term;
       term.column = 0;
       term.expression_descriptor_id =
           working.anchor_batch.columns.front().descriptor_id;
       term.direction = CanonicalDescriptorOrderDirection::ascending;
       term.null_placement = CanonicalDescriptorNullPlacement::first;
-      equality_terms.push_back(std::move(term));
+      try {
+        equality_terms.push_back(std::move(term));
+      } catch (const std::bad_alloc&) {
+        return refuse_memory(
+            "recursive CTE UNION equality term allocation was refused");
+      } catch (const std::length_error&) {
+        return refuse_memory(
+            "recursive CTE UNION equality term capacity exceeds the container limit");
+      }
+    }
+    if (equality_terms.size() != equality_term_capacity ||
+        equality_terms.capacity() != equality_term_capacity) {
+      return refuse_memory(
+          "recursive CTE UNION equality term capacity differs from its charged logical capacity");
+    }
+    for (const auto& term : equality_terms) {
+      if (term.timezone_seed.timezone_names.capacity() !=
+          term.timezone_seed.timezone_names.size()) {
+        return refuse_memory(
+            "recursive CTE UNION equality timezone-name capacity differs from its charged logical capacity");
+      }
     }
     if (equality_terms.size() != working.anchor_batch.columns.size() ||
         equality_terms.empty() ||
@@ -2369,6 +2524,16 @@ ExecuteCanonicalRecursiveCteSearchCycle(
           &foreign_anchor_capacity_detail)) {
     return refuse_memory(std::move(foreign_anchor_capacity_detail));
   }
+  const auto admitted_cycle_term_count =
+      request.cycle_key_terms.empty()
+          ? request.anchor_batch.columns.size()
+          : request.cycle_key_terms.size();
+  std::string foreign_term_capacity_detail;
+  if (!AdmitForeignRecursiveCteOrderTermCapacity(
+          request.cycle_key_terms, admitted_cycle_term_count,
+          "SEARCH/CYCLE key", &foreign_term_capacity_detail)) {
+    return refuse_memory(std::move(foreign_term_capacity_detail));
+  }
   const auto maximum_recursive_output_row_count =
       request.maximum_recursive_output_row_count == 0
           ? request.maximum_working_row_count
@@ -2386,10 +2551,7 @@ ExecuteCanonicalRecursiveCteSearchCycle(
       maximum_recursive_output_row_count;
   structural_capacity.maximum_result_row_count =
       request.maximum_result_row_count;
-  structural_capacity.equality_term_count =
-      request.cycle_key_terms.empty()
-          ? request.anchor_batch.columns.size()
-          : request.cycle_key_terms.size();
+  structural_capacity.equality_term_count = admitted_cycle_term_count;
   std::size_t structural_bytes = 0;
   std::string structural_detail;
   if (!BoundCanonicalRecursiveCteStructuralBytes(
@@ -2461,17 +2623,19 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     return refuse("recursive CTE SEARCH/CYCLE descriptors are not exact");
   }
 
+  const bool synthesize_legacy_cycle_term =
+      legacy_int64_profile && request.cycle_key_terms.empty();
+  const auto cycle_term_capacity =
+      synthesize_legacy_cycle_term
+          ? std::size_t{1}
+          : request.cycle_key_terms.size();
   std::vector<CanonicalDescriptorOrderTerm> cycle_key_terms;
-  try {
-    cycle_key_terms = request.cycle_key_terms;
-  } catch (const std::bad_alloc&) {
-    return refuse_memory(
-        "recursive CTE SEARCH/CYCLE key term allocation was refused");
-  } catch (const std::length_error&) {
-    return refuse_memory(
-        "recursive CTE SEARCH/CYCLE key term capacity exceeds the container limit");
+  if (!CopyRecursiveCteOrderTermsExact(
+          request.cycle_key_terms, cycle_term_capacity, &cycle_key_terms,
+          "SEARCH/CYCLE key copy", &capacity_detail)) {
+    return refuse_memory(std::move(capacity_detail));
   }
-  if (legacy_int64_profile && cycle_key_terms.empty()) {
+  if (synthesize_legacy_cycle_term) {
     if (request.cycle_key_column >= request.anchor_batch.columns.size() ||
         request.cycle_key_expression_descriptor_id == 0 ||
         request.anchor_batch.columns[request.cycle_key_column].descriptor_id !=
@@ -2486,7 +2650,27 @@ ExecuteCanonicalRecursiveCteSearchCycle(
         request.cycle_key_expression_descriptor_id;
     term.direction = CanonicalDescriptorOrderDirection::ascending;
     term.null_placement = CanonicalDescriptorNullPlacement::first;
-    cycle_key_terms.push_back(std::move(term));
+    try {
+      cycle_key_terms.push_back(std::move(term));
+    } catch (const std::bad_alloc&) {
+      return refuse_memory(
+          "recursive CTE SEARCH/CYCLE key term allocation was refused");
+    } catch (const std::length_error&) {
+      return refuse_memory(
+          "recursive CTE SEARCH/CYCLE key term capacity exceeds the container limit");
+    }
+  }
+  if (cycle_key_terms.size() != cycle_term_capacity ||
+      cycle_key_terms.capacity() != cycle_term_capacity) {
+    return refuse_memory(
+        "recursive CTE SEARCH/CYCLE key term capacity differs from its charged logical capacity");
+  }
+  for (const auto& term : cycle_key_terms) {
+    if (term.timezone_seed.timezone_names.capacity() !=
+        term.timezone_seed.timezone_names.size()) {
+      return refuse_memory(
+          "recursive CTE SEARCH/CYCLE key timezone-name capacity differs from its charged logical capacity");
+    }
   }
   if (cycle_key_terms.empty() ||
       request.maximum_value_comparison_count == 0) {
