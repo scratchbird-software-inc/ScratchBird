@@ -45486,7 +45486,7 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
               columnar_request.maximum_cells = source_input.maximum_cells;
               columnar_request.security_admitted = true;
               columnar_request.exact_reconstruction_fallback_available = true;
-              const auto reconstructed =
+              auto reconstructed =
                   api::nosql::ExecuteColumnarLogicalV1(columnar_request);
               if (!reconstructed.accepted ||
                   !reconstructed.root_publishable) {
@@ -45504,7 +45504,7 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
               batch.causal_counter_id = source_input.causal_counter_id;
               batch.output_descriptor_ids =
                   source_input.output_descriptor_ids;
-              batch.batch = reconstructed.batch;
+              batch.batch = std::move(reconstructed.batch);
               batch.properties.property_uuid = source_copy.property_uuid;
               batch.properties.uniqueness_id = "row_uuid";
               batch.properties.exact = true;
@@ -46586,12 +46586,12 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               return fail("SB_MODEL_SPATIAL_COORDINATE_INVALID_V1",
                           "SPATIAL_MATCH POINT evaluation failed");
             }
-            const auto matched =
+            auto matched =
                 api::nosql::ExecuteSpatialNativeV1(spatial_request);
             if (!matched.accepted || !matched.root_publishable) {
               return fail(matched.diagnostic_id, matched.detail);
             }
-            rows = matched.rows;
+            rows = std::move(matched.rows);
             source_rows.clear();
             for (const auto& row : rows) {
               source_rows.push_back(
@@ -46622,20 +46622,20 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               return fail("SB_MODEL_SPATIAL_TOP_K_REFUSED_V1",
                           "SPATIAL_NEAREST top-k is invalid");
             }
-            const auto nearest_result =
+            auto nearest_result =
                 api::nosql::ExecuteSpatialNativeV1(spatial_request);
             if (!nearest_result.accepted || !nearest_result.root_publishable) {
               return fail(nearest_result.diagnostic_id, nearest_result.detail);
             }
-            rows = nearest_result.rows;
+            rows = std::move(nearest_result.rows);
           } else if (!has_match) {
             spatial_request.operation_id = "SPATIAL_SOURCE";
-            const auto sourced =
+            auto sourced =
                 api::nosql::ExecuteSpatialNativeV1(spatial_request);
             if (!sourced.accepted || !sourced.root_publishable) {
               return fail(sourced.diagnostic_id, sourced.detail);
             }
-            rows = sourced.rows;
+            rows = std::move(sourced.rows);
           }
           batch.properties.ordering_id =
               has_nearest ? "spatial_distance_row_uuid_ascending_v1"
@@ -46795,7 +46795,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                       std::distance(persisted.columns.begin(), column)));
             }
           }
-          const auto reconstructed =
+          auto reconstructed =
               api::nosql::ExecuteColumnarLogicalV1(columnar_request);
           if (!reconstructed.accepted || !reconstructed.root_publishable ||
               reconstructed.batch.columns.size() != public_columns.size()) {
@@ -46807,7 +46807,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                             : reconstructed.detail);
           }
           batch.properties.ordering_id = "fixture_order";
-          batch.batch = reconstructed.batch;
+          batch.batch = std::move(reconstructed.batch);
           for (std::size_t ordinal = 0;
                ordinal < batch.batch.columns.size(); ++ordinal) {
             if (batch.batch.columns[ordinal].stable_name !=
