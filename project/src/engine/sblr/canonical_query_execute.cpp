@@ -10045,42 +10045,25 @@ MakeLiveAggregateRegistryRegistration(
               "aggregate registry did not receive its bounded typed input";
           return step;
         }
-        exec::TypedPhysicalNodeDag execution_dag = dag;
-        if (node.physical_node_id != dag.root_physical_node_id) {
-          std::unordered_set<std::uint64_t> execution_view_nodes;
-          std::vector<std::uint64_t> execution_view_pending{
-              node.physical_node_id};
-          while (!execution_view_pending.empty()) {
-            const auto physical_node_id = execution_view_pending.back();
-            execution_view_pending.pop_back();
-            if (!execution_view_nodes.insert(physical_node_id).second) {
-              continue;
-            }
-            const auto found = std::ranges::find_if(
-                dag.nodes, [&](const auto& candidate) {
-                  return candidate.physical_node_id == physical_node_id;
-                });
-            if (found == dag.nodes.end()) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
-              step.diagnostic.detail =
-                  "aggregate registry execution view is unresolved";
-              return step;
-            }
-            execution_view_pending.insert(
-                execution_view_pending.end(),
-                found->input_physical_node_ids.begin(),
-                found->input_physical_node_ids.end());
-          }
-          std::erase_if(execution_dag.nodes, [&](const auto& candidate) {
-            return !execution_view_nodes.contains(
-                candidate.physical_node_id);
-          });
-          execution_dag.root_physical_node_id = node.physical_node_id;
-        }
         const auto& input_batch =
             *inputs.front().materialized_output_batch;
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id,
+                  &*scoped_execution_dag, &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+            step.diagnostic.detail =
+                "aggregate registry execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
         std::optional<std::vector<api::EngineSqlTruthValue>>
             filter_truth_values;
         if (prepared.filter_column.has_value()) {
@@ -10109,10 +10092,8 @@ MakeLiveAggregateRegistryRegistration(
           return step;
         }
         exec::CanonicalAggregateRuntimeRequest aggregate_request;
-        aggregate_request.physical_dag = std::move(execution_dag);
         aggregate_request.selected_physical_node_id = node.physical_node_id;
         aggregate_request.descriptor = prepared.aggregate_descriptor;
-        aggregate_request.input_batch = input_batch;
         aggregate_request.value_columns = prepared.value_columns;
         aggregate_request.value_expression_descriptor_ids =
             prepared.value_descriptor_ids;
@@ -10141,9 +10122,9 @@ MakeLiveAggregateRegistryRegistration(
             *aggregate_memory_bound;
         aggregate_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
-                mga_context, aggregate_request.physical_dag);
-        auto aggregate_result =
-            exec::ExecuteCanonicalAggregateRuntime(aggregate_request);
+                mga_context, *execution_dag);
+        auto aggregate_result = exec::ExecuteCanonicalAggregateRuntime(
+            aggregate_request, *execution_dag, input_batch);
         if (!aggregate_result.diagnostic.ok) {
           step.diagnostic = std::move(aggregate_result.diagnostic);
           return step;
@@ -22906,10 +22887,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
             return step;
           }
           exec::CanonicalAggregateRuntimeRequest aggregate_request;
-          aggregate_request.physical_dag = dag;
           aggregate_request.selected_physical_node_id = node.physical_node_id;
           aggregate_request.descriptor = aggregate_descriptor;
-          aggregate_request.input_batch = input_batch;
           aggregate_request.value_columns = value_columns;
           aggregate_request.value_expression_descriptor_ids =
               value_descriptor_ids;
@@ -22933,8 +22912,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           aggregate_request.maximum_finalization_workspace_bytes =
               *aggregate_memory_bound;
           aggregate_request.mga_authority = mga_authority;
-          auto aggregate_result =
-              exec::ExecuteCanonicalAggregateRuntime(aggregate_request);
+          auto aggregate_result = exec::ExecuteCanonicalAggregateRuntime(
+              aggregate_request, dag, input_batch);
           if (!aggregate_result.diagnostic.ok) {
             step.diagnostic = std::move(aggregate_result.diagnostic);
             return step;
