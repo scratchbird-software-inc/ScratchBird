@@ -2957,6 +2957,16 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch);
+// Ordinary input-column ordering may additionally borrow its immutable order
+// terms and deterministic tie receipt. All owned execution and semantic
+// carriers in the request must remain exact-default, and no expression
+// order-key receipt may be set.
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::vector<CanonicalDescriptorOrderTerm>& borrowed_order_terms,
+    const std::string& borrowed_deterministic_tie_evidence_uuid);
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
     const CanonicalDescriptorOrderTerm& term,
     const ExecutorColumnDescriptor& column);

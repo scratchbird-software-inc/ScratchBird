@@ -34,6 +34,17 @@ bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
          batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
 }
 
+bool DescriptorOrderTermsCarrierIsExactDefault(
+    const std::vector<CanonicalDescriptorOrderTerm>& order_terms) {
+  const std::vector<CanonicalDescriptorOrderTerm> empty;
+  return order_terms.empty() && order_terms.capacity() == empty.capacity();
+}
+
+bool StringCarrierIsExactDefault(const std::string& value) {
+  const std::string empty;
+  return value.empty() && value.capacity() == empty.capacity();
+}
+
 bool IsCanonicalUuid(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
       value[18] != '-' || value[23] != '-') {
@@ -957,6 +968,31 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
       request.selected_physical_node_id, request.maximum_pair_comparisons,
       borrowed_input_batch, borrowed_input_batch, request.order_terms,
       request.deterministic_tie_evidence_uuid, false);
+}
+
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::vector<CanonicalDescriptorOrderTerm>& borrowed_order_terms,
+    const std::string& borrowed_deterministic_tie_evidence_uuid) {
+  if (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+      !DescriptorBatchCarrierIsExactDefault(request.input_batch) ||
+      !DescriptorOrderTermsCarrierIsExactDefault(request.order_terms) ||
+      !StringCarrierIsExactDefault(
+          request.deterministic_tie_evidence_uuid) ||
+      request.order_key_receipt != nullptr) {
+    CanonicalDescriptorSortResult result;
+    result.diagnostic = Refusal(
+        "QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
+        "descriptor order request carries conflicting owned execution or semantic carriers");
+    return result;
+  }
+  return ExecuteCanonicalDescriptorSortBound(
+      borrowed_execution_dag, request.mga_authority,
+      request.selected_physical_node_id, request.maximum_pair_comparisons,
+      borrowed_input_batch, borrowed_input_batch, borrowed_order_terms,
+      borrowed_deterministic_tie_evidence_uuid, false);
 }
 
 }  // namespace scratchbird::engine::executor
