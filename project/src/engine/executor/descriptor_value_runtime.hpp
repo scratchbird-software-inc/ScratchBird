@@ -2867,6 +2867,13 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const DescriptorBatch& borrowed_ordered_input_batch);
 CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
     const CanonicalDescriptorDistinctRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG and input carriers must remain in their
+// exact default states.
+CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
+    const CanonicalDescriptorDistinctRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request);
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
