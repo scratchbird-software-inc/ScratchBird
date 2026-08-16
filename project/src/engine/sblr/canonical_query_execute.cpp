@@ -43750,7 +43750,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   execution_request.current_selected_plan_generation =
       admitted.selected_plan_generation;
   execution_request.current_mga_statement_context = mga;
-  const auto executed =
+  auto executed =
       exec::ExecuteModelFamilyCompositionV1(execution_request);
   if (!executed.accepted || !executed.execution_started ||
       !executed.root_published || !executed.no_partial_root ||
@@ -43769,13 +43769,12 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   publication.statement_uuid = input.context.statement_uuid.canonical;
   publication.mga_authority =
       BuildCanonicalExecutionMgaAuthority(input.context, physical_dag);
-  publication.selected_physical_dag = physical_dag;
+  publication.selected_physical_dag = std::move(physical_dag);
   publication.selected_catalog_epoch_uuid =
       input.context.catalog_epoch_uuid.canonical;
   publication.execution_attempt_uuid = DerivedCanonicalUuid(
       identity_scope + ":" + input.context.current_monotonic_ns,
       "rcp080.execution-attempt");
-  publication.physical_output_batch = executed.root_output_batch;
   publication.transaction_effect_evidence_uuid = DerivedCanonicalUuid(
       identity_scope + ":" +
           std::to_string(input.context.local_transaction_id),
@@ -43790,6 +43789,8 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "bounded composition root publication binding is incomplete");
   }
+  publication.physical_output_batch =
+      std::move(executed.root_output_batch);
   for (std::size_t ordinal = 0; ordinal < root_outputs.size(); ++ordinal) {
     const auto descriptor = descriptor_for(root_outputs[ordinal]->descriptor_id);
     if (descriptor == dag.descriptors.end() ||
@@ -43807,7 +43808,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     published.timezone_profile_id = descriptor->timezone_profile_id;
     publication.column_bindings.push_back({ordinal, true, std::move(published)});
   }
-  const auto published = exec::PublishCanonicalResultEnvelope(publication);
+  auto published = exec::PublishCanonicalResultEnvelope(publication);
   if (!published.published || !published.diagnostic.ok) {
     return refuse(published.diagnostic.diagnostic_code.empty()
                       ? "SB_MODEL_ROOT_PUBLICATION_REFUSED_V1"
@@ -43819,7 +43820,8 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   result.canonical_result_published = true;
   result.canonical_result_column_count = published.envelope.column_descriptors.size();
   result.canonical_result_row_count = published.row_stream.rows.size();
-  result.canonical_result_bytes = published.canonical_envelope_bytes;
+  result.canonical_result_bytes =
+      std::move(published.canonical_envelope_bytes);
   result.api_result.ok = true;
   result.api_result.operation_id = "query.execute";
   result.api_result.result_shape.result_kind = "rows";
@@ -43827,15 +43829,16 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   result.api_result.transaction_uuid = input.context.transaction_uuid;
   result.api_result.embedded_trust_mode_observed =
       input.context.trust_mode == api::EngineTrustMode::embedded_in_process;
-  for (const auto& column : published.row_stream.columns) {
-    result.api_result.result_shape.columns.push_back(column.descriptor);
+  for (auto& column : published.row_stream.columns) {
+    result.api_result.result_shape.columns.push_back(
+        std::move(column.descriptor));
   }
-  for (const auto& row : published.row_stream.rows) {
+  for (auto& row : published.row_stream.rows) {
     api::EngineRowValue api_row;
     for (std::size_t column = 0; column < row.values.size(); ++column) {
       api_row.fields.emplace_back(
           published.envelope.column_descriptors[column].name_utf8,
-          row.values[column]);
+          std::move(row.values[column]));
     }
     result.api_result.result_shape.rows.push_back(std::move(api_row));
   }
