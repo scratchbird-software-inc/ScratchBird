@@ -2833,6 +2833,13 @@ ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
     std::size_t exact_final_output_ceiling);
 CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
     const CanonicalAggregateStateSpillRequest& request);
+// Borrowed execution carriers are consumed synchronously through spill,
+// reopen, and finalization and are never retained. The nested aggregate
+// request's owned DAG and input carriers must remain exact-default.
+CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
+    const CanonicalAggregateStateSpillRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     const CanonicalAggregateStateExchangeRequest& request);
 CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(

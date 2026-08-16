@@ -4469,8 +4469,12 @@ ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
 // the ordinary canonical finalizer. The optimizer-selected physical node and
 // exact MGA/security/recheck contract govern the route; temporary metadata
 // never owns row visibility, transaction finality, or recovery.
-CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
-    const CanonicalAggregateStateSpillRequest& request) {
+static CanonicalAggregateStateSpillResult
+ExecuteCanonicalAggregateStateSpillSelected(
+    const CanonicalAggregateStateSpillRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   CanonicalAggregateStateSpillResult result;
   const auto refuse = [&](std::string code, std::string detail) {
     result.diagnostic.ok = false;
@@ -4482,16 +4486,25 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
     return result;
   };
 
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(
+           request.aggregate_request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(
+           request.aggregate_request.input_batch))) {
+    return refuse(
+        "QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-AUTHORITY-V1",
+        "aggregate spill request carries conflicting owned execution carriers");
+  }
+
   const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.aggregate_request.mga_authority,
-      request.aggregate_request.physical_dag);
+      request.aggregate_request.mga_authority, execution_dag);
   if (!entry_authority.ok) {
     return refuse(entry_authority.diagnostic_code, entry_authority.detail);
   }
 
   auto baseline = ExecuteCanonicalAggregateRuntimeSelected(
-      request.aggregate_request, request.aggregate_request.physical_dag,
-      request.aggregate_request.input_batch, false, false,
+      request.aggregate_request, execution_dag, execution_input_batch,
+      borrowed_execution_carriers, false,
       {request.retained_memory_bytes, std::nullopt});
   if (!baseline.diagnostic.ok) {
     return refuse(baseline.diagnostic.diagnostic_code,
@@ -4504,7 +4517,7 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
                   "aggregate spill baseline returned a different MGA statement context");
   }
   const PhysicalNodeRecord* selected_node = nullptr;
-  for (const auto& node : request.aggregate_request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
         request.aggregate_request.selected_physical_node_id) {
       selected_node = &node;
@@ -4518,12 +4531,12 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
            "window.aggregate-registry-state-spill.v1" &&
        selected_node->implementation_id !=
            "aggregate.registry-grouping-sets-state-spill.v1") ||
-      !request.aggregate_request.physical_dag.spill_allowed) {
+      !execution_dag.spill_allowed) {
     return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-STRATEGY-V1",
                   "aggregate state spill was not selected and permitted by the physical plan");
   }
   const auto node_memory_grant = AggregateNodeMemoryGrant(
-      request.aggregate_request.physical_dag, *selected_node);
+      execution_dag, *selected_node);
   if (request.retained_memory_bytes >
       std::numeric_limits<std::size_t>::max() -
           request.aggregate_request.retained_memory_bytes) {
@@ -4549,7 +4562,7 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
       enclosing_retained_memory_bytes + filter_memory_bytes;
   std::size_t input_payload_bytes = 0;
   if (!node_memory_grant.has_value() ||
-      !AggregateBatchPayloadBytes(request.aggregate_request.input_batch,
+      !AggregateBatchPayloadBytes(execution_input_batch,
                                   &input_payload_bytes) ||
       combined_retained_memory_bytes > *node_memory_grant ||
       input_payload_bytes >
@@ -4621,16 +4634,16 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
   PreparedAggregateTransitions prepared;
   DescriptorRuntimeDiagnostic state_diagnostic;
   if (!PrepareCanonicalAggregateTransitions(
-          request.aggregate_request,
-          request.aggregate_request.input_batch, replay_state_limit,
+          request.aggregate_request, execution_input_batch,
+          replay_state_limit,
           &prepared, &state_diagnostic)) {
     return refuse(state_diagnostic.diagnostic_code, state_diagnostic.detail);
   }
   CanonicalAggregateCoreState state;
   if (prepared.retained_bytes > replay_state_limit ||
       !BuildCanonicalAggregateCoreState(
-          request.aggregate_request,
-          request.aggregate_request.input_batch, prepared.transitions,
+          request.aggregate_request, execution_input_batch,
+          prepared.transitions,
           replay_state_limit - prepared.retained_bytes, &state,
           &state_diagnostic)) {
     return refuse(state_diagnostic.diagnostic_code, state_diagnostic.detail);
@@ -4918,8 +4931,7 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
   restored.peak_finalization_workspace_bytes =
       finalization_receipt.peak_workspace_bytes;
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.aggregate_request.mga_authority,
-      request.aggregate_request.physical_dag);
+      request.aggregate_request.mga_authority, execution_dag);
   if (!result_authority.ok) {
     return refuse(result_authority.diagnostic_code, result_authority.detail);
   }
@@ -4930,6 +4942,21 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
   result.mga_statement_context =
       request.aggregate_request.mga_authority.statement_context;
   return result;
+}
+
+CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
+    const CanonicalAggregateStateSpillRequest& request) {
+  return ExecuteCanonicalAggregateStateSpillSelected(
+      request, request.aggregate_request.physical_dag,
+      request.aggregate_request.input_batch, false);
+}
+
+CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
+    const CanonicalAggregateStateSpillRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalAggregateStateSpillSelected(
+      request, borrowed_execution_dag, borrowed_input_batch, true);
 }
 
 // QOW-SOURCE-QRY-011-REGISTRY-STATE-EXCHANGE-V1

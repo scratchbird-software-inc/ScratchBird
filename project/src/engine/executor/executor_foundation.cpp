@@ -8449,12 +8449,13 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
 
     auto aggregate =
         CloneFoundationAggregateRequestWithoutRowsOrFilter(
-            aggregate_template);
-    aggregate.input_batch.columns =
+            aggregate_template, false);
+    DescriptorBatch frame_input_batch;
+    frame_input_batch.columns =
         aggregate_request.frames.ordered_batch.columns;
-    aggregate.input_batch.rows.reserve(frame.size());
+    frame_input_batch.rows.reserve(frame.size());
     for (const auto row : frame) {
-      aggregate.input_batch.rows.push_back(
+      frame_input_batch.rows.push_back(
           aggregate_request.frames.ordered_batch.rows[row]);
     }
     if (template_filter_truth_values != nullptr) {
@@ -8484,7 +8485,9 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
         request.cleanup_after_cancellation;
     state_request.restart_recovery_proof_available =
         request.restart_recovery_proof_available;
-    auto state = ExecuteCanonicalAggregateStateSpill(state_request);
+    auto state = ExecuteCanonicalAggregateStateSpill(
+        state_request, aggregate_template.physical_dag,
+        frame_input_batch);
 
     result.spilled = result.spilled || state.spilled;
     result.spill_reopened = result.spill_reopened || state.spill_reopened;
