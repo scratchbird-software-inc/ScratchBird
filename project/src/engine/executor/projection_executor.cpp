@@ -141,7 +141,7 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjectionBound(
       expression_request.operation =
           internal_api::EngineCanonicalExpressionOperation::identity;
       expression_request.left_value =
-          result.output_batch.rows[row].values[column];
+          std::move(result.output_batch.rows[row].values[column]);
       expression_request.result_descriptor =
           result.output_batch.columns[column].descriptor;
       internal_api::EngineCanonicalExpressionEvaluationResult
