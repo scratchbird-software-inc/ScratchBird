@@ -7862,13 +7862,6 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
       aggregate_template.retained_memory_bytes + input_payload_bytes +
       source_filter_bytes;
 
-  const auto make_owned_frame_request = [&]() {
-    auto aggregate =
-        CloneFoundationAggregateRequestWithoutRowsOrFilter(
-            aggregate_template);
-    aggregate.input_batch.columns = request.frames.ordered_batch.columns;
-    return aggregate;
-  };
   const auto make_borrowed_frame_request = [&]() {
     return CloneFoundationAggregateRequestWithoutRowsOrFilter(
         aggregate_template, false);
@@ -7954,24 +7947,22 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
 
   if (selected_state_strategy ==
       CanonicalRegistryWindowAggregateStateStrategy::moving_inverse) {
-    if (input_payload_bytes >
-            *node_memory_grant - base_retained_memory_bytes ||
-        source_filter_bytes >
-            *node_memory_grant - base_retained_memory_bytes -
-                input_payload_bytes) {
+    const auto moving_retained_memory_bytes =
+        aggregate_template.retained_memory_bytes + source_filter_bytes;
+    if (source_filter_bytes >
+        *node_memory_grant - moving_retained_memory_bytes -
+            input_payload_bytes) {
       return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
-                    "moving aggregate input or FILTER copy exceeds its selected-node grant");
+                    "moving aggregate FILTER copy exceeds its selected-node grant");
     }
     CanonicalAggregateMovingRuntimeRequest moving_request;
-    moving_request.aggregate_request = make_owned_frame_request();
-    moving_request.aggregate_request.input_batch.rows =
-        request.frames.ordered_batch.rows;
+    moving_request.aggregate_request = make_borrowed_frame_request();
     if (template_filter_truth_values != nullptr) {
       moving_request.aggregate_request.filter_truth_values =
           *template_filter_truth_values;
     }
     moving_request.aggregate_request.retained_memory_bytes =
-        base_retained_memory_bytes;
+        moving_retained_memory_bytes;
     moving_request.effective_frame_row_indices = result.frame_row_indices;
     moving_request.maximum_output_rows = request.maximum_output_rows;
     moving_request.maximum_addition_transition_count =
@@ -7983,7 +7974,9 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
     moving_request.maximum_combined_final_output_bytes =
         maximum_combined_final_output_bytes;
     moving_request.cancellation_requested = request.cancellation_requested;
-    auto moving = ExecuteCanonicalAggregateMovingRuntime(moving_request);
+    auto moving = ExecuteCanonicalAggregateMovingRuntime(
+        moving_request, aggregate_template.physical_dag,
+        request.frames.ordered_batch);
     if (!moving.diagnostic.ok) {
       return refuse(moving.diagnostic.diagnostic_code,
                     moving.diagnostic.detail);

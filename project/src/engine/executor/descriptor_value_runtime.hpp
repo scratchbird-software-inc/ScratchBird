@@ -2837,6 +2837,13 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     const CanonicalAggregateStateExchangeRequest& request);
 CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     const CanonicalAggregateMovingRuntimeRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The nested aggregate request's owned DAG and input carriers must
+// remain in their exact default states.
+CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
+    const CanonicalAggregateMovingRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalAggregateGroupingExpansionResult
 ExpandCanonicalAggregateGroupingSets(
     const CanonicalAggregateGroupingExpansionRequest& request);

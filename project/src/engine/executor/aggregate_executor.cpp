@@ -5374,8 +5374,12 @@ CanonicalAggregateRuntimeRequest CloneCanonicalAggregateRequestWithoutRows(
 // explicitly admitted inverse transition, and every output uses the same
 // canonical finalizer.  Unsupported functions and modifiers fail closed
 // rather than relabelling frame recomputation as inverse execution.
-CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
-    const CanonicalAggregateMovingRuntimeRequest& request) {
+static CanonicalAggregateMovingRuntimeResult
+ExecuteCanonicalAggregateMovingRuntimeSelected(
+    const CanonicalAggregateMovingRuntimeRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   using scratchbird::engine::internal_api::EnginePredicateConsumer;
   using scratchbird::engine::internal_api::QowPredicateConsumerPassesV1;
 
@@ -5391,8 +5395,15 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     return result;
   };
   const auto& aggregate = request.aggregate_request;
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(aggregate.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(aggregate.input_batch))) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-INVERSE-AUTHORITY-V1",
+        "moving aggregate request carries conflicting owned execution carriers"));
+  }
   const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
-      aggregate.mga_authority, aggregate.physical_dag);
+      aggregate.mga_authority, execution_dag);
   if (!entry_authority.ok) return refuse(entry_authority);
   const auto* entry = LookupCanonicalAggregateExactV1(
       aggregate.descriptor.abi_version, aggregate.descriptor.function,
@@ -5430,13 +5441,13 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   if (aggregate.descriptor.function == CanonicalAggregateFunction::sum ||
       aggregate.descriptor.function == CanonicalAggregateFunction::avg) {
     if (aggregate.value_columns.size() != 1 ||
-        aggregate.value_columns.front() >= aggregate.input_batch.columns.size()) {
+        aggregate.value_columns.front() >= execution_input_batch.columns.size()) {
       return refuse(Refusal(
           "QOW-DIAG-QRY-011-REGISTRY-INVERSE-TYPE-V1",
           "moving SUM and AVG inverse state requires one numeric input"));
     }
     const auto& value_descriptor =
-        aggregate.input_batch.columns[aggregate.value_columns.front()]
+        execution_input_batch.columns[aggregate.value_columns.front()]
             .descriptor;
     if (!IsCanonicalBoundedSignedIntegerDescriptor(value_descriptor) &&
         value_descriptor.canonical_type_name != "real64") {
@@ -5447,26 +5458,26 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     }
   }
   if (aggregate.filter_truth_values.has_value() &&
-      aggregate.filter_truth_values->size() != aggregate.input_batch.rows.size()) {
+      aggregate.filter_truth_values->size() != execution_input_batch.rows.size()) {
     return refuse(Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
                           "moving aggregate FILTER cardinality is not bound"));
   }
   std::vector<std::uint32_t> input_descriptor_ids;
-  input_descriptor_ids.reserve(aggregate.input_batch.columns.size());
-  for (const auto& column : aggregate.input_batch.columns) {
+  input_descriptor_ids.reserve(execution_input_batch.columns.size());
+  for (const auto& column : execution_input_batch.columns) {
     input_descriptor_ids.push_back(column.descriptor_id);
   }
   auto input_validation = ValidateCanonicalDescriptorBatch(
-      aggregate.input_batch, input_descriptor_ids);
+      execution_input_batch, input_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
   const auto aggregate_node = std::ranges::find_if(
-      aggregate.physical_dag.nodes, [&](const auto& node) {
+      execution_dag.nodes, [&](const auto& node) {
         return node.physical_node_id == aggregate.selected_physical_node_id;
       });
   std::size_t input_payload_bytes = 0;
   std::size_t filter_memory_bytes = 0;
-  if (aggregate_node == aggregate.physical_dag.nodes.end() ||
-      !AggregateBatchPayloadBytes(aggregate.input_batch,
+  if (aggregate_node == execution_dag.nodes.end() ||
+      !AggregateBatchPayloadBytes(execution_input_batch,
                                   &input_payload_bytes) ||
       (aggregate.filter_truth_values.has_value() &&
        !CheckedAggregateFinalizationMultiply(
@@ -5478,7 +5489,7 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
         "moving aggregate selected-node memory grant is unresolved"));
   }
   const auto node_memory_grant =
-      AggregateNodeMemoryGrant(aggregate.physical_dag, *aggregate_node);
+      AggregateNodeMemoryGrant(execution_dag, *aggregate_node);
   if (!node_memory_grant.has_value() ||
       aggregate.retained_memory_bytes > *node_memory_grant ||
       input_payload_bytes >
@@ -5511,7 +5522,7 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   for (const auto& frame : request.effective_frame_row_indices) {
     if (!std::is_sorted(frame.begin(), frame.end()) ||
         std::adjacent_find(frame.begin(), frame.end()) != frame.end() ||
-        (!frame.empty() && frame.back() >= aggregate.input_batch.rows.size())) {
+        (!frame.empty() && frame.back() >= execution_input_batch.rows.size())) {
       return refuse(Refusal(
           "QOW-DIAG-QRY-011-REGISTRY-INVERSE-FRAME-V1",
           "moving aggregate frame rows are not sorted unique input handles"));
@@ -5519,11 +5530,12 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   }
 
   auto preflight_request =
-      CloneCanonicalAggregateRequestWithoutRows(aggregate);
+      CloneCanonicalAggregateRequestWithoutRows(aggregate, false);
+  DescriptorBatch preflight_input_batch;
+  preflight_input_batch.columns = execution_input_batch.columns;
   auto preflight = ExecuteCanonicalAggregateRuntimeSelected(
-      preflight_request, preflight_request.physical_dag,
-      preflight_request.input_batch, false, false,
-      {input_payload_bytes + filter_memory_bytes, std::nullopt});
+      preflight_request, execution_dag, preflight_input_batch, true, false,
+      {input_payload_bytes - 1 + filter_memory_bytes, std::nullopt});
   if (!preflight.diagnostic.ok) {
     return refuse(preflight.diagnostic);
   }
@@ -5559,7 +5571,7 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   };
   const auto transition_values = [&](const std::size_t row) {
     return BindAggregateTransitionValues(
-        aggregate, aggregate.input_batch, row);
+        aggregate, execution_input_batch, row);
   };
   const auto within_total = [](const std::size_t next,
                                const std::size_t current,
@@ -5684,7 +5696,7 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     result.values.push_back(std::move(row.values.front()));
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      aggregate.mga_authority, aggregate.physical_dag);
+      aggregate.mga_authority, execution_dag);
   if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
@@ -5698,6 +5710,21 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   result.causal_counter_id = preflight.causal_counter_id;
   result.mga_statement_context = aggregate.mga_authority.statement_context;
   return result;
+}
+
+CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
+    const CanonicalAggregateMovingRuntimeRequest& request) {
+  return ExecuteCanonicalAggregateMovingRuntimeSelected(
+      request, request.aggregate_request.physical_dag,
+      request.aggregate_request.input_batch, false);
+}
+
+CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
+    const CanonicalAggregateMovingRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalAggregateMovingRuntimeSelected(
+      request, borrowed_execution_dag, borrowed_input_batch, true);
 }
 
 // QOW-SOURCE-QRY-011-GROUPING-EXPANSION-V1
