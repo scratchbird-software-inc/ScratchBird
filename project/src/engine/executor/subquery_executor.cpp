@@ -32,6 +32,13 @@ DescriptorRuntimeDiagnostic TableSubqueryRefusal(std::string detail) {
   return diagnostic;
 }
 
+bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
+  const DescriptorBatch empty;
+  return batch.columns.empty() &&
+         batch.columns.capacity() == empty.columns.capacity() &&
+         batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
+}
+
 struct CorrelatedCancellationPoll {
   DescriptorRuntimeDiagnostic diagnostic;
   bool cancelled = false;
@@ -119,7 +126,9 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
     const CanonicalTableSubqueryRequest& request,
     const TypedPhysicalNodeDag& execution_dag,
     const std::uint64_t scoped_root_physical_node_id,
-    const bool borrowed_execution_dag) {
+    const bool borrowed_execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_input_batch) {
   CanonicalTableSubqueryResult result;
   const auto refuse = [&](std::string detail) {
     result.diagnostic = TableSubqueryRefusal(std::move(detail));
@@ -135,6 +144,11 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
       !TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag)) {
     return refuse(
         "table subquery request carries conflicting physical DAG authority");
+  }
+  if (borrowed_input_batch &&
+      !DescriptorBatchCarrierIsExactDefault(request.input_batch)) {
+    return refuse(
+        "table subquery request carries conflicting input batch ownership");
   }
 
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
@@ -178,18 +192,18 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
   }
 
   auto input_validation = ValidateCanonicalDescriptorBatch(
-      request.input_batch, input_node->output_descriptor_ids);
+      execution_input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) {
     return refuse(input_validation.diagnostic_code + ":" +
                   input_validation.detail);
   }
   if (request.maximum_materialized_row_count == 0 ||
-      request.input_batch.rows.size() >
+      execution_input_batch.rows.size() >
           request.maximum_materialized_row_count) {
     return refuse("table-subquery materialization row bound was exceeded");
   }
 
-  DescriptorBatch materialized = request.input_batch;
+  DescriptorBatch materialized = execution_input_batch;
   auto output_validation = ValidateCanonicalDescriptorBatch(
       materialized, selected_node->output_descriptor_ids);
   if (!output_validation.ok) {
@@ -217,7 +231,8 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
     const CanonicalTableSubqueryRequest& request) {
   return ExecuteCanonicalTableSubqueryBound(
       request, request.physical_dag,
-      request.physical_dag.root_physical_node_id, false);
+      request.physical_dag.root_physical_node_id, false,
+      request.input_batch, false);
 }
 
 CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
@@ -225,7 +240,18 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const std::uint64_t scoped_root_physical_node_id) {
   return ExecuteCanonicalTableSubqueryBound(
-      request, borrowed_execution_dag, scoped_root_physical_node_id, true);
+      request, borrowed_execution_dag, scoped_root_physical_node_id, true,
+      request.input_batch, false);
+}
+
+CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
+    const CanonicalTableSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalTableSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id, true,
+      borrowed_input_batch, true);
 }
 
 // QOW-SOURCE-QRY-013-SCALAR-V1

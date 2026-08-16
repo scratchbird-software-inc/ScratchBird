@@ -10792,24 +10792,24 @@ MakeLiveTableSubqueryRegistration(
               "table subquery did not receive its bounded typed input";
           return step;
         }
+        const auto& input_batch =
+            *inputs.front().materialized_output_batch;
         exec::CanonicalTableSubqueryRequest subquery_request;
         subquery_request.selected_physical_node_id = node.physical_node_id;
-        subquery_request.input_batch =
-            *inputs.front().materialized_output_batch;
         subquery_request.maximum_materialized_row_count =
             std::max<std::size_t>(1, maximum_input_row_count);
         subquery_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         auto materialized =
             exec::ExecuteCanonicalTableSubquery(
-                subquery_request, dag, node.physical_node_id);
+                subquery_request, dag, node.physical_node_id, input_batch);
         if (!materialized.diagnostic.ok) {
           step.diagnostic = materialized.diagnostic;
           return step;
         }
         step.result_handle_id = node.physical_node_id;
-        step.input_row_count = subquery_request.input_batch.rows.size();
-        step.rows_examined = subquery_request.input_batch.rows.size();
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = input_batch.rows.size();
         step.output_row_count = materialized.output_batch.rows.size();
         step.materialized_output_batch =
             std::move(materialized.output_batch);
