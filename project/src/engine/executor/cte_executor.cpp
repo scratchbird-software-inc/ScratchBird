@@ -884,9 +884,20 @@ bool BoundCanonicalRecursiveCteStructuralBytes(
 // when that intermediate relation is empty. All intermediate state remains
 // local until convergence, so malformed input, resource excess, or a
 // non-convergent recursive term cannot publish a partial CTE result.
-CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
-    const CanonicalRecursiveCteWorkingRequest& request) {
+namespace {
+CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
+    const CanonicalRecursiveCteWorkingRequest& request,
+    const DescriptorBatch* anchor_override,
+    const CanonicalRecursiveCteStep* recursive_step_override,
+    const std::string_view accepted_implementation_id,
+    const std::size_t retained_input_payload_bytes,
+    std::shared_ptr<CanonicalRecursiveCteMemoryState> memory_state) {
   CanonicalRecursiveCteWorkingResult result;
+  const auto& anchor_batch =
+      anchor_override == nullptr ? request.anchor_batch : *anchor_override;
+  const auto& recursive_step = recursive_step_override == nullptr
+                                   ? request.recursive_step
+                                   : *recursive_step_override;
   const auto refuse_diagnostic = [&](DescriptorRuntimeDiagnostic diagnostic,
                                      const bool cancelled = false,
                                      const std::size_t ordinal = 0) {
@@ -934,15 +945,14 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
       selected_node->implementation_id !=
-          "cte.recursive.working.typed.v1" ||
+          accepted_implementation_id ||
       selected_node->input_physical_node_ids.size() != 2) {
     return refuse("recursive CTE working physical profile is not bound");
   }
-  auto memory_state = request.memory_state;
   const auto memory_binding = BindRecursiveCteMemoryState(
       request.physical_dag, *selected_node,
       request.enforce_payload_memory_grant,
-      request.retained_input_payload_bytes, &memory_state);
+      retained_input_payload_bytes, &memory_state);
   if (!memory_binding.ok) {
     return refuse_diagnostic(memory_binding);
   }
@@ -999,22 +1009,22 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     return refuse("recursive CTE input or output descriptor handles drifted");
   }
 
-  if (!request.recursive_step || request.maximum_iteration_count == 0 ||
+  if (!recursive_step || request.maximum_iteration_count == 0 ||
       request.maximum_working_row_count == 0 ||
       request.maximum_result_row_count == 0 ||
       !RecursiveCteCancellationEvidenceBound(
           request.physical_dag, request.cancellation_requested,
           request.cancellation_evidence_uuid) ||
-      request.anchor_batch.rows.size() >
+      anchor_batch.rows.size() >
           request.maximum_working_row_count ||
-      request.anchor_batch.rows.size() > request.maximum_result_row_count) {
+      anchor_batch.rows.size() > request.maximum_result_row_count) {
     return refuse("recursive CTE working resource contract is invalid");
   }
   CanonicalRecursiveCteStructuralCapacity structural_capacity;
   structural_capacity.profile =
       CanonicalRecursiveCteStructuralProfile::kWorking;
   structural_capacity.maximum_anchor_row_count =
-      request.anchor_batch.rows.size();
+      anchor_batch.rows.size();
   structural_capacity.maximum_iteration_count =
       request.maximum_iteration_count;
   structural_capacity.maximum_working_row_count =
@@ -1028,7 +1038,7 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
   std::size_t structural_bytes = 0;
   std::string structural_detail;
   if (!BoundCanonicalRecursiveCteStructuralBytes(
-          request.anchor_batch.columns, nullptr, nullptr, nullptr,
+          anchor_batch.columns, nullptr, nullptr, nullptr,
           structural_capacity, &structural_bytes, &structural_detail)) {
     return refuse_memory(std::move(structural_detail));
   }
@@ -1038,7 +1048,7 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     return refuse_diagnostic(structural_binding);
   }
   const auto anchor_validation = ValidateRecursiveCteBatch(
-      request.anchor_batch, anchor_node->output_descriptor_ids,
+      anchor_batch, anchor_node->output_descriptor_ids,
       request.cancellation_requested, 0, "while validating anchor rows");
   if (anchor_validation.cancellation.has_value()) {
     return refuse_poll(std::move(*anchor_validation.cancellation));
@@ -1048,15 +1058,15 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
                   anchor_validation.diagnostic.detail);
   }
   if (materialized_count_anchor &&
-      (request.anchor_batch.columns.size() != 1 ||
-       request.anchor_batch.columns.front().descriptor.canonical_type_name !=
+      (anchor_batch.columns.size() != 1 ||
+       anchor_batch.columns.front().descriptor.canonical_type_name !=
            "int64" ||
-       request.anchor_batch.rows.size() != 1 ||
-       request.anchor_batch.rows.front().values.size() != 1 ||
-       request.anchor_batch.rows.front().values.front().is_null ||
-       request.anchor_batch.rows.front().values.front().state !=
+       anchor_batch.rows.size() != 1 ||
+       anchor_batch.rows.front().values.size() != 1 ||
+       anchor_batch.rows.front().values.front().is_null ||
+       anchor_batch.rows.front().values.front().state !=
            scratchbird::engine::internal_api::EngineValueState::value ||
-       !DecodeInt64Value(request.anchor_batch.rows.front().values.front())
+       !DecodeInt64Value(anchor_batch.rows.front().values.front())
             .ok())) {
     return refuse(
         "recursive CTE COUNT(*) anchor is not one materialized non-null int64 value");
@@ -1068,7 +1078,7 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
 
   std::size_t anchor_payload_bytes = 0;
   if (auto failure = measure_payload(
-          request.anchor_batch, 0,
+          anchor_batch, 0,
           "while measuring the recursive anchor",
           &anchor_payload_bytes)) {
     return std::move(*failure);
@@ -1088,8 +1098,8 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
   std::vector<CanonicalRecursiveCteIteration> iterations;
   std::string capacity_detail;
   try {
-    accumulated.columns = request.anchor_batch.columns;
-    working.columns = request.anchor_batch.columns;
+    accumulated.columns = anchor_batch.columns;
+    working.columns = anchor_batch.columns;
     if (!ReserveRecursiveCteVector(
             &accumulated.rows, request.maximum_result_row_count,
             "accumulated row", &capacity_detail) ||
@@ -1101,13 +1111,13 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
             "iteration receipt", &capacity_detail)) {
       return refuse_memory(std::move(capacity_detail));
     }
-    for (const auto& row : request.anchor_batch.rows) {
+    for (const auto& row : anchor_batch.rows) {
       if (!AppendNormalizedRecursiveCteTuple(
-              row, request.anchor_batch.columns.size(),
+              row, anchor_batch.columns.size(),
               &accumulated.rows, "accumulated anchor",
               &capacity_detail) ||
           !AppendNormalizedRecursiveCteTuple(
-              row, request.anchor_batch.columns.size(),
+              row, anchor_batch.columns.size(),
               &working.rows, "working anchor", &capacity_detail)) {
         return refuse_memory(std::move(capacity_detail));
       }
@@ -1140,7 +1150,7 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
                     pre_step_authority.detail);
     }
     try {
-      intermediate = request.recursive_step(working, iteration_ordinal);
+      intermediate = recursive_step(working, iteration_ordinal);
     } catch (const std::bad_alloc&) {
       return refuse_memory(
           memory_state && !memory_state->refusal_detail.empty()
@@ -1197,7 +1207,7 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
                     intermediate_validation.diagnostic.detail);
     }
     if (!SameCanonicalCteColumns(intermediate.columns,
-                                 request.anchor_batch.columns)) {
+                                 anchor_batch.columns)) {
       return refuse("recursive CTE generated schema differs from its anchor");
     }
     if (intermediate.rows.size() > request.maximum_working_row_count ||
@@ -1208,7 +1218,7 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
 
     DescriptorBatch normalized_working;
     try {
-      normalized_working.columns = request.anchor_batch.columns;
+      normalized_working.columns = anchor_batch.columns;
       if (!ReserveRecursiveCteVector(
               &normalized_working.rows,
               request.maximum_working_row_count,
@@ -1234,11 +1244,11 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     try {
       for (const auto& row : intermediate.rows) {
         if (!AppendNormalizedRecursiveCteTuple(
-                row, request.anchor_batch.columns.size(),
+                row, anchor_batch.columns.size(),
                 &accumulated.rows, "accumulated recursive",
                 &capacity_detail) ||
             !AppendNormalizedRecursiveCteTuple(
-                row, request.anchor_batch.columns.size(),
+                row, anchor_batch.columns.size(),
                 &normalized_working.rows, "next working",
                 &capacity_detail)) {
           return refuse_memory(std::move(capacity_detail));
@@ -1356,6 +1366,14 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
   result.causal_counter_id = selected_node->causal_counter_id;
   result.mga_statement_context = request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
+    const CanonicalRecursiveCteWorkingRequest& request) {
+  return ExecuteCanonicalRecursiveCteWorkingBound(
+      request, nullptr, nullptr, "cte.recursive.working.typed.v1",
+      request.retained_input_payload_bytes, request.memory_state);
 }
 
 // QOW-SOURCE-QRY-014-UNION-V1
@@ -1534,29 +1552,32 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
     result.working_result.working_state_cleaned = true;
     return result;
   }
-  CanonicalRecursiveCteWorkingRequest working = request.working_request;
-  working.retained_input_payload_bytes = retained_payload_bytes;
-  working.memory_state = memory_state;
-  for (auto& node : working.physical_dag.nodes) {
-    if (node.physical_node_id == working.selected_physical_node_id) {
-      node.implementation_id = "cte.recursive.working.typed.v1";
-      break;
-    }
-  }
+  const auto& working = request.working_request;
+  DescriptorBatch distinct_anchor;
+  CanonicalRecursiveCteStep distinct_recursive_step;
+  const DescriptorBatch* working_anchor_override = nullptr;
+  const CanonicalRecursiveCteStep* working_step_override = nullptr;
 
-  auto duplicate_count = std::make_shared<std::size_t>(0);
-  auto cancellation_failure =
-      std::make_shared<std::optional<RecursiveCteCancellationPoll>>();
+  std::size_t duplicate_count = 0;
+  std::optional<RecursiveCteCancellationPoll> cancellation_failure;
+  std::size_t identity_count = 0;
+  std::size_t representative_count = 0;
+  std::size_t comparison_count = 0;
+  std::size_t raw_generated_payload_bytes = 0;
+  std::size_t admitted_output_payload_bytes = 0;
+  bool seen_null = false;
+  RecursiveCteInt64IdentitySet seen_values;
+  std::vector<DescriptorTuple> seen_rows;
   if (request.union_mode == CanonicalRecursiveCteUnionMode::kDistinct) {
     const auto poll_distinct =
-        [probe = working.cancellation_requested, cancellation_failure](
+        [probe = &working.cancellation_requested, &cancellation_failure](
             const std::size_t iteration, const std::string_view phase) {
           auto polled =
-              PollRecursiveCteCancellation(probe, iteration, phase);
+              PollRecursiveCteCancellation(*probe, iteration, phase);
           if (polled.diagnostic.ok) return;
-          *cancellation_failure = std::move(polled);
+          cancellation_failure = std::move(polled);
           throw std::runtime_error(
-              cancellation_failure->value().diagnostic.detail);
+              cancellation_failure->diagnostic.detail);
         };
     const bool legacy_int64_profile =
         selected_node->implementation_id ==
@@ -1620,57 +1641,42 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
       covered[term.column] = true;
     }
 
-    auto raw_generated_payload_bytes =
-        std::make_shared<std::size_t>(0);
-    auto admitted_output_payload_bytes =
-        std::make_shared<std::size_t>(0);
     std::function<bool(const DescriptorTuple&, std::size_t)> admit;
     if (legacy_int64_profile) {
-      auto identity_count = std::make_shared<std::size_t>(0);
-      auto representative_count = std::make_shared<std::size_t>(0);
-      std::shared_ptr<RecursiveCteInt64IdentitySet> seen_values;
-      try {
-        seen_values =
-            std::make_shared<RecursiveCteInt64IdentitySet>();
-      } catch (const std::bad_alloc&) {
-        return refuse_memory(
-            "recursive CTE UNION DISTINCT identity allocation was refused");
-      }
-      if (!seen_values->Initialize(
+      if (!seen_values.Initialize(
               working.maximum_result_row_count, &capacity_detail)) {
         return refuse_memory(std::move(capacity_detail));
       }
-      auto seen_null = std::make_shared<bool>(false);
-      admit = [identity_count, maximum =
-                                   request.maximum_value_comparison_count,
-               representative_count,
+      admit = [&identity_count, maximum =
+                                    request.maximum_value_comparison_count,
+               &representative_count,
                maximum_representatives = working.maximum_result_row_count,
-               seen_values, seen_null, duplicate_count, poll_distinct](
+               &seen_values, &seen_null, &duplicate_count, poll_distinct](
                   const DescriptorTuple& row, const std::size_t iteration) {
         poll_distinct(iteration,
                       "while admitting recursive UNION DISTINCT rows");
         if (row.values.size() != 1) {
           throw std::runtime_error("recursive UNION DISTINCT row is ragged");
         }
-        if (*identity_count == maximum) {
+        if (identity_count == maximum) {
           throw std::runtime_error(
               "recursive CTE UNION DISTINCT value comparison bound was "
               "exceeded");
         }
-        ++*identity_count;
+        ++identity_count;
         const auto& value = row.values.front();
         if (value.state == scratchbird::engine::internal_api::
                                EngineValueState::sql_null) {
-          if (*seen_null) {
-            ++*duplicate_count;
+          if (seen_null) {
+            ++duplicate_count;
             return false;
           }
-          if (*representative_count == maximum_representatives) {
+          if (representative_count == maximum_representatives) {
             throw std::runtime_error(
                 "recursive CTE UNION DISTINCT result row bound was exceeded");
           }
-          *seen_null = true;
-          ++*representative_count;
+          seen_null = true;
+          ++representative_count;
           return true;
         }
         const auto decoded = DecodeInt64Value(value);
@@ -1678,24 +1684,23 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
           throw std::runtime_error(decoded.diagnostic.diagnostic_code + ":" +
                                    decoded.diagnostic.detail);
         }
-        const auto inserted = seen_values->Insert(
+        const auto inserted = seen_values.Insert(
             decoded.value,
-            *representative_count < maximum_representatives);
+            representative_count < maximum_representatives);
         if (inserted == RecursiveCteInt64IdentitySet::InsertResult::duplicate) {
-          ++*duplicate_count;
+          ++duplicate_count;
           return false;
         }
         if (inserted == RecursiveCteInt64IdentitySet::InsertResult::full) {
           throw std::runtime_error(
               "recursive CTE UNION DISTINCT result row bound was exceeded");
         }
-        ++*representative_count;
+        ++representative_count;
         return true;
       };
     } else {
-      auto comparison_count = std::make_shared<std::size_t>(0);
-      const auto equal_rows =
-          [equality_terms = std::move(equality_terms), comparison_count,
+      auto equal_rows =
+          [equality_terms = std::move(equality_terms), &comparison_count,
            maximum = request.maximum_value_comparison_count, poll_distinct](
               const DescriptorTuple& left, const DescriptorTuple& right,
               const std::size_t iteration) {
@@ -1708,12 +1713,12 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
               poll_distinct(
                   iteration,
                   "while comparing recursive UNION DISTINCT rows");
-              if (*comparison_count == maximum) {
+              if (comparison_count == maximum) {
                 throw std::runtime_error(
                     "recursive CTE UNION DISTINCT value comparison bound was "
                     "exceeded");
               }
-              ++*comparison_count;
+              ++comparison_count;
               const auto compared = CompareCanonicalDescriptorOrderValues(
                   left.values[term.column], right.values[term.column], term);
               if (!compared.diagnostic.ok) {
@@ -1724,34 +1729,28 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
             }
             return true;
           };
-      std::shared_ptr<std::vector<DescriptorTuple>> seen;
-      try {
-        seen = std::make_shared<std::vector<DescriptorTuple>>();
-      } catch (const std::bad_alloc&) {
-        return refuse_memory(
-            "recursive CTE UNION DISTINCT representative allocation was refused");
-      }
       if (!ReserveRecursiveCteVector(
-              seen.get(), working.maximum_result_row_count,
+              &seen_rows, working.maximum_result_row_count,
               "UNION DISTINCT representative", &capacity_detail)) {
         return refuse_memory(std::move(capacity_detail));
       }
-      admit = [seen, duplicate_count, equal_rows, memory_state,
-               raw_generated_payload_bytes,
-               admitted_output_payload_bytes,
+      admit = [&seen_rows, &duplicate_count,
+               equal_rows = std::move(equal_rows), &memory_state,
+               &raw_generated_payload_bytes,
+               &admitted_output_payload_bytes,
                maximum_representatives = working.maximum_result_row_count](
                   const DescriptorTuple& row, const std::size_t iteration) {
         if (!equal_rows(row, row, iteration)) {
           throw std::runtime_error(
               "recursive UNION DISTINCT self comparison failed");
         }
-        for (const auto& representative : *seen) {
+        for (const auto& representative : seen_rows) {
           if (equal_rows(row, representative, iteration)) {
-            ++*duplicate_count;
+            ++duplicate_count;
             return false;
           }
         }
-        if (seen->size() == maximum_representatives) {
+        if (seen_rows.size() == maximum_representatives) {
           throw std::runtime_error(
               "recursive CTE UNION DISTINCT result row bound was exceeded");
         }
@@ -1773,8 +1772,8 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
             prospective_seen_payload;
         if (!ObserveRecursiveCtePayload(
                 memory_state,
-                {*raw_generated_payload_bytes,
-                 *admitted_output_payload_bytes},
+                {raw_generated_payload_bytes,
+                 admitted_output_payload_bytes},
                 "before retaining a UNION DISTINCT representative")) {
           memory_state->auxiliary_live_payload_bytes =
               previous_seen_payload;
@@ -1782,7 +1781,7 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
         }
         std::string capacity_detail;
         if (!AppendNormalizedRecursiveCteTuple(
-                row, row.values.size(), seen.get(),
+                row, row.values.size(), &seen_rows,
                 "UNION DISTINCT representative", &capacity_detail)) {
           memory_state->auxiliary_live_payload_bytes =
               previous_seen_payload;
@@ -1792,7 +1791,6 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
         return true;
       };
     }
-    DescriptorBatch distinct_anchor;
     try {
       distinct_anchor.columns = working.anchor_batch.columns;
     } catch (const std::bad_alloc&) {
@@ -1812,7 +1810,7 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
     std::size_t distinct_anchor_payload_bytes = 0;
     try {
       for (const auto& row : working.anchor_batch.rows) {
-        *admitted_output_payload_bytes =
+        admitted_output_payload_bytes =
             distinct_anchor_payload_bytes;
         if (admit(row, 0)) {
           std::size_t row_payload_bytes = 0;
@@ -1840,14 +1838,13 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
             throw std::runtime_error(memory_state->refusal_detail);
           }
           distinct_anchor_payload_bytes = prospective_anchor_payload;
-          *admitted_output_payload_bytes =
+          admitted_output_payload_bytes =
               distinct_anchor_payload_bytes;
         }
       }
     } catch (const std::exception& error) {
-      if (cancellation_failure->has_value()) {
-        return refuse_poll(
-            std::move(cancellation_failure->value()));
+      if (cancellation_failure.has_value()) {
+        return refuse_poll(std::move(*cancellation_failure));
       }
       if (!memory_state->refusal_detail.empty()) {
         result.working_result = {};
@@ -1858,32 +1855,32 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
       }
       return refuse(error.what());
     }
-    working.anchor_batch = std::move(distinct_anchor);
+    working_anchor_override = &distinct_anchor;
 
-    const auto recursive_step = working.recursive_step;
-    working.recursive_step =
-        [recursive_step, admit, memory_state,
-         raw_generated_payload_bytes,
-         admitted_output_payload_bytes, cancellation_failure,
+    const auto* recursive_step = &working.recursive_step;
+    distinct_recursive_step =
+        [recursive_step, admit, &memory_state,
+         &raw_generated_payload_bytes,
+         &admitted_output_payload_bytes, &cancellation_failure,
          maximum_working_row_count = working.maximum_working_row_count,
          cancellation_requested = working.cancellation_requested](
             const DescriptorBatch& current, const std::size_t iteration) {
-          auto generated = recursive_step(current, iteration);
+          auto generated = (*recursive_step)(current, iteration);
           auto generated_measurement = MeasureRecursiveCtePayload(
               generated, cancellation_requested, iteration,
               "while measuring raw UNION DISTINCT output");
           if (generated_measurement.cancellation.has_value()) {
-            *cancellation_failure =
+            cancellation_failure =
                 std::move(*generated_measurement.cancellation);
             throw std::runtime_error(
-                cancellation_failure->value().diagnostic.detail);
+                cancellation_failure->diagnostic.detail);
           }
           if (!generated_measurement.ok) {
             memory_state->refusal_detail =
                 generated_measurement.detail;
             throw std::runtime_error(memory_state->refusal_detail);
           }
-          *raw_generated_payload_bytes = generated_measurement.bytes;
+          raw_generated_payload_bytes = generated_measurement.bytes;
           if (!ObserveRecursiveCtePayload(
                   memory_state, {generated_measurement.bytes},
                   "after retaining raw UNION DISTINCT output")) {
@@ -1911,9 +1908,9 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
             throw std::runtime_error(memory_state->refusal_detail);
           }
           std::size_t distinct_payload_bytes = 0;
-          *admitted_output_payload_bytes = 0;
+          admitted_output_payload_bytes = 0;
           for (const auto& row : generated.rows) {
-            *admitted_output_payload_bytes =
+            admitted_output_payload_bytes =
                 distinct_payload_bytes;
             if (admit(row, iteration)) {
               if (distinct.rows.size() == maximum_working_row_count) {
@@ -1947,18 +1944,22 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
                 throw std::runtime_error(memory_state->refusal_detail);
               }
               distinct_payload_bytes = prospective_distinct_payload;
-              *admitted_output_payload_bytes =
+              admitted_output_payload_bytes =
                   distinct_payload_bytes;
             }
           }
           return distinct;
         };
+    working_step_override = &distinct_recursive_step;
   }
 
-  auto working_result = ExecuteCanonicalRecursiveCteWorking(working);
+  auto working_result = ExecuteCanonicalRecursiveCteWorkingBound(
+      working, working_anchor_override, working_step_override,
+      selected_node->implementation_id, retained_payload_bytes,
+      memory_state);
   if (!working_result.diagnostic.ok) {
-    if (cancellation_failure->has_value()) {
-      return refuse_poll(std::move(cancellation_failure->value()));
+    if (cancellation_failure.has_value()) {
+      return refuse_poll(std::move(*cancellation_failure));
     }
     if (working_result.cancellation_observed ||
         working_result.diagnostic.diagnostic_code ==
@@ -1990,7 +1991,7 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
   }
   result.working_result = std::move(working_result);
   result.union_mode = request.union_mode;
-  result.duplicate_row_count = *duplicate_count;
+  result.duplicate_row_count = duplicate_count;
   result.mga_statement_context =
       request.working_request.mga_authority.statement_context;
   return result;
