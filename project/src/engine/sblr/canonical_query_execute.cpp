@@ -45517,9 +45517,9 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
               batch.residual_recheck_complete = true;
               batch.base_row_mga_recheck_complete = true;
               batch.security_recheck_complete = true;
-              for (const auto& row_uuid : reconstructed.row_uuids) {
+              for (auto& row_uuid : reconstructed.row_uuids) {
                 exec::ModelProviderRowIdentityV1 identity;
-                identity.row_uuid = row_uuid;
+                identity.row_uuid = std::move(row_uuid);
                 batch.ordered_row_identities.push_back(std::move(identity));
               }
               provider.ok = true;
@@ -46567,7 +46567,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           spatial_request.statement_context = source_input.mga_statement_context;
           spatial_request.current_statement_context =
               source_input.mga_statement_context;
-          spatial_request.source_rows = source_rows;
+          spatial_request.source_rows = std::move(source_rows);
           spatial_request.maximum_rows = source_input.maximum_rows;
           spatial_request.security_admitted = true;
           spatial_request.exact_scan_fallback_available = true;
@@ -46592,12 +46592,17 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               return fail(matched.diagnostic_id, matched.detail);
             }
             rows = std::move(matched.rows);
-            source_rows.clear();
-            for (const auto& row : rows) {
-              source_rows.push_back(
-                  {row.row_uuid, row.encoded_point, row.crs_uuid});
+            if (has_nearest) {
+              source_rows.clear();
+              source_rows.reserve(rows.size());
+              for (auto& row : rows) {
+                source_rows.push_back(
+                    {std::move(row.row_uuid),
+                     std::move(row.encoded_point),
+                     std::move(row.crs_uuid)});
+              }
+              spatial_request.source_rows = std::move(source_rows);
             }
-            spatial_request.source_rows = source_rows;
           }
           if (has_nearest) {
             const auto nearest = operation_for("SPATIAL_NEAREST");
@@ -46641,7 +46646,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               has_nearest ? "spatial_distance_row_uuid_ascending_v1"
                           : "fixture_order";
           batch.batch.columns = public_columns;
-          for (const auto& row : rows) {
+          for (auto& row : rows) {
             exec::DescriptorTuple tuple;
             for (std::size_t ordinal = 0; ordinal < public_columns.size();
                  ++ordinal) {
@@ -46649,8 +46654,12 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               value.descriptor = public_columns[ordinal].descriptor;
               value.setState(api::EngineValueState::value);
               if (ordinal == 0) value.encoded_value = row.row_uuid;
-              if (ordinal == 1) value.binary_value = row.encoded_point;
-              if (ordinal == 2) value.encoded_value = row.crs_uuid;
+              if (ordinal == 1) {
+                value.binary_value = std::move(row.encoded_point);
+              }
+              if (ordinal == 2) {
+                value.encoded_value = std::move(row.crs_uuid);
+              }
               if (ordinal == 3 && has_match) value.encoded_value = "true";
               if ((ordinal == 3 && !has_match && has_nearest) || ordinal == 4) {
                 value.encoded_value = Rcp079CanonicalReal64(row.distance);
@@ -46659,7 +46668,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             }
             batch.batch.rows.push_back(std::move(tuple));
             exec::ModelProviderRowIdentityV1 identity;
-            identity.row_uuid = row.row_uuid;
+            identity.row_uuid = std::move(row.row_uuid);
             batch.ordered_row_identities.push_back(std::move(identity));
           }
         } else {
@@ -46717,8 +46726,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           columnar_request.operation_ids = source_input.operation_ids;
           columnar_request.operation_id = source_input.operation_id;
           columnar_request.relation_uuid = source_input.object_uuid;
-          columnar_request.row_uuids = row_uuids;
-          columnar_request.logical_rows = logical_rows;
+          columnar_request.row_uuids = std::move(row_uuids);
           columnar_request.statement_context = source_input.mga_statement_context;
           columnar_request.current_statement_context =
               source_input.mga_statement_context;
@@ -46759,6 +46767,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               columnar_request.filter_truth_values.push_back(truth);
             }
           }
+          columnar_request.logical_rows = std::move(logical_rows);
           if (has_project) {
             const auto project = std::ranges::find_if(
                 dag.expressions, [](const auto& expression) {
@@ -46819,9 +46828,9 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             }
             batch.batch.columns[ordinal] = public_columns[ordinal];
           }
-          for (const auto& row_uuid : reconstructed.row_uuids) {
+          for (auto& row_uuid : reconstructed.row_uuids) {
             exec::ModelProviderRowIdentityV1 identity;
-            identity.row_uuid = row_uuid;
+            identity.row_uuid = std::move(row_uuid);
             batch.ordered_row_identities.push_back(std::move(identity));
           }
         }
