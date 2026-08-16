@@ -11236,9 +11236,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
         exec::CanonicalDescriptorLimitResult limited;
         if (fetch_first_rows_only) {
           exec::CanonicalDescriptorFetchProfileRequest fetch_request;
-          fetch_request.physical_dag = dag;
           fetch_request.selected_physical_node_id = node.physical_node_id;
-          fetch_request.input_batch = input_batch;
           fetch_request.form =
               exec::CanonicalFetchTopProfileForm::fetch_first_rows_only;
           fetch_request.row_count = row_limit;
@@ -11246,8 +11244,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
           fetch_request.row_count_is_bound = true;
           fetch_request.mga_authority =
               BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-          auto fetched =
-              exec::ExecuteCanonicalDescriptorFetchProfile(fetch_request);
+          auto fetched = exec::ExecuteCanonicalDescriptorFetchProfile(
+              fetch_request, dag, input_batch);
           limited.diagnostic = std::move(fetched.diagnostic);
           limited.output_batch = std::move(fetched.output_batch);
           limited.selected_plan_uuid =
@@ -11259,14 +11257,13 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
               std::move(fetched.mga_statement_context);
         } else {
           exec::CanonicalDescriptorLimitRequest limit_request;
-          limit_request.physical_dag = dag;
           limit_request.selected_physical_node_id = node.physical_node_id;
-          limit_request.input_batch = input_batch;
           limit_request.limit = row_limit;
           limit_request.offset = row_offset;
           limit_request.mga_authority =
               BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-          limited = exec::ExecuteCanonicalDescriptorLimit(limit_request);
+          limited = exec::ExecuteCanonicalDescriptorLimit(
+              limit_request, dag, input_batch);
         }
         if (!limited.diagnostic.ok) {
           step.diagnostic = std::move(limited.diagnostic);
@@ -23227,15 +23224,13 @@ ExecuteCanonicalObjectFreeLimitQuery(
           return step;
         }
         exec::CanonicalDescriptorLimitRequest limit_request;
-        limit_request.physical_dag = dag;
         limit_request.selected_physical_node_id = node.physical_node_id;
-        limit_request.input_batch = input_batch;
         limit_request.limit = row_limit;
         limit_request.offset = 0;
         limit_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        auto limit_result =
-            exec::ExecuteCanonicalDescriptorLimit(limit_request);
+        auto limit_result = exec::ExecuteCanonicalDescriptorLimit(
+            limit_request, dag, input_batch);
         if (!limit_result.diagnostic.ok) {
           step.diagnostic = std::move(limit_result.diagnostic);
           return step;

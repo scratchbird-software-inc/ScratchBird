@@ -2706,6 +2706,13 @@ CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
     const DescriptorBatch& borrowed_input_batch);
 CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
     const CanonicalDescriptorLimitRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG and input carriers must remain in their
+// exact default states.
+CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
+    const CanonicalDescriptorLimitRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
     const CanonicalTableSubqueryRequest& request);
 // The borrowed DAG is consumed synchronously and is never retained. The
@@ -2786,6 +2793,13 @@ CanonicalSetOperationNestingResult ExecuteCanonicalSetOperationNesting(
     const CanonicalSetOperationNestingRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG and input carriers must remain in their
+// exact default states.
+CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
+    const CanonicalDescriptorFetchProfileRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request);
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(

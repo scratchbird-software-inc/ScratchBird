@@ -41,6 +41,13 @@ bool HasColumn(const Tuple& tuple, std::size_t column) {
   return column < tuple.values.size();
 }
 
+bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
+  const DescriptorBatch empty;
+  return batch.columns.empty() &&
+         batch.columns.capacity() == empty.columns.capacity() &&
+         batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
+}
+
 bool IsCanonicalUuid(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
       value[18] != '-' || value[23] != '-') {
@@ -395,11 +402,26 @@ void RequireResolvedColumnHandles(
 // The native SBSQL development profile admits only FETCH FIRST <bound count>
 // ROWS ONLY.  WITH TIES and donor TOP variants stay explicit refusals rather
 // than silently degrading to an ordinary limit.
-CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
-    const CanonicalDescriptorFetchProfileRequest& request) {
+namespace {
+CanonicalDescriptorFetchProfileResult
+ExecuteCanonicalDescriptorFetchProfileBound(
+    const CanonicalDescriptorFetchProfileRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   CanonicalDescriptorFetchProfileResult result;
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(request.input_batch))) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-010-FETCH-TOP-PROFILE-REFUSAL-V1";
+    result.diagnostic.detail =
+        "FETCH request carries conflicting owned execution carriers";
+    return result;
+  }
   const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!entry_authority.ok) {
     result.diagnostic = entry_authority;
     return result;
@@ -416,14 +438,13 @@ CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
   }
 
   CanonicalDescriptorLimitRequest limit_request;
-  limit_request.physical_dag = request.physical_dag;
   limit_request.selected_physical_node_id =
       request.selected_physical_node_id;
-  limit_request.input_batch = request.input_batch;
   limit_request.limit = request.row_count;
   limit_request.offset = request.offset;
   limit_request.mga_authority = request.mga_authority;
-  auto limited = ExecuteCanonicalDescriptorLimit(limit_request);
+  auto limited = ExecuteCanonicalDescriptorLimit(
+      limit_request, execution_dag, execution_input_batch);
   if (limited.diagnostic.ok &&
       !PhysicalMgaStatementContextEqual(
           limited.mga_statement_context,
@@ -436,7 +457,7 @@ CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
   }
   if (limited.diagnostic.ok) {
     const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-        request.mga_authority, request.physical_dag);
+        request.mga_authority, execution_dag);
     if (!result_authority.ok) limited.diagnostic = result_authority;
   }
   if (!limited.diagnostic.ok) {
@@ -452,6 +473,21 @@ CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     result.mga_statement_context = request.mga_authority.statement_context;
   }
   return result;
+}
+}  // namespace
+
+CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
+    const CanonicalDescriptorFetchProfileRequest& request) {
+  return ExecuteCanonicalDescriptorFetchProfileBound(
+      request, request.physical_dag, request.input_batch, false);
+}
+
+CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
+    const CanonicalDescriptorFetchProfileRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalDescriptorFetchProfileBound(
+      request, borrowed_execution_dag, borrowed_input_batch, true);
 }
 
 // QOW-SOURCE-QRY-011-STATE-V1

@@ -404,30 +404,41 @@ CanonicalDescriptorOrderComparisonResult CompareCanonicalDescriptorOrderValues(
 // First canonical implementation in this module: a typed LIMIT/OFFSET node.
 // Typed ORDER BY terms are deliberately left to QRY-010; this entry does not
 // fall back to the legacy one-integer-key sorter.
-CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
-    const CanonicalDescriptorLimitRequest& request) {
+namespace {
+CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimitBound(
+    const CanonicalDescriptorLimitRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   CanonicalDescriptorLimitResult result;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
     result.diagnostic = std::move(diagnostic);
     result.output_batch = {};
     return result;
   };
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(request.input_batch))) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-SORT-LIMIT-PHYSICAL-ROUTE-V1",
+        "descriptor limit request carries conflicting owned execution carriers"));
+  }
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;
   const PhysicalNodeRecord* input_node = nullptr;
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == request.selected_physical_node_id) {
       selected_node = &node;
     }
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id ||
+          execution_dag.root_physical_node_id ||
       selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kLimit ||
       selected_node->input_physical_node_ids.size() != 1) {
@@ -435,7 +446,7 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
         "QOW-DIAG-QRY-007-SORT-LIMIT-PHYSICAL-ROUTE-V1",
         "descriptor limit requires one selected root limit node"));
   }
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
         selected_node->input_physical_node_ids.front()) {
       input_node = &node;
@@ -449,11 +460,11 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
                           "limit schema does not preserve input handles"));
   }
   auto input_validation = ValidateCanonicalDescriptorBatch(
-      request.input_batch, input_node->output_descriptor_ids);
+      execution_input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
 
-  result.output_batch.columns = request.input_batch.columns;
-  const auto row_count = request.input_batch.rows.size();
+  result.output_batch.columns = execution_input_batch.columns;
+  const auto row_count = execution_input_batch.rows.size();
   const auto offset = request.offset > row_count
                           ? row_count
                           : static_cast<std::size_t>(request.offset);
@@ -464,22 +475,38 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
   result.output_batch.rows.reserve(take);
   result.output_batch.rows.insert(
       result.output_batch.rows.end(),
-      request.input_batch.rows.begin() + static_cast<std::ptrdiff_t>(offset),
-      request.input_batch.rows.begin() +
+      execution_input_batch.rows.begin() +
+          static_cast<std::ptrdiff_t>(offset),
+      execution_input_batch.rows.begin() +
           static_cast<std::ptrdiff_t>(offset + take));
 
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, selected_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!result_authority.ok) return refuse(result_authority);
   result.diagnostic = {};
-  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
   result.mga_statement_context = request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
+    const CanonicalDescriptorLimitRequest& request) {
+  return ExecuteCanonicalDescriptorLimitBound(
+      request, request.physical_dag, request.input_batch, false);
+}
+
+CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
+    const CanonicalDescriptorLimitRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalDescriptorLimitBound(
+      request, borrowed_execution_dag, borrowed_input_batch, true);
 }
 
 // QOW-SOURCE-QRY-010-DISTINCT-COMPOSITION-V1
