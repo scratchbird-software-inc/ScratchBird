@@ -4021,6 +4021,26 @@ struct CanonicalAggregateExecutionMemoryScope {
   std::optional<std::size_t> maximum_final_output_bytes;
 };
 
+static bool CanonicalAggregateRuntimeImplementationMatches(
+    const std::string_view implementation_id,
+    const bool state_exchange_execution_context) {
+  if (state_exchange_execution_context) {
+    return implementation_id == "aggregate.registry-state-exchange.v1";
+  }
+  return implementation_id == "aggregate.registry-core.v1" ||
+         implementation_id == "aggregate.registry.serial.v1" ||
+         implementation_id == "aggregate.registry-state-spill.v1" ||
+         implementation_id == "aggregate.registry-grouping-sets.v1" ||
+         implementation_id ==
+             "aggregate.registry-grouping-sets-state-spill.v1" ||
+         implementation_id ==
+             "window.aggregate-registry-frame-recompute.v1" ||
+         implementation_id ==
+             "window.aggregate-registry-moving-inverse.v1" ||
+         implementation_id ==
+             "window.aggregate-registry-state-spill.v1";
+}
+
 static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
     const CanonicalAggregateRuntimeRequest& request,
     const TypedPhysicalNodeDag& execution_dag,
@@ -4102,6 +4122,14 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
         state_exchange_selected
             ? "selected aggregate state exchange requires the exchange runtime"
             : "aggregate state exchange payload does not match the selected implementation"));
+  }
+  if (!CanonicalAggregateRuntimeImplementationMatches(
+          aggregate_node->implementation_id,
+          state_exchange_execution_context)) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-PHYSICAL-V1",
+        "selected aggregate implementation does not match its canonical "
+        "runtime context"));
   }
   for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
