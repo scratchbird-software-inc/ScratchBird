@@ -56,6 +56,12 @@ const PhysicalNodeRecord* FindPhysicalNode(const TypedPhysicalNodeDag& dag,
   return nullptr;
 }
 
+bool RecursiveCteHasDistinctBinaryInputs(const PhysicalNodeRecord& node) {
+  return node.input_physical_node_ids.size() == 2 &&
+         node.input_physical_node_ids[0] !=
+             node.input_physical_node_ids[1];
+}
+
 bool IsCanonicalCteEvidenceUuid(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
       value[18] != '-' || value[23] != '-') {
@@ -1267,7 +1273,7 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
       selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
       selected_node->implementation_id !=
           accepted_implementation_id ||
-      selected_node->input_physical_node_ids.size() != 2) {
+      !RecursiveCteHasDistinctBinaryInputs(*selected_node)) {
     return refuse("recursive CTE working physical profile is not bound");
   }
   const auto memory_binding = BindRecursiveCteMemoryState(
@@ -1834,7 +1840,8 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnionBound(
           scoped_root_physical_node_id ||
       selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
-      !profile_matches) {
+      !profile_matches ||
+      !RecursiveCteHasDistinctBinaryInputs(*selected_node)) {
     return refuse("recursive CTE UNION physical profile is not bound");
   }
   std::string foreign_anchor_capacity_detail;
@@ -2538,7 +2545,7 @@ ExecuteCanonicalRecursiveCteSearchCycleBound(
       selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
       (!legacy_int64_profile && !generic_typed_profile) ||
-      selected_node->input_physical_node_ids.size() != 2) {
+      !RecursiveCteHasDistinctBinaryInputs(*selected_node)) {
     return refuse("recursive CTE SEARCH/CYCLE physical profile is not bound");
   }
   auto memory_state = request.memory_state;
@@ -3478,7 +3485,8 @@ CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
       selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
       selected_node->implementation_id !=
-          "cte.recursive.resource-bounded.typed.v1") {
+          "cte.recursive.resource-bounded.typed.v1" ||
+      !RecursiveCteHasDistinctBinaryInputs(*selected_node)) {
     return refuse("recursive CTE resource physical profile is not bound");
   }
   const auto resource_evidence = std::find_if(
@@ -3659,7 +3667,8 @@ ExecuteCanonicalRecursiveCteCancellation(
       selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
       selected_node->implementation_id !=
-          "cte.recursive.cancellable.typed.v1") {
+          "cte.recursive.cancellable.typed.v1" ||
+      !RecursiveCteHasDistinctBinaryInputs(*selected_node)) {
     return refuse("recursive CTE cancellation physical profile is not bound");
   }
   const auto policy_evidence = std::find_if(
@@ -3818,7 +3827,8 @@ CanonicalRecursiveCteMgaResult ExecuteCanonicalRecursiveCteMgaBoundary(
       selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
       selected_node->implementation_id !=
-          "cte.recursive.mga-boundary.typed.v1") {
+          "cte.recursive.mga-boundary.typed.v1" ||
+      !RecursiveCteHasDistinctBinaryInputs(*selected_node)) {
     return refuse("recursive CTE MGA physical profile is not bound");
   }
 

@@ -11391,6 +11391,13 @@ MakeLiveRecursiveCteRegistration(
                         inputs[0].output_descriptor_ids;
         }
         if (inputs.size() != 2 ||
+            node.input_physical_node_ids.size() != 2 ||
+            node.input_physical_node_ids[0] ==
+                node.input_physical_node_ids[1] ||
+            inputs[0].physical_node_id !=
+                node.input_physical_node_ids[0] ||
+            inputs[1].physical_node_id !=
+                node.input_physical_node_ids[1] ||
             !inputs[0].materialized_output_batch.has_value() ||
             !inputs[1].materialized_output_batch.has_value() ||
             inputs[0].materialized_output_batch->rows.size() >
