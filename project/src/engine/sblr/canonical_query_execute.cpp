@@ -655,6 +655,45 @@ bool RuntimeMaterializedBatchMemoryBytes(const exec::DescriptorBatch& batch,
   return true;
 }
 
+void PublishRecursiveCteRuntimeMemoryObservation(
+    exec::CanonicalPhysicalDispatchStepResult* step,
+    const std::uint64_t current_memory_bytes,
+    const std::uint64_t peak_memory_bytes) {
+  if (step == nullptr) return;
+  namespace metric = scratchbird::engine::executor;
+  const auto observed = [](const std::uint64_t value) {
+    return metric::CanonicalObservedUint64{
+        metric::CanonicalRuntimeMetricState::kObserved, value};
+  };
+  const auto not_applicable = [] {
+    return metric::CanonicalObservedUint64{
+        metric::CanonicalRuntimeMetricState::kNotApplicable, 0};
+  };
+  auto& receipt = step->runtime_observation;
+  receipt.abi_version = 1;
+  receipt.operator_wait_ns = observed(0);
+  receipt.current_memory_bytes = observed(current_memory_bytes);
+  receipt.peak_memory_bytes = observed(peak_memory_bytes);
+  receipt.decoded_bytes = not_applicable();
+  receipt.bytes_read = not_applicable();
+  receipt.bytes_written = not_applicable();
+  receipt.pages_read = not_applicable();
+  receipt.pages_written = not_applicable();
+  receipt.spill_bytes_read = observed(0);
+  receipt.spill_bytes_written = observed(0);
+  receipt.visibility_recheck_count = not_applicable();
+  receipt.security_recheck_count = not_applicable();
+  receipt.storage_recheck_count = not_applicable();
+  receipt.index_recheck_count = not_applicable();
+  receipt.residual_recheck_count = not_applicable();
+  receipt.compatibility_recheck_count = not_applicable();
+  receipt.archive_bytes_read = not_applicable();
+  receipt.cluster_bytes_sent = not_applicable();
+  receipt.cluster_bytes_received = not_applicable();
+  receipt.authority.engine_execution_observation = true;
+  receipt.producer_receipt_complete = true;
+}
+
 void PublishOrdinaryRuntimeObservations(
     std::vector<exec::CanonicalPhysicalExecutorRegistration>* registrations,
     const OrdinaryRuntimeMemoryReceipts& memory_receipts) {
@@ -670,7 +709,8 @@ void PublishOrdinaryRuntimeObservations(
   };
   for (auto& registration : *registrations) {
     if (!registration.engine_owned || !registration.execute ||
-        registration.implementation_id.starts_with("scan.heap")) {
+        registration.implementation_id.starts_with("scan.heap") ||
+        registration.publishes_runtime_observation_v1) {
       continue;
     }
     const bool has_producer_receipt = std::ranges::any_of(
@@ -1870,13 +1910,107 @@ struct PreparedRecursiveCteRoot {
   PreparedRecursiveCteTerm term;
   exec::ExecutorColumnDescriptor search_sequence_column;
   exec::ExecutorColumnDescriptor cycle_mark_column;
-  std::size_t anchor_row_count{0};
+  std::size_t maximum_anchor_row_count{0};
   std::size_t maximum_iteration_count{0};
   std::size_t maximum_working_row_count{0};
   std::size_t maximum_term_output_row_count{0};
   std::size_t maximum_result_row_count{0};
   std::size_t rows_examined{0};
+  std::size_t planned_peak_payload_bytes{0};
 };
+
+bool BoundPreparedRecursiveCtePeakPayload(
+    const PreparedRecursiveCteRoot& prepared,
+    std::size_t* peak_payload_bytes) {
+  if (peak_payload_bytes == nullptr ||
+      prepared.maximum_anchor_row_count == 0 ||
+      prepared.anchor_columns.empty() ||
+      prepared.maximum_working_row_count == 0 ||
+      prepared.maximum_term_output_row_count == 0 ||
+      prepared.maximum_result_row_count == 0) {
+    return false;
+  }
+  // The currently admitted live recursive term is an exact signed-int64
+  // increment. Reserve both its longest canonical text form and native binary
+  // carrier. SEARCH/CYCLE adds an int64 sequence and canonical boolean mark.
+  constexpr std::uint64_t kInt64PayloadBytes = 20 + sizeof(std::int64_t);
+  constexpr std::uint64_t kBooleanPayloadBytes = 5 + sizeof(bool);
+  std::uint64_t base_row_payload = 0;
+  if (!CheckedMultiply(prepared.anchor_columns.size(),
+                       kInt64PayloadBytes, &base_row_payload)) {
+    return false;
+  }
+  std::uint64_t anchor_payload = 0;
+  std::uint64_t working_payload = 0;
+  std::uint64_t generated_payload = 0;
+  std::uint64_t result_payload = 0;
+  if (!CheckedMultiply(prepared.maximum_anchor_row_count, base_row_payload,
+                       &anchor_payload) ||
+      !CheckedMultiply(prepared.maximum_working_row_count,
+                       base_row_payload, &working_payload) ||
+      !CheckedMultiply(prepared.maximum_term_output_row_count,
+                       base_row_payload, &generated_payload)) {
+    return false;
+  }
+  if (prepared.profile.search_cycle) {
+    std::uint64_t projected_row_payload = 0;
+    if (!CheckedAdd(base_row_payload, kInt64PayloadBytes,
+                    &projected_row_payload) ||
+        !CheckedAdd(projected_row_payload, kBooleanPayloadBytes,
+                    &projected_row_payload) ||
+        !CheckedMultiply(prepared.maximum_result_row_count,
+                         projected_row_payload, &result_payload)) {
+      return false;
+    }
+    // Dispatcher anchor + request anchor + projected result + current
+    // working + raw generated + next working + one projected row in flight.
+    std::uint64_t peak = 1;
+    if (!CheckedAdd(peak, anchor_payload, &peak) ||
+        !CheckedAdd(peak, anchor_payload, &peak) ||
+        !CheckedAdd(peak, result_payload, &peak) ||
+        !CheckedAdd(peak, working_payload, &peak) ||
+        !CheckedAdd(peak, generated_payload, &peak) ||
+        !CheckedAdd(peak, generated_payload, &peak) ||
+        !CheckedAdd(peak, projected_row_payload, &peak) ||
+        peak > std::numeric_limits<std::size_t>::max()) {
+      return false;
+    }
+    *peak_payload_bytes = static_cast<std::size_t>(peak);
+    return true;
+  }
+  if (!CheckedMultiply(prepared.maximum_result_row_count,
+                       base_row_payload, &result_payload)) {
+    return false;
+  }
+  std::uint64_t peak = 1;
+  // Dispatcher anchor + outer UNION request anchor + inner Working request
+  // anchor + accumulated result + typed DISTINCT representatives + current
+  // working + raw/admitted output overlap.
+  if (!CheckedAdd(peak, anchor_payload, &peak) ||
+      !CheckedAdd(peak, anchor_payload, &peak) ||
+      !CheckedAdd(peak, anchor_payload, &peak) ||
+      !CheckedAdd(peak, result_payload, &peak) ||
+      !CheckedAdd(peak, result_payload, &peak) ||
+      !CheckedAdd(peak, working_payload, &peak) ||
+      !CheckedAdd(peak, generated_payload, &peak) ||
+      !CheckedAdd(peak, generated_payload, &peak) ||
+      peak > std::numeric_limits<std::size_t>::max()) {
+    return false;
+  }
+  *peak_payload_bytes = static_cast<std::size_t>(peak);
+  return true;
+}
+
+bool BindPreparedRecursiveCtePeakPayload(
+    PreparedRecursiveCteRoot* prepared,
+    const std::uint64_t memory_budget_bytes) {
+  if (prepared == nullptr || memory_budget_bytes == 0 ||
+      !BoundPreparedRecursiveCtePeakPayload(
+          *prepared, &prepared->planned_peak_payload_bytes)) {
+    return false;
+  }
+  return prepared->planned_peak_payload_bytes <= memory_budget_bytes;
+}
 
 struct PreparedGlobalAggregateRoot {
   bool ok{false};
@@ -7472,6 +7606,66 @@ struct LivePhysicalNodeProfile {
   std::string model_family_id;
 };
 
+bool BindPreparedRecursiveCteCardinality(
+    PreparedRecursiveCteRoot* prepared,
+    const std::vector<LivePhysicalNodeProfile>& profiles,
+    const std::uint32_t anchor_logical_node_id,
+    const std::uint64_t recursive_upper_bound,
+    const std::size_t execution_row_ceiling) {
+  if (prepared == nullptr || execution_row_ceiling == 0 ||
+      recursive_upper_bound >= execution_row_ceiling ||
+      recursive_upper_bound >=
+          std::numeric_limits<std::size_t>::max() ||
+      prepared->profile.search_cycle ||
+      prepared->profile.emit_current_duplicate ||
+      prepared->profile.union_mode !=
+          exec::CanonicalRecursiveCteUnionMode::kAll) {
+    return false;
+  }
+  const LivePhysicalNodeProfile* anchor_profile = nullptr;
+  for (const auto& profile : profiles) {
+    if (profile.logical_node_id != anchor_logical_node_id) continue;
+    if (anchor_profile != nullptr) return false;
+    anchor_profile = &profile;
+  }
+  if (anchor_profile == nullptr ||
+      anchor_profile->physical_node_kind !=
+          exec::PhysicalNodeKind::kAggregate ||
+      anchor_profile->implementation_id != "aggregate.count-star.v1") {
+    return false;
+  }
+  // estimated_rows is a cost input, not an execution limit. The five model
+  // compositions currently admit recursion only over the canonical global
+  // COUNT(*) producer, whose hard result cardinality is exactly one row.
+  // Future multi-row anchors require a separate hard cardinality carrier.
+  constexpr std::size_t anchor_row_bound = 1;
+  const auto result_row_bound =
+      static_cast<std::size_t>(recursive_upper_bound + 1);
+  constexpr std::size_t term_row_multiplier = 1;
+  std::uint64_t maximum_term_output_rows = 0;
+  std::uint64_t rows_examined = 0;
+  if (!CheckedMultiply(anchor_row_bound, term_row_multiplier,
+                       &maximum_term_output_rows) ||
+      !CheckedMultiply(result_row_bound, std::uint64_t{2},
+                       &rows_examined) ||
+      maximum_term_output_rows >
+          std::numeric_limits<std::size_t>::max() ||
+      rows_examined > std::numeric_limits<std::size_t>::max()) {
+    return false;
+  }
+  // COUNT(*) is nonnegative. The accepted UNION ALL increment therefore
+  // emits at most upper_bound + 1 total rows, including its anchor; a count
+  // already above the bound emits only that anchor.
+  prepared->maximum_anchor_row_count = anchor_row_bound;
+  prepared->maximum_iteration_count = result_row_bound;
+  prepared->maximum_working_row_count = anchor_row_bound;
+  prepared->maximum_term_output_row_count =
+      static_cast<std::size_t>(maximum_term_output_rows);
+  prepared->maximum_result_row_count = result_row_bound;
+  prepared->rows_examined = static_cast<std::size_t>(rows_examined);
+  return true;
+}
+
 struct LivePhysicalPlanningResult {
   bool ok{false};
   exec::TypedPhysicalNodeDag physical_dag;
@@ -11032,6 +11226,7 @@ MakeLiveRecursiveCteRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 = true;
   registration.execute =
       [prepared = std::move(prepared),
        recursive_term_capability_uuid =
@@ -11063,8 +11258,8 @@ MakeLiveRecursiveCteRegistration(
         if (inputs.size() != 2 ||
             !inputs[0].materialized_output_batch.has_value() ||
             !inputs[1].materialized_output_batch.has_value() ||
-            inputs[0].materialized_output_batch->rows.size() !=
-                prepared.anchor_row_count ||
+            inputs[0].materialized_output_batch->rows.size() >
+                prepared.maximum_anchor_row_count ||
             !inputs[1].materialized_output_batch->rows.empty() ||
             inputs[0].output_descriptor_ids !=
                 inputs[1].output_descriptor_ids ||
@@ -11075,6 +11270,42 @@ MakeLiveRecursiveCteRegistration(
           step.diagnostic.detail =
               "recursive CTE did not receive its exact anchor and term "
               "bindings";
+          return step;
+        }
+
+        std::uint64_t retained_input_payload_bytes = 0;
+        std::uint64_t anchor_input_payload_bytes = 0;
+        for (std::size_t input_index = 0; input_index < inputs.size();
+             ++input_index) {
+          const auto& input = inputs[input_index];
+          std::uint64_t input_payload_bytes = 0;
+          if (!RuntimeMaterializedBatchMemoryBytes(
+                  *input.materialized_output_batch,
+                  &input_payload_bytes) ||
+              input_payload_bytes == 0 ||
+              input_payload_bytes - 1 >
+                  std::numeric_limits<std::uint64_t>::max() -
+                      retained_input_payload_bytes) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-014-RESOURCE-REFUSAL-V1";
+            step.diagnostic.detail =
+                "recursive CTE retained input payload accounting overflowed";
+            return step;
+          }
+          if (input_index == 0) {
+            anchor_input_payload_bytes = input_payload_bytes - 1;
+          }
+          retained_input_payload_bytes += input_payload_bytes - 1;
+        }
+        if (retained_input_payload_bytes >
+            std::numeric_limits<std::size_t>::max()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-014-RESOURCE-REFUSAL-V1";
+          step.diagnostic.detail =
+              "recursive CTE retained input payload exceeds the native "
+              "receipt width";
           return step;
         }
 
@@ -11127,6 +11358,42 @@ MakeLiveRecursiveCteRegistration(
               "recursive CTE cancellation policy evidence is missing";
           return step;
         }
+        const auto resource_evidence = std::ranges::find_if(
+            operator_dag.admission_evidence,
+            [](const exec::PhysicalAdmissionEvidence& evidence) {
+              return evidence.stage ==
+                     exec::PhysicalAdmissionStage::kResource;
+            });
+        const auto resource_evidence_count = std::ranges::count_if(
+            operator_dag.admission_evidence,
+            [](const exec::PhysicalAdmissionEvidence& evidence) {
+              return evidence.stage ==
+                     exec::PhysicalAdmissionStage::kResource;
+            });
+        if (resource_evidence_count != 1 ||
+            resource_evidence == operator_dag.admission_evidence.end() ||
+            resource_evidence->evidence_uuid.empty() ||
+            prepared.planned_peak_payload_bytes == 0 ||
+            node.memory_bytes_required !=
+                prepared.planned_peak_payload_bytes ||
+            node.memory_bytes_required > operator_dag.memory_budget_bytes ||
+            retained_input_payload_bytes >
+                node.memory_bytes_required ||
+            anchor_input_payload_bytes >
+                node.memory_bytes_required -
+                    retained_input_payload_bytes ||
+            (node.retained_cost.memory_bytes_required != 0 &&
+             node.retained_cost.memory_bytes_required !=
+                 node.memory_bytes_required)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-014-RESOURCE-REFUSAL-V1";
+          step.diagnostic.detail =
+              "recursive CTE selected-node memory grant is not exactly bound";
+          return step;
+        }
+        const auto memory_grant_evidence_uuid =
+            resource_evidence->evidence_uuid;
         const auto cancellation_evidence_uuid =
             cancellation_policy->evidence_uuid;
         const auto cancellation_requested =
@@ -11167,6 +11434,10 @@ MakeLiveRecursiveCteRegistration(
         exec::DescriptorRuntimeDiagnostic diagnostic;
         exec::PhysicalMgaStatementContext result_mga;
         std::size_t recursive_iteration_count = 0;
+        std::size_t output_payload_bytes = 0;
+        std::size_t peak_live_payload_bytes = 0;
+        std::size_t memory_grant_bytes = 0;
+        std::string result_memory_grant_evidence_uuid;
         if (prepared.profile.search_cycle) {
           exec::CanonicalRecursiveCteSearchCycleRequest recursive;
           recursive.physical_dag = std::move(operator_dag);
@@ -11187,6 +11458,9 @@ MakeLiveRecursiveCteRegistration(
               std::max<std::size_t>(1, prepared.maximum_working_row_count);
           recursive.maximum_result_row_count =
               std::max<std::size_t>(1, prepared.maximum_result_row_count);
+          recursive.enforce_payload_memory_grant = true;
+          recursive.retained_input_payload_bytes =
+              static_cast<std::size_t>(retained_input_payload_bytes);
           recursive.cancellation_requested =
               recursive_cancellation_requested;
           recursive.cancellation_evidence_uuid =
@@ -11225,6 +11499,11 @@ MakeLiveRecursiveCteRegistration(
           output = std::move(result.output_batch);
           result_mga = std::move(result.mga_statement_context);
           recursive_iteration_count = result.recursive_iteration_count;
+          output_payload_bytes = result.output_payload_bytes;
+          peak_live_payload_bytes = result.peak_live_payload_bytes;
+          memory_grant_bytes = result.memory_grant_bytes;
+          result_memory_grant_evidence_uuid =
+              std::move(result.memory_grant_evidence_uuid);
           step.cancellation_observed = result.cancellation_observed;
           step.transient_state_cleanup_proven =
               result.working_state_cleaned;
@@ -11243,6 +11522,9 @@ MakeLiveRecursiveCteRegistration(
               std::max<std::size_t>(1, prepared.maximum_working_row_count);
           working.maximum_result_row_count =
               std::max<std::size_t>(1, prepared.maximum_result_row_count);
+          working.enforce_payload_memory_grant = true;
+          working.retained_input_payload_bytes =
+              static_cast<std::size_t>(retained_input_payload_bytes);
           working.cancellation_requested =
               recursive_cancellation_requested;
           working.cancellation_evidence_uuid =
@@ -11282,6 +11564,15 @@ MakeLiveRecursiveCteRegistration(
           result_mga = std::move(result.mga_statement_context);
           recursive_iteration_count =
               result.working_result.recursive_iteration_count;
+          output_payload_bytes =
+              result.working_result.output_payload_bytes;
+          peak_live_payload_bytes =
+              result.working_result.peak_live_payload_bytes;
+          memory_grant_bytes =
+              result.working_result.memory_grant_bytes;
+          result_memory_grant_evidence_uuid =
+              std::move(result.working_result
+                            .memory_grant_evidence_uuid);
           step.cancellation_observed =
               result.working_result.cancellation_observed;
           step.transient_state_cleanup_proven =
@@ -11297,6 +11588,24 @@ MakeLiveRecursiveCteRegistration(
         }
         if (!diagnostic.ok) {
           step.diagnostic = std::move(diagnostic);
+          return step;
+        }
+        std::uint64_t measured_output_payload_bytes = 0;
+        if (!RuntimeMaterializedBatchMemoryBytes(
+                output, &measured_output_payload_bytes) ||
+            measured_output_payload_bytes == 0 ||
+            output_payload_bytes != measured_output_payload_bytes - 1 ||
+            memory_grant_bytes != node.memory_bytes_required ||
+            result_memory_grant_evidence_uuid !=
+                memory_grant_evidence_uuid ||
+            peak_live_payload_bytes < output_payload_bytes ||
+            peak_live_payload_bytes > memory_grant_bytes) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-014-RESOURCE-REFUSAL-V1";
+          step.diagnostic.detail =
+              "recursive CTE runtime payload receipt is inconsistent";
+          step.transient_state_cleanup_proven = true;
           return step;
         }
         bool output_validation_cancelled = false;
@@ -11333,11 +11642,16 @@ MakeLiveRecursiveCteRegistration(
           return step;
         }
         step.result_handle_id = node.physical_node_id;
-        step.input_row_count = prepared.anchor_row_count;
+        step.input_row_count =
+            inputs[0].materialized_output_batch->rows.size();
         step.rows_examined = prepared.rows_examined;
         step.output_row_count = output.rows.size();
         step.materialized_output_batch = std::move(output);
         step.mga_statement_context = std::move(result_mga);
+        step.data_access_observation_known = true;
+        step.data_access_observed = false;
+        PublishRecursiveCteRuntimeMemoryObservation(
+            &step, output_payload_bytes, peak_live_payload_bytes);
         return step;
       };
   return registration;
@@ -12499,7 +12813,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     prepared.term = prepared_recursive_term;
     prepared.search_sequence_column = search_sequence_column;
     prepared.cycle_mark_column = cycle_mark_column;
-    prepared.anchor_row_count = anchor.batch.rows.size();
+    prepared.maximum_anchor_row_count = anchor.batch.rows.size();
     prepared.maximum_iteration_count =
         std::max<std::size_t>(1, iteration_count);
     prepared.maximum_working_row_count =
@@ -12509,6 +12823,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     prepared.maximum_result_row_count =
         std::max<std::size_t>(1, accumulated.rows.size());
     prepared.rows_examined = static_cast<std::size_t>(recursive_work);
+    if (!BindPreparedRecursiveCtePeakPayload(
+            &prepared,
+            request.optimizer_request.resource.memory_budget_bytes)) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+          "recursive CTE materialized payload peak exceeds its admitted "
+          "memory budget");
+    }
     prepared_recursive_cte = prepared;
 
     profiles.push_back(
@@ -12532,7 +12854,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          plan::CanonicalLogicalRelationalNodeKind::kRecursiveCte,
          exec::PhysicalNodeKind::kRecursiveCte,
          recursive_cte_profile.transformation_id,
-         accumulated.rows.size(), recursive_memory, 2, 2});
+         accumulated.rows.size(), prepared.planned_peak_payload_bytes,
+         2, 2});
     state.ok = true;
     state.batch = std::move(accumulated);
     state.result_bindings = anchor.result_bindings;
@@ -26694,14 +27017,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                 ? "time-series recursive upper bound exceeds its admitted work bound"
                 : detail);
       }
-      const auto maximum_result_rows =
-          static_cast<std::size_t>(upper_bound + 1);
-      if (maximum_result_rows >
-          std::numeric_limits<std::size_t>::max() / 2) {
-        return refuse(
-            "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-            "time-series recursive work receipt overflowed");
-      }
       PreparedRecursiveCteRoot prepared;
       prepared.profile = MatchLiveRecursiveCteProfile(
           recursive_root->semantic_variant_id);
@@ -26709,15 +27024,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       prepared.term = PrepareLiveRecursiveCteTerm(
           prepared.profile, prepared.anchor_columns,
           static_cast<std::int64_t>(upper_bound));
-      prepared.anchor_row_count = 1;
-      prepared.maximum_iteration_count =
-          std::max<std::size_t>(1, maximum_result_rows);
-      prepared.maximum_working_row_count = 1;
-      prepared.maximum_term_output_row_count =
-          prepared.profile.emit_current_duplicate ? 2 : 1;
-      prepared.maximum_result_row_count =
-          std::max<std::size_t>(1, maximum_result_rows);
-      prepared.rows_examined = maximum_result_rows * 2;
+      if (!BindPreparedRecursiveCteCardinality(
+              &prepared, profiles, previous_logical->logical_node_id,
+              upper_bound, kTimeSeriesCompositionRowBound)) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+            "time-series recursive cardinality bound is invalid");
+      }
+      if (!BindPreparedRecursiveCtePeakPayload(
+              &prepared, planning.memory_budget_bytes)) {
+        return refuse(
+            "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+            "time-series recursive payload peak exceeds its admitted memory budget");
+      }
       composition_recursive_cte = prepared;
       composition_recursive_term_capability_uuid = DerivedCanonicalUuid(
           identity_scope, "time-series.recursive-term.capability");
@@ -26746,10 +27065,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       root_profile.physical_node_kind = exec::PhysicalNodeKind::kRecursiveCte;
       root_profile.transformation_rule_id = prepared.profile.transformation_id;
       root_profile.estimated_rows = prepared.maximum_result_row_count;
-      root_profile.memory_bytes_required = 1;
+      root_profile.memory_bytes_required =
+          prepared.planned_peak_payload_bytes;
       root_profile.minimum_input_count = 2;
       root_profile.maximum_input_count = 2;
-      root_profile.runtime_peak_from_callback_batches = true;
       profiles.push_back(std::move(root_profile));
       previous_logical = logical_root;
     }
@@ -31232,14 +31551,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
               ? "search recursive upper bound exceeds its admitted work bound"
               : detail);
     }
-    const auto maximum_result_rows =
-        static_cast<std::size_t>(upper_bound + 1);
-    if (maximum_result_rows >
-        std::numeric_limits<std::size_t>::max() / 2) {
-      return refuse(
-          "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-          "search recursive work receipt overflowed");
-    }
     PreparedRecursiveCteRoot prepared;
     prepared.profile = MatchLiveRecursiveCteProfile(
         recursive_root->semantic_variant_id);
@@ -31247,15 +31558,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     prepared.term = PrepareLiveRecursiveCteTerm(
         prepared.profile, prepared.anchor_columns,
         static_cast<std::int64_t>(upper_bound));
-    prepared.anchor_row_count = 1;
-    prepared.maximum_iteration_count =
-        std::max<std::size_t>(1, maximum_result_rows);
-    prepared.maximum_working_row_count = 1;
-    prepared.maximum_term_output_row_count =
-        prepared.profile.emit_current_duplicate ? 2 : 1;
-    prepared.maximum_result_row_count =
-        std::max<std::size_t>(1, maximum_result_rows);
-    prepared.rows_examined = maximum_result_rows * 2;
+    if (!BindPreparedRecursiveCteCardinality(
+            &prepared, profiles, previous_logical->logical_node_id,
+            upper_bound, kSearchCompositionRowBound)) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+          "search recursive cardinality bound is invalid");
+    }
+    if (!BindPreparedRecursiveCtePeakPayload(
+            &prepared, planning.memory_budget_bytes)) {
+      return refuse(
+          "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+          "search recursive payload peak exceeds its admitted memory budget");
+    }
     prepared_recursive_cte = prepared;
     recursive_term_capability_uuid = DerivedCanonicalUuid(
         identity_scope, "search.recursive-term.capability");
@@ -31282,10 +31597,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     root_profile.physical_node_kind = exec::PhysicalNodeKind::kRecursiveCte;
     root_profile.transformation_rule_id = prepared.profile.transformation_id;
     root_profile.estimated_rows = prepared.maximum_result_row_count;
-    root_profile.memory_bytes_required = 1;
+    root_profile.memory_bytes_required =
+        prepared.planned_peak_payload_bytes;
     root_profile.minimum_input_count = 2;
     root_profile.maximum_input_count = 2;
-    root_profile.runtime_peak_from_callback_batches = true;
     profiles.push_back(std::move(root_profile));
     previous_logical = logical_root;
   }
@@ -33386,14 +33701,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
               ? "key/value recursive upper bound exceeds its admitted work bound"
               : detail);
     }
-    const auto maximum_result_rows =
-        static_cast<std::size_t>(upper_bound + 1);
-    if (maximum_result_rows >
-        std::numeric_limits<std::size_t>::max() / 2) {
-      return refuse(
-          "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-          "key/value recursive work receipt overflowed");
-    }
     PreparedRecursiveCteRoot prepared;
     prepared.profile = MatchLiveRecursiveCteProfile(
         recursive_root->semantic_variant_id);
@@ -33401,15 +33708,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
     prepared.term = PrepareLiveRecursiveCteTerm(
         prepared.profile, prepared.anchor_columns,
         static_cast<std::int64_t>(upper_bound));
-    prepared.anchor_row_count = 1;
-    prepared.maximum_iteration_count =
-        std::max<std::size_t>(1, maximum_result_rows);
-    prepared.maximum_working_row_count = 1;
-    prepared.maximum_term_output_row_count =
-        prepared.profile.emit_current_duplicate ? 2 : 1;
-    prepared.maximum_result_row_count =
-        std::max<std::size_t>(1, maximum_result_rows);
-    prepared.rows_examined = maximum_result_rows * 2;
+    if (!BindPreparedRecursiveCteCardinality(
+            &prepared, profiles, previous_logical->logical_node_id,
+            upper_bound, kKeyValueCompositionRowBound)) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+          "key/value recursive cardinality bound is invalid");
+    }
+    if (!BindPreparedRecursiveCtePeakPayload(
+            &prepared, planning.memory_budget_bytes)) {
+      return refuse(
+          "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+          "key/value recursive payload peak exceeds its admitted memory budget");
+    }
     prepared_recursive_cte = prepared;
     recursive_term_capability_uuid = DerivedCanonicalUuid(
         identity_scope, "key-value.recursive-term.capability");
@@ -33436,10 +33747,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
     root_profile.physical_node_kind = exec::PhysicalNodeKind::kRecursiveCte;
     root_profile.transformation_rule_id = prepared.profile.transformation_id;
     root_profile.estimated_rows = prepared.maximum_result_row_count;
-    root_profile.memory_bytes_required = 1;
+    root_profile.memory_bytes_required =
+        prepared.planned_peak_payload_bytes;
     root_profile.minimum_input_count = 2;
     root_profile.maximum_input_count = 2;
-    root_profile.runtime_peak_from_callback_batches = true;
     profiles.push_back(std::move(root_profile));
     previous_logical = logical_root;
   }
@@ -35790,14 +36101,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
               ? "graph recursive upper bound exceeds its admitted work bound"
               : detail);
     }
-    const auto maximum_result_rows =
-        static_cast<std::size_t>(upper_bound + 1);
-    if (maximum_result_rows >
-        std::numeric_limits<std::size_t>::max() / 2) {
-      return refuse(
-          "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-          "graph recursive work receipt overflowed");
-    }
     PreparedRecursiveCteRoot prepared;
     prepared.profile = MatchLiveRecursiveCteProfile(
         recursive_root->semantic_variant_id);
@@ -35805,15 +36108,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
     prepared.term = PrepareLiveRecursiveCteTerm(
         prepared.profile, prepared.anchor_columns,
         static_cast<std::int64_t>(upper_bound));
-    prepared.anchor_row_count = 1;
-    prepared.maximum_iteration_count =
-        std::max<std::size_t>(1, maximum_result_rows);
-    prepared.maximum_working_row_count = 1;
-    prepared.maximum_term_output_row_count =
-        prepared.profile.emit_current_duplicate ? 2 : 1;
-    prepared.maximum_result_row_count =
-        std::max<std::size_t>(1, maximum_result_rows);
-    prepared.rows_examined = maximum_result_rows * 2;
+    if (!BindPreparedRecursiveCteCardinality(
+            &prepared, profiles, previous_logical->logical_node_id,
+            upper_bound, kGraphCompositionRowBound)) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+          "graph recursive cardinality bound is invalid");
+    }
+    if (!BindPreparedRecursiveCtePeakPayload(
+            &prepared, planning.memory_budget_bytes)) {
+      return refuse(
+          "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+          "graph recursive payload peak exceeds its admitted memory budget");
+    }
     prepared_recursive_cte = prepared;
     recursive_term_capability_uuid = DerivedCanonicalUuid(
         identity_scope, "graph.recursive-term.capability");
@@ -35840,10 +36147,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
     root_profile.physical_node_kind = exec::PhysicalNodeKind::kRecursiveCte;
     root_profile.transformation_rule_id = prepared.profile.transformation_id;
     root_profile.estimated_rows = prepared.maximum_result_row_count;
-    root_profile.memory_bytes_required = 1;
+    root_profile.memory_bytes_required =
+        prepared.planned_peak_payload_bytes;
     root_profile.minimum_input_count = 2;
     root_profile.maximum_input_count = 2;
-    root_profile.runtime_peak_from_callback_batches = true;
     profiles.push_back(std::move(root_profile));
     previous_logical = logical_root;
   }
@@ -38474,7 +38781,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
       if (!EvaluateNonNegativeRowBound(
               &runtime, recursive_root->bound_expression_ids.front(),
               &upper_bound, &detail) ||
-          upper_bound > bounded_rows ||
+          upper_bound >= bounded_rows ||
           upper_bound >=
               static_cast<std::uint64_t>(
                   std::numeric_limits<std::size_t>::max())) {
@@ -38484,14 +38791,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                 ? "DOCUMENT_UNNEST recursive upper bound exceeds its admitted work bound"
                 : detail);
       }
-      const auto maximum_result_rows =
-          static_cast<std::size_t>(upper_bound + 1);
-      if (maximum_result_rows >
-              std::numeric_limits<std::size_t>::max() / 2) {
-        return refuse(
-            "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-            "DOCUMENT_UNNEST recursive work receipt overflowed");
-      }
       PreparedRecursiveCteRoot prepared;
       prepared.profile = MatchLiveRecursiveCteProfile(
           recursive_root->semantic_variant_id);
@@ -38499,15 +38798,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
       prepared.term = PrepareLiveRecursiveCteTerm(
           prepared.profile, prepared.anchor_columns,
           static_cast<std::int64_t>(upper_bound));
-      prepared.anchor_row_count = 1;
-      prepared.maximum_iteration_count =
-          std::max<std::size_t>(1, maximum_result_rows);
-      prepared.maximum_working_row_count = 1;
-      prepared.maximum_term_output_row_count =
-          prepared.profile.emit_current_duplicate ? 2 : 1;
-      prepared.maximum_result_row_count =
-          std::max<std::size_t>(1, maximum_result_rows);
-      prepared.rows_examined = maximum_result_rows * 2;
+      if (!BindPreparedRecursiveCteCardinality(
+              &prepared, profiles, previous_logical->logical_node_id,
+              upper_bound, bounded_rows)) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+            "DOCUMENT_UNNEST recursive cardinality bound is invalid");
+      }
+      if (!BindPreparedRecursiveCtePeakPayload(
+              &prepared, planning.memory_budget_bytes)) {
+        return refuse(
+            "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+            "document recursive payload peak exceeds its admitted memory budget");
+      }
       prepared_recursive_cte = prepared;
       recursive_term_capability_uuid = DerivedCanonicalUuid(
           identity_scope, "document-unnest.recursive-term.capability");
@@ -38536,10 +38839,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
       root_profile.transformation_rule_id =
           prepared.profile.transformation_id;
       root_profile.estimated_rows = prepared.maximum_result_row_count;
-      root_profile.memory_bytes_required = 1;
+      root_profile.memory_bytes_required =
+          prepared.planned_peak_payload_bytes;
       root_profile.minimum_input_count = 2;
       root_profile.maximum_input_count = 2;
-      root_profile.runtime_peak_from_callback_batches = true;
       profiles.push_back(std::move(root_profile));
     }
     if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {

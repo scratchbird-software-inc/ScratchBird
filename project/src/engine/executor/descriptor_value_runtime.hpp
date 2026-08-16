@@ -592,6 +592,29 @@ using CanonicalRecursiveCteStep =
 using CanonicalRecursiveCteCancellationProbe =
     std::function<bool(std::size_t)>;
 
+// Internal, execution-owned state shared by recursive wrappers and the
+// working kernel. The immutable selected-node grant and resource evidence are
+// resolved from the physical DAG; callers may supply only the bytes retained
+// by the synchronous dispatcher around the recursive call.
+struct CanonicalRecursiveCteMemoryState {
+  bool enforced = false;
+  std::size_t grant_bytes = 0;
+  std::size_t retained_input_payload_bytes = 0;
+  std::size_t kernel_live_payload_bytes = 0;
+  std::size_t auxiliary_live_payload_bytes = 0;
+  std::size_t current_live_payload_bytes = 0;
+  std::size_t peak_live_payload_bytes = 0;
+  std::string selected_plan_uuid;
+  std::uint64_t selected_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+  std::string selected_alternative_uuid;
+  std::string cost_vector_uuid;
+  std::string resource_snapshot_uuid;
+  std::uint64_t resource_epoch = 0;
+  std::string resource_evidence_uuid;
+  std::string refusal_detail;
+};
+
 struct CanonicalRecursiveCteWorkingRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -603,6 +626,9 @@ struct CanonicalRecursiveCteWorkingRequest {
   CanonicalRecursiveCteCancellationProbe cancellation_requested;
   std::string cancellation_evidence_uuid;
   CanonicalExecutionMgaAuthority mga_authority;
+  bool enforce_payload_memory_grant = false;
+  std::size_t retained_input_payload_bytes = 0;
+  std::shared_ptr<CanonicalRecursiveCteMemoryState> memory_state;
 };
 
 struct CanonicalRecursiveCteIteration {
@@ -626,6 +652,10 @@ struct CanonicalRecursiveCteWorkingResult {
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
   PhysicalMgaStatementContext mga_statement_context;
+  std::size_t output_payload_bytes = 0;
+  std::size_t peak_live_payload_bytes = 0;
+  std::size_t memory_grant_bytes = 0;
+  std::string memory_grant_evidence_uuid;
 };
 
 enum class CanonicalDescriptorOrderDirection : std::uint8_t {
@@ -708,6 +738,9 @@ struct CanonicalRecursiveCteSearchCycleRequest {
   CanonicalRecursiveCteCancellationProbe cancellation_requested;
   std::string cancellation_evidence_uuid;
   CanonicalExecutionMgaAuthority mga_authority;
+  bool enforce_payload_memory_grant = false;
+  std::size_t retained_input_payload_bytes = 0;
+  std::shared_ptr<CanonicalRecursiveCteMemoryState> memory_state;
 };
 
 struct CanonicalRecursiveCteSearchCycleMetadata {
@@ -732,6 +765,10 @@ struct CanonicalRecursiveCteSearchCycleResult {
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
   PhysicalMgaStatementContext mga_statement_context;
+  std::size_t output_payload_bytes = 0;
+  std::size_t peak_live_payload_bytes = 0;
+  std::size_t memory_grant_bytes = 0;
+  std::string memory_grant_evidence_uuid;
 };
 
 struct CanonicalRecursiveCteResourceRequest {
