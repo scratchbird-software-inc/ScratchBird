@@ -26,6 +26,13 @@ DescriptorRuntimeDiagnostic Refusal(std::string code,
   return diagnostic;
 }
 
+bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
+  const DescriptorBatch empty;
+  return batch.columns.empty() &&
+         batch.columns.capacity() == empty.columns.capacity() &&
+         batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
+}
+
 bool IsCanonicalUuid(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
       value[18] != '-' || value[23] != '-') {
@@ -453,8 +460,12 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
 // First canonical implementation in this module: global ROW_NUMBER over a
 // typed batch whose deterministic order has already been established by its
 // physical sort input and retained as explicit evidence.
-CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
-    const CanonicalDescriptorRowNumberRequest& request) {
+namespace {
+CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
+    const CanonicalDescriptorRowNumberRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_ordered_input_batch,
+    const bool borrowed_execution_carriers) {
   using scratchbird::engine::internal_api::EngineTypedValue;
   using scratchbird::engine::internal_api::EngineValueState;
 
@@ -464,21 +475,29 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     result.output_batch = {};
     return result;
   };
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(
+           request.ordered_input_batch))) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1",
+        "ROW_NUMBER request carries conflicting owned execution carriers"));
+  }
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id) {
+          execution_dag.root_physical_node_id) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "selected window node is not the root"));
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;
   const PhysicalNodeRecord* input_node = nullptr;
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == request.selected_physical_node_id) {
       selected_node = &node;
     }
@@ -490,7 +509,7 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     return refuse(Refusal("QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1",
                           "ROW_NUMBER requires one selected window node"));
   }
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
         selected_node->input_physical_node_ids.front()) {
       input_node = &node;
@@ -540,17 +559,17 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
                           "ROW_NUMBER output descriptor is not bound int64"));
   }
   auto input_validation = ValidateCanonicalDescriptorBatch(
-      request.ordered_input_batch, input_node->output_descriptor_ids);
+      execution_ordered_input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
-  if (request.ordered_input_batch.rows.size() >
+  if (execution_ordered_input_batch.rows.size() >
       static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
     return refuse(Refusal("QOW-DIAG-QRY-007-WINDOW-OVERFLOW-V1",
                           "ROW_NUMBER exceeds int64 result width"));
   }
 
-  result.output_batch.columns = request.ordered_input_batch.columns;
+  result.output_batch.columns = execution_ordered_input_batch.columns;
   result.output_batch.columns.push_back(request.row_number_column);
-  result.output_batch.rows = request.ordered_input_batch.rows;
+  result.output_batch.rows = execution_ordered_input_batch.rows;
   for (std::size_t row = 0; row < result.output_batch.rows.size(); ++row) {
     EngineTypedValue row_number;
     row_number.descriptor = request.row_number_column.descriptor;
@@ -562,15 +581,30 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
       result.output_batch, selected_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
-  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
   result.mga_statement_context = request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
+    const CanonicalDescriptorRowNumberRequest& request) {
+  return ExecuteCanonicalDescriptorRowNumberBound(
+      request, request.physical_dag, request.ordered_input_batch, false);
+}
+
+CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
+    const CanonicalDescriptorRowNumberRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_ordered_input_batch) {
+  return ExecuteCanonicalDescriptorRowNumberBound(
+      request, borrowed_execution_dag, borrowed_ordered_input_batch, true);
 }
 
 }  // namespace scratchbird::engine::executor

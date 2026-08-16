@@ -8586,16 +8586,14 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
         exec::CanonicalDescriptorRowNumberRequest request;
-        request.physical_dag = dag;
         request.selected_physical_node_id = node.physical_node_id;
-        request.ordered_input_batch = input_batch;
         request.row_number_column = row_number_column;
         request.deterministic_order_evidence_uuid =
             deterministic_order_evidence_uuid;
         request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        auto window =
-            exec::ExecuteCanonicalDescriptorRowNumber(request);
+        auto window = exec::ExecuteCanonicalDescriptorRowNumber(
+            request, dag, input_batch);
         if (!window.diagnostic.ok) {
           step.diagnostic = std::move(window.diagnostic);
           return step;

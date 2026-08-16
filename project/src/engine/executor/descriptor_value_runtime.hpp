@@ -2858,6 +2858,13 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
     const CanonicalJoinMgaRequest& request);
 CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const CanonicalDescriptorRowNumberRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG and ordered-input carriers must remain in
+// their exact default states.
+CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
+    const CanonicalDescriptorRowNumberRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_ordered_input_batch);
 CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
     const CanonicalDescriptorDistinctRequest& request);
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
