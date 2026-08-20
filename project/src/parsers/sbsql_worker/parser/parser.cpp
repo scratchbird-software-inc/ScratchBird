@@ -2921,6 +2921,12 @@ class NativeRelationalParser final {
 
   bool LooksLikeBoundedWindowSelect() const {
     if (tokens_.size() < 9 || tokens_[2]->text != "(") return false;
+    if (IsWord(*tokens_[1], "SUM")) {
+      return tokens_.size() > 6 && tokens_[4]->text == ")" &&
+             IsWord(*tokens_[5], "OVER") &&
+             (tokens_[6]->text == "(" ||
+              tokens_[6]->kind == TokenKind::kIdentifier);
+    }
     if (IsWord(*tokens_[1], "NTILE") || IsWord(*tokens_[1], "LAG") ||
         IsWord(*tokens_[1], "LEAD") ||
         IsWord(*tokens_[1], "FIRST_VALUE") ||
@@ -2942,7 +2948,8 @@ class NativeRelationalParser final {
     // QOW-SOURCE-RCP-050-TYPED-WINDOW-AST-V1
     // The general ROW_NUMBER surface preserves the complete window
     // specification. RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, NTILE, LAG,
-    // LEAD, FIRST_VALUE, LAST_VALUE, and NTH_VALUE are admitted only for the exact global,
+    // LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE, and aggregate SUM are admitted
+    // only for the exact global,
     // one-direct-column
     // ordering profile executed by the canonical spine. NTILE additionally
     // requires one exact positive signed-int64 literal operand. LAG and LEAD
@@ -2951,7 +2958,10 @@ class NativeRelationalParser final {
     // signed-int64 value column and consume the effective implicit ordered
     // frame. NTH_VALUE additionally requires one exact positive signed-int64
     // literal position and normalizes omitted origin/NULL-treatment state to
-    // FROM FIRST RESPECT NULLS in the canonical execution route.
+    // FROM FIRST RESPECT NULLS in the canonical execution route. Aggregate
+    // SUM admits one direct signed-int64 value column and the same exact
+    // implicit ordered frame, then binds through the engine-owned aggregate
+    // registry rather than the native window-function registry.
     document_.status = NativeRelationalParseStatus::kRefused;
     if (cst_.messages.has_errors()) {
       document_.messages = cst_.messages;
@@ -2974,17 +2984,20 @@ class NativeRelationalParser final {
     const bool first_value_window = IsWord(function_token, "FIRST_VALUE");
     const bool last_value_window = IsWord(function_token, "LAST_VALUE");
     const bool nth_value_window = IsWord(function_token, "NTH_VALUE");
+    const bool aggregate_sum_window = IsWord(function_token, "SUM");
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
-        nth_value_window;
+        nth_value_window || aggregate_sum_window;
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
     const bool strict_ordered_window =
         peer_ranking_window || ntile_window || value_window;
     const std::string function_name =
-        value_window
+        aggregate_sum_window
+            ? "SUM"
+            : (value_window
             ? (first_value_window ? "FIRST_VALUE"
                                   : (last_value_window
                                          ? "LAST_VALUE"
@@ -3000,7 +3013,7 @@ class NativeRelationalParser final {
                    ? "PERCENT_RANK"
                    : (dense_rank_window
                           ? "DENSE_RANK"
-                          : (rank_window ? "RANK" : "ROW_NUMBER")))));
+                          : (rank_window ? "RANK" : "ROW_NUMBER"))))));
     if (!RequireSymbol("(", "window_function_open_required",
                        function_name + " requires an opening parenthesis")) {
       return FinishRefusal();
@@ -3046,14 +3059,16 @@ class NativeRelationalParser final {
       document_.expressions.push_back(std::move(operand));
     } else if (value_window) {
       if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
-        Refuse(first_value_window
+        Refuse(aggregate_sum_window
+                   ? "aggregate_sum_window_operand_required"
+                   : (first_value_window
                    ? "first_value_operand_required"
                    : (last_value_window
                           ? "last_value_operand_required"
                           : (nth_value_window
                                  ? "nth_value_operand_required"
                                  : (lag_window ? "lag_operand_required"
-                                               : "lead_operand_required"))),
+                                               : "lead_operand_required")))),
                function_name +
                    " requires one direct signed-int64 column operand");
         return FinishRefusal();
@@ -3587,7 +3602,9 @@ class NativeRelationalParser final {
       const auto expected_output_name = ToLowerAscii(
           invocation.output_alias.has_value()
               ? invocation.output_alias->spelling
-              : (value_window
+              : (aggregate_sum_window
+                     ? std::string("sum")
+                     : (value_window
                      ? std::string(first_value_window
                                        ? "first_value"
                                        : (last_value_window
@@ -3606,7 +3623,7 @@ class NativeRelationalParser final {
                                    ? std::string("dense_rank")
                                    : (rank_window
                                           ? std::string("rank")
-                                          : std::string("row_number"))))))));
+                                          : std::string("row_number")))))))));
       if (ToLowerAscii(output_reference.text) != expected_output_name) {
         Refuse("qualify_window_output_unresolved",
                "QUALIFY may reference only the selected window result in this bounded profile");
@@ -3663,7 +3680,9 @@ class NativeRelationalParser final {
     }
     if (strict_ordered_window) {
       if (document_.window_definitions.size() != 1) {
-        Refuse(value_window
+        Refuse(aggregate_sum_window
+                   ? "aggregate_sum_window_shape_unsupported"
+                   : (value_window
                    ? (first_value_window
                           ? "first_value_window_shape_unsupported"
                           : (last_value_window
@@ -3681,7 +3700,7 @@ class NativeRelationalParser final {
                           ? "percent_rank_window_shape_unsupported"
                           : (dense_rank_window
                                  ? "dense_rank_window_shape_unsupported"
-                                 : "rank_window_shape_unsupported")))),
+                                 : "rank_window_shape_unsupported"))))),
                "typed " + function_name +
                    " requires one inline direct-column ORDER BY key");
         return FinishRefusal();
@@ -3697,7 +3716,9 @@ class NativeRelationalParser final {
           rank_definition.frame_end.has_value() ||
           rank_definition.exclusion !=
               NativeWindowFrameExclusion::kNoOthers) {
-        Refuse(value_window
+        Refuse(aggregate_sum_window
+                   ? "aggregate_sum_window_shape_unsupported"
+                   : (value_window
                    ? (first_value_window
                           ? "first_value_window_shape_unsupported"
                           : (last_value_window
@@ -3715,7 +3736,7 @@ class NativeRelationalParser final {
                           ? "percent_rank_window_shape_unsupported"
                           : (dense_rank_window
                                  ? "dense_rank_window_shape_unsupported"
-                                 : "rank_window_shape_unsupported")))),
+                                 : "rank_window_shape_unsupported"))))),
                "typed " + function_name +
                    " requires one inline direct-column ORDER BY key");
         return FinishRefusal();

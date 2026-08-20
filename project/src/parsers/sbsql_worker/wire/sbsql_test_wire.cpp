@@ -4334,10 +4334,13 @@ BuildEngineProjectedNativeBindingContext(
     const bool nth_value_window =
         function_expression != ast.expressions.end() &&
         function_expression->operator_name == "NTH_VALUE";
+    const bool aggregate_sum_window =
+        function_expression != ast.expressions.end() &&
+        function_expression->operator_name == "SUM";
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
-        nth_value_window;
+        nth_value_window || aggregate_sum_window;
     const bool recognized_ranking =
         function_expression != ast.expressions.end() &&
         (rank_window || dense_rank_window || percent_rank_window ||
@@ -4349,7 +4352,9 @@ BuildEngineProjectedNativeBindingContext(
     const bool strict_ordered_window =
         peer_ranking_window || ntile_window || value_window;
     const std::string_view expected_operator =
-        value_window
+        aggregate_sum_window
+            ? "SUM"
+            : (value_window
             ? (first_value_window ? "FIRST_VALUE"
                                   : (last_value_window
                                          ? "LAST_VALUE"
@@ -4365,9 +4370,11 @@ BuildEngineProjectedNativeBindingContext(
                    ? "PERCENT_RANK"
                    : (dense_rank_window
                           ? "DENSE_RANK"
-                          : (rank_window ? "RANK" : "ROW_NUMBER")))));
+                          : (rank_window ? "RANK" : "ROW_NUMBER"))))));
     const std::string_view expected_builtin =
-        value_window
+        aggregate_sum_window
+            ? "sb.aggregate.sum"
+            : (value_window
             ? (first_value_window
                    ? "sb.window.first_value"
                    : (last_value_window
@@ -4385,9 +4392,11 @@ BuildEngineProjectedNativeBindingContext(
                    : (dense_rank_window
                           ? "sb.window.dense_rank"
                           : (rank_window ? "sb.window.rank"
-                                         : "sb.window.row_number")))));
+                                         : "sb.window.row_number"))))));
     const std::string_view expected_function_uuid =
-        value_window
+        aggregate_sum_window
+            ? std::string_view(statement_context.sum_function_uuid)
+            : (value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
                    : (last_value_window
@@ -4405,9 +4414,14 @@ BuildEngineProjectedNativeBindingContext(
                    : (dense_rank_window
                           ? kDenseRankFunctionUuid
                           : (rank_window ? kRankFunctionUuid
-                                         : kRowNumberFunctionUuid)))));
-    const auto function_profile = std::ranges::find_if(
+                                         : kRowNumberFunctionUuid))))));
+    const auto window_function_profile = std::ranges::find_if(
         statement_context.window_function_profiles,
+        [&](const auto& candidate) {
+          return candidate.builtin_id == expected_builtin;
+        });
+    const auto aggregate_function_profile = std::ranges::find_if(
+        statement_context.aggregate_function_profiles,
         [&](const auto& candidate) {
           return candidate.builtin_id == expected_builtin;
         });
@@ -4488,16 +4502,31 @@ BuildEngineProjectedNativeBindingContext(
             : (ntile_operand != nullptr
                    ? std::vector<std::uint32_t>{ntile_operand->expression_id}
                    : std::vector<std::uint32_t>{}));
+    const bool function_profile_invalid =
+        aggregate_sum_window
+            ? (aggregate_function_profile ==
+                   statement_context.aggregate_function_profiles.end() ||
+               aggregate_function_profile->abi_version != 1 ||
+               !aggregate_function_profile->executable ||
+               aggregate_function_profile->function_uuid !=
+                   expected_function_uuid ||
+               !CanonicalUuidBytes(aggregate_function_profile->function_uuid)
+                    .has_value())
+            : (window_function_profile ==
+                   statement_context.window_function_profiles.end() ||
+               window_function_profile->abi_version != 1 ||
+               !window_function_profile->executable ||
+               window_function_profile->function_uuid !=
+                   expected_function_uuid ||
+               !CanonicalUuidBytes(window_function_profile->function_uuid)
+                    .has_value());
     if (!recognized_ranking ||
         function_expression->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
         function_expression->operator_name != expected_operator ||
         function_expression->child_expression_ids !=
             expected_function_children ||
-        function_profile == statement_context.window_function_profiles.end() ||
-        function_profile->abi_version != 1 || !function_profile->executable ||
-        function_profile->function_uuid != expected_function_uuid ||
-        !CanonicalUuidBytes(function_profile->function_uuid).has_value() ||
+        function_profile_invalid ||
         result_profile == statement_context.descriptor_profiles.end() ||
         result_profile->nullable != value_window ||
         !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
@@ -4566,6 +4595,17 @@ BuildEngineProjectedNativeBindingContext(
                    candidate.expression_id ==
                        definition.ordering_terms.front().expression_id;
           });
+      const auto order_source =
+          order_expression == ast.expressions.end()
+              ? source_relation->output_expression_ids.end()
+              : std::ranges::find(source_relation->output_expression_ids,
+                                  order_expression->expression_id);
+      const auto order_source_ordinal =
+          order_source == source_relation->output_expression_ids.end()
+              ? context.descriptors.size()
+              : static_cast<std::size_t>(std::distance(
+                    source_relation->output_expression_ids.begin(),
+                    order_source));
       if (has_qualify || ast.window_definitions.size() != 1 ||
           definition.name.has_value() || definition.base_name.has_value() ||
           !definition.partition_expression_ids.empty() ||
@@ -4577,6 +4617,14 @@ BuildEngineProjectedNativeBindingContext(
           order_expression == ast.expressions.end() ||
           order_expression->expression_kind !=
               NativeExpressionAstKind::kIdentifier ||
+          (aggregate_sum_window &&
+           (order_source_ordinal >= context.descriptors.size() ||
+            context.descriptors[order_source_ordinal].type_uuid !=
+                result_profile->type_uuid ||
+            context.descriptors[order_source_ordinal]
+                .collation_uuid.has_value() ||
+            context.descriptors[order_source_ordinal]
+                .timezone_profile_id.has_value())) ||
           source_relation->output_expression_ids != [&] {
             std::vector<std::uint32_t> expected;
             if (lag_operand != nullptr) {
@@ -4643,18 +4691,32 @@ BuildEngineProjectedNativeBindingContext(
           source_descriptor.width_precision_scale;
     }
     context.descriptors.push_back(std::move(function_descriptor));
+    const auto function_abi_version =
+        aggregate_sum_window ? aggregate_function_profile->abi_version
+                             : window_function_profile->abi_version;
+    const auto& function_builtin_id =
+        aggregate_sum_window ? aggregate_function_profile->builtin_id
+                             : window_function_profile->builtin_id;
+    const auto& function_uuid =
+        aggregate_sum_window ? aggregate_function_profile->function_uuid
+                             : window_function_profile->function_uuid;
+    const bool function_executable =
+        aggregate_sum_window ? aggregate_function_profile->executable
+                             : window_function_profile->executable;
     context.expressions.push_back(
         {function_binding_id, function_binding_id,
-         function_profile->function_uuid, std::nullopt});
+         function_uuid, std::nullopt});
     context.window_functions.push_back(
         {invocation.invocation_id, function_binding_id,
-         function_profile->abi_version, function_profile->builtin_id,
-         function_profile->function_uuid, function_profile->executable,
+         function_abi_version, function_builtin_id,
+         function_uuid, function_executable,
          function_binding_id});
     const auto window_output_name =
         invocation.output_alias.has_value()
             ? invocation.output_alias->spelling
-            : (value_window
+            : (aggregate_sum_window
+                   ? std::string("sum")
+                   : (value_window
                    ? std::string(first_value_window
                                      ? "first_value"
                                      : (last_value_window
@@ -4673,7 +4735,7 @@ BuildEngineProjectedNativeBindingContext(
                                  ? std::string("dense_rank")
                                  : (rank_window
                                         ? std::string("rank")
-                                        : std::string("row_number")))))));
+                                        : std::string("row_number"))))))));
     context.outputs.push_back(
         {static_cast<std::uint32_t>(context.outputs.size() + 1),
          function_binding_id,
@@ -4752,7 +4814,9 @@ BuildEngineProjectedNativeBindingContext(
     context.catalog_relations.push_back(std::move(catalog_relation));
     context.relations.push_back(
         {window_relation->relation_id,
-         value_window
+         aggregate_sum_window
+             ? "window.aggregate-bridge.v1"
+             : (value_window
              ? (first_value_window
                     ? "window.first-value.v1"
                     : (last_value_window
@@ -4770,7 +4834,7 @@ BuildEngineProjectedNativeBindingContext(
                     : (dense_rank_window
                            ? "window.dense-rank.v1"
                            : (rank_window ? "window.rank.v1"
-                                          : "window.row-number.v1")))))});
+                                          : "window.row-number.v1"))))))});
     if (has_qualify) {
       context.relations.push_back(
           {qualify_relation->relation_id,
