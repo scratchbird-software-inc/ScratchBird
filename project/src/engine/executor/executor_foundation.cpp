@@ -4505,7 +4505,8 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
                   "QOW-DIAG-QRY-016-ARITY-REFUSAL-V1");
   }
 
-  DescriptorBatch aligned_right = right_batch;
+  std::optional<DescriptorBatch> aligned_right_storage;
+  const DescriptorBatch* aligned_right = &right_batch;
   std::vector<std::size_t> right_to_result_column_indices(
       right_batch.columns.size());
   std::iota(right_to_result_column_indices.begin(),
@@ -4539,10 +4540,11 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
                       "QOW-DIAG-QRY-016-BY-NAME-REFUSAL-V1");
       }
     }
-    aligned_right.columns.clear();
-    aligned_right.rows.assign(right_batch.rows.size(), {});
-    aligned_right.columns.reserve(request.result_columns.size());
-    for (auto& row : aligned_right.rows) {
+    aligned_right_storage.emplace();
+    auto& aligned = *aligned_right_storage;
+    aligned.rows.assign(right_batch.rows.size(), {});
+    aligned.columns.reserve(request.result_columns.size());
+    for (auto& row : aligned.rows) {
       row.values.reserve(request.result_columns.size());
     }
     for (std::size_t result_column = 0;
@@ -4555,10 +4557,9 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       }
       const auto right_column = found->second;
       right_to_result_column_indices[right_column] = result_column;
-      aligned_right.columns.push_back(
-          right_batch.columns[right_column]);
+      aligned.columns.push_back(right_batch.columns[right_column]);
       for (std::size_t row = 0; row < right_batch.rows.size(); ++row) {
-        aligned_right.rows[row].values.push_back(
+        aligned.rows[row].values.push_back(
             right_batch.rows[row].values[right_column]);
       }
     }
@@ -4567,6 +4568,7 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       return refuse("BY NAME operand column sets differ",
                     "QOW-DIAG-QRY-016-BY-NAME-REFUSAL-V1");
     }
+    aligned_right = &aligned;
   }
 
   namespace dt = scratchbird::core::datatypes;
@@ -4579,7 +4581,7 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   // explicit-only, lossy, forbidden, and unknown conversions are refusals.
   for (std::size_t column = 0; column < request.result_columns.size(); ++column) {
     const auto& left = left_batch.columns[column];
-    const auto& right = aligned_right.columns[column];
+    const auto& right = aligned_right->columns[column];
     const auto& output = request.result_columns[column];
     bool compatible = left.descriptor.descriptor_kind == "scalar" &&
                       right.descriptor.descriptor_kind == "scalar" &&
@@ -4638,8 +4640,10 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     reconciled_type_names.push_back(output.descriptor.canonical_type_name);
   }
 
-  DescriptorBatch reconciled_left = left_batch;
-  DescriptorBatch reconciled_right = aligned_right;
+  std::optional<DescriptorBatch> reconciled_left_storage;
+  std::optional<DescriptorBatch> reconciled_ordinal_right_storage;
+  const DescriptorBatch* execution_left = &left_batch;
+  const DescriptorBatch* execution_right = aligned_right;
   std::size_t coerced_value_count = 0;
   if (reconcile_types) {
     std::string reconciliation_detail;
@@ -4693,12 +4697,24 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       }
       return true;
     };
-    if (!reconcile_batch(&reconciled_left) ||
-        !reconcile_batch(&reconciled_right)) {
+    reconciled_left_storage.emplace(left_batch);
+    DescriptorBatch* mutable_right = nullptr;
+    if (aligned_right_storage.has_value()) {
+      mutable_right = &*aligned_right_storage;
+    } else {
+      reconciled_ordinal_right_storage.emplace(right_batch);
+      mutable_right = &*reconciled_ordinal_right_storage;
+    }
+    if (!reconcile_batch(&*reconciled_left_storage) ||
+        !reconcile_batch(mutable_right)) {
       return refuse(std::move(reconciliation_detail),
                     "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1");
     }
+    execution_left = &*reconciled_left_storage;
+    execution_right = mutable_right;
   }
+  const auto& reconciled_left = *execution_left;
+  const auto& reconciled_right = *execution_right;
 
   std::vector<const CanonicalSetOperationCollationBinding*> collation_by_column(
       request.result_columns.size(), nullptr);
