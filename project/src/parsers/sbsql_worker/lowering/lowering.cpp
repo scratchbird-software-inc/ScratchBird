@@ -39309,6 +39309,267 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
   }
 
+  // QOW-SOURCE-ROW-NUMBER-CATALOG-EXECUTION-NORMALIZATION-V1
+  // The bounded SQL surface publishes only ROW_NUMBER, while the canonical
+  // executor requires an explicit ordered input and a passthrough Window
+  // schema.  Preserve the validated BoundAST and synthesize only an emission
+  // view with a root Project for the exact executable cohort.
+  constexpr std::string_view kCatalogOrderingPropertyUuid =
+      "019f0000-0000-7200-8000-00000000c701";
+  constexpr std::string_view kRowNumberFunctionUuid =
+      "019de5fc-2400-7539-bcce-00eef3ae7220";
+  std::vector<BoundRelationAstRecord> emitted_relations = native.relations;
+  std::vector<BoundOutputAstRecord> emitted_outputs = native.outputs;
+  std::uint32_t emitted_root_relation_id = native.root_relation_id;
+  std::uint32_t normalized_sort_relation_id = 0;
+  std::uint32_t normalized_project_relation_id = 0;
+  const bool normalize_catalog_row_number =
+      catalog_window_graph_is_exact && qualify_relation == nullptr &&
+      catalog_relation != nullptr && window_relation != nullptr &&
+      native.relations.size() == 2 &&
+      native.window_definitions.size() == 1 &&
+      native.window_invocations.size() == 1 &&
+      !native.window_definitions.front().canonical_name_key.has_value() &&
+      !native.window_definitions.front().inherited_window_id.has_value() &&
+      native.window_definitions.front().partition_expression_ids.empty() &&
+      native.window_definitions.front().ordering_terms.size() == 1 &&
+      !native.window_definitions.front().frame_unit.has_value() &&
+      !native.window_definitions.front().frame_start.has_value() &&
+      !native.window_definitions.front().frame_end.has_value() &&
+      native.window_definitions.front().exclusion ==
+          NativeWindowFrameExclusion::kNoOthers &&
+      native.window_invocations.front().function_abi_version == 1 &&
+      native.window_invocations.front().builtin_id ==
+          "sb.window.row_number" &&
+      native.window_invocations.front().bound_function_uuid ==
+          kRowNumberFunctionUuid &&
+      native.window_invocations.front().argument_expression_ids.empty() &&
+      catalog_relation->output_expression_ids ==
+          std::vector<std::uint32_t>{
+              native.window_definitions.front()
+                  .ordering_terms.front()
+                  .expression_id} &&
+      window_relation->bound_expression_ids ==
+          std::vector<std::uint32_t>{
+              native.window_definitions.front()
+                  .ordering_terms.front()
+                  .expression_id,
+              native.window_invocations.front().function_expression_id};
+  if (normalize_catalog_row_number) {
+    const auto maximum_relation_id = std::ranges::max(
+        native.relations, {}, &BoundRelationAstRecord::relation_id)
+                                         .relation_id;
+    const auto maximum_output_id = std::ranges::max(
+        native.outputs, {}, &BoundOutputAstRecord::output_id)
+                                       .output_id;
+    const auto& source_outputs =
+        outputs_by_relation.at(catalog_relation->relation_id);
+    const auto& public_window_outputs =
+        outputs_by_relation.at(window_relation->relation_id);
+    const bool output_count_overflow =
+        source_outputs.size() >
+        (std::numeric_limits<std::uint64_t>::max() - 1) / 2;
+    const auto additional_output_count =
+        output_count_overflow
+            ? std::numeric_limits<std::uint64_t>::max()
+            : static_cast<std::uint64_t>(source_outputs.size()) * 2 + 1;
+    if (output_count_overflow ||
+        maximum_relation_id >
+            std::numeric_limits<std::uint32_t>::max() - 2 ||
+        additional_output_count >
+            std::numeric_limits<std::uint32_t>::max() - maximum_output_id ||
+        source_outputs.empty() || public_window_outputs.size() != 1) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "ROW_NUMBER normalization handle space is exhausted");
+      return envelope;
+    }
+    normalized_sort_relation_id = maximum_relation_id + 1;
+    normalized_project_relation_id = maximum_relation_id + 2;
+
+    BoundRelationAstRecord normalized_sort;
+    normalized_sort.relation_id = normalized_sort_relation_id;
+    normalized_sort.relation_kind = NativeRelationAstKind::kSort;
+    normalized_sort.input_relation_ids = {catalog_relation->relation_id};
+    normalized_sort.output_expression_ids =
+        catalog_relation->output_expression_ids;
+    normalized_sort.ordering_terms =
+        native.window_definitions.front().ordering_terms;
+    normalized_sort.bound_expression_ids = {
+        normalized_sort.ordering_terms.front().expression_id};
+    normalized_sort.semantic_variant_id = "sort.required-order.v1";
+
+    auto normalized_window = *window_relation;
+    normalized_window.input_relation_ids = {normalized_sort_relation_id};
+    normalized_window.output_expression_ids =
+        catalog_relation->output_expression_ids;
+    normalized_window.output_expression_ids.push_back(
+        native.window_invocations.front().function_expression_id);
+
+    BoundRelationAstRecord normalized_project;
+    normalized_project.relation_id = normalized_project_relation_id;
+    normalized_project.relation_kind = NativeRelationAstKind::kProject;
+    normalized_project.input_relation_ids = {window_relation->relation_id};
+    normalized_project.output_expression_ids = {
+        native.window_invocations.front().function_expression_id};
+    normalized_project.bound_expression_ids =
+        normalized_project.output_expression_ids;
+    normalized_project.semantic_variant_id =
+        "project.catalog-visible-columns.v1";
+
+    emitted_relations.clear();
+    emitted_relations.push_back(*catalog_relation);
+    emitted_relations.push_back(std::move(normalized_sort));
+    emitted_relations.push_back(std::move(normalized_window));
+    emitted_relations.push_back(std::move(normalized_project));
+    emitted_root_relation_id = normalized_project_relation_id;
+
+    emitted_outputs.clear();
+    std::uint32_t next_output_id = maximum_output_id + 1;
+    for (std::size_t ordinal = 0; ordinal < source_outputs.size();
+         ++ordinal) {
+      auto source_output = *source_outputs[ordinal];
+      source_output.visible = true;
+      emitted_outputs.push_back(source_output);
+
+      auto sort_output = source_output;
+      sort_output.output_id = next_output_id++;
+      sort_output.relation_id = normalized_sort_relation_id;
+      emitted_outputs.push_back(std::move(sort_output));
+
+      auto window_output = source_output;
+      window_output.output_id = next_output_id++;
+      window_output.relation_id = window_relation->relation_id;
+      emitted_outputs.push_back(std::move(window_output));
+    }
+    auto window_result = *public_window_outputs.front();
+    window_result.output_id = next_output_id;
+    window_result.relation_id = window_relation->relation_id;
+    window_result.visible = true;
+    window_result.ordinal =
+        static_cast<std::uint32_t>(source_outputs.size());
+    emitted_outputs.push_back(std::move(window_result));
+
+    auto project_result = *public_window_outputs.front();
+    project_result.relation_id = normalized_project_relation_id;
+    project_result.visible = true;
+    project_result.ordinal = 0;
+    emitted_outputs.push_back(std::move(project_result));
+    std::ranges::sort(emitted_outputs, {},
+                      &BoundOutputAstRecord::output_id);
+  }
+
+  std::unordered_map<
+      std::uint32_t, std::vector<const BoundOutputAstRecord*>>
+      emitted_outputs_by_relation;
+  for (const auto& relation : emitted_relations) {
+    emitted_outputs_by_relation.try_emplace(relation.relation_id);
+  }
+  for (const auto& output : emitted_outputs) {
+    emitted_outputs_by_relation[output.relation_id].push_back(&output);
+  }
+  for (auto& [relation_id, outputs] : emitted_outputs_by_relation) {
+    (void)relation_id;
+    std::ranges::sort(outputs, {}, &BoundOutputAstRecord::ordinal);
+  }
+  if (normalize_catalog_row_number) {
+    const auto emitted_source = std::ranges::find_if(
+        emitted_relations, [&](const auto& relation) {
+          return relation.relation_id == catalog_relation->relation_id;
+        });
+    const auto emitted_sort = std::ranges::find_if(
+        emitted_relations, [&](const auto& relation) {
+          return relation.relation_id == normalized_sort_relation_id;
+        });
+    const auto emitted_window = std::ranges::find_if(
+        emitted_relations, [&](const auto& relation) {
+          return relation.relation_id == window_relation->relation_id;
+        });
+    const auto emitted_project = std::ranges::find_if(
+        emitted_relations, [&](const auto& relation) {
+          return relation.relation_id == normalized_project_relation_id;
+        });
+    bool normalized_view_exact =
+        emitted_relations.size() == 4 &&
+        emitted_root_relation_id == normalized_project_relation_id &&
+        emitted_source != emitted_relations.end() &&
+        emitted_sort != emitted_relations.end() &&
+        emitted_window != emitted_relations.end() &&
+        emitted_project != emitted_relations.end() &&
+        emitted_source->relation_kind ==
+            NativeRelationAstKind::kCatalogSource &&
+        emitted_sort->relation_kind == NativeRelationAstKind::kSort &&
+        emitted_window->relation_kind == NativeRelationAstKind::kWindow &&
+        emitted_project->relation_kind == NativeRelationAstKind::kProject &&
+        emitted_sort->input_relation_ids ==
+            std::vector<std::uint32_t>{emitted_source->relation_id} &&
+        emitted_window->input_relation_ids ==
+            std::vector<std::uint32_t>{emitted_sort->relation_id} &&
+        emitted_project->input_relation_ids ==
+            std::vector<std::uint32_t>{emitted_window->relation_id} &&
+        emitted_sort->semantic_variant_id == "sort.required-order.v1" &&
+        emitted_window->semantic_variant_id == "window.row-number.v1" &&
+        emitted_project->semantic_variant_id ==
+            "project.catalog-visible-columns.v1" &&
+        emitted_sort->output_expression_ids ==
+            emitted_source->output_expression_ids &&
+        emitted_window->output_expression_ids.size() ==
+            emitted_source->output_expression_ids.size() + 1 &&
+        std::equal(emitted_source->output_expression_ids.begin(),
+                   emitted_source->output_expression_ids.end(),
+                   emitted_window->output_expression_ids.begin()) &&
+        emitted_window->output_expression_ids.back() ==
+            native.window_invocations.front().function_expression_id &&
+        emitted_project->output_expression_ids ==
+            std::vector<std::uint32_t>{
+                native.window_invocations.front().function_expression_id} &&
+        emitted_project->bound_expression_ids ==
+            emitted_project->output_expression_ids;
+    std::unordered_set<std::uint32_t> emitted_relation_ids;
+    std::unordered_set<std::uint32_t> emitted_output_ids;
+    for (const auto& relation : emitted_relations) {
+      normalized_view_exact =
+          normalized_view_exact && relation.relation_id != 0 &&
+          emitted_relation_ids.insert(relation.relation_id).second;
+      const auto outputs =
+          emitted_outputs_by_relation.find(relation.relation_id);
+      if (!normalized_view_exact ||
+          outputs == emitted_outputs_by_relation.end() ||
+          outputs->second.size() != relation.output_expression_ids.size()) {
+        normalized_view_exact = false;
+        break;
+      }
+      for (std::size_t ordinal = 0;
+           normalized_view_exact && ordinal < outputs->second.size();
+           ++ordinal) {
+        const auto* output = outputs->second[ordinal];
+        const auto expression = expressions_by_id.find(output->expression_id);
+        normalized_view_exact =
+            output->output_id != 0 &&
+            emitted_output_ids.insert(output->output_id).second &&
+            output->relation_id == relation.relation_id && output->visible &&
+            output->ordinal == ordinal &&
+            output->expression_id == relation.output_expression_ids[ordinal] &&
+            expression != expressions_by_id.end() &&
+            output->descriptor_id ==
+                expression->second->result_descriptor_id;
+      }
+    }
+    if (!normalized_view_exact ||
+        emitted_output_ids.size() != emitted_outputs.size() ||
+        emitted_outputs_by_relation.at(emitted_project->relation_id)
+                .front()
+                ->output_id !=
+            outputs_by_relation.at(window_relation->relation_id)
+                .front()
+                ->output_id) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "ROW_NUMBER normalized emission view is not exact");
+      return envelope;
+    }
+  }
+
   envelope.operands.push_back(
       {"uint16", "relational_wire_version", "2"});
   envelope.operands.push_back(
@@ -39357,7 +39618,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   }
   envelope.operands.push_back(
       {"uint32", "relational_root_node_id",
-       std::to_string(native.root_relation_id)});
+       std::to_string(emitted_root_relation_id)});
   for (const auto& descriptor : native.descriptors) {
     envelope.operands.push_back(
         {"relational_descriptor_v1", std::to_string(descriptor.descriptor_id),
@@ -39394,7 +39655,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              "|" +
              EncodeOptionalCanonicalHex(expression.literal_or_parameter_ref)});
   }
-  for (const auto& output : native.outputs) {
+  for (const auto& output : emitted_outputs) {
     envelope.operands.push_back(
         {"relational_output_v1", std::to_string(output.output_id),
          std::to_string(output.relation_id) + "|" +
@@ -39534,10 +39795,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           window_partition_property_uuid);
     }
     if (!effective_window_ordering_terms.empty()) {
-      window_ordering_property_uuid = DerivedNativeRelationalUuid(
-          native.bound_ast_uuid, "window.ordering." + property_scope);
-      window_dependency_property_uuids.push_back(
-          window_ordering_property_uuid);
+      if (normalize_catalog_row_number) {
+        window_dependency_property_uuids.push_back(
+            std::string(kCatalogOrderingPropertyUuid));
+      } else {
+        window_ordering_property_uuid = DerivedNativeRelationalUuid(
+            native.bound_ast_uuid, "window.ordering." + property_scope);
+        window_dependency_property_uuids.push_back(
+            window_ordering_property_uuid);
+      }
       for (std::size_t ordinal = 0;
            ordinal < effective_window_ordering_terms.size(); ++ordinal) {
         const auto& term = effective_window_ordering_terms[ordinal];
@@ -39579,13 +39845,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
     return joined;
   };
-  constexpr std::string_view kCatalogOrderingPropertyUuid =
-      "019f0000-0000-7200-8000-00000000c701";
   std::string encoded_catalog_ordering_terms;
-  if (catalog_sort_relation != nullptr) {
+  if (catalog_sort_relation != nullptr || normalize_catalog_row_number) {
+    const auto& catalog_ordering_terms =
+        normalize_catalog_row_number
+            ? native.window_definitions.front().ordering_terms
+            : catalog_sort_relation->ordering_terms;
     for (std::size_t ordinal = 0;
-         ordinal < catalog_sort_relation->ordering_terms.size(); ++ordinal) {
-      const auto& term = catalog_sort_relation->ordering_terms[ordinal];
+         ordinal < catalog_ordering_terms.size(); ++ordinal) {
+      const auto& term = catalog_ordering_terms[ordinal];
       const auto expression = expressions_by_id.at(term.expression_id);
       const auto descriptor = std::ranges::find_if(
           native.descriptors, [&](const auto& candidate) {
@@ -39611,9 +39879,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                             : "-");
     }
   }
-  for (const auto& relation : native.relations) {
+  for (const auto& relation : emitted_relations) {
     std::vector<std::uint32_t> output_descriptor_ids;
-    for (const auto* output : outputs_by_relation.at(relation.relation_id)) {
+    for (const auto* output :
+         emitted_outputs_by_relation.at(relation.relation_id)) {
       output_descriptor_ids.push_back(output->descriptor_id);
     }
     const auto node_kind =
@@ -39678,10 +39947,14 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                window_delivered_property_uuids)
                          : "-"))});
   }
-  if (catalog_sort_relation != nullptr) {
+  if (catalog_sort_relation != nullptr || normalize_catalog_row_number) {
+    const auto ordering_origin_relation_id =
+        normalize_catalog_row_number
+            ? normalized_sort_relation_id
+            : catalog_sort_relation->relation_id;
     envelope.operands.push_back(
         {"relational_property_v1", std::string(kCatalogOrderingPropertyUuid),
-         "1|" + std::to_string(catalog_sort_relation->relation_id) + "|-|" +
+         "1|" + std::to_string(ordering_origin_relation_id) + "|-|" +
              encoded_catalog_ordering_terms + "|-|-"});
   }
   if (!window_partition_property_uuid.empty()) {
