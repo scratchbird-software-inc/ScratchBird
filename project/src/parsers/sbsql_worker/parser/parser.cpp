@@ -2924,7 +2924,8 @@ class NativeRelationalParser final {
     if (IsWord(*tokens_[1], "NTILE") || IsWord(*tokens_[1], "LAG") ||
         IsWord(*tokens_[1], "LEAD") ||
         IsWord(*tokens_[1], "FIRST_VALUE") ||
-        IsWord(*tokens_[1], "LAST_VALUE")) {
+        IsWord(*tokens_[1], "LAST_VALUE") ||
+        IsWord(*tokens_[1], "NTH_VALUE")) {
       return true;
     }
     return (IsWord(*tokens_[1], "ROW_NUMBER") ||
@@ -2941,14 +2942,16 @@ class NativeRelationalParser final {
     // QOW-SOURCE-RCP-050-TYPED-WINDOW-AST-V1
     // The general ROW_NUMBER surface preserves the complete window
     // specification. RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, NTILE, LAG,
-    // LEAD, FIRST_VALUE, and LAST_VALUE are admitted only for the exact global,
+    // LEAD, FIRST_VALUE, LAST_VALUE, and NTH_VALUE are admitted only for the exact global,
     // one-direct-column
     // ordering profile executed by the canonical spine. NTILE additionally
     // requires one exact positive signed-int64 literal operand. LAG and LEAD
     // admit one direct signed-int64 column with only their implicit offset and
     // implicit NULL default. FIRST_VALUE and LAST_VALUE admit one direct
     // signed-int64 value column and consume the effective implicit ordered
-    // frame.
+    // frame. NTH_VALUE additionally requires one exact positive signed-int64
+    // literal position and normalizes omitted origin/NULL-treatment state to
+    // FROM FIRST RESPECT NULLS in the canonical execution route.
     document_.status = NativeRelationalParseStatus::kRefused;
     if (cst_.messages.has_errors()) {
       document_.messages = cst_.messages;
@@ -2970,9 +2973,11 @@ class NativeRelationalParser final {
     const bool lead_window = IsWord(function_token, "LEAD");
     const bool first_value_window = IsWord(function_token, "FIRST_VALUE");
     const bool last_value_window = IsWord(function_token, "LAST_VALUE");
+    const bool nth_value_window = IsWord(function_token, "NTH_VALUE");
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
-        navigation_window || first_value_window || last_value_window;
+        navigation_window || first_value_window || last_value_window ||
+        nth_value_window;
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
@@ -2983,7 +2988,10 @@ class NativeRelationalParser final {
             ? (first_value_window ? "FIRST_VALUE"
                                   : (last_value_window
                                          ? "LAST_VALUE"
-                                         : (lag_window ? "LAG" : "LEAD")))
+                                         : (nth_value_window
+                                                ? "NTH_VALUE"
+                                                : (lag_window ? "LAG"
+                                                              : "LEAD"))))
             : (ntile_window
             ? "NTILE"
             : (cume_dist_window
@@ -3005,6 +3013,7 @@ class NativeRelationalParser final {
     document_.expressions.push_back(std::move(function));
     std::optional<std::uint32_t> ntile_operand_expression_id;
     std::optional<std::uint32_t> navigation_operand_expression_id;
+    std::optional<std::uint32_t> nth_position_expression_id;
     if (ntile_window) {
       if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
         Refuse("ntile_operand_required",
@@ -3041,8 +3050,10 @@ class NativeRelationalParser final {
                    ? "first_value_operand_required"
                    : (last_value_window
                           ? "last_value_operand_required"
-                          : (lag_window ? "lag_operand_required"
-                                        : "lead_operand_required")),
+                          : (nth_value_window
+                                 ? "nth_value_operand_required"
+                                 : (lag_window ? "lag_operand_required"
+                                               : "lead_operand_required"))),
                function_name +
                    " requires one direct signed-int64 column operand");
         return FinishRefusal();
@@ -3055,12 +3066,62 @@ class NativeRelationalParser final {
       operand.range = TokenSourceRange(operand_token);
       navigation_operand_expression_id = operand.expression_id;
       document_.expressions.push_back(std::move(operand));
+      if (nth_value_window) {
+        if (!RequireSymbol(",", "nth_value_position_separator_required",
+                           "NTH_VALUE requires a value and position separated by a comma")) {
+          return FinishRefusal();
+        }
+        if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
+          Refuse("nth_value_position_required",
+                 "NTH_VALUE requires one positive signed-int64 literal position");
+          return FinishRefusal();
+        }
+        const Token& position_token = Consume();
+        std::uint64_t position = 0;
+        const auto [end, error] = std::from_chars(
+            position_token.text.data(),
+            position_token.text.data() + position_token.text.size(), position);
+        if (position_token.text.empty() ||
+            (position_token.text.size() > 1 &&
+             position_token.text.front() == '0') ||
+            error != std::errc{} ||
+            end != position_token.text.data() + position_token.text.size() ||
+            position == 0 ||
+            position > static_cast<std::uint64_t>(
+                           std::numeric_limits<std::int64_t>::max())) {
+          Refuse("nth_value_position_invalid",
+                 "NTH_VALUE position must be a canonical positive signed-int64 literal");
+          return FinishRefusal();
+        }
+        NativeExpressionAstNode position_operand;
+        position_operand.expression_id = NextExpressionId();
+        position_operand.expression_kind = NativeExpressionAstKind::kLiteral;
+        position_operand.literal_kind = NativeLiteralAstKind::kNumeric;
+        position_operand.spelling = position_token.text;
+        position_operand.range = TokenSourceRange(position_token);
+        nth_position_expression_id = position_operand.expression_id;
+        document_.expressions.push_back(std::move(position_operand));
+        if (!AtEnd() &&
+            (IsWord(Current(), "FROM") || IsWord(Current(), "RESPECT") ||
+             IsWord(Current(), "IGNORE"))) {
+          Refuse("nth_value_option_not_available",
+                 "bounded NTH_VALUE accepts omitted FROM FIRST and RESPECT NULLS only");
+          return FinishRefusal();
+        }
+      }
     }
     if (!RequireSymbol(")", "window_function_close_required",
                        function_name + " requires a closing parenthesis")) {
       return FinishRefusal();
     }
     const Token& function_close = Previous();
+    if (nth_value_window && !AtEnd() &&
+        (IsWord(Current(), "FROM") || IsWord(Current(), "RESPECT") ||
+         IsWord(Current(), "IGNORE"))) {
+      Refuse("nth_value_option_not_available",
+             "bounded NTH_VALUE accepts omitted FROM FIRST and RESPECT NULLS only");
+      return FinishRefusal();
+    }
     if (!RequireWord("OVER", "window_over_required",
                      function_name + " requires OVER")) {
       return FinishRefusal();
@@ -3083,8 +3144,11 @@ class NativeRelationalParser final {
     if (ntile_operand_expression_id.has_value()) {
       stored_function.child_expression_ids = {*ntile_operand_expression_id};
     } else if (navigation_operand_expression_id.has_value()) {
-      stored_function.child_expression_ids = {
-          *navigation_operand_expression_id};
+      stored_function.child_expression_ids = {*navigation_operand_expression_id};
+      if (nth_position_expression_id.has_value()) {
+        stored_function.child_expression_ids.push_back(
+            *nth_position_expression_id);
+      }
     }
     stored_function.spelling = SourceSpelling(function_token, function_close);
     stored_function.range = Span(function_token, function_close);
@@ -3528,7 +3592,10 @@ class NativeRelationalParser final {
                                        ? "first_value"
                                        : (last_value_window
                                               ? "last_value"
-                                              : (lag_window ? "lag" : "lead")))
+                                              : (nth_value_window
+                                                     ? "nth_value"
+                                                     : (lag_window ? "lag"
+                                                                   : "lead"))))
                      : (ntile_window
                      ? std::string("ntile")
                      : (cume_dist_window
@@ -3601,8 +3668,11 @@ class NativeRelationalParser final {
                           ? "first_value_window_shape_unsupported"
                           : (last_value_window
                                  ? "last_value_window_shape_unsupported"
-                                 : (lag_window ? "lag_window_shape_unsupported"
-                                               : "lead_window_shape_unsupported")))
+                                 : (nth_value_window
+                                        ? "nth_value_window_shape_unsupported"
+                                        : (lag_window
+                                               ? "lag_window_shape_unsupported"
+                                               : "lead_window_shape_unsupported"))))
                    : (ntile_window
                    ? "ntile_window_shape_unsupported"
                    : (cume_dist_window
@@ -3632,8 +3702,11 @@ class NativeRelationalParser final {
                           ? "first_value_window_shape_unsupported"
                           : (last_value_window
                                  ? "last_value_window_shape_unsupported"
-                                 : (lag_window ? "lag_window_shape_unsupported"
-                                               : "lead_window_shape_unsupported")))
+                                 : (nth_value_window
+                                        ? "nth_value_window_shape_unsupported"
+                                        : (lag_window
+                                               ? "lag_window_shape_unsupported"
+                                               : "lead_window_shape_unsupported"))))
                    : (ntile_window
                    ? "ntile_window_shape_unsupported"
                    : (cume_dist_window
