@@ -1,0 +1,2 @@
+#include "sblr_ddl_alter_function_coordinator.hpp"
+namespace scratchbird::engine::internal_api { SblrDdlAlterFunctionCoordinationResult CompileSblrDdlAlterFunctionDescriptor(const EngineRequestContext&c,const std::string&s,std::uint64_t o,std::uint32_t f,std::uint64_t a){return CompileSblrDdlCreateFunctionDescriptor(c,s,o,f,a);} SblrDdlAlterFunctionCoordinationResult ConsumeSblrDdlAlterFunctionDescriptor(const EngineRequestContext&c,const scratchbird::engine::sblr::SblrDdlAlterFunctionDescriptorV1&d){return ConsumeSblrDdlCreateFunctionDescriptor(c,d);} }

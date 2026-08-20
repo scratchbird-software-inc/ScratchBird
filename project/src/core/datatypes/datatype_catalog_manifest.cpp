@@ -88,6 +88,18 @@ bool TypedUuidEquals(const TypedUuid& left, const TypedUuid& right) {
   return left.kind == right.kind && left.value == right.value;
 }
 
+TypedUuid AuthoritativeDatatypeDescriptorUuid(const CanonicalTypeId type_id,
+                                              const std::string& stable_name) {
+  if (type_id == CanonicalTypeId::int64) {
+    TypedUuid uuid;
+    uuid.kind = UuidKind::object;
+    uuid.value.bytes = {0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00,
+                        0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x11};
+    return uuid;
+  }
+  return StableDatatypeDescriptorUuid(type_id, stable_name);
+}
+
 }  // namespace
 
 TypedUuid StableDatatypeDescriptorUuid(CanonicalTypeId type_id,
@@ -138,9 +150,8 @@ DatatypeCatalogManifestResult LoadCurrentCoreDatatypeCatalogManifest() {
     }
 
     DatatypeCatalogDescriptorRow descriptor_row;
-    descriptor_row.descriptor_uuid =
-        StableDatatypeDescriptorUuid(descriptor.type_id,
-                                     descriptor.stable_name);
+    descriptor_row.descriptor_uuid = AuthoritativeDatatypeDescriptorUuid(
+        descriptor.type_id, descriptor.stable_name);
     descriptor_row.type_id = descriptor.type_id;
     descriptor_row.family = descriptor.family;
     descriptor_row.stable_name = descriptor.stable_name;
@@ -231,7 +242,7 @@ DatatypeCatalogManifestResult ValidateDatatypeCatalogManifest(
       continue;
     }
     const auto expected_uuid =
-        StableDatatypeDescriptorUuid(row.type_id, row.stable_name);
+        AuthoritativeDatatypeDescriptorUuid(row.type_id, row.stable_name);
     if (!TypedUuidEquals(row.descriptor_uuid, expected_uuid)) {
       AddFailure(&result,
                  "SB-DATATYPE-CATALOG-UUID-STABILITY-VIOLATION",
@@ -348,6 +359,35 @@ DatatypeCatalogManifestResult DatatypeCatalogCache::Lookup(
     return result;
   }
   return LookupDatatypeCatalogRow(manifest_, type_id);
+}
+
+DatatypeTypeCodecIdentityLookupV1 LookupDatatypeTypeCodecIdentityV1(
+    const std::string& catalog_snapshot_uuid,
+    u64 catalog_generation,
+    u64 registry_generation,
+    const std::string& descriptor_uuid,
+    u64 descriptor_generation) {
+  // DATATYPE-TYPE-CODEC-IDENTITY-REGISTRY-V1 is a manifest-admitted exact
+  // identity table.  This lookup deliberately does not accept a stable name,
+  // CanonicalTypeId, or caller-selected codec.
+  static const DatatypeTypeCodecIdentityRowV1 bigint{
+      "019d0000-0000-7000-8000-00000000d701", 1, 1,
+      "019d0000-0000-7000-8000-00000000d711", 1,
+      "019d0000-0000-7000-8000-00000000d712", 1,
+      "datatype.int64.le.v1", 1, 1, 8, false};
+  DatatypeTypeCodecIdentityLookupV1 result;
+  result.diagnostic_id = "DATATYPE.DESCRIPTOR_INVALID";
+  if (catalog_snapshot_uuid != bigint.catalog_snapshot_uuid ||
+      catalog_generation != bigint.catalog_generation ||
+      registry_generation != bigint.registry_generation ||
+      descriptor_uuid != bigint.descriptor_uuid ||
+      descriptor_generation != bigint.descriptor_generation) {
+    return result;
+  }
+  result.ok = true;
+  result.row = bigint;
+  result.diagnostic_id.clear();
+  return result;
 }
 
 }  // namespace scratchbird::core::datatypes

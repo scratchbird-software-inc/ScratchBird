@@ -73,6 +73,7 @@ constexpr std::uint32_t kSchemaPrepareResultV2 = 4010;
 constexpr std::uint32_t kSchemaExecuteSblrV2 = 4011;
 constexpr std::uint32_t kSchemaExecuteResultV2 = 4012;
 constexpr std::uint32_t kSchemaExecuteCanonicalSblrV1 = 4015;
+constexpr std::uint32_t kSchemaExecuteCanonicalSblrLiteralV1 = 4016;
 constexpr std::uint32_t kSchemaClosePreparedSblrV1 = 4013;
 constexpr std::uint32_t kSchemaClosePreparedSblrResultV1 = 4014;
 constexpr std::uint32_t kSchemaManagementRequestV1 = 6001;
@@ -103,6 +104,198 @@ constexpr std::uint32_t kSchemaAcquireStatementContextRequestV9 = 7027;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV9 = 7028;
 constexpr std::uint32_t kSchemaAcquireStatementContextRequestV10 = 7029;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV10 = 7030;
+constexpr std::uint32_t kSchemaAcquireStatementContextRequestV11 = 7031;
+constexpr std::uint32_t kSchemaAcquireStatementContextResultV11 = 7032;
+constexpr std::uint32_t kSchemaNegotiateLiteralDescriptorsRequestV1 = 7033;
+constexpr std::uint32_t kSchemaNegotiateLiteralDescriptorsResultV1 = 7034;
+constexpr std::uint32_t kSchemaFinalizeLiteralBindingRequestV1 = 7035;
+constexpr std::uint32_t kSchemaFinalizeLiteralBindingResultV1 = 7036;
+constexpr std::uint32_t kSchemaNegotiateParameterDescriptorsRequestV1 = 7037;
+constexpr std::uint32_t kSchemaNegotiateParameterDescriptorsResultV1 = 7038;
+constexpr std::uint32_t kSchemaFinalizeParameterBindingRequestV1 = 7039;
+constexpr std::uint32_t kSchemaFinalizeParameterBindingResultV1 = 7040;
+constexpr std::uint32_t kSchemaBeginParameterCoordinationRequestV1 = 7041;
+constexpr std::uint32_t kSchemaBeginParameterCoordinationResultV1 = 7042;
+constexpr std::uint32_t kSchemaAcquireParameterStatementContextRequestV1 = 7043;
+constexpr std::uint32_t kSchemaFinalizePreparedParameterRequestV1 = 7044;
+constexpr std::uint32_t kSchemaFinalizePreparedParameterResultV1 = 7045;
+constexpr std::uint32_t kSchemaExecuteCanonicalSblrParameterV1 = 4017;
+constexpr std::uint32_t kSchemaExecuteCanonicalSblrVariableV1 = 4018;
+constexpr std::uint32_t kSchemaNegotiateVariableDescriptorsRequestV1 = 7050;
+constexpr std::uint32_t kSchemaNegotiateVariableDescriptorsResultV1 = 7051;
+constexpr std::uint32_t kSchemaFinalizeVariableBindingRequestV1 = 7052;
+constexpr std::uint32_t kSchemaFinalizeVariableBindingResultV1 = 7053;
+constexpr std::uint32_t kSchemaBeginVariableFrameRequestV1 = 7054;
+constexpr std::uint32_t kSchemaBeginVariableFrameResultV1 = 7055;
+constexpr std::uint32_t kSchemaAcquireVariableStatementContextRequestV1 = 7056;
+constexpr std::uint32_t kSchemaCloseVariableFrameRequestV1 = 7057;
+constexpr std::uint32_t kSchemaCloseVariableFrameResultV1 = 7058;
+constexpr std::uint32_t kSchemaAssignVariableValuesRequestV1 = 7059;
+constexpr std::uint32_t kSchemaAssignVariableValuesResultV1 = 7060;
+constexpr std::uint32_t kSchemaIssueSourceMapRequestV1 = 7061;
+constexpr std::uint32_t kSchemaIssueSourceMapResultV1 = 7062;
+constexpr std::uint32_t kSchemaIssueErrorVectorRequestV1 = 7063;
+constexpr std::uint32_t kSchemaIssueErrorVectorResultV1 = 7064;
+constexpr std::uint32_t kSchemaCoordinateSavepointRequestV1 = 7065;
+constexpr std::uint32_t kSchemaCoordinateSavepointResultV1 = 7066;
+constexpr std::uint32_t kSchemaCoordinateAutonomousFrameRequestV1 = 7067;
+constexpr std::uint32_t kSchemaCoordinateAutonomousFrameResultV1 = 7068;
+constexpr std::uint32_t kSchemaCoordinateReservationReleaseRequestV1 = 7069;
+constexpr std::uint32_t kSchemaCoordinateReservationReleaseResultV1 = 7070;
+constexpr std::uint32_t kSchemaCoordinateTemporaryInstanceCleanupRequestV1 = 7071;
+constexpr std::uint32_t kSchemaCoordinateTemporaryInstanceCleanupResultV1 = 7072;
+constexpr std::uint32_t kSchemaCoordinateCursorOpenRequestV1 = 7073;
+constexpr std::uint32_t kSchemaCoordinateCursorOpenResultV1 = 7074;
+constexpr std::uint32_t kSchemaCoordinateReadByKeyRequestV1 = 7075;
+constexpr std::uint32_t kSchemaCoordinateReadByKeyResultV1 = 7076;
+constexpr std::uint32_t kSchemaCoordinateReadRangeRequestV1 = 7077;
+constexpr std::uint32_t kSchemaCoordinateReadRangeResultV1 = 7078;
+constexpr std::uint32_t kSchemaCoordinateReadStreamRequestV1 = 7079;
+constexpr std::uint32_t kSchemaCoordinateReadStreamResultV1 = 7080;
+constexpr std::uint32_t kSchemaCoordinateResultSetPassRequestV1 = 7081;
+constexpr std::uint32_t kSchemaCoordinateResultSetPassResultV1 = 7082;
+constexpr std::uint32_t kSchemaCoordinateAccessCursorOpenRequestV1 = 7083;
+constexpr std::uint32_t kSchemaCoordinateAccessCursorOpenResultV1 = 7084;
+constexpr std::uint32_t kSchemaCoordinateAccessCursorFetchRequestV1 = 7085;
+constexpr std::uint32_t kSchemaCoordinateAccessCursorFetchResultV1 = 7086;
+constexpr std::uint32_t kSchemaCoordinateAccessCursorCloseRequestV1 = 7087;
+constexpr std::uint32_t kSchemaCoordinateAccessCursorCloseResultV1 = 7088;
+constexpr std::uint32_t kSchemaCoordinateInsertRequestV1 = 7089;
+constexpr std::uint32_t kSchemaCoordinateInsertResultV1 = 7090;
+constexpr std::uint32_t kSchemaCoordinateUpdateRequestV1 = 7091;
+constexpr std::uint32_t kSchemaCoordinateUpdateResultV1 = 7092;
+constexpr std::uint32_t kSchemaCoordinateDeleteRequestV1 = 7093;
+constexpr std::uint32_t kSchemaCoordinateDeleteResultV1 = 7094;
+constexpr std::uint32_t kSchemaCoordinateMergeRequestV1 = 7095;
+constexpr std::uint32_t kSchemaCoordinateMergeResultV1 = 7096;
+constexpr std::uint32_t kSchemaCoordinateTableTruncateRequestV1 = 7097;
+constexpr std::uint32_t kSchemaCoordinateTableTruncateResultV1 = 7098;
+constexpr std::uint32_t kSchemaCoordinateTableAnalyzeRequestV1 = 7099;
+constexpr std::uint32_t kSchemaCoordinateTableAnalyzeResultV1 = 7100;
+constexpr std::uint32_t kSchemaCoordinateBulkImportStreamRequestV1 = 7101;
+constexpr std::uint32_t kSchemaCoordinateBulkImportStreamResultV1 = 7102;
+constexpr std::uint32_t kSchemaCoordinateBulkExportStreamRequestV1 = 7103;
+constexpr std::uint32_t kSchemaCoordinateBulkExportStreamResultV1 = 7104;
+constexpr std::uint32_t kSchemaCoordinateStatementBatchRequestV1 = 7105;
+constexpr std::uint32_t kSchemaCoordinateStatementBatchResultV1 = 7106;
+constexpr std::uint32_t kSchemaCoordinateAtomicCasRequestV1 = 7107;
+constexpr std::uint32_t kSchemaCoordinateAtomicCasResultV1 = 7108;
+constexpr std::uint32_t kSchemaCoordinateAtomicRmwRequestV1 = 7109;
+constexpr std::uint32_t kSchemaCoordinateAtomicRmwResultV1 = 7110;
+constexpr std::uint32_t kSchemaCoordinateAdvisoryLockRequestV1 = 7111;
+constexpr std::uint32_t kSchemaCoordinateAdvisoryLockResultV1 = 7112;
+constexpr std::uint32_t kSchemaCoordinateAdvisoryLockReleaseRequestV1 = 7113;
+constexpr std::uint32_t kSchemaCoordinateAdvisoryLockReleaseResultV1 = 7114;
+constexpr std::uint32_t kSchemaCoordinateFunctionCallRequestV1 = 7115;
+constexpr std::uint32_t kSchemaCoordinateFunctionCallResultV1 = 7116;
+constexpr std::uint32_t kSchemaCoordinateOperatorCallRequestV1 = 7117;
+constexpr std::uint32_t kSchemaCoordinateOperatorCallResultV1 = 7118;
+constexpr std::uint32_t kSchemaCoordinateCastRequestV1 = 7119;
+constexpr std::uint32_t kSchemaCoordinateCastResultV1 = 7120;
+constexpr std::uint32_t kSchemaCoordinateCompareRequestV1 = 7121;
+constexpr std::uint32_t kSchemaCoordinateCompareResultV1 = 7122;
+constexpr std::uint32_t kSchemaCoordinateDomainOperationRequestV1 = 7123;
+constexpr std::uint32_t kSchemaCoordinateDomainOperationResultV1 = 7124;
+constexpr std::uint32_t kSchemaCoordinateUdrInvokeRequestV1 = 7125;
+constexpr std::uint32_t kSchemaCoordinateUdrInvokeResultV1 = 7126;
+constexpr std::uint32_t kSchemaCoordinateProcedureInvokeRequestV1 = 7127;
+constexpr std::uint32_t kSchemaCoordinateProcedureInvokeResultV1 = 7128;
+constexpr std::uint32_t kSchemaCoordinateFunctionInvokeRequestV1 = 7129;
+constexpr std::uint32_t kSchemaCoordinateFunctionInvokeResultV1 = 7130;
+constexpr std::uint32_t kSchemaCoordinateAggregateInvokeRequestV1 = 7131;
+constexpr std::uint32_t kSchemaCoordinateAggregateInvokeResultV1 = 7132;
+constexpr std::uint32_t kSchemaCoordinateSequenceNextvalRequestV1 = 7133;
+constexpr std::uint32_t kSchemaCoordinateSequenceNextvalResultV1 = 7134;
+constexpr std::uint32_t kSchemaCoordinateSequenceCurrvalRequestV1 = 7135;
+constexpr std::uint32_t kSchemaCoordinateSequenceCurrvalResultV1 = 7136;
+constexpr std::uint32_t kSchemaCoordinateSequenceSetvalRequestV1 = 7137;
+constexpr std::uint32_t kSchemaCoordinateSequenceSetvalResultV1 = 7138;
+constexpr std::uint32_t kSchemaCoordinateQueryNumericRequestV1 = 7139;
+constexpr std::uint32_t kSchemaCoordinateQueryNumericResultV1 = 7140;
+constexpr std::uint32_t kSchemaCoordinateAdvancedDatatypeFamilyRequestV1 = 7141;
+constexpr std::uint32_t kSchemaCoordinateAdvancedDatatypeFamilyResultV1 = 7142;
+constexpr std::uint32_t kSchemaCoordinateProjectRequestV1 = 7143;
+constexpr std::uint32_t kSchemaCoordinateProjectResultV1 = 7144;
+constexpr std::uint32_t kSchemaCoordinateKvStructuredReadRequestV1 = 7157;
+constexpr std::uint32_t kSchemaCoordinateKvStructuredReadResultV1 = 7158;
+constexpr std::uint32_t kSchemaCoordinateKvStructuredMutateRequestV1 = 7159;
+constexpr std::uint32_t kSchemaCoordinateKvStructuredMutateResultV1 = 7160;
+constexpr std::uint32_t kSchemaCoordinateKvStructuredScanRequestV1 = 7161;
+constexpr std::uint32_t kSchemaCoordinateKvStructuredScanResultV1 = 7162;
+constexpr std::uint32_t kSchemaCoordinateKvStructuredStreamReadRequestV1 = 7163;
+constexpr std::uint32_t kSchemaCoordinateKvStructuredStreamReadResultV1 = 7164;
+constexpr std::uint32_t kSchemaCoordinateKvStructuredStreamAppendRequestV1 = 7165;
+constexpr std::uint32_t kSchemaCoordinateKvStructuredStreamAppendResultV1 = 7166;
+constexpr std::uint32_t kSchemaCoordinateKvStructuredTimeseriesRequestV1 = 7167;
+constexpr std::uint32_t kSchemaCoordinateKvStructuredTimeseriesResultV1 = 7168;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateDomainRequestV1 = 7171;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateSchemaRequestV1 = 7173;
+constexpr std::uint32_t kSchemaCoordinateSystemConfigSetRequestV1 = 7169;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateDomainResultV1 = 7172;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterDomainRequestV1 = 7181;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterDomainResultV1 = 7182;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateViewRequestV1 = 7183;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateViewResultV1 = 7184;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterViewRequestV1 = 7185;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterViewResultV1 = 7186;
+constexpr std::uint32_t kSchemaCoordinateDdlDropViewRequestV1 = 7187;
+constexpr std::uint32_t kSchemaCoordinateDdlDropViewResultV1 = 7188;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateTriggerRequestV1 = 7189;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateTriggerResultV1 = 7190;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterTriggerRequestV1 = 7191;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterTriggerResultV1 = 7192;
+constexpr std::uint32_t kSchemaCoordinateDdlDropTriggerRequestV1 = 7193;
+constexpr std::uint32_t kSchemaCoordinateDdlDropTriggerResultV1 = 7194;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateProcedureRequestV1 = 7195;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateProcedureResultV1 = 7196;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterProcedureRequestV1 = 7197;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterProcedureResultV1 = 7198;
+constexpr std::uint32_t kSchemaCoordinateDdlDropProcedureRequestV1 = 7199;
+constexpr std::uint32_t kSchemaCoordinateDdlDropProcedureResultV1 = 7200;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateFunctionRequestV1 = 7201;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateFunctionResultV1 = 7202;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterFunctionRequestV1 = 7203;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterFunctionResultV1 = 7204;
+constexpr std::uint32_t kSchemaCoordinateDdlDropFunctionRequestV1 = 7205;
+constexpr std::uint32_t kSchemaCoordinateDdlDropFunctionResultV1 = 7206;
+constexpr std::uint32_t kSchemaCoordinateDdlCreatePackageRequestV1 = 7207;
+constexpr std::uint32_t kSchemaCoordinateDdlCreatePackageResultV1 = 7208;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateTemporaryTableRequestV1 = 7209;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateTemporaryTableResultV1 = 7210;
+constexpr std::uint32_t kSchemaCoordinateDdlDropTemporaryTableRequestV1 = 7211;
+constexpr std::uint32_t kSchemaCoordinateDdlDropTemporaryTableResultV1 = 7212;
+constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectVectorRequestV1 = 7213;
+constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectVectorResultV1 = 7214;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateOrReplaceSrsRequestV1 = 7215;
+constexpr std::uint32_t kSchemaCoordinateDdlDropSrsRequestV1 = 7217;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateOrReplaceSrsResultV1 = 7216;
+constexpr std::uint32_t kSchemaCoordinateDdlDropSrsResultV1 = 7218;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateRewriteRuleRequestV1 = 7219;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateRewriteRuleResultV1 = 7220;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterRewriteRuleRequestV1 = 7221;
+constexpr std::uint32_t kSchemaCoordinateDdlAlterRewriteRuleResultV1 = 7222;
+constexpr std::uint32_t kSchemaCoordinateDdlDropRewriteRuleRequestV1 = 7223;
+constexpr std::uint32_t kSchemaCoordinateDdlDropRewriteRuleResultV1 = 7224;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateSchemaResultV1 = 7174;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateTableRequestV1 = 7175;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateTableResultV1 = 7176;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateIndexRequestV1 = 7177;
+constexpr std::uint32_t kSchemaCoordinateDdlCreateIndexResultV1 = 7178;
+constexpr std::uint32_t kSchemaCoordinateDdlDropIndexRequestV1 = 7179;
+constexpr std::uint32_t kSchemaCoordinateDdlDropIndexResultV1 = 7180;
+constexpr std::uint32_t kSchemaCoordinateSystemConfigSetResultV1 = 7170;
+constexpr std::uint32_t kSchemaCoordinateAggregateRequestV1 = 7145;
+constexpr std::uint32_t kSchemaCoordinateAggregateResultV1 = 7146;
+constexpr std::uint32_t kSchemaCoordinateGroupRequestV1 = 7147;
+constexpr std::uint32_t kSchemaCoordinateGroupResultV1 = 7148;
+constexpr std::uint32_t kSchemaCoordinateSortRequestV1 = 7149;
+constexpr std::uint32_t kSchemaCoordinateSortResultV1 = 7150;
+constexpr std::uint32_t kSchemaCoordinateLimitRequestV1 = 7151;
+constexpr std::uint32_t kSchemaCoordinateLimitResultV1 = 7152;
+constexpr std::uint32_t kSchemaCoordinateWindowRequestV1 = 7153;
+constexpr std::uint32_t kSchemaCoordinateWindowResultV1 = 7154;
+constexpr std::uint32_t kSchemaCoordinateReturnResultSetRequestV1 = 7155;
+constexpr std::uint32_t kSchemaCoordinateReturnResultSetResultV1 = 7156;
 constexpr std::uint16_t kMessageHello = 1;
 constexpr std::uint16_t kMessageHelloAccept = 2;
 constexpr std::uint16_t kMessageAuthHandoff = 10;
@@ -110,6 +303,190 @@ constexpr std::uint16_t kMessageAuthResult = 11;
 constexpr std::uint16_t kMessageAttachDatabase = 20;
 constexpr std::uint16_t kMessageAttachResult = 21;
 constexpr std::uint16_t kMessageManagementRequest = 30;
+constexpr std::uint16_t kMessageNegotiateLiteralDescriptorsRequest = 38;
+constexpr std::uint16_t kMessageNegotiateLiteralDescriptorsResult = 39;
+constexpr std::uint16_t kMessageFinalizeLiteralBindingRequest = 40;
+constexpr std::uint16_t kMessageFinalizeLiteralBindingResult = 41;
+constexpr std::uint16_t kMessageNegotiateParameterDescriptorsRequest = 42;
+constexpr std::uint16_t kMessageNegotiateParameterDescriptorsResult = 43;
+constexpr std::uint16_t kMessageFinalizeParameterBindingRequest = 44;
+constexpr std::uint16_t kMessageFinalizeParameterBindingResult = 45;
+constexpr std::uint16_t kMessageBeginParameterCoordinationRequest = 50;
+constexpr std::uint16_t kMessageBeginParameterCoordinationResult = 51;
+constexpr std::uint16_t kMessageNegotiateVariableDescriptorsRequest = 52;
+constexpr std::uint16_t kMessageNegotiateVariableDescriptorsResult = 53;
+constexpr std::uint16_t kMessageFinalizeVariableBindingRequest = 54;
+constexpr std::uint16_t kMessageFinalizeVariableBindingResult = 55;
+constexpr std::uint16_t kMessageBeginVariableFrameRequest = 56;
+constexpr std::uint16_t kMessageBeginVariableFrameResult = 57;
+constexpr std::uint16_t kMessageCloseVariableFrameRequest = 58;
+constexpr std::uint16_t kMessageCloseVariableFrameResult = 59;
+constexpr std::uint16_t kMessageAssignVariableValuesRequest = 60;
+constexpr std::uint16_t kMessageAssignVariableValuesResult = 61;
+constexpr std::uint16_t kMessageIssueSourceMapRequest = 62;
+constexpr std::uint16_t kMessageIssueSourceMapResult = 63;
+constexpr std::uint16_t kMessageIssueErrorVectorRequest = 64;
+constexpr std::uint16_t kMessageIssueErrorVectorResult = 65;
+constexpr std::uint16_t kMessageCoordinateSavepointRequest = 66;
+constexpr std::uint16_t kMessageCoordinateSavepointResult = 67;
+constexpr std::uint16_t kMessageCoordinateAutonomousFrameRequest = 68;
+constexpr std::uint16_t kMessageCoordinateAutonomousFrameResult = 69;
+constexpr std::uint16_t kMessageCoordinateReservationReleaseRequest = 72;
+constexpr std::uint16_t kMessageCoordinateReservationReleaseResult = 73;
+constexpr std::uint16_t kMessageCoordinateTemporaryInstanceCleanupRequest = 76;
+constexpr std::uint16_t kMessageCoordinateTemporaryInstanceCleanupResult = 77;
+constexpr std::uint16_t kMessageCoordinateCursorOpenRequest = 78;
+constexpr std::uint16_t kMessageCoordinateCursorOpenResult = 79;
+constexpr std::uint16_t kMessageCoordinateReadByKeyRequest = 80;
+constexpr std::uint16_t kMessageCoordinateReadByKeyResult = 81;
+constexpr std::uint16_t kMessageCoordinateReadRangeRequest = 82;
+constexpr std::uint16_t kMessageCoordinateReadRangeResult = 83;
+constexpr std::uint16_t kMessageCoordinateReadStreamRequest = 84;
+constexpr std::uint16_t kMessageCoordinateReadStreamResult = 85;
+constexpr std::uint16_t kMessageCoordinateResultSetPassRequest = 86;
+constexpr std::uint16_t kMessageCoordinateResultSetPassResult = 87;
+constexpr std::uint16_t kMessageCoordinateAccessCursorOpenRequest = 88;
+constexpr std::uint16_t kMessageCoordinateAccessCursorOpenResult = 89;
+constexpr std::uint16_t kMessageCoordinateAccessCursorFetchRequest = 90;
+constexpr std::uint16_t kMessageCoordinateAccessCursorFetchResult = 91;
+constexpr std::uint16_t kMessageCoordinateAccessCursorCloseRequest = 92;
+constexpr std::uint16_t kMessageCoordinateAccessCursorCloseResult = 93;
+constexpr std::uint16_t kMessageCoordinateInsertRequest = 94;
+constexpr std::uint16_t kMessageCoordinateInsertResult = 95;
+constexpr std::uint16_t kMessageCoordinateUpdateRequest = 96;
+constexpr std::uint16_t kMessageCoordinateUpdateResult = 97;
+constexpr std::uint16_t kMessageCoordinateDeleteRequest = 98;
+constexpr std::uint16_t kMessageCoordinateDeleteResult = 99;
+constexpr std::uint16_t kMessageCoordinateMergeRequest = 100;
+constexpr std::uint16_t kMessageCoordinateMergeResult = 101;
+constexpr std::uint16_t kMessageCoordinateTableTruncateRequest = 102;
+constexpr std::uint16_t kMessageCoordinateTableTruncateResult = 103;
+constexpr std::uint16_t kMessageCoordinateTableAnalyzeRequest = 104;
+constexpr std::uint16_t kMessageCoordinateTableAnalyzeResult = 105;
+constexpr std::uint16_t kMessageCoordinateBulkImportStreamRequest = 106;
+constexpr std::uint16_t kMessageCoordinateBulkImportStreamResult = 107;
+constexpr std::uint16_t kMessageCoordinateBulkExportStreamRequest = 108;
+constexpr std::uint16_t kMessageCoordinateBulkExportStreamResult = 109;
+constexpr std::uint16_t kMessageCoordinateStatementBatchRequest = 110;
+constexpr std::uint16_t kMessageCoordinateStatementBatchResult = 111;
+constexpr std::uint16_t kMessageCoordinateAtomicCasRequest = 112;
+constexpr std::uint16_t kMessageCoordinateAtomicCasResult = 113;
+constexpr std::uint16_t kMessageCoordinateAtomicRmwRequest = 114;
+constexpr std::uint16_t kMessageCoordinateAtomicRmwResult = 115;
+constexpr std::uint16_t kMessageCoordinateAdvisoryLockRequest = 116;
+constexpr std::uint16_t kMessageCoordinateAdvisoryLockResult = 117;
+constexpr std::uint16_t kMessageCoordinateAdvisoryLockReleaseRequest = 118;
+constexpr std::uint16_t kMessageCoordinateAdvisoryLockReleaseResult = 119;
+constexpr std::uint16_t kMessageCoordinateFunctionCallRequest = 120;
+constexpr std::uint16_t kMessageCoordinateFunctionCallResult = 121;
+constexpr std::uint16_t kMessageCoordinateOperatorCallRequest = 122;
+constexpr std::uint16_t kMessageCoordinateOperatorCallResult = 123;
+constexpr std::uint16_t kMessageCoordinateCastRequest = 124;
+constexpr std::uint16_t kMessageCoordinateCastResult = 125;
+constexpr std::uint16_t kMessageCoordinateCompareRequest = 126;
+constexpr std::uint16_t kMessageCoordinateCompareResult = 127;
+constexpr std::uint16_t kMessageCoordinateDomainOperationRequest = 128;
+constexpr std::uint16_t kMessageCoordinateDomainOperationResult = 129;
+constexpr std::uint16_t kMessageCoordinateUdrInvokeRequest = 130;
+constexpr std::uint16_t kMessageCoordinateUdrInvokeResult = 131;
+constexpr std::uint16_t kMessageCoordinateProcedureInvokeRequest = 132;
+constexpr std::uint16_t kMessageCoordinateProcedureInvokeResult = 133;
+constexpr std::uint16_t kMessageCoordinateFunctionInvokeRequest = 134;
+constexpr std::uint16_t kMessageCoordinateFunctionInvokeResult = 135;
+constexpr std::uint16_t kMessageCoordinateAggregateInvokeRequest = 136;
+constexpr std::uint16_t kMessageCoordinateAggregateInvokeResult = 137;
+constexpr std::uint16_t kMessageCoordinateSequenceNextvalRequest = 138;
+constexpr std::uint16_t kMessageCoordinateSequenceNextvalResult = 139;
+constexpr std::uint16_t kMessageCoordinateSequenceCurrvalRequest = 140;
+constexpr std::uint16_t kMessageCoordinateSequenceCurrvalResult = 141;
+constexpr std::uint16_t kMessageCoordinateSequenceSetvalRequest = 142;
+constexpr std::uint16_t kMessageCoordinateSequenceSetvalResult = 143;
+constexpr std::uint16_t kMessageCoordinateQueryNumericRequest = 144;
+constexpr std::uint16_t kMessageCoordinateQueryNumericResult = 145;
+constexpr std::uint16_t kMessageCoordinateAdvancedDatatypeFamilyRequest = 146;
+constexpr std::uint16_t kMessageCoordinateAdvancedDatatypeFamilyResult = 147;
+constexpr std::uint16_t kMessageCoordinateProjectRequest = 148;
+constexpr std::uint16_t kMessageCoordinateProjectResult = 149;
+constexpr std::uint16_t kMessageCoordinateKvStructuredReadRequest = 162;
+constexpr std::uint16_t kMessageCoordinateKvStructuredReadResult = 163;
+constexpr std::uint16_t kMessageCoordinateKvStructuredMutateRequest = 164;
+constexpr std::uint16_t kMessageCoordinateKvStructuredMutateResult = 165;
+constexpr std::uint16_t kMessageCoordinateKvStructuredScanRequest = 166;
+constexpr std::uint16_t kMessageCoordinateKvStructuredScanResult = 167;
+constexpr std::uint16_t kMessageCoordinateKvStructuredStreamReadRequest = 168;
+constexpr std::uint16_t kMessageCoordinateKvStructuredStreamReadResult = 169;
+constexpr std::uint16_t kMessageCoordinateKvStructuredStreamAppendRequest = 170;
+constexpr std::uint16_t kMessageCoordinateKvStructuredStreamAppendResult = 171;
+constexpr std::uint16_t kMessageCoordinateKvStructuredTimeseriesRequest = 172;
+constexpr std::uint16_t kMessageCoordinateKvStructuredTimeseriesResult = 173;
+constexpr std::uint16_t kMessageCoordinateDdlCreateDomainRequest = 176;
+constexpr std::uint16_t kMessageCoordinateDdlCreateSchemaRequest = 178;
+constexpr std::uint16_t kMessageCoordinateSystemConfigSetRequest = 174;
+constexpr std::uint16_t kMessageCoordinateDdlCreateDomainResult = 177;
+constexpr std::uint16_t kMessageCoordinateDdlAlterDomainRequest = 186;
+constexpr std::uint16_t kMessageCoordinateDdlAlterDomainResult = 187;
+constexpr std::uint16_t kMessageCoordinateDdlCreateViewRequest = 188;
+constexpr std::uint16_t kMessageCoordinateDdlCreateViewResult = 189;
+constexpr std::uint16_t kMessageCoordinateDdlAlterViewRequest = 190;
+constexpr std::uint16_t kMessageCoordinateDdlAlterViewResult = 191;
+constexpr std::uint16_t kMessageCoordinateDdlDropViewRequest = 192;
+constexpr std::uint16_t kMessageCoordinateDdlDropViewResult = 193;
+constexpr std::uint16_t kMessageCoordinateDdlCreateTriggerRequest = 194;
+constexpr std::uint16_t kMessageCoordinateDdlCreateTriggerResult = 195;
+constexpr std::uint16_t kMessageCoordinateDdlAlterTriggerRequest = 196;
+constexpr std::uint16_t kMessageCoordinateDdlAlterTriggerResult = 197;
+constexpr std::uint16_t kMessageCoordinateDdlDropTriggerRequest = 198;
+constexpr std::uint16_t kMessageCoordinateDdlDropTriggerResult = 199;
+constexpr std::uint16_t kMessageCoordinateDdlCreateProcedureRequest = 200;
+constexpr std::uint16_t kMessageCoordinateDdlCreateProcedureResult = 201;
+constexpr std::uint16_t kMessageCoordinateDdlAlterProcedureRequest = 202;
+constexpr std::uint16_t kMessageCoordinateDdlAlterProcedureResult = 203;
+constexpr std::uint16_t kMessageCoordinateDdlDropProcedureRequest = 204;
+constexpr std::uint16_t kMessageCoordinateDdlDropProcedureResult = 205;
+constexpr std::uint16_t kMessageCoordinateDdlCreateFunctionRequest = 206;
+constexpr std::uint16_t kMessageCoordinateDdlCreateFunctionResult = 207;
+constexpr std::uint16_t kMessageCoordinateDdlAlterFunctionRequest = 208;
+constexpr std::uint16_t kMessageCoordinateDdlAlterFunctionResult = 209;
+constexpr std::uint16_t kMessageCoordinateDdlDropFunctionRequest = 210;
+constexpr std::uint16_t kMessageCoordinateDdlDropFunctionResult = 211;
+constexpr std::uint16_t kMessageCoordinateDdlCreatePackageRequest = 212;
+constexpr std::uint16_t kMessageCoordinateDdlCreatePackageResult = 213;
+constexpr std::uint16_t kMessageCoordinateDdlCreateTemporaryTableRequest = 214;
+constexpr std::uint16_t kMessageCoordinateDdlCreateTemporaryTableResult = 215;
+constexpr std::uint16_t kMessageCoordinateDdlDropTemporaryTableRequest = 216;
+constexpr std::uint16_t kMessageCoordinateDdlDropTemporaryTableResult = 217;
+constexpr std::uint16_t kMessageCoordinateDdlRenameObjectVectorRequest = 218;
+constexpr std::uint16_t kMessageCoordinateDdlRenameObjectVectorResult = 219;
+constexpr std::uint16_t kMessageCoordinateDdlCreateOrReplaceSrsRequest = 220;
+constexpr std::uint16_t kMessageCoordinateDdlDropSrsRequest = 222;
+constexpr std::uint16_t kMessageCoordinateDdlCreateOrReplaceSrsResult = 221;
+constexpr std::uint16_t kMessageCoordinateDdlDropSrsResult = 223;
+constexpr std::uint16_t kMessageCoordinateDdlCreateRewriteRuleRequest = 224;
+constexpr std::uint16_t kMessageCoordinateDdlCreateRewriteRuleResult = 225;
+constexpr std::uint16_t kMessageCoordinateDdlAlterRewriteRuleRequest = 226;
+constexpr std::uint16_t kMessageCoordinateDdlAlterRewriteRuleResult = 227;
+constexpr std::uint16_t kMessageCoordinateDdlDropRewriteRuleRequest = 228;
+constexpr std::uint16_t kMessageCoordinateDdlDropRewriteRuleResult = 229;
+constexpr std::uint16_t kMessageCoordinateDdlCreateSchemaResult = 179;
+constexpr std::uint16_t kMessageCoordinateDdlCreateTableRequest = 180;
+constexpr std::uint16_t kMessageCoordinateDdlCreateTableResult = 181;
+constexpr std::uint16_t kMessageCoordinateDdlCreateIndexRequest = 182;
+constexpr std::uint16_t kMessageCoordinateDdlCreateIndexResult = 183;
+constexpr std::uint16_t kMessageCoordinateDdlDropIndexRequest = 184;
+constexpr std::uint16_t kMessageCoordinateDdlDropIndexResult = 185;
+constexpr std::uint16_t kMessageCoordinateSystemConfigSetResult = 175;
+constexpr std::uint16_t kMessageCoordinateAggregateRequest = 150;
+constexpr std::uint16_t kMessageCoordinateAggregateResult = 151;
+constexpr std::uint16_t kMessageCoordinateGroupRequest = 152;
+constexpr std::uint16_t kMessageCoordinateGroupResult = 153;
+constexpr std::uint16_t kMessageCoordinateSortRequest = 154;
+constexpr std::uint16_t kMessageCoordinateSortResult = 155;
+constexpr std::uint16_t kMessageCoordinateLimitRequest = 156;
+constexpr std::uint16_t kMessageCoordinateLimitResult = 157;
+constexpr std::uint16_t kMessageCoordinateWindowRequest = 158;
+constexpr std::uint16_t kMessageCoordinateWindowResult = 159;
+constexpr std::uint16_t kMessageCoordinateReturnResultSetRequest = 160;
+constexpr std::uint16_t kMessageCoordinateReturnResultSetResult = 161;
 constexpr std::uint16_t kMessageManagementResult = 31;
 constexpr std::uint16_t kMessageResolveNameRequest = 32;
 constexpr std::uint16_t kMessageResolveNameResult = 33;
@@ -510,9 +887,9 @@ bool ReadTransactionSelector(const std::vector<std::uint8_t>& payload,
   return ReadString(payload, offset, &selector->transaction_uuid);
 }
 
-bool DecodeExecuteResultPayloadV2(const Frame& response,
-                                  ServerExecutionResult* result,
-                                  MessageVectorSet* messages) {
+bool DecodeExecuteResultPayloadV2Base(const Frame& response,
+                                      ServerExecutionResult* result,
+                                      MessageVectorSet* messages) {
   if (result == nullptr) return false;
   std::size_t offset = 0;
   std::string outcome;
@@ -629,7 +1006,9 @@ bool DecodeExecuteResultPayloadV2(const Frame& response,
     if (offset + 8 > response.payload.size()) {
       AddDiagnostic(messages,
                     "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID",
-                    "The server V2 typed diagnostic trailer is malformed.");
+                    "The server V2 typed diagnostic trailer is malformed at offset " +
+                        std::to_string(offset) + " of " +
+                        std::to_string(response.payload.size()) + ".");
       return false;
     }
     const std::uint64_t diagnostic_bytes = GetU64(response.payload, offset);
@@ -641,7 +1020,10 @@ bool DecodeExecuteResultPayloadV2(const Frame& response,
             response.payload.size()) {
       AddDiagnostic(messages,
                     "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID",
-                    "The server V2 typed diagnostic trailer is malformed.");
+                    "The server V2 typed diagnostic trailer is malformed: offset=" +
+                        std::to_string(offset) + ", bytes=" +
+                        std::to_string(diagnostic_bytes) + ", total=" +
+                        std::to_string(response.payload.size()) + ".");
       return false;
     }
     encoded_diagnostics.assign(
@@ -766,6 +1148,80 @@ bool DecodeExecuteResultPayloadV2(const Frame& response,
                                                  : legacy_detail)
                         : result->transaction_outcome_detail);
     }
+  }
+  return true;
+}
+
+bool DecodeExecuteResultPayloadV2(const Frame& response,
+                                  ServerExecutionResult* result,
+                                  MessageVectorSet* messages) {
+  constexpr std::size_t kPresentDescriptorBytes =
+      1 + 16 + 2 + 8 + 16 * 5 + 8 + 8;
+  if (result == nullptr || response.payload.empty()) return false;
+  Frame base = response;
+  CursorStreamDescriptorV1 descriptor;
+  if (response.payload.size() >= kPresentDescriptorBytes &&
+      response.payload[response.payload.size() - kPresentDescriptorBytes] == 1) {
+    std::size_t offset = response.payload.size() - kPresentDescriptorBytes + 1;
+    const auto descriptor_uuid = GetUuid(response.payload, offset);
+    offset += 16;
+    descriptor.descriptor_version = GetU16(response.payload, offset);
+    offset += 2;
+    descriptor.descriptor_generation = GetU64(response.payload, offset);
+    offset += 8;
+    const auto cursor_uuid = GetUuid(response.payload, offset);
+    offset += 16;
+    const auto execution_uuid = GetUuid(response.payload, offset);
+    offset += 16;
+    const auto result_set_uuid = GetUuid(response.payload, offset);
+    offset += 16;
+    const auto row_descriptor_uuid = GetUuid(response.payload, offset);
+    offset += 16;
+    const auto snapshot_uuid = GetUuid(response.payload, offset);
+    offset += 16;
+    descriptor.max_chunk_rows = GetU64(response.payload, offset);
+    offset += 8;
+    descriptor.max_chunk_bytes = GetU64(response.payload, offset);
+    descriptor.present = true;
+    descriptor.stream_descriptor_uuid = OptionalUuidToText(descriptor_uuid);
+    descriptor.cursor_uuid = OptionalUuidToText(cursor_uuid);
+    descriptor.execution_uuid = OptionalUuidToText(execution_uuid);
+    descriptor.result_set_uuid = OptionalUuidToText(result_set_uuid);
+    descriptor.row_descriptor_uuid = OptionalUuidToText(row_descriptor_uuid);
+    descriptor.snapshot_uuid = OptionalUuidToText(snapshot_uuid);
+    if (descriptor.complete()) {
+      base.payload.resize(response.payload.size() - kPresentDescriptorBytes);
+    } else if (response.payload.back() == 0) {
+      descriptor = CursorStreamDescriptorV1{};
+      base.payload.pop_back();
+    } else {
+      AddDiagnostic(messages,
+                    "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID",
+                    "The server V2 cursor stream descriptor trailer is malformed.");
+      return false;
+    }
+  } else if (response.payload.back() == 0) {
+    base.payload.pop_back();
+  } else {
+    AddDiagnostic(messages,
+                  "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID",
+                  "The server V2 cursor stream descriptor trailer is malformed.");
+    return false;
+  }
+  if (!DecodeExecuteResultPayloadV2Base(base, result, messages)) return false;
+  if (!result->cursor_uuid.empty()) {
+    if (!descriptor.complete() || descriptor.cursor_uuid != result->cursor_uuid) {
+      AddDiagnostic(messages,
+                    "SERVER.STREAM.DESCRIPTOR_INVALID",
+                    "The server cursor result lacks its exact versioned stream descriptor.");
+      return false;
+    }
+    result->cursor_stream_descriptor = std::move(descriptor);
+  } else if (descriptor.present) {
+    AddDiagnostic(messages,
+                  "SERVER.STREAM.DESCRIPTOR_INVALID",
+                  "A cursor stream descriptor was returned without a cursor.");
+    return false;
   }
   return true;
 }
@@ -938,6 +1394,14 @@ std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV10(
   return out;
 }
 
+std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV11(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction) {
+  auto out = EncodeAcquireStatementContextPayloadV1(session, transaction);
+  out[0] = 11;
+  return out;
+}
+
 bool IsCanonicalStatementTimestamp(std::string_view value) {
   if (value.size() != 20 &&
       (value.size() < 22 || value.size() > 30)) {
@@ -1041,7 +1505,8 @@ bool DecodeAcquireStatementContextPayloadNative(
     const std::uint8_t maximum_profile_kind,
     const bool has_statement_timestamp,
     const std::uint8_t exact_descriptor_cohort_version,
-    ParserStatementContext* context) {
+    ParserStatementContext* context,
+    std::size_t* consumed_bytes = nullptr) {
   constexpr std::size_t kBaseBytes = 2 + 1 + (6 * 16) + (2 * 8);
   constexpr std::size_t kProfileBytes = 1 + 2 + (3 * 16) + 1 + (3 * 4);
   const bool exact_v8_descriptor_cohort =
@@ -1070,7 +1535,7 @@ bool DecodeAcquireStatementContextPayloadNative(
   std::size_t offset = kBaseBytes;
   if (has_statement_timestamp &&
       (!ReadString(payload, &offset, &decoded.statement_timestamp) ||
-       !IsCanonicalStatementTimestamp(decoded.statement_timestamp))) {
+      !IsCanonicalStatementTimestamp(decoded.statement_timestamp))) {
     return false;
   }
   const auto bound_ast_uuid = GetUuid(payload, offset);
@@ -1170,9 +1635,13 @@ bool DecodeAcquireStatementContextPayloadNative(
       (exact_v8_descriptor_cohort && profile_count != 322) ||
       (exact_v9_descriptor_cohort && profile_count != 326) ||
       (exact_v10_descriptor_cohort && profile_count != 646) ||
-      payload.size() != offset +
-                            static_cast<std::size_t>(profile_count) *
-                                kProfileBytes) {
+      (consumed_bytes == nullptr
+           ? payload.size() != offset +
+                                 static_cast<std::size_t>(profile_count) *
+                                     kProfileBytes
+           : payload.size() < offset +
+                                 static_cast<std::size_t>(profile_count) *
+                                     kProfileBytes)) {
     return false;
   }
 
@@ -1260,7 +1729,7 @@ bool DecodeAcquireStatementContextPayloadNative(
     }
     decoded.descriptor_profiles.push_back(std::move(profile));
   }
-  if (offset != payload.size()) return false;
+  if (consumed_bytes == nullptr && offset != payload.size()) return false;
   for (std::size_t kind = 1; kind <= maximum_profile_kind; ++kind) {
     if (expected_slots[kind] == 0 ||
         (exact_descriptor_cohort &&
@@ -1319,6 +1788,7 @@ bool DecodeAcquireStatementContextPayloadNative(
   if (exact_v10_descriptor_cohort && !decoded.native_v10_complete()) {
     return false;
   }
+  if (consumed_bytes != nullptr) *consumed_bytes = offset;
   *context = std::move(decoded);
   return true;
 }
@@ -1393,6 +1863,383 @@ bool DecodeAcquireStatementContextPayloadV10(
   return DecodeAcquireStatementContextPayloadNative(payload, 10, true, true,
                                                      true, 23, true, 10,
                                                      context);
+}
+
+bool DecodeAcquireStatementContextPayloadV11(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  std::size_t offset = 0;
+  if (!DecodeAcquireStatementContextPayloadNative(
+          payload, 11, true, true, true, 23, true, 10, context, &offset) ||
+      (payload.size() != offset + 76 && payload.size() != offset + 156 &&
+       payload.size() != offset + 228 && payload.size() < offset + 260) ||
+      GetU16(payload, offset + 2) != 0) {
+    return false;
+  }
+  const auto wire_extension_version = GetU16(payload, offset);
+  const auto extension_version = wire_extension_version >= 27 && wire_extension_version <= 58 ? 26 : wire_extension_version;
+  if ((payload.size() == offset + 76 && wire_extension_version != 2) ||
+      (payload.size() == offset + 156 && extension_version != 3) ||
+      (payload.size() == offset + 228 && extension_version != 4) ||
+      (payload.size() >= offset + 260 && extension_version != 5 &&
+       extension_version != 6 && extension_version != 7 &&
+       extension_version != 8 && extension_version != 9 && extension_version != 10 && extension_version != 11 && extension_version != 12 && extension_version != 13 && extension_version != 14 && extension_version != 15 && extension_version != 16 && extension_version != 17 && extension_version != 18 && extension_version != 19 && extension_version != 20 && extension_version != 21 && extension_version != 22 && extension_version != 23 && extension_version != 24 && extension_version != 25 && extension_version != 26 && wire_extension_version != 27 && wire_extension_version != 28 && wire_extension_version != 29 && wire_extension_version != 30 && wire_extension_version != 31 && wire_extension_version != 32 && wire_extension_version != 33 && wire_extension_version != 34 && wire_extension_version != 35 && wire_extension_version != 36 && wire_extension_version != 37 && wire_extension_version != 38 && wire_extension_version != 39 && wire_extension_version != 40 && wire_extension_version != 41 && wire_extension_version != 42 && wire_extension_version != 43 && wire_extension_version != 44 && wire_extension_version != 45 && wire_extension_version != 46 && wire_extension_version != 47 && wire_extension_version != 48 && wire_extension_version != 49 && wire_extension_version != 50 && wire_extension_version != 51 && wire_extension_version != 52 && wire_extension_version != 53 && wire_extension_version != 54 && wire_extension_version != 55 && wire_extension_version != 56 && wire_extension_version != 57 && wire_extension_version != 58 && wire_extension_version != 59 && wire_extension_version != 60 && wire_extension_version != 61)) {
+    return false;
+  }
+  const auto preliminary_receipt_uuid = GetUuid(payload, offset + 4);
+  const auto catalog_snapshot_uuid = GetUuid(payload, offset + 20);
+  const auto catalog_generation = GetU64(payload, offset + 36);
+  const auto security_epoch = GetU64(payload, offset + 44);
+  const auto resource_epoch = GetU64(payload, offset + 52);
+  const auto mga_snapshot_uuid = GetUuid(payload, offset + 60);
+  if (!UuidPresent(preliminary_receipt_uuid) ||
+      !UuidPresent(catalog_snapshot_uuid) || catalog_generation == 0 ||
+      security_epoch == 0 || resource_epoch == 0 ||
+      !UuidPresent(mga_snapshot_uuid)) {
+    return false;
+  }
+  context->literal_statement_descriptor_profiles.clear();
+  context->preliminary_receipt_uuid = UuidToText(preliminary_receipt_uuid);
+  context->preliminary_catalog_snapshot_uuid = UuidToText(catalog_snapshot_uuid);
+  context->preliminary_catalog_generation = catalog_generation;
+  context->preliminary_security_epoch = security_epoch;
+  context->preliminary_resource_epoch = resource_epoch;
+  context->preliminary_mga_snapshot_uuid = UuidToText(mga_snapshot_uuid);
+  context->preliminary_extension_version = extension_version;
+  context->preliminary_prepared_statement_uuid.clear();
+  context->preliminary_prepared_generation = 0;
+  context->preliminary_batch_uuid.clear();
+  context->preliminary_batch_generation = 0;
+  context->preliminary_dynamic_package_uuid.clear();
+  context->preliminary_dynamic_generation = 0;
+  context->preliminary_parameter_executor_availability_generation = 0;
+  context->preliminary_variable_scope_uuid.clear();
+  context->preliminary_variable_scope_generation = 0;
+  context->preliminary_variable_frame_uuid.clear();
+  context->preliminary_variable_frame_generation = 0;
+  context->preliminary_variable_registry_snapshot_uuid.clear();
+  context->preliminary_variable_executor_availability_generation = 0;
+  context->preliminary_diagnostic_registry_snapshot_uuid.clear();
+  context->preliminary_diagnostic_registry_generation = 0;
+  context->preliminary_diagnostic_identities.clear();
+  context->preliminary_transaction_isolation_profile_uuid.clear();
+  context->preliminary_transaction_isolation_profile_generation = 0;
+  context->preliminary_transaction_policy_snapshot_uuid.clear();
+  context->preliminary_transaction_policy_generation = 0;
+  context->preliminary_transaction_executor_availability_generation = 0;
+  context->preliminary_transaction_read_mode = 0;
+  context->preliminary_transaction_authority_scope = 0;
+  context->preliminary_transaction_wait_policy = 0;
+  context->preliminary_transaction_deadline_monotonic_ns = 0;
+  context->preliminary_transaction_commit_executor_availability_generation = 0;
+  context->preliminary_transaction_commit_mode = 0;
+  context->preliminary_transaction_commit_authority_scope = 0;
+  context->preliminary_transaction_commit_wait_policy = 0;
+  context->preliminary_transaction_commit_deadline_monotonic_ns = 0;
+  context->preliminary_transaction_rollback_executor_availability_generation = 0;
+  context->preliminary_transaction_rollback_mode = 0;
+  context->preliminary_transaction_rollback_authority_scope = 0;
+  context->preliminary_transaction_rollback_wait_policy = 0;
+  context->preliminary_transaction_rollback_deadline_monotonic_ns = 0;
+  context->preliminary_transaction_release_savepoint_executor_availability_generation = 0;
+  context->preliminary_transaction_rollback_to_savepoint_executor_availability_generation = 0;
+  context->preliminary_psql_autonomous_frame_executor_availability_generation = 0;
+  context->preliminary_transaction_reservation_release_executor_availability_generation = 0;
+  context->preliminary_temporary_instance_cleanup_executor_availability_generation = 0;
+  context->preliminary_cursor_open_executor_availability_generation = 0;
+  context->preliminary_cursor_fetch_executor_availability_generation = 0;
+  context->preliminary_cursor_close_executor_availability_generation = 0;
+  context->preliminary_read_by_key_executor_availability_generation = 0;
+  context->preliminary_read_range_executor_availability_generation = 0;
+  context->preliminary_read_stream_executor_availability_generation = 0;
+  context->preliminary_result_set_pass_executor_availability_generation = 0;
+  context->preliminary_access_cursor_open_executor_availability_generation = 0;
+  context->preliminary_access_cursor_fetch_executor_availability_generation = 0;
+  context->preliminary_access_cursor_close_executor_availability_generation = 0;
+  context->preliminary_insert_executor_availability_generation = 0;
+  context->preliminary_update_executor_availability_generation = 0;
+  context->preliminary_delete_executor_availability_generation = 0;
+  context->preliminary_merge_executor_availability_generation = 0;
+  context->preliminary_table_truncate_executor_availability_generation = 0;
+  context->preliminary_table_analyze_executor_availability_generation = 0;
+  if (extension_version >= 3 && extension_version <= 26) {
+    const auto prepared_uuid = GetUuid(payload, offset + 76);
+    const auto prepared_generation = GetU64(payload, offset + 92);
+    const auto batch_uuid = GetUuid(payload, offset + 100);
+    const auto batch_generation = GetU64(payload, offset + 116);
+    const auto dynamic_uuid = GetUuid(payload, offset + 124);
+    const auto dynamic_generation = GetU64(payload, offset + 140);
+    const auto parameter_executor_availability_generation =
+        GetU64(payload, offset + 148);
+    const auto exact_pair = [](const auto& uuid, std::uint64_t generation) {
+      return UuidPresent(uuid) == (generation != 0);
+    };
+    if (!exact_pair(prepared_uuid, prepared_generation) ||
+        !exact_pair(batch_uuid, batch_generation) ||
+        !exact_pair(dynamic_uuid, dynamic_generation) ||
+        parameter_executor_availability_generation == 0) {
+      return false;
+    }
+    if (UuidPresent(prepared_uuid))
+      context->preliminary_prepared_statement_uuid = UuidToText(prepared_uuid);
+    context->preliminary_prepared_generation = prepared_generation;
+    if (UuidPresent(batch_uuid))
+      context->preliminary_batch_uuid = UuidToText(batch_uuid);
+    context->preliminary_batch_generation = batch_generation;
+    if (UuidPresent(dynamic_uuid))
+      context->preliminary_dynamic_package_uuid = UuidToText(dynamic_uuid);
+    context->preliminary_dynamic_generation = dynamic_generation;
+    context->preliminary_parameter_executor_availability_generation =
+        parameter_executor_availability_generation;
+  }
+  if (extension_version >= 4 && extension_version <= 26) {
+    const auto scope_uuid = GetUuid(payload, offset + 156);
+    const auto scope_generation = GetU64(payload, offset + 172);
+    const auto frame_uuid = GetUuid(payload, offset + 180);
+    const auto frame_generation = GetU64(payload, offset + 196);
+    const auto registry_snapshot_uuid = GetUuid(payload, offset + 204);
+    const auto executor_generation = GetU64(payload, offset + 220);
+    const auto exact_pair = [](const auto& uuid, std::uint64_t generation) {
+      return UuidPresent(uuid) == (generation != 0);
+    };
+    if ((extension_version == 4 &&
+         (!UuidPresent(scope_uuid) || scope_generation == 0 ||
+          !UuidPresent(frame_uuid) || frame_generation == 0)) ||
+        ((extension_version >= 5 && extension_version <= 26) &&
+         (!exact_pair(scope_uuid, scope_generation) ||
+          !exact_pair(frame_uuid, frame_generation) ||
+          (UuidPresent(registry_snapshot_uuid) != (executor_generation != 0)))) ||
+        (extension_version == 4 &&
+         (!UuidPresent(registry_snapshot_uuid) || executor_generation == 0))) {
+      return false;
+    }
+    context->preliminary_variable_scope_uuid = UuidToText(scope_uuid);
+    context->preliminary_variable_scope_generation = scope_generation;
+    context->preliminary_variable_frame_uuid = UuidToText(frame_uuid);
+    context->preliminary_variable_frame_generation = frame_generation;
+    context->preliminary_variable_registry_snapshot_uuid =
+        UuidToText(registry_snapshot_uuid);
+    context->preliminary_variable_executor_availability_generation =
+        executor_generation;
+  }
+  if (extension_version >= 5 && extension_version <= 26) {
+    const auto diagnostic_snapshot_uuid = GetUuid(payload, offset + 228);
+    const auto diagnostic_generation = GetU64(payload, offset + 244);
+    const auto row_count = GetU32(payload, offset + 252);
+    const auto row_bytes = GetU32(payload, offset + 256);
+    if (wire_extension_version != 56 && (!UuidPresent(diagnostic_snapshot_uuid) || diagnostic_generation == 0 ||
+        row_count == 0 || row_bytes != 72 || row_count > 4096 ||
+        payload.size() != offset + 260 + static_cast<std::size_t>(row_count) * 72 +
+                              (extension_version == 6 ? 80 :
+                               extension_version == 7 ? 104 :
+                               wire_extension_version == 61 ? 552 : wire_extension_version == 60 ? 544 : wire_extension_version == 59 ? 536 : wire_extension_version == 58 ? 528 :
+                               wire_extension_version == 57 ? 520 : wire_extension_version == 56 ? 512 : wire_extension_version == 55 ? 504 : wire_extension_version == 54 ? 496 : wire_extension_version == 53 ? 488 : wire_extension_version == 52 ? 480 : wire_extension_version == 51 ? 472 : wire_extension_version == 50 ? 464 : wire_extension_version == 49 ? 456 : wire_extension_version == 48 ? 448 : wire_extension_version == 47 ? 440 : wire_extension_version == 46 ? 432 : wire_extension_version == 45 ? 424 : wire_extension_version == 44 ? 416 :
+                               wire_extension_version == 43 ? 408 :
+                               wire_extension_version == 42 ? 400 : wire_extension_version == 41 ? 392 : wire_extension_version == 40 ? 384 : wire_extension_version == 39 ? 376 : wire_extension_version == 38 ? 368 : wire_extension_version == 37 ? 360 : wire_extension_version == 36 ? 352 : wire_extension_version == 35 ? 344 : wire_extension_version == 34 ? 336 : wire_extension_version == 33 ? 328 : wire_extension_version == 32 ? 320 : wire_extension_version == 31 ? 312 : wire_extension_version == 30 ? 304 : wire_extension_version == 29 ? 296 : wire_extension_version == 28 ? 288 : wire_extension_version == 27 ? 280 : extension_version == 8 ? 128 : extension_version == 9 ? 136 : extension_version == 10 ? 144 : extension_version == 11 ? 152 : extension_version == 12 ? 160 : extension_version == 13 ? 168 : extension_version == 14 ? 176 : extension_version == 15 ? 184 : extension_version == 16 ? 192 : extension_version == 17 ? 200 : extension_version == 18 ? 208 : extension_version == 19 ? 216 : extension_version == 20 ? 224 : extension_version == 21 ? 232 : extension_version == 22 ? 240 : extension_version == 23 ? 248 : extension_version == 24 ? 256 : extension_version == 25 ? 264 : extension_version == 26 ? 272 : 0))) {
+      return false;
+    }
+    context->preliminary_diagnostic_registry_snapshot_uuid =
+        UuidToText(diagnostic_snapshot_uuid);
+    context->preliminary_diagnostic_registry_generation = diagnostic_generation;
+    context->preliminary_diagnostic_identities.reserve(row_count);
+    for (std::uint32_t index = 0; index < row_count; ++index) {
+      const auto at = offset + 260 + static_cast<std::size_t>(index) * 72;
+      PreliminaryDiagnosticIdentityV1 row;
+      const auto uuid = GetUuid(payload, at);
+      row.generation = GetU64(payload, at + 16);
+      row.precedence_ordinal = GetU32(payload, at + 24);
+      row.severity_code = payload[at + 28];
+      row.redaction_class = payload[at + 29];
+      row.max_safe_fields = GetU32(payload, at + 32);
+      if (!UuidPresent(uuid) || row.generation == 0 ||
+          GetU16(payload, at + 30) != 0 || GetU32(payload, at + 36) != 0) {
+        return false;
+      }
+      row.diagnostic_uuid = UuidToText(uuid);
+      std::copy_n(payload.begin() + static_cast<std::ptrdiff_t>(at + 40), 32,
+                  row.identity_sha256.begin());
+      context->preliminary_diagnostic_identities.push_back(std::move(row));
+    }
+    if (extension_version >= 6 && extension_version <= 26) {
+      const auto trailer = offset + 260 + static_cast<std::size_t>(row_count) * 72;
+      const auto isolation_uuid = GetUuid(payload, trailer);
+      const auto isolation_generation = GetU64(payload, trailer + 16);
+      const auto policy_uuid = GetUuid(payload, trailer + 24);
+      const auto policy_generation = GetU64(payload, trailer + 40);
+      const auto executor_generation = GetU64(payload, trailer + 48);
+      const auto read_mode = payload[trailer + 64];
+      const auto authority_scope = payload[trailer + 65];
+      const auto wait_policy = payload[trailer + 66];
+      const auto deadline = GetU64(payload, trailer + 72);
+      if (!UuidPresent(isolation_uuid) || isolation_generation == 0 ||
+          !UuidPresent(policy_uuid) || policy_generation == 0 ||
+          executor_generation == 0 || GetU64(payload, trailer + 56) != 0 ||
+          read_mode < 1 || read_mode > 2 || authority_scope < 1 ||
+          authority_scope > 2 || wait_policy < 1 || wait_policy > 2 ||
+          std::any_of(payload.begin() + static_cast<std::ptrdiff_t>(trailer + 67),
+                      payload.begin() + static_cast<std::ptrdiff_t>(trailer + 72),
+                      [](std::uint8_t value) { return value != 0; })) {
+        return false;
+      }
+      context->preliminary_transaction_isolation_profile_uuid = UuidToText(isolation_uuid);
+      context->preliminary_transaction_isolation_profile_generation = isolation_generation;
+      context->preliminary_transaction_policy_snapshot_uuid = UuidToText(policy_uuid);
+      context->preliminary_transaction_policy_generation = policy_generation;
+      context->preliminary_transaction_executor_availability_generation = executor_generation;
+      context->preliminary_transaction_read_mode = read_mode;
+      context->preliminary_transaction_authority_scope = authority_scope;
+      context->preliminary_transaction_wait_policy = wait_policy;
+      context->preliminary_transaction_deadline_monotonic_ns = deadline;
+      if (extension_version >= 7 && extension_version <= 26) {
+        const auto commit = trailer + 80;
+        const auto commit_generation = GetU64(payload, commit);
+        const auto commit_mode = payload[commit + 8];
+        const auto commit_scope = payload[commit + 9];
+        const auto commit_wait = payload[commit + 10];
+        const auto commit_deadline = GetU64(payload, commit + 16);
+        if (commit_generation == 0 || commit_mode != 1 ||
+            commit_scope < 1 || commit_scope > 2 || commit_wait < 1 ||
+            commit_wait > 2 ||
+            std::any_of(payload.begin() + static_cast<std::ptrdiff_t>(commit + 11),
+                        payload.begin() + static_cast<std::ptrdiff_t>(commit + 16),
+                        [](std::uint8_t value) { return value != 0; })) return false;
+        context->preliminary_transaction_commit_executor_availability_generation = commit_generation;
+        context->preliminary_transaction_commit_mode = commit_mode;
+        context->preliminary_transaction_commit_authority_scope = commit_scope;
+        context->preliminary_transaction_commit_wait_policy = commit_wait;
+        context->preliminary_transaction_commit_deadline_monotonic_ns = commit_deadline;
+      }
+      if (extension_version >= 8 && extension_version <= 26) {
+        const auto rollback = trailer + 104;
+        const auto rollback_generation = GetU64(payload, rollback);
+        const auto rollback_mode = payload[rollback + 8];
+        const auto rollback_scope = payload[rollback + 9];
+        const auto rollback_wait = payload[rollback + 10];
+        const auto rollback_deadline = GetU64(payload, rollback + 16);
+        if (rollback_generation == 0 || rollback_mode != 1 ||
+            rollback_scope < 1 || rollback_scope > 2 || rollback_wait < 1 ||
+            rollback_wait > 2 ||
+            std::any_of(payload.begin() + static_cast<std::ptrdiff_t>(rollback + 11),
+                        payload.begin() + static_cast<std::ptrdiff_t>(rollback + 16),
+                        [](std::uint8_t value) { return value != 0; })) return false;
+        context->preliminary_transaction_rollback_executor_availability_generation =
+            rollback_generation;
+        context->preliminary_transaction_rollback_mode = rollback_mode;
+        context->preliminary_transaction_rollback_authority_scope = rollback_scope;
+        context->preliminary_transaction_rollback_wait_policy = rollback_wait;
+        context->preliminary_transaction_rollback_deadline_monotonic_ns =
+            rollback_deadline;
+      }
+      if (extension_version >= 9 && extension_version <= 26) {
+        const auto generation = GetU64(payload, trailer + 128);
+        if (generation == 0) return false;
+        context->preliminary_transaction_release_savepoint_executor_availability_generation = generation;
+      }
+      if (extension_version >= 10 && extension_version <= 26) {
+        const auto generation = GetU64(payload, trailer + 136);
+        if (generation == 0) return false;
+        context->preliminary_transaction_rollback_to_savepoint_executor_availability_generation = generation;
+      }
+      if (extension_version >= 11 && extension_version <= 26) {
+        const auto generation = GetU64(payload, trailer + 144);
+        if (generation == 0) return false;
+        context->preliminary_psql_autonomous_frame_executor_availability_generation = generation;
+      }
+      if (extension_version >= 12 && extension_version <= 26) {
+        const auto generation = GetU64(payload, trailer + 152);
+        if (generation == 0) return false;
+        context->preliminary_transaction_reservation_release_executor_availability_generation = generation;
+      }
+      if (extension_version >= 13 && extension_version <= 26) {
+        const auto generation = GetU64(payload, trailer + 160);
+        if (generation == 0) return false;
+        context->preliminary_temporary_instance_cleanup_executor_availability_generation = generation;
+      }
+      if (extension_version >= 14 && extension_version <= 26) {
+        const auto generation = GetU64(payload, trailer + 168);
+        if (generation == 0) return false;
+        context->preliminary_cursor_open_executor_availability_generation = generation;
+      }
+      if (extension_version >= 15 && extension_version <= 26) {
+        const auto generation = GetU64(payload, trailer + 176);
+        if (generation == 0) return false;
+        context->preliminary_cursor_fetch_executor_availability_generation = generation;
+      }
+      if (extension_version >= 16 && extension_version <= 26) {
+        const auto generation = GetU64(payload, trailer + 184);
+        if (generation == 0) return false;
+        context->preliminary_cursor_close_executor_availability_generation = generation;
+      }
+      if (extension_version >= 17 && extension_version <= 26) {
+        const auto generation = GetU64(payload, trailer + 192);
+        if (generation == 0) return false;
+        context->preliminary_read_by_key_executor_availability_generation = generation;
+      }
+      if (extension_version >= 18 && extension_version <= 26) {
+        const auto generation = GetU64(payload, trailer + 200);
+        if (generation == 0) return false;
+        context->preliminary_read_range_executor_availability_generation = generation;
+      }
+      if (extension_version >= 19 && extension_version <= 26) { const auto stream_generation = GetU64(payload, trailer + 208); if (stream_generation == 0) return false; context->preliminary_read_stream_executor_availability_generation = stream_generation; }
+      if (extension_version >= 20 && extension_version <= 26) { const auto pass_generation = GetU64(payload, trailer + 216); if (pass_generation == 0) return false; context->preliminary_result_set_pass_executor_availability_generation = pass_generation; }
+      if (extension_version >= 21 && extension_version <= 26) { const auto access_generation = GetU64(payload, trailer + 224); if (access_generation == 0) return false; context->preliminary_access_cursor_open_executor_availability_generation = access_generation; }
+      if (extension_version >= 22 && extension_version <= 26) { const auto fetch_generation = GetU64(payload, trailer + 232); if (fetch_generation == 0) return false; context->preliminary_access_cursor_fetch_executor_availability_generation = fetch_generation; }
+      if (extension_version >= 23 && extension_version <= 26) { const auto close_generation = GetU64(payload, trailer + 240); if (close_generation == 0) return false; context->preliminary_access_cursor_close_executor_availability_generation = close_generation; }
+      if (extension_version >= 24 && extension_version <= 26) { const auto insert_generation = GetU64(payload, trailer + 248); if (insert_generation == 0) return false; context->preliminary_insert_executor_availability_generation = insert_generation; }
+      if (extension_version >= 25 && extension_version <= 26) { const auto update_generation = GetU64(payload, trailer + 256); if (update_generation == 0) return false; context->preliminary_update_executor_availability_generation = update_generation; }
+      if (extension_version == 26) { const auto delete_generation = GetU64(payload, trailer + 264); if (delete_generation == 0) return false; context->preliminary_delete_executor_availability_generation = delete_generation; }
+      if (wire_extension_version == 27) { const auto merge_generation = GetU64(payload, trailer + 272); if (merge_generation == 0) return false; context->preliminary_merge_executor_availability_generation = merge_generation; }
+      if (wire_extension_version == 28) { const auto merge_generation = GetU64(payload, trailer + 272); const auto truncate_generation = GetU64(payload, trailer + 280); if (merge_generation == 0 || truncate_generation == 0) return false; context->preliminary_merge_executor_availability_generation = merge_generation; context->preliminary_table_truncate_executor_availability_generation = truncate_generation; }
+      if (wire_extension_version == 29) { const auto merge_generation = GetU64(payload, trailer + 272); const auto truncate_generation = GetU64(payload, trailer + 280); const auto analyze_generation = GetU64(payload, trailer + 288); if (merge_generation == 0 || truncate_generation == 0 || analyze_generation == 0) return false; context->preliminary_merge_executor_availability_generation = merge_generation; context->preliminary_table_truncate_executor_availability_generation = truncate_generation; context->preliminary_table_analyze_executor_availability_generation = analyze_generation; }
+      if (wire_extension_version == 30) { const auto merge_generation = GetU64(payload, trailer + 272); const auto truncate_generation = GetU64(payload, trailer + 280); const auto analyze_generation = GetU64(payload, trailer + 288); const auto bulk_generation = GetU64(payload, trailer + 296); if (merge_generation == 0 || truncate_generation == 0 || analyze_generation == 0 || bulk_generation == 0) return false; context->preliminary_merge_executor_availability_generation = merge_generation; context->preliminary_table_truncate_executor_availability_generation = truncate_generation; context->preliminary_table_analyze_executor_availability_generation = analyze_generation; context->preliminary_bulk_import_stream_executor_availability_generation = bulk_generation; }
+      if (wire_extension_version >= 31) { const auto merge_generation=GetU64(payload,trailer+272),truncate_generation=GetU64(payload,trailer+280),analyze_generation=GetU64(payload,trailer+288),import_generation=GetU64(payload,trailer+296),export_generation=GetU64(payload,trailer+304); if(!merge_generation||!truncate_generation||!analyze_generation||!import_generation||!export_generation)return false;context->preliminary_merge_executor_availability_generation=merge_generation;context->preliminary_table_truncate_executor_availability_generation=truncate_generation;context->preliminary_table_analyze_executor_availability_generation=analyze_generation;context->preliminary_bulk_import_stream_executor_availability_generation=import_generation;context->preliminary_bulk_export_stream_executor_availability_generation=export_generation; }
+      if (wire_extension_version >= 32) { const auto batch_generation=GetU64(payload,trailer+312); if(!batch_generation)return false; context->preliminary_statement_batch_executor_availability_generation=batch_generation; }
+      if (wire_extension_version >= 33) { const auto cas_generation=GetU64(payload,trailer+320); if(!cas_generation)return false; context->preliminary_atomic_cas_executor_availability_generation=cas_generation; }
+      if (wire_extension_version >= 34) { const auto rmw_generation=GetU64(payload,trailer+328); if(!rmw_generation)return false; context->preliminary_atomic_rmw_executor_availability_generation=rmw_generation; }
+      if (wire_extension_version >= 35) { const auto lock_generation=GetU64(payload,trailer+336); if(!lock_generation)return false; context->preliminary_advisory_lock_acquire_executor_availability_generation=lock_generation; }
+      if (wire_extension_version >= 36) { const auto release_generation=GetU64(payload,trailer+344); if(!release_generation)return false; context->preliminary_advisory_lock_release_executor_availability_generation=release_generation; }
+      if (wire_extension_version >= 37) { const auto function_generation=GetU64(payload,trailer+352); if(!function_generation)return false; context->preliminary_function_call_executor_availability_generation=function_generation; }
+      if (wire_extension_version >= 38) { const auto operator_generation=GetU64(payload,trailer+360); if(!operator_generation)return false; context->preliminary_operator_call_executor_availability_generation=operator_generation; }
+      if (wire_extension_version >= 39) { const auto cast_generation=GetU64(payload,trailer+368); if(!cast_generation)return false; context->preliminary_cast_executor_availability_generation=cast_generation; }
+      if (wire_extension_version >= 40) { const auto compare_generation=GetU64(payload,trailer+376); if(!compare_generation)return false; context->preliminary_compare_executor_availability_generation=compare_generation; }
+      if (wire_extension_version >= 41) { const auto domain_generation=GetU64(payload,trailer+384); if(!domain_generation)return false; context->preliminary_domain_operation_executor_availability_generation=domain_generation; }
+      if (wire_extension_version >= 42) { const auto udr_generation=GetU64(payload,trailer+392); if(!udr_generation)return false; context->preliminary_udr_invoke_executor_availability_generation=udr_generation; }
+      if (wire_extension_version >= 43) { const auto procedure_generation=GetU64(payload,trailer+400); if(!procedure_generation)return false; context->preliminary_procedure_invoke_executor_availability_generation=procedure_generation; }
+      if (wire_extension_version >= 44) { const auto function_generation=GetU64(payload,trailer+408); if(!function_generation)return false; context->preliminary_function_invoke_executor_availability_generation=function_generation; }
+      if (wire_extension_version >= 45) { const auto aggregate_generation=GetU64(payload,trailer+416); if(!aggregate_generation)return false; context->preliminary_aggregate_invoke_executor_availability_generation=aggregate_generation; }
+      if (wire_extension_version >= 46) { const auto nextval_generation=GetU64(payload,trailer+424); if(!nextval_generation)return false; context->preliminary_sequence_nextval_executor_availability_generation=nextval_generation; }
+      if (wire_extension_version >= 47) { const auto currval_generation=GetU64(payload,trailer+432); if(!currval_generation)return false; context->preliminary_sequence_currval_executor_availability_generation=currval_generation; }
+      if (wire_extension_version >= 48) { const auto setval_generation=GetU64(payload,trailer+440); if(!setval_generation)return false; context->preliminary_sequence_setval_executor_availability_generation=setval_generation; }
+      if (wire_extension_version >= 49) { const auto numeric_generation=GetU64(payload,trailer+448); if(!numeric_generation)return false; context->preliminary_query_numeric_executor_availability_generation=numeric_generation; }
+      if (wire_extension_version >= 50) { const auto family_generation=GetU64(payload,trailer+456); if(!family_generation)return false; context->preliminary_advanced_datatype_family_executor_availability_generation=family_generation; }
+      if (wire_extension_version >= 51) { const auto project_generation=GetU64(payload,trailer+464); if(!project_generation)return false; context->preliminary_project_executor_availability_generation=project_generation; }
+      if (wire_extension_version >= 52) { const auto aggregate_generation=GetU64(payload,trailer+472); if(!aggregate_generation)return false; context->preliminary_aggregate_executor_availability_generation=aggregate_generation; }
+      if (wire_extension_version >= 53) { const auto group_generation=GetU64(payload,trailer+480); if(!group_generation)return false; context->preliminary_group_executor_availability_generation=group_generation; }
+      if (wire_extension_version >= 54) { const auto sort_generation=GetU64(payload,trailer+488); if(!sort_generation)return false; context->preliminary_sort_executor_availability_generation=sort_generation; }
+      if (wire_extension_version >= 55) { const auto limit_generation=GetU64(payload,trailer+496); if(!limit_generation)return false; context->preliminary_limit_executor_availability_generation=limit_generation; }
+      if (wire_extension_version >= 56) { const auto window_generation=GetU64(payload,trailer+504); if(!window_generation)return false; context->preliminary_window_executor_availability_generation=window_generation; }
+      if (wire_extension_version >= 57) { const auto return_generation=GetU64(payload,trailer+512); if(!return_generation)return false; context->preliminary_return_result_set_executor_availability_generation=return_generation; }
+      if (wire_extension_version >= 58) { const auto kv_generation=GetU64(payload,trailer+520); if(!kv_generation)return false; context->preliminary_kv_structured_read_executor_availability_generation=kv_generation; } if (wire_extension_version >= 59) { const auto kv_generation=GetU64(payload,trailer+528); if(!kv_generation)return false; context->preliminary_kv_structured_mutate_executor_availability_generation=kv_generation; } else if (wire_extension_version >= 58) context->preliminary_kv_structured_mutate_executor_availability_generation = context->preliminary_kv_structured_read_executor_availability_generation;
+      context->preliminary_kv_structured_scan_executor_availability_generation = context->preliminary_kv_structured_mutate_executor_availability_generation ? context->preliminary_kv_structured_mutate_executor_availability_generation : context->preliminary_kv_structured_read_executor_availability_generation;
+      context->preliminary_kv_structured_stream_read_executor_availability_generation = context->preliminary_kv_structured_scan_executor_availability_generation;
+      context->preliminary_kv_structured_stream_append_executor_availability_generation = context->preliminary_kv_structured_stream_read_executor_availability_generation;
+      context->preliminary_kv_structured_timeseries_executor_availability_generation = context->preliminary_kv_structured_stream_append_executor_availability_generation;
+      context->preliminary_system_config_set_executor_availability_generation = context->preliminary_kv_structured_timeseries_executor_availability_generation;
+      context->preliminary_ddl_create_domain_executor_availability_generation = context->preliminary_system_config_set_executor_availability_generation;
+      context->preliminary_ddl_create_schema_executor_availability_generation = context->preliminary_ddl_create_domain_executor_availability_generation;
+      context->preliminary_ddl_create_table_executor_availability_generation = context->preliminary_ddl_create_schema_executor_availability_generation;
+      context->preliminary_ddl_create_index_executor_availability_generation = context->preliminary_ddl_create_table_executor_availability_generation;
+      context->preliminary_ddl_drop_index_executor_availability_generation = context->preliminary_ddl_create_index_executor_availability_generation;
+    }
+  }
+  context->literal_preliminary_receipt_uuid =
+      UuidToText(preliminary_receipt_uuid);
+  context->literal_catalog_snapshot_uuid = UuidToText(catalog_snapshot_uuid);
+  context->literal_catalog_generation = catalog_generation;
+  context->literal_security_epoch = security_epoch;
+  context->literal_resource_epoch = resource_epoch;
+  context->literal_mga_snapshot_uuid = UuidToText(mga_snapshot_uuid);
+  return true;
 }
 
 bool IsCanonicalNonzeroUuidText(std::string_view text) {
@@ -2789,6 +3636,67 @@ std::vector<std::uint8_t> EncodeCanonicalExecutePayloadV1(
   return out;
 }
 
+std::vector<std::uint8_t> EncodeCanonicalExecuteLiteralPayloadV1(
+    const ParserSessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ParserCanonicalSblrSubmission& submission,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) {
+  auto out = EncodeCanonicalExecutePayloadV1(
+      session, statement_context, submission, data_packet, cursor_requested);
+  PutU32(&out, 176);
+  out.insert(out.end(), {'S', 'B', 'E', 'L'});
+  PutU16(&out, 1);
+  PutU16(&out, 176);
+  PutU32(&out, 176);
+  PutU32(&out, 0);
+  PutUuid(&out, TextToUuid(submission.literal_final_receipt_uuid));
+  PutUuid(&out, TextToUuid(submission.literal_admission_token_uuid));
+  out.insert(out.end(), submission.literal_token_binding_sha256.begin(),
+             submission.literal_token_binding_sha256.end());
+  out.insert(out.end(), submission.literal_bound_ast_sha256.begin(),
+             submission.literal_bound_ast_sha256.end());
+  out.insert(out.end(), submission.literal_sbxn_sha256.begin(),
+             submission.literal_sbxn_sha256.end());
+  out.insert(out.end(), submission.literal_sbos_sha256.begin(),
+             submission.literal_sbos_sha256.end());
+  return out;
+}
+
+std::vector<std::uint8_t> EncodeCanonicalExecuteParameterPayloadV1(
+    const ParserSessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ParserCanonicalSblrSubmission& submission,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) {
+  auto out = EncodeCanonicalExecutePayloadV1(
+      session, statement_context, submission, data_packet, cursor_requested);
+  PutU32(&out, static_cast<std::uint32_t>(
+                   submission.parameter_execution_extension_bytes.size()));
+  out.insert(out.end(), submission.parameter_execution_extension_bytes.begin(),
+             submission.parameter_execution_extension_bytes.end());
+  PutU32(&out,
+         static_cast<std::uint32_t>(submission.parameter_value_set_bytes.size()));
+  out.insert(out.end(), submission.parameter_value_set_bytes.begin(),
+             submission.parameter_value_set_bytes.end());
+  return out;
+}
+
+std::vector<std::uint8_t> EncodeCanonicalExecuteVariablePayloadV1(
+    const ParserSessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ParserCanonicalSblrSubmission& submission,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) {
+  auto out = EncodeCanonicalExecutePayloadV1(
+      session, statement_context, submission, data_packet, cursor_requested);
+  PutU32(&out, static_cast<std::uint32_t>(
+                   submission.variable_execution_extension_bytes.size()));
+  out.insert(out.end(), submission.variable_execution_extension_bytes.begin(),
+             submission.variable_execution_extension_bytes.end());
+  return out;
+}
+
 std::vector<std::uint8_t> EncodePreparePayload(const ParserSessionContext& session,
                                                const std::array<std::uint8_t, 16>& session_uuid,
                                                std::string_view encoded_sblr_envelope) {
@@ -2846,6 +3754,7 @@ std::vector<std::uint8_t> EncodeClosePreparedSblrPayload(
 
 std::vector<std::uint8_t> EncodeCursorPayload(const std::array<std::uint8_t, 16>& session_uuid,
                                               std::string_view cursor_uuid,
+                                              const CursorStreamDescriptorV1* stream_descriptor,
                                               std::uint64_t max_rows = 1,
                                               std::uint64_t max_bytes = 0,
                                               std::uint32_t fetch_flags = 0) {
@@ -2855,6 +3764,11 @@ std::vector<std::uint8_t> EncodeCursorPayload(const std::array<std::uint8_t, 16>
   PutU64(&out, max_rows);
   PutU64(&out, max_bytes);
   PutU32(&out, fetch_flags);
+  if (stream_descriptor != nullptr) {
+    PutUuid(&out, TextToUuid(stream_descriptor->stream_descriptor_uuid));
+    PutU16(&out, stream_descriptor->descriptor_version);
+    PutU64(&out, stream_descriptor->descriptor_generation);
+  }
   return out;
 }
 
@@ -3573,6 +4487,18 @@ void ReleaseDedicatedV2Channel(SbpsClientChannelState* state) {
 }
 
 }  // namespace
+
+std::vector<std::uint8_t> EncodePreparedParameterSchema4015Template(
+    const ParserSessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ParserCanonicalSblrSubmission& submission) {
+  if (!submission.complete() || submission.literal_finalized() ||
+      submission.parameter_finalized()) {
+    return {};
+  }
+  return EncodeCanonicalExecutePayloadV1(session, statement_context,
+                                         submission, {}, false);
+}
 
 bool DecodeExecuteResultPayloadV2ForTest(
     const std::vector<std::uint8_t>& payload,
@@ -4551,10 +5477,10 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   if (!SendRequest(
           endpoint_,
           BaseHeader(kMessageAcquireStatementContextRequest,
-                     kSchemaAcquireStatementContextRequestV10,
+                     kSchemaAcquireStatementContextRequestV11,
                      session_uuid,
                      connection_uuid),
-          EncodeAcquireStatementContextPayloadV10(session, transaction),
+          EncodeAcquireStatementContextPayloadV11(session, transaction),
           &response,
           &messages,
           ActiveSocketCacheKey())) {
@@ -4563,20 +5489,21 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   }
   if (response.header.message_type !=
           kMessageAcquireStatementContextResult ||
-      response.header.schema_id != kSchemaAcquireStatementContextResultV10 ||
+      response.header.schema_id != kSchemaAcquireStatementContextResultV11 ||
       IsErrorFrame(response)) {
     AddFrameDiagnostics(response, &messages);
     if (!IsErrorFrame(response)) {
       AddDiagnostic(
           &messages,
           "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_SCHEMA_MISMATCH",
-          "The server did not return the native statement-context V10 result schema.");
+          "The server did not return the native statement-context V11 result schema.");
     }
     result.messages = std::move(messages);
     return result;
   }
-  if (!DecodeAcquireStatementContextPayloadV10(response.payload,
-                                               &result.context) ||
+  const bool decoded_native_context =
+      DecodeAcquireStatementContextPayloadV11(response.payload, &result.context);
+  if (!decoded_native_context ||
       result.context.transaction.local_transaction_id !=
           transaction.local_transaction_id ||
       result.context.transaction.transaction_uuid !=
@@ -4584,10 +5511,708 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
     AddDiagnostic(
         &result.messages,
         "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_INVALID",
-        "The engine-issued native statement context was malformed or did not match the requested transaction.");
+        "The engine-issued native statement context was malformed or did not match the requested transaction (payload_bytes=" +
+            std::to_string(response.payload.size()) + ", extension=" +
+            std::to_string(result.context.preliminary_extension_version) +
+            ", requested_local=" + std::to_string(transaction.local_transaction_id) +
+            ", returned_local=" + std::to_string(result.context.transaction.local_transaction_id) +
+            ", uuid_equal=" +
+            (result.context.transaction.transaction_uuid == transaction.transaction_uuid ? "true" : "false") + ").");
     result.context = {};
     return result;
   }
+  result.accepted = true;
+  return result;
+}
+
+ServerParameterCoordinationResult
+SbpsClient::BeginParameterExecutionCoordination(
+    const ParserSessionContext& session,
+    ParameterExecutionMode mode,
+    std::string_view operation_uuid,
+    std::string_view public_prepared_uuid,
+    std::string_view public_dynamic_package_uuid) const {
+  ServerParameterCoordinationResult result;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  const auto operation = TextToUuid(operation_uuid);
+  const auto prepared = TextToUuid(public_prepared_uuid);
+  const auto dynamic = TextToUuid(public_dynamic_package_uuid);
+  const auto mode_code = static_cast<std::uint8_t>(mode);
+  const bool prepared_present = UuidPresent(prepared);
+  const bool dynamic_present = UuidPresent(dynamic);
+  const bool matrix_valid =
+      (mode == ParameterExecutionMode::kDirect && !prepared_present &&
+       !dynamic_present) ||
+      (mode == ParameterExecutionMode::kPrepared && !dynamic_present) ||
+      (mode == ParameterExecutionMode::kBatch && !dynamic_present) ||
+      (mode == ParameterExecutionMode::kDynamic && !prepared_present &&
+       dynamic_present);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || !UuidPresent(operation) ||
+      mode_code > static_cast<std::uint8_t>(ParameterExecutionMode::kDynamic) ||
+      !matrix_valid) {
+    AddDiagnostic(&result.messages,
+                  "SBLR.OPERAND_INVALID",
+                  "The parameter execution coordination request is malformed.");
+    return result;
+  }
+  std::vector<std::uint8_t> payload;
+  PutU16(&payload, 1);
+  PutU8(&payload, mode_code);
+  PutU8(&payload, 0);
+  PutUuid(&payload, session_uuid);
+  PutUuid(&payload, operation);
+  PutUuid(&payload, prepared);
+  PutUuid(&payload, dynamic);
+  PutU32(&payload, 0);
+  Frame response;
+  MessageVectorSet messages;
+  if (payload.size() != 72 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageBeginParameterCoordinationRequest,
+                              kSchemaBeginParameterCoordinationRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type !=
+          kMessageBeginParameterCoordinationResult ||
+      response.header.schema_id !=
+          kSchemaBeginParameterCoordinationResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.payload.size() != 48 || GetU16(response.payload, 0) != 1 ||
+      response.payload[2] != mode_code || response.payload[3] != 0 ||
+      GetUuid(response.payload, 20) != operation ||
+      GetU64(response.payload, 36) == 0 ||
+      GetU32(response.payload, 44) != 0 ||
+      !UuidPresent(GetUuid(response.payload, 4))) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.PARAMETER_COORDINATION_RESULT_INVALID",
+                  "The parameter execution coordination result was malformed or mismatched.");
+    return result;
+  }
+  result.coordination.mode = mode;
+  result.coordination.public_coordination_uuid =
+      UuidToText(GetUuid(response.payload, 4));
+  result.coordination.operation_uuid = UuidToText(operation);
+  result.coordination.coordinator_generation = GetU64(response.payload, 36);
+  result.accepted = true;
+  return result;
+}
+
+ServerStatementContextResult SbpsClient::AcquireParameterStatementContext(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction,
+    const ParameterExecutionCoordination& coordination) const {
+  ServerStatementContextResult result;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  const auto coordination_uuid =
+      TextToUuid(coordination.public_coordination_uuid);
+  const auto operation_uuid = TextToUuid(coordination.operation_uuid);
+  const auto mode_code = static_cast<std::uint8_t>(coordination.mode);
+  if (!session.authenticated || !transaction.present() ||
+      !coordination.present() || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || !UuidPresent(coordination_uuid) ||
+      !UuidPresent(operation_uuid) ||
+      mode_code > static_cast<std::uint8_t>(ParameterExecutionMode::kDynamic)) {
+    AddDiagnostic(&result.messages,
+                  "SBLR.OPERAND_INVALID",
+                  "The parameter statement-context selection is malformed.");
+    return result;
+  }
+  auto payload = EncodeAcquireStatementContextPayloadV11(session, transaction);
+  PutU16(&payload, 1);
+  PutU8(&payload, mode_code);
+  PutU8(&payload, 0);
+  PutUuid(&payload, coordination_uuid);
+  PutUuid(&payload, operation_uuid);
+  Frame response;
+  MessageVectorSet messages;
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageAcquireStatementContextRequest,
+                              kSchemaAcquireParameterStatementContextRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageAcquireStatementContextResult ||
+      response.header.schema_id != kSchemaAcquireStatementContextResultV11 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!DecodeAcquireStatementContextPayloadV11(response.payload,
+                                               &result.context) ||
+      result.context.preliminary_extension_version != 3 ||
+      result.context.transaction.local_transaction_id !=
+          transaction.local_transaction_id ||
+      result.context.transaction.transaction_uuid !=
+          transaction.transaction_uuid) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_INVALID",
+                  "The coordinated parameter statement context was malformed or mismatched.");
+    result.context = {};
+    return result;
+  }
+  result.accepted = true;
+  return result;
+}
+
+ServerLiteralBindingResult SbpsClient::NegotiateLiteralDescriptors(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbln) const {
+  ServerLiteralBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_sbln.size() < 128 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageNegotiateLiteralDescriptorsRequest,
+                              kSchemaNegotiateLiteralDescriptorsRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sbln, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type !=
+          kMessageNegotiateLiteralDescriptorsResult ||
+      response.header.schema_id !=
+          kSchemaNegotiateLiteralDescriptorsResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerLiteralBindingResult SbpsClient::FinalizeLiteralBinding(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sblf) const {
+  ServerLiteralBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_sblf.size() < 208 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageFinalizeLiteralBindingRequest,
+                              kSchemaFinalizeLiteralBindingRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sblf, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageFinalizeLiteralBindingResult ||
+      response.header.schema_id != kSchemaFinalizeLiteralBindingResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerParameterBindingResult SbpsClient::NegotiateParameterDescriptors(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbpr) const {
+  ServerParameterBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_sbpr.size() < 136 ||
+      canonical_sbpr.size() > 98416 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageNegotiateParameterDescriptorsRequest,
+                              kSchemaNegotiateParameterDescriptorsRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sbpr, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type !=
+          kMessageNegotiateParameterDescriptorsResult ||
+      response.header.schema_id !=
+          kSchemaNegotiateParameterDescriptorsResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerParameterBindingResult SbpsClient::FinalizeParameterBinding(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbpf) const {
+  ServerParameterBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_sbpf.size() < 280 ||
+      canonical_sbpf.size() > 426192 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageFinalizeParameterBindingRequest,
+                              kSchemaFinalizeParameterBindingRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sbpf, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageFinalizeParameterBindingResult ||
+      response.header.schema_id != kSchemaFinalizeParameterBindingResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::BeginVariableFrame(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbvb) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_sbvb.size() < 144 ||
+      canonical_sbvb.size() > 196704 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageBeginVariableFrameRequest,
+                              kSchemaBeginVariableFrameRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sbvb, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageBeginVariableFrameResult ||
+      response.header.schema_id != kSchemaBeginVariableFrameResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerStatementContextResult SbpsClient::AcquireVariableStatementContext(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction,
+    const VariableFrameCoordination& coordination) const {
+  ServerStatementContextResult result;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  const auto coordination_uuid = TextToUuid(coordination.public_coordination_uuid);
+  const auto operation_uuid = TextToUuid(coordination.operation_uuid);
+  if (!session.authenticated || !transaction.present() ||
+      !coordination.present() || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || !UuidPresent(coordination_uuid) ||
+      !UuidPresent(operation_uuid)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "The variable statement-context selection is malformed.");
+    return result;
+  }
+  auto payload = EncodeAcquireStatementContextPayloadV11(session, transaction);
+  PutU16(&payload, 1);
+  PutU8(&payload, 1);
+  PutU8(&payload, 0);
+  PutUuid(&payload, coordination_uuid);
+  PutUuid(&payload, operation_uuid);
+  PutU64(&payload, coordination.coordinator_generation);
+  Frame response;
+  MessageVectorSet messages;
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageAcquireStatementContextRequest,
+                              kSchemaAcquireVariableStatementContextRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageAcquireStatementContextResult ||
+      response.header.schema_id != kSchemaAcquireStatementContextResultV11 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!DecodeAcquireStatementContextPayloadV11(response.payload,
+                                               &result.context) ||
+      result.context.preliminary_extension_version != 4 ||
+      result.context.transaction.transaction_uuid != transaction.transaction_uuid) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_INVALID",
+                  "The engine-issued variable statement context was malformed or mismatched.");
+    result.context = {};
+    return result;
+  }
+  result.accepted = true;
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::NegotiateVariableDescriptors(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbvr) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_sbvr.size() < 160 ||
+      canonical_sbvr.size() > 131200 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageNegotiateVariableDescriptorsRequest,
+                              kSchemaNegotiateVariableDescriptorsRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sbvr, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageNegotiateVariableDescriptorsResult ||
+      response.header.schema_id != kSchemaNegotiateVariableDescriptorsResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::FinalizeVariableBinding(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbvf) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_sbvf.size() < 352 ||
+      canonical_sbvf.size() > 655584 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageFinalizeVariableBindingRequest,
+                              kSchemaFinalizeVariableBindingRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sbvf, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageFinalizeVariableBindingResult ||
+      response.header.schema_id != kSchemaFinalizeVariableBindingResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::AssignVariableValues(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbvy) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_sbvy.size() < 296 ||
+      canonical_sbvy.size() > 1048576 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageAssignVariableValuesRequest,
+                              kSchemaAssignVariableValuesRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sbvy, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageAssignVariableValuesResult ||
+      response.header.schema_id != kSchemaAssignVariableValuesResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CloseVariableFrame(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_sbvx) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_sbvx.size() != 64 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageCloseVariableFrameRequest,
+                              kSchemaCloseVariableFrameRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sbvx, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageCloseVariableFrameResult ||
+      response.header.schema_id != kSchemaCloseVariableFrameResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::IssueSourceMapDescriptor(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_smrq) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_smrq.size() < 312 ||
+      canonical_smrq.size() > 524496 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageIssueSourceMapRequest,
+                              kSchemaIssueSourceMapRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_smrq, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageIssueSourceMapResult ||
+      response.header.schema_id != kSchemaIssueSourceMapResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::IssueErrorVectorDescriptor(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_evrq) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_evrq.size() < 248 ||
+      canonical_evrq.size() > 524408 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageIssueErrorVectorRequest,
+                              kSchemaIssueErrorVectorRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_evrq, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageIssueErrorVectorResult ||
+      response.header.schema_id != kSchemaIssueErrorVectorResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateSavepoint(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_spcr) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_spcr.size() != 128 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageCoordinateSavepointRequest,
+                              kSchemaCoordinateSavepointRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_spcr, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageCoordinateSavepointResult ||
+      response.header.schema_id != kSchemaCoordinateSavepointResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateAutonomousFrame(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& canonical_afcr) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || canonical_afcr.size() != 224 ||
+      !SendRequest(endpoint_, BaseHeader(kMessageCoordinateAutonomousFrameRequest,
+          kSchemaCoordinateAutonomousFrameRequestV1, session_uuid, connection_uuid),
+          canonical_afcr, &response, &messages, ActiveSocketCacheKey())) {
+    result.messages = std::move(messages); return result;
+  }
+  if (response.header.message_type != kMessageCoordinateAutonomousFrameResult ||
+      response.header.schema_id != kSchemaCoordinateAutonomousFrameResultV1 ||
+      response.payload.size() != 324 || IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages); result.messages = std::move(messages); return result;
+  }
+  result.accepted = true; result.canonical_payload = std::move(response.payload); return result;
+}
+ServerVariableBindingResult SbpsClient::CoordinateReservationRelease(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult r;MessageVectorSet m;Frame response;auto su=TextToUuid(session.session_uuid),cu=TextToUuid(session.connection_uuid);if(!session.authenticated||!UuidPresent(su)||!UuidPresent(cu)||payload.size()!=80||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateReservationReleaseRequest,kSchemaCoordinateReservationReleaseRequestV1,su,cu),payload,&response,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;}if(response.header.message_type!=kMessageCoordinateReservationReleaseResult||response.header.schema_id!=kSchemaCoordinateReservationReleaseResultV1||response.payload.size()!=144||IsErrorFrame(response)){AddFrameDiagnostics(response,&m);r.messages=std::move(m);return r;}r.accepted=true;r.canonical_payload=std::move(response.payload);return r;}
+ServerVariableBindingResult SbpsClient::CoordinateTemporaryInstanceCleanup(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult r;MessageVectorSet m;Frame response;auto su=TextToUuid(session.session_uuid),cu=TextToUuid(session.connection_uuid);if(!session.authenticated||!UuidPresent(su)||!UuidPresent(cu)||payload.size()!=88||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateTemporaryInstanceCleanupRequest,kSchemaCoordinateTemporaryInstanceCleanupRequestV1,su,cu),payload,&response,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;}if(response.header.message_type!=kMessageCoordinateTemporaryInstanceCleanupResult||response.header.schema_id!=kSchemaCoordinateTemporaryInstanceCleanupResultV1||response.payload.size()!=184||IsErrorFrame(response)){AddFrameDiagnostics(response,&m);r.messages=std::move(m);return r;}r.accepted=true;r.canonical_payload=std::move(response.payload);return r;}
+
+ServerPreparedParameterFinalizeResult
+SbpsClient::FinalizePreparedParameterSubmission(
+    const ParserSessionContext& session,
+    const ParameterExecutionCoordination& coordination,
+    const std::vector<std::uint8_t>& canonical_sbpt,
+    const ParserStatementContext& preliminary_context) const {
+  ServerPreparedParameterFinalizeResult result;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  const auto coordination_uuid =
+      TextToUuid(coordination.public_coordination_uuid);
+  const auto operation_uuid = TextToUuid(coordination.operation_uuid);
+  const auto provisional_prepared =
+      TextToUuid(preliminary_context.preliminary_prepared_statement_uuid);
+  if (!session.authenticated ||
+      coordination.mode != ParameterExecutionMode::kPrepared ||
+      !coordination.present() || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || !UuidPresent(coordination_uuid) ||
+      !UuidPresent(operation_uuid) ||
+      preliminary_context.preliminary_extension_version != 3 ||
+      !UuidPresent(provisional_prepared) ||
+      preliminary_context.preliminary_prepared_generation == 0 ||
+      canonical_sbpt.size() < 280 + 192 ||
+      canonical_sbpt.size() > std::numeric_limits<std::uint32_t>::max() ||
+      canonical_sbpt[0] != 'S' || canonical_sbpt[1] != 'B' ||
+      canonical_sbpt[2] != 'P' || canonical_sbpt[3] != 'T' ||
+      GetU16(canonical_sbpt, 4) != 1 || GetU16(canonical_sbpt, 6) != 280 ||
+      GetU32(canonical_sbpt, 8) != canonical_sbpt.size() ||
+      GetU32(canonical_sbpt, 12) != 0 ||
+      GetUuid(canonical_sbpt, 16) != coordination_uuid ||
+      GetUuid(canonical_sbpt, 32) != operation_uuid ||
+      GetUuid(canonical_sbpt, 48) != provisional_prepared ||
+      GetU64(canonical_sbpt, 64) !=
+          preliminary_context.preliminary_prepared_generation ||
+      GetU32(canonical_sbpt, 96) == 0 ||
+      GetU32(canonical_sbpt, 100) != 192 ||
+      static_cast<std::uint64_t>(280) + GetU32(canonical_sbpt, 96) +
+              GetU32(canonical_sbpt, 100) !=
+          canonical_sbpt.size()) {
+    AddDiagnostic(&result.messages,
+                  "SBLR.OPERAND_INVALID",
+                  "The prepared parameter finalization request is malformed.");
+    return result;
+  }
+  Frame response;
+  MessageVectorSet messages;
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessagePrepareSblr,
+                              kSchemaFinalizePreparedParameterRequestV1,
+                              session_uuid, connection_uuid),
+                   canonical_sbpt, &response, &messages,
+                   ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessagePrepareResult ||
+      response.header.schema_id != kSchemaFinalizePreparedParameterResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.payload.size() != 56 || GetU16(response.payload, 0) != 1 ||
+      GetU16(response.payload, 2) != 0 ||
+      !UuidPresent(GetUuid(response.payload, 4)) ||
+      GetUuid(response.payload, 4) != provisional_prepared ||
+      GetU64(response.payload, 20) !=
+          preliminary_context.preliminary_prepared_generation ||
+      GetUuid(response.payload, 28) != operation_uuid ||
+      GetU64(response.payload, 44) <= coordination.coordinator_generation ||
+      GetU32(response.payload, 52) != 0) {
+    AddDiagnostic(
+        &result.messages,
+        "PARSER_SERVER_IPC.PREPARED_PARAMETER_FINALIZE_RESULT_INVALID",
+        "The prepared parameter reference did not exactly seal the provisional engine binding.");
+    return result;
+  }
+  result.prepared.prepared_statement_uuid =
+      UuidToText(GetUuid(response.payload, 4));
+  result.prepared.prepared_generation = GetU64(response.payload, 20);
+  result.prepared.operation_uuid = UuidToText(operation_uuid);
+  result.prepared.coordination_generation = GetU64(response.payload, 44);
   result.accepted = true;
   return result;
 }
@@ -4754,7 +6379,8 @@ ServerExecutionResult SbpsClient::ExecuteCanonicalSblrWithDataPacket(
   MessageVectorSet messages;
   if (!RequireTransactionRoutingV2(session, &messages) ||
       !statement_context.complete() || !submission.complete() ||
-      submission.statement_uuid != statement_context.statement_uuid) {
+      submission.statement_uuid != statement_context.statement_uuid ||
+      (submission.literal_finalized() && submission.parameter_finalized())) {
     if (messages.diagnostics.empty()) {
       AddDiagnostic(&messages,
                     "PARSER_SERVER_IPC.CANONICAL_STATEMENT_CONTEXT_INVALID",
@@ -4774,18 +6400,42 @@ ServerExecutionResult SbpsClient::ExecuteCanonicalSblrWithDataPacket(
     result.messages = std::move(messages);
     return result;
   }
+  const auto request_payload =
+      submission.variable_finalized()
+          ? EncodeCanonicalExecuteVariablePayloadV1(
+                session, statement_context, submission, data_packet,
+                cursor_requested)
+          : submission.parameter_finalized()
+          ? EncodeCanonicalExecuteParameterPayloadV1(
+                session, statement_context, submission, data_packet,
+                cursor_requested)
+          : (submission.literal_finalized()
+                 ? EncodeCanonicalExecuteLiteralPayloadV1(
+                       session, statement_context, submission, data_packet,
+                       cursor_requested)
+                 : EncodeCanonicalExecutePayloadV1(
+                       session, statement_context, submission, data_packet,
+                       cursor_requested));
+  if (submission.parameter_finalized() && request_payload.size() > 33554432) {
+    AddDiagnostic(&messages, "RESOURCE.BUDGET_EXCEEDED",
+                  "Canonical parameter execution exceeds the admitted combined transport maximum.");
+    result.messages = std::move(messages);
+    return result;
+  }
   Frame response;
   if (!SendRequest(
           endpoint_,
           BaseHeader(kMessageExecuteSblr,
-                     kSchemaExecuteCanonicalSblrV1,
+                     submission.variable_finalized()
+                         ? kSchemaExecuteCanonicalSblrVariableV1
+                         : submission.parameter_finalized()
+                         ? kSchemaExecuteCanonicalSblrParameterV1
+                         : (submission.literal_finalized()
+                                ? kSchemaExecuteCanonicalSblrLiteralV1
+                                : kSchemaExecuteCanonicalSblrV1),
                      session_uuid,
                      connection_uuid),
-          EncodeCanonicalExecutePayloadV1(session,
-                                          statement_context,
-                                          submission,
-                                          data_packet,
-                                          cursor_requested),
+          request_payload,
           &response,
           &messages,
           ActiveSocketCacheKey())) {
@@ -5144,6 +6794,7 @@ ServerClosePreparedSblrResult SbpsClient::ClosePreparedSblr(
 
 ServerFetchResult SbpsClient::FetchCursor(const ParserSessionContext& session,
                                           std::string_view cursor_uuid,
+                                          const CursorStreamDescriptorV1& stream_descriptor,
                                           std::uint64_t max_rows,
                                           std::uint64_t max_bytes,
                                           std::uint32_t fetch_flags) const {
@@ -5151,10 +6802,22 @@ ServerFetchResult SbpsClient::FetchCursor(const ParserSessionContext& session,
   const auto session_uuid = TextToUuid(session.session_uuid);
   const auto connection_uuid = TextToUuid(session.connection_uuid);
   MessageVectorSet messages;
+  if (!stream_descriptor.complete() ||
+      stream_descriptor.cursor_uuid != cursor_uuid || max_rows == 0 ||
+      max_bytes == 0 || max_rows > stream_descriptor.max_chunk_rows ||
+      max_bytes > stream_descriptor.max_chunk_bytes) {
+    AddDiagnostic(&messages,
+                  "SERVER.STREAM.DESCRIPTOR_INVALID",
+                  "Fetch requires the exact live cursor stream descriptor and bounded positive limits.");
+    result.messages = std::move(messages);
+    return result;
+  }
   Frame response;
   if (!SendRequest(endpoint_,
                    BaseHeader(kMessageFetch, kSchemaFetchV1, session_uuid, connection_uuid),
-                   EncodeCursorPayload(session_uuid, cursor_uuid, max_rows, max_bytes, fetch_flags),
+                   EncodeCursorPayload(session_uuid, cursor_uuid,
+                                       &stream_descriptor, max_rows,
+                                       max_bytes, fetch_flags),
                    &response,
                    &messages,
                    ActiveSocketCacheKey())) {
@@ -5203,7 +6866,7 @@ ServerCloseCursorResult SbpsClient::CloseCursor(const ParserSessionContext& sess
                               kSchemaCloseCursorV1,
                               session_uuid,
                               connection_uuid),
-                   EncodeCursorPayload(session_uuid, cursor_uuid, 1, 0, 0),
+                   EncodeCursorPayload(session_uuid, cursor_uuid, nullptr, 1, 0, 0),
                    &response,
                    &messages,
                    ActiveSocketCacheKey())) {
@@ -5243,7 +6906,7 @@ ServerCloseCursorResult SbpsClient::CancelCursor(const ParserSessionContext& ses
                               kSchemaCloseCursorV1,
                               session_uuid,
                               connection_uuid),
-                   EncodeCursorPayload(session_uuid, cursor_uuid, 1, 0, kCursorCloseFlagCancel),
+                   EncodeCursorPayload(session_uuid, cursor_uuid, nullptr, 1, 0, kCursorCloseFlagCancel),
                    &response,
                    &messages,
                    ActiveSocketCacheKey())) {
@@ -5352,4 +7015,109 @@ bool SbpsClient::DisconnectSession(const ParserSessionContext& session, MessageV
   return true;
 }
 
+ServerVariableBindingResult SbpsClient::CoordinateCursorOpen(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) || payload.size() != 64 ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageCoordinateCursorOpenRequest,
+                              kSchemaCoordinateCursorOpenRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageCoordinateCursorOpenResult ||
+      response.header.schema_id != kSchemaCoordinateCursorOpenResultV1 ||
+      response.payload.size() != 232 || IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::CoordinateReadByKey(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto session_uuid=TextToUuid(session.session_uuid);const auto connection_uuid=TextToUuid(session.connection_uuid);if(!session.authenticated||!UuidPresent(session_uuid)||!UuidPresent(connection_uuid)||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateReadByKeyRequest,kSchemaCoordinateReadByKeyRequestV1,session_uuid,connection_uuid),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateReadByKeyResult||response.header.schema_id!=kSchemaCoordinateReadByKeyResultV1||response.payload.size()!=308||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateReadRange(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto session_uuid=TextToUuid(session.session_uuid);const auto connection_uuid=TextToUuid(session.connection_uuid);if(!session.authenticated||!UuidPresent(session_uuid)||!UuidPresent(connection_uuid)||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateReadRangeRequest,kSchemaCoordinateReadRangeRequestV1,session_uuid,connection_uuid),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateReadRangeResult||response.header.schema_id!=kSchemaCoordinateReadRangeResultV1||response.payload.size()!=404||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateReadStream(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateReadStreamRequest,kSchemaCoordinateReadStreamRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateReadStreamResult||response.header.schema_id!=kSchemaCoordinateReadStreamResultV1||response.payload.size()!=240||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateResultSetPass(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateResultSetPassRequest,kSchemaCoordinateResultSetPassRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateResultSetPassResult||response.header.schema_id!=kSchemaCoordinateResultSetPassResultV1||response.payload.size()!=288||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateAccessCursorOpen(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateAccessCursorOpenRequest,kSchemaCoordinateAccessCursorOpenRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateAccessCursorOpenResult||response.header.schema_id!=kSchemaCoordinateAccessCursorOpenResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateAccessCursorFetch(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateAccessCursorFetchRequest,kSchemaCoordinateAccessCursorFetchRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateAccessCursorFetchResult||response.header.schema_id!=kSchemaCoordinateAccessCursorFetchResultV1||response.payload.size()!=280||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateAccessCursorClose(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateAccessCursorCloseRequest,kSchemaCoordinateAccessCursorCloseRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateAccessCursorCloseResult||response.header.schema_id!=kSchemaCoordinateAccessCursorCloseResultV1||response.payload.size()!=232||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateInsert(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateInsertRequest,kSchemaCoordinateInsertRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateInsertResult||response.header.schema_id!=kSchemaCoordinateInsertResultV1||response.payload.size()!=440||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateUpdate(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateUpdateRequest,kSchemaCoordinateUpdateRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateUpdateResult||response.header.schema_id!=kSchemaCoordinateUpdateResultV1||response.payload.size()!=456||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDelete(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDeleteRequest,kSchemaCoordinateDeleteRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDeleteResult||response.header.schema_id!=kSchemaCoordinateDeleteResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateMerge(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateMergeRequest,kSchemaCoordinateMergeRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateMergeResult||response.header.schema_id!=kSchemaCoordinateMergeResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateTableTruncate(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateTableTruncateRequest,kSchemaCoordinateTableTruncateRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateTableTruncateResult||response.header.schema_id!=kSchemaCoordinateTableTruncateResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateTableAnalyze(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateTableAnalyzeRequest,kSchemaCoordinateTableAnalyzeRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateTableAnalyzeResult||response.header.schema_id!=kSchemaCoordinateTableAnalyzeResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateBulkImportStream(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateBulkImportStreamRequest,kSchemaCoordinateBulkImportStreamRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateBulkImportStreamResult||response.header.schema_id!=kSchemaCoordinateBulkImportStreamResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateBulkExportStream(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateBulkExportStreamRequest,kSchemaCoordinateBulkExportStreamRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateBulkExportStreamResult||response.header.schema_id!=kSchemaCoordinateBulkExportStreamResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateStatementBatch(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateStatementBatchRequest,kSchemaCoordinateStatementBatchRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateStatementBatchResult||response.header.schema_id!=kSchemaCoordinateStatementBatchResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateAtomicCas(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateAtomicCasRequest,kSchemaCoordinateAtomicCasRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateAtomicCasResult||response.header.schema_id!=kSchemaCoordinateAtomicCasResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateAtomicRmw(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateAtomicRmwRequest,kSchemaCoordinateAtomicRmwRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateAtomicRmwResult||response.header.schema_id!=kSchemaCoordinateAtomicRmwResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateAdvisoryLock(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateAdvisoryLockRequest,kSchemaCoordinateAdvisoryLockRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateAdvisoryLockResult||response.header.schema_id!=kSchemaCoordinateAdvisoryLockResultV1||response.payload.size()!=352||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateAdvisoryLockRelease(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateAdvisoryLockReleaseRequest,kSchemaCoordinateAdvisoryLockReleaseRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateAdvisoryLockReleaseResult||response.header.schema_id!=kSchemaCoordinateAdvisoryLockReleaseResultV1||response.payload.size()!=256||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateFunctionCall(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateFunctionCallRequest,kSchemaCoordinateFunctionCallRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateFunctionCallResult||response.header.schema_id!=kSchemaCoordinateFunctionCallResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateOperatorCall(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateOperatorCallRequest,kSchemaCoordinateOperatorCallRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateOperatorCallResult||response.header.schema_id!=kSchemaCoordinateOperatorCallResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateCast(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateCastRequest,kSchemaCoordinateCastRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateCastResult||response.header.schema_id!=kSchemaCoordinateCastResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateCompare(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateCompareRequest,kSchemaCoordinateCompareRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateCompareResult||response.header.schema_id!=kSchemaCoordinateCompareResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDomainOperation(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDomainOperationRequest,kSchemaCoordinateDomainOperationRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDomainOperationResult||response.header.schema_id!=kSchemaCoordinateDomainOperationResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateUdrInvoke(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateUdrInvokeRequest,kSchemaCoordinateUdrInvokeRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateUdrInvokeResult||response.header.schema_id!=kSchemaCoordinateUdrInvokeResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateProcedureInvoke(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateProcedureInvokeRequest,kSchemaCoordinateProcedureInvokeRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateProcedureInvokeResult||response.header.schema_id!=kSchemaCoordinateProcedureInvokeResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateFunctionInvoke(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateFunctionInvokeRequest,kSchemaCoordinateFunctionInvokeRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateFunctionInvokeResult||response.header.schema_id!=kSchemaCoordinateFunctionInvokeResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateAggregateInvoke(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateAggregateInvokeRequest,kSchemaCoordinateAggregateInvokeRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateAggregateInvokeResult||response.header.schema_id!=kSchemaCoordinateAggregateInvokeResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateSequenceNextval(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSequenceNextvalRequest,kSchemaCoordinateSequenceNextvalRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateSequenceNextvalResult||response.header.schema_id!=kSchemaCoordinateSequenceNextvalResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateSequenceCurrval(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSequenceCurrvalRequest,kSchemaCoordinateSequenceCurrvalRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateSequenceCurrvalResult||response.header.schema_id!=kSchemaCoordinateSequenceCurrvalResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateSequenceSetval(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSequenceSetvalRequest,kSchemaCoordinateSequenceSetvalRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateSequenceSetvalResult||response.header.schema_id!=kSchemaCoordinateSequenceSetvalResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateQueryNumeric(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateQueryNumericRequest,kSchemaCoordinateQueryNumericRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateQueryNumericResult||response.header.schema_id!=kSchemaCoordinateQueryNumericResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateAdvancedDatatypeFamily(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateAdvancedDatatypeFamilyRequest,kSchemaCoordinateAdvancedDatatypeFamilyRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateAdvancedDatatypeFamilyResult||response.header.schema_id!=kSchemaCoordinateAdvancedDatatypeFamilyResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateProject(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateProjectRequest,kSchemaCoordinateProjectRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateProjectResult||response.header.schema_id!=kSchemaCoordinateProjectResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateKvStructuredRead(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateKvStructuredReadRequest,kSchemaCoordinateKvStructuredReadRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateKvStructuredReadResult||response.header.schema_id!=kSchemaCoordinateKvStructuredReadResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateAggregate(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateAggregateRequest,kSchemaCoordinateAggregateRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateAggregateResult||response.header.schema_id!=kSchemaCoordinateAggregateResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateGroup(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateGroupRequest,kSchemaCoordinateGroupRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateGroupResult||response.header.schema_id!=kSchemaCoordinateGroupResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateSort(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSortRequest,kSchemaCoordinateSortRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateSortResult||response.header.schema_id!=kSchemaCoordinateSortResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateLimit(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateLimitRequest,kSchemaCoordinateLimitRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateLimitResult||response.header.schema_id!=kSchemaCoordinateLimitResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateWindow(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateWindowRequest,kSchemaCoordinateWindowRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateWindowResult||response.header.schema_id!=kSchemaCoordinateWindowResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateReturnResultSet(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateReturnResultSetRequest,kSchemaCoordinateReturnResultSetRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateReturnResultSetResult||response.header.schema_id!=kSchemaCoordinateReturnResultSetResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+
+ServerVariableBindingResult SbpsClient::CoordinateKvStructuredMutate(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateKvStructuredMutateRequest,kSchemaCoordinateKvStructuredMutateRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateKvStructuredMutateResult||response.header.schema_id!=kSchemaCoordinateKvStructuredMutateResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateKvStructuredScan(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateKvStructuredScanRequest,kSchemaCoordinateKvStructuredScanRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateKvStructuredScanResult||response.header.schema_id!=kSchemaCoordinateKvStructuredScanResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+
+ServerVariableBindingResult SbpsClient::CoordinateKvStructuredStreamRead(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateKvStructuredStreamReadRequest,kSchemaCoordinateKvStructuredStreamReadRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateKvStructuredStreamReadResult||response.header.schema_id!=kSchemaCoordinateKvStructuredStreamReadResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+
+ServerVariableBindingResult SbpsClient::CoordinateKvStructuredStreamAppend(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateKvStructuredStreamAppendRequest,kSchemaCoordinateKvStructuredStreamAppendRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateKvStructuredStreamAppendResult||response.header.schema_id!=kSchemaCoordinateKvStructuredStreamAppendResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateKvStructuredTimeseries(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateKvStructuredTimeseriesRequest,kSchemaCoordinateKvStructuredTimeseriesRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateKvStructuredTimeseriesResult||response.header.schema_id!=kSchemaCoordinateKvStructuredTimeseriesResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateSystemConfigSet(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSystemConfigSetRequest,kSchemaCoordinateSystemConfigSetRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateSystemConfigSetResult||response.header.schema_id!=kSchemaCoordinateSystemConfigSetResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlCreateDomain(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreateDomainRequest,kSchemaCoordinateDdlCreateDomainRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreateDomainResult||response.header.schema_id!=kSchemaCoordinateDdlCreateDomainResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlCreateSchema(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreateSchemaRequest,kSchemaCoordinateDdlCreateSchemaRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreateSchemaResult||response.header.schema_id!=kSchemaCoordinateDdlCreateSchemaResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlCreateTable(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreateTableRequest,kSchemaCoordinateDdlCreateTableRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreateTableResult||response.header.schema_id!=kSchemaCoordinateDdlCreateTableResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlCreateIndex(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreateIndexRequest,kSchemaCoordinateDdlCreateIndexRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreateIndexResult||response.header.schema_id!=kSchemaCoordinateDdlCreateIndexResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlDropIndex(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlDropIndexRequest,kSchemaCoordinateDdlDropIndexRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlDropIndexResult||response.header.schema_id!=kSchemaCoordinateDdlDropIndexResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlAlterDomain(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlAlterDomainRequest,kSchemaCoordinateDdlAlterDomainRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlAlterDomainResult||response.header.schema_id!=kSchemaCoordinateDdlAlterDomainResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}ServerVariableBindingResult SbpsClient::CoordinateDdlCreateView(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreateViewRequest,kSchemaCoordinateDdlCreateViewRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreateViewResult||response.header.schema_id!=kSchemaCoordinateDdlCreateViewResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlAlterView(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlAlterViewRequest,kSchemaCoordinateDdlAlterViewRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlAlterViewResult||response.header.schema_id!=kSchemaCoordinateDdlAlterViewResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}ServerVariableBindingResult SbpsClient::CoordinateDdlDropView(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlDropViewRequest,kSchemaCoordinateDdlDropViewRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlDropViewResult||response.header.schema_id!=kSchemaCoordinateDdlDropViewResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}ServerVariableBindingResult SbpsClient::CoordinateDdlCreateTrigger(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreateTriggerRequest,kSchemaCoordinateDdlCreateTriggerRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreateTriggerResult||response.header.schema_id!=kSchemaCoordinateDdlCreateTriggerResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlAlterTrigger(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlAlterTriggerRequest,kSchemaCoordinateDdlAlterTriggerRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlAlterTriggerResult||response.header.schema_id!=kSchemaCoordinateDdlAlterTriggerResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlDropTrigger(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlDropTriggerRequest,kSchemaCoordinateDdlDropTriggerRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlDropTriggerResult||response.header.schema_id!=kSchemaCoordinateDdlDropTriggerResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlCreateProcedure(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreateProcedureRequest,kSchemaCoordinateDdlCreateProcedureRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreateProcedureResult||response.header.schema_id!=kSchemaCoordinateDdlCreateProcedureResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlAlterProcedure(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlAlterProcedureRequest,kSchemaCoordinateDdlAlterProcedureRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlAlterProcedureResult||response.header.schema_id!=kSchemaCoordinateDdlAlterProcedureResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlDropProcedure(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlDropProcedureRequest,kSchemaCoordinateDdlDropProcedureRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlDropProcedureResult||response.header.schema_id!=kSchemaCoordinateDdlDropProcedureResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlCreateFunction(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreateFunctionRequest,kSchemaCoordinateDdlCreateFunctionRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreateFunctionResult||response.header.schema_id!=kSchemaCoordinateDdlCreateFunctionResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlAlterFunction(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlAlterFunctionRequest,kSchemaCoordinateDdlAlterFunctionRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlAlterFunctionResult||response.header.schema_id!=kSchemaCoordinateDdlAlterFunctionResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlDropFunction(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlDropFunctionRequest,kSchemaCoordinateDdlDropFunctionRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlDropFunctionResult||response.header.schema_id!=kSchemaCoordinateDdlDropFunctionResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlCreatePackage(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreatePackageRequest,kSchemaCoordinateDdlCreatePackageRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreatePackageResult||response.header.schema_id!=kSchemaCoordinateDdlCreatePackageResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlCreateTemporaryTable(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreateTemporaryTableRequest,kSchemaCoordinateDdlCreateTemporaryTableRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreateTemporaryTableResult||response.header.schema_id!=kSchemaCoordinateDdlCreateTemporaryTableResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlDropTemporaryTable(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlDropTemporaryTableRequest,kSchemaCoordinateDdlDropTemporaryTableRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlDropTemporaryTableResult||response.header.schema_id!=kSchemaCoordinateDdlDropTemporaryTableResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlRenameObjectVector(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlRenameObjectVectorRequest,kSchemaCoordinateDdlRenameObjectVectorRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlRenameObjectVectorResult||response.header.schema_id!=kSchemaCoordinateDdlRenameObjectVectorResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlCreateOrReplaceSrs(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreateOrReplaceSrsRequest,kSchemaCoordinateDdlCreateOrReplaceSrsRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreateOrReplaceSrsResult||response.header.schema_id!=kSchemaCoordinateDdlCreateOrReplaceSrsResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlDropSrs(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlDropSrsRequest,kSchemaCoordinateDdlDropSrsRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlDropSrsResult||response.header.schema_id!=kSchemaCoordinateDdlDropSrsResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlCreateRewriteRule(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreateRewriteRuleRequest,kSchemaCoordinateDdlCreateRewriteRuleRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreateRewriteRuleResult||response.header.schema_id!=kSchemaCoordinateDdlCreateRewriteRuleResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlAlterRewriteRule(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlAlterRewriteRuleRequest,kSchemaCoordinateDdlAlterRewriteRuleRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlAlterRewriteRuleResult||response.header.schema_id!=kSchemaCoordinateDdlAlterRewriteRuleResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlDropRewriteRule(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlDropRewriteRuleRequest,kSchemaCoordinateDdlDropRewriteRuleRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlDropRewriteRuleResult||response.header.schema_id!=kSchemaCoordinateDdlDropRewriteRuleResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
 } // namespace scratchbird::parser::ipc

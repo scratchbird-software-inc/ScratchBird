@@ -6201,9 +6201,21 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               NativeExpressionAstKind::kIdentifier ||
           !filter_identifier->child_expression_ids.empty() ||
           !filter_identifier->operator_name.empty() ||
-          filter_literal->expression_kind !=
-              NativeExpressionAstKind::kLiteral ||
-          filter_literal->literal_kind != NativeLiteralAstKind::kNumeric ||
+          (filter_literal->expression_kind !=
+               NativeExpressionAstKind::kLiteral &&
+           filter_literal->expression_kind !=
+               NativeExpressionAstKind::kParameter &&
+           filter_literal->expression_kind !=
+               NativeExpressionAstKind::kVariable) ||
+          (filter_literal->expression_kind ==
+               NativeExpressionAstKind::kLiteral &&
+           filter_literal->literal_kind != NativeLiteralAstKind::kNumeric) ||
+          (filter_literal->expression_kind ==
+               NativeExpressionAstKind::kParameter &&
+           filter_literal->literal_kind.has_value()) ||
+          (filter_literal->expression_kind ==
+               NativeExpressionAstKind::kVariable &&
+           filter_literal->literal_kind.has_value()) ||
           !filter_literal->child_expression_ids.empty() ||
           !filter_literal->operator_name.empty()) {
         AddBoundAstDiagnostic(
@@ -6211,18 +6223,20 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             "catalog WHERE requires one bound numeric column comparison");
         return RefusedBoundAst(std::move(bound));
       }
-      std::uint64_t parsed = 0;
-      const auto [end, error] = std::from_chars(
-          filter_literal->spelling.data(),
-          filter_literal->spelling.data() + filter_literal->spelling.size(),
-          parsed);
-      if (error != std::errc{} ||
-          end != filter_literal->spelling.data() +
-                     filter_literal->spelling.size()) {
-        AddBoundAstDiagnostic(
-            &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-            "catalog WHERE literal must be a canonical unsigned integer");
-        return RefusedBoundAst(std::move(bound));
+      if (filter_literal->expression_kind == NativeExpressionAstKind::kLiteral) {
+        std::uint64_t parsed = 0;
+        const auto [end, error] = std::from_chars(
+            filter_literal->spelling.data(),
+            filter_literal->spelling.data() + filter_literal->spelling.size(),
+            parsed);
+        if (error != std::errc{} ||
+            end != filter_literal->spelling.data() +
+                       filter_literal->spelling.size()) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+              "catalog WHERE literal must be a canonical unsigned integer");
+          return RefusedBoundAst(std::move(bound));
+        }
       }
     }
     std::vector<const NativeExpressionAstNode*> sort_identifiers;
@@ -6766,6 +6780,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       used_descriptor_ids.insert(expected_numeric_descriptor_id);
     }
     const NativeDescriptorBindingInput* boolean_descriptor = nullptr;
+    const NativeExpressionBindingInput* negotiated_literal_binding = nullptr;
     const NativeCatalogColumnBindingInput* filter_column = nullptr;
     if (filter_composition) {
       const auto expected_boolean_descriptor_id =
@@ -6798,6 +6813,36 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       boolean_descriptor = descriptor->second;
       filter_column = &*column;
       used_descriptor_ids.insert(expected_boolean_descriptor_id);
+      const bool parameter_leaf =
+          filter_literal->expression_kind == NativeExpressionAstKind::kParameter;
+      const bool variable_leaf =
+          filter_literal->expression_kind == NativeExpressionAstKind::kVariable;
+      const auto literal_binding = std::ranges::find_if(
+          context.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == filter_literal->expression_id &&
+                   (parameter_leaf
+                        ? candidate.structural_parameter_occurrence_id ==
+                              filter_literal->structural_parameter_occurrence_id
+                        : variable_leaf
+                        ? candidate.structural_variable_occurrence_id ==
+                              filter_literal->structural_variable_occurrence_id
+                        : candidate.structural_literal_occurrence_id ==
+                              filter_literal->structural_literal_occurrence_id);
+          });
+      if (literal_binding == context.expressions.end() ||
+          (parameter_leaf
+               ? filter_literal->structural_parameter_occurrence_id == 0
+               : variable_leaf
+               ? filter_literal->structural_variable_occurrence_id == 0
+               : filter_literal->structural_literal_occurrence_id == 0) ||
+          !descriptor_by_id.contains(literal_binding->descriptor_id)) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
+            "catalog WHERE value lacks its exact negotiated occurrence descriptor");
+        return RefusedBoundAst(std::move(bound));
+      }
+      negotiated_literal_binding = &*literal_binding;
+      used_descriptor_ids.insert(literal_binding->descriptor_id);
     }
     if (used_descriptor_ids.size() != descriptor_by_id.size()) {
       AddBoundAstDiagnostic(
@@ -6825,7 +6870,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           (limit_composition ? visible_column_count : 0);
       if (context.expressions.size() !=
               column_count + (aggregate_composition ? 1 : 0) +
-                  aggregate_direct_descriptor_count ||
+                  aggregate_direct_descriptor_count +
+                  (filter_composition ? 1 : 0) ||
           visible_column_count == 0 ||
           context.outputs.size() != expected_output_count) {
         AddBoundAstDiagnostic(
@@ -7055,17 +7101,25 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (filter_composition) {
       BoundExpressionAstRecord literal;
       literal.expression_id =
-          static_cast<std::uint32_t>(bound.expressions.size() + 1);
-      literal.expression_kind = NativeExpressionAstKind::kLiteral;
-      literal.literal_kind = NativeLiteralAstKind::kNumeric;
-      literal.result_descriptor_id = filter_column->descriptor_id;
-      literal.literal_or_parameter_ref = filter_literal->spelling;
+          filter_literal->expression_id;
+      literal.expression_kind = filter_literal->expression_kind;
+      literal.literal_kind = filter_literal->literal_kind;
+      literal.result_descriptor_id = negotiated_literal_binding->descriptor_id;
+      if (filter_literal->expression_kind == NativeExpressionAstKind::kLiteral) {
+        literal.literal_or_parameter_ref = filter_literal->spelling;
+      }
+      literal.structural_literal_occurrence_id =
+          filter_literal->structural_literal_occurrence_id;
+      literal.structural_parameter_occurrence_id =
+          filter_literal->structural_parameter_occurrence_id;
+      literal.structural_variable_occurrence_id =
+          filter_literal->structural_variable_occurrence_id;
       const auto literal_id = literal.expression_id;
       bound.expressions.push_back(std::move(literal));
 
       BoundExpressionAstRecord predicate;
       predicate.expression_id =
-          static_cast<std::uint32_t>(bound.expressions.size() + 1);
+          filter_predicate->expression_id;
       predicate.expression_kind = NativeExpressionAstKind::kBinary;
       predicate.result_descriptor_id = boolean_descriptor->descriptor_id;
       predicate.child_expression_ids = {
@@ -7351,11 +7405,34 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     record.result_descriptor_id = expression_binding.descriptor_id;
     record.bound_function_uuid = expression_binding.function_uuid;
     record.bound_name_uuid = expression_binding.bound_name_uuid;
+    if (expression.structural_literal_occurrence_id !=
+        expression_binding.structural_literal_occurrence_id) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                            "literal structural occurrence identity changed during binding");
+      return RefusedBoundAst(std::move(bound));
+    }
+    record.structural_literal_occurrence_id =
+        expression.structural_literal_occurrence_id;
+    if (expression.structural_parameter_occurrence_id !=
+        expression_binding.structural_parameter_occurrence_id) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                            "parameter structural occurrence identity changed during binding");
+      return RefusedBoundAst(std::move(bound));
+    }
+    record.structural_parameter_occurrence_id =
+        expression.structural_parameter_occurrence_id;
+    if (expression.structural_variable_occurrence_id !=
+        expression_binding.structural_variable_occurrence_id) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                            "variable structural occurrence identity changed during binding");
+      return RefusedBoundAst(std::move(bound));
+    }
+    record.structural_variable_occurrence_id =
+        expression.structural_variable_occurrence_id;
     if (operator_expression) {
       record.canonical_operator_name = expression.operator_name;
     }
-    if (expression.expression_kind == NativeExpressionAstKind::kLiteral ||
-        expression.expression_kind == NativeExpressionAstKind::kParameter) {
+    if (expression.expression_kind == NativeExpressionAstKind::kLiteral) {
       record.literal_or_parameter_ref = expression.spelling;
     }
     used_descriptor_ids.insert(record.result_descriptor_id);

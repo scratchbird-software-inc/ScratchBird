@@ -12,6 +12,7 @@
 
 #include "diagnostics.hpp"
 #include "../engine/sblr/sblr_engine_envelope.hpp"
+#include "../engine/sblr/sblr_opcode_stream.hpp"
 
 #include <array>
 #include <cstdint>
@@ -20,7 +21,61 @@
 #include <string>
 #include <vector>
 
+namespace scratchbird::server_engine_bridge {
+struct StatementContextReceiptView;
+}
+
 namespace scratchbird::server {
+
+enum class ServerSblrPayloadKind : std::uint8_t {
+  invalid = 0,
+  opcode_stream = 1,
+  operation_envelope = 2,
+};
+
+inline constexpr std::uint64_t
+    kServerSblrLocalGatewayOwnershipRegistryGenerationV1 = 1;
+inline constexpr std::uint64_t
+    kServerSblrPackageExecutorRegistryGenerationV1 = 1;
+
+enum class ServerSblrGatewayEvidenceSource : std::uint8_t {
+  invalid = 0,
+  local_observed = 1,
+};
+
+enum class ServerSblrGatewayDisposition : std::uint8_t {
+  invalid = 0,
+  pass_through = 1,
+  handled = 2,
+  async_accepted = 3,
+  refused = 4,
+};
+
+struct ServerSblrGatewayDecisionEvidence {
+  ServerSblrGatewayEvidenceSource source =
+      ServerSblrGatewayEvidenceSource::invalid;
+  ServerSblrGatewayDisposition disposition =
+      ServerSblrGatewayDisposition::invalid;
+  std::uint64_t provider_observation_generation = 0;
+  std::array<std::uint8_t, 32> canonical_payload_sha256{};
+  std::string route_snapshot_uuid;
+  std::uint64_t route_epoch = 0;
+  std::uint64_t route_generation = 0;
+  std::string security_snapshot_uuid;
+  std::uint64_t security_epoch = 0;
+  std::uint64_t security_observation_generation = 0;
+  bool cluster_context_active = false;
+  bool cluster_transaction_active = false;
+  bool route_fence_present = false;
+};
+
+struct ServerSblrPackageExecutorEvidence {
+  std::string begin_executor_id;
+  std::string end_executor_id;
+  std::string registry_snapshot_uuid;
+  std::uint64_t executor_evidence_generation = 0;
+  std::array<std::uint8_t, 32> canonical_payload_sha256{};
+};
 
 struct ServerSblrAdmissionRequest {
   // Retired frame/text input. Retained only for source compatibility and
@@ -41,6 +96,21 @@ struct ServerSblrAdmissionRequest {
   std::uint64_t catalog_epoch = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t resource_epoch = 0;
+  std::string route_snapshot_uuid;
+  std::uint64_t route_epoch = 0;
+  std::uint64_t route_generation = 0;
+  std::string security_snapshot_uuid;
+  std::uint64_t security_observation_generation = 0;
+  bool route_snapshot_engine_owned = false;
+  bool security_snapshot_engine_owned = false;
+  bool cluster_transaction_active = false;
+  bool route_fence_present = false;
+  std::uint64_t package_reservation_handle = 0;
+  ServerSblrPayloadKind reserved_payload_kind = ServerSblrPayloadKind::invalid;
+  std::uint64_t reserved_payload_size = 0;
+  std::uint32_t reserved_record_count = 0;
+  std::uint64_t reserved_resource_policy_generation = 0;
+  std::array<std::uint8_t, 32> reserved_payload_sha256{};
 };
 
 struct ServerSblrAdmissionTokenData {
@@ -52,6 +122,10 @@ struct ServerSblrAdmissionTokenData {
   std::array<std::uint8_t, 32> operation_sha256{};
   std::array<std::uint8_t, 32> admission_binding_sha256{};
   scratchbird::engine::sblr::SblrOperationEnvelope operation;
+  bool opcode_stream = false;
+  ServerSblrGatewayDecisionEvidence gateway_evidence;
+  ServerSblrPackageExecutorEvidence package_executor_evidence;
+  scratchbird::engine::sblr::SblrOpcodeStream stream;
   std::string authenticated_principal_uuid;
   std::string catalog_snapshot_uuid;
   std::string engine_mga_statement_uuid;
@@ -59,6 +133,11 @@ struct ServerSblrAdmissionTokenData {
   std::uint64_t catalog_epoch = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t resource_epoch = 0;
+  std::uint64_t package_reservation_handle = 0;
+  ServerSblrPayloadKind reserved_payload_kind = ServerSblrPayloadKind::invalid;
+  std::uint64_t reserved_payload_size = 0;
+  std::uint32_t reserved_record_count = 0;
+  std::uint64_t reserved_resource_policy_generation = 0;
 };
 
 using ServerSblrAdmissionToken =
@@ -73,6 +152,10 @@ struct ServerSblrAdmissionResult {
   ServerSblrAdmissionToken admission_token;
   std::vector<ServerDiagnostic> diagnostics;
 };
+
+void BindServerSblrGatewayReceiptObservation(
+    const scratchbird::server_engine_bridge::StatementContextReceiptView& view,
+    ServerSblrAdmissionRequest* request);
 
 ServerSblrAdmissionResult AdmitServerSblrEnvelope(
     const ServerSblrAdmissionRequest& request);

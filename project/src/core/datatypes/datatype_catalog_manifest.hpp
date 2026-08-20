@@ -91,4 +91,32 @@ DatatypeCatalogManifestResult LookupDatatypeCatalogRow(
     const DatatypeCatalogManifest& manifest,
     CanonicalTypeId type_id);
 
+struct DatatypeTypeCodecIdentityRowV1 {
+  std::string catalog_snapshot_uuid;
+  u64 catalog_generation = 0;
+  u64 registry_generation = 0;
+  std::string descriptor_uuid;
+  u64 descriptor_generation = 0;
+  std::string type_uuid;
+  u64 type_generation = 0;
+  std::string codec_id;
+  u16 codec_version = 0;
+  u64 codec_generation = 0;
+  u32 canonical_value_bytes = 0;
+  bool null_supported = false;
+};
+
+struct DatatypeTypeCodecIdentityLookupV1 {
+  bool ok = false;
+  DatatypeTypeCodecIdentityRowV1 row;
+  std::string diagnostic_id;
+};
+
+DatatypeTypeCodecIdentityLookupV1 LookupDatatypeTypeCodecIdentityV1(
+    const std::string& catalog_snapshot_uuid,
+    u64 catalog_generation,
+    u64 registry_generation,
+    const std::string& descriptor_uuid,
+    u64 descriptor_generation);
+
 }  // namespace scratchbird::core::datatypes

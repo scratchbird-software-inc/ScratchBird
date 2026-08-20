@@ -1,0 +1,7 @@
+#pragma once
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+namespace scratchbird::engine::sblr { using DdlAlterRewriteRuleUuid=std::array<std::uint8_t,16>;using DdlAlterRewriteRuleSha=std::array<std::uint8_t,32>; struct SblrDdlAlterRewriteRuleRequestV1{DdlAlterRewriteRuleUuid receipt{};std::uint64_t occurrence=0;std::uint32_t rule_occurrence=0;}; struct SblrDdlAlterRewriteRuleDescriptorV1{std::array<std::uint8_t,400> body{};DdlAlterRewriteRuleSha evidence{};std::uint64_t availability=0;}; struct SblrDdlAlterRewriteRuleResultV1{std::array<std::uint8_t,240> body{};DdlAlterRewriteRuleSha evidence{};std::uint64_t availability=0;DdlAlterRewriteRuleUuid publication_barrier{};}; std::vector<std::uint8_t> EncodeSblrDdlAlterRewriteRuleRequestV1(const SblrDdlAlterRewriteRuleRequestV1&);bool DecodeSblrDdlAlterRewriteRuleRequestV1(const std::uint8_t*,std::size_t,SblrDdlAlterRewriteRuleRequestV1*,std::string*);std::vector<std::uint8_t> EncodeSblrDdlAlterRewriteRuleDescriptorV1(const SblrDdlAlterRewriteRuleDescriptorV1&,bool);bool DecodeSblrDdlAlterRewriteRuleDescriptorV1(const std::uint8_t*,std::size_t,SblrDdlAlterRewriteRuleDescriptorV1*,std::string*,bool);std::vector<std::uint8_t> EncodeSblrDdlAlterRewriteRuleResultV1(const SblrDdlAlterRewriteRuleResultV1&);bool DecodeSblrDdlAlterRewriteRuleResultV1(const std::uint8_t*,std::size_t,SblrDdlAlterRewriteRuleResultV1*,std::string*);}

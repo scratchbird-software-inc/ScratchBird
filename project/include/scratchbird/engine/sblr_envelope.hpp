@@ -606,6 +606,8 @@ struct SblrDecodedExecutionEnvelopeV1 {
 struct SblrExecutionEnvelopeSemanticView {
   SblrPayloadKind payload_kind = SblrPayloadKind::operation_envelope;
   std::uint8_t opcode_ref_kind = 0;
+  const std::uint8_t* opcode_inline_data = nullptr;
+  std::uint64_t opcode_inline_size = 0;
   std::uint8_t operation_ref_kind = 0;
   const std::uint8_t* operation_inline_data = nullptr;
   std::uint64_t operation_inline_size = 0;
@@ -660,7 +662,9 @@ inline bool SblrValidateExecutionEnvelopeFields(
         break;
       }
       case 6:
-        ok = SblrConsumeReference(&reader, &view.opcode_ref_kind);
+        ok = SblrConsumeReference(&reader, &view.opcode_ref_kind,
+                                  &view.opcode_inline_data,
+                                  &view.opcode_inline_size);
         break;
       case 7:
         ok = SblrConsumeReference(&reader, &view.operation_ref_kind,
@@ -772,6 +776,13 @@ inline bool SblrValidateExecutionEnvelopeFields(
         view.payload_checksum_kind != 1 ||
         SblrCrc32c(view.operation_inline_data,
                    static_cast<std::size_t>(view.operation_inline_size)) !=
+            view.payload_crc32c) return false;
+  }
+  if (view.opcode_ref_kind == 1) {
+    if (view.opcode_inline_size != view.payload_size ||
+        view.payload_checksum_kind != 1 ||
+        SblrCrc32c(view.opcode_inline_data,
+                   static_cast<std::size_t>(view.opcode_inline_size)) !=
             view.payload_crc32c) return false;
   }
   if (semantic != nullptr) *semantic = view;

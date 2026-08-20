@@ -20,6 +20,29 @@ namespace scratchbird::parser::ipc {
 
 struct SbpsClientChannelState;
 
+struct CursorStreamDescriptorV1 {
+  bool present{false};
+  std::string stream_descriptor_uuid;
+  std::uint16_t descriptor_version{0};
+  std::uint64_t descriptor_generation{0};
+  std::string cursor_uuid;
+  std::string execution_uuid;
+  std::string result_set_uuid;
+  std::string row_descriptor_uuid;
+  std::string snapshot_uuid;
+  std::uint64_t max_chunk_rows{0};
+  std::uint64_t max_chunk_bytes{0};
+
+  [[nodiscard]] bool complete() const {
+    return present && !stream_descriptor_uuid.empty() &&
+           descriptor_version == 1 && descriptor_generation != 0 &&
+           !cursor_uuid.empty() && !execution_uuid.empty() &&
+           !result_set_uuid.empty() && !row_descriptor_uuid.empty() &&
+           !snapshot_uuid.empty() && max_chunk_rows != 0 &&
+           max_chunk_bytes != 0;
+  }
+};
+
 struct ServerExecutionResult {
   bool accepted{false};
   std::string operation_id;
@@ -28,6 +51,7 @@ struct ServerExecutionResult {
   std::uint64_t affected_rows{0};
   bool affected_rows_present{false};
   std::string row_packet;
+  CursorStreamDescriptorV1 cursor_stream_descriptor;
   bool transaction_state_present{false};
   std::uint64_t local_transaction_id{0};
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
@@ -107,6 +131,79 @@ struct ServerStatementContextResult {
   MessageVectorSet messages;
 };
 
+struct ServerLiteralBindingResult {
+  bool accepted{false};
+  std::vector<std::uint8_t> canonical_payload;
+  MessageVectorSet messages;
+};
+
+struct ServerParameterBindingResult {
+  bool accepted{false};
+  std::vector<std::uint8_t> canonical_payload;
+  MessageVectorSet messages;
+};
+
+struct ServerVariableBindingResult {
+  bool accepted{false};
+  std::vector<std::uint8_t> canonical_payload;
+  MessageVectorSet messages;
+};
+
+struct VariableFrameCoordination {
+  std::string public_coordination_uuid;
+  std::string operation_uuid;
+  std::uint64_t coordinator_generation{0};
+  std::uint64_t frame_generation{0};
+
+  [[nodiscard]] bool present() const {
+    return !public_coordination_uuid.empty() && !operation_uuid.empty() &&
+           coordinator_generation != 0 && frame_generation != 0;
+  }
+};
+
+enum class ParameterExecutionMode : std::uint8_t {
+  kDirect = 0,
+  kPrepared = 1,
+  kBatch = 2,
+  kDynamic = 3,
+};
+
+struct ParameterExecutionCoordination {
+  ParameterExecutionMode mode{ParameterExecutionMode::kDirect};
+  std::string public_coordination_uuid;
+  std::string operation_uuid;
+  std::uint64_t coordinator_generation{0};
+
+  [[nodiscard]] bool present() const {
+    return !public_coordination_uuid.empty() && !operation_uuid.empty() &&
+           coordinator_generation != 0;
+  }
+};
+
+struct ServerParameterCoordinationResult {
+  bool accepted{false};
+  ParameterExecutionCoordination coordination;
+  MessageVectorSet messages;
+};
+
+struct PreparedParameterReference {
+  std::string prepared_statement_uuid;
+  std::uint64_t prepared_generation{0};
+  std::string operation_uuid;
+  std::uint64_t coordination_generation{0};
+
+  [[nodiscard]] bool present() const {
+    return !prepared_statement_uuid.empty() && prepared_generation != 0 &&
+           !operation_uuid.empty() && coordination_generation != 0;
+  }
+};
+
+struct ServerPreparedParameterFinalizeResult {
+  bool accepted{false};
+  PreparedParameterReference prepared;
+  MessageVectorSet messages;
+};
+
 // Deterministic protocol-conformance hook.  Production callers receive the
 // same validation through the routed execute APIs.
 bool DecodeExecuteResultPayloadV2ForTest(
@@ -117,6 +214,14 @@ bool DecodePrepareResultPayloadV2ForTest(
     const std::vector<std::uint8_t>& payload,
     ServerPrepareSblrResult* result,
     MessageVectorSet* messages);
+
+// Canonical value-free schema-4015 request bytes used only as the SBPT
+// template suffix. Runtime parameter values remain exclusively in a fresh
+// schema-4017 EXECUTE request.
+std::vector<std::uint8_t> EncodePreparedParameterSchema4015Template(
+    const ParserSessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ParserCanonicalSblrSubmission& submission);
 bool DecodeDiagnosticFrameForTest(
     const std::vector<std::uint8_t>& encoded_frame,
     MessageVectorSet* messages);
@@ -335,6 +440,142 @@ class SbpsClient {
   ServerStatementContextResult AcquireNativeStatementContext(
       const ParserSessionContext& session,
       const ParserTransactionSelector& transaction) const;
+  ServerParameterCoordinationResult BeginParameterExecutionCoordination(
+      const ParserSessionContext& session,
+      ParameterExecutionMode mode,
+      std::string_view operation_uuid,
+      std::string_view public_prepared_uuid = {},
+      std::string_view public_dynamic_package_uuid = {}) const;
+  ServerStatementContextResult AcquireParameterStatementContext(
+      const ParserSessionContext& session,
+      const ParserTransactionSelector& transaction,
+      const ParameterExecutionCoordination& coordination) const;
+  ServerLiteralBindingResult NegotiateLiteralDescriptors(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sbln) const;
+  ServerLiteralBindingResult FinalizeLiteralBinding(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sblf) const;
+  ServerParameterBindingResult NegotiateParameterDescriptors(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sbpr) const;
+  ServerParameterBindingResult FinalizeParameterBinding(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sbpf) const;
+  ServerVariableBindingResult BeginVariableFrame(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sbvb) const;
+  ServerStatementContextResult AcquireVariableStatementContext(
+      const ParserSessionContext& session,
+      const ParserTransactionSelector& transaction,
+      const VariableFrameCoordination& coordination) const;
+  ServerVariableBindingResult NegotiateVariableDescriptors(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sbvr) const;
+  ServerVariableBindingResult AssignVariableValues(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sbvy) const;
+  ServerVariableBindingResult FinalizeVariableBinding(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sbvf) const;
+  ServerVariableBindingResult CloseVariableFrame(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_sbvx) const;
+  ServerVariableBindingResult IssueSourceMapDescriptor(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_smrq) const;
+  ServerVariableBindingResult IssueErrorVectorDescriptor(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_evrq) const;
+  ServerVariableBindingResult CoordinateSavepoint(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_spcr) const;
+  ServerVariableBindingResult CoordinateAutonomousFrame(
+      const ParserSessionContext& session,
+      const std::vector<std::uint8_t>& canonical_afcr) const;
+  ServerVariableBindingResult CoordinateReservationRelease(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateTemporaryInstanceCleanup(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateCursorOpen(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateReadByKey(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateReadRange(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateReadStream(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateResultSetPass(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateAccessCursorOpen(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateAccessCursorFetch(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateAccessCursorClose(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateInsert(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateUpdate(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDelete(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateMerge(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateTableTruncate(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateTableAnalyze(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateBulkImportStream(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateBulkExportStream(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateStatementBatch(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateAtomicCas(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateAtomicRmw(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateAdvisoryLock(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateAdvisoryLockRelease(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateFunctionCall(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateOperatorCall(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateCast(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateCompare(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDomainOperation(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateUdrInvoke(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateProcedureInvoke(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateFunctionInvoke(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateAggregateInvoke(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateSequenceNextval(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateSequenceCurrval(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateSequenceSetval(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateQueryNumeric(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateAdvancedDatatypeFamily(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateProject(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateKvStructuredRead(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateKvStructuredMutate(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateKvStructuredScan(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateKvStructuredStreamRead(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateKvStructuredStreamAppend(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateKvStructuredTimeseries(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateSystemConfigSet(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlCreateDomain(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlAlterDomain(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlCreateView(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlAlterView(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlDropView(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlCreateTrigger(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlAlterTrigger(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlDropTrigger(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlCreateProcedure(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlAlterProcedure(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlDropProcedure(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlCreateFunction(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlAlterFunction(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlDropFunction(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlCreatePackage(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlCreateTemporaryTable(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlDropTemporaryTable(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlRenameObjectVector(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlCreateSchema(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlCreateOrReplaceSrs(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlDropSrs(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlCreateRewriteRule(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlAlterRewriteRule(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlDropRewriteRule(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlCreateTable(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlCreateIndex(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlDropIndex(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateAggregate(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateGroup(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateSort(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateLimit(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateWindow(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateReturnResultSet(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerPreparedParameterFinalizeResult FinalizePreparedParameterSubmission(
+      const ParserSessionContext& session,
+      const ParameterExecutionCoordination& coordination,
+      const std::vector<std::uint8_t>& canonical_sbpt,
+      const ParserStatementContext& preliminary_context) const;
   ServerExecutionResult ExecuteSblr(const ParserSessionContext& session,
                                     std::string_view encoded_sblr_envelope,
                                     bool cursor_requested = false) const;
@@ -383,6 +624,7 @@ class SbpsClient {
       std::string_view prepared_statement_uuid) const;
   ServerFetchResult FetchCursor(const ParserSessionContext& session,
                                 std::string_view cursor_uuid,
+                                const CursorStreamDescriptorV1& stream_descriptor,
                                 std::uint64_t max_rows = 1,
                                 std::uint64_t max_bytes = 0,
                                 std::uint32_t fetch_flags = 0) const;

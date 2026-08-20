@@ -266,6 +266,8 @@ struct Frame {
 struct PreparedStatement {
   std::string sql;
   std::vector<std::uint32_t> param_types;
+  std::string parameter_prepared_statement_uuid;
+  std::uint64_t parameter_prepared_generation{0};
   struct InsertRowsetPlan {
     std::string target_name;
     std::string target_object_uuid;
@@ -281,7 +283,10 @@ struct BoundPortal {
   std::string sql;
   std::vector<std::uint32_t> param_types;
   std::vector<std::optional<std::string>> param_values;
+  std::vector<PreparedParameterWireValue> parameter_wire_values;
   std::vector<std::vector<std::optional<std::string>>> param_rows;
+  std::string parameter_prepared_statement_uuid;
+  std::uint64_t parameter_prepared_generation{0};
   std::optional<PreparedStatement::InsertRowsetPlan> insert_rowset_plan;
 };
 
@@ -1432,6 +1437,7 @@ std::string ReadSizedString(const std::vector<std::uint8_t>& payload, std::size_
 
 std::size_t PreparedStatementBytes(const PreparedStatement& statement) {
   std::size_t bytes = statement.sql.size() + statement.param_types.size() * sizeof(std::uint32_t);
+  bytes += statement.parameter_prepared_statement_uuid.size();
   if (statement.insert_rowset_plan.has_value()) {
     bytes += statement.insert_rowset_plan->target_name.size();
     bytes += statement.insert_rowset_plan->target_object_uuid.size();
@@ -1445,6 +1451,7 @@ std::size_t PreparedStatementBytes(const PreparedStatement& statement) {
 
 std::size_t BoundPortalBytes(const BoundPortal& portal) {
   std::size_t bytes = portal.sql.size() + portal.param_types.size() * sizeof(std::uint32_t);
+  bytes += portal.parameter_prepared_statement_uuid.size();
   for (const auto& value : portal.param_values) {
     if (value.has_value()) bytes += value->size();
   }
@@ -4562,15 +4569,8 @@ bool SendPipelineResult(ClientIo* io,
                          "cursor fetch returned no rows without reaching end of cursor");
       }
     }
-    const auto closed = session->CloseCursorOnRoute(result.server_cursor_uuid);
-    if (!closed.accepted || closed.messages.has_errors()) {
-      return SendError(io,
-                       state,
-                       "42000",
-                       FirstDiagnosticText(closed.messages),
-                       FirstDiagnosticCode(closed.messages,
-                                           "PARSER_SERVER_IPC.CLOSE_CURSOR_REJECTED"));
-    }
+    // End-of-stream revokes the descriptor and releases the cursor/receipt
+    // lifecycle.  Sending a second close would be a stale-descriptor replay.
     return SendFrame(io,
                      state,
                      kCommandComplete,
@@ -5125,10 +5125,10 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
   if (off + 4 > payload.size()) return std::nullopt;
   const std::uint16_t value_count = ReadU16(payload, off);
   off += 4;
-  std::vector<std::string> literals;
-  literals.reserve(value_count);
   std::vector<std::optional<std::string>> values;
+  std::vector<PreparedParameterWireValue> wire_values;
   values.reserve(value_count);
+  wire_values.reserve(value_count);
   for (std::uint16_t i = 0; i < value_count && off + 4 <= payload.size(); ++i) {
     const std::int32_t length = ReadI32(payload, off);
     off += 4;
@@ -5144,14 +5144,27 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
                                      ? 1
                                      : formats[std::min<std::size_t>(i, formats.size() - 1)];
     const std::uint32_t oid = i < statement.param_types.size() ? statement.param_types[i] : 0;
-    literals.push_back(DecodeParamLiteral(oid, format, data));
     values.push_back(DecodeParamValue(oid, format, data));
+    PreparedParameterWireValue wire_value;
+    wire_value.is_null = !data.has_value();
+    wire_value.encoding = format == 0
+                              ? PreparedParameterPayloadEncoding::utf8_text
+                              : PreparedParameterPayloadEncoding::binary;
+    if (data.has_value()) wire_value.raw_bytes = *data;
+    wire_value.public_type_metadata = oid;
+    wire_values.push_back(std::move(wire_value));
   }
   BoundPortal bound;
-  bound.sql = SubstituteParams(statement.sql, literals);
+  // Preserve parameter markers through parse/bind/lower. Values travel in
+  // the engine-issued parameter-set carrier and never become SQL text.
+  bound.sql = statement.sql;
   bound.param_types = statement.param_types;
   bound.param_values = std::move(values);
+  bound.parameter_wire_values = std::move(wire_values);
   bound.param_rows.push_back(bound.param_values);
+  bound.parameter_prepared_statement_uuid =
+      statement.parameter_prepared_statement_uuid;
+  bound.parameter_prepared_generation = statement.parameter_prepared_generation;
   bound.insert_rowset_plan = statement.insert_rowset_plan;
   return bound;
 }
@@ -5427,7 +5440,11 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                 const SbwpTxnCommitRequest* commit_request = nullptr,
                 bool* command_accepted = nullptr,
                 bool suppress_success_result = false,
-                PipelineResult* success_result = nullptr) {
+                PipelineResult* success_result = nullptr,
+                const std::vector<PreparedParameterWireValue>*
+                    parameter_values = nullptr,
+                std::string_view parameter_prepared_statement_uuid = {},
+                std::uint64_t parameter_prepared_generation = 0) {
   const bool phase_trace = ParserPhaseTraceEnabled();
   const std::int64_t total_started = phase_trace ? ParserPhaseNowNs() : 0;
   state->ready_sent_for_current_operation = false;
@@ -5484,11 +5501,20 @@ bool ExecuteSql(SbsqlTestWireSession* session,
   const std::uint64_t original_txn_id = state->txn_id;
   const bool auto_cursor = ShouldAutoCursor(sql);
   const std::int64_t pipeline_started = phase_trace ? ParserPhaseNowNs() : 0;
-  const auto result = session->RunPipeline(sql,
-                                           true,
-                                           auto_cursor,
-                                           0,
-                                           autocommit_emulation && !auto_cursor);
+  const auto result = parameter_prepared_statement_uuid.empty()
+      ? session->RunPipeline(
+            sql, true, auto_cursor, 0,
+            autocommit_emulation && !auto_cursor,
+            parameter_values == nullptr
+                ? std::vector<PreparedParameterWireValue>{}
+                : *parameter_values)
+      : session->RunPreparedParameterizedForWire(
+            sql, parameter_prepared_statement_uuid,
+            parameter_prepared_generation,
+            parameter_values == nullptr
+                ? std::vector<PreparedParameterWireValue>{}
+                : *parameter_values,
+            auto_cursor);
   WriteParserPhaseTraceIfEnabled(phase_trace,
                                  "execute_sql",
                                  "run_pipeline",
@@ -6786,8 +6812,11 @@ bool SbsqlTestWireSession::AuthenticateCredentials(const AuthCredentialEnvelope&
     if (metrics_) metrics_->SetState(ParserState::kIdlePreAuth);
     return false;
   }
-  SbpsClient client(config_.server_endpoint);
-  const bool accepted = client.AuthenticateAndAttach(credentials, config_, &session_, messages);
+  if (server_client_ == nullptr) {
+    server_client_ = std::make_unique<SbpsClient>(config_.server_endpoint);
+  }
+  const bool accepted =
+      server_client_->AuthenticateAndAttach(credentials, config_, &session_, messages);
   if (accepted) {
     if (metrics_) metrics_->SetState(ParserState::kAuthenticated);
     return true;
@@ -6910,6 +6939,25 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
           if (!SendError(&io, &state, "08P01", "invalid PARSE payload")) rc = 1;
           break;
         }
+        if (state.authenticated && !prepared->param_types.empty() &&
+            !prepared->insert_rowset_plan.has_value()) {
+          auto sealed = PrepareParameterizedForWire(prepared->sql);
+          if (!sealed.accepted || !sealed.prepared.present()) {
+            if (!SendError(
+                    &io, &state, "42000",
+                    FirstDiagnosticCode(
+                        sealed.messages,
+                        "SBLR.PARAMETER.PREPARE_FINALIZE_REFUSED"),
+                    FirstDiagnosticText(sealed.messages))) {
+              rc = 1;
+            }
+            break;
+          }
+          prepared->parameter_prepared_statement_uuid =
+              sealed.prepared.prepared_statement_uuid;
+          prepared->parameter_prepared_generation =
+              sealed.prepared.prepared_generation;
+        }
         if (state.authenticated && prepared->insert_rowset_plan.has_value()) {
           auto resolved = ResolvePublicNameForWire(prepared->insert_rowset_plan->target_name,
                                                    false,
@@ -7024,7 +7072,11 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
           auto rowset_executed = ExecutePreparedInsertRowset(this, &io, &state, found->second, false);
           if (rowset_executed.has_value()) {
             if (!*rowset_executed) rc = 1;
-          } else if (!ExecuteSql(this, &io, &state, sql, false, autocommit_emulation)) {
+          } else if (!ExecuteSql(this, &io, &state, sql, false,
+                                 autocommit_emulation, nullptr, nullptr, false,
+                                 nullptr, &found->second.parameter_wire_values,
+                                 found->second.parameter_prepared_statement_uuid,
+                                 found->second.parameter_prepared_generation)) {
             rc = 1;
           }
         }

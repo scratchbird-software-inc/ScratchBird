@@ -1,0 +1,21 @@
+#include "sblr_return_result_set_runtime.hpp"
+#include "core/hash/hash_digest.hpp"
+#include <algorithm>
+#include <cstring>
+
+namespace scratchbird::engine::sblr {
+namespace {
+void Put(std::vector<std::uint8_t>& o, std::uint64_t v, std::size_t n) { for (std::size_t i=0;i<n;++i) o.push_back(static_cast<std::uint8_t>(v>>(8*i))); }
+std::uint64_t Get(const std::uint8_t* p, std::size_t n) { std::uint64_t v=0; for (std::size_t i=0;i<n;++i) v|=std::uint64_t(p[i])<<(8*i); return v; }
+template<class T> bool Nonzero(const T& a) { return std::any_of(a.begin(), a.end(), [](auto x){return x!=0;}); }
+std::vector<std::uint8_t> Header(const char* m, std::size_t n) { std::vector<std::uint8_t> o(m,m+4); Put(o,1,2); Put(o,n,2); Put(o,n,4); Put(o,0,4); return o; }
+bool ValidHeader(const std::uint8_t* b, std::size_t n, const char* m, std::size_t z) { return b&&n==z&&std::equal(b,b+4,m)&&Get(b+4,2)==1&&Get(b+6,2)==z&&Get(b+8,4)==z&&std::all_of(b+12,b+16,[](auto x){return x==0;}); }
+ReturnResultSetSha Digest(const char* domain, const std::uint8_t* b, std::size_t n) { std::vector<std::uint8_t> x(domain,domain+std::strlen(domain)); x.insert(x.end(),b,b+n); return scratchbird::core::hash::ComputeSha256Digest(x).digest; }
+}
+std::vector<std::uint8_t> EncodeSblrReturnResultSetRequestV1(const SblrReturnResultSetRequestV1& v) { if(!Nonzero(v.receipt)||!v.occurrence||!v.return_occurrence)return{}; auto o=Header("RRSQ",64); o.insert(o.end(),v.receipt.begin(),v.receipt.end()); Put(o,v.occurrence,8); Put(o,v.return_occurrence,4); o.insert(o.end(),20,0); return o; }
+bool DecodeSblrReturnResultSetRequestV1(const std::uint8_t* b,std::size_t n,SblrReturnResultSetRequestV1* out,std::string* d) { if(!out||!ValidHeader(b,n,"RRSQ",64)||std::any_of(b+44,b+64,[](auto x){return x!=0;})){if(d)*d="RRSQ invalid";return false;} SblrReturnResultSetRequestV1 v;std::copy_n(b+16,16,v.receipt.begin());v.occurrence=Get(b+32,8);v.return_occurrence=Get(b+40,4);if(EncodeSblrReturnResultSetRequestV1(v).empty())return false;*out=v;return true; }
+std::vector<std::uint8_t> EncodeSblrReturnResultSetDescriptorV1(const SblrReturnResultSetDescriptorV1& v,bool operand) { if(!Nonzero(v.body)||!v.availability)return{}; auto o=Header(operand?"RRDO":"RRDD",488);o.insert(o.end(),v.body.begin(),v.body.end());auto e=Digest("ScratchBird.SblrReturnResultSetDescriptor.V1",o.data()+16,360);if(Nonzero(v.evidence)&&e!=v.evidence)return{};o.insert(o.end(),e.begin(),e.end());Put(o,v.availability,8);o.insert(o.end(),72,0);return o; }
+bool DecodeSblrReturnResultSetDescriptorV1(const std::uint8_t* b,std::size_t n,SblrReturnResultSetDescriptorV1* out,std::string* d,bool operand) { if(!out||!ValidHeader(b,n,operand?"RRDO":"RRDD",488)||std::any_of(b+416,b+488,[](auto x){return x!=0;})){if(d)*d="RRD invalid";return false;} SblrReturnResultSetDescriptorV1 v;std::copy_n(b+16,360,v.body.begin());std::copy_n(b+376,32,v.evidence.begin());v.availability=Get(b+408,8);if(EncodeSblrReturnResultSetDescriptorV1(v,operand).empty())return false;*out=v;return true; }
+std::vector<std::uint8_t> EncodeSblrReturnResultSetResultV1(const SblrReturnResultSetResultV1& v) { if(!Nonzero(v.body)||v.body[24]!=1||v.body[25]>1||std::all_of(v.body.begin()+32,v.body.begin()+48,[](auto x){return x==0;})||!v.availability||!Nonzero(v.publication_barrier))return{};auto o=Header("RRRS",256);o.insert(o.end(),v.body.begin(),v.body.end());auto e=Digest("ScratchBird.SblrReturnResultSetExecutorEvidence.V1",o.data()+16,168);if(Nonzero(v.evidence)&&e!=v.evidence)return{};o.insert(o.end(),e.begin(),e.end());Put(o,v.availability,8);o.insert(o.end(),v.publication_barrier.begin(),v.publication_barrier.end());o.insert(o.end(),16,0);return o; }
+bool DecodeSblrReturnResultSetResultV1(const std::uint8_t* b,std::size_t n,SblrReturnResultSetResultV1* out,std::string* d) { if(!out||!ValidHeader(b,n,"RRRS",256)||std::any_of(b+240,b+256,[](auto x){return x!=0;})){if(d)*d="RRS invalid";return false;} SblrReturnResultSetResultV1 v;std::copy_n(b+16,168,v.body.begin());std::copy_n(b+184,32,v.evidence.begin());v.availability=Get(b+216,8);std::copy_n(b+224,16,v.publication_barrier.begin());if(EncodeSblrReturnResultSetResultV1(v).empty())return false;*out=v;return true; }
+}

@@ -1,0 +1,2 @@
+#include "sblr_ddl_drop_procedure_coordinator.hpp"
+namespace scratchbird::engine::internal_api { SblrDdlDropProcedureCoordinationResult CompileSblrDdlDropProcedureDescriptor(const EngineRequestContext&c,const std::string&r,std::uint64_t o,std::uint32_t p,std::uint64_t a){return CompileSblrDdlCreateProcedureDescriptor(c,r,o,p,a);} SblrDdlDropProcedureCoordinationResult ConsumeSblrDdlDropProcedureDescriptor(const EngineRequestContext&c,const scratchbird::engine::sblr::SblrDdlDropProcedureDescriptorV1&v){return ConsumeSblrDdlCreateProcedureDescriptor(c,v);} }

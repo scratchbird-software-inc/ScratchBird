@@ -1,0 +1,2 @@
+#include "sblr_ddl_alter_procedure_coordinator.hpp"
+namespace scratchbird::engine::internal_api { SblrDdlAlterProcedureCoordinationResult CompileSblrDdlAlterProcedureDescriptor(const EngineRequestContext&c,const std::string&r,std::uint64_t o,std::uint32_t p,std::uint64_t a){auto x=CompileSblrDdlCreateProcedureDescriptor(c,r,o,p,a);return x;} SblrDdlAlterProcedureCoordinationResult ConsumeSblrDdlAlterProcedureDescriptor(const EngineRequestContext&c,const scratchbird::engine::sblr::SblrDdlAlterProcedureDescriptorV1&v){return ConsumeSblrDdlCreateProcedureDescriptor(c,v);} }

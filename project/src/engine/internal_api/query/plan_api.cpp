@@ -1940,8 +1940,15 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         operator_expression != expression.operator_name.has_value() ||
         (expression.operator_name.has_value() &&
          expression.operator_name->empty()) ||
-        (literal || parameter) !=
-            expression.literal_or_parameter_ref.has_value()) {
+        (parameter != (expression.literal_or_parameter_ref.has_value() ||
+                       expression.parameter_typed_value_v1.has_value())) ||
+        (parameter && expression.literal_or_parameter_ref.has_value() &&
+         expression.parameter_typed_value_v1.has_value()) ||
+        (literal &&
+         (expression.literal_or_parameter_ref.has_value() ==
+          expression.literal_typed_value_v1.has_value())) ||
+        (!literal && expression.literal_typed_value_v1.has_value()) ||
+        (!parameter && expression.parameter_typed_value_v1.has_value())) {
       return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
                     "expression_typed_fields");
     }

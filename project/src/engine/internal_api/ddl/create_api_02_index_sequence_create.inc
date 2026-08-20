@@ -262,9 +262,29 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
               "ddl.create_table",
               "column_type_catalog_row_invalid:" + column_name));
     }
-    const std::string engine_type_uuid =
+    std::string engine_type_uuid =
         scratchbird::core::uuid::UuidToString(
             type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
+    // DATATYPE-TYPE-CODEC-IDENTITY-REGISTRY-V1: bigint has distinct
+    // descriptor and type identities.  New catalog rows must carry the exact
+    // registry-issued type UUID; the legacy stable-name-derived descriptor
+    // UUID has no execution authority and is never accepted as an alias.
+    if (canonical_type_id ==
+        scratchbird::core::datatypes::CanonicalTypeId::int64) {
+      const auto identity =
+          scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+              "019d0000-0000-7000-8000-00000000d701", 1, 1,
+              "019d0000-0000-7000-8000-00000000d711", 1);
+      if (!identity.ok || identity.row.type_uuid.empty()) {
+        return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+            request.context,
+            "ddl.create_table",
+            MakeInvalidRequestDiagnostic(
+                "ddl.create_table",
+                "column_type_codec_registry_row_invalid:" + column_name));
+      }
+      engine_type_uuid = identity.row.type_uuid;
+    }
     std::optional<std::string> carried_type_uuid;
     bool type_uuid_carrier_invalid = false;
     std::size_t descriptor_offset = 0;

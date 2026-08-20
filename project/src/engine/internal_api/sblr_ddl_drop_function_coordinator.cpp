@@ -1,0 +1,2 @@
+#include "sblr_ddl_drop_function_coordinator.hpp"
+namespace scratchbird::engine::internal_api { SblrDdlDropFunctionCoordinationResult CompileSblrDdlDropFunctionDescriptor(const EngineRequestContext&c,const std::string&s,std::uint64_t o,std::uint32_t f,std::uint64_t a){return CompileSblrDdlCreateFunctionDescriptor(c,s,o,f,a);} SblrDdlDropFunctionCoordinationResult ConsumeSblrDdlDropFunctionDescriptor(const EngineRequestContext&c,const scratchbird::engine::sblr::SblrDdlDropFunctionDescriptorV1&d){return ConsumeSblrDdlCreateFunctionDescriptor(c,d);} }

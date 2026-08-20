@@ -54,6 +54,9 @@ struct NativeExpressionBindingInput {
   std::uint32_t descriptor_id{0};
   std::optional<std::string> function_uuid;
   std::optional<std::string> bound_name_uuid;
+  std::uint64_t structural_literal_occurrence_id{0};
+  std::uint64_t structural_parameter_occurrence_id{0};
+  std::uint64_t structural_variable_occurrence_id{0};
 };
 
 struct NativeOutputBindingInput {
@@ -172,6 +175,9 @@ struct BoundExpressionAstRecord {
   std::optional<std::string> bound_name_uuid;
   std::optional<std::string> canonical_operator_name;
   std::optional<std::string> literal_or_parameter_ref;
+  std::uint64_t structural_literal_occurrence_id{0};
+  std::uint64_t structural_parameter_occurrence_id{0};
+  std::uint64_t structural_variable_occurrence_id{0};
 };
 
 struct BoundValuesRowAstRecord {
