@@ -8,10 +8,12 @@
 
 #include "query/canonical_heap_optimizer_admission.hpp"
 
+#include "datatype_catalog_manifest.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "query/canonical_relational_bridge.hpp"
 #include "security/security_model.hpp"
 #include "transaction/transaction_api.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -40,6 +42,20 @@ bool IsCanonicalUuid(const std::string_view value) {
     if (!std::isxdigit(ch) || std::isupper(ch)) return false;
   }
   return true;
+}
+
+std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
+  static const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows, [&](const auto& row) {
+        return row.stable_name == stable_name;
+      });
+  return found == manifest.manifest.descriptor_rows.end()
+             ? std::string{}
+             : scratchbird::core::uuid::UuidToString(
+                   found->descriptor_uuid.value);
 }
 
 bool ParsePositiveU64(const std::string_view text, std::uint64_t* value) {
@@ -819,9 +835,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          window_node->semantic_variant_id != "window.dense-rank.v1" &&
          window_node->semantic_variant_id != "window.percent-rank.v1" &&
          window_node->semantic_variant_id != "window.cume-dist.v1" &&
-         window_node->semantic_variant_id != "window.ntile.v1") ||
+         window_node->semantic_variant_id != "window.ntile.v1" &&
+         window_node->semantic_variant_id != "window.lag.v1") ||
         window_node->bound_expression_ids.size() !=
-            (window_node->semantic_variant_id == "window.ntile.v1" ? 3U : 2U) ||
+            ((window_node->semantic_variant_id == "window.ntile.v1" ||
+              window_node->semantic_variant_id == "window.lag.v1")
+                 ? 3U
+                 : 2U) ||
         window_node->output_descriptor_ids.size() !=
             sort_node->output_descriptor_ids.size() + 1 ||
         !std::equal(sort_node->output_descriptor_ids.begin(),
@@ -1003,6 +1023,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         "019de5fc-2400-721c-be64-2568b64a02b9";
     constexpr std::string_view kNtileFunctionUuid =
         "019de5fc-2400-7047-9474-232ca488c094";
+    constexpr std::string_view kLagFunctionUuid =
+        "019de5fc-2400-782c-8436-9ac310301738";
     const bool rank_window =
         window_node->semantic_variant_id == "window.rank.v1";
     const bool dense_rank_window =
@@ -1013,8 +1035,14 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         window_node->semantic_variant_id == "window.cume-dist.v1";
     const bool ntile_window =
         window_node->semantic_variant_id == "window.ntile.v1";
+    const bool lag_window =
+        window_node->semantic_variant_id == "window.lag.v1";
+    const auto canonical_int64_type_uuid =
+        lag_window ? CanonicalCoreDatatypeUuid("int64") : std::string{};
     const std::string_view expected_builtin_id =
-        ntile_window
+        lag_window
+            ? "sb.window.lag"
+            : (ntile_window
             ? "sb.window.ntile"
             : (cume_dist_window
             ? "sb.window.cume_dist"
@@ -1023,9 +1051,11 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                    : (dense_rank_window
                           ? "sb.window.dense_rank"
                           : (rank_window ? "sb.window.rank"
-                                         : "sb.window.row_number"))));
+                                         : "sb.window.row_number")))));
     const std::string_view expected_function_uuid =
-        ntile_window
+        lag_window
+            ? kLagFunctionUuid
+            : (ntile_window
             ? kNtileFunctionUuid
             : (cume_dist_window
             ? kCumeDistFunctionUuid
@@ -1034,7 +1064,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                    : (dense_rank_window
                           ? kDenseRankFunctionUuid
                           : (rank_window ? kRankFunctionUuid
-                                         : kRowNumberFunctionUuid))));
+                                         : kRowNumberFunctionUuid)))));
     const auto ordering_property_uuid =
         sort_node->delivered_property_uuids.front();
     const auto window_property_uuid = std::ranges::find_if(
@@ -1069,13 +1099,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             : relational.descriptors.end();
     const bool exact_argument_arity =
         relational.window_invocations.size() == 1 &&
-        (ntile_window
+        ((ntile_window || lag_window)
              ? relational.window_invocations.front()
                        .argument_expression_ids.size() == 1
              : relational.window_invocations.front()
                    .argument_expression_ids.empty());
     const auto ntile_argument =
-        ntile_window && exact_argument_arity
+        (ntile_window || lag_window) && exact_argument_arity
             ? std::ranges::find_if(
                   relational.expressions, [&](const auto& expression) {
                     return expression.expression_id ==
@@ -1096,7 +1126,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         relational.window_invocations.size() == 1 && exact_argument_arity) {
       expected_window_bound_expression_ids.push_back(
           sort_node->bound_expression_ids.front());
-      if (ntile_window) {
+      if (ntile_window || lag_window) {
         expected_window_bound_expression_ids.push_back(
             relational.window_invocations.front()
                 .argument_expression_ids.front());
@@ -1187,7 +1217,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         function->result_descriptor_id !=
             relational.window_invocations.front().result_descriptor_id ||
         result_descriptor == relational.descriptors.end() ||
-        result_descriptor->nullability != RelationalNullability::kNonNull ||
+        result_descriptor->nullability !=
+            (lag_window ? RelationalNullability::kNullable
+                        : RelationalNullability::kNonNull) ||
         window_node->bound_expression_ids !=
             expected_window_bound_expression_ids ||
         (ntile_window &&
@@ -1216,6 +1248,39 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
           ntile_argument_descriptor->width.has_value() ||
           ntile_argument_descriptor->precision.has_value() ||
           ntile_argument_descriptor->scale.has_value())) ||
+        (lag_window &&
+         (ntile_argument == relational.expressions.end() ||
+          ntile_argument->expression_kind !=
+              RelationalExpressionKind::kIdentifier ||
+          !ntile_argument->child_expression_ids.empty() ||
+          !ntile_argument->bound_name_uuid.has_value() ||
+          ntile_argument->function_uuid.has_value() ||
+          ntile_argument->literal_kind.has_value() ||
+          ntile_argument->literal_or_parameter_ref.has_value() ||
+          ntile_argument->operator_name.has_value() ||
+          ntile_argument_descriptor == relational.descriptors.end() ||
+          ntile_argument_descriptor->descriptor_id ==
+              result_descriptor->descriptor_id ||
+          ntile_argument_descriptor->descriptor_uuid ==
+              result_descriptor->descriptor_uuid ||
+          ntile_argument_descriptor->descriptor_uuid ==
+              expected_function_uuid ||
+          canonical_int64_type_uuid.empty() ||
+          ntile_argument_descriptor->type_uuid !=
+              canonical_int64_type_uuid ||
+          ntile_argument_descriptor->type_uuid !=
+              result_descriptor->type_uuid ||
+          ntile_argument_descriptor->collation_uuid !=
+              result_descriptor->collation_uuid ||
+          ntile_argument_descriptor->timezone_profile_id !=
+              result_descriptor->timezone_profile_id ||
+          ntile_argument_descriptor->width != result_descriptor->width ||
+          ntile_argument_descriptor->precision !=
+              result_descriptor->precision ||
+          ntile_argument_descriptor->scale != result_descriptor->scale ||
+          std::ranges::find(sort_node->output_descriptor_ids,
+                            ntile_argument_descriptor->descriptor_id) ==
+              sort_node->output_descriptor_ids.end())) ||
         window_outputs.back()->ordinal !=
             sort_node->output_descriptor_ids.size() ||
         !window_outputs.back()->visible ||
@@ -1225,7 +1290,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         window_outputs.back()->output_name_utf8 !=
             relational.window_invocations.front().output_name_utf8) {
       return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
-                    ntile_window
+                    lag_window
+                        ? "heap_lag_window_binding"
+                        : (ntile_window
                         ? "heap_ntile_window_binding"
                         : (cume_dist_window
                         ? "heap_cume_dist_window_binding"
@@ -1235,7 +1302,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                                       ? "heap_dense_rank_window_binding"
                                       : (rank_window
                                              ? "heap_rank_window_binding"
-                                             : "heap_row_number_window_binding")))));
+                                             : "heap_row_number_window_binding"))))));
     }
   }
   const auto& node = *scan_node;

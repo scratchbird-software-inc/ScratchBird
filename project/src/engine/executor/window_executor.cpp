@@ -8,6 +8,9 @@
 
 #include "executor_foundation.hpp"
 
+#include "datatype_catalog_manifest.hpp"
+#include "uuid.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -130,6 +133,20 @@ bool IsCanonicalUuid(const std::string_view value) {
   return true;
 }
 
+std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
+  static const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows, [&](const auto& row) {
+        return row.stable_name == stable_name;
+      });
+  return found == manifest.manifest.descriptor_rows.end()
+             ? std::string{}
+             : scratchbird::core::uuid::UuidToString(
+                   found->descriptor_uuid.value);
+}
+
 std::optional<std::string_view> CanonicalDescriptorField(
     const scratchbird::engine::internal_api::EngineDescriptor& descriptor,
     const std::string_view key) {
@@ -224,10 +241,16 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
       break;
     }
   }
+  const bool operator_local_stage =
+      request.operator_local_parent_implementation_id == "window.lag.v1";
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kWindow ||
       selected_node->implementation_id !=
-          "window.partition-order-peer.v1" ||
+          (operator_local_stage
+               ? request.operator_local_parent_implementation_id
+               : "window.partition-order-peer.v1") ||
+      (!request.operator_local_parent_implementation_id.empty() &&
+       !operator_local_stage) ||
       selected_node->input_physical_node_ids.size() != 1) {
     return refuse("QOW-DIAG-WINDOW-PEER",
                   "selected physical node is not the canonical unary "
@@ -240,9 +263,18 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
       break;
     }
   }
-  if (input_node == nullptr ||
-      selected_node->output_descriptor_ids !=
-          input_node->output_descriptor_ids) {
+  const bool exact_stage_output =
+      input_node != nullptr &&
+      ((!operator_local_stage &&
+        selected_node->output_descriptor_ids ==
+            input_node->output_descriptor_ids) ||
+       (operator_local_stage &&
+        selected_node->output_descriptor_ids.size() ==
+            input_node->output_descriptor_ids.size() + 1 &&
+        std::equal(input_node->output_descriptor_ids.begin(),
+                   input_node->output_descriptor_ids.end(),
+                   selected_node->output_descriptor_ids.begin())));
+  if (!exact_stage_output) {
     return refuse("QOW-DIAG-WINDOW-PEER",
                   "window partition stage does not preserve descriptors");
   }
@@ -516,7 +548,7 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
   }
 
   const auto output_validation = ValidateCanonicalDescriptorBatch(
-      result.ordered_batch, selected_node->output_descriptor_ids);
+      result.ordered_batch, input_node->output_descriptor_ids);
   if (!output_validation.ok) {
     return refuse(output_validation.diagnostic_code,
                   output_validation.detail);
@@ -554,6 +586,9 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
   result.stable_ties_preserved = true;
   result.weaker_peer_recomputation_forbidden = true;
   result.final_query_order_guaranteed = false;
+  result.operator_local_stage = operator_local_stage;
+  result.operator_local_parent_implementation_id =
+      request.operator_local_parent_implementation_id;
   result.authority.engine_mga_snapshot_bound = true;
   result.mga_statement_context = request.mga_authority.statement_context;
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
@@ -1026,6 +1061,432 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtile(
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch) {
   return ExecuteCanonicalDescriptorNtileBound(
+      request, borrowed_execution_dag, borrowed_ordered_input_batch, true);
+}
+
+namespace {
+CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindowBound(
+    const CanonicalDescriptorLagWindowRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_ordered_input_batch,
+    const bool borrowed_execution_carriers) {
+  CanonicalDescriptorLagWindowResult result;
+  const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
+    result.diagnostic = std::move(diagnostic);
+    result.output_batch = {};
+    return result;
+  };
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(request.ordered_input_batch))) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1",
+        "navigation window request carries conflicting owned execution carriers"));
+  }
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, execution_dag);
+  if (!authority_validation.ok) return refuse(authority_validation);
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          execution_dag.root_physical_node_id) {
+    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
+                          "selected navigation window node is not the root"));
+  }
+
+  const bool lag = request.builtin_id == "sb.window.lag" &&
+                   request.function_uuid ==
+                       "019de5fc-2400-782c-8436-9ac310301738";
+  constexpr std::string_view implementation_id = "window.lag.v1";
+  if (request.function_abi_version != 1 || !lag ||
+      !IsCanonicalUuid(request.function_uuid)) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
+        "navigation window registry identity is not exact"));
+  }
+
+  const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* input_node = nullptr;
+  for (const auto& node : execution_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      selected_node = &node;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kWindow ||
+      selected_node->implementation_id != implementation_id ||
+      selected_node->input_physical_node_ids.size() != 1) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1",
+        "navigation window requires one exact selected window node"));
+  }
+  for (const auto& node : execution_dag.nodes) {
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids.front()) {
+      input_node = &node;
+      break;
+    }
+  }
+  const bool exact_ordering_property =
+      selected_node->required_property_uuids.size() == 1 &&
+      IsCanonicalUuid(selected_node->required_property_uuids.front());
+  const std::string ordering_property_uuid =
+      exact_ordering_property
+          ? selected_node->required_property_uuids.front()
+          : std::string{};
+  const auto window_property = std::ranges::find_if(
+      selected_node->delivered_property_uuids,
+      [&](const auto& property_uuid) {
+        return property_uuid != ordering_property_uuid;
+      });
+  const bool exact_window_property =
+      exact_ordering_property &&
+      selected_node->delivered_property_uuids.size() == 2 &&
+      PropertyCount(selected_node->delivered_property_uuids,
+                    ordering_property_uuid) == 1 &&
+      window_property != selected_node->delivered_property_uuids.end() &&
+      IsCanonicalUuid(*window_property) &&
+      *window_property != ordering_property_uuid;
+  if (input_node == nullptr || input_node->node_kind != PhysicalNodeKind::kSort ||
+      input_node->delivered_property_uuids !=
+          std::vector<std::string>{ordering_property_uuid} ||
+      !exact_window_property ||
+      selected_node->executor_capability_abi_version != 1 ||
+      !selected_node->engine_capability_validated ||
+      !IsCanonicalUuid(selected_node->executor_capability_uuid) ||
+      selected_node->executor_capability_uuid !=
+          request.executor_capability_uuid ||
+      !IsCanonicalUuid(request.window_frame_descriptor_uuid) ||
+      !IsCanonicalUuid(request.order_term_binding_evidence_uuid) ||
+      !IsCanonicalUuid(request.deterministic_order_evidence_uuid) ||
+      !IsCanonicalUuid(request.frame_property_binding_evidence_uuid)) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
+        "navigation window lacks exact registry, ordering, frame, or window evidence"));
+  }
+  std::vector<std::uint32_t> output_descriptor_ids =
+      input_node->output_descriptor_ids;
+  output_descriptor_ids.push_back(request.result_column.descriptor_id);
+  if (selected_node->output_descriptor_ids != output_descriptor_ids ||
+      request.value_column >= execution_ordered_input_batch.columns.size() ||
+      request.order_term.column >=
+          execution_ordered_input_batch.columns.size() ||
+      request.result_column.descriptor_id == 0 ||
+      !request.result_column.nullable ||
+      request.result_column.descriptor.descriptor_kind != "scalar" ||
+      !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          request.result_column.descriptor) ||
+      !CanonicalDerivedDescriptorTypeMatches(
+          execution_ordered_input_batch.columns[request.value_column].descriptor,
+          execution_ordered_input_batch.columns[request.value_column].nullable,
+          request.result_column.descriptor, true)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.INVALID_HANDLE",
+        "navigation value or nullable result descriptor is not exact"));
+  }
+  const auto input_validation = ValidateCanonicalDescriptorBatch(
+      execution_ordered_input_batch, input_node->output_descriptor_ids);
+  if (!input_validation.ok) return refuse(input_validation);
+  const auto order_validation = ValidateCanonicalDescriptorOrderTerm(
+      request.order_term,
+      execution_ordered_input_batch.columns[request.order_term.column]);
+  if (!order_validation.ok) return refuse(order_validation);
+  const auto result_type_uuid = CanonicalDescriptorField(
+      request.result_column.descriptor, "type_uuid");
+  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
+  const std::array<std::string_view, 11> independent_identities{
+      request.function_uuid,
+      execution_ordered_input_batch.columns[request.value_column]
+          .descriptor.descriptor_uuid.canonical,
+      request.result_column.descriptor.descriptor_uuid.canonical,
+      result_type_uuid.value_or(std::string_view{}),
+      ordering_property_uuid,
+      *window_property,
+      request.window_frame_descriptor_uuid,
+      request.executor_capability_uuid,
+      request.order_term_binding_evidence_uuid,
+      request.deterministic_order_evidence_uuid,
+      request.frame_property_binding_evidence_uuid};
+  if (!result_type_uuid.has_value() || !IsCanonicalUuid(*result_type_uuid) ||
+      canonical_int64_type_uuid.empty() ||
+      *result_type_uuid != canonical_int64_type_uuid ||
+      execution_ordered_input_batch.columns[request.value_column]
+              .descriptor.canonical_type_name != "int64" ||
+      request.result_column.descriptor.canonical_type_name != "int64") {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.INVALID_HANDLE",
+        "LAG source and result are not exact canonical int64"));
+  }
+  for (std::size_t left = 0; left < independent_identities.size(); ++left) {
+    for (std::size_t right = left + 1;
+         right < independent_identities.size(); ++right) {
+      if (independent_identities[left] == independent_identities[right]) {
+        return refuse(Refusal(
+            "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+            "navigation window evidence identities are not independent"));
+      }
+    }
+  }
+  std::uint64_t planned_receipt_workspace_bytes = 0;
+  std::uint64_t actual_receipt_workspace_bytes = 0;
+  if (!PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+          request.order_term, ordering_property_uuid,
+          &planned_receipt_workspace_bytes) ||
+      ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
+          request.order_term, ordering_property_uuid,
+          planned_receipt_workspace_bytes,
+          &actual_receipt_workspace_bytes) !=
+          request.order_term_binding_evidence_uuid ||
+      actual_receipt_workspace_bytes != planned_receipt_workspace_bytes) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        "navigation order-term binding receipt is not exact"));
+  }
+
+  // Refuse before QOW-401/QOW-402 or the value foundation can allocate any
+  // pair matrix, frame-reference vector, copied input, or value vector. The
+  // selected grant covers the retained input and output payloads plus a
+  // conservative peak for every operator-local navigation carrier.
+  const auto checked_multiply = [](const std::uint64_t left,
+                                   const std::uint64_t right,
+                                   std::uint64_t* product) {
+    if (product == nullptr ||
+        (left != 0 && right > std::numeric_limits<std::uint64_t>::max() / left)) {
+      return false;
+    }
+    *product = left * right;
+    return true;
+  };
+  const auto checked_add = [](const std::uint64_t left,
+                              const std::uint64_t right,
+                              std::uint64_t* sum) {
+    if (sum == nullptr ||
+        right > std::numeric_limits<std::uint64_t>::max() - left) {
+      return false;
+    }
+    *sum = left + right;
+    return true;
+  };
+  const auto row_count = execution_ordered_input_batch.rows.size();
+  std::uint64_t pair_count_u64 = 0;
+  std::uint64_t matrix_bytes = 0;
+  std::uint64_t reference_bytes = 0;
+  std::uint64_t metadata_bytes = 0;
+  std::uint64_t copied_row_metadata_bytes = 0;
+  std::uint64_t value_vector_bytes = 0;
+  std::uint64_t partition_index_bytes = 0;
+  std::uint64_t partition_vector_bytes = 0;
+  std::uint64_t input_payload_bytes = 0;
+  std::uint64_t navigation_payload_bytes = 0;
+  std::uint64_t output_payload_bytes = 0;
+  std::uint64_t planned_auxiliary_workspace_bytes = 0;
+  std::uint64_t planned_peak_memory_bytes = 0;
+  const auto row_count_u64 = static_cast<std::uint64_t>(row_count);
+  for (const auto& row : execution_ordered_input_batch.rows) {
+    const auto& value = row.values[request.value_column];
+    if (!checked_add(navigation_payload_bytes, value.encoded_value.size(),
+                     &navigation_payload_bytes) ||
+        !checked_add(navigation_payload_bytes, value.binary_value.size(),
+                     &navigation_payload_bytes)) {
+      return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                            "LAG value payload accounting overflowed"));
+    }
+  }
+  if (!RowNumberBatchPayloadBytes(execution_ordered_input_batch,
+                                  &input_payload_bytes) ||
+      !checked_multiply(row_count_u64, row_count_u64, &pair_count_u64) ||
+      pair_count_u64 > request.maximum_pair_comparisons ||
+      pair_count_u64 > request.maximum_effective_row_references ||
+      !checked_multiply(pair_count_u64, 2, &matrix_bytes) ||
+      !checked_multiply(pair_count_u64, sizeof(std::size_t),
+                        &reference_bytes) ||
+      !checked_multiply(
+          row_count_u64,
+          sizeof(CanonicalWindowRowPeerMetadata) +
+              sizeof(CanonicalWindowEffectiveFrame),
+          &metadata_bytes) ||
+      !checked_multiply(row_count_u64,
+                        sizeof(CanonicalWindowRowPeerMetadata),
+                        &copied_row_metadata_bytes) ||
+      !checked_multiply(
+          row_count_u64,
+          2 * sizeof(scratchbird::engine::internal_api::EngineTypedValue) +
+              sizeof(std::uint64_t),
+          &value_vector_bytes) ||
+      !checked_multiply(row_count_u64, sizeof(std::size_t),
+                        &partition_index_bytes) ||
+      !checked_multiply(row_count_u64, sizeof(std::vector<std::size_t>),
+                        &partition_vector_bytes) ||
+      !checked_add(input_payload_bytes, navigation_payload_bytes,
+                   &output_payload_bytes) ||
+      !checked_add(matrix_bytes, reference_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes, metadata_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes,
+                   copied_row_metadata_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes, value_vector_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes, partition_index_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes, partition_vector_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes,
+                   sizeof(std::vector<std::vector<std::size_t>>),
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes,
+                   planned_receipt_workspace_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      // CanonicalWindowPartitionOrderRequest owns one bounded copy until the
+      // stage returns; account it as auxiliary beside the retained input.
+      !checked_add(planned_auxiliary_workspace_bytes, input_payload_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      // QOW-402 retains its input while materializing the frame result, and
+      // the value foundation retains converted sources beside final values.
+      !checked_add(planned_auxiliary_workspace_bytes, input_payload_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes,
+                   navigation_payload_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(input_payload_bytes, output_payload_bytes,
+                   &planned_peak_memory_bytes) ||
+      !checked_add(planned_peak_memory_bytes,
+                   planned_auxiliary_workspace_bytes,
+                   &planned_peak_memory_bytes) ||
+      selected_node->memory_bytes_required == 0 ||
+      selected_node->memory_bytes_required > execution_dag.memory_budget_bytes ||
+      selected_node->memory_bytes_required >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max()) ||
+      planned_peak_memory_bytes > selected_node->memory_bytes_required) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "LAG runtime materialization exceeds its selected node grant"));
+  }
+
+  CanonicalWindowPartitionOrderRequest partition_request;
+  partition_request.physical_dag = execution_dag;
+  partition_request.selected_physical_node_id =
+      request.selected_physical_node_id;
+  partition_request.input_batch = execution_ordered_input_batch;
+  partition_request.order_terms = {request.order_term};
+  partition_request.window_property_uuid = *window_property;
+  partition_request.ordering_property_uuid = ordering_property_uuid;
+  partition_request.term_binding_evidence_uuid =
+      request.order_term_binding_evidence_uuid;
+  partition_request.deterministic_tie_evidence_uuid =
+      request.deterministic_order_evidence_uuid;
+  partition_request.operator_local_parent_implementation_id =
+      std::string(implementation_id);
+  partition_request.maximum_term_count = 1;
+  partition_request.maximum_pair_comparisons =
+      request.maximum_pair_comparisons;
+  partition_request.mga_authority = request.mga_authority;
+  auto partition = ExecuteCanonicalWindowPartitionOrder(partition_request);
+  if (!partition.diagnostic.ok) return refuse(std::move(partition.diagnostic));
+
+  CanonicalWindowFrameRequest frame_request;
+  frame_request.partition_order = std::move(partition);
+  frame_request.frame.frame_descriptor_uuid =
+      request.window_frame_descriptor_uuid;
+  frame_request.frame.frame_specified = false;
+  frame_request.frame_property_binding_evidence_uuid =
+      request.frame_property_binding_evidence_uuid;
+  frame_request.maximum_effective_row_references =
+      request.maximum_effective_row_references;
+  frame_request.mga_authority = request.mga_authority;
+  auto frames = ExecuteCanonicalWindowFrames(frame_request);
+  if (!frames.diagnostic.ok) return refuse(std::move(frames.diagnostic));
+
+  std::size_t effective_frame_row_reference_count = 0;
+  for (const auto& frame : frames.effective_frames) {
+    if (frame.effective_row_indices.size() >
+        std::numeric_limits<std::size_t>::max() -
+            effective_frame_row_reference_count) {
+      return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                            "navigation frame reference count overflowed"));
+    }
+    effective_frame_row_reference_count +=
+        frame.effective_row_indices.size();
+  }
+
+  CanonicalWindowValueRequest value_request;
+  value_request.frames = std::move(frames);
+  value_request.function = CanonicalWindowValueFunction::lag;
+  value_request.function_uuid = request.function_uuid;
+  value_request.value_expression_descriptor_id =
+      execution_ordered_input_batch.columns[request.value_column].descriptor_id;
+  value_request.result_column = request.result_column;
+  value_request.maximum_output_rows =
+      execution_ordered_input_batch.rows.empty()
+          ? 1
+          : execution_ordered_input_batch.rows.size();
+  value_request.mga_authority = request.mga_authority;
+  auto values = ExecuteCanonicalWindowValue(value_request);
+  if (!values.diagnostic.ok) return refuse(std::move(values.diagnostic));
+  if (!values.used_implicit_navigation_offset ||
+      values.explicit_navigation_default_present ||
+      !values.every_function_operand_consumed ||
+      !values.partition_metadata_consumed_for_navigation ||
+      values.effective_frame_membership_consumed ||
+      !values.frame_and_exclusion_validated ||
+      !values.frame_and_exclusion_ignored_for_navigation ||
+      values.values.size() != execution_ordered_input_batch.rows.size()) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+        "navigation strategy did not consume the exact implicit-offset payload"));
+  }
+
+  result.output_batch = std::move(value_request.frames.ordered_batch);
+  result.output_batch.columns.push_back(request.result_column);
+  for (std::size_t row = 0; row < result.output_batch.rows.size(); ++row) {
+    result.output_batch.rows[row].values.push_back(std::move(values.values[row]));
+  }
+  const auto output_validation = ValidateCanonicalDescriptorBatch(
+      result.output_batch, selected_node->output_descriptor_ids);
+  if (!output_validation.ok) return refuse(output_validation);
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, execution_dag);
+  if (!result_authority.ok) return refuse(result_authority);
+
+  if (pair_count_u64 > std::numeric_limits<std::size_t>::max() ||
+      effective_frame_row_reference_count >
+          std::numeric_limits<std::uint64_t>::max() / sizeof(std::size_t)) {
+    return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "navigation workspace accounting overflowed"));
+  }
+  const auto pair_count = static_cast<std::size_t>(pair_count_u64);
+  if (effective_frame_row_reference_count >
+      request.maximum_effective_row_references) {
+    return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "navigation frame reference bound was exceeded"));
+  }
+
+  result.diagnostic = {};
+  result.partition_order_comparison_count = pair_count;
+  result.effective_frame_row_reference_count =
+      effective_frame_row_reference_count;
+  result.peak_auxiliary_workspace_bytes =
+      planned_auxiliary_workspace_bytes;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
+  result.executed_physical_node_id = selected_node->physical_node_id;
+  result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
+  return result;
+}
+}  // namespace
+
+CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindow(
+    const CanonicalDescriptorLagWindowRequest& request) {
+  return ExecuteCanonicalDescriptorLagWindowBound(
+      request, request.physical_dag, request.ordered_input_batch, false);
+}
+
+CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindow(
+    const CanonicalDescriptorLagWindowRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_ordered_input_batch) {
+  return ExecuteCanonicalDescriptorLagWindowBound(
       request, borrowed_execution_dag, borrowed_ordered_input_batch, true);
 }
 

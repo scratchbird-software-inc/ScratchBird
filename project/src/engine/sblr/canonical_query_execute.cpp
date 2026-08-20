@@ -6272,6 +6272,9 @@ struct PreparedGlobalRowNumberWindowBinding {
   const api::RelationalTypeDescriptor* result_descriptor{nullptr};
   std::vector<const api::RelationalOutputRecord*> outputs;
   std::optional<api::EngineTypedValue> ntile_bucket_count_operand;
+  std::optional<std::size_t> navigation_value_column;
+  std::string window_property_uuid;
+  std::string window_frame_descriptor_uuid;
 };
 
 struct GlobalRankingWindowProfile {
@@ -6300,6 +6303,9 @@ constexpr GlobalRankingWindowProfile kGlobalCumeDistProfile{
 constexpr GlobalRankingWindowProfile kGlobalNtileProfile{
     "window.ntile.v1", "sb.window.ntile",
     "019de5fc-2400-7047-9474-232ca488c094", "NTILE", "int64"};
+constexpr GlobalRankingWindowProfile kGlobalLagProfile{
+    "window.lag.v1", "sb.window.lag",
+    "019de5fc-2400-782c-8436-9ac310301738", "LAG", "int64"};
 constexpr std::uint64_t kRealRankingRatioTextMaximumBytes = 36;
 constexpr std::uint64_t kRealRankingConversionWorkspaceMaximumBytes =
     2 * kRealRankingRatioTextMaximumBytes;
@@ -6373,9 +6379,10 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
             })
           : dag.descriptors.end();
   const bool ntile_window = profile.builtin_id == "sb.window.ntile";
+  const bool lag_window = profile.builtin_id == "sb.window.lag";
   const bool exact_argument_arity =
       invocations.size() == 1 &&
-      (ntile_window
+      ((ntile_window || lag_window)
            ? invocations.front()->argument_expression_ids.size() == 1
            : invocations.front()->argument_expression_ids.empty());
   std::vector<std::uint32_t> expected_bound_expression_ids;
@@ -6384,7 +6391,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       invocations.size() == 1 && exact_argument_arity) {
     expected_bound_expression_ids.push_back(
         typed_sort->bound_expression_ids.front());
-    if (ntile_window) {
+    if (ntile_window || lag_window) {
       expected_bound_expression_ids.push_back(
           invocations.front()->argument_expression_ids.front());
     }
@@ -6523,7 +6530,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       result_descriptor == dag.descriptors.end() || result_type_uuid.empty() ||
       result_descriptor->type_uuid != result_type_uuid ||
       result_descriptor->nullability !=
-          api::RelationalNullability::kNonNull ||
+          (lag_window ? api::RelationalNullability::kNullable
+                      : api::RelationalNullability::kNonNull) ||
       consumer.output_descriptor_ids.size() !=
           previous_logical.output_descriptor_ids.size() + 1 ||
       !std::equal(previous_logical.output_descriptor_ids.begin(),
@@ -6635,12 +6643,65 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       return result;
     }
     result.ntile_bucket_count_operand = std::move(operand);
+  } else if (lag_window) {
+    const auto argument_expression_id =
+        invocations.front()->argument_expression_ids.front();
+    const auto argument = std::ranges::find_if(
+        dag.expressions, [&](const auto& expression) {
+          return expression.expression_id == argument_expression_id;
+        });
+    const auto argument_descriptor = std::ranges::find_if(
+        dag.descriptors, [&](const auto& descriptor) {
+          return argument != dag.expressions.end() &&
+                 descriptor.descriptor_id == argument->result_descriptor_id;
+        });
+    const auto value_column =
+        argument_descriptor == dag.descriptors.end()
+            ? previous_logical.output_descriptor_ids.end()
+            : std::ranges::find(previous_logical.output_descriptor_ids,
+                                argument_descriptor->descriptor_id);
+    if (argument == dag.expressions.end() ||
+        argument->expression_kind !=
+            api::RelationalExpressionKind::kIdentifier ||
+        !argument->child_expression_ids.empty() ||
+        !argument->bound_name_uuid.has_value() ||
+        argument->function_uuid.has_value() ||
+        argument->literal_kind.has_value() ||
+        argument->literal_or_parameter_ref.has_value() ||
+        argument->operator_name.has_value() ||
+        argument_descriptor == dag.descriptors.end() ||
+        value_column == previous_logical.output_descriptor_ids.end() ||
+        argument_descriptor->descriptor_id ==
+            result_descriptor->descriptor_id ||
+        argument_descriptor->descriptor_uuid ==
+            result_descriptor->descriptor_uuid ||
+        argument_descriptor->descriptor_uuid == profile.function_uuid ||
+        argument_descriptor->type_uuid != result_type_uuid ||
+        result_descriptor->type_uuid != argument_descriptor->type_uuid ||
+        result_descriptor->collation_uuid !=
+            argument_descriptor->collation_uuid ||
+        result_descriptor->timezone_profile_id !=
+            argument_descriptor->timezone_profile_id ||
+        result_descriptor->width != argument_descriptor->width ||
+        result_descriptor->precision != argument_descriptor->precision ||
+        result_descriptor->scale != argument_descriptor->scale) {
+      result.detail = std::string(family_label) +
+                      " LAG value is not one direct canonical int64 column "
+                      "with a distinct nullable result descriptor";
+      return result;
+    }
+    result.navigation_value_column = static_cast<std::size_t>(
+        std::distance(previous_logical.output_descriptor_ids.begin(),
+                      value_column));
   }
 
   result.ok = true;
   result.invocation = invocations.front();
   result.function = &*function;
   result.result_descriptor = &*result_descriptor;
+  result.window_property_uuid = *window_property_uuid;
+  result.window_frame_descriptor_uuid =
+      window_property->window_frame_descriptor_uuid;
   return result;
 }
 
@@ -9966,6 +10027,160 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
+        step.output_row_count = window.output_batch.rows.size();
+        step.materialized_output_batch = std::move(window.output_batch);
+        step.mga_statement_context = std::move(window.mga_statement_context);
+        PublishRuntimeMemoryObservation(
+            &step, output_memory_bytes, peak_memory_bytes);
+        return step;
+      };
+  return registration;
+}
+
+exec::CanonicalPhysicalExecutorRegistration MakeLiveLagWindowRegistration(
+    exec::ExecutorColumnDescriptor result_column,
+    exec::CanonicalDescriptorOrderTerm order_term,
+    const std::size_t value_column,
+    std::string window_frame_descriptor_uuid,
+    std::string order_term_binding_evidence_uuid,
+    std::string deterministic_order_evidence_uuid,
+    std::string frame_property_binding_evidence_uuid,
+    std::string capability_uuid,
+    const std::size_t maximum_input_row_count,
+    const std::size_t maximum_pair_comparisons,
+    const std::size_t maximum_effective_row_references,
+    const GlobalRankingWindowProfile profile,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kWindow;
+  registration.implementation_id = std::string(profile.semantic_variant_id);
+  registration.executor_capability_uuid = capability_uuid;
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 = true;
+  registration.execute =
+      [result_column = std::move(result_column),
+       order_term = std::move(order_term), value_column,
+       window_frame_descriptor_uuid =
+           std::move(window_frame_descriptor_uuid),
+       order_term_binding_evidence_uuid =
+           std::move(order_term_binding_evidence_uuid),
+       deterministic_order_evidence_uuid =
+           std::move(deterministic_order_evidence_uuid),
+       frame_property_binding_evidence_uuid =
+           std::move(frame_property_binding_evidence_uuid),
+       capability_uuid = std::move(capability_uuid),
+       maximum_input_row_count, maximum_pair_comparisons,
+       maximum_effective_row_references, profile,
+       mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            node.input_physical_node_ids.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-007-WINDOW-INPUT-V1";
+          step.diagnostic.detail = std::string(profile.display_name) +
+                                   " did not receive its bounded sorted input batch";
+          return step;
+        }
+        const auto& input_batch = *inputs.front().materialized_output_batch;
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id, &*scoped_execution_dag,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-007-WINDOW-INPUT-V1";
+            step.diagnostic.detail = std::string(profile.display_name) +
+                                     " execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
+        exec::CanonicalDescriptorLagWindowRequest request;
+        request.selected_physical_node_id = node.physical_node_id;
+        request.order_term = order_term;
+        request.value_column = value_column;
+        request.result_column = result_column;
+        request.function_abi_version = 1;
+        request.builtin_id = std::string(profile.builtin_id);
+        request.function_uuid = std::string(profile.function_uuid);
+        request.window_frame_descriptor_uuid =
+            window_frame_descriptor_uuid;
+        request.order_term_binding_evidence_uuid =
+            order_term_binding_evidence_uuid;
+        request.deterministic_order_evidence_uuid =
+            deterministic_order_evidence_uuid;
+        request.frame_property_binding_evidence_uuid =
+            frame_property_binding_evidence_uuid;
+        request.executor_capability_uuid = capability_uuid;
+        request.maximum_pair_comparisons = maximum_pair_comparisons;
+        request.maximum_effective_row_references =
+            maximum_effective_row_references;
+        request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
+        auto window = exec::ExecuteCanonicalDescriptorLagWindow(
+            request, *execution_dag, input_batch);
+        if (!window.diagnostic.ok) {
+          step.diagnostic = std::move(window.diagnostic);
+          return step;
+        }
+        std::uint64_t input_memory_bytes = 0;
+        std::uint64_t output_memory_bytes = 0;
+        std::uint64_t peak_memory_bytes = 0;
+        std::uint64_t rows_examined = 0;
+        if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
+                                                 &input_memory_bytes) ||
+            !RuntimeMaterializedBatchMemoryBytes(window.output_batch,
+                                                 &output_memory_bytes) ||
+            !CheckedAdd(input_memory_bytes, output_memory_bytes,
+                        &peak_memory_bytes) ||
+            !CheckedAdd(peak_memory_bytes,
+                        window.peak_auxiliary_workspace_bytes,
+                        &peak_memory_bytes) ||
+            !CheckedAdd(
+                static_cast<std::uint64_t>(input_batch.rows.size()),
+                static_cast<std::uint64_t>(
+                    window.partition_order_comparison_count),
+                &rows_examined) ||
+            !CheckedAdd(
+                rows_examined,
+                static_cast<std::uint64_t>(
+                    window.effective_frame_row_reference_count),
+                &rows_examined) ||
+            peak_memory_bytes > node.memory_bytes_required ||
+            window.partition_order_comparison_count >
+                maximum_pair_comparisons ||
+            window.effective_frame_row_reference_count >
+                maximum_effective_row_references) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail = std::string(profile.display_name) +
+                                   " runtime work or memory observation exceeded its grant";
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = rows_examined;
         step.output_row_count = window.output_batch.rows.size();
         step.materialized_output_batch = std::move(window.output_batch);
         step.mga_statement_context = std::move(window.mga_statement_context);
@@ -14285,10 +14500,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
              current->semantic_variant_id != "window.dense-rank.v1" &&
              current->semantic_variant_id != "window.percent-rank.v1" &&
              current->semantic_variant_id != "window.cume-dist.v1" &&
-             current->semantic_variant_id != "window.ntile.v1") ||
+             current->semantic_variant_id != "window.ntile.v1" &&
+             current->semantic_variant_id != "window.lag.v1") ||
             current->logical_node_id != graph.root_logical_node_id ||
             current->bound_expression_ids.size() !=
-                (current->semantic_variant_id == "window.ntile.v1" ? 3U : 2U) ||
+                ((current->semantic_variant_id == "window.ntile.v1" ||
+                  current->semantic_variant_id == "window.lag.v1")
+                     ? 3U
+                     : 2U) ||
             current->required_property_uuids.size() != 1 ||
             current->delivered_property_uuids.size() != 2) {
           return result;
@@ -14431,6 +14650,16 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::optional<exec::CanonicalDescriptorOrderTerm>
       prepared_peer_ranking_order_term;
   GlobalRankingWindowProfile prepared_peer_ranking_profile;
+  std::optional<exec::ExecutorColumnDescriptor> prepared_navigation_window;
+  std::optional<exec::CanonicalDescriptorOrderTerm>
+      prepared_navigation_order_term;
+  std::optional<std::size_t> prepared_navigation_value_column;
+  std::string prepared_navigation_frame_descriptor_uuid;
+  std::string navigation_order_term_binding_evidence_uuid;
+  std::string navigation_frame_property_binding_evidence_uuid;
+  std::string navigation_capability_uuid;
+  std::size_t navigation_maximum_pair_comparisons = 0;
+  std::size_t navigation_maximum_effective_row_references = 0;
   std::string row_number_order_evidence_uuid;
   std::string ntile_order_term_binding_evidence_uuid;
   std::string peer_ranking_order_term_binding_evidence_uuid;
@@ -17888,13 +18117,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             node.semantic_variant_id == "window.cume-dist.v1";
         const bool ntile_window =
             node.semantic_variant_id == "window.ntile.v1";
+        const bool lag_window =
+            node.semantic_variant_id == "window.lag.v1";
         const bool peer_ranking_window =
             rank_window || dense_rank_window || percent_rank_window ||
             cume_dist_window;
         const bool real_ranking_window =
             percent_rank_window || cume_dist_window;
         const auto& ranking_profile =
-            ntile_window
+            lag_window
+                ? kGlobalLagProfile
+                : (ntile_window
                 ? kGlobalNtileProfile
                 : (cume_dist_window
                 ? kGlobalCumeDistProfile
@@ -17903,7 +18136,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                        : (dense_rank_window
                               ? kGlobalDenseRankProfile
                               : (rank_window ? kGlobalRankProfile
-                                             : kGlobalRowNumberProfile))));
+                                             : kGlobalRowNumberProfile)))));
         const std::string_view ranking_name = ranking_profile.display_name;
         const auto typed_consumer = std::ranges::find_if(
             request.relational_dag.nodes, [&](const auto& candidate) {
@@ -17912,7 +18145,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         if (typed_consumer == request.relational_dag.nodes.end() ||
             typed_consumer->node_kind != api::RelationalDagNodeKind::kWindow ||
             !prepared_sort.has_value() ||
-            ((peer_ranking_window || ntile_window) &&
+            ((peer_ranking_window || ntile_window || lag_window) &&
              (prepared_sort->expression_ordering ||
               prepared_sort->order_terms.size() != 1))) {
           return refuse(std::string(kPayloadDiagnostic),
@@ -17949,6 +18182,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           return refuse(std::string(kPayloadDiagnostic),
                         "composition NTILE bucket operand is unresolved");
         }
+        if (lag_window && !ranking.navigation_value_column.has_value()) {
+          return refuse(std::string(kPayloadDiagnostic),
+                        "composition LAG value column is unresolved");
+        }
         if (input_row_count > static_cast<std::size_t>(
                                   std::numeric_limits<std::int64_t>::max())) {
           return refuse(std::string(kPayloadDiagnostic),
@@ -17957,16 +18194,49 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         }
         const auto* output_descriptor = ranking.result_descriptor;
         api::EngineDescriptor descriptor;
-        descriptor.descriptor_uuid.canonical =
-            output_descriptor->descriptor_uuid;
-        descriptor.descriptor_kind = "scalar";
-        descriptor.canonical_type_name =
-            std::string(ranking_profile.result_type_name);
-        descriptor.encoded_descriptor =
-            "type_uuid=" + output_descriptor->type_uuid +
-            ";nullability=non_null";
+        std::uint64_t navigation_value_payload_memory = 0;
+        if (lag_window) {
+          for (const auto& row : input_batch.rows) {
+            const auto& value =
+                row.values[*ranking.navigation_value_column];
+            if (!CheckedAdd(navigation_value_payload_memory,
+                            value.encoded_value.size(),
+                            &navigation_value_payload_memory) ||
+                !CheckedAdd(navigation_value_payload_memory,
+                            value.binary_value.size(),
+                            &navigation_value_payload_memory)) {
+              return refuse(
+                  "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "composition LAG value payload size overflowed");
+            }
+          }
+          descriptor =
+              input_batch.columns[*ranking.navigation_value_column].descriptor;
+          descriptor.descriptor_uuid.canonical =
+              output_descriptor->descriptor_uuid;
+          if (!exec::DeriveCanonicalNullableDescriptorEncoding(&descriptor) ||
+              !exec::CanonicalDerivedDescriptorTypeMatches(
+                  input_batch.columns[*ranking.navigation_value_column]
+                      .descriptor,
+                  input_batch.columns[*ranking.navigation_value_column]
+                      .nullable,
+                  descriptor, true)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          "composition LAG nullable result descriptor does not "
+                          "preserve its exact source shape");
+          }
+        } else {
+          descriptor.descriptor_uuid.canonical =
+              output_descriptor->descriptor_uuid;
+          descriptor.descriptor_kind = "scalar";
+          descriptor.canonical_type_name =
+              std::string(ranking_profile.result_type_name);
+          descriptor.encoded_descriptor =
+              "type_uuid=" + output_descriptor->type_uuid +
+              ";nullability=non_null";
+        }
         exec::ExecutorColumnDescriptor ranking_column{
-            ranking.outputs.back()->output_name_utf8, descriptor, false,
+            ranking.outputs.back()->output_name_utf8, descriptor, lag_window,
             output_descriptor->descriptor_id};
         if (!api::QowCanonicalDescriptorIdentityV1(descriptor)) {
           return refuse(std::string(kPayloadDiagnostic),
@@ -17983,7 +18253,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 ranking_column.stable_name,
                 output_descriptor->descriptor_uuid,
                 output_descriptor->type_uuid,
-                exec::CanonicalResultNullability::kNonNull, std::nullopt,
+                lag_window ? exec::CanonicalResultNullability::kNullable
+                           : exec::CanonicalResultNullability::kNonNull,
+                std::nullopt,
                 std::nullopt};
         exec::DescriptorBatch output = input_batch;
         output.columns.push_back(ranking_column);
@@ -18085,7 +18357,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           if (cume_dist_window) continue;
           api::EngineTypedValue value;
-          if (ntile_window) {
+          if (lag_window) {
+            value.descriptor = descriptor;
+            if (row == 0) {
+              value.is_null = true;
+              value.state = api::EngineValueState::sql_null;
+            } else {
+              value = input_batch.rows[row - 1]
+                          .values[*ranking.navigation_value_column];
+              value.descriptor = descriptor;
+            }
+          } else if (ntile_window) {
             exec::CanonicalWindowNtileValueRequest ntile_request;
             ntile_request.function_abi_version = 1;
             ntile_request.builtin_id =
@@ -18169,7 +18451,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         state.batch = std::move(output);
         state.result_bindings = input_bindings;
         state.result_bindings.push_back(std::move(ranking_binding));
-        if (peer_ranking_window) {
+        if (lag_window) {
+          prepared_navigation_window = std::move(ranking_column);
+          prepared_navigation_order_term =
+              prepared_sort->order_terms.front();
+          prepared_navigation_value_column =
+              *ranking.navigation_value_column;
+          prepared_navigation_frame_descriptor_uuid =
+              ranking.window_frame_descriptor_uuid;
+        } else if (peer_ranking_window) {
           prepared_peer_ranking = std::move(ranking_column);
           prepared_peer_ranking_order_term =
               prepared_sort->order_terms.front();
@@ -18188,7 +18478,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         row_number_order_evidence_uuid = DerivedCanonicalUuid(
             identity_scope + ":" + prepared_sort->ordering_property_uuid,
             "node-composition.window.deterministic-order");
-        if (peer_ranking_window || ntile_window) {
+        if (peer_ranking_window || ntile_window || lag_window) {
           std::uint64_t planned_receipt_workspace_bytes = 0;
           std::uint64_t actual_receipt_workspace_bytes = 0;
           if (!exec::PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
@@ -18218,7 +18508,115 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           auxiliary_memory =
               std::max(auxiliary_memory, actual_receipt_workspace_bytes);
-          if (ntile_window) {
+          if (lag_window) {
+            navigation_order_term_binding_evidence_uuid =
+                order_term_binding_evidence_uuid;
+            navigation_frame_property_binding_evidence_uuid =
+                DerivedCanonicalUuid(
+                    identity_scope + ":" + ranking.window_property_uuid + ":" +
+                        ranking.window_frame_descriptor_uuid,
+                    "node-composition.window.frame-property-binding");
+            navigation_capability_uuid = DerivedCanonicalUuid(
+                identity_scope + ":" +
+                    ranking.result_descriptor->descriptor_uuid + ":" +
+                    navigation_order_term_binding_evidence_uuid + ":" +
+                    navigation_frame_property_binding_evidence_uuid,
+                "node-composition.window.lag.capability");
+            if (navigation_capability_uuid.empty() ||
+                navigation_capability_uuid ==
+                    navigation_order_term_binding_evidence_uuid ||
+                navigation_capability_uuid ==
+                    navigation_frame_property_binding_evidence_uuid) {
+              return refuse(
+                  std::string(kPayloadDiagnostic),
+                  "composition LAG capability identity is not independent");
+            }
+            std::uint64_t navigation_pair_count = 0;
+            std::uint64_t navigation_reference_bytes = 0;
+            std::uint64_t navigation_matrix_bytes = 0;
+            std::uint64_t navigation_metadata_bytes = 0;
+            std::uint64_t navigation_copied_row_metadata_bytes = 0;
+            std::uint64_t navigation_value_vector_bytes = 0;
+            std::uint64_t navigation_partition_index_bytes = 0;
+            std::uint64_t navigation_partition_vector_bytes = 0;
+            std::uint64_t navigation_workspace_bytes = 0;
+            if (!CheckedMultiply(input_row_count, input_row_count,
+                                 &navigation_pair_count) ||
+                !CheckedMultiply(navigation_pair_count, sizeof(std::size_t),
+                                 &navigation_reference_bytes) ||
+                !CheckedMultiply(navigation_pair_count, 2,
+                                 &navigation_matrix_bytes) ||
+                !CheckedMultiply(
+                    input_row_count,
+                    sizeof(exec::CanonicalWindowRowPeerMetadata) +
+                        sizeof(exec::CanonicalWindowEffectiveFrame),
+                    &navigation_metadata_bytes) ||
+                !CheckedMultiply(
+                    input_row_count,
+                    sizeof(exec::CanonicalWindowRowPeerMetadata),
+                    &navigation_copied_row_metadata_bytes) ||
+                !CheckedMultiply(
+                    input_row_count,
+                    2 * sizeof(api::EngineTypedValue) + sizeof(std::uint64_t),
+                    &navigation_value_vector_bytes) ||
+                !CheckedMultiply(input_row_count, sizeof(std::size_t),
+                                 &navigation_partition_index_bytes) ||
+                !CheckedMultiply(input_row_count,
+                                 sizeof(std::vector<std::size_t>),
+                                 &navigation_partition_vector_bytes) ||
+                !CheckedAdd(navigation_reference_bytes,
+                            navigation_matrix_bytes,
+                            &navigation_workspace_bytes) ||
+                !CheckedAdd(navigation_workspace_bytes,
+                            navigation_metadata_bytes,
+                            &navigation_workspace_bytes) ||
+                !CheckedAdd(navigation_workspace_bytes,
+                            navigation_copied_row_metadata_bytes,
+                            &navigation_workspace_bytes) ||
+                !CheckedAdd(navigation_workspace_bytes,
+                            navigation_value_vector_bytes,
+                            &navigation_workspace_bytes) ||
+                !CheckedAdd(navigation_workspace_bytes,
+                            navigation_partition_index_bytes,
+                            &navigation_workspace_bytes) ||
+                !CheckedAdd(navigation_workspace_bytes,
+                            navigation_partition_vector_bytes,
+                            &navigation_workspace_bytes) ||
+                !CheckedAdd(
+                    navigation_workspace_bytes,
+                    sizeof(std::vector<std::vector<std::size_t>>),
+                    &navigation_workspace_bytes) ||
+                !CheckedAdd(navigation_workspace_bytes,
+                            actual_receipt_workspace_bytes,
+                            &navigation_workspace_bytes) ||
+                !CheckedAdd(navigation_workspace_bytes, input_memory,
+                            &navigation_workspace_bytes) ||
+                !CheckedAdd(navigation_workspace_bytes, input_memory,
+                            &navigation_workspace_bytes) ||
+                !CheckedAdd(navigation_workspace_bytes,
+                            navigation_value_payload_memory,
+                            &navigation_workspace_bytes) ||
+                navigation_pair_count >
+                    std::numeric_limits<std::size_t>::max()) {
+              return refuse(
+                  "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "composition LAG navigation workspace overflowed");
+            }
+            std::uint64_t navigation_work = 0;
+            if (!CheckedMultiply(navigation_pair_count, 2,
+                                 &navigation_work) ||
+                !add_work(navigation_work)) {
+              return refuse(
+                  "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "composition LAG navigation work exceeds its admitted bound");
+            }
+            navigation_maximum_pair_comparisons = std::max<std::size_t>(
+                1, static_cast<std::size_t>(navigation_pair_count));
+            navigation_maximum_effective_row_references =
+                navigation_maximum_pair_comparisons;
+            auxiliary_memory =
+                std::max(auxiliary_memory, navigation_workspace_bytes);
+          } else if (ntile_window) {
             std::uint64_t operand_memory_bytes = 0;
             if (!RuntimeTypedValueMemoryBytes(
                     *ranking.ntile_bucket_count_operand,
@@ -18255,13 +18653,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         }
         implementation_id = std::string(ranking_profile.semantic_variant_id);
         capability_uuid =
-            ntile_window
+            lag_window
+                ? navigation_capability_uuid
+                : (ntile_window
                 ? ntile_order_term_binding_evidence_uuid
                 : (peer_ranking_window
                        ? peer_ranking_order_term_binding_evidence_uuid
-                       : window_capability_uuid);
+                       : window_capability_uuid));
         transformation_rule =
-            ntile_window
+            lag_window
+                ? "canonical.window.composed-lag.v1"
+                : (ntile_window
                 ? "canonical.window.composed-ntile.v1"
                 : (cume_dist_window
                 ? "canonical.window.composed-cume-dist.v1"
@@ -18271,7 +18673,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                               ? "canonical.window.composed-dense-rank.v1"
                               : (rank_window
                                      ? "canonical.window.composed-rank.v1"
-                                     : "canonical.window.composed-row-number.v1"))));
+                                     : "canonical.window.composed-row-number.v1")))));
         physical_kind = exec::PhysicalNodeKind::kWindow;
         required_property_uuids = node.required_property_uuids;
         delivered_property_uuids = node.delivered_property_uuids;
@@ -19026,6 +19428,23 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             ntile_order_term_binding_evidence_uuid,
             row_number_order_evidence_uuid,
             ntile_order_term_binding_evidence_uuid, sort_input_row_count,
+            request.context));
+  }
+  if (prepared_navigation_window.has_value() &&
+      prepared_navigation_order_term.has_value() &&
+      prepared_navigation_value_column.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveLagWindowRegistration(
+            *prepared_navigation_window,
+            *prepared_navigation_order_term,
+            *prepared_navigation_value_column,
+            prepared_navigation_frame_descriptor_uuid,
+            navigation_order_term_binding_evidence_uuid,
+            row_number_order_evidence_uuid,
+            navigation_frame_property_binding_evidence_uuid,
+            navigation_capability_uuid,
+            sort_input_row_count, navigation_maximum_pair_comparisons,
+            navigation_maximum_effective_row_references, kGlobalLagProfile,
             request.context));
   }
   if (prepared_peer_ranking.has_value() &&
@@ -50754,6 +51173,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   std::optional<exec::CanonicalDescriptorOrderTerm>
       prepared_heap_peer_ranking_order_term;
   GlobalRankingWindowProfile prepared_heap_peer_ranking_profile;
+  std::optional<exec::ExecutorColumnDescriptor>
+      prepared_heap_navigation_window;
+  std::optional<exec::CanonicalDescriptorOrderTerm>
+      prepared_heap_navigation_order_term;
+  std::optional<std::size_t> prepared_heap_navigation_value_column;
+  std::string prepared_heap_navigation_frame_descriptor_uuid;
+  std::string heap_navigation_order_term_binding_evidence_uuid;
+  std::string heap_navigation_frame_property_binding_evidence_uuid;
   std::string window_capability_uuid;
   std::string heap_ntile_order_term_binding_evidence_uuid;
   std::string heap_peer_ranking_order_term_binding_evidence_uuid;
@@ -50769,11 +51196,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         window_node->semantic_variant_id == "window.cume-dist.v1";
     const bool ntile_window =
         window_node->semantic_variant_id == "window.ntile.v1";
+    const bool lag_window =
+        window_node->semantic_variant_id == "window.lag.v1";
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
     const auto& ranking_profile =
-        ntile_window
+        lag_window
+            ? kGlobalLagProfile
+            : (ntile_window
             ? kGlobalNtileProfile
             : (cume_dist_window
             ? kGlobalCumeDistProfile
@@ -50782,7 +51213,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                    : (dense_rank_window
                           ? kGlobalDenseRankProfile
                           : (rank_window ? kGlobalRankProfile
-                                         : kGlobalRowNumberProfile))));
+                                         : kGlobalRowNumberProfile)))));
     const std::string_view ranking_name = ranking_profile.display_name;
     const auto logical_window = std::ranges::find_if(
         graph.nodes, [&](const auto& candidate) {
@@ -50822,25 +51253,61 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
                     "object-backed NTILE bucket operand is unresolved");
     }
+    if (lag_window && !ranking.navigation_value_column.has_value()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+                    "object-backed LAG value column is unresolved");
+    }
     const auto* output_descriptor = ranking.result_descriptor;
     api::EngineDescriptor descriptor;
-    descriptor.descriptor_uuid.canonical =
-        output_descriptor->descriptor_uuid;
-    descriptor.descriptor_kind = "scalar";
-    descriptor.canonical_type_name =
-        std::string(ranking_profile.result_type_name);
-    descriptor.encoded_descriptor =
-        "type_uuid=" + output_descriptor->type_uuid +
-        ";nullability=non_null";
+    if (lag_window) {
+      if (*ranking.navigation_value_column >=
+          admission.current_relation_projection_descriptors.size()) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+                      "object-backed LAG source descriptor is unresolved");
+      }
+      const auto& source_descriptor =
+          admission.current_relation_projection_descriptors
+              [*ranking.navigation_value_column];
+      const auto source_relational_descriptor = std::ranges::find_if(
+          dag.descriptors, [&](const auto& candidate) {
+            return candidate.descriptor_id ==
+                   sort_node->output_descriptor_ids
+                       [*ranking.navigation_value_column];
+          });
+      descriptor = source_descriptor;
+      descriptor.descriptor_uuid.canonical =
+          output_descriptor->descriptor_uuid;
+      if (source_relational_descriptor == dag.descriptors.end() ||
+          !exec::DeriveCanonicalNullableDescriptorEncoding(&descriptor) ||
+          !exec::CanonicalDerivedDescriptorTypeMatches(
+              source_descriptor,
+              source_relational_descriptor->nullability ==
+                  api::RelationalNullability::kNullable,
+              descriptor, true)) {
+        return refuse(
+            "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+            "object-backed LAG nullable result descriptor does not preserve "
+            "its exact source shape");
+      }
+    } else {
+      descriptor.descriptor_uuid.canonical =
+          output_descriptor->descriptor_uuid;
+      descriptor.descriptor_kind = "scalar";
+      descriptor.canonical_type_name =
+          std::string(ranking_profile.result_type_name);
+      descriptor.encoded_descriptor =
+          "type_uuid=" + output_descriptor->type_uuid +
+          ";nullability=non_null";
+    }
     exec::ExecutorColumnDescriptor ranking_column{
-        ranking.outputs.back()->output_name_utf8, descriptor, false,
+        ranking.outputs.back()->output_name_utf8, descriptor, lag_window,
         output_descriptor->descriptor_id};
     if (!api::QowCanonicalDescriptorIdentityV1(descriptor)) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
                     "object-backed " + std::string(ranking_name) +
                         " descriptor is invalid");
     }
-    if (peer_ranking_window || ntile_window) {
+    if (peer_ranking_window || ntile_window || lag_window) {
       if (heap_order_terms.size() != 1) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
                       "object-backed " + std::string(ranking_name) +
@@ -50869,7 +51336,35 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                       "object-backed " + std::string(ranking_name) +
                           " order-term receipt is unresolved");
       }
-      if (ntile_window) {
+      if (lag_window) {
+        prepared_heap_navigation_window = std::move(ranking_column);
+        prepared_heap_navigation_order_term =
+            heap_descriptor_order_terms.front();
+        prepared_heap_navigation_value_column =
+            *ranking.navigation_value_column;
+        prepared_heap_navigation_frame_descriptor_uuid =
+            ranking.window_frame_descriptor_uuid;
+        heap_navigation_order_term_binding_evidence_uuid =
+            order_term_binding_evidence_uuid;
+        heap_navigation_frame_property_binding_evidence_uuid =
+            DerivedCanonicalUuid(
+                identity_scope + ":" + ranking.window_property_uuid + ":" +
+                    ranking.window_frame_descriptor_uuid,
+                "heap-window.frame-property-binding");
+        window_capability_uuid = DerivedCanonicalUuid(
+            identity_scope + ":" + output_descriptor->descriptor_uuid + ":" +
+                heap_navigation_order_term_binding_evidence_uuid + ":" +
+                heap_navigation_frame_property_binding_evidence_uuid,
+            "heap-window.lag.capability");
+        if (window_capability_uuid.empty() ||
+            window_capability_uuid ==
+                heap_navigation_order_term_binding_evidence_uuid ||
+            window_capability_uuid ==
+                heap_navigation_frame_property_binding_evidence_uuid) {
+          return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+                        "object-backed LAG capability identity is not independent");
+        }
+      } else if (ntile_window) {
         prepared_heap_ntile = std::move(ranking_column);
         prepared_heap_ntile_order_term =
             heap_descriptor_order_terms.front();
@@ -50903,7 +51398,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          window_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kWindow,
          exec::PhysicalNodeKind::kWindow,
-         ntile_window
+         lag_window
+             ? "canonical.heap.window.lag.v1"
+             : (ntile_window
              ? "canonical.heap.window.ntile.v1"
              : (cume_dist_window
              ? "canonical.heap.window.cume-dist.v1"
@@ -50912,7 +51409,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                     : (dense_rank_window
                            ? "canonical.heap.window.dense-rank.v1"
                            : (rank_window ? "canonical.heap.window.rank.v1"
-                                          : "canonical.heap.window.row-number.v1")))),
+                                          : "canonical.heap.window.row-number.v1"))))),
          1,
          planning_request.optimizer_request.resource.memory_budget_bytes,
          1, 1, window_node->required_property_uuids,
@@ -51094,14 +51591,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                  : (project_composition
                  ? "object-backed heap hidden-column PROJECT composition"
                  : (window_composition
-                        ? (prepared_heap_ntile.has_value()
+                        ? (prepared_heap_navigation_window.has_value()
+                               ? "object-backed heap LAG composition"
+                               : (prepared_heap_ntile.has_value()
                                ? "object-backed heap NTILE composition"
                                : (prepared_heap_peer_ranking.has_value()
                                ? "object-backed heap " +
                                      std::string(prepared_heap_peer_ranking_profile
                                                      .display_name) +
                                      " composition"
-                               : "object-backed heap ROW_NUMBER composition"))
+                               : "object-backed heap ROW_NUMBER composition")))
                         : (sort_composition
                                ? "object-backed heap ORDER BY composition"
                                : (filter_composition
@@ -51245,7 +51744,28 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
               input.context));
     }
     if (window_composition) {
-      if (prepared_heap_ntile.has_value() &&
+      if (prepared_heap_navigation_window.has_value() &&
+          prepared_heap_navigation_order_term.has_value() &&
+          prepared_heap_navigation_value_column.has_value()) {
+        selected.available_executors.push_back(
+            MakeLiveLagWindowRegistration(
+                *prepared_heap_navigation_window,
+                *prepared_heap_navigation_order_term,
+                *prepared_heap_navigation_value_column,
+                prepared_heap_navigation_frame_descriptor_uuid,
+                heap_navigation_order_term_binding_evidence_uuid,
+                window_order_evidence_uuid,
+                heap_navigation_frame_property_binding_evidence_uuid,
+                window_capability_uuid,
+                maximum_output_rows,
+                std::max<std::size_t>(
+                    1, static_cast<std::size_t>(
+                           maximum_pair_comparisons_u64)),
+                std::max<std::size_t>(
+                    1, static_cast<std::size_t>(
+                           maximum_pair_comparisons_u64)),
+                kGlobalLagProfile, input.context));
+      } else if (prepared_heap_ntile.has_value() &&
           prepared_heap_ntile_order_term.has_value() &&
           prepared_heap_ntile_bucket_count_operand.has_value()) {
         selected.available_executors.push_back(

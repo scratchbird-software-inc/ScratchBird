@@ -593,22 +593,51 @@ bool TemporalThreshold(const api::EngineTypedValue& current,
 bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
   const auto row_count = input.ordered_batch.rows.size();
   const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* selected_input_node = nullptr;
   for (const auto& node : input.physical_dag.nodes) {
     if (node.physical_node_id == input.executed_physical_node_id) {
       selected_node = &node;
       break;
     }
   }
-  if (selected_node == nullptr ||
+  if (selected_node != nullptr &&
+      selected_node->input_physical_node_ids.size() == 1) {
+    for (const auto& node : input.physical_dag.nodes) {
+      if (node.physical_node_id ==
+          selected_node->input_physical_node_ids.front()) {
+        selected_input_node = &node;
+        break;
+      }
+    }
+  }
+  const bool direct_stage =
+      !input.operator_local_stage &&
+      input.operator_local_parent_implementation_id.empty() &&
+      selected_node != nullptr &&
+      selected_node->implementation_id == "window.partition-order-peer.v1";
+  const bool operator_local_stage =
+      input.operator_local_stage &&
+      input.operator_local_parent_implementation_id == "window.lag.v1" &&
+      selected_node != nullptr && selected_input_node != nullptr &&
+      selected_node->implementation_id ==
+          input.operator_local_parent_implementation_id &&
+      selected_node->output_descriptor_ids.size() ==
+          selected_input_node->output_descriptor_ids.size() + 1 &&
+      std::equal(selected_input_node->output_descriptor_ids.begin(),
+                 selected_input_node->output_descriptor_ids.end(),
+                 selected_node->output_descriptor_ids.begin());
+  if (selected_node == nullptr || selected_input_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kWindow ||
-      selected_node->implementation_id !=
-          "window.partition-order-peer.v1" ||
+      (!direct_stage && !operator_local_stage) ||
       selected_node->physical_node_id !=
           input.physical_dag.root_physical_node_id) {
     return false;
   }
+  const auto& stage_output_descriptor_ids =
+      operator_local_stage ? selected_input_node->output_descriptor_ids
+                           : selected_node->output_descriptor_ids;
   const auto payload_validation = ValidateCanonicalDescriptorBatch(
-      input.ordered_batch, selected_node->output_descriptor_ids);
+      input.ordered_batch, stage_output_descriptor_ids);
   const auto& comparison_batch = ComparisonBatch(input);
   std::vector<std::uint32_t> comparison_descriptor_ids;
   comparison_descriptor_ids.reserve(comparison_batch.columns.size());
@@ -1466,6 +1495,9 @@ CanonicalWindowFrameResult ExecuteCanonicalWindowFrames(
   result.empty_state_uses_optional_bounds = true;
   result.base_frame_constructed_before_exclusion = true;
   result.exactly_one_exclusion_consumed = true;
+  result.operator_local_stage = request.partition_order.operator_local_stage;
+  result.operator_local_parent_implementation_id =
+      request.partition_order.operator_local_parent_implementation_id;
   result.authority = request.partition_order.authority;
   result.mga_authority = request.mga_authority;
   result.mga_statement_context = request.mga_authority.statement_context;

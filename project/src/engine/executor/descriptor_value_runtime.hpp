@@ -1931,6 +1931,38 @@ struct CanonicalDescriptorNtileResult {
   PhysicalMgaStatementContext mga_statement_context;
 };
 
+struct CanonicalDescriptorLagWindowRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch ordered_input_batch;
+  CanonicalDescriptorOrderTerm order_term;
+  std::size_t value_column = 0;
+  ExecutorColumnDescriptor result_column;
+  std::uint16_t function_abi_version = 0;
+  std::string builtin_id;
+  std::string function_uuid;
+  std::string window_frame_descriptor_uuid;
+  std::string order_term_binding_evidence_uuid;
+  std::string deterministic_order_evidence_uuid;
+  std::string frame_property_binding_evidence_uuid;
+  std::string executor_capability_uuid;
+  std::size_t maximum_pair_comparisons = 0;
+  std::size_t maximum_effective_row_references = 0;
+  CanonicalExecutionMgaAuthority mga_authority;
+};
+
+struct CanonicalDescriptorLagWindowResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::size_t partition_order_comparison_count = 0;
+  std::size_t effective_frame_row_reference_count = 0;
+  std::uint64_t peak_auxiliary_workspace_bytes = 0;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
+};
+
 enum class CanonicalAggregateExecutionStrategy : std::uint8_t {
   unknown = 0,
   serial,
@@ -2563,6 +2595,12 @@ struct CanonicalWindowPartitionOrderRequest {
   // term compares equal; it is never part of peer equality.
   std::string term_binding_evidence_uuid;
   std::string deterministic_tie_evidence_uuid;
+  // Exact navigation implementations may invoke QOW-401 as an
+  // operator-local stage of their immutable optimizer-published Window node.
+  // The published DAG remains byte-for-byte unchanged; this field names the
+  // parent implementation whose input schema is the stage output schema.
+  // Empty selects an independently published partition/order/peer node.
+  std::string operator_local_parent_implementation_id;
   CanonicalExecutionMgaAuthority mga_authority;
   std::size_t maximum_term_count = 64;
   std::size_t maximum_pair_comparisons = 1048576;
@@ -2592,6 +2630,8 @@ struct CanonicalWindowPartitionOrderResult {
   bool stable_ties_preserved = false;
   bool weaker_peer_recomputation_forbidden = false;
   bool final_query_order_guaranteed = false;
+  bool operator_local_stage = false;
+  std::string operator_local_parent_implementation_id;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   PhysicalMgaStatementContext mga_statement_context;
   std::string selected_plan_uuid;
@@ -2692,6 +2732,8 @@ struct CanonicalWindowFrameResult {
   bool empty_state_uses_optional_bounds = false;
   bool base_frame_constructed_before_exclusion = false;
   bool exactly_one_exclusion_consumed = false;
+  bool operator_local_stage = false;
+  std::string operator_local_parent_implementation_id;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   CanonicalExecutionMgaAuthority mga_authority;
   PhysicalMgaStatementContext mga_statement_context;
@@ -3105,6 +3147,12 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtile(
     const CanonicalDescriptorNtileRequest& request);
 CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtile(
     const CanonicalDescriptorNtileRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_ordered_input_batch);
+CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindow(
+    const CanonicalDescriptorLagWindowRequest& request);
+CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindow(
+    const CanonicalDescriptorLagWindowRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch);
 CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(

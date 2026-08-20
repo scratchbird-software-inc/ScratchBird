@@ -7599,16 +7599,43 @@ bool CanonicalWindowFrameEvidenceValid(
     const CanonicalWindowFrameResult& frames) {
   const auto row_count = frames.ordered_batch.rows.size();
   const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* selected_input_node = nullptr;
   for (const auto& node : frames.physical_dag.nodes) {
     if (node.physical_node_id == frames.executed_physical_node_id) {
       selected_node = &node;
       break;
     }
   }
+  if (selected_node != nullptr &&
+      selected_node->input_physical_node_ids.size() == 1) {
+    for (const auto& node : frames.physical_dag.nodes) {
+      if (node.physical_node_id ==
+          selected_node->input_physical_node_ids.front()) {
+        selected_input_node = &node;
+        break;
+      }
+    }
+  }
+  const bool direct_stage =
+      !frames.operator_local_stage &&
+      frames.operator_local_parent_implementation_id.empty() &&
+      selected_node != nullptr &&
+      selected_node->implementation_id == "window.partition-order-peer.v1";
+  const bool operator_local_stage =
+      frames.operator_local_stage &&
+      frames.operator_local_parent_implementation_id == "window.lag.v1" &&
+      selected_node != nullptr && selected_input_node != nullptr &&
+      selected_node->implementation_id ==
+          frames.operator_local_parent_implementation_id &&
+      selected_node->output_descriptor_ids.size() ==
+          selected_input_node->output_descriptor_ids.size() + 1 &&
+      std::equal(selected_input_node->output_descriptor_ids.begin(),
+                 selected_input_node->output_descriptor_ids.end(),
+                 selected_node->output_descriptor_ids.begin());
   if (selected_node == nullptr ||
+      selected_input_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kWindow ||
-      selected_node->implementation_id !=
-          "window.partition-order-peer.v1" ||
+      (!direct_stage && !operator_local_stage) ||
       selected_node->input_physical_node_ids.size() != 1 ||
       selected_node->physical_node_id !=
           frames.physical_dag.root_physical_node_id ||
@@ -7616,8 +7643,11 @@ bool CanonicalWindowFrameEvidenceValid(
       frames.causal_counter_id != selected_node->causal_counter_id) {
     return false;
   }
+  const auto& stage_output_descriptor_ids =
+      operator_local_stage ? selected_input_node->output_descriptor_ids
+                           : selected_node->output_descriptor_ids;
   const auto batch_diagnostic = ValidateCanonicalDescriptorBatch(
-      frames.ordered_batch, selected_node->output_descriptor_ids);
+      frames.ordered_batch, stage_output_descriptor_ids);
   if (!frames.diagnostic.ok || !frames.every_frame_operand_consumed ||
       !frames.empty_state_uses_optional_bounds ||
       !frames.base_frame_constructed_before_exclusion ||
@@ -8490,6 +8520,25 @@ static CanonicalWindowValueResult ExecuteCanonicalWindowValueStrategy(
   if (!CanonicalWindowFrameEvidenceValid(request.frames)) {
     return refuse("QOW-DIAG-WINDOW-FRAME",
                   "window value input is not canonical QOW-402 frame evidence");
+  }
+  if (request.frames.operator_local_stage) {
+    const auto selected_node = std::ranges::find_if(
+        request.frames.physical_dag.nodes, [&](const auto& node) {
+          return node.physical_node_id ==
+                 request.frames.executed_physical_node_id;
+        });
+    if (request.frames.operator_local_parent_implementation_id !=
+            "window.lag.v1" ||
+        request.function != CanonicalWindowValueFunction::lag ||
+        selected_node == request.frames.physical_dag.nodes.end() ||
+        selected_node->output_descriptor_ids.empty() ||
+        request.result_column.descriptor_id == 0 ||
+        selected_node->output_descriptor_ids.back() !=
+            request.result_column.descriptor_id) {
+      return refuse(
+          "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
+          "operator-local LAG evidence is not bound to its published result");
+    }
   }
   if (request.parser_execution_authority_claimed ||
       request.transaction_finality_claimed ||
