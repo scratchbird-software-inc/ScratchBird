@@ -18417,23 +18417,18 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   amount.is_null) {
                 continue;
               }
-              if (amount.descriptor.canonical_type_name != "int64") {
+              if (!exec::IsCanonicalBoundedSignedIntegerDescriptor(
+                      amount.descriptor)) {
                 return refuse(std::string(kPayloadDiagnostic),
-                              "composed grouped SUM input is not int64");
+                              "composed grouped SUM input is not "
+                              "bounded-signed");
               }
-              std::int64_t decoded = 0;
-              const auto [end, error] = std::from_chars(
-                  amount.encoded_value.data(),
-                  amount.encoded_value.data() +
-                      amount.encoded_value.size(),
-                  decoded);
-              if (error != std::errc{} ||
-                  end != amount.encoded_value.data() +
-                             amount.encoded_value.size()) {
+              const auto decoded = exec::DecodeInt64Value(amount);
+              if (!decoded.ok()) {
                 return refuse(std::string(kPayloadDiagnostic),
                               "composed grouped SUM input is invalid");
               }
-              group->sum += static_cast<__int128>(decoded);
+              group->sum += static_cast<__int128>(decoded.value);
               group->has_sum = true;
             }
           }
