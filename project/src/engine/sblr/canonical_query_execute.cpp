@@ -6253,6 +6253,8 @@ struct PreparedGlobalRowNumberWindowBinding {
   std::vector<const api::RelationalOutputRecord*> outputs;
 };
 
+// The optional Project-root form preserves a narrower public SELECT list and
+// additionally binds every Window passthrough to its ordered input expression.
 PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalPropertyCatalog& logical_properties,
@@ -6263,7 +6265,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
     const std::size_t materialized_column_count,
     const std::size_t result_binding_count,
     const std::string& int64_type_uuid,
-    const std::string_view family_label) {
+    const std::string_view family_label,
+    const bool allow_project_root = false) {
   constexpr std::string_view kRowNumberFunctionUuid =
       "019de5fc-2400-7539-bcce-00eef3ae7220";
   PreparedGlobalRowNumberWindowBinding result;
@@ -6289,6 +6292,16 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
   }
   std::ranges::sort(result.outputs, {},
                     &api::RelationalOutputRecord::ordinal);
+  const auto typed_root = std::ranges::find_if(
+      dag.nodes, [&](const auto& node) {
+        return node.node_id == dag.root_node_id;
+      });
+  const bool exact_window_position =
+      consumer.node_id == dag.root_node_id ||
+      (allow_project_root && typed_root != dag.nodes.end() &&
+       typed_root->node_kind == api::RelationalDagNodeKind::kProject &&
+       typed_root->input_node_ids ==
+           std::vector<std::uint32_t>{consumer.node_id});
 
   const auto typed_sort = std::ranges::find_if(
       dag.nodes, [&](const auto& node) {
@@ -6308,6 +6321,57 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
                      invocations.front()->result_descriptor_id;
             })
           : dag.descriptors.end();
+  std::uint32_t input_lineage_node_id = 0;
+  bool input_lineage_exact = !allow_project_root;
+  if (allow_project_root) {
+    input_lineage_exact =
+        typed_sort != dag.nodes.end() &&
+        typed_sort->input_node_ids.size() == 1;
+  }
+  if (allow_project_root && input_lineage_exact) {
+    input_lineage_node_id = typed_sort->input_node_ids.front();
+    std::unordered_set<std::uint32_t> lineage_visited;
+    while (input_lineage_exact &&
+           std::ranges::none_of(dag.outputs, [&](const auto& output) {
+             return output.relation_node_id == input_lineage_node_id;
+           })) {
+      if (!lineage_visited.insert(input_lineage_node_id).second) {
+        input_lineage_exact = false;
+        break;
+      }
+      const auto lineage_node = std::ranges::find_if(
+          dag.nodes, [&](const auto& node) {
+            return node.node_id == input_lineage_node_id;
+          });
+      if (lineage_node == dag.nodes.end() ||
+          (lineage_node->node_kind != api::RelationalDagNodeKind::kFilter &&
+           lineage_node->node_kind != api::RelationalDagNodeKind::kSort) ||
+          lineage_node->input_node_ids.size() != 1) {
+        input_lineage_exact = false;
+        break;
+      }
+      const auto lineage_input = std::ranges::find_if(
+          dag.nodes, [&](const auto& node) {
+            return node.node_id == lineage_node->input_node_ids.front();
+          });
+      if (lineage_input == dag.nodes.end() ||
+          lineage_node->output_descriptor_ids !=
+              lineage_input->output_descriptor_ids) {
+        input_lineage_exact = false;
+        break;
+      }
+      input_lineage_node_id = lineage_input->node_id;
+    }
+  }
+  std::vector<const api::RelationalOutputRecord*> input_outputs;
+  for (const auto& output : dag.outputs) {
+    if (input_lineage_exact &&
+        output.relation_node_id == input_lineage_node_id) {
+      input_outputs.push_back(&output);
+    }
+  }
+  std::ranges::sort(input_outputs, {},
+                    &api::RelationalOutputRecord::ordinal);
   const bool ordered_input =
       previous_logical.node_kind ==
           plan::CanonicalLogicalRelationalNodeKind::kSort &&
@@ -6322,6 +6386,10 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
   bool passthrough_outputs =
       result.outputs.size() ==
           previous_logical.output_descriptor_ids.size() + 1 &&
+      (!allow_project_root ||
+       (input_lineage_exact &&
+        input_outputs.size() ==
+            previous_logical.output_descriptor_ids.size())) &&
       materialized_column_count ==
           previous_logical.output_descriptor_ids.size() &&
       result_binding_count == previous_logical.output_descriptor_ids.size();
@@ -6330,6 +6398,12 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
        ordinal < previous_logical.output_descriptor_ids.size();
        ++ordinal) {
     passthrough_outputs =
+        (!allow_project_root ||
+         (input_outputs[ordinal]->ordinal == ordinal &&
+          input_outputs[ordinal]->descriptor_id ==
+              previous_logical.output_descriptor_ids[ordinal] &&
+          result.outputs[ordinal]->expression_id ==
+              input_outputs[ordinal]->expression_id)) &&
         result.outputs[ordinal]->ordinal == ordinal &&
         result.outputs[ordinal]->visible &&
         result.outputs[ordinal]->descriptor_id ==
@@ -6337,7 +6411,12 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
   }
 
   if (consumer.semantic_variant_id != "window.row-number.v1" ||
-      consumer.node_id != dag.root_node_id || !ordered_input ||
+      !exact_window_position ||
+      consumer.input_node_ids !=
+          std::vector<std::uint32_t>{previous_logical.logical_node_id} ||
+      logical_consumer.input_logical_node_ids !=
+          std::vector<std::uint32_t>{previous_logical.logical_node_id} ||
+      !ordered_input ||
       definitions.size() != 1 || invocations.size() != 1 ||
       !passthrough_outputs || !consumer.required_object_uuids.empty() ||
       consumer.bound_expression_ids !=
@@ -49588,9 +49667,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                                              ? 0
                                              : scan_node->node_id))))));
   const auto expected_project_input =
-      sort_composition
-          ? sort_node->node_id
-          : (filter_composition ? filter_node->node_id : 0);
+      window_composition
+          ? window_node->node_id
+          : (sort_composition
+                 ? sort_node->node_id
+                 : (filter_composition ? filter_node->node_id : 0));
   const auto expected_limit_input =
       aggregate_composition
           ? aggregate_node->node_id
@@ -49627,8 +49708,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
        (sort_composition &&
         window_node->input_node_ids ==
             std::vector<std::uint32_t>{sort_node->node_id} &&
-        !project_composition && !aggregate_composition &&
-        !limit_composition)) &&
+        !aggregate_composition && !limit_composition)) &&
       (!aggregate_composition ||
        (aggregate_node->input_node_ids ==
             std::vector<std::uint32_t>{
@@ -49935,7 +50015,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         dag, admission.request.logical_properties, *window_node,
         *logical_window, *logical_sort, heap_sort_binding,
         sort_node->output_descriptor_ids.size(),
-        sort_node->output_descriptor_ids.size(), int64_type_uuid, "heap");
+        sort_node->output_descriptor_ids.size(), int64_type_uuid, "heap",
+        project_composition);
     if (!row_number.ok) {
       return refuse(row_number.diagnostic_id, row_number.detail);
     }
@@ -49976,16 +50057,79 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   std::vector<std::size_t> projected_columns;
   std::string project_capability_uuid;
   if (project_composition) {
-    std::unordered_set<std::size_t> projected_source_ordinals;
-    for (const auto descriptor_id : project_node->output_descriptor_ids) {
-      const auto source_descriptor = std::ranges::find(
-          scan_node->output_descriptor_ids, descriptor_id);
-      if (source_descriptor == scan_node->output_descriptor_ids.end()) {
+    const auto& project_input_descriptor_ids =
+        window_composition ? window_node->output_descriptor_ids
+                           : scan_node->output_descriptor_ids;
+    const auto project_lineage_node_id =
+        window_composition ? window_node->node_id : scan_node->node_id;
+    std::vector<const api::RelationalOutputRecord*> project_outputs;
+    std::vector<const api::RelationalOutputRecord*> project_input_outputs;
+    for (const auto& output : dag.outputs) {
+      if (output.relation_node_id == project_node->node_id) {
+        project_outputs.push_back(&output);
+      }
+      if (output.relation_node_id == project_lineage_node_id) {
+        project_input_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(project_outputs, {},
+                      &api::RelationalOutputRecord::ordinal);
+    std::ranges::sort(project_input_outputs, {},
+                      &api::RelationalOutputRecord::ordinal);
+    if (project_outputs.size() !=
+            project_node->output_descriptor_ids.size() ||
+        project_node->bound_expression_ids.size() !=
+            project_outputs.size() ||
+        project_input_outputs.size() !=
+            project_input_descriptor_ids.size()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-V1",
+                    "object-backed PROJECT output binding is incomplete");
+    }
+    for (std::size_t ordinal = 0; ordinal < project_input_outputs.size();
+         ++ordinal) {
+      if (project_input_outputs[ordinal]->ordinal != ordinal ||
+          project_input_outputs[ordinal]->descriptor_id !=
+              project_input_descriptor_ids[ordinal]) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-V1",
-                      "object-backed PROJECT output is not supplied by its source");
+                      "object-backed PROJECT input lineage is incomplete");
+      }
+    }
+    std::unordered_set<std::size_t> projected_source_ordinals;
+    for (std::size_t ordinal = 0; ordinal < project_outputs.size();
+         ++ordinal) {
+      const auto& output = *project_outputs[ordinal];
+      const auto expression = std::ranges::find_if(
+          dag.expressions, [&](const auto& candidate) {
+            return candidate.expression_id ==
+                   project_node->bound_expression_ids[ordinal];
+          });
+      if (expression == dag.expressions.end() || !output.visible ||
+          output.ordinal != ordinal ||
+          output.expression_id !=
+              project_node->bound_expression_ids[ordinal] ||
+          output.descriptor_id !=
+              project_node->output_descriptor_ids[ordinal] ||
+          expression->result_descriptor_id != output.descriptor_id) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-V1",
+                      "object-backed PROJECT expression binding is not "
+                      "exact");
+      }
+      const auto descriptor_id = output.descriptor_id;
+      const auto source_descriptor = std::ranges::find(
+          project_input_descriptor_ids, descriptor_id);
+      if (source_descriptor == project_input_descriptor_ids.end()) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-V1",
+                      "object-backed PROJECT output is not supplied by its "
+                      "input");
       }
       const auto source_ordinal = static_cast<std::size_t>(std::distance(
-          scan_node->output_descriptor_ids.begin(), source_descriptor));
+          project_input_descriptor_ids.begin(), source_descriptor));
+      if (project_input_outputs[source_ordinal]->expression_id !=
+          project_node->bound_expression_ids[ordinal]) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-V1",
+                      "object-backed PROJECT does not reference its exact "
+                      "input expression");
+      }
       if (!projected_source_ordinals.insert(source_ordinal).second) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-V1",
                       "object-backed PROJECT repeats a source column");
@@ -49998,7 +50142,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             projected_columns.size() ||
         projected_columns.empty() ||
         projected_columns.size() >=
-            scan_node->output_descriptor_ids.size()) {
+            project_input_descriptor_ids.size()) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-V1",
                     "object-backed hidden-column PROJECT binding is not exact");
     }

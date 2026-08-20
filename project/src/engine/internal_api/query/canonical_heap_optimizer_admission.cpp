@@ -662,9 +662,76 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                                                         ? filter_node
                                                         : scan_node)))));
   const auto expected_project_input =
-      sort_node != nullptr
-          ? sort_node->node_id
-          : (filter_node == nullptr ? 0 : filter_node->node_id);
+      window_node != nullptr
+          ? window_node->node_id
+          : (sort_node != nullptr
+                 ? sort_node->node_id
+                 : (filter_node == nullptr ? 0 : filter_node->node_id));
+  // FILTER and SORT are schema-preserving and intentionally own no output
+  // records in this profile.  Project lineage therefore resolves at the
+  // Window when present, otherwise at the Scan.
+  const auto* project_input_node =
+      window_node != nullptr ? window_node : scan_node;
+  bool exact_project_outputs = project_node == nullptr;
+  if (project_node != nullptr && project_input_node != nullptr &&
+      project_node->bound_expression_ids.size() ==
+          project_node->output_descriptor_ids.size()) {
+    std::vector<const RelationalOutputRecord*> project_outputs;
+    std::vector<const RelationalOutputRecord*> project_input_outputs;
+    for (const auto& output : relational.outputs) {
+      if (output.relation_node_id == project_node->node_id) {
+        project_outputs.push_back(&output);
+      }
+      if (output.relation_node_id == project_input_node->node_id) {
+        project_input_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(project_outputs, {},
+                      &RelationalOutputRecord::ordinal);
+    std::ranges::sort(project_input_outputs, {},
+                      &RelationalOutputRecord::ordinal);
+    exact_project_outputs =
+        project_outputs.size() == project_node->output_descriptor_ids.size() &&
+        project_input_outputs.size() ==
+            project_input_node->output_descriptor_ids.size();
+    for (std::size_t ordinal = 0;
+         exact_project_outputs && ordinal < project_input_outputs.size();
+         ++ordinal) {
+      exact_project_outputs =
+          project_input_outputs[ordinal]->ordinal == ordinal &&
+          project_input_outputs[ordinal]->descriptor_id ==
+              project_input_node->output_descriptor_ids[ordinal];
+    }
+    for (std::size_t ordinal = 0;
+         exact_project_outputs && ordinal < project_outputs.size();
+         ++ordinal) {
+      const auto expression = std::ranges::find_if(
+          relational.expressions, [&](const auto& candidate) {
+            return candidate.expression_id ==
+                   project_node->bound_expression_ids[ordinal];
+          });
+      const auto source_descriptor = std::ranges::find(
+          project_input_node->output_descriptor_ids,
+          project_node->output_descriptor_ids[ordinal]);
+      const auto source_ordinal = static_cast<std::size_t>(std::distance(
+          project_input_node->output_descriptor_ids.begin(),
+          source_descriptor));
+      exact_project_outputs =
+          expression != relational.expressions.end() &&
+          source_descriptor !=
+              project_input_node->output_descriptor_ids.end() &&
+          project_input_outputs[source_ordinal]->expression_id ==
+              project_node->bound_expression_ids[ordinal] &&
+          project_outputs[ordinal]->ordinal == ordinal &&
+          project_outputs[ordinal]->visible &&
+          project_outputs[ordinal]->expression_id ==
+              project_node->bound_expression_ids[ordinal] &&
+          project_outputs[ordinal]->descriptor_id ==
+              project_node->output_descriptor_ids[ordinal] &&
+          expression->result_descriptor_id ==
+              project_node->output_descriptor_ids[ordinal];
+    }
+  }
   const auto expected_limit_input =
       aggregate_node != nullptr
           ? aggregate_node->node_id
@@ -687,8 +754,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       (aggregate_node != nullptr &&
        (project_node != nullptr || sort_node != nullptr)) ||
       (window_node != nullptr &&
-       (sort_node == nullptr || project_node != nullptr ||
-        aggregate_node != nullptr || limit_node != nullptr)) ||
+       (sort_node == nullptr || aggregate_node != nullptr ||
+        limit_node != nullptr)) ||
       (filter_node != nullptr &&
        (filter_node->input_node_ids !=
             std::vector<std::uint32_t>{scan_node->node_id} ||
@@ -704,6 +771,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       (project_node != nullptr &&
        (project_node->input_node_ids !=
             std::vector<std::uint32_t>{expected_project_input} ||
+        !exact_project_outputs ||
         project_node->semantic_variant_id !=
             "project.catalog-visible-columns.v1" ||
         project_node->bound_expression_ids.empty() ||
@@ -711,13 +779,14 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             project_node->output_descriptor_ids.size() ||
         project_node->output_descriptor_ids.empty() ||
         project_node->output_descriptor_ids.size() >=
-            scan_node->output_descriptor_ids.size() ||
+            project_input_node->output_descriptor_ids.size() ||
         std::ranges::any_of(
             project_node->output_descriptor_ids,
             [&](const auto descriptor_id) {
-              return std::ranges::find(scan_node->output_descriptor_ids,
-                                       descriptor_id) ==
-                     scan_node->output_descriptor_ids.end();
+              return std::ranges::find(
+                         project_input_node->output_descriptor_ids,
+                         descriptor_id) ==
+                     project_input_node->output_descriptor_ids.end();
             }) ||
         !project_node->required_object_uuids.empty() ||
         !project_node->values_row_ids.empty() ||
@@ -945,23 +1014,36 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                   })
             : relational.descriptors.end();
     std::vector<const RelationalOutputRecord*> window_outputs;
+    std::vector<const RelationalOutputRecord*> ordered_input_outputs;
     for (const auto& output : relational.outputs) {
       if (output.relation_node_id == window_node->node_id) {
         window_outputs.push_back(&output);
       }
+      if (output.relation_node_id == scan_node->node_id) {
+        ordered_input_outputs.push_back(&output);
+      }
     }
     std::ranges::sort(window_outputs, {},
                       &RelationalOutputRecord::ordinal);
+    std::ranges::sort(ordered_input_outputs, {},
+                      &RelationalOutputRecord::ordinal);
     bool passthrough_outputs =
-        window_outputs.size() == sort_node->output_descriptor_ids.size() + 1;
+        window_outputs.size() == sort_node->output_descriptor_ids.size() + 1 &&
+        ordered_input_outputs.size() ==
+            sort_node->output_descriptor_ids.size();
     for (std::size_t ordinal = 0;
          passthrough_outputs &&
          ordinal < sort_node->output_descriptor_ids.size(); ++ordinal) {
       passthrough_outputs =
+          ordered_input_outputs[ordinal]->ordinal == ordinal &&
+          ordered_input_outputs[ordinal]->descriptor_id ==
+              sort_node->output_descriptor_ids[ordinal] &&
           window_outputs[ordinal]->ordinal == ordinal &&
           window_outputs[ordinal]->visible &&
           window_outputs[ordinal]->descriptor_id ==
-              sort_node->output_descriptor_ids[ordinal];
+              sort_node->output_descriptor_ids[ordinal] &&
+          window_outputs[ordinal]->expression_id ==
+              ordered_input_outputs[ordinal]->expression_id;
     }
     if (window_property_uuid ==
             window_node->delivered_property_uuids.end() ||
