@@ -13406,9 +13406,10 @@ MakeLiveRecursiveCteRegistration(
 // than by a whole-query shape name.  Existing exact profiles remain preferred
 // while this compiler grows across the remaining relational node families.
 // The compiler admits a descriptor-valid unary tail containing at most one
-// FILTER, PROJECT, query DISTINCT, SORT, and LIMIT/FETCH node over either one
-// canonical VALUES leaf, a two-VALUES accepted JOIN-kind branch, or an exact
-// or losslessly reconciled ordinal/BY NAME quantified set-operation subtree.
+// FILTER, PROJECT, query DISTINCT, SORT, exact global ROW_NUMBER WINDOW, and
+// LIMIT/FETCH node over either one canonical VALUES leaf, a two-VALUES
+// accepted JOIN-kind branch, or an exact or losslessly reconciled ordinal/BY
+// NAME quantified set-operation subtree.
 // Every node still executes through the ordinary optimizer-published ABI-v2
 // DAG and its canonical executor.
 CanonicalObjectFreeValuesExecutionResult
@@ -13457,6 +13458,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   LiveApproximateExpressionProfile approximate_profile;
   LiveGroupedCountSumProfile grouped_aggregate_profile;
   std::size_t sort_count = 0;
+  std::size_t window_count = 0;
   while (current != graph.nodes.end()) {
     if (!visited.insert(current->logical_node_id).second ||
         !current->required_object_uuids.empty()) {
@@ -13806,6 +13808,16 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           return result;
         }
         break;
+      case plan::CanonicalLogicalRelationalNodeKind::kWindow:
+        ++window_count;
+        if (current->semantic_variant_id != "window.row-number.v1" ||
+            current->logical_node_id != graph.root_logical_node_id ||
+            current->bound_expression_ids.size() != 2 ||
+            current->required_property_uuids.size() != 1 ||
+            current->delivered_property_uuids.size() != 2) {
+          return result;
+        }
+        break;
       case plan::CanonicalLogicalRelationalNodeKind::kSubquery:
         if (const auto predicate_profile =
                 MatchLivePredicateSubqueryProfile(
@@ -13863,10 +13875,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          reverse_chain.back()->node_kind ==
              plan::CanonicalLogicalRelationalNodeKind::kSubquery)) ||
       visited.size() != graph.nodes.size() || sort_count > 1 ||
-      (sort_count == 0 &&
-       !request.optimizer_request.logical_properties.properties.empty()) ||
-      (sort_count == 1 &&
-       request.optimizer_request.logical_properties.properties.size() != 1)) {
+      window_count > 1 ||
+      request.optimizer_request.logical_properties.properties.size() !=
+          sort_count + window_count) {
     return result;
   }
   std::ranges::reverse(reverse_chain);
@@ -13937,6 +13948,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::size_t grouped_aggregate_output_row_bound = 0;
   std::optional<PreparedSortRoot> prepared_sort;
   std::optional<exec::ExecutorColumnDescriptor> prepared_row_number;
+  std::string row_number_order_evidence_uuid;
   std::size_t sort_input_row_count = 0;
   std::size_t sort_comparison_bound = 0;
   bool prepared_table_subquery = false;
@@ -13989,6 +14001,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       identity_scope, "composition.grouped-aggregate.capability");
   const auto sort_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.sort.capability");
+  const auto window_capability_uuid = DerivedCanonicalUuid(
+      identity_scope, "composition.window.row-number.capability");
   const auto subquery_capability_uuid = DerivedCanonicalUuid(
       identity_scope, "composition.subquery.capability");
   const auto cte_capability_uuid =
@@ -17377,6 +17391,115 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             plan::CanonicalLogicalPropertyKind::kOrdering};
         break;
       }
+      case plan::CanonicalLogicalRelationalNodeKind::kWindow: {
+        const auto typed_consumer = std::ranges::find_if(
+            request.relational_dag.nodes, [&](const auto& candidate) {
+              return candidate.node_id == node.logical_node_id;
+            });
+        if (typed_consumer == request.relational_dag.nodes.end() ||
+            typed_consumer->node_kind != api::RelationalDagNodeKind::kWindow ||
+            !prepared_sort.has_value()) {
+          return refuse(std::string(kPayloadDiagnostic),
+                        "composition ROW_NUMBER input binding is unresolved");
+        }
+        const auto core_manifest =
+            dt::LoadCurrentCoreDatatypeCatalogManifest();
+        if (!core_manifest.ok()) {
+          return refuse(std::string(kPayloadDiagnostic),
+                        "composition ROW_NUMBER core datatype catalog is "
+                        "unavailable");
+        }
+        const auto int64_type = std::ranges::find_if(
+            core_manifest.manifest.descriptor_rows, [&](const auto& row) {
+              return row.stable_name == "int64";
+            });
+        const auto int64_type_uuid =
+            int64_type == core_manifest.manifest.descriptor_rows.end()
+                ? std::string{}
+                : scratchbird::core::uuid::UuidToString(
+                      int64_type->descriptor_uuid.value);
+        const auto row_number = PrepareGlobalRowNumberWindowBinding(
+            request.relational_dag,
+            request.optimizer_request.logical_properties, *typed_consumer,
+            node, input_node, *prepared_sort, input_batch.columns.size(),
+            input_bindings.size(), int64_type_uuid, "composition");
+        if (!row_number.ok) {
+          return refuse(row_number.diagnostic_id, row_number.detail);
+        }
+        if (input_row_count > static_cast<std::size_t>(
+                                  std::numeric_limits<std::int64_t>::max())) {
+          return refuse(std::string(kPayloadDiagnostic),
+                        "composition ROW_NUMBER exceeds int64 result width");
+        }
+        const auto* output_descriptor = row_number.result_descriptor;
+        api::EngineDescriptor descriptor;
+        descriptor.descriptor_uuid.canonical =
+            output_descriptor->descriptor_uuid;
+        descriptor.descriptor_kind = "scalar";
+        descriptor.canonical_type_name = "int64";
+        descriptor.encoded_descriptor =
+            "type_uuid=" + output_descriptor->type_uuid +
+            ";nullability=non_null";
+        exec::ExecutorColumnDescriptor row_number_column{
+            row_number.outputs.back()->output_name_utf8, descriptor, false,
+            output_descriptor->descriptor_id};
+        if (!api::QowCanonicalDescriptorIdentityV1(descriptor)) {
+          return refuse(std::string(kPayloadDiagnostic),
+                        "composition ROW_NUMBER descriptor is invalid");
+        }
+        exec::CanonicalResultColumnBinding row_number_binding;
+        row_number_binding.physical_column_ordinal =
+            input_batch.columns.size();
+        row_number_binding.visible = true;
+        row_number_binding.published_descriptor =
+            exec::CanonicalResultColumnDescriptor{
+                static_cast<std::uint32_t>(input_batch.columns.size()),
+                row_number_column.stable_name,
+                output_descriptor->descriptor_uuid,
+                output_descriptor->type_uuid,
+                exec::CanonicalResultNullability::kNonNull, std::nullopt,
+                std::nullopt};
+        exec::DescriptorBatch output = input_batch;
+        output.columns.push_back(row_number_column);
+        for (std::size_t row = 0; row < output.rows.size(); ++row) {
+          api::EngineTypedValue value;
+          value.descriptor = descriptor;
+          value.state = api::EngineValueState::value;
+          value.encoded_value = std::to_string(row + 1);
+          output.rows[row].values.push_back(std::move(value));
+        }
+        const auto canonical = exec::ValidateCanonicalDescriptorBatch(
+            output, node.output_descriptor_ids);
+        const auto values = exec::ValidateDescriptorBatch(output);
+        if (!canonical.ok || !values.ok || !add_work(input_row_count)) {
+          return refuse(
+              std::string(kPayloadDiagnostic),
+              !canonical.ok
+                  ? "composition ROW_NUMBER output: " + canonical.detail
+                  : (!values.ok
+                         ? "composition ROW_NUMBER output: " + values.detail
+                         : "composition ROW_NUMBER work exceeds its admitted "
+                           "bound"));
+        }
+        state.batch = std::move(output);
+        state.result_bindings = input_bindings;
+        state.result_bindings.push_back(std::move(row_number_binding));
+        prepared_row_number = std::move(row_number_column);
+        row_number_order_evidence_uuid = DerivedCanonicalUuid(
+            identity_scope + ":" + prepared_sort->ordering_property_uuid,
+            "node-composition.window.deterministic-order");
+        implementation_id = "window.row-number.v1";
+        capability_uuid = window_capability_uuid;
+        transformation_rule =
+            "canonical.window.composed-row-number.v1";
+        physical_kind = exec::PhysicalNodeKind::kWindow;
+        required_property_uuids = node.required_property_uuids;
+        delivered_property_uuids = node.delivered_property_uuids;
+        property_kinds = {
+            plan::CanonicalLogicalPropertyKind::kOrdering,
+            plan::CanonicalLogicalPropertyKind::kWindow};
+        break;
+      }
       case plan::CanonicalLogicalRelationalNodeKind::kSubquery: {
         const auto predicate_profile =
             MatchLivePredicateSubqueryProfile(node.semantic_variant_id);
@@ -17912,14 +18035,16 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     if ((physical_kind == exec::PhysicalNodeKind::kFilter ||
          physical_kind == exec::PhysicalNodeKind::kProject ||
          physical_kind == exec::PhysicalNodeKind::kSort ||
+         physical_kind == exec::PhysicalNodeKind::kWindow ||
          physical_kind == exec::PhysicalNodeKind::kLimit ||
          dynamic_table_subquery || dynamic_nonrecursive_cte ||
          query_distinct) &&
         !planning_values_exact) {
       // The preceding complex aggregate owns its live result values.  The
       // planning batch is only a schema/cardinality placeholder, so bind the
-      // dynamic FILTER, PROJECT, DISTINCT, SORT, LIMIT, TABLE-subquery, or
-      // nonrecursive CTE to the full selected budget and let its
+      // dynamic FILTER, PROJECT, DISTINCT, SORT, WINDOW, LIMIT,
+      // TABLE-subquery, or nonrecursive CTE to the full selected budget and
+      // let its
       // issuer/executor charge exact callback payloads and auxiliary state.
       operator_memory =
           request.optimizer_request.resource.memory_budget_bytes;
@@ -18105,6 +18230,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               sort_input_row_count, sort_comparison_bound,
               request.context));
     }
+  }
+  if (prepared_row_number.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveRowNumberRegistration(
+            *prepared_row_number, row_number_order_evidence_uuid,
+            window_capability_uuid, sort_input_row_count, request.context));
   }
   if (prepared_table_subquery) {
     execution_request.available_executors.push_back(
