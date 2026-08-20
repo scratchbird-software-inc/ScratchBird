@@ -7978,6 +7978,78 @@ CanonicalWindowCumeDistValueResult ComputeCanonicalWindowCumeDistValue(
   return result;
 }
 
+CanonicalWindowNtileValueResult ComputeCanonicalWindowNtileValue(
+    const CanonicalWindowNtileValueRequest& request) {
+  CanonicalWindowNtileValueResult result;
+  const auto refuse = [&](std::string detail) {
+    result = {};
+    result.diagnostic = WindowRankingRefusal(
+        CanonicalWindowRankingFunction::ntile, std::move(detail));
+    return result;
+  };
+  const auto type_uuid =
+      RankingDescriptorField(request.output_descriptor, "type_uuid");
+  const auto nullability =
+      RankingDescriptorField(request.output_descriptor, "nullability");
+  if (request.function_abi_version != 1 ||
+      request.builtin_id != "sb.window.ntile" ||
+      request.function_uuid != kWindowNtileUuid ||
+      !IsCanonicalUuid(request.function_uuid) ||
+      request.partition_row_count == 0 ||
+      request.zero_based_partition_position >= request.partition_row_count ||
+      request.partition_row_count >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::int64_t>::max()) ||
+      request.bucket_count == 0 ||
+      request.bucket_count >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::int64_t>::max()) ||
+      !IsCanonicalUuid(
+          request.output_descriptor.descriptor_uuid.canonical) ||
+      request.output_descriptor.descriptor_kind != "scalar" ||
+      request.output_descriptor.canonical_type_name != "int64" ||
+      request.output_descriptor.encoded_descriptor.empty() ||
+      !type_uuid.has_value() || !IsCanonicalUuid(*type_uuid) ||
+      !nullability.has_value() || *nullability != "non_null" ||
+      request.output_descriptor.descriptor_uuid.canonical == *type_uuid ||
+      request.output_descriptor.descriptor_uuid.canonical ==
+          request.function_uuid) {
+    return refuse(
+        "NTILE value lacks its exact registry identity, descriptor, positive "
+        "bucket count, or partition position");
+  }
+
+  const auto base_size = request.partition_row_count / request.bucket_count;
+  const auto larger_bucket_count =
+      request.partition_row_count % request.bucket_count;
+  const auto larger_bucket_size = base_size + 1;
+  if (larger_bucket_count != 0 &&
+      larger_bucket_size > std::numeric_limits<std::uint64_t>::max() /
+                               larger_bucket_count) {
+    return refuse("NTILE bucket boundary arithmetic overflowed");
+  }
+  const auto larger_rows = larger_bucket_count * larger_bucket_size;
+  std::uint64_t bucket = 0;
+  if (request.zero_based_partition_position < larger_rows) {
+    bucket = request.zero_based_partition_position / larger_bucket_size + 1;
+  } else {
+    if (base_size == 0) {
+      return refuse("NTILE reached an impossible zero-width bucket");
+    }
+    bucket = larger_bucket_count +
+             (request.zero_based_partition_position - larger_rows) /
+                 base_size +
+             1;
+  }
+  if (bucket == 0 || bucket > request.bucket_count ||
+      bucket > request.partition_row_count) {
+    return refuse("NTILE produced a bucket outside its bounded partition");
+  }
+  result.value = RankingInt64Value(request.output_descriptor, bucket);
+  result.diagnostic = {};
+  return result;
+}
+
 // QOW-SOURCE-WIN-006-V1
 // Ranking functions consume the exact partition and typed peer ranges created
 // by QOW-401 after QOW-402 has validated the complete frame and exclusion.
@@ -8107,19 +8179,19 @@ static CanonicalWindowRankingResult ExecuteCanonicalWindowRankingStrategy(
         break;
       }
       case CanonicalWindowRankingFunction::ntile: {
-        const auto base_size = partition_rows / buckets;
-        const auto larger_bucket_count = partition_rows % buckets;
-        const auto larger_bucket_size = base_size + 1;
-        const auto larger_rows = larger_bucket_count * larger_bucket_size;
-        std::uint64_t bucket = 0;
-        if (partition_position < larger_rows) {
-          bucket = partition_position / larger_bucket_size + 1;
-        } else {
-          bucket = larger_bucket_count +
-                   (partition_position - larger_rows) / base_size + 1;
+        CanonicalWindowNtileValueRequest ntile_request;
+        ntile_request.function_abi_version = 1;
+        ntile_request.builtin_id = "sb.window.ntile";
+        ntile_request.function_uuid = request.function_uuid;
+        ntile_request.output_descriptor = request.output_descriptor;
+        ntile_request.zero_based_partition_position = partition_position;
+        ntile_request.partition_row_count = partition_rows;
+        ntile_request.bucket_count = buckets;
+        auto ntile_value = ComputeCanonicalWindowNtileValue(ntile_request);
+        if (!ntile_value.diagnostic.ok) {
+          return refuse(ntile_value.diagnostic.detail);
         }
-        result.values.push_back(
-            RankingInt64Value(request.output_descriptor, bucket));
+        result.values.push_back(std::move(ntile_value.value));
         break;
       }
     }

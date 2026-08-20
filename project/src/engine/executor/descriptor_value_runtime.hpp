@@ -1905,6 +1905,32 @@ struct CanonicalDescriptorPeerRankingResult {
   PhysicalMgaStatementContext mga_statement_context;
 };
 
+struct CanonicalDescriptorNtileRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch ordered_input_batch;
+  CanonicalDescriptorOrderTerm order_term;
+  ExecutorColumnDescriptor ntile_column;
+  scratchbird::engine::internal_api::EngineTypedValue bucket_count_operand;
+  std::uint16_t function_abi_version = 0;
+  std::string builtin_id;
+  std::string function_uuid;
+  std::string order_term_binding_evidence_uuid;
+  std::string deterministic_order_evidence_uuid;
+  CanonicalExecutionMgaAuthority mga_authority;
+};
+
+struct CanonicalDescriptorNtileResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::uint64_t resolved_bucket_count = 0;
+  std::uint64_t peak_auxiliary_workspace_bytes = 0;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
+};
+
 enum class CanonicalAggregateExecutionStrategy : std::uint8_t {
   unknown = 0,
   serial,
@@ -3073,6 +3099,12 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRanking(
     const CanonicalDescriptorPeerRankingRequest& request);
 CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRanking(
     const CanonicalDescriptorPeerRankingRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_ordered_input_batch);
+CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtile(
+    const CanonicalDescriptorNtileRequest& request);
+CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtile(
+    const CanonicalDescriptorNtileRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch);
 CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(

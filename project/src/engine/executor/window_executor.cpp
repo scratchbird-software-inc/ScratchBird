@@ -9,6 +9,7 @@
 #include "executor_foundation.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <limits>
 #include <string_view>
@@ -80,6 +81,26 @@ bool RowNumberEncodedPayloadBytes(const std::size_t row_count,
   return true;
 }
 
+bool NtileOperandPayloadBytes(
+    const scratchbird::engine::internal_api::EngineTypedValue& operand,
+    std::uint64_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = 1;
+  const std::array<std::size_t, 6> payloads{
+      operand.descriptor.descriptor_uuid.canonical.size(),
+      operand.descriptor.descriptor_kind.size(),
+      operand.descriptor.canonical_type_name.size(),
+      operand.descriptor.encoded_descriptor.size(), operand.encoded_value.size(),
+      operand.binary_value.size()};
+  for (const auto payload : payloads) {
+    if (payload > std::numeric_limits<std::uint64_t>::max() - *bytes) {
+      return false;
+    }
+    *bytes += payload;
+  }
+  return true;
+}
+
 constexpr std::uint64_t kRealRankingRatioTextMaximumBytes = 36;
 constexpr std::uint64_t kRealRankingConversionWorkspaceMaximumBytes =
     2 * kRealRankingRatioTextMaximumBytes;
@@ -107,6 +128,26 @@ bool IsCanonicalUuid(const std::string_view value) {
     if (!std::isxdigit(ch) || std::isupper(ch)) return false;
   }
   return true;
+}
+
+std::optional<std::string_view> CanonicalDescriptorField(
+    const scratchbird::engine::internal_api::EngineDescriptor& descriptor,
+    const std::string_view key) {
+  const auto prefix = std::string(key) + "=";
+  std::optional<std::string_view> result;
+  std::size_t begin = 0;
+  while (begin <= descriptor.encoded_descriptor.size()) {
+    const auto end = descriptor.encoded_descriptor.find(';', begin);
+    const auto field = std::string_view(descriptor.encoded_descriptor).substr(
+        begin, end == std::string::npos ? std::string::npos : end - begin);
+    if (field.starts_with(prefix)) {
+      if (result.has_value()) return std::nullopt;
+      result = field.substr(prefix.size());
+    }
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return result;
 }
 
 std::size_t PropertyCount(const std::vector<std::string>& properties,
@@ -699,6 +740,292 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch) {
   return ExecuteCanonicalDescriptorRowNumberBound(
+      request, borrowed_execution_dag, borrowed_ordered_input_batch, true);
+}
+
+namespace {
+CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
+    const CanonicalDescriptorNtileRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_ordered_input_batch,
+    const bool borrowed_execution_carriers) {
+  using scratchbird::engine::internal_api::EngineValueState;
+
+  CanonicalDescriptorNtileResult result;
+  const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
+    result.diagnostic = std::move(diagnostic);
+    result.output_batch = {};
+    return result;
+  };
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(
+           request.ordered_input_batch))) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1",
+        "NTILE request carries conflicting owned execution carriers"));
+  }
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, execution_dag);
+  if (!authority_validation.ok) return refuse(authority_validation);
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          execution_dag.root_physical_node_id) {
+    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
+                          "selected NTILE window node is not the root"));
+  }
+
+  const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* input_node = nullptr;
+  for (const auto& node : execution_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      selected_node = &node;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kWindow ||
+      selected_node->implementation_id != "window.ntile.v1" ||
+      selected_node->input_physical_node_ids.size() != 1) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1",
+        "NTILE requires one selected window node"));
+  }
+  for (const auto& node : execution_dag.nodes) {
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids.front()) {
+      input_node = &node;
+      break;
+    }
+  }
+  const bool exact_ordering_property =
+      selected_node->required_property_uuids.size() == 1 &&
+      IsCanonicalUuid(selected_node->required_property_uuids.front());
+  const std::string ordering_property_uuid =
+      exact_ordering_property
+          ? selected_node->required_property_uuids.front()
+          : std::string{};
+  const auto window_property = std::ranges::find_if(
+      selected_node->delivered_property_uuids,
+      [&](const auto& property_uuid) {
+        return property_uuid != ordering_property_uuid;
+      });
+  const bool exact_window_property =
+      exact_ordering_property &&
+      selected_node->delivered_property_uuids.size() == 2 &&
+      PropertyCount(selected_node->delivered_property_uuids,
+                    ordering_property_uuid) == 1 &&
+      window_property != selected_node->delivered_property_uuids.end() &&
+      IsCanonicalUuid(*window_property) &&
+      *window_property != ordering_property_uuid;
+  if (input_node == nullptr || input_node->node_kind != PhysicalNodeKind::kSort ||
+      input_node->delivered_property_uuids !=
+          std::vector<std::string>{ordering_property_uuid} ||
+      !exact_window_property || request.function_abi_version != 1 ||
+      request.builtin_id != "sb.window.ntile" ||
+      request.function_uuid != "019de5fc-2400-7047-9474-232ca488c094" ||
+      !IsCanonicalUuid(request.function_uuid) ||
+      selected_node->executor_capability_abi_version != 1 ||
+      !selected_node->engine_capability_validated ||
+      !IsCanonicalUuid(selected_node->executor_capability_uuid) ||
+      !IsCanonicalUuid(request.order_term_binding_evidence_uuid) ||
+      !IsCanonicalUuid(request.deterministic_order_evidence_uuid) ||
+      request.order_term_binding_evidence_uuid == ordering_property_uuid ||
+      request.order_term_binding_evidence_uuid == *window_property ||
+      request.order_term_binding_evidence_uuid == request.function_uuid ||
+      request.deterministic_order_evidence_uuid ==
+          request.order_term_binding_evidence_uuid ||
+      request.deterministic_order_evidence_uuid == ordering_property_uuid ||
+      request.deterministic_order_evidence_uuid == *window_property ||
+      request.deterministic_order_evidence_uuid == request.function_uuid) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
+        "NTILE input lacks exact registry, ordering, or window evidence"));
+  }
+
+  std::vector<std::uint32_t> output_descriptor_ids =
+      input_node->output_descriptor_ids;
+  output_descriptor_ids.push_back(request.ntile_column.descriptor_id);
+  const auto decoded_bucket_count =
+      DecodeInt64Value(request.bucket_count_operand);
+  const auto output_type_uuid = CanonicalDescriptorField(
+      request.ntile_column.descriptor, "type_uuid");
+  const auto output_nullability = CanonicalDescriptorField(
+      request.ntile_column.descriptor, "nullability");
+  const auto operand_type_uuid = CanonicalDescriptorField(
+      request.bucket_count_operand.descriptor, "type_uuid");
+  const auto operand_nullability = CanonicalDescriptorField(
+      request.bucket_count_operand.descriptor, "nullability");
+  if (selected_node->output_descriptor_ids != output_descriptor_ids ||
+      request.ntile_column.descriptor_id == 0 ||
+      request.ntile_column.nullable ||
+      request.ntile_column.descriptor.descriptor_kind != "scalar" ||
+      request.ntile_column.descriptor.canonical_type_name != "int64" ||
+      !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          request.ntile_column.descriptor) ||
+      !output_type_uuid.has_value() ||
+      !IsCanonicalUuid(*output_type_uuid) ||
+      !output_nullability.has_value() ||
+      *output_nullability != "non_null" ||
+      request.ntile_column.descriptor.descriptor_uuid.canonical ==
+          *output_type_uuid ||
+      request.ntile_column.descriptor.descriptor_uuid.canonical ==
+          request.function_uuid ||
+      request.ntile_column.descriptor.descriptor_uuid.canonical ==
+          ordering_property_uuid ||
+      request.ntile_column.descriptor.descriptor_uuid.canonical ==
+          *window_property ||
+      request.ntile_column.descriptor.descriptor_uuid.canonical ==
+          request.order_term_binding_evidence_uuid ||
+      request.ntile_column.descriptor.descriptor_uuid.canonical ==
+          request.deterministic_order_evidence_uuid ||
+      request.order_term.column >=
+          execution_ordered_input_batch.columns.size() ||
+      request.bucket_count_operand.state != EngineValueState::value ||
+      request.bucket_count_operand.is_null ||
+      !request.bucket_count_operand.binary_value.empty() ||
+      request.bucket_count_operand.descriptor.descriptor_kind != "scalar" ||
+      request.bucket_count_operand.descriptor.canonical_type_name != "int64" ||
+      !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          request.bucket_count_operand.descriptor) ||
+      !operand_type_uuid.has_value() ||
+      !IsCanonicalUuid(*operand_type_uuid) ||
+      *operand_type_uuid != *output_type_uuid ||
+      !operand_nullability.has_value() ||
+      *operand_nullability != "non_null" ||
+      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
+          *operand_type_uuid ||
+      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
+          request.ntile_column.descriptor.descriptor_uuid.canonical ||
+      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
+          request.function_uuid ||
+      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
+          ordering_property_uuid ||
+      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
+          *window_property ||
+      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
+          request.order_term_binding_evidence_uuid ||
+      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
+          request.deterministic_order_evidence_uuid ||
+      !decoded_bucket_count.ok() || decoded_bucket_count.value <= 0) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.INVALID_HANDLE",
+        "NTILE output and positive int64 bucket operand are not exact"));
+  }
+  const auto order_validation = ValidateCanonicalDescriptorOrderTerm(
+      request.order_term,
+      execution_ordered_input_batch.columns[request.order_term.column]);
+  if (!order_validation.ok) return refuse(order_validation);
+  const auto input_validation = ValidateCanonicalDescriptorBatch(
+      execution_ordered_input_batch, input_node->output_descriptor_ids);
+  if (!input_validation.ok) return refuse(std::move(input_validation));
+  if (execution_ordered_input_batch.rows.size() >
+      static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+    return refuse(Refusal("QOW-DIAG-QRY-007-WINDOW-OVERFLOW-V1",
+                          "NTILE exceeds int64 result width"));
+  }
+
+  std::uint64_t input_payload_bytes = 0;
+  std::uint64_t ntile_payload_bytes = 0;
+  std::uint64_t operand_payload_bytes = 0;
+  std::uint64_t binding_receipt_workspace_bytes = 0;
+  if (!RowNumberBatchPayloadBytes(execution_ordered_input_batch,
+                                  &input_payload_bytes) ||
+      !RowNumberEncodedPayloadBytes(execution_ordered_input_batch.rows.size(),
+                                    &ntile_payload_bytes) ||
+      !NtileOperandPayloadBytes(request.bucket_count_operand,
+                                &operand_payload_bytes) ||
+      !PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+          request.order_term, ordering_property_uuid,
+          &binding_receipt_workspace_bytes) ||
+      selected_node->memory_bytes_required == 0 ||
+      selected_node->memory_bytes_required > execution_dag.memory_budget_bytes ||
+      selected_node->memory_bytes_required >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max())) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "NTILE memory grant or runtime payload accounting is invalid"));
+  }
+  auto remaining_memory_bytes = selected_node->memory_bytes_required;
+  const auto charge = [&](const std::uint64_t bytes) {
+    if (bytes > remaining_memory_bytes) return false;
+    remaining_memory_bytes -= bytes;
+    return true;
+  };
+  if (!charge(input_payload_bytes) || !charge(input_payload_bytes) ||
+      !charge(ntile_payload_bytes) || !charge(operand_payload_bytes) ||
+      !charge(binding_receipt_workspace_bytes)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "NTILE runtime materialization exceeds its selected node grant"));
+  }
+  std::uint64_t actual_binding_receipt_workspace_bytes = 0;
+  const auto expected_order_term_binding_evidence_uuid =
+      ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
+          request.order_term, ordering_property_uuid,
+          binding_receipt_workspace_bytes,
+          &actual_binding_receipt_workspace_bytes);
+  if (expected_order_term_binding_evidence_uuid.empty() ||
+      actual_binding_receipt_workspace_bytes !=
+          binding_receipt_workspace_bytes ||
+      selected_node->executor_capability_uuid !=
+          expected_order_term_binding_evidence_uuid ||
+      request.order_term_binding_evidence_uuid !=
+          selected_node->executor_capability_uuid) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
+        "NTILE order term differs from optimizer-published capability "
+        "evidence"));
+  }
+
+  result.output_batch.columns = execution_ordered_input_batch.columns;
+  result.output_batch.columns.push_back(request.ntile_column);
+  result.output_batch.rows = execution_ordered_input_batch.rows;
+  const auto row_count = result.output_batch.rows.size();
+  const auto buckets = static_cast<std::uint64_t>(decoded_bucket_count.value);
+  for (std::size_t row = 0; row < row_count; ++row) {
+    CanonicalWindowNtileValueRequest value_request;
+    value_request.function_abi_version = request.function_abi_version;
+    value_request.builtin_id = request.builtin_id;
+    value_request.function_uuid = request.function_uuid;
+    value_request.output_descriptor = request.ntile_column.descriptor;
+    value_request.zero_based_partition_position = row;
+    value_request.partition_row_count = row_count;
+    value_request.bucket_count = buckets;
+    auto value = ComputeCanonicalWindowNtileValue(value_request);
+    if (!value.diagnostic.ok) return refuse(std::move(value.diagnostic));
+    result.output_batch.rows[row].values.push_back(std::move(value.value));
+  }
+  auto output_validation = ValidateCanonicalDescriptorBatch(
+      result.output_batch, selected_node->output_descriptor_ids);
+  if (!output_validation.ok) return refuse(std::move(output_validation));
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, execution_dag);
+  if (!result_authority.ok) return refuse(result_authority);
+
+  result.diagnostic = {};
+  result.resolved_bucket_count = buckets;
+  result.peak_auxiliary_workspace_bytes =
+      binding_receipt_workspace_bytes + operand_payload_bytes;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
+  result.executed_physical_node_id = selected_node->physical_node_id;
+  result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
+  return result;
+}
+}  // namespace
+
+CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtile(
+    const CanonicalDescriptorNtileRequest& request) {
+  return ExecuteCanonicalDescriptorNtileBound(
+      request, request.physical_dag, request.ordered_input_batch, false);
+}
+
+CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtile(
+    const CanonicalDescriptorNtileRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_ordered_input_batch) {
+  return ExecuteCanonicalDescriptorNtileBound(
       request, borrowed_execution_dag, borrowed_ordered_input_batch, true);
 }
 
