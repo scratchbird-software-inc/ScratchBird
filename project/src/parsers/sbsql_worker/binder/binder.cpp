@@ -4654,20 +4654,31 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool rank_window =
         window_binding != context.relations.end() &&
         window_binding->semantic_variant_id == "window.rank.v1";
+    const bool dense_rank_window =
+        window_binding != context.relations.end() &&
+        window_binding->semantic_variant_id == "window.dense-rank.v1";
+    const bool peer_ranking_window = rank_window || dense_rank_window;
     const bool recognized_integer_ranking =
         window_binding != context.relations.end() &&
-        (rank_window || window_binding->semantic_variant_id ==
-                            "window.row-number.v1");
+        (peer_ranking_window || window_binding->semantic_variant_id ==
+                                    "window.row-number.v1");
     constexpr std::string_view kRowNumberFunctionUuid =
         "019de5fc-2400-7539-bcce-00eef3ae7220";
     constexpr std::string_view kRankFunctionUuid =
         "019de5fc-2400-7b94-870d-0dd789ca70ab";
+    constexpr std::string_view kDenseRankFunctionUuid =
+        "019de5fc-2400-741d-bef0-f079fd3ba494";
     const std::string_view expected_operator =
-        rank_window ? "RANK" : "ROW_NUMBER";
+        dense_rank_window ? "DENSE_RANK"
+                          : (rank_window ? "RANK" : "ROW_NUMBER");
     const std::string_view expected_builtin =
-        rank_window ? "sb.window.rank" : "sb.window.row_number";
+        dense_rank_window
+            ? "sb.window.dense_rank"
+            : (rank_window ? "sb.window.rank" : "sb.window.row_number");
     const std::string_view expected_function_uuid =
-        rank_window ? kRankFunctionUuid : kRowNumberFunctionUuid;
+        dense_rank_window
+            ? kDenseRankFunctionUuid
+            : (rank_window ? kRankFunctionUuid : kRowNumberFunctionUuid);
     if (source_relation == ast.relations.end() ||
         ast.relations.size() != 2 + static_cast<std::size_t>(has_qualify) ||
         ast.root_relation_id !=
@@ -4684,7 +4695,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         context.relations.size() !=
             1 + static_cast<std::size_t>(has_qualify) ||
         context.window_functions.size() != 1 ||
-        !recognized_integer_ranking || (rank_window && has_qualify) ||
+        !recognized_integer_ranking || (peer_ranking_window && has_qualify) ||
         (has_qualify &&
          (qualify_binding == context.relations.end() ||
           qualify_binding->semantic_variant_id !=
@@ -4814,7 +4825,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     const auto& selected_window_definition =
         ast.window_definitions[selected_definition->second];
-    if (rank_window &&
+    if (peer_ranking_window &&
         (ast.window_definitions.size() != 1 ||
          selected_definition->second != 0 ||
          selected_window_definition.name.has_value() ||
@@ -4831,7 +4842,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  selected_window_definition.ordering_terms.front()
                      .expression_id})) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
-                            "typed RANK window shape is not exact");
+                            "typed " + std::string(expected_operator) +
+                                " window shape is not exact");
       return RefusedBoundAst(std::move(bound));
     }
     std::vector<std::uint32_t> offset_ast_ids;

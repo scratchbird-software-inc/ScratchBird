@@ -4286,15 +4286,30 @@ BuildEngineProjectedNativeBindingContext(
         "019de5fc-2400-7539-bcce-00eef3ae7220";
     constexpr std::string_view kRankFunctionUuid =
         "019de5fc-2400-7b94-870d-0dd789ca70ab";
+    constexpr std::string_view kDenseRankFunctionUuid =
+        "019de5fc-2400-741d-bef0-f079fd3ba494";
     const bool rank_window =
         function_expression != ast.expressions.end() &&
         function_expression->operator_name == "RANK";
+    const bool dense_rank_window =
+        function_expression != ast.expressions.end() &&
+        function_expression->operator_name == "DENSE_RANK";
+    const bool recognized_integer_ranking =
+        function_expression != ast.expressions.end() &&
+        (rank_window || dense_rank_window ||
+         function_expression->operator_name == "ROW_NUMBER");
+    const bool peer_ranking_window = rank_window || dense_rank_window;
     const std::string_view expected_operator =
-        rank_window ? "RANK" : "ROW_NUMBER";
+        dense_rank_window ? "DENSE_RANK"
+                          : (rank_window ? "RANK" : "ROW_NUMBER");
     const std::string_view expected_builtin =
-        rank_window ? "sb.window.rank" : "sb.window.row_number";
+        dense_rank_window
+            ? "sb.window.dense_rank"
+            : (rank_window ? "sb.window.rank" : "sb.window.row_number");
     const std::string_view expected_function_uuid =
-        rank_window ? kRankFunctionUuid : kRowNumberFunctionUuid;
+        dense_rank_window
+            ? kDenseRankFunctionUuid
+            : (rank_window ? kRankFunctionUuid : kRowNumberFunctionUuid);
     const auto function_profile = std::ranges::find_if(
         statement_context.window_function_profiles,
         [&](const auto& candidate) {
@@ -4304,7 +4319,7 @@ BuildEngineProjectedNativeBindingContext(
         statement_context.descriptor_profiles, [](const auto& candidate) {
           return candidate.profile_kind == 1 && candidate.slot == 0;
         });
-    if (function_expression == ast.expressions.end() ||
+    if (!recognized_integer_ranking ||
         function_expression->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
         function_expression->operator_name != expected_operator ||
@@ -4319,7 +4334,7 @@ BuildEngineProjectedNativeBindingContext(
         !CanonicalUuidBytes(result_profile->type_uuid).has_value()) {
       return fail("catalog_window_ranking_profile_unavailable");
     }
-    if (rank_window) {
+    if (peer_ranking_window) {
       const auto& definition = ast.window_definitions.front();
       const auto order_expression = std::ranges::find_if(
           ast.expressions, [&](const auto& candidate) {
@@ -4340,7 +4355,9 @@ BuildEngineProjectedNativeBindingContext(
               NativeExpressionAstKind::kIdentifier ||
           source_relation->output_expression_ids !=
               std::vector<std::uint32_t>{order_expression->expression_id}) {
-        return fail("catalog_window_rank_shape_invalid");
+        return fail(dense_rank_window
+                        ? "catalog_window_dense_rank_shape_invalid"
+                        : "catalog_window_rank_shape_invalid");
       }
     }
     const auto function_binding_id =
@@ -4360,8 +4377,10 @@ BuildEngineProjectedNativeBindingContext(
     const auto window_output_name =
         invocation.output_alias.has_value()
             ? invocation.output_alias->spelling
-            : (rank_window ? std::string("rank")
-                           : std::string("row_number"));
+            : (dense_rank_window
+                   ? std::string("dense_rank")
+                   : (rank_window ? std::string("rank")
+                                  : std::string("row_number")));
     context.outputs.push_back(
         {static_cast<std::uint32_t>(context.outputs.size() + 1),
          function_binding_id,
@@ -4440,7 +4459,9 @@ BuildEngineProjectedNativeBindingContext(
     context.catalog_relations.push_back(std::move(catalog_relation));
     context.relations.push_back(
         {window_relation->relation_id,
-         rank_window ? "window.rank.v1" : "window.row-number.v1"});
+         dense_rank_window
+             ? "window.dense-rank.v1"
+             : (rank_window ? "window.rank.v1" : "window.row-number.v1")});
     if (has_qualify) {
       context.relations.push_back(
           {qualify_relation->relation_id,

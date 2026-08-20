@@ -36079,7 +36079,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           relation.bound_object_uuid.has_value() ||
           relation.window_invocation_ids.size() != 1 ||
           (relation.semantic_variant_id != "window.row-number.v1" &&
-           relation.semantic_variant_id != "window.rank.v1") ||
+           relation.semantic_variant_id != "window.rank.v1" &&
+           relation.semantic_variant_id != "window.dense-rank.v1") ||
           native.window_definitions.empty() ||
           native.window_definitions.size() > 1024 ||
           native.window_invocations.size() != 1 ||
@@ -36307,12 +36308,21 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         "019de5fc-2400-7539-bcce-00eef3ae7220";
     constexpr std::string_view kRankFunctionUuid =
         "019de5fc-2400-7b94-870d-0dd789ca70ab";
+    constexpr std::string_view kDenseRankFunctionUuid =
+        "019de5fc-2400-741d-bef0-f079fd3ba494";
     const bool rank_window =
         window_relation->semantic_variant_id == "window.rank.v1";
+    const bool dense_rank_window =
+        window_relation->semantic_variant_id == "window.dense-rank.v1";
+    const bool peer_ranking_window = rank_window || dense_rank_window;
     const std::string_view expected_window_builtin =
-        rank_window ? "sb.window.rank" : "sb.window.row_number";
+        dense_rank_window
+            ? "sb.window.dense_rank"
+            : (rank_window ? "sb.window.rank" : "sb.window.row_number");
     const std::string_view expected_window_function_uuid =
-        rank_window ? kRankFunctionUuid : kRowNumberFunctionUuid;
+        dense_rank_window
+            ? kDenseRankFunctionUuid
+            : (rank_window ? kRankFunctionUuid : kRowNumberFunctionUuid);
     const auto& invocation = native.window_invocations.front();
     const auto function = expressions_by_id.find(
         invocation.function_expression_id);
@@ -36445,8 +36455,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         native.descriptors, [&](const auto& descriptor) {
           return descriptor.descriptor_id == invocation.result_descriptor_id;
         });
-    const bool rank_shape_exact = [&]() {
-      if (!rank_window) return true;
+    const bool peer_ranking_shape_exact = [&]() {
+      if (!peer_ranking_window) return true;
       if (qualify_relation != nullptr || catalog_relation == nullptr ||
           native.window_definitions.size() != 1) {
         return false;
@@ -36476,7 +36486,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              order_expression->second->expression_kind ==
                  NativeExpressionAstKind::kIdentifier;
     }();
-    if (!references_exact || !rank_shape_exact ||
+    if (!references_exact || !peer_ranking_shape_exact ||
         function == expressions_by_id.end() ||
         function->second->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
@@ -39355,24 +39365,37 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   // The canonical integer-ranking executor requires an explicit ordered
   // input and a passthrough Window schema. Preserve the validated BoundAST
   // and synthesize only an emission view with a root Project for the exact
-  // executable ROW_NUMBER/RANK cohort.
+  // executable ROW_NUMBER/RANK/DENSE_RANK cohort.
   constexpr std::string_view kCatalogOrderingPropertyUuid =
       "019f0000-0000-7200-8000-00000000c701";
   constexpr std::string_view kRowNumberFunctionUuid =
       "019de5fc-2400-7539-bcce-00eef3ae7220";
   constexpr std::string_view kRankFunctionUuid =
       "019de5fc-2400-7b94-870d-0dd789ca70ab";
+  constexpr std::string_view kDenseRankFunctionUuid =
+      "019de5fc-2400-741d-bef0-f079fd3ba494";
   const bool normalize_rank_semantic =
       window_relation != nullptr &&
       window_relation->semantic_variant_id == "window.rank.v1";
+  const bool normalize_dense_rank_semantic =
+      window_relation != nullptr &&
+      window_relation->semantic_variant_id == "window.dense-rank.v1";
+  const bool normalize_peer_ranking_semantic =
+      normalize_rank_semantic || normalize_dense_rank_semantic;
   const bool normalize_integer_ranking_semantic =
       window_relation != nullptr &&
-      (normalize_rank_semantic ||
+      (normalize_peer_ranking_semantic ||
        window_relation->semantic_variant_id == "window.row-number.v1");
   const std::string_view normalized_ranking_builtin =
-      normalize_rank_semantic ? "sb.window.rank" : "sb.window.row_number";
+      normalize_dense_rank_semantic
+          ? "sb.window.dense_rank"
+          : (normalize_rank_semantic ? "sb.window.rank"
+                                     : "sb.window.row_number");
   const std::string_view normalized_ranking_function_uuid =
-      normalize_rank_semantic ? kRankFunctionUuid : kRowNumberFunctionUuid;
+      normalize_dense_rank_semantic
+          ? kDenseRankFunctionUuid
+          : (normalize_rank_semantic ? kRankFunctionUuid
+                                     : kRowNumberFunctionUuid);
   std::vector<BoundRelationAstRecord> emitted_relations = native.relations;
   std::vector<BoundOutputAstRecord> emitted_outputs = native.outputs;
   std::uint32_t emitted_root_relation_id = native.root_relation_id;
@@ -39411,10 +39434,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                   .ordering_terms.front()
                   .expression_id,
               native.window_invocations.front().function_expression_id};
-  if (normalize_rank_semantic && !normalize_catalog_integer_ranking) {
+  if (normalize_peer_ranking_semantic &&
+      !normalize_catalog_integer_ranking) {
     AddNativeRelationalLoweringError(
         &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-        "typed RANK requires explicit canonical ordering normalization");
+        std::string("typed ") +
+            (normalize_dense_rank_semantic ? "DENSE_RANK" : "RANK") +
+            " requires explicit canonical ordering normalization");
     return envelope;
   }
   if (normalize_catalog_integer_ranking) {
@@ -39571,8 +39597,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             std::vector<std::uint32_t>{emitted_window->relation_id} &&
         emitted_sort->semantic_variant_id == "sort.required-order.v1" &&
         emitted_window->semantic_variant_id ==
-            (normalize_rank_semantic ? "window.rank.v1"
-                                     : "window.row-number.v1") &&
+            (normalize_dense_rank_semantic
+                 ? "window.dense-rank.v1"
+                 : (normalize_rank_semantic ? "window.rank.v1"
+                                            : "window.row-number.v1")) &&
         emitted_project->semantic_variant_id ==
             "project.catalog-visible-columns.v1" &&
         emitted_sort->output_expression_ids ==
