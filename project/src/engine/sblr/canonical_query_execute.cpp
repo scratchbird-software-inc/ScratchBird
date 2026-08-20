@@ -6807,7 +6807,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           (value_window && !aggregate_count_window
                ? api::RelationalNullability::kNullable
                : api::RelationalNullability::kNonNull) ||
-      (aggregate_window &&
+      ((aggregate_window || profile.builtin_id == "sb.window.row_number") &&
        (result_descriptor->collation_uuid.has_value() ||
         result_descriptor->timezone_profile_id.has_value() ||
         result_descriptor->width.has_value() ||
@@ -40735,6 +40735,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           row_number_descriptor->type_uuid != int64_type_uuid ||
           row_number_descriptor->nullability !=
               api::RelationalNullability::kNonNull ||
+          row_number_descriptor->collation_uuid.has_value() ||
+          row_number_descriptor->timezone_profile_id.has_value() ||
+          row_number_descriptor->width.has_value() ||
+          row_number_descriptor->precision.has_value() ||
+          row_number_descriptor->scale.has_value() ||
           consumer->output_descriptor_ids.size() !=
               previous_logical->output_descriptor_ids.size() + 1 ||
           !std::equal(previous_logical->output_descriptor_ids.begin(),
