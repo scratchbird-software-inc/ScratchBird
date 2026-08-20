@@ -1703,17 +1703,27 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       request.aggregate_descriptor.function,
       request.aggregate_descriptor.builtin_id,
       request.aggregate_descriptor.function_uuid);
-  const bool exact_int64_unary_window =
+  const bool exact_unary_window =
       aggregate_registry_row != nullptr &&
       (aggregate_registry_row->function == CanonicalAggregateFunction::sum ||
        aggregate_registry_row->function == CanonicalAggregateFunction::min ||
        aggregate_registry_row->function == CanonicalAggregateFunction::max ||
-       aggregate_registry_row->function == CanonicalAggregateFunction::count);
+       aggregate_registry_row->function == CanonicalAggregateFunction::count ||
+       aggregate_registry_row->function ==
+           CanonicalAggregateFunction::bool_and ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::bool_or ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::every);
   const bool count_window =
       aggregate_registry_row != nullptr &&
       aggregate_registry_row->function == CanonicalAggregateFunction::count;
+  const bool boolean_window =
+      aggregate_registry_row != nullptr &&
+      (aggregate_registry_row->function ==
+           CanonicalAggregateFunction::bool_and ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::bool_or ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::every);
   if (request.aggregate_descriptor.count_star ||
-      !exact_int64_unary_window ||
+      !exact_unary_window ||
       !aggregate_registry_row->executable ||
       !aggregate_registry_row->aggregate_as_window) {
     return refuse(Refusal(
@@ -1788,6 +1798,8 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
   expected_output_descriptor_ids.push_back(
       request.result_column.descriptor_id);
   const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
+  const auto canonical_boolean_type_uuid =
+      boolean_window ? CanonicalCoreDatatypeUuid("boolean") : std::string{};
   const auto source_type_uuid =
       request.value_column < execution_ordered_input_batch.columns.size()
           ? CanonicalDescriptorField(
@@ -1839,6 +1851,21 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
                     execution_ordered_input_batch.columns[request.value_column]
                         .descriptor) &&
                 !has_auxiliary_type_fields(request.result_column.descriptor)
+          : boolean_window
+          ? request.result_column.nullable &&
+                execution_ordered_input_batch.columns[request.value_column]
+                        .descriptor.canonical_type_name == "boolean" &&
+                *source_type_uuid == canonical_boolean_type_uuid &&
+                CanonicalDerivedDescriptorTypeMatches(
+                    execution_ordered_input_batch.columns[request.value_column]
+                        .descriptor,
+                    execution_ordered_input_batch.columns[request.value_column]
+                        .nullable,
+                    request.result_column.descriptor, true) &&
+                !has_auxiliary_type_fields(
+                    execution_ordered_input_batch.columns[request.value_column]
+                        .descriptor) &&
+                !has_auxiliary_type_fields(request.result_column.descriptor)
           : request.result_column.nullable &&
                 execution_ordered_input_batch.columns[request.value_column]
                         .descriptor.canonical_type_name == "int64" &&
@@ -1856,20 +1883,24 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
           execution_ordered_input_batch.columns.size() ||
       request.result_column.descriptor_id == 0 ||
       request.result_column.descriptor.descriptor_kind != "scalar" ||
-      request.result_column.descriptor.canonical_type_name != "int64" ||
+      request.result_column.descriptor.canonical_type_name !=
+          (boolean_window ? "boolean" : "int64") ||
       execution_ordered_input_batch.columns[request.order_term.column]
               .descriptor.canonical_type_name != "int64" ||
       !source_type_uuid.has_value() || !result_type_uuid.has_value() ||
       !order_type_uuid.has_value() ||
       canonical_int64_type_uuid.empty() ||
-      *result_type_uuid != canonical_int64_type_uuid ||
+      (boolean_window && canonical_boolean_type_uuid.empty()) ||
+      *result_type_uuid !=
+          (boolean_window ? canonical_boolean_type_uuid
+                          : canonical_int64_type_uuid) ||
       *order_type_uuid != canonical_int64_type_uuid ||
       !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
           request.result_column.descriptor) ||
       !exact_value_result_contract) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-DESCRIPTOR",
-        "int64 aggregate window source/result descriptors are not exact"));
+        "aggregate window source/result descriptors are not exact"));
   }
   const auto input_validation = ValidateCanonicalDescriptorBatch(
       execution_ordered_input_batch, input_node->output_descriptor_ids);
@@ -1963,7 +1994,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
   std::uint64_t planned_auxiliary_workspace_bytes = 0;
   std::uint64_t planned_peak_memory_bytes = 0;
   std::uint64_t planned_retained_memory_bytes = 0;
-  constexpr std::uint64_t kMaximumInt64TextBytes = 20;
+  const std::uint64_t maximum_result_text_bytes = boolean_window ? 5 : 20;
   constexpr std::uint64_t kFrameGraphCopyCount = 5;
   constexpr std::uint64_t kFrameCarrierMetadataCopyCount = 4;
   constexpr std::uint64_t kRetainedInputCopyCount = 4;
@@ -2011,7 +2042,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
           row_count_u64,
           kFrameGraphCopyCount * sizeof(std::vector<std::size_t>),
           &partition_vector_bytes) ||
-      !checked_multiply(row_count_u64, kMaximumInt64TextBytes,
+      !checked_multiply(row_count_u64, maximum_result_text_bytes,
                         &result_value_payload_bytes) ||
       !checked_multiply(input_payload_bytes, kRetainedInputCopyCount,
                         &retained_input_copy_bytes) ||
@@ -2148,10 +2179,22 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       aggregate_request.function =
           CanonicalWindowAggregateFunction::int64_count;
       break;
+    case CanonicalAggregateFunction::bool_and:
+      aggregate_request.function =
+          CanonicalWindowAggregateFunction::boolean_and;
+      break;
+    case CanonicalAggregateFunction::bool_or:
+      aggregate_request.function =
+          CanonicalWindowAggregateFunction::boolean_or;
+      break;
+    case CanonicalAggregateFunction::every:
+      aggregate_request.function =
+          CanonicalWindowAggregateFunction::boolean_every;
+      break;
     default:
       return refuse(Refusal(
           "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
-          "aggregate window registry function is outside the int64 unary cohort"));
+          "aggregate window registry function is outside the unary cohort"));
   }
   aggregate_request.function_uuid =
       request.aggregate_descriptor.function_uuid;

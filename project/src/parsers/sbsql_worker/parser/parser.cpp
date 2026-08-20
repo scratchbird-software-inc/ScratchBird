@@ -2922,7 +2922,9 @@ class NativeRelationalParser final {
   bool LooksLikeBoundedWindowSelect() const {
     if (tokens_.size() < 9 || tokens_[2]->text != "(") return false;
     if (IsWord(*tokens_[1], "SUM") || IsWord(*tokens_[1], "MIN") ||
-        IsWord(*tokens_[1], "MAX") || IsWord(*tokens_[1], "COUNT")) {
+        IsWord(*tokens_[1], "MAX") || IsWord(*tokens_[1], "COUNT") ||
+        IsWord(*tokens_[1], "BOOL_AND") ||
+        IsWord(*tokens_[1], "BOOL_OR") || IsWord(*tokens_[1], "EVERY")) {
       return tokens_.size() > 6 && tokens_[4]->text == ")" &&
              IsWord(*tokens_[5], "OVER") &&
              (tokens_[6]->text == "(" ||
@@ -2950,7 +2952,7 @@ class NativeRelationalParser final {
     // The general ROW_NUMBER surface preserves the complete window
     // specification. RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, NTILE, LAG,
     // LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE, and the exact aggregate
-    // SUM/MIN/MAX/COUNT(identifier) cohort are admitted
+    // SUM/MIN/MAX/COUNT/BOOL_AND/BOOL_OR/EVERY(identifier) cohort is admitted
     // only for the exact global,
     // one-direct-column
     // ordering profile executed by the canonical spine. NTILE additionally
@@ -2961,8 +2963,9 @@ class NativeRelationalParser final {
     // frame. NTH_VALUE additionally requires one exact positive signed-int64
     // literal position and normalizes omitted origin/NULL-treatment state to
     // FROM FIRST RESPECT NULLS in the canonical execution route. Aggregate
-    // SUM/MIN/MAX/COUNT admit one direct signed-int64 value column and the same
-    // exact implicit ordered frame, then bind through the engine-owned aggregate
+    // Numeric aggregates admit one direct signed-int64 value column; boolean
+    // aggregates admit one direct boolean value column. Both use the same exact
+    // implicit ordered frame and bind through the engine-owned aggregate
     // registry rather than the native window-function registry.
     document_.status = NativeRelationalParseStatus::kRefused;
     if (cst_.messages.has_errors()) {
@@ -2989,7 +2992,10 @@ class NativeRelationalParser final {
     const bool aggregate_window = IsWord(function_token, "SUM") ||
                                   IsWord(function_token, "MIN") ||
                                   IsWord(function_token, "MAX") ||
-                                  IsWord(function_token, "COUNT");
+                                  IsWord(function_token, "COUNT") ||
+                                  IsWord(function_token, "BOOL_AND") ||
+                                  IsWord(function_token, "BOOL_OR") ||
+                                  IsWord(function_token, "EVERY");
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||

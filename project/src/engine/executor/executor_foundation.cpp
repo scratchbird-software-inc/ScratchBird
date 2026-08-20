@@ -10540,8 +10540,7 @@ ExecuteCanonicalRegistryWindowAggregate(
 // QOW-SOURCE-WIN-012-DISTINCT-V1
 // QOW-SOURCE-WIN-012-ORDER-V1
 // QOW-SOURCE-WIN-012-FRAME-V1
-// Compatibility entry point for the exact int64 SUM/MIN/MAX/COUNT(expr)
-// window cohort.
+// Compatibility entry point for the exact unary aggregate window cohort.
 // It carries no state implementation: the request is translated onto the
 // canonical aggregate registry and enters the same descriptor/state/frame
 // dispatcher as every other aggregate-as-window function.
@@ -10566,6 +10565,12 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
         return CanonicalAggregateFunction::max;
       case CanonicalWindowAggregateFunction::int64_count:
         return CanonicalAggregateFunction::count;
+      case CanonicalWindowAggregateFunction::boolean_and:
+        return CanonicalAggregateFunction::bool_and;
+      case CanonicalWindowAggregateFunction::boolean_or:
+        return CanonicalAggregateFunction::bool_or;
+      case CanonicalWindowAggregateFunction::boolean_every:
+        return CanonicalAggregateFunction::every;
     }
     return CanonicalAggregateFunction::unknown;
   }();

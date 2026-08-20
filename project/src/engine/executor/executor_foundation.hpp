@@ -235,6 +235,9 @@ enum class CanonicalWindowAggregateFunction : std::uint8_t {
   int64_min,
   int64_max,
   int64_count,
+  boolean_and,
+  boolean_or,
+  boolean_every,
 };
 
 struct CanonicalWindowAggregateRequest {

@@ -1074,7 +1074,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             ? executor::LookupCanonicalAggregateByUuidV1(
                   relational.window_invocations.front().function_uuid)
             : nullptr;
-    const bool exact_int64_unary_aggregate =
+    const bool exact_unary_aggregate =
         aggregate_window_row != nullptr &&
         (aggregate_window_row->function ==
              executor::CanonicalAggregateFunction::sum ||
@@ -1083,17 +1083,37 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          aggregate_window_row->function ==
              executor::CanonicalAggregateFunction::max ||
          aggregate_window_row->function ==
-             executor::CanonicalAggregateFunction::count);
+             executor::CanonicalAggregateFunction::count ||
+         aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::bool_and ||
+         aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::bool_or ||
+         aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::every);
     const bool aggregate_count_window =
         aggregate_window_row != nullptr &&
         aggregate_window_row->function ==
             executor::CanonicalAggregateFunction::count;
+    const bool aggregate_boolean_window =
+        aggregate_window_row != nullptr &&
+        (aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::bool_and ||
+         aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::bool_or ||
+         aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::every);
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
         nth_value_window || aggregate_window;
     const auto canonical_int64_type_uuid =
         value_window ? CanonicalCoreDatatypeUuid("int64") : std::string{};
+    const auto canonical_boolean_type_uuid =
+        aggregate_boolean_window ? CanonicalCoreDatatypeUuid("boolean")
+                                 : std::string{};
+    const auto& canonical_value_type_uuid =
+        aggregate_boolean_window ? canonical_boolean_type_uuid
+                                 : canonical_int64_type_uuid;
     const std::string_view expected_builtin_id =
         aggregate_window
             ? (aggregate_window_row == nullptr
@@ -1311,7 +1331,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         relational.window_invocations.front().window_definition_id !=
             relational.window_definitions.front().window_id ||
         (aggregate_window &&
-         (!exact_int64_unary_aggregate ||
+         (!exact_unary_aggregate ||
           !aggregate_window_row->executable ||
           !aggregate_window_row->aggregate_as_window ||
           aggregate_window_row->abi_version != 1)) ||
@@ -1383,9 +1403,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
               result_descriptor->descriptor_uuid ||
           ntile_argument_descriptor->descriptor_uuid ==
               expected_function_uuid ||
-          canonical_int64_type_uuid.empty() ||
+          canonical_value_type_uuid.empty() ||
           ntile_argument_descriptor->type_uuid !=
-              canonical_int64_type_uuid ||
+              canonical_value_type_uuid ||
           ntile_argument_descriptor->type_uuid !=
               result_descriptor->type_uuid ||
           ntile_argument_descriptor->collation_uuid !=
@@ -1396,6 +1416,17 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
           ntile_argument_descriptor->precision !=
               result_descriptor->precision ||
           ntile_argument_descriptor->scale != result_descriptor->scale ||
+          (aggregate_window &&
+           (ntile_argument_descriptor->collation_uuid.has_value() ||
+            ntile_argument_descriptor->timezone_profile_id.has_value() ||
+            ntile_argument_descriptor->width.has_value() ||
+            ntile_argument_descriptor->precision.has_value() ||
+            ntile_argument_descriptor->scale.has_value() ||
+            result_descriptor->collation_uuid.has_value() ||
+            result_descriptor->timezone_profile_id.has_value() ||
+            result_descriptor->width.has_value() ||
+            result_descriptor->precision.has_value() ||
+            result_descriptor->scale.has_value())) ||
           std::ranges::find(sort_node->output_descriptor_ids,
                             ntile_argument_descriptor->descriptor_id) ==
               sort_node->output_descriptor_ids.end())) ||

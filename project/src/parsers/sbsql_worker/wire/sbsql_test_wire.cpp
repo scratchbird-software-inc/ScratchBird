@@ -4207,6 +4207,7 @@ BuildEngineProjectedNativeBindingContext(
             return candidate.canonical_name_key == expression->spelling;
           });
       if (column == projection.columns.end() || column->column_uuid.empty() ||
+          column->canonical_type_name.empty() ||
           !CanonicalUuidBytes(column->type_descriptor_uuid).has_value()) {
         return fail("catalog_window_source_column_unresolved");
       }
@@ -4227,6 +4228,7 @@ BuildEngineProjectedNativeBindingContext(
                                    : BoundNullability::kNonNull;
       descriptor.collation_uuid = descriptor_fields->collation_uuid;
       descriptor.timezone_profile_id = descriptor_fields->timezone_profile_id;
+      descriptor.canonical_type_name = column->canonical_type_name;
       if (column->character_length != 0) {
         descriptor.width_precision_scale.width = column->character_length;
       }
@@ -4349,9 +4351,17 @@ BuildEngineProjectedNativeBindingContext(
         (function_expression->operator_name == "SUM" ||
          function_expression->operator_name == "MIN" ||
          function_expression->operator_name == "MAX" ||
-         function_expression->operator_name == "COUNT");
+         function_expression->operator_name == "COUNT" ||
+         function_expression->operator_name == "BOOL_AND" ||
+         function_expression->operator_name == "BOOL_OR" ||
+         function_expression->operator_name == "EVERY");
     const bool aggregate_count_window =
         aggregate_window && function_expression->operator_name == "COUNT";
+    const bool aggregate_boolean_window =
+        aggregate_window &&
+        (function_expression->operator_name == "BOOL_AND" ||
+         function_expression->operator_name == "BOOL_OR" ||
+         function_expression->operator_name == "EVERY");
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
@@ -4394,7 +4404,15 @@ BuildEngineProjectedNativeBindingContext(
                           ? "sb.aggregate.min"
                           : (function_expression->operator_name == "MAX"
                                  ? "sb.aggregate.max"
-                                 : "sb.aggregate.count")))
+                                 : (function_expression->operator_name == "COUNT"
+                                        ? "sb.aggregate.count"
+                                        : (function_expression->operator_name ==
+                                                   "BOOL_AND"
+                                               ? "sb.aggregate.bool_and"
+                                               : (function_expression->operator_name ==
+                                                          "BOOL_OR"
+                                                      ? "sb.aggregate.bool_or"
+                                                      : "sb.aggregate.every"))))))
             : (value_window
             ? (first_value_window
                    ? "sb.window.first_value"
@@ -4414,9 +4432,17 @@ BuildEngineProjectedNativeBindingContext(
                           ? "sb.window.dense_rank"
                           : (rank_window ? "sb.window.rank"
                                          : "sb.window.row_number"))))));
+    const auto boolean_aggregate_function_uuid =
+        aggregate_boolean_window
+            ? EngineIssuedAggregateFunctionUuid(
+                  statement_context, function_expression->operator_name)
+            : std::optional<std::string_view>{};
     const std::string_view expected_function_uuid =
         aggregate_window
-            ? (function_expression->operator_name == "SUM"
+            ? (aggregate_boolean_window
+                   ? boolean_aggregate_function_uuid.value_or(
+                         std::string_view{})
+                   : (function_expression->operator_name == "SUM"
                    ? std::string_view(statement_context.sum_function_uuid)
                    : (function_expression->operator_name == "MIN"
                           ? std::string_view(statement_context.min_function_uuid)
@@ -4424,7 +4450,7 @@ BuildEngineProjectedNativeBindingContext(
                                  ? std::string_view(
                                        statement_context.max_function_uuid)
                                  : std::string_view(
-                                       statement_context.count_function_uuid))))
+                                       statement_context.count_function_uuid)))))
             : (value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
@@ -4459,11 +4485,17 @@ BuildEngineProjectedNativeBindingContext(
           return candidate.profile_kind ==
                      (aggregate_count_window
                           ? 1
+                          : aggregate_boolean_window
+                          ? 6
                           : value_window
                           ? 2
                           : ((percent_rank_window || cume_dist_window) ? 11
                                                                        : 1)) &&
                  candidate.slot == 0;
+        });
+    const auto order_profile = std::ranges::find_if(
+        statement_context.descriptor_profiles, [](const auto& candidate) {
+          return candidate.profile_kind == 1 && candidate.slot == 0;
         });
     const NativeExpressionAstNode* ntile_operand = nullptr;
     if (ntile_window && function_expression->child_expression_ids.size() == 1) {
@@ -4561,6 +4593,10 @@ BuildEngineProjectedNativeBindingContext(
         result_profile == statement_context.descriptor_profiles.end() ||
         result_profile->nullable !=
             (value_window && !aggregate_count_window) ||
+        (aggregate_boolean_window &&
+         (!result_profile->collation_uuid.empty() ||
+          result_profile->width != 0 || result_profile->precision != 0 ||
+          result_profile->scale != 0)) ||
         !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
         !CanonicalUuidBytes(result_profile->type_uuid).has_value() ||
         result_profile->descriptor_uuid == expected_function_uuid ||
@@ -4617,7 +4653,11 @@ BuildEngineProjectedNativeBindingContext(
               expected_function_uuid ||
           context.descriptors[*lag_operand_source_ordinal].type_uuid !=
               result_profile->type_uuid ||
-          (aggregate_count_window &&
+          (aggregate_window &&
+           context.descriptors[*lag_operand_source_ordinal]
+                   .canonical_type_name !=
+               (aggregate_boolean_window ? "boolean" : "int64")) ||
+          (aggregate_window &&
            (context.descriptors[*lag_operand_source_ordinal]
                 .collation_uuid.has_value() ||
             context.descriptors[*lag_operand_source_ordinal]
@@ -4649,7 +4689,14 @@ BuildEngineProjectedNativeBindingContext(
               : static_cast<std::size_t>(std::distance(
                     source_relation->output_expression_ids.begin(),
                     order_source));
-      if (has_qualify || ast.window_definitions.size() != 1 ||
+      if (order_profile == statement_context.descriptor_profiles.end() ||
+          order_profile->nullable || order_profile->profile_kind != 1 ||
+          order_profile->slot != 0 ||
+          !CanonicalUuidBytes(order_profile->descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(order_profile->type_uuid).has_value() ||
+          !order_profile->collation_uuid.empty() || order_profile->width != 0 ||
+          order_profile->precision != 0 || order_profile->scale != 0 ||
+          has_qualify || ast.window_definitions.size() != 1 ||
           definition.name.has_value() || definition.base_name.has_value() ||
           !definition.partition_expression_ids.empty() ||
           definition.ordering_terms.size() != 1 ||
@@ -4663,11 +4710,19 @@ BuildEngineProjectedNativeBindingContext(
           (aggregate_window &&
            (order_source_ordinal >= context.descriptors.size() ||
             context.descriptors[order_source_ordinal].type_uuid !=
-                result_profile->type_uuid ||
+                order_profile->type_uuid ||
+            context.descriptors[order_source_ordinal].canonical_type_name !=
+                "int64" ||
             context.descriptors[order_source_ordinal]
                 .collation_uuid.has_value() ||
             context.descriptors[order_source_ordinal]
-                .timezone_profile_id.has_value())) ||
+                .timezone_profile_id.has_value() ||
+            context.descriptors[order_source_ordinal]
+                .width_precision_scale.width.has_value() ||
+            context.descriptors[order_source_ordinal]
+                .width_precision_scale.precision.has_value() ||
+            context.descriptors[order_source_ordinal]
+                .width_precision_scale.scale.has_value())) ||
           source_relation->output_expression_ids != [&] {
             std::vector<std::uint32_t> expected;
             if (lag_operand != nullptr) {
@@ -4735,6 +4790,9 @@ BuildEngineProjectedNativeBindingContext(
           source_descriptor.timezone_profile_id;
       function_descriptor.width_precision_scale =
           source_descriptor.width_precision_scale;
+      function_descriptor.canonical_type_name =
+          source_descriptor.canonical_type_name;
+      function_descriptor.element_profile = source_descriptor.element_profile;
     }
     context.descriptors.push_back(std::move(function_descriptor));
     const auto function_abi_version =
@@ -4769,7 +4827,16 @@ BuildEngineProjectedNativeBindingContext(
                                             : (function_expression->operator_name ==
                                                        "MAX"
                                                    ? "max"
-                                                   : "count")))
+                                                   : (function_expression->operator_name ==
+                                                              "COUNT"
+                                                          ? "count"
+                                                          : (function_expression->operator_name ==
+                                                                     "BOOL_AND"
+                                                                 ? "bool_and"
+                                                                 : (function_expression->operator_name ==
+                                                                            "BOOL_OR"
+                                                                        ? "bool_or"
+                                                                        : "every"))))))
                    : (value_window
                    ? std::string(first_value_window
                                      ? "first_value"

@@ -6319,7 +6319,7 @@ constexpr GlobalRankingWindowProfile kGlobalLastValueProfile{
 constexpr GlobalRankingWindowProfile kGlobalNthValueProfile{
     "window.nth-value.v1", "sb.window.nth_value",
     "019de5fc-2400-7dc9-80e6-9f2ccf08076f", "NTH_VALUE", "int64"};
-GlobalRankingWindowProfile GlobalAggregateInt64WindowProfileV1(
+GlobalRankingWindowProfile GlobalAggregateWindowProfileV1(
     const api::TypedRelationalDag& dag,
     const std::uint32_t relation_node_id) {
   const api::RelationalWindowInvocationRecord* exact_invocation = nullptr;
@@ -6337,6 +6337,7 @@ GlobalRankingWindowProfile GlobalAggregateInt64WindowProfileV1(
     return {};
   }
   std::string_view display_name;
+  std::string_view result_type_name = "int64";
   switch (row->function) {
     case exec::CanonicalAggregateFunction::sum:
       display_name = "SUM";
@@ -6350,11 +6351,23 @@ GlobalRankingWindowProfile GlobalAggregateInt64WindowProfileV1(
     case exec::CanonicalAggregateFunction::count:
       display_name = "COUNT";
       break;
+    case exec::CanonicalAggregateFunction::bool_and:
+      display_name = "BOOL_AND";
+      result_type_name = "boolean";
+      break;
+    case exec::CanonicalAggregateFunction::bool_or:
+      display_name = "BOOL_OR";
+      result_type_name = "boolean";
+      break;
+    case exec::CanonicalAggregateFunction::every:
+      display_name = "EVERY";
+      result_type_name = "boolean";
+      break;
     default:
       return {};
   }
   return {"window.aggregate-bridge.v1", row->builtin_id,
-          row->function_uuid, display_name, "int64"};
+          row->function_uuid, display_name, result_type_name};
 }
 constexpr std::uint64_t kRealRankingRatioTextMaximumBytes = 36;
 constexpr std::uint64_t kRealRankingConversionWorkspaceMaximumBytes =
@@ -6372,6 +6385,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
     const std::size_t materialized_column_count,
     const std::size_t result_binding_count,
     const std::string& result_type_uuid,
+    const std::string& order_type_uuid,
     const std::string_view family_label,
     const GlobalRankingWindowProfile& profile,
     const bool allow_project_root = false) {
@@ -6600,7 +6614,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           (value_window && !aggregate_count_window
                ? api::RelationalNullability::kNullable
                : api::RelationalNullability::kNonNull) ||
-      (aggregate_count_window &&
+      (aggregate_window &&
        (result_descriptor->collation_uuid.has_value() ||
         result_descriptor->timezone_profile_id.has_value() ||
         result_descriptor->width.has_value() ||
@@ -6750,14 +6764,19 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         argument_descriptor->descriptor_uuid ==
             result_descriptor->descriptor_uuid ||
         argument_descriptor->descriptor_uuid == profile.function_uuid ||
-        (aggregate_count_window &&
+        (aggregate_window &&
          (argument_descriptor->type_uuid != result_type_uuid ||
           argument_descriptor->collation_uuid.has_value() ||
           argument_descriptor->timezone_profile_id.has_value() ||
           argument_descriptor->width.has_value() ||
           argument_descriptor->precision.has_value() ||
-          argument_descriptor->scale.has_value())) ||
-        (!aggregate_count_window &&
+          argument_descriptor->scale.has_value() ||
+          result_descriptor->collation_uuid.has_value() ||
+          result_descriptor->timezone_profile_id.has_value() ||
+          result_descriptor->width.has_value() ||
+          result_descriptor->precision.has_value() ||
+          result_descriptor->scale.has_value())) ||
+        (!aggregate_window &&
          (argument_descriptor->type_uuid != result_type_uuid ||
           result_descriptor->type_uuid != argument_descriptor->type_uuid ||
           result_descriptor->collation_uuid !=
@@ -6769,7 +6788,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           result_descriptor->scale != argument_descriptor->scale))) {
       result.detail = std::string(family_label) +
                       " " + std::string(profile.display_name) +
-                      " value is not one direct canonical int64 column "
+                      " value is not one direct canonical " +
+                      std::string(profile.result_type_name) + " column "
                       "with an exact distinct result descriptor";
       return result;
     }
@@ -6875,7 +6895,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         order_expression->literal_or_parameter_ref.has_value() ||
         order_expression->operator_name.has_value() ||
         order_descriptor == dag.descriptors.end() ||
-        order_descriptor->type_uuid != result_type_uuid ||
+        order_descriptor->type_uuid != order_type_uuid ||
         order_descriptor->collation_uuid.has_value() ||
         order_descriptor->timezone_profile_id.has_value() ||
         order_descriptor->width.has_value() ||
@@ -6916,7 +6936,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
   return PrepareGlobalRankingWindowBinding(
       dag, logical_properties, consumer, logical_consumer, previous_logical,
       prepared_sort, materialized_column_count, result_binding_count,
-      int64_type_uuid, family_label, kGlobalRowNumberProfile,
+      int64_type_uuid, int64_type_uuid, family_label, kGlobalRowNumberProfile,
       allow_project_root);
 }
 
@@ -18530,7 +18550,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             percent_rank_window || cume_dist_window;
         const auto ranking_profile =
             aggregate_window
-                ? GlobalAggregateInt64WindowProfileV1(
+                ? GlobalAggregateWindowProfileV1(
                       request.relational_dag, node.logical_node_id)
                 : value_window
                 ? (first_value_window
@@ -18580,17 +18600,25 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             core_manifest.manifest.descriptor_rows, [&](const auto& row) {
               return row.stable_name == ranking_profile.result_type_name;
             });
+        const auto order_type = std::ranges::find_if(
+            core_manifest.manifest.descriptor_rows,
+            [](const auto& row) { return row.stable_name == "int64"; });
         const auto result_type_uuid =
             result_type == core_manifest.manifest.descriptor_rows.end()
                 ? std::string{}
                 : scratchbird::core::uuid::UuidToString(
                       result_type->descriptor_uuid.value);
+        const auto order_type_uuid =
+            order_type == core_manifest.manifest.descriptor_rows.end()
+                ? std::string{}
+                : scratchbird::core::uuid::UuidToString(
+                      order_type->descriptor_uuid.value);
         const auto ranking = PrepareGlobalRankingWindowBinding(
             request.relational_dag,
             request.optimizer_request.logical_properties, *typed_consumer,
             node, input_node, *prepared_sort, input_batch.columns.size(),
-            input_bindings.size(), result_type_uuid, "composition",
-            ranking_profile);
+            input_bindings.size(), result_type_uuid, order_type_uuid,
+            "composition", ranking_profile);
         if (!ranking.ok) {
           return refuse(ranking.diagnostic_id, ranking.detail);
         }
@@ -18661,8 +18689,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                          value_payload_memory);
           }
           if (aggregate_window) {
-            constexpr std::uint64_t kMaximumInt64TextBytes = 20;
-            if (!CheckedMultiply(kMaximumInt64TextBytes, input_row_count,
+            const std::uint64_t maximum_aggregate_text_bytes =
+                ranking_profile.result_type_name == "boolean" ? 5 : 20;
+            if (!CheckedMultiply(maximum_aggregate_text_bytes, input_row_count,
                                  &result_value_payload_memory)) {
               return refuse(
                   "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -52029,7 +52058,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         cume_dist_window;
     const auto ranking_profile =
         aggregate_window
-            ? GlobalAggregateInt64WindowProfileV1(dag,
+            ? GlobalAggregateWindowProfileV1(dag,
                                                    window_node->node_id)
             : value_window
             ? (first_value_window
@@ -52074,17 +52103,25 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         core_manifest.manifest.descriptor_rows, [&](const auto& row) {
           return row.stable_name == ranking_profile.result_type_name;
         });
+    const auto order_type = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows,
+        [](const auto& row) { return row.stable_name == "int64"; });
     const auto result_type_uuid =
         result_type == core_manifest.manifest.descriptor_rows.end()
             ? std::string{}
             : scratchbird::core::uuid::UuidToString(
                   result_type->descriptor_uuid.value);
+    const auto order_type_uuid =
+        order_type == core_manifest.manifest.descriptor_rows.end()
+            ? std::string{}
+            : scratchbird::core::uuid::UuidToString(
+                  order_type->descriptor_uuid.value);
     const auto ranking = PrepareGlobalRankingWindowBinding(
         dag, admission.request.logical_properties, *window_node,
         *logical_window, *logical_sort, heap_sort_binding,
         sort_node->output_descriptor_ids.size(),
-        sort_node->output_descriptor_ids.size(), result_type_uuid, "heap",
-        ranking_profile, project_composition);
+        sort_node->output_descriptor_ids.size(), result_type_uuid,
+        order_type_uuid, "heap", ranking_profile, project_composition);
     if (!ranking.ok) {
       return refuse(ranking.diagnostic_id, ranking.detail);
     }

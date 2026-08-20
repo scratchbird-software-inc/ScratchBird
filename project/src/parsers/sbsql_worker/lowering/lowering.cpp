@@ -36367,17 +36367,25 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const bool strict_ordered_window =
         peer_ranking_window || ntile_window || value_window;
     const auto& invocation = native.window_invocations.front();
-    const bool exact_int64_aggregate_builtin =
+    const bool exact_unary_aggregate_builtin =
         invocation.builtin_id == "sb.aggregate.sum" ||
         invocation.builtin_id == "sb.aggregate.min" ||
         invocation.builtin_id == "sb.aggregate.max" ||
-        invocation.builtin_id == "sb.aggregate.count";
+        invocation.builtin_id == "sb.aggregate.count" ||
+        invocation.builtin_id == "sb.aggregate.bool_and" ||
+        invocation.builtin_id == "sb.aggregate.bool_or" ||
+        invocation.builtin_id == "sb.aggregate.every";
     const bool aggregate_count_window =
         aggregate_window &&
         invocation.builtin_id == "sb.aggregate.count";
+    const bool aggregate_boolean_window =
+        aggregate_window &&
+        (invocation.builtin_id == "sb.aggregate.bool_and" ||
+         invocation.builtin_id == "sb.aggregate.bool_or" ||
+         invocation.builtin_id == "sb.aggregate.every");
     const std::string_view expected_window_builtin =
         aggregate_window
-            ? (exact_int64_aggregate_builtin
+            ? (exact_unary_aggregate_builtin
                    ? std::string_view{invocation.builtin_id}
                    : std::string_view{})
             : (value_window
@@ -36662,13 +36670,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                  NativeExpressionAstKind::kIdentifier &&
              (!aggregate_window ||
               (order_descriptor != native.descriptors.end() &&
-               result_descriptor != native.descriptors.end() &&
-               order_descriptor->type_uuid == result_descriptor->type_uuid &&
+               order_descriptor->canonical_type_name == "int64" &&
                !order_descriptor->collation_uuid.has_value() &&
-               !order_descriptor->timezone_profile_id.has_value()));
+               !order_descriptor->timezone_profile_id.has_value() &&
+               !order_descriptor->width_precision_scale.width.has_value() &&
+               !order_descriptor->width_precision_scale.precision.has_value() &&
+               !order_descriptor->width_precision_scale.scale.has_value()));
     }();
     if (!references_exact || !strict_ordered_shape_exact ||
-        (aggregate_window && !exact_int64_aggregate_builtin) ||
+        (aggregate_window && !exact_unary_aggregate_builtin) ||
         function == expressions_by_id.end() ||
         function->second->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
@@ -36687,13 +36697,19 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         result_descriptor->descriptor_uuid ==
             expected_window_function_uuid ||
         result_descriptor->type_uuid == expected_window_function_uuid ||
+        (aggregate_window &&
+         result_descriptor->canonical_type_name !=
+             (aggregate_boolean_window ? "boolean" : "int64")) ||
         result_descriptor->nullability !=
             (value_window && !aggregate_count_window
                  ? BoundNullability::kNullable
                  : BoundNullability::kNonNull) ||
-        ((!value_window || aggregate_count_window) &&
+        ((!value_window || aggregate_window) &&
          (result_descriptor->collation_uuid.has_value() ||
-          result_descriptor->timezone_profile_id.has_value())) ||
+          result_descriptor->timezone_profile_id.has_value() ||
+          result_descriptor->width_precision_scale.width.has_value() ||
+          result_descriptor->width_precision_scale.precision.has_value() ||
+          result_descriptor->width_precision_scale.scale.has_value())) ||
         ((ntile_window || nth_value_window) &&
          (numeric_window_argument == expressions_by_id.end() ||
           numeric_window_argument->second->expression_kind !=
@@ -36772,7 +36788,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           window_argument_descriptor->width_precision_scale.precision !=
               result_descriptor->width_precision_scale.precision ||
           window_argument_descriptor->width_precision_scale.scale !=
-              result_descriptor->width_precision_scale.scale))) {
+              result_descriptor->width_precision_scale.scale ||
+          window_argument_descriptor->canonical_type_name !=
+              result_descriptor->canonical_type_name ||
+          window_argument_descriptor->element_profile !=
+              result_descriptor->element_profile))) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed window definition and registry receipt are not exact");
@@ -39718,15 +39738,18 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               native.window_invocations.size() == 1
           ? &native.window_invocations.front()
           : nullptr;
-  const bool normalized_int64_aggregate_builtin =
+  const bool normalized_unary_aggregate_builtin =
       normalized_aggregate_invocation != nullptr &&
       (normalized_aggregate_invocation->builtin_id == "sb.aggregate.sum" ||
        normalized_aggregate_invocation->builtin_id == "sb.aggregate.min" ||
        normalized_aggregate_invocation->builtin_id == "sb.aggregate.max" ||
-       normalized_aggregate_invocation->builtin_id == "sb.aggregate.count");
+       normalized_aggregate_invocation->builtin_id == "sb.aggregate.count" ||
+       normalized_aggregate_invocation->builtin_id == "sb.aggregate.bool_and" ||
+       normalized_aggregate_invocation->builtin_id == "sb.aggregate.bool_or" ||
+       normalized_aggregate_invocation->builtin_id == "sb.aggregate.every");
   const std::string_view normalized_ranking_builtin =
       normalize_aggregate_window_semantic
-          ? (normalized_int64_aggregate_builtin
+          ? (normalized_unary_aggregate_builtin
                  ? std::string_view{
                        normalized_aggregate_invocation->builtin_id}
                  : std::string_view{})
@@ -39751,7 +39774,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                                    : "sb.window.row_number"))))));
   const std::string_view normalized_ranking_function_uuid =
       normalize_aggregate_window_semantic
-          ? (normalized_int64_aggregate_builtin
+          ? (normalized_unary_aggregate_builtin
                  ? std::string_view{
                        normalized_aggregate_invocation->bound_function_uuid}
                  : std::string_view{})
@@ -39797,7 +39820,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           NativeWindowFrameExclusion::kNoOthers &&
       native.window_invocations.front().function_abi_version == 1 &&
       (!normalize_aggregate_window_semantic ||
-       normalized_int64_aggregate_builtin) &&
+       normalized_unary_aggregate_builtin) &&
       native.window_invocations.front().builtin_id ==
           normalized_ranking_builtin &&
       native.window_invocations.front().bound_function_uuid ==

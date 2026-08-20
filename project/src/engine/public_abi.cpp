@@ -3221,9 +3221,9 @@ sb_engine_status_t AcquireStatementContextReceipt(
         {entry.abi_version, entry.builtin_id, entry.function_uuid, true});
   }
 
-  // Numeric statement descriptors represent the canonical signed-int64
-  // scalar profile. The profile descriptor UUIDs remain statement-owned, but
-  // their type identity is owned by the core datatype catalog.
+  // Numeric and Boolean statement descriptors represent canonical core scalar
+  // profiles. Their descriptor UUIDs remain statement-owned, while their type
+  // identities are owned by the core datatype catalog.
   const auto core_manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   const auto int64_count =
@@ -3232,15 +3232,29 @@ sb_engine_status_t AcquireStatementContextReceipt(
                 core_manifest.manifest.descriptor_rows,
                 [](const auto& row) { return row.stable_name == "int64"; })
           : 0;
+  const auto boolean_count =
+      core_manifest.ok()
+          ? std::ranges::count_if(
+                core_manifest.manifest.descriptor_rows,
+                [](const auto& row) { return row.stable_name == "boolean"; })
+          : 0;
   const auto int64_row =
       core_manifest.ok()
           ? std::ranges::find_if(
                 core_manifest.manifest.descriptor_rows,
                 [](const auto& row) { return row.stable_name == "int64"; })
           : core_manifest.manifest.descriptor_rows.end();
-  if (!core_manifest.ok() || int64_count != 1 ||
+  const auto boolean_row =
+      core_manifest.ok()
+          ? std::ranges::find_if(
+                core_manifest.manifest.descriptor_rows,
+                [](const auto& row) { return row.stable_name == "boolean"; })
+          : core_manifest.manifest.descriptor_rows.end();
+  if (!core_manifest.ok() || int64_count != 1 || boolean_count != 1 ||
       int64_row == core_manifest.manifest.descriptor_rows.end() ||
-      !int64_row->descriptor_uuid.valid()) {
+      boolean_row == core_manifest.manifest.descriptor_rows.end() ||
+      !int64_row->descriptor_uuid.valid() ||
+      !boolean_row->descriptor_uuid.valid()) {
     scratchbird::transaction::mga::RevokePublishedSnapshotVector(
         snapshot.snapshot_uuid);
     return fail_result(
@@ -3253,12 +3267,14 @@ sb_engine_status_t AcquireStatementContextReceipt(
   }
   const auto numeric_type_uuid = scratchbird::core::uuid::UuidToString(
       int64_row->descriptor_uuid.value);
+  const auto boolean_type_uuid = scratchbird::core::uuid::UuidToString(
+      boolean_row->descriptor_uuid.value);
   std::string text_type_uuid;
-  std::string boolean_type_uuid;
   std::string json_type_uuid;
   std::string text_list_type_uuid;
-  if (numeric_type_uuid.empty() || !issue_identity(&text_type_uuid) ||
-      !issue_identity(&boolean_type_uuid) ||
+  if (numeric_type_uuid.empty() || boolean_type_uuid.empty() ||
+      numeric_type_uuid == boolean_type_uuid ||
+      !issue_identity(&text_type_uuid) ||
       !issue_identity(&json_type_uuid) ||
       !issue_identity(&text_list_type_uuid)) {
     scratchbird::transaction::mga::RevokePublishedSnapshotVector(
@@ -3457,15 +3473,9 @@ sb_engine_status_t AcquireStatementContextReceipt(
   // exact 32-slot pools to the immutable V9 prefix. Type identity remains
   // core-catalog-owned; every result descriptor identity is issued here by
   // the engine before any model-family provider or data access can begin.
-  const auto boolean_count = std::ranges::count_if(
-      core_manifest.manifest.descriptor_rows,
-      [](const auto& row) { return row.stable_name == "boolean"; });
   const auto geometry_count = std::ranges::count_if(
       core_manifest.manifest.descriptor_rows,
       [](const auto& row) { return row.stable_name == "geometry"; });
-  const auto boolean_row = std::ranges::find_if(
-      core_manifest.manifest.descriptor_rows,
-      [](const auto& row) { return row.stable_name == "boolean"; });
   const auto geometry_row = std::ranges::find_if(
       core_manifest.manifest.descriptor_rows,
       [](const auto& row) { return row.stable_name == "geometry"; });
