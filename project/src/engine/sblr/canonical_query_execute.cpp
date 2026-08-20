@@ -49553,6 +49553,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kSort;
       });
+  const auto window_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.node_kind == api::RelationalDagNodeKind::kWindow;
+      });
   const auto aggregate_node = std::ranges::find_if(
       dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kAggregate;
@@ -49564,6 +49568,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   const bool filter_composition = filter_node != dag.nodes.end();
   const bool project_composition = project_node != dag.nodes.end();
   const bool sort_composition = sort_node != dag.nodes.end();
+  const bool window_composition = window_node != dag.nodes.end();
   const bool aggregate_composition = aggregate_node != dag.nodes.end();
   const bool limit_composition = limit_node != dag.nodes.end();
   const auto expected_root =
@@ -49573,13 +49578,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                  ? aggregate_node->node_id
                  : (project_composition
                  ? project_node->node_id
-                 : (sort_composition
-                        ? sort_node->node_id
-                        : (filter_composition
-                               ? filter_node->node_id
-                               : (scan_node == dag.nodes.end()
-                                      ? 0
-                                      : scan_node->node_id)))));
+                 : (window_composition
+                        ? window_node->node_id
+                        : (sort_composition
+                               ? sort_node->node_id
+                               : (filter_composition
+                                      ? filter_node->node_id
+                                      : (scan_node == dag.nodes.end()
+                                             ? 0
+                                             : scan_node->node_id))))));
   const auto expected_project_input =
       sort_composition
           ? sort_node->node_id
@@ -49600,6 +49607,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       dag.nodes.size() ==
           1 + static_cast<std::size_t>(filter_composition) +
               static_cast<std::size_t>(sort_composition) +
+              static_cast<std::size_t>(window_composition) +
               static_cast<std::size_t>(project_composition) +
               static_cast<std::size_t>(aggregate_composition) +
               static_cast<std::size_t>(limit_composition) &&
@@ -49615,6 +49623,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
            std::vector<std::uint32_t>{
                filter_composition ? filter_node->node_id
                                   : scan_node->node_id}) &&
+      (!window_composition ||
+       (sort_composition &&
+        window_node->input_node_ids ==
+            std::vector<std::uint32_t>{sort_node->node_id} &&
+        !project_composition && !aggregate_composition &&
+        !limit_composition)) &&
       (!aggregate_composition ||
        (aggregate_node->input_node_ids ==
             std::vector<std::uint32_t>{
@@ -49830,6 +49844,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   std::vector<std::size_t> heap_order_columns;
   std::string sort_capability_uuid;
   std::string ordering_property_uuid;
+  PreparedSortRoot heap_sort_binding;
   if (sort_composition) {
     const auto& properties = admission.request.logical_properties.properties;
     const auto property = std::ranges::find_if(
@@ -49874,6 +49889,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       heap_order_terms.push_back(term);
     }
     ordering_property_uuid = property->property_uuid;
+    heap_sort_binding.ok = true;
+    heap_sort_binding.ordering_property_uuid = ordering_property_uuid;
     sort_capability_uuid =
         DerivedCanonicalUuid(identity_scope, "heap-sort.capability");
     profiles.push_back(
@@ -49885,6 +49902,76 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          1, 1, {},
          {ordering_property_uuid},
          {plan::CanonicalLogicalPropertyKind::kOrdering}});
+  }
+  std::optional<exec::ExecutorColumnDescriptor> prepared_heap_row_number;
+  std::string window_capability_uuid;
+  std::string window_order_evidence_uuid;
+  if (window_composition) {
+    const auto logical_window = std::ranges::find_if(
+        graph.nodes, [&](const auto& candidate) {
+          return candidate.logical_node_id == window_node->node_id;
+        });
+    const auto logical_sort = std::ranges::find_if(
+        graph.nodes, [&](const auto& candidate) {
+          return candidate.logical_node_id == sort_node->node_id;
+        });
+    const auto core_manifest =
+        dt::LoadCurrentCoreDatatypeCatalogManifest();
+    if (logical_window == graph.nodes.end() ||
+        logical_sort == graph.nodes.end() || !core_manifest.ok()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+                    "object-backed ROW_NUMBER authority is unavailable");
+    }
+    const auto int64_type = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows, [&](const auto& row) {
+          return row.stable_name == "int64";
+        });
+    const auto int64_type_uuid =
+        int64_type == core_manifest.manifest.descriptor_rows.end()
+            ? std::string{}
+            : scratchbird::core::uuid::UuidToString(
+                  int64_type->descriptor_uuid.value);
+    const auto row_number = PrepareGlobalRowNumberWindowBinding(
+        dag, admission.request.logical_properties, *window_node,
+        *logical_window, *logical_sort, heap_sort_binding,
+        sort_node->output_descriptor_ids.size(),
+        sort_node->output_descriptor_ids.size(), int64_type_uuid, "heap");
+    if (!row_number.ok) {
+      return refuse(row_number.diagnostic_id, row_number.detail);
+    }
+    const auto* output_descriptor = row_number.result_descriptor;
+    api::EngineDescriptor descriptor;
+    descriptor.descriptor_uuid.canonical =
+        output_descriptor->descriptor_uuid;
+    descriptor.descriptor_kind = "scalar";
+    descriptor.canonical_type_name = "int64";
+    descriptor.encoded_descriptor =
+        "type_uuid=" + output_descriptor->type_uuid +
+        ";nullability=non_null";
+    exec::ExecutorColumnDescriptor row_number_column{
+        row_number.outputs.back()->output_name_utf8, descriptor, false,
+        output_descriptor->descriptor_id};
+    if (!api::QowCanonicalDescriptorIdentityV1(descriptor)) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+                    "object-backed ROW_NUMBER descriptor is invalid");
+    }
+    prepared_heap_row_number = std::move(row_number_column);
+    window_capability_uuid =
+        DerivedCanonicalUuid(identity_scope, "heap-window.capability");
+    window_order_evidence_uuid = DerivedCanonicalUuid(
+        identity_scope + ":" + ordering_property_uuid,
+        "heap-window.deterministic-order");
+    profiles.push_back(
+        {window_node->node_id, "window.row-number.v1",
+         window_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kWindow,
+         exec::PhysicalNodeKind::kWindow,
+         "canonical.heap.window.row-number.v1", 1,
+         planning_request.optimizer_request.resource.memory_budget_bytes,
+         1, 1, window_node->required_property_uuids,
+         window_node->delivered_property_uuids,
+         {plan::CanonicalLogicalPropertyKind::kOrdering,
+          plan::CanonicalLogicalPropertyKind::kWindow}});
   }
   std::vector<std::size_t> projected_columns;
   std::string project_capability_uuid;
@@ -49983,21 +50070,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                  ? "heap-aggregate.selected-plan"
                  : (project_composition
                  ? "heap-project.selected-plan"
-                 : (sort_composition
-                        ? "heap-sort.selected-plan"
-                        : (filter_composition ? "heap-filter.selected-plan"
-                                              : "heap-scan.selected-plan")))),
+                 : (window_composition
+                        ? "heap-window.selected-plan"
+                        : (sort_composition
+                               ? "heap-sort.selected-plan"
+                               : (filter_composition
+                                      ? "heap-filter.selected-plan"
+                                      : "heap-scan.selected-plan"))))),
       limit_composition
           ? "object-backed heap LIMIT composition"
           : (aggregate_composition
                  ? "object-backed heap global aggregate composition"
                  : (project_composition
                  ? "object-backed heap hidden-column PROJECT composition"
-                 : (sort_composition
-                        ? "object-backed heap ORDER BY composition"
-                        : (filter_composition
-                               ? "object-backed heap WHERE composition"
-                               : "object-backed heap scan")))));
+                 : (window_composition
+                        ? "object-backed heap ROW_NUMBER composition"
+                        : (sort_composition
+                               ? "object-backed heap ORDER BY composition"
+                               : (filter_composition
+                                      ? "object-backed heap WHERE composition"
+                                      : "object-backed heap scan"))))));
   if (!physical.ok) {
     return refuse(
         physical.diagnostic_id.empty()
@@ -50036,8 +50128,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                   "object-backed heap execution bounds are absent or overflow");
   }
 
-  if (filter_composition || sort_composition || project_composition ||
-      aggregate_composition || limit_composition) {
+  if (filter_composition || sort_composition || window_composition ||
+      project_composition || aggregate_composition || limit_composition) {
     exec::CanonicalHeapPhysicalDagDispatchRequest heap_request;
     heap_request.context = &input.context;
     heap_request.relational_dag = &input.relational_dag;
@@ -50074,9 +50166,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                    ? &*aggregate_node
                    : (project_composition
                    ? &*project_node
-                   : (sort_composition
-                          ? &*sort_node
-                          : (filter_composition ? &*filter_node : &*scan_node))));
+                   : (window_composition
+                          ? &*window_node
+                          : (sort_composition
+                                 ? &*sort_node
+                                 : (filter_composition ? &*filter_node
+                                                       : &*scan_node)))));
     for (const auto& output : dag.outputs) {
       if (output.relation_node_id == publication_node->node_id) {
         ordered_outputs.push_back(&output);
@@ -50132,6 +50227,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                   1, static_cast<std::size_t>(maximum_pair_comparisons_u64)),
               input.context));
     }
+    if (window_composition) {
+      selected.available_executors.push_back(
+          MakeLiveRowNumberRegistration(
+              *prepared_heap_row_number, window_order_evidence_uuid,
+              window_capability_uuid, maximum_output_rows, input.context));
+    }
     if (project_composition) {
       selected.available_executors.push_back(
           MakeLiveHeapProjectRegistration(
@@ -50156,8 +50257,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                        ? "heap-aggregate.execution-attempt"
                        : (project_composition
                        ? "heap-project.execution-attempt"
-                       : (sort_composition ? "heap-sort.execution-attempt"
-                                           : "heap-filter.execution-attempt"))));
+                       : (window_composition
+                              ? "heap-window.execution-attempt"
+                              : (sort_composition
+                                     ? "heap-sort.execution-attempt"
+                                     : "heap-filter.execution-attempt")))));
     selected.result_publication_request.transaction_effect_evidence_uuid =
         DerivedCanonicalUuid(
             identity_scope + ":" +
@@ -50171,9 +50275,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                        ? "heap-aggregate.transaction-effect-unchanged"
                        : (project_composition
                        ? "heap-project.transaction-effect-unchanged"
-                       : (sort_composition
-                              ? "heap-sort.transaction-effect-unchanged"
-                              : "heap-filter.transaction-effect-unchanged"))));
+                       : (window_composition
+                              ? "heap-window.transaction-effect-unchanged"
+                              : (sort_composition
+                                     ? "heap-sort.transaction-effect-unchanged"
+                                     : "heap-filter.transaction-effect-unchanged")))));
     selected.result_publication_request.result_kind =
         exec::CanonicalResultKind::kRows;
     selected.result_publication_request.invocation_mode =
@@ -50219,9 +50325,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                             ? "QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-EXECUTION-V1"
                             : (project_composition
                             ? "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-EXECUTION-V1"
-                            : (sort_composition
-                                   ? "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-EXECUTION-V1"
-                                   : "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1"))))
+                            : (window_composition
+                                   ? "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-EXECUTION-V1"
+                                   : (sort_composition
+                                          ? "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-EXECUTION-V1"
+                                          : "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1")))))
               : execution.issues.front().diagnostic_id,
           execution.issues.empty()
               ? (limit_composition
@@ -50230,9 +50338,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                             ? "object-backed heap aggregate selected DAG was not completed"
                             : (project_composition
                             ? "object-backed heap PROJECT selected DAG was not completed"
-                            : (sort_composition
-                                   ? "object-backed heap ORDER BY selected DAG was not completed"
-                                   : "object-backed heap WHERE selected DAG was not completed"))))
+                            : (window_composition
+                                   ? "object-backed heap ROW_NUMBER selected DAG was not completed"
+                                   : (sort_composition
+                                          ? "object-backed heap ORDER BY selected DAG was not completed"
+                                          : "object-backed heap WHERE selected DAG was not completed")))))
               : execution.issues.front().field_id);
     }
     result.physical_dag_executed = true;
