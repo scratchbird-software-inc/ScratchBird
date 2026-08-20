@@ -270,6 +270,9 @@ CloneFoundationAggregateRequestWithoutRowsOrFilter(
         std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>{};
   }
   clone.distinct = source.distinct;
+  clone.aggregate_equality_terms = source.aggregate_equality_terms;
+  clone.aggregate_equality_authority_profile =
+      source.aggregate_equality_authority_profile;
   clone.aggregate_order_terms = source.aggregate_order_terms;
   clone.aggregate_separator = source.aggregate_separator;
   clone.listagg_overflow_mode = source.listagg_overflow_mode;
@@ -279,6 +282,10 @@ CloneFoundationAggregateRequestWithoutRowsOrFilter(
   clone.forced_strategy = source.forced_strategy;
   clone.maximum_transition_count = source.maximum_transition_count;
   clone.maximum_distinct_value_count = source.maximum_distinct_value_count;
+  clone.maximum_equality_key_generation_count =
+      source.maximum_equality_key_generation_count;
+  clone.maximum_equality_comparison_count =
+      source.maximum_equality_comparison_count;
   clone.maximum_aggregate_order_term_count =
       source.maximum_aggregate_order_term_count;
   clone.maximum_order_comparison_count =
@@ -306,6 +313,27 @@ bool FoundationFilterBytes(
   }
   *bytes = count *
            sizeof(scratchbird::engine::internal_api::EngineSqlTruthValue);
+  return true;
+}
+
+bool FoundationCheckedMultiply(const std::size_t left,
+                               const std::size_t right,
+                               std::size_t* product) {
+  if (product == nullptr ||
+      (left != 0 &&
+       right > std::numeric_limits<std::size_t>::max() / left)) {
+    return false;
+  }
+  *product = left * right;
+  return true;
+}
+
+bool FoundationCheckedAdd(std::size_t* total, const std::size_t amount) {
+  if (total == nullptr ||
+      amount > std::numeric_limits<std::size_t>::max() - *total) {
+    return false;
+  }
+  *total += amount;
   return true;
 }
 
@@ -8487,6 +8515,8 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
       request.maximum_transition_count == 0 ||
       request.maximum_distinct_tuple_count == 0 ||
       request.maximum_order_comparison_count == 0 ||
+      request.maximum_equality_key_generation_count == 0 ||
+      request.maximum_equality_comparison_count == 0 ||
       request.maximum_combined_state_bytes == 0) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
                   "aggregate registry window resource contract is invalid");
@@ -8898,6 +8928,12 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
           !within_total(frame_result.order_comparison_count,
                         result.order_comparison_count,
                         request.maximum_order_comparison_count) ||
+          !within_total(frame_result.equality_key_generation_count,
+                        result.equality_key_generation_count,
+                        request.maximum_equality_key_generation_count) ||
+          !within_total(frame_result.equality_comparison_count,
+                        result.equality_comparison_count,
+                        request.maximum_equality_comparison_count) ||
           !within_total(frame_result.state_bytes, result.combined_state_bytes,
                         request.maximum_combined_state_bytes) ||
           !within_total(frame_result.final_output_bytes,
@@ -8909,6 +8945,16 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
       result.transition_count += frame_result.transition_count;
       result.distinct_tuple_count += frame_result.distinct_tuple_count;
       result.order_comparison_count += frame_result.order_comparison_count;
+      result.equality_key_generation_count +=
+          frame_result.equality_key_generation_count;
+      result.equality_comparison_count +=
+          frame_result.equality_comparison_count;
+      result.frame_non_null_transition_counts.push_back(
+          frame_result.non_null_transition_count);
+      result.frame_equality_key_generation_counts.push_back(
+          frame_result.equality_key_generation_count);
+      result.frame_equality_comparison_counts.push_back(
+          frame_result.equality_comparison_count);
       result.combined_state_bytes += frame_result.state_bytes;
       result.combined_final_output_bytes +=
           frame_result.final_output_bytes;
@@ -9063,6 +9109,36 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
     return refuse(entry_authority.diagnostic_code, entry_authority.detail);
   }
 
+  if (!aggregate_template.aggregate_equality_authority_profile.empty()) {
+    const auto function = aggregate_template.descriptor.function;
+    const bool frequency_restore_required =
+        function == CanonicalAggregateFunction::mode ||
+        function == CanonicalAggregateFunction::approx_count_distinct ||
+        function == CanonicalAggregateFunction::approx_top_k;
+    std::size_t minimum_cumulative_generation_count = 0;
+    std::size_t minimum_cumulative_comparison_count = 0;
+    if (request.maximum_cumulative_equality_key_generation_count == 0 ||
+        request.maximum_cumulative_equality_comparison_count == 0 ||
+        !FoundationCheckedMultiply(
+            aggregate_request.maximum_equality_key_generation_count, 4,
+            &minimum_cumulative_generation_count) ||
+        !FoundationCheckedMultiply(
+            aggregate_request.maximum_equality_comparison_count, 4,
+            &minimum_cumulative_comparison_count) ||
+        (frequency_restore_required &&
+         !FoundationCheckedAdd(
+             &minimum_cumulative_comparison_count,
+             aggregate_request.maximum_equality_key_generation_count)) ||
+        minimum_cumulative_generation_count >
+            request.maximum_cumulative_equality_key_generation_count ||
+        minimum_cumulative_comparison_count >
+            request.maximum_cumulative_equality_comparison_count) {
+      return refuse(
+          "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
+          "window aggregate cumulative equality-work ceiling is insufficient");
+    }
+  }
+
   auto canonical = ExecuteCanonicalRegistryWindowAggregateSelected(
       aggregate_request, true);
   if (!canonical.diagnostic.ok) {
@@ -9120,7 +9196,26 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
       canonical.combined_final_output_bytes;
   const auto baseline_peak_finalization_workspace_bytes =
       canonical.peak_finalization_workspace_bytes;
+  result.equality_key_generation_count =
+      canonical.equality_key_generation_count;
+  result.equality_comparison_count = canonical.equality_comparison_count;
+  if (result.equality_key_generation_count >
+          request.maximum_cumulative_equality_key_generation_count ||
+      result.equality_comparison_count >
+          request.maximum_cumulative_equality_comparison_count) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
+                  "window aggregate baseline equality work exceeded its cumulative ceiling");
+  }
   const auto expected_value_count = canonical.values.size();
+  if (canonical.frame_non_null_transition_counts.size() !=
+          expected_value_count ||
+      canonical.frame_equality_key_generation_counts.size() !=
+          expected_value_count ||
+      canonical.frame_equality_comparison_counts.size() !=
+          expected_value_count) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-EVIDENCE",
+                  "window aggregate frame equality receipts are incomplete");
+  }
   const auto expected_transition_count = canonical.transition_count;
   const auto expected_inverse_transition_count =
       canonical.inverse_transition_count;
@@ -9245,6 +9340,33 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
     auto aggregate =
         CloneFoundationAggregateRequestWithoutRowsOrFilter(
             aggregate_template, false);
+    bool frequency_restore_required = false;
+    std::size_t restore_equality_comparison_ceiling = 0;
+    if (!aggregate.aggregate_equality_authority_profile.empty()) {
+      const auto function = aggregate.descriptor.function;
+      frequency_restore_required =
+          function == CanonicalAggregateFunction::mode ||
+          function == CanonicalAggregateFunction::approx_count_distinct ||
+          function == CanonicalAggregateFunction::approx_top_k;
+      if (frequency_restore_required) {
+        const auto non_null_count =
+            reopened.frame_non_null_transition_counts[frame_index];
+        std::size_t pair_count = 0;
+        if ((non_null_count > 1 &&
+             !FoundationCheckedMultiply(non_null_count, non_null_count - 1,
+                                        &pair_count)) ||
+            (pair_count /= 2,
+             !FoundationCheckedAdd(&pair_count, non_null_count))) {
+          return refuse(
+              "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
+              "window aggregate restore equality-work ceiling overflowed");
+        }
+        restore_equality_comparison_ceiling = pair_count;
+        restore_equality_comparison_ceiling = std::max(
+            restore_equality_comparison_ceiling,
+            reopened.frame_equality_comparison_counts[frame_index]);
+      }
+    }
     DescriptorBatch frame_input_batch;
     frame_input_batch.columns =
         aggregate_request.frames.ordered_batch.columns;
@@ -9272,6 +9394,25 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
     state_request.memory_quota_bytes = request.memory_quota_bytes;
     state_request.maximum_serialized_state_bytes = remaining_bytes;
     state_request.maximum_spill_record_count = remaining_records;
+    state_request.maximum_cumulative_equality_key_generation_count =
+        request.maximum_cumulative_equality_key_generation_count -
+        result.equality_key_generation_count;
+    state_request.maximum_cumulative_equality_comparison_count =
+        request.maximum_cumulative_equality_comparison_count -
+        result.equality_comparison_count;
+    if (!state_request.aggregate_request
+             .aggregate_equality_authority_profile.empty()) {
+      state_request.maximum_ordinary_equality_key_generation_count =
+          reopened.frame_equality_key_generation_counts[frame_index];
+      state_request.maximum_ordinary_equality_comparison_count =
+          reopened.frame_equality_comparison_counts[frame_index];
+      state_request.maximum_restore_equality_key_generation_count =
+          frequency_restore_required
+              ? reopened.frame_equality_key_generation_counts[frame_index]
+              : 0;
+      state_request.maximum_restore_equality_comparison_count =
+          restore_equality_comparison_ceiling;
+    }
     state_request.retained_memory_bytes =
         ordered_input_payload_bytes + expected_combined_final_output_bytes +
         source_filter_bytes;
@@ -9334,6 +9475,14 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
             state.aggregate_result.order_comparison_count,
             reopened.order_comparison_count,
             aggregate_request.maximum_order_comparison_count) ||
+        !within_total(
+            state.aggregate_result.equality_key_generation_count,
+            result.equality_key_generation_count,
+            request.maximum_cumulative_equality_key_generation_count) ||
+        !within_total(
+            state.aggregate_result.equality_comparison_count,
+            result.equality_comparison_count,
+            request.maximum_cumulative_equality_comparison_count) ||
         !within_total(state.aggregate_result.state_bytes,
                       reopened.combined_state_bytes,
                       aggregate_request.maximum_combined_state_bytes) ||
@@ -9352,6 +9501,10 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
         state.aggregate_result.distinct_tuple_count;
     reopened.order_comparison_count +=
         state.aggregate_result.order_comparison_count;
+    result.equality_key_generation_count +=
+        state.aggregate_result.equality_key_generation_count;
+    result.equality_comparison_count +=
+        state.aggregate_result.equality_comparison_count;
     reopened.combined_state_bytes += state.aggregate_result.state_bytes;
     const auto& expected_value = reopened.values[frame_index];
     const auto& actual_value =

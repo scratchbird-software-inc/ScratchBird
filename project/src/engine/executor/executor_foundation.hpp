@@ -249,6 +249,8 @@ struct CanonicalRegistryWindowAggregateRequest {
   std::size_t maximum_inverse_transition_count = 8388608;
   std::size_t maximum_distinct_tuple_count = 8388608;
   std::size_t maximum_order_comparison_count = 8388608;
+  std::size_t maximum_equality_key_generation_count = 67108864;
+  std::size_t maximum_equality_comparison_count = 67108864;
   std::size_t maximum_combined_state_bytes = 268435456;
   std::size_t maximum_combined_final_output_bytes = 0;
   bool cancellation_requested = false;
@@ -263,6 +265,9 @@ struct CanonicalRegistryWindowAggregateResult {
   std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
   std::vector<std::vector<std::size_t>> frame_row_indices;
   std::vector<std::vector<std::size_t>> transition_row_indices;
+  std::vector<std::size_t> frame_non_null_transition_counts;
+  std::vector<std::size_t> frame_equality_key_generation_counts;
+  std::vector<std::size_t> frame_equality_comparison_counts;
   std::size_t frame_input_row_count = 0;
   std::size_t transition_count = 0;
   std::size_t inverse_transition_count = 0;
@@ -271,6 +276,8 @@ struct CanonicalRegistryWindowAggregateResult {
   std::size_t modifier_count = 0;
   std::size_t aggregate_order_term_count = 0;
   std::size_t order_comparison_count = 0;
+  std::size_t equality_key_generation_count = 0;
+  std::size_t equality_comparison_count = 0;
   std::size_t combined_state_bytes = 0;
   std::size_t combined_final_output_bytes = 0;
   std::size_t peak_finalization_workspace_bytes = 0;
@@ -315,6 +322,8 @@ struct CanonicalRegistryWindowAggregateSpillRequest {
   std::uint64_t memory_quota_bytes = 0;
   std::size_t maximum_serialized_state_bytes = 16777216;
   std::size_t maximum_spill_record_count = 8388608;
+  std::size_t maximum_cumulative_equality_key_generation_count = 268435456;
+  std::size_t maximum_cumulative_equality_comparison_count = 335544320;
   bool cancellation_requested = false;
   bool cleanup_after_cancellation = true;
   bool restart_recovery_proof_available = true;
@@ -326,6 +335,8 @@ struct CanonicalRegistryWindowAggregateSpillResult {
   std::size_t spilled_aggregate_state_count = 0;
   std::size_t serialized_aggregate_state_bytes = 0;
   std::size_t spilled_aggregate_state_record_count = 0;
+  std::size_t equality_key_generation_count = 0;
+  std::size_t equality_comparison_count = 0;
   bool spilled = false;
   bool spill_reopened = false;
   bool cleanup_proven = false;
