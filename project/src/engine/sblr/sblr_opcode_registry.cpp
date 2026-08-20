@@ -1116,6 +1116,7 @@ CanonicalEntry("engine.op.ddl_create_or_replace_srs", "SBLR_DDL_CREATE_OR_REPLAC
       CanonicalEntry("engine.op.ddl_create_rewrite_rule", "SBLR_DDL_CREATE_REWRITE_RULE", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("engine.op.ddl_alter_rewrite_rule", "SBLR_DDL_ALTER_REWRITE_RULE", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_rewrite_rule", "SBLR_DDL_DROP_REWRITE_RULE", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
+      CanonicalEntry("engine.op.ddl_validate_constraint", "SBLR_DDL_VALIDATE_CONSTRAINT", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_trigger", "SBLR_DDL_DROP_TRIGGER", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_index", "SBLR_DDL_DROP_INDEX", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("kv.structured.stream_read", "SBLR_KV_STRUCTURED_STREAM_READ", "kv-structured-execution", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
@@ -1795,6 +1796,7 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
   if (code == 1617 && operation_id == "engine.op.ddl_create_rewrite_rule" && opcode == "SBLR_DDL_CREATE_REWRITE_RULE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_REWRITE_RULE"); result.ok = result.entry != nullptr; return result; }
   if (code == 1618 && operation_id == "engine.op.ddl_alter_rewrite_rule" && opcode == "SBLR_DDL_ALTER_REWRITE_RULE") { result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_REWRITE_RULE"); result.ok = result.entry != nullptr; return result; }
   if (code == 1619 && operation_id == "engine.op.ddl_drop_rewrite_rule" && opcode == "SBLR_DDL_DROP_REWRITE_RULE") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_REWRITE_RULE"); result.ok = result.entry != nullptr; return result; }
+  if (code == 1620 && operation_id == "engine.op.ddl_validate_constraint" && opcode == "SBLR_DDL_VALIDATE_CONSTRAINT") { result.entry = LookupSblrOpcode("SBLR_DDL_VALIDATE_CONSTRAINT"); result.ok = result.entry != nullptr; return result; }
   if (code == 8192 && operation_id == "engine.op.kv_structured_read" &&
       opcode == "SBLR_KV_STRUCTURED_READ") {
     result.entry = LookupSblrOpcode("SBLR_KV_STRUCTURED_READ");
@@ -1883,6 +1885,7 @@ SblrOpcodeValidationResult ValidateSblrOpcodeForEnvelope(const SblrOperationEnve
   if (envelope.opcode_code == 1617 && envelope.operation_id == "engine.op.ddl_create_rewrite_rule" && envelope.opcode == "SBLR_DDL_CREATE_REWRITE_RULE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_REWRITE_RULE"); result.ok = result.entry != nullptr; return result; }
   if (envelope.opcode_code == 1618 && envelope.operation_id == "engine.op.ddl_alter_rewrite_rule" && envelope.opcode == "SBLR_DDL_ALTER_REWRITE_RULE") { result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_REWRITE_RULE"); result.ok = result.entry != nullptr; return result; }
   if (envelope.opcode_code == 1619 && envelope.operation_id == "engine.op.ddl_drop_rewrite_rule" && envelope.opcode == "SBLR_DDL_DROP_REWRITE_RULE") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_REWRITE_RULE"); result.ok = result.entry != nullptr; return result; }
+  if (envelope.opcode_code == 1620 && envelope.operation_id == "engine.op.ddl_validate_constraint" && envelope.opcode == "SBLR_DDL_VALIDATE_CONSTRAINT") { result.entry = LookupSblrOpcode("SBLR_DDL_VALIDATE_CONSTRAINT"); result.ok = result.entry != nullptr; return result; }
   if (envelope.opcode_code == 8194 && envelope.operation_id == "engine.op.kv_structured_scan" && envelope.opcode == "SBLR_KV_STRUCTURED_SCAN") {
     result.entry = LookupSblrOpcode("SBLR_KV_STRUCTURED_SCAN"); result.ok = result.entry != nullptr;
     return result;

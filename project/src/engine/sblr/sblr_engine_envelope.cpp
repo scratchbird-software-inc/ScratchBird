@@ -42,6 +42,7 @@
 #include "sblr_ddl_create_rewrite_rule_runtime.hpp"
 #include "sblr_ddl_alter_rewrite_rule_runtime.hpp"
 #include "sblr_ddl_drop_rewrite_rule_runtime.hpp"
+#include "sblr_ddl_validate_constraint_runtime.hpp"
 #include "sblr_ddl_create_function_runtime.hpp"
 #include "sblr_ddl_alter_function_runtime.hpp"
 #include "sblr_ddl_drop_function_runtime.hpp"
@@ -631,6 +632,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::rewrite_rule_descriptor: { SblrDdlCreateRewriteRuleDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateRewriteRuleDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::rewrite_rule_alter_descriptor: { SblrDdlAlterRewriteRuleDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterRewriteRuleDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::rewrite_rule_drop_descriptor: { SblrDdlDropRewriteRuleDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropRewriteRuleDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::constraint_validation_descriptor: { SblrDdlValidateConstraintDescriptorV1 operand; std::string detail; return DecodeSblrDdlValidateConstraintDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::alter_function_descriptor: { SblrDdlAlterFunctionDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterFunctionDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_view_descriptor: { SblrDdlDropViewDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropViewDescriptorV1(data,size,&operand,&detail,true); }
   }
