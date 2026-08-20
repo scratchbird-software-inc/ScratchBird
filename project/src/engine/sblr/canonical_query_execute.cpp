@@ -6646,6 +6646,11 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
   const bool aggregate_bounded_signed_window =
       aggregate_window && !aggregate_count_window &&
       !aggregate_boolean_window;
+  const bool fixed_unqualified_int64_result_window =
+      profile.builtin_id == "sb.window.row_number" ||
+      profile.builtin_id == "sb.window.rank" ||
+      profile.builtin_id == "sb.window.dense_rank" ||
+      profile.builtin_id == "sb.window.ntile";
   const bool aggregate_count_star_window =
       aggregate_count_window && invocations.size() == 1 &&
       invocations.front()->argument_expression_ids.empty();
@@ -6811,7 +6816,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           (value_window && !aggregate_count_window
                ? api::RelationalNullability::kNullable
                : api::RelationalNullability::kNonNull) ||
-      ((aggregate_window || profile.builtin_id == "sb.window.row_number") &&
+      ((aggregate_window || fixed_unqualified_int64_result_window) &&
        (result_descriptor->collation_uuid.has_value() ||
         result_descriptor->timezone_profile_id.has_value() ||
         result_descriptor->width.has_value() ||
