@@ -3060,6 +3060,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   std::array<std::string, kBoundedSignedTypeNames.size()>
       bounded_signed_source_type_uuids;
   std::string core_int64_result_type_uuid;
+  std::string core_boolean_type_uuid;
   if (uses_exact_core_int64_result ||
       has_widened_independent_order_argument) {
     const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
@@ -3100,6 +3101,35 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     if (uses_exact_core_int64_result) {
       core_int64_result_type_uuid =
           bounded_signed_source_type_uuids.back();
+    }
+  }
+  if (is_boolean) {
+    const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+    const auto boolean_count =
+        core_manifest.ok()
+            ? std::ranges::count_if(
+                  core_manifest.manifest.descriptor_rows,
+                  [](const auto& row) { return row.stable_name == "boolean"; })
+            : 0;
+    const auto boolean_type =
+        core_manifest.ok()
+            ? std::ranges::find_if(
+                  core_manifest.manifest.descriptor_rows,
+                  [](const auto& row) { return row.stable_name == "boolean"; })
+            : core_manifest.manifest.descriptor_rows.end();
+    if (!core_manifest.ok() || boolean_count != 1 ||
+        boolean_type == core_manifest.manifest.descriptor_rows.end() ||
+        !boolean_type->descriptor_uuid.valid()) {
+      result.detail =
+          "global boolean aggregate core datatype cohort is incomplete";
+      return result;
+    }
+    core_boolean_type_uuid = scratchbird::core::uuid::UuidToString(
+        boolean_type->descriptor_uuid.value);
+    if (core_boolean_type_uuid.empty()) {
+      result.detail =
+          "global boolean aggregate core datatype identity is unavailable";
+      return result;
     }
   }
   if (root.output_descriptor_ids.size() != 1 ||
@@ -3205,6 +3235,15 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         "type with a distinct result descriptor identity";
     return result;
   }
+  if (is_boolean &&
+      (descriptor->type_uuid != core_boolean_type_uuid ||
+       descriptor->descriptor_uuid == descriptor->type_uuid ||
+       descriptor->descriptor_uuid == aggregate->function_uuid)) {
+    result.detail =
+        "global boolean aggregate result does not bind the exact core "
+        "boolean type with a distinct result descriptor identity";
+    return result;
+  }
 
   if (!count_star) {
     CanonicalRelationalExpressionRuntime expression_runtime(dag);
@@ -3251,6 +3290,45 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
                  source_column.descriptor.encoded_descriptor ==
                      "type_uuid=" +
                          bounded_signed_source_type_uuids[source_index] +
+                         ";nullability=" +
+                         (source_column.nullable ? "nullable" : "non_null");
+        };
+    const auto exact_boolean_input =
+        [&](const std::uint32_t expression_descriptor_id,
+            const std::size_t value_column,
+            const std::string_view input_type) {
+          const auto source_descriptor = std::ranges::find_if(
+              dag.descriptors, [&](const auto& candidate) {
+                return candidate.descriptor_id == expression_descriptor_id;
+              });
+          const auto& source_column = input.batch.columns[value_column];
+          return input_type == "boolean" &&
+                 !core_boolean_type_uuid.empty() &&
+                 source_descriptor != dag.descriptors.end() &&
+                 source_descriptor->descriptor_uuid ==
+                     source_column.descriptor.descriptor_uuid.canonical &&
+                 source_descriptor->descriptor_uuid !=
+                     source_descriptor->type_uuid &&
+                 source_descriptor->descriptor_uuid !=
+                     aggregate->function_uuid &&
+                 source_descriptor->descriptor_uuid !=
+                     descriptor->descriptor_uuid &&
+                 source_descriptor->type_uuid == core_boolean_type_uuid &&
+                 source_descriptor->nullability ==
+                     (source_column.nullable
+                          ? api::RelationalNullability::kNullable
+                          : api::RelationalNullability::kNonNull) &&
+                 !source_descriptor->collation_uuid.has_value() &&
+                 !source_descriptor->timezone_profile_id.has_value() &&
+                 !source_descriptor->width.has_value() &&
+                 !source_descriptor->precision.has_value() &&
+                 !source_descriptor->scale.has_value() &&
+                 source_column.descriptor.descriptor_kind == "scalar" &&
+                 source_column.descriptor.canonical_type_name == "boolean" &&
+                 api::QowCanonicalDescriptorIdentityV1(
+                     source_column.descriptor) &&
+                 source_column.descriptor.encoded_descriptor ==
+                     "type_uuid=" + core_boolean_type_uuid +
                          ";nullability=" +
                          (source_column.nullable ? "nullable" : "non_null");
         };
@@ -3633,10 +3711,12 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         }
         return result;
       }
-      if (is_boolean && input_type != "boolean") {
+      if (is_boolean &&
+          !exact_boolean_input(argument->result_descriptor_id, value_column,
+                               input_type)) {
         result.detail =
-            "global BOOL_AND/BOOL_OR/EVERY input must be a canonical boolean "
-            "column; actual=" + input_type;
+            "global BOOL_AND/BOOL_OR/EVERY input is not one exact core "
+            "boolean column";
         return result;
       }
       if (is_string_agg && input_type != "text") {
