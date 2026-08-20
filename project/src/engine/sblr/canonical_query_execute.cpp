@@ -6600,6 +6600,12 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           (value_window && !aggregate_count_window
                ? api::RelationalNullability::kNullable
                : api::RelationalNullability::kNonNull) ||
+      (aggregate_count_window &&
+       (result_descriptor->collation_uuid.has_value() ||
+        result_descriptor->timezone_profile_id.has_value() ||
+        result_descriptor->width.has_value() ||
+        result_descriptor->precision.has_value() ||
+        result_descriptor->scale.has_value())) ||
       consumer.output_descriptor_ids.size() !=
           previous_logical.output_descriptor_ids.size() + 1 ||
       !std::equal(previous_logical.output_descriptor_ids.begin(),
@@ -6764,7 +6770,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       result.detail = std::string(family_label) +
                       " " + std::string(profile.display_name) +
                       " value is not one direct canonical int64 column "
-                      "with a distinct nullable result descriptor";
+                      "with an exact distinct result descriptor";
       return result;
     }
     result.navigation_value_column = static_cast<std::size_t>(

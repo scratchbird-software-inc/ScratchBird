@@ -1806,6 +1806,27 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
           : std::optional<std::string_view>{};
   const bool value_column_in_range =
       request.value_column < execution_ordered_input_batch.columns.size();
+  const auto has_auxiliary_type_fields = [](const auto& descriptor) {
+    const auto contains_field = [&](const std::string_view key) {
+      const auto prefix = std::string(key) + "=";
+      std::size_t begin = 0;
+      while (begin <= descriptor.encoded_descriptor.size()) {
+        const auto end = descriptor.encoded_descriptor.find(';', begin);
+        const auto field =
+            std::string_view(descriptor.encoded_descriptor)
+                .substr(begin, end == std::string::npos
+                                   ? std::string::npos
+                                   : end - begin);
+        if (field.starts_with(prefix)) return true;
+        if (end == std::string::npos) break;
+        begin = end + 1;
+      }
+      return false;
+    };
+    return contains_field("collation_uuid") ||
+           contains_field("timezone_profile_id") || contains_field("width") ||
+           contains_field("precision") || contains_field("scale");
+  };
   const bool exact_value_result_contract =
       !value_column_in_range || !source_type_uuid.has_value()
           ? false
@@ -1813,7 +1834,11 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
           ? !request.result_column.nullable &&
                 execution_ordered_input_batch.columns[request.value_column]
                         .descriptor.canonical_type_name == "int64" &&
-                *source_type_uuid == canonical_int64_type_uuid
+                *source_type_uuid == canonical_int64_type_uuid &&
+                !has_auxiliary_type_fields(
+                    execution_ordered_input_batch.columns[request.value_column]
+                        .descriptor) &&
+                !has_auxiliary_type_fields(request.result_column.descriptor)
           : request.result_column.nullable &&
                 execution_ordered_input_batch.columns[request.value_column]
                         .descriptor.canonical_type_name == "int64" &&
