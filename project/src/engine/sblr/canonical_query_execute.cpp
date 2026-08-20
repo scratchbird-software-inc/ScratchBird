@@ -3043,6 +3043,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool is_ordered_set =
       is_hypothetical || is_mode || is_exact_percentile ||
       is_approx_percentile;
+  const bool uses_exact_core_int64_result =
+      uses_bounded_signed_value || is_count || is_regr_count ||
+      is_approx_count_distinct || is_hypothetical_rank ||
+      is_hypothetical_dense_rank;
   if ((!is_count && !is_sum && !is_avg && !is_min && !is_max &&
        !is_boolean && !is_statistical && !is_pair_statistical &&
        !is_string_agg && !is_listagg_profile && !is_ordered_collection &&
@@ -3055,8 +3059,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       "int8", "int16", "int32", "int64"};
   std::array<std::string, kBoundedSignedTypeNames.size()>
       bounded_signed_source_type_uuids;
-  std::string bounded_signed_result_type_uuid;
-  if (uses_bounded_signed_value ||
+  std::string core_int64_result_type_uuid;
+  if (uses_exact_core_int64_result ||
       has_widened_independent_order_argument) {
     const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
     if (!core_manifest.ok()) {
@@ -3093,8 +3097,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         return result;
       }
     }
-    if (uses_bounded_signed_value) {
-      bounded_signed_result_type_uuid =
+    if (uses_exact_core_int64_result) {
+      core_int64_result_type_uuid =
           bounded_signed_source_type_uuids.back();
     }
   }
@@ -3192,13 +3196,13 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         "global aggregate function identity or argument binding is invalid";
     return result;
   }
-  if (uses_bounded_signed_value &&
-      (descriptor->type_uuid != bounded_signed_result_type_uuid ||
+  if (uses_exact_core_int64_result &&
+      (descriptor->type_uuid != core_int64_result_type_uuid ||
        descriptor->descriptor_uuid == descriptor->type_uuid ||
        descriptor->descriptor_uuid == aggregate->function_uuid)) {
     result.detail =
-        "global bounded-signed aggregate result is not the canonical "
-        "nullable int64 type";
+        "global int64 aggregate result does not bind the exact core int64 "
+        "type with a distinct result descriptor identity";
     return result;
   }
 
