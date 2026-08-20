@@ -175,6 +175,42 @@ std::string DescriptorField(const std::string& descriptor,
   return value;
 }
 
+void AppendEqualityKeyField(std::string* key,
+                            const std::string_view field) {
+  const auto size = static_cast<std::uint64_t>(field.size());
+  for (unsigned shift = 0; shift < 64; shift += 8) {
+    key->push_back(static_cast<char>(size >> shift));
+  }
+  key->append(field);
+}
+
+bool CheckedEqualityKeySizeAdd(std::size_t* total,
+                               const std::size_t amount) {
+  if (total == nullptr ||
+      *total > std::numeric_limits<std::size_t>::max() - amount) {
+    return false;
+  }
+  *total += amount;
+  return true;
+}
+
+bool CheckedEqualityKeySizeMultiply(const std::size_t left,
+                                    const std::size_t right,
+                                    std::size_t* product) {
+  if (product == nullptr ||
+      (left != 0 && right > std::numeric_limits<std::size_t>::max() / left)) {
+    return false;
+  }
+  *product = left * right;
+  return true;
+}
+
+bool AddEqualityKeyFramedFieldBound(std::size_t* total,
+                                    const std::size_t field_bytes) {
+  return CheckedEqualityKeySizeAdd(total, sizeof(std::uint64_t)) &&
+         CheckedEqualityKeySizeAdd(total, field_bytes);
+}
+
 bool DescriptorU32(const std::string& descriptor,
                    const std::string& key,
                    std::uint32_t* value) {
@@ -188,6 +224,134 @@ bool DescriptorU32(const std::string& descriptor,
     if (parsed > std::numeric_limits<std::uint32_t>::max()) return false;
   }
   *value = static_cast<std::uint32_t>(parsed);
+  return true;
+}
+
+bool BindDescriptorRuntimeNumericRequest(
+    const scratchbird::engine::internal_api::EngineTypedValue& value,
+    const scratchbird::core::datatypes::CanonicalTypeId type_id,
+    const scratchbird::core::datatypes::DatatypeNumericOperationKind operation,
+    scratchbird::core::datatypes::DatatypeNumericOperationRequest* request,
+    std::string* refusal_detail) {
+  namespace dt = scratchbird::core::datatypes;
+  if (request == nullptr || refusal_detail == nullptr) return false;
+  *request = {};
+  request->operation = operation;
+  request->type_id = type_id;
+  request->left.type_id = type_id;
+  request->left.encoded_value = value.encoded_value;
+  request->context.precision = 38;
+  request->context.scale = 0;
+  if (type_id == dt::CanonicalTypeId::decimal ||
+      type_id == dt::CanonicalTypeId::decimal_float) {
+    std::uint32_t precision = 0;
+    std::uint32_t scale = 0;
+    if (!DescriptorU32(value.descriptor.encoded_descriptor, "precision",
+                       &precision) ||
+        !DescriptorU32(value.descriptor.encoded_descriptor, "scale",
+                       &scale)) {
+      *refusal_detail =
+          "numeric descriptor precision or scale is not bound";
+      return false;
+    }
+    request->context.precision = precision;
+    request->context.scale = scale;
+  } else {
+    std::uint32_t width = 0;
+    if (!DescriptorU32(value.descriptor.encoded_descriptor, "width", &width) ||
+        width != 128) {
+      *refusal_detail = "128-bit numeric descriptor width is invalid";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool CanonicalizeDescriptorRuntimeNumericValue(
+    const scratchbird::engine::internal_api::EngineTypedValue& value,
+    const scratchbird::core::datatypes::CanonicalTypeId type_id,
+    std::string* canonical_value,
+    bool* is_nan,
+    std::string* refusal_detail) {
+  namespace dt = scratchbird::core::datatypes;
+  if (canonical_value == nullptr || is_nan == nullptr ||
+      refusal_detail == nullptr) {
+    return false;
+  }
+  canonical_value->clear();
+  *is_nan = false;
+  const auto exponent_position = value.encoded_value.find_first_of("eE");
+  if (exponent_position != std::string::npos) {
+    auto position = exponent_position + 1;
+    bool negative_exponent = false;
+    if (position < value.encoded_value.size() &&
+        (value.encoded_value[position] == '+' ||
+         value.encoded_value[position] == '-')) {
+      negative_exponent = value.encoded_value[position] == '-';
+      ++position;
+    }
+    const std::uint64_t exponent_bound =
+        type_id == dt::CanonicalTypeId::real128
+            ? 5000U
+            : (value.encoded_value.size() >
+                       std::numeric_limits<std::uint64_t>::max() - 38U
+                   ? std::numeric_limits<std::uint64_t>::max()
+                   : static_cast<std::uint64_t>(
+                         value.encoded_value.size()) +
+                         38U);
+    std::uint64_t exponent = 0;
+    for (; position < value.encoded_value.size(); ++position) {
+      const auto byte = value.encoded_value[position];
+      if (byte < '0' || byte > '9') break;
+      if (exponent > exponent_bound / 10U) {
+        exponent = exponent_bound + 1U;
+        break;
+      }
+      exponent = exponent * 10U + static_cast<unsigned>(byte - '0');
+      if (exponent > exponent_bound) break;
+    }
+    if ((!negative_exponent || type_id == dt::CanonicalTypeId::real128) &&
+        exponent > exponent_bound) {
+      *refusal_detail =
+          "numeric exponent exceeds the descriptor runtime allocation domain";
+      return false;
+    }
+  }
+  dt::DatatypeNumericOperationRequest request;
+  if (!BindDescriptorRuntimeNumericRequest(
+          value, type_id, dt::DatatypeNumericOperationKind::canonicalize,
+          &request, refusal_detail)) {
+    return false;
+  }
+  const auto canonical = dt::ApplyNumericOperation(request);
+  if (!canonical.ok()) {
+    *refusal_detail = canonical.diagnostic.diagnostic_code;
+    return false;
+  }
+  *canonical_value = canonical.value.encoded_value;
+  if (*canonical_value == "NaN" || *canonical_value == "sNaN") {
+    // SQL aggregate equality has one deterministic unordered numeric class.
+    // The order comparator places that class after every ordered value, while
+    // the equality key deliberately erases quiet/signaling spelling drift.
+    *canonical_value = "NaN";
+    *is_nan = true;
+    return true;
+  }
+
+  request.operation = dt::DatatypeNumericOperationKind::compare;
+  request.left.encoded_value = *canonical_value;
+  request.right.type_id = type_id;
+  request.right.encoded_value = "0";
+  const auto compared_to_zero = dt::ApplyNumericOperation(request);
+  if (!compared_to_zero.ok()) {
+    *refusal_detail = compared_to_zero.diagnostic.diagnostic_code;
+    return false;
+  }
+  if (compared_to_zero.comparison == 0) {
+    // Normalize decimal scale spellings and every signed-zero spelling to the
+    // single equality representative used by the comparator.
+    *canonical_value = "0";
+  }
   return true;
 }
 
@@ -337,44 +501,35 @@ bool CompareOrderValues(
         type_id == dt::CanonicalTypeId::uint128 ||
         type_id == dt::CanonicalTypeId::real128;
     if (runtime_numeric) {
-      dt::DatatypeNumericOperationRequest request;
-      request.operation = dt::DatatypeNumericOperationKind::compare;
-      request.type_id = type_id;
-      request.left.type_id = type_id;
-      request.left.encoded_value = left_encoded;
-      request.right.type_id = type_id;
-      request.right.encoded_value = right_encoded;
-      request.context.precision = 38;
-      request.context.scale = 0;
-      if (type_id == dt::CanonicalTypeId::decimal ||
-          type_id == dt::CanonicalTypeId::decimal_float) {
-        std::uint32_t precision = 0;
-        std::uint32_t scale = 0;
-        if (!DescriptorU32(left.descriptor.encoded_descriptor, "precision",
-                           &precision) ||
-            !DescriptorU32(left.descriptor.encoded_descriptor, "scale",
-                           &scale)) {
-          *refusal_detail =
-              "order descriptor precision or scale is not bound";
-          return false;
-        }
-        request.context.precision = precision;
-        request.context.scale = scale;
-      } else {
-        std::uint32_t width = 0;
-        if (!DescriptorU32(left.descriptor.encoded_descriptor, "width",
-                           &width) ||
-            width != 128) {
-          *refusal_detail = "128-bit order descriptor width is invalid";
-          return false;
-        }
-      }
-      const auto numeric = dt::ApplyNumericOperation(request);
-      if (!numeric.ok()) {
-        *refusal_detail = numeric.diagnostic.diagnostic_code;
+      std::string left_canonical;
+      std::string right_canonical;
+      bool left_nan = false;
+      bool right_nan = false;
+      if (!CanonicalizeDescriptorRuntimeNumericValue(
+              left, type_id, &left_canonical, &left_nan, refusal_detail) ||
+          !CanonicalizeDescriptorRuntimeNumericValue(
+              right, type_id, &right_canonical, &right_nan, refusal_detail)) {
         return false;
       }
-      *comparison = numeric.comparison;
+      if (left_nan || right_nan) {
+        *comparison = left_nan == right_nan ? 0 : (left_nan ? 1 : -1);
+      } else {
+        dt::DatatypeNumericOperationRequest request;
+        if (!BindDescriptorRuntimeNumericRequest(
+                left, type_id, dt::DatatypeNumericOperationKind::compare,
+                &request, refusal_detail)) {
+          return false;
+        }
+        request.left.encoded_value = std::move(left_canonical);
+        request.right.type_id = type_id;
+        request.right.encoded_value = std::move(right_canonical);
+        const auto numeric = dt::ApplyNumericOperation(request);
+        if (!numeric.ok()) {
+          *refusal_detail = numeric.diagnostic.diagnostic_code;
+          return false;
+        }
+        *comparison = numeric.comparison;
+      }
     } else {
       if (timezone_normalized) {
         *comparison = left_timezone_key < right_timezone_key
@@ -410,12 +565,35 @@ bool CompareOrderValues(
             term.text_seed.collation_case_insensitive;
         request.text_seed = term.text_seed;
       }
-      const auto compared = dt::CompareDatatypeValues(request);
-      if (!compared.ok()) {
-        *refusal_detail = compared.diagnostic.diagnostic_code;
-        return false;
+      if (type_id == dt::CanonicalTypeId::bfloat16 ||
+          type_id == dt::CanonicalTypeId::real16 ||
+          type_id == dt::CanonicalTypeId::real32 ||
+          type_id == dt::CanonicalTypeId::real64) {
+        dt::DatatypeSortKeyRequest left_sort_request;
+        left_sort_request.value = left_checked.value;
+        left_sort_request.null_ordering = null_ordering;
+        dt::DatatypeSortKeyRequest right_sort_request;
+        right_sort_request.value = right_checked.value;
+        right_sort_request.null_ordering = null_ordering;
+        const auto left_key = dt::MakeDatatypeSortKey(left_sort_request);
+        const auto right_key = dt::MakeDatatypeSortKey(right_sort_request);
+        if (!left_key.ok() || !right_key.ok()) {
+          *refusal_detail = !left_key.ok()
+                                ? left_key.diagnostic.diagnostic_code
+                                : right_key.diagnostic.diagnostic_code;
+          return false;
+        }
+        *comparison = left_key.sort_key < right_key.sort_key
+                          ? -1
+                          : (left_key.sort_key > right_key.sort_key ? 1 : 0);
+      } else {
+        const auto compared = dt::CompareDatatypeValues(request);
+        if (!compared.ok()) {
+          *refusal_detail = compared.diagnostic.diagnostic_code;
+          return false;
+        }
+        *comparison = compared.comparison;
       }
-      *comparison = compared.comparison;
     }
   }
   *comparison = *comparison < 0 ? -1 : (*comparison > 0 ? 1 : 0);
@@ -428,12 +606,13 @@ bool CompareOrderValues(
 
 }  // namespace
 
-DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
+static DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTermFields(
     const CanonicalDescriptorOrderTerm& term,
-    const ExecutorColumnDescriptor& column) {
+    const scratchbird::engine::internal_api::EngineDescriptor& descriptor,
+    const std::uint32_t descriptor_id) {
   namespace dt = scratchbird::core::datatypes;
   if (term.expression_descriptor_id == 0 ||
-      term.expression_descriptor_id != column.descriptor_id) {
+      term.expression_descriptor_id != descriptor_id) {
     return Refusal("QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
                    "order expression descriptor handle is unresolved");
   }
@@ -445,14 +624,14 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
                    "order direction or NULL placement is invalid");
   }
   const auto type_id = dt::CanonicalTypeIdFromStableName(
-      column.descriptor.canonical_type_name);
+      descriptor.canonical_type_name);
   if (type_id == dt::CanonicalTypeId::unknown) {
     return Refusal("QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
                    "order expression type is unknown");
   }
   if (type_id == dt::CanonicalTypeId::character) {
     const auto descriptor_collation = DescriptorField(
-        column.descriptor.encoded_descriptor, "collation_uuid");
+        descriptor.encoded_descriptor, "collation_uuid");
     const auto& seed = term.text_seed;
     if (!IsCanonicalUuid(term.collation_uuid) ||
         descriptor_collation != term.collation_uuid ||
@@ -471,11 +650,11 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
     }
   } else if ((type_id == dt::CanonicalTypeId::time ||
               type_id == dt::CanonicalTypeId::timestamp) &&
-             !DescriptorField(column.descriptor.encoded_descriptor,
+             !DescriptorField(descriptor.encoded_descriptor,
                               "timezone_profile_id")
                   .empty()) {
     const auto timezone_profile = DescriptorField(
-        column.descriptor.encoded_descriptor, "timezone_profile_id");
+        descriptor.encoded_descriptor, "timezone_profile_id");
     const bool profile_matches_type =
         (type_id == dt::CanonicalTypeId::timestamp &&
          timezone_profile == "timestamp_timezone_profile") ||
@@ -502,6 +681,13 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
   return {};
 }
 
+DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
+    const CanonicalDescriptorOrderTerm& term,
+    const ExecutorColumnDescriptor& column) {
+  return ValidateCanonicalDescriptorOrderTermFields(
+      term, column.descriptor, column.descriptor_id);
+}
+
 CanonicalDescriptorOrderComparisonResult CompareCanonicalDescriptorOrderValues(
     const scratchbird::engine::internal_api::EngineTypedValue& left,
     const scratchbird::engine::internal_api::EngineTypedValue& right,
@@ -513,6 +699,429 @@ CanonicalDescriptorOrderComparisonResult CompareCanonicalDescriptorOrderValues(
     result.diagnostic = Refusal("QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
                                 std::move(detail));
   }
+  return result;
+}
+
+CanonicalDescriptorEqualityKeyPlan PlanCanonicalDescriptorEqualityKey(
+    const scratchbird::engine::internal_api::EngineTypedValue& value,
+    const CanonicalDescriptorOrderTerm& term) {
+  namespace dt = scratchbird::core::datatypes;
+  CanonicalDescriptorEqualityKeyPlan plan;
+  plan.diagnostic = ValidateCanonicalDescriptorOrderTermFields(
+      term, value.descriptor, term.expression_descriptor_id);
+  if (!plan.diagnostic.ok) return plan;
+
+  std::size_t retained = 0;
+  const auto add_field = [&](const std::size_t bytes) {
+    return AddEqualityKeyFramedFieldBound(&retained, bytes);
+  };
+  const auto add_exact_metadata = [&]() {
+    return add_field(
+               std::string_view("scratchbird.descriptor-equality-key.v1")
+                   .size()) &&
+           add_field(value.descriptor.descriptor_uuid.canonical.size()) &&
+           add_field(value.descriptor.canonical_type_name.size()) &&
+           add_field(value.descriptor.encoded_descriptor.size()) &&
+           add_field(term.collation_uuid.size()) &&
+           add_field(20) && add_field(20) && add_field(20) &&
+           add_field(term.text_seed.seed_pack_name.size()) &&
+           add_field(term.text_seed.seed_pack_version.size()) &&
+           add_field(term.text_seed.charset_name.size()) &&
+           add_field(term.text_seed.collation_name.size()) &&
+           add_field(term.timezone_seed.seed_pack_name.size()) &&
+           add_field(term.timezone_seed.seed_pack_version.size()) &&
+           add_field(term.timezone_seed.content_hash.size());
+  };
+  if (!add_exact_metadata()) {
+    plan.diagnostic = Refusal(
+        "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+        "equality-key authority metadata size overflowed");
+    return plan;
+  }
+  if (value.state ==
+      scratchbird::engine::internal_api::EngineValueState::sql_null) {
+    if (!add_field(std::string_view("sql-null").size())) {
+      plan.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          "NULL equality-key size overflowed");
+      return plan;
+    }
+    plan.retained_key_bytes = retained;
+    plan.peak_workspace_bytes = retained;
+    return plan;
+  }
+  if (!add_field(std::string_view("value").size())) {
+    plan.diagnostic = Refusal(
+        "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+        "equality-key value discriminator size overflowed");
+    return plan;
+  }
+
+  const auto timezone_profile = DescriptorField(
+      value.descriptor.encoded_descriptor, "timezone_profile_id");
+  if (!timezone_profile.empty()) {
+    // int64 UTC seconds and uint64 fractional picoseconds are rendered as at
+    // most 20 decimal bytes each.
+    if (!add_field(20) || !add_field(20)) {
+      plan.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          "temporal equality-key size overflowed");
+      return plan;
+    }
+    std::size_t temporal_authority_bytes = timezone_profile.size();
+    if (!CheckedEqualityKeySizeAdd(
+            &temporal_authority_bytes,
+            value.descriptor.canonical_type_name.size()) ||
+        !CheckedEqualityKeySizeAdd(
+            &temporal_authority_bytes,
+            term.timezone_seed.seed_pack_name.size()) ||
+        !CheckedEqualityKeySizeAdd(
+            &temporal_authority_bytes,
+            term.timezone_seed.seed_pack_version.size()) ||
+        !CheckedEqualityKeySizeAdd(
+            &temporal_authority_bytes,
+            term.timezone_seed.content_hash.size())) {
+      plan.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          "temporal equality authority size overflowed");
+      return plan;
+    }
+    for (const auto& name : term.timezone_seed.timezone_names) {
+      if (!CheckedEqualityKeySizeAdd(&temporal_authority_bytes,
+                                     sizeof(std::string)) ||
+          !CheckedEqualityKeySizeAdd(&temporal_authority_bytes,
+                                     name.size())) {
+        plan.diagnostic = Refusal(
+            "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+            "temporal equality authority name size overflowed");
+        return plan;
+      }
+    }
+    // The wire validator carries the request, normalized text, parsed-zone
+    // text, and returned result concurrently. These named carriage layers
+    // bound their source and authority copies before key retention.
+    constexpr std::size_t kTemporalWireValueCarriageLayers = 6;
+    constexpr std::size_t kTemporalWireAuthorityCarriageLayers = 3;
+    std::size_t temporal_value_workspace = 0;
+    std::size_t temporal_authority_workspace = 0;
+    std::size_t peak = retained;
+    if (!CheckedEqualityKeySizeMultiply(
+            value.encoded_value.size(), kTemporalWireValueCarriageLayers,
+            &temporal_value_workspace) ||
+        !CheckedEqualityKeySizeMultiply(
+            temporal_authority_bytes,
+            kTemporalWireAuthorityCarriageLayers,
+            &temporal_authority_workspace) ||
+        !CheckedEqualityKeySizeAdd(&peak, temporal_value_workspace) ||
+        !CheckedEqualityKeySizeAdd(&peak, temporal_authority_workspace)) {
+      plan.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          "temporal equality workspace size overflowed");
+      return plan;
+    }
+    plan.retained_key_bytes = retained;
+    plan.peak_workspace_bytes = peak;
+    return plan;
+  }
+
+  const auto type_id = dt::CanonicalTypeIdFromStableName(
+      value.descriptor.canonical_type_name);
+  const std::size_t payload_bytes =
+      type_id == dt::CanonicalTypeId::binary && !value.binary_value.empty()
+          ? value.binary_value.size()
+          : value.encoded_value.size();
+  std::size_t doubled_payload = 0;
+  if (!CheckedEqualityKeySizeMultiply(payload_bytes, 2,
+                                      &doubled_payload)) {
+    plan.diagnostic = Refusal(
+        "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+        "equality-key payload size overflowed");
+    return plan;
+  }
+  std::size_t sort_key_bound = 0;
+  std::size_t numeric_backend_workspace_bound = 0;
+  if (type_id == dt::CanonicalTypeId::character) {
+    sort_key_bound = doubled_payload;
+    if (!CheckedEqualityKeySizeAdd(&sort_key_bound, 32) ||
+        !CheckedEqualityKeySizeAdd(
+            &sort_key_bound, term.text_seed.seed_pack_name.size()) ||
+        !CheckedEqualityKeySizeAdd(
+            &sort_key_bound, term.text_seed.seed_pack_version.size()) ||
+        !CheckedEqualityKeySizeAdd(
+            &sort_key_bound, term.text_seed.charset_name.size()) ||
+        !CheckedEqualityKeySizeAdd(
+            &sort_key_bound, term.text_seed.collation_name.size())) {
+      plan.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          "character equality-key size overflowed");
+      return plan;
+    }
+  } else if (type_id == dt::CanonicalTypeId::int8 ||
+             type_id == dt::CanonicalTypeId::int16 ||
+             type_id == dt::CanonicalTypeId::int32 ||
+             type_id == dt::CanonicalTypeId::int64 ||
+             type_id == dt::CanonicalTypeId::int128 ||
+             type_id == dt::CanonicalTypeId::uint8 ||
+             type_id == dt::CanonicalTypeId::uint16 ||
+             type_id == dt::CanonicalTypeId::uint32 ||
+             type_id == dt::CanonicalTypeId::uint64 ||
+             type_id == dt::CanonicalTypeId::uint128) {
+    sort_key_bound = 44;
+  } else if (type_id == dt::CanonicalTypeId::decimal ||
+             type_id == dt::CanonicalTypeId::decimal_float) {
+    // The descriptor-bound numeric backend canonicalizes these families to
+    // at most their admitted source width plus bounded sign/scale/exponent
+    // syntax.
+    sort_key_bound = payload_bytes;
+    if (!CheckedEqualityKeySizeAdd(&sort_key_bound, 128)) {
+      plan.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          "runtime numeric equality-key size overflowed");
+      return plan;
+    }
+  } else if (type_id == dt::CanonicalTypeId::real128) {
+    sort_key_bound = payload_bytes;
+    if (!CheckedEqualityKeySizeAdd(&sort_key_bound, 192)) {
+      plan.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          "real128 equality-key size overflowed");
+      return plan;
+    }
+    // Binary128 admits decimal exponents through roughly 5,000. The runtime
+    // preflight above rejects larger source exponents before the numeric
+    // backend can materialize an exponent-sized integer.
+    numeric_backend_workspace_bound = 10032;
+  } else if (type_id == dt::CanonicalTypeId::bfloat16 ||
+             type_id == dt::CanonicalTypeId::real16 ||
+             type_id == dt::CanonicalTypeId::real32 ||
+             type_id == dt::CanonicalTypeId::real64) {
+    // Ordered finite negative decimals carry a fixed 10,000-byte fractional
+    // complement; the payload term covers positive/canonical text growth.
+    sort_key_bound = payload_bytes;
+    if (!CheckedEqualityKeySizeAdd(&sort_key_bound, 10032)) {
+      plan.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          "numeric equality-key size overflowed");
+      return plan;
+    }
+  } else if (type_id == dt::CanonicalTypeId::date ||
+             type_id == dt::CanonicalTypeId::time ||
+             type_id == dt::CanonicalTypeId::timestamp ||
+             type_id == dt::CanonicalTypeId::interval) {
+    sort_key_bound = payload_bytes;
+    if (!CheckedEqualityKeySizeAdd(&sort_key_bound, 3)) {
+      plan.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          "temporal equality-key size overflowed");
+      return plan;
+    }
+  } else {
+    sort_key_bound = doubled_payload;
+    if (!CheckedEqualityKeySizeAdd(&sort_key_bound, 3)) {
+      plan.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          "descriptor equality-key size overflowed");
+      return plan;
+    }
+  }
+  if (!add_field(sort_key_bound)) {
+    plan.diagnostic = Refusal(
+        "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+        "retained equality-key size overflowed");
+    return plan;
+  }
+  // CastDatatypeValue and MakeDatatypeSortKey retain five source-carriage
+  // layers at their deepest point; sort-key expression construction may
+  // concurrently retain the returned key plus two construction temporaries.
+  constexpr std::size_t kDatatypeSourceCarriageLayers = 5;
+  constexpr std::size_t kSortKeyConstructionLayers = 3;
+  std::size_t source_workspace = 0;
+  std::size_t sort_workspace = 0;
+  std::size_t peak = retained;
+  if (!CheckedEqualityKeySizeMultiply(
+          payload_bytes, kDatatypeSourceCarriageLayers,
+          &source_workspace) ||
+      !CheckedEqualityKeySizeMultiply(
+          sort_key_bound, kSortKeyConstructionLayers,
+          &sort_workspace) ||
+      !CheckedEqualityKeySizeAdd(&peak, source_workspace) ||
+      !CheckedEqualityKeySizeAdd(&peak, sort_workspace) ||
+      !CheckedEqualityKeySizeAdd(&peak,
+                                 numeric_backend_workspace_bound)) {
+    plan.diagnostic = Refusal(
+        "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+        "equality-key workspace size overflowed");
+    return plan;
+  }
+  plan.retained_key_bytes = retained;
+  plan.peak_workspace_bytes = peak;
+  return plan;
+}
+
+CanonicalDescriptorEqualityKeyResult MakeCanonicalDescriptorEqualityKey(
+    const scratchbird::engine::internal_api::EngineTypedValue& value,
+    const CanonicalDescriptorOrderTerm& term) {
+  namespace dt = scratchbird::core::datatypes;
+  CanonicalDescriptorEqualityKeyResult result;
+  const auto plan = PlanCanonicalDescriptorEqualityKey(value, term);
+  if (!plan.diagnostic.ok) {
+    result.diagnostic = plan.diagnostic;
+    return result;
+  }
+  const auto self = CompareCanonicalDescriptorOrderValues(value, value, term);
+  if (!self.diagnostic.ok || self.comparison != 0) {
+    result.diagnostic = self.diagnostic.ok
+                            ? Refusal(
+                                  "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+                                  "equality-key operand is not reflexive")
+                            : self.diagnostic;
+    return result;
+  }
+
+  std::string key;
+  key.reserve(plan.retained_key_bytes);
+  AppendEqualityKeyField(&key, "scratchbird.descriptor-equality-key.v1");
+  AppendEqualityKeyField(&key,
+                         value.descriptor.descriptor_uuid.canonical);
+  AppendEqualityKeyField(&key, value.descriptor.canonical_type_name);
+  AppendEqualityKeyField(&key, value.descriptor.encoded_descriptor);
+  AppendEqualityKeyField(&key, term.collation_uuid);
+  AppendEqualityKeyField(&key, std::to_string(term.resource_epoch));
+  AppendEqualityKeyField(&key, std::to_string(term.collation_epoch));
+  AppendEqualityKeyField(&key, std::to_string(term.timezone_epoch));
+  AppendEqualityKeyField(&key, term.text_seed.seed_pack_name);
+  AppendEqualityKeyField(&key, term.text_seed.seed_pack_version);
+  AppendEqualityKeyField(&key, term.text_seed.charset_name);
+  AppendEqualityKeyField(&key, term.text_seed.collation_name);
+  AppendEqualityKeyField(&key, term.timezone_seed.seed_pack_name);
+  AppendEqualityKeyField(&key, term.timezone_seed.seed_pack_version);
+  AppendEqualityKeyField(&key, term.timezone_seed.content_hash);
+
+  if (value.state ==
+      scratchbird::engine::internal_api::EngineValueState::sql_null) {
+    AppendEqualityKeyField(&key, "sql-null");
+    if (key.size() > plan.retained_key_bytes ||
+        key.capacity() > plan.retained_key_bytes) {
+      result.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          "NULL equality key exceeded its allocation plan");
+      return result;
+    }
+    result.equality_key = std::move(key);
+    return result;
+  }
+  AppendEqualityKeyField(&key, "value");
+  const auto type_id = dt::CanonicalTypeIdFromStableName(
+      value.descriptor.canonical_type_name);
+  const auto timezone_profile = DescriptorField(
+      value.descriptor.encoded_descriptor, "timezone_profile_id");
+  if (!timezone_profile.empty()) {
+    dt::ReferenceTemporalWireProfileRequest request;
+    request.reference_engine = "scratchbird_native";
+    request.reference_type_or_family =
+        value.descriptor.canonical_type_name;
+    request.wire_profile = timezone_profile;
+    request.encoded_value = value.encoded_value;
+    request.timezone_seed = term.timezone_seed;
+    const auto normalized = dt::ValidateReferenceTemporalWireProfile(request);
+    if (!normalized.ok() || normalized.canonical_type_id != type_id ||
+        !normalized.comparable_utc_key_available) {
+      result.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          !normalized.ok()
+              ? normalized.diagnostic.diagnostic_code
+              : "named-zone equality requires a resolved transition instant");
+      return result;
+    }
+    AppendEqualityKeyField(
+        &key, std::to_string(normalized.comparable_utc_whole_seconds));
+    AppendEqualityKeyField(
+        &key,
+        std::to_string(normalized.comparable_fractional_picoseconds));
+    if (key.size() > plan.retained_key_bytes ||
+        key.capacity() > plan.retained_key_bytes) {
+      result.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          "temporal equality key exceeded its allocation plan");
+      return result;
+    }
+    result.equality_key = std::move(key);
+    return result;
+  }
+
+  const bool runtime_numeric =
+      type_id == dt::CanonicalTypeId::decimal ||
+      type_id == dt::CanonicalTypeId::decimal_float ||
+      type_id == dt::CanonicalTypeId::int128 ||
+      type_id == dt::CanonicalTypeId::uint128 ||
+      type_id == dt::CanonicalTypeId::real128;
+  if (runtime_numeric) {
+    std::string canonical_value;
+    bool is_nan = false;
+    std::string refusal_detail;
+    if (!CanonicalizeDescriptorRuntimeNumericValue(
+            value, type_id, &canonical_value, &is_nan, &refusal_detail)) {
+      result.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          std::move(refusal_detail));
+      return result;
+    }
+    AppendEqualityKeyField(&key, canonical_value);
+    if (key.size() > plan.retained_key_bytes ||
+        key.capacity() > plan.retained_key_bytes) {
+      result.diagnostic = Refusal(
+          "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+          "numeric equality key exceeded its allocation plan");
+      return result;
+    }
+    result.equality_key = std::move(key);
+    return result;
+  }
+
+  std::string encoded_value = value.encoded_value;
+  if (type_id == dt::CanonicalTypeId::binary &&
+      !value.binary_value.empty()) {
+    encoded_value.assign(
+        reinterpret_cast<const char*>(value.binary_value.data()),
+        value.binary_value.size());
+  }
+  dt::DatatypeCastRequest cast_request;
+  cast_request.value.type_id = type_id;
+  cast_request.value.encoded_value = std::move(encoded_value);
+  cast_request.value.is_null = false;
+  cast_request.target_type_id = type_id;
+  cast_request.explicit_cast = true;
+  const auto checked = dt::CastDatatypeValue(cast_request);
+  if (!checked.ok()) {
+    result.diagnostic = Refusal(
+        "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+        checked.diagnostic.diagnostic_code);
+    return result;
+  }
+  dt::DatatypeSortKeyRequest sort_request;
+  sort_request.value = checked.value;
+  sort_request.null_ordering = dt::DatatypeNullOrdering::nulls_first;
+  if (type_id == dt::CanonicalTypeId::character) {
+    sort_request.case_insensitive_character_compare =
+        term.text_seed.collation_case_insensitive;
+    sort_request.text_seed = term.text_seed;
+  }
+  const auto sorted = dt::MakeDatatypeSortKey(sort_request);
+  if (!sorted.ok()) {
+    result.diagnostic = Refusal(
+        "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+        sorted.diagnostic.diagnostic_code);
+    return result;
+  }
+  AppendEqualityKeyField(&key, sorted.sort_key);
+  if (key.size() > plan.retained_key_bytes ||
+      key.capacity() > plan.retained_key_bytes) {
+    result.diagnostic = Refusal(
+        "QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+        "descriptor equality key exceeded its allocation plan");
+    return result;
+  }
+  result.equality_key = std::move(key);
   return result;
 }
 

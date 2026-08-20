@@ -181,7 +181,7 @@ bool ParseDecimal(std::string input, bool allow_exponent, ParsedDecimal* out) {
       if (scale > (std::numeric_limits<std::uint32_t>::max() - exponent)) { return false; }
       scale += exponent;
     } else if (exponent >= scale) {
-      coefficient *= Pow10(exponent - scale);
+      if (coefficient != 0) { coefficient *= Pow10(exponent - scale); }
       scale = 0;
     } else {
       scale -= exponent;
@@ -212,6 +212,17 @@ bool RoundToScale(ParsedDecimal* value, std::uint32_t target_scale, RoundingMode
     return true;
   }
   const std::uint32_t drop = value->scale - target_scale;
+  const std::uint32_t coefficient_digits = DigitCount(value->coefficient);
+  if (drop > coefficient_digits) {
+    // The divisor is strictly more than twice the coefficient.  The rounded
+    // result is therefore zero for every supported rounding mode, and no
+    // exponent-sized temporary integer needs to be materialized.
+    value->coefficient = 0;
+    value->scale = target_scale;
+    value->negative = false;
+    value->negative_zero = false;
+    return true;
+  }
   const cpp_int divisor = Pow10(drop);
   const cpp_int quotient = value->coefficient / divisor;
   const cpp_int remainder = value->coefficient % divisor;

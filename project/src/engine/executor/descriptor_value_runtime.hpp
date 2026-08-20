@@ -1912,6 +1912,13 @@ struct CanonicalAggregateRuntimeRequest {
       std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>>
       filter_truth_values;
   bool distinct = false;
+  // Exact descriptor-bound authority used to mint deterministic semantic
+  // identity keys for DISTINCT and frequency-class aggregate state.  This is
+  // intentionally separate from aggregate_order_terms: equality applies to
+  // the value arguments, while WITHIN GROUP/aggregate ORDER BY may cover a
+  // different expression list.
+  std::vector<CanonicalDescriptorOrderTerm> aggregate_equality_terms;
+  std::string aggregate_equality_authority_profile;
   std::vector<CanonicalDescriptorOrderTerm> aggregate_order_terms;
   std::string aggregate_separator = ",";
   CanonicalListaggOverflowMode listagg_overflow_mode =
@@ -1923,6 +1930,8 @@ struct CanonicalAggregateRuntimeRequest {
       CanonicalAggregateExecutionStrategy::serial;
   std::size_t maximum_transition_count = 1048576;
   std::size_t maximum_distinct_value_count = 1048576;
+  std::size_t maximum_equality_key_generation_count = 1048576;
+  std::size_t maximum_equality_comparison_count = 1048576;
   std::size_t maximum_aggregate_order_term_count = 64;
   std::size_t maximum_order_comparison_count = 1048576;
   std::size_t maximum_state_bytes = 16777216;
@@ -1952,6 +1961,8 @@ struct CanonicalAggregateRuntimeResult {
   std::size_t transition_count = 0;
   std::size_t non_null_transition_count = 0;
   std::size_t distinct_tuple_count = 0;
+  std::size_t equality_key_generation_count = 0;
+  std::size_t equality_comparison_count = 0;
   std::size_t direct_argument_count = 0;
   std::size_t modifier_count = 0;
   std::size_t aggregate_order_term_count = 0;
@@ -1986,6 +1997,21 @@ struct CanonicalAggregateStateSpillRequest {
   std::uint64_t memory_quota_bytes = 0;
   std::size_t maximum_serialized_state_bytes = 16777216;
   std::size_t maximum_spill_record_count = 16777216;
+  std::size_t maximum_cumulative_equality_key_generation_count = 3145728;
+  std::size_t maximum_cumulative_equality_comparison_count = 4194304;
+  // Optional exact phase ceilings let an enclosing canonical baseline narrow
+  // this replay without weakening the aggregate request's analytic admission
+  // bounds.
+  std::optional<std::size_t>
+      maximum_ordinary_equality_key_generation_count;
+  std::optional<std::size_t> maximum_ordinary_equality_comparison_count;
+  // A spill has two ordinary executions (baseline and replay) plus one
+  // codec-integrity validation phase. When absent, validation receives the
+  // finite input-cardinality bound derived by the spill runtime; a present
+  // zero is an exact zero-work validation authority.
+  std::optional<std::size_t>
+      maximum_restore_equality_key_generation_count;
+  std::optional<std::size_t> maximum_restore_equality_comparison_count;
   // Bytes retained by an enclosing aggregate composite while this replay
   // executes. They are charged against the selected physical-node grant.
   std::size_t retained_memory_bytes = 0;
@@ -2018,6 +2044,11 @@ struct CanonicalAggregateStateExchangeRequest {
   std::size_t maximum_partial_state_count = 1024;
   std::size_t maximum_serialized_state_bytes_per_worker = 16777216;
   std::size_t maximum_combined_serialized_state_bytes = 67108864;
+  std::size_t maximum_cumulative_equality_key_generation_count = 3145728;
+  std::size_t maximum_cumulative_equality_comparison_count = 3145728;
+  std::optional<std::size_t>
+      maximum_restore_equality_key_generation_count;
+  std::optional<std::size_t> maximum_restore_equality_comparison_count;
   bool cancellation_requested = false;
 };
 
@@ -2121,6 +2152,8 @@ struct CanonicalGroupedAggregateRuntimeRequest {
   std::size_t maximum_grouping_set_transition_count = 1048576;
   std::size_t maximum_combined_distinct_tuple_count = 1048576;
   std::size_t maximum_combined_order_comparison_count = 1048576;
+  std::size_t maximum_combined_equality_key_generation_count = 67108864;
+  std::size_t maximum_combined_equality_comparison_count = 67108864;
   std::size_t maximum_combined_state_bytes = 67108864;
   std::size_t maximum_combined_final_output_bytes = 0;
   std::size_t maximum_output_rows = 65536;
@@ -2133,6 +2166,9 @@ struct CanonicalGroupedAggregateMetadata {
   std::vector<std::size_t> source_row_indices;
   std::size_t source_row_count = 0;
   std::size_t aggregate_transition_count = 0;
+  std::size_t aggregate_non_null_transition_count = 0;
+  std::size_t aggregate_equality_key_generation_count = 0;
+  std::size_t aggregate_equality_comparison_count = 0;
   std::size_t aggregate_state_bytes = 0;
 };
 
@@ -2146,6 +2182,8 @@ struct CanonicalGroupedAggregateRuntimeResult {
   std::size_t aggregate_transition_count = 0;
   std::size_t aggregate_distinct_tuple_count = 0;
   std::size_t aggregate_order_comparison_count = 0;
+  std::size_t equality_key_generation_count = 0;
+  std::size_t equality_comparison_count = 0;
   std::size_t combined_state_bytes = 0;
   std::size_t combined_final_output_bytes = 0;
   std::size_t peak_finalization_workspace_bytes = 0;
@@ -2169,6 +2207,8 @@ struct CanonicalGroupedAggregateSetRuntimeRequest {
   std::size_t maximum_combined_aggregate_transition_count = 8388608;
   std::size_t maximum_combined_distinct_tuple_count = 8388608;
   std::size_t maximum_combined_order_comparison_count = 8388608;
+  std::size_t maximum_combined_equality_key_generation_count = 67108864;
+  std::size_t maximum_combined_equality_comparison_count = 67108864;
   std::size_t maximum_combined_state_bytes = 268435456;
   std::size_t maximum_combined_final_output_bytes = 0;
 };
@@ -2180,6 +2220,9 @@ struct CanonicalGroupedAggregateSetMetadata {
   std::vector<std::size_t> source_row_indices;
   std::size_t source_row_count = 0;
   std::vector<std::size_t> aggregate_transition_counts;
+  std::vector<std::size_t> aggregate_non_null_transition_counts;
+  std::vector<std::size_t> aggregate_equality_key_generation_counts;
+  std::vector<std::size_t> aggregate_equality_comparison_counts;
   std::vector<std::size_t> aggregate_state_bytes;
 };
 
@@ -2193,6 +2236,8 @@ struct CanonicalGroupedAggregateSetRuntimeResult {
   std::size_t aggregate_transition_count = 0;
   std::size_t aggregate_distinct_tuple_count = 0;
   std::size_t aggregate_order_comparison_count = 0;
+  std::size_t equality_key_generation_count = 0;
+  std::size_t equality_comparison_count = 0;
   std::size_t combined_state_bytes = 0;
   std::size_t combined_final_output_bytes = 0;
   std::size_t peak_finalization_workspace_bytes = 0;
@@ -2299,6 +2344,8 @@ struct CanonicalGroupedAggregateSetStateSpillRequest {
   std::uint64_t memory_quota_bytes = 0;
   std::size_t maximum_serialized_state_bytes = 67108864;
   std::size_t maximum_spill_record_count = 67108864;
+  std::size_t maximum_cumulative_equality_key_generation_count = 268435456;
+  std::size_t maximum_cumulative_equality_comparison_count = 335544320;
   bool cancellation_requested = false;
   bool cleanup_after_cancellation = true;
   bool restart_recovery_proof_available = true;
@@ -2310,6 +2357,8 @@ struct CanonicalGroupedAggregateSetStateSpillResult {
   std::size_t spilled_aggregate_state_count = 0;
   std::size_t serialized_aggregate_state_bytes = 0;
   std::size_t spilled_aggregate_state_record_count = 0;
+  std::size_t equality_key_generation_count = 0;
+  std::size_t equality_comparison_count = 0;
   bool spilled = false;
   bool spill_reopened = false;
   bool cleanup_proven = false;
@@ -2321,6 +2370,17 @@ struct CanonicalGroupedAggregateSetStateSpillResult {
 struct CanonicalDescriptorOrderComparisonResult {
   DescriptorRuntimeDiagnostic diagnostic;
   int comparison = 0;
+};
+
+struct CanonicalDescriptorEqualityKeyResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::string equality_key;
+};
+
+struct CanonicalDescriptorEqualityKeyPlan {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::size_t retained_key_bytes = 0;
+  std::size_t peak_workspace_bytes = 0;
 };
 
 struct CanonicalDescriptorDistinctRequest {
@@ -2851,6 +2911,9 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const ExecutorColumnDescriptor& borrowed_count_column);
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request);
+DescriptorRuntimeDiagnostic BindCanonicalAggregateEqualityAuthorityProfile(
+    CanonicalAggregateRuntimeRequest* request,
+    const DescriptorBatch& input_batch);
 // Borrowed execution carriers are consumed synchronously and are never
 // retained. The request's owned DAG and input carriers must remain in their
 // exact default states.
@@ -3023,6 +3086,12 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
 CanonicalDescriptorOrderComparisonResult CompareCanonicalDescriptorOrderValues(
     const scratchbird::engine::internal_api::EngineTypedValue& left,
     const scratchbird::engine::internal_api::EngineTypedValue& right,
+    const CanonicalDescriptorOrderTerm& term);
+CanonicalDescriptorEqualityKeyResult MakeCanonicalDescriptorEqualityKey(
+    const scratchbird::engine::internal_api::EngineTypedValue& value,
+    const CanonicalDescriptorOrderTerm& term);
+CanonicalDescriptorEqualityKeyPlan PlanCanonicalDescriptorEqualityKey(
+    const scratchbird::engine::internal_api::EngineTypedValue& value,
     const CanonicalDescriptorOrderTerm& term);
 CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
     const CanonicalWindowPartitionOrderRequest& request);

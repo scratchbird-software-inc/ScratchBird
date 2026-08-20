@@ -4977,6 +4977,420 @@ bool BindTimezoneOrderAuthority(
 #endif
 }
 
+std::optional<std::string> ExactEncodedDescriptorField(
+    const std::string_view descriptor,
+    const std::string_view key) {
+  const std::string prefix = std::string(key) + "=";
+  std::optional<std::string> value;
+  std::size_t start = 0;
+  while (start <= descriptor.size()) {
+    const auto end = descriptor.find(';', start);
+    const auto field = descriptor.substr(
+        start, end == std::string_view::npos ? std::string_view::npos
+                                             : end - start);
+    if (field.starts_with(prefix)) {
+      if (value.has_value()) return std::nullopt;
+      value = std::string(field.substr(prefix.size()));
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  if (value.has_value() && value->empty()) return std::nullopt;
+  return value;
+}
+
+bool BindCanonicalDescriptorEqualityTerm(
+    const api::EngineRequestContext& context,
+    const exec::ExecutorColumnDescriptor& column,
+    const std::size_t column_ordinal,
+    exec::CanonicalDescriptorOrderTerm* term,
+    std::string* detail) {
+  if (term == nullptr || detail == nullptr) return false;
+  *term = {};
+  detail->clear();
+  term->column = column_ordinal;
+  term->expression_descriptor_id = column.descriptor_id;
+  term->direction = exec::CanonicalDescriptorOrderDirection::ascending;
+  term->null_placement = exec::CanonicalDescriptorNullPlacement::first;
+  const auto& type = column.descriptor.canonical_type_name;
+  if (type == "text" || type == "varchar" || type == "char" ||
+      type == "character") {
+    const auto collation_uuid = ExactEncodedDescriptorField(
+        column.descriptor.encoded_descriptor, "collation_uuid");
+    if (!collation_uuid.has_value()) {
+      *detail =
+          "aggregate character equality lacks an exact bound collation";
+      return false;
+    }
+    term->collation_uuid = *collation_uuid;
+#if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+    *term = {};
+    *detail =
+        "aggregate character equality requires the production engine "
+        "resource catalog";
+    return false;
+#else
+    api::EngineUuid resource_uuid;
+    resource_uuid.canonical = term->collation_uuid;
+    const auto resolved = api::LookupEngineResourceDescriptorByUuid(
+        context, resource_uuid, "collation");
+    if (!resolved.ok || !resolved.resource_descriptor.present ||
+        resolved.resource_descriptor.resource_uuid.canonical !=
+            term->collation_uuid) {
+      *term = {};
+      *detail =
+          "aggregate character equality lacks current engine collation "
+          "authority";
+      return false;
+    }
+    term->resource_epoch = resolved.resource_descriptor.resource_epoch;
+    term->collation_epoch = resolved.resource_descriptor.family_epoch;
+    term->text_seed.active = true;
+    term->text_seed.seed_pack_name =
+        resolved.resource_descriptor.seed_pack_name;
+    term->text_seed.seed_pack_version =
+        resolved.resource_descriptor.seed_pack_version;
+    term->text_seed.charset_name =
+        resolved.resource_descriptor.parent_canonical_name;
+    term->text_seed.collation_name =
+        resolved.resource_descriptor.canonical_name;
+    term->text_seed.collation_case_insensitive =
+        resolved.resource_descriptor.case_insensitive;
+    term->text_seed.collation_accent_insensitive =
+        resolved.resource_descriptor.accent_insensitive;
+#endif
+  } else if (type == "time" || type == "timestamp") {
+    const bool carries_timezone_profile =
+        column.descriptor.encoded_descriptor.find("timezone_profile_id=") !=
+        std::string::npos;
+    const auto timezone_profile = ExactEncodedDescriptorField(
+        column.descriptor.encoded_descriptor, "timezone_profile_id");
+    if (carries_timezone_profile && !timezone_profile.has_value()) {
+      *detail =
+          "aggregate temporal equality carries a malformed timezone profile";
+      return false;
+    }
+    if (timezone_profile.has_value() &&
+        !BindTimezoneOrderAuthority(context, term, detail)) {
+      *term = {};
+      return false;
+    }
+  }
+  const auto validation =
+      exec::ValidateCanonicalDescriptorOrderTerm(*term, column);
+  if (!validation.ok) {
+    *term = {};
+    *detail = validation.detail;
+    return false;
+  }
+  return true;
+}
+
+bool BindCanonicalAggregateEqualityTerms(
+    const api::EngineRequestContext& context,
+    const exec::DescriptorBatch& input_batch,
+    exec::CanonicalAggregateRuntimeRequest* request,
+    std::string* detail) {
+  if (request == nullptr || detail == nullptr) return false;
+  request->aggregate_equality_terms.clear();
+  request->aggregate_equality_authority_profile.clear();
+  const auto function = request->descriptor.function;
+  const bool frequency_identity_required =
+      function == exec::CanonicalAggregateFunction::mode ||
+      function == exec::CanonicalAggregateFunction::approx_count_distinct ||
+      function == exec::CanonicalAggregateFunction::approx_top_k;
+  const bool equality_required =
+      request->distinct || frequency_identity_required;
+  if (!equality_required) {
+    const auto profile =
+        exec::BindCanonicalAggregateEqualityAuthorityProfile(request,
+                                                             input_batch);
+    if (!profile.ok) {
+      *detail = profile.detail;
+      return false;
+    }
+    return true;
+  }
+  request->aggregate_equality_terms.reserve(request->value_columns.size());
+  for (std::size_t index = 0; index < request->value_columns.size(); ++index) {
+    const auto column = request->value_columns[index];
+    if (column >= input_batch.columns.size() ||
+        index >= request->value_expression_descriptor_ids.size() ||
+        input_batch.columns[column].descriptor_id !=
+            request->value_expression_descriptor_ids[index]) {
+      request->aggregate_equality_terms.clear();
+      *detail =
+          "aggregate equality expression is not descriptor-exact";
+      return false;
+    }
+    exec::CanonicalDescriptorOrderTerm term;
+    if (!BindCanonicalDescriptorEqualityTerm(
+            context, input_batch.columns[column], column, &term, detail)) {
+      request->aggregate_equality_terms.clear();
+      return false;
+    }
+    request->aggregate_equality_terms.push_back(std::move(term));
+  }
+  const std::size_t frequency_phase_count =
+      frequency_identity_required
+          ? (request->forced_strategy ==
+                     exec::CanonicalAggregateExecutionStrategy::
+                         partitioned_combine
+                 ? 2U
+                 : 1U)
+          : 0U;
+  const std::size_t identity_phase_count =
+      (request->distinct ? 1U : 0U) + frequency_phase_count;
+  const auto row_count = input_batch.rows.size();
+  std::uint64_t generations = row_count;
+  std::uint64_t comparisons = row_count;
+  if (request->value_columns.size() != 0 &&
+      generations <= std::numeric_limits<std::uint64_t>::max() /
+                         request->value_columns.size()) {
+    generations *= request->value_columns.size();
+  } else if (request->value_columns.size() != 0) {
+    *detail = "aggregate equality-key generation bound overflowed";
+    return false;
+  }
+  if (generations > std::numeric_limits<std::uint64_t>::max() /
+                        identity_phase_count) {
+    *detail = "aggregate equality-key generation bound overflowed";
+    return false;
+  }
+  generations *= identity_phase_count;
+  if (row_count > 1) {
+    if (row_count > std::numeric_limits<std::uint64_t>::max() /
+                        (row_count - 1)) {
+      *detail = "aggregate equality comparison bound overflowed";
+      return false;
+    }
+    comparisons = row_count * (row_count - 1) / 2;
+  } else {
+    comparisons = 0;
+  }
+  if (comparisons > std::numeric_limits<std::uint64_t>::max() /
+                        identity_phase_count) {
+    *detail = "aggregate equality comparison bound overflowed";
+    return false;
+  }
+  comparisons *= identity_phase_count;
+  if (generations > std::numeric_limits<std::size_t>::max() ||
+      comparisons > std::numeric_limits<std::size_t>::max()) {
+    *detail = "aggregate equality work exceeds the platform size domain";
+    return false;
+  }
+  request->maximum_equality_key_generation_count =
+      static_cast<std::size_t>(generations);
+  request->maximum_equality_comparison_count =
+      static_cast<std::size_t>(comparisons);
+  const auto profile =
+      exec::BindCanonicalAggregateEqualityAuthorityProfile(request,
+                                                           input_batch);
+  if (!profile.ok) {
+    request->aggregate_equality_terms.clear();
+    request->aggregate_equality_authority_profile.clear();
+    *detail = profile.detail.empty() ? profile.diagnostic_code
+                                     : profile.detail;
+    return false;
+  }
+  return true;
+}
+
+struct PlanningAggregateDistinctState {
+  bool active{false};
+  std::vector<exec::CanonicalDescriptorOrderTerm> equality_terms;
+  std::vector<std::string> keys;
+  std::uint64_t retained_memory_bytes{0};
+  std::uint64_t peak_memory_bytes{0};
+  std::uint64_t equality_key_generation_count{0};
+  std::uint64_t equality_comparison_count{0};
+};
+
+bool InitializePlanningAggregateDistinctState(
+    const api::EngineRequestContext& context,
+    const exec::DescriptorBatch& input_batch,
+    const PreparedGlobalAggregateRoot& prepared,
+    const std::uint64_t maximum_auxiliary_memory_bytes,
+    PlanningAggregateDistinctState* state,
+    std::string* detail) {
+  if (state == nullptr || detail == nullptr) return false;
+  *state = {};
+  detail->clear();
+  state->active = prepared.distinct;
+  if (!state->active) return true;
+  if (prepared.value_columns.empty() ||
+      prepared.value_columns.size() != prepared.value_descriptor_ids.size()) {
+    *detail = "aggregate DISTINCT planning arity is not exact";
+    return false;
+  }
+  std::uint64_t planned_container_bytes = 0;
+  if (!CheckedMultiply(input_batch.rows.size(), sizeof(std::string),
+                       &planned_container_bytes) ||
+      planned_container_bytes > maximum_auxiliary_memory_bytes) {
+    *detail = "aggregate DISTINCT planning container exceeds its memory bound";
+    return false;
+  }
+  try {
+    state->equality_terms.reserve(prepared.value_columns.size());
+    for (std::size_t index = 0; index < prepared.value_columns.size(); ++index) {
+      const auto column = prepared.value_columns[index];
+      if (column >= input_batch.columns.size() ||
+          input_batch.columns[column].descriptor_id !=
+              prepared.value_descriptor_ids[index]) {
+        *detail = "aggregate DISTINCT planning descriptor is unresolved";
+        return false;
+      }
+      exec::CanonicalDescriptorOrderTerm term;
+      if (!BindCanonicalDescriptorEqualityTerm(
+              context, input_batch.columns[column], column, &term, detail)) {
+        return false;
+      }
+      state->equality_terms.push_back(std::move(term));
+    }
+    state->keys.reserve(input_batch.rows.size());
+  } catch (const std::bad_alloc&) {
+    *detail = "aggregate DISTINCT planning allocation was refused";
+    return false;
+  } catch (const std::length_error&) {
+    *detail = "aggregate DISTINCT planning allocation exceeded its size domain";
+    return false;
+  }
+  if (!CheckedMultiply(state->keys.capacity(), sizeof(std::string),
+                       &state->retained_memory_bytes) ||
+      state->retained_memory_bytes > maximum_auxiliary_memory_bytes) {
+    *detail = "aggregate DISTINCT planning container exceeds its memory bound";
+    return false;
+  }
+  state->peak_memory_bytes = state->retained_memory_bytes;
+  return true;
+}
+
+bool AdmitPlanningAggregateDistinctTuple(
+    const std::array<const api::EngineTypedValue*, 2>& values,
+    const std::size_t value_count,
+    const std::uint64_t maximum_generation_count,
+    const std::uint64_t maximum_comparison_count,
+    const std::uint64_t maximum_auxiliary_memory_bytes,
+    PlanningAggregateDistinctState* state,
+    bool* admitted,
+    std::string* detail) {
+  if (state == nullptr || admitted == nullptr || detail == nullptr ||
+      !state->active || value_count == 0 || value_count > values.size() ||
+      value_count != state->equality_terms.size()) {
+    return false;
+  }
+  *admitted = false;
+  detail->clear();
+
+  std::size_t retained_key_bound = 0;
+  std::size_t maximum_scalar_generation_peak = 0;
+  for (std::size_t index = 0; index < value_count; ++index) {
+    if (values[index] == nullptr) {
+      *detail = "aggregate DISTINCT planning value is absent";
+      return false;
+    }
+    const auto scalar_plan = exec::PlanCanonicalDescriptorEqualityKey(
+        *values[index], state->equality_terms[index]);
+    std::uint64_t framed_retained = scalar_plan.retained_key_bytes;
+    if (!scalar_plan.diagnostic.ok ||
+        !CheckedAdd(framed_retained, sizeof(std::uint64_t),
+                    &framed_retained) ||
+        framed_retained >
+            std::numeric_limits<std::size_t>::max() - retained_key_bound) {
+      *detail = scalar_plan.diagnostic.ok
+                    ? "aggregate DISTINCT tuple-key size overflowed"
+                    : (scalar_plan.diagnostic.detail.empty()
+                           ? scalar_plan.diagnostic.diagnostic_code
+                           : scalar_plan.diagnostic.detail);
+      return false;
+    }
+    retained_key_bound += static_cast<std::size_t>(framed_retained);
+    maximum_scalar_generation_peak = std::max(
+        maximum_scalar_generation_peak,
+        scalar_plan.peak_workspace_bytes);
+  }
+  std::uint64_t peak_workspace_bound = retained_key_bound;
+  if (!CheckedAdd(peak_workspace_bound, maximum_scalar_generation_peak,
+                  &peak_workspace_bound)) {
+    *detail = "aggregate DISTINCT tuple-key workspace overflowed";
+    return false;
+  }
+  std::uint64_t live_peak = state->retained_memory_bytes;
+  if (!CheckedAdd(live_peak, peak_workspace_bound, &live_peak) ||
+      live_peak > maximum_auxiliary_memory_bytes) {
+    *detail = "aggregate DISTINCT tuple-key workspace exceeds its memory bound";
+    return false;
+  }
+  state->peak_memory_bytes = std::max(state->peak_memory_bytes, live_peak);
+  if (value_count > maximum_generation_count ||
+      state->equality_key_generation_count >
+          maximum_generation_count - value_count) {
+    *detail = "aggregate DISTINCT equality-key generation bound is exhausted";
+    return false;
+  }
+  state->equality_key_generation_count += value_count;
+
+  std::string tuple_key;
+  try {
+    tuple_key.reserve(retained_key_bound);
+    for (std::size_t index = 0; index < value_count; ++index) {
+      const auto identity = exec::MakeCanonicalDescriptorEqualityKey(
+          *values[index], state->equality_terms[index]);
+      if (!identity.diagnostic.ok) {
+        *detail = identity.diagnostic.detail.empty()
+                      ? identity.diagnostic.diagnostic_code
+                      : identity.diagnostic.detail;
+        return false;
+      }
+      const auto size = static_cast<std::uint64_t>(
+          identity.equality_key.size());
+      for (unsigned shift = 0; shift < 64; shift += 8) {
+        tuple_key.push_back(static_cast<char>(size >> shift));
+      }
+      tuple_key.append(identity.equality_key);
+    }
+  } catch (const std::bad_alloc&) {
+    *detail = "aggregate DISTINCT tuple-key allocation was refused";
+    return false;
+  } catch (const std::length_error&) {
+    *detail = "aggregate DISTINCT tuple-key exceeded its size domain";
+    return false;
+  }
+  if (tuple_key.size() > retained_key_bound ||
+      tuple_key.capacity() > retained_key_bound) {
+    *detail = "aggregate DISTINCT tuple-key exceeded its allocation plan";
+    return false;
+  }
+  for (const auto& candidate : state->keys) {
+    if (state->equality_comparison_count >= maximum_comparison_count) {
+      *detail = "aggregate DISTINCT equality comparison bound is exhausted";
+      return false;
+    }
+    ++state->equality_comparison_count;
+    if (candidate == tuple_key) return true;
+  }
+  if (tuple_key.capacity() >
+          maximum_auxiliary_memory_bytes - state->retained_memory_bytes ||
+      !CheckedAdd(state->retained_memory_bytes, tuple_key.capacity(),
+                  &state->retained_memory_bytes)) {
+    *detail = "aggregate DISTINCT retained keys exceed their memory bound";
+    return false;
+  }
+  try {
+    state->keys.push_back(std::move(tuple_key));
+  } catch (const std::bad_alloc&) {
+    *detail = "aggregate DISTINCT retained-key allocation was refused";
+    return false;
+  } catch (const std::length_error&) {
+    *detail = "aggregate DISTINCT retained-key count exceeded its size domain";
+    return false;
+  }
+  state->peak_memory_bytes =
+      std::max(state->peak_memory_bytes, state->retained_memory_bytes);
+  *admitted = true;
+  return true;
+}
+
 bool PrepareCanonicalSortOrderTerm(
     const api::EngineRequestContext& context,
     const plan::CanonicalLogicalPropertyOrderingTerm& logical_term,
@@ -10930,6 +11344,16 @@ MakeLiveAggregateRegistryRegistration(
         aggregate_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, *execution_dag);
+        std::string equality_detail;
+        if (!BindCanonicalAggregateEqualityTerms(
+                mga_context, input_batch, &aggregate_request,
+                &equality_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-EQUALITY-V1";
+          step.diagnostic.detail = std::move(equality_detail);
+          return step;
+        }
         auto aggregate_result = exec::ExecuteCanonicalAggregateRuntime(
             aggregate_request, *execution_dag, input_batch);
         if (!aggregate_result.diagnostic.ok) {
@@ -14951,33 +15375,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             }
             filter_truth_values = std::move(materialized_filter);
           }
-          std::set<std::string> distinct_values;
-          std::size_t count_value = 0;
-          const auto value_column = prepared.value_columns.front();
-          for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
-            if (filter_truth_values.has_value() &&
-                (*filter_truth_values)[row] !=
-                    api::EngineSqlTruthValue::true_value) {
-              continue;
-            }
-            const auto& value = input_batch.rows[row].values[value_column];
-            if (value.state == api::EngineValueState::sql_null ||
-                value.is_null) {
-              continue;
-            }
-            if (prepared.distinct) {
-              std::string key;
-              std::string distinct_detail;
-              if (!EncodeCanonicalScalarEqualityKey(
-                      value, &key, &distinct_detail)) {
-                return refuse(
-                    std::string(kPayloadDiagnostic),
-                    "composition COUNT(DISTINCT): " + distinct_detail);
-              }
-              if (!distinct_values.insert(std::move(key)).second) continue;
-            }
-            ++count_value;
-          }
           std::uint64_t aggregate_work = input_row_count;
           if (prepared.distinct &&
               !CheckedMultiply(input_row_count, input_row_count,
@@ -14991,6 +15388,56 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                 "composition COUNT(expression) work exceeds the admitted "
                 "bound");
+          }
+          if (input_memory >
+              request.optimizer_request.resource.memory_budget_bytes) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition COUNT input exceeds the admitted memory bound");
+          }
+          const auto distinct_memory_bound =
+              request.optimizer_request.resource.memory_budget_bytes -
+              input_memory;
+          PlanningAggregateDistinctState distinct_state;
+          std::string distinct_detail;
+          if (!InitializePlanningAggregateDistinctState(
+                  request.context, input_batch, prepared,
+                  distinct_memory_bound, &distinct_state,
+                  &distinct_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          "composition COUNT(DISTINCT): " + distinct_detail);
+          }
+          std::size_t count_value = 0;
+          const auto value_column = prepared.value_columns.front();
+          for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+            if (filter_truth_values.has_value() &&
+                (*filter_truth_values)[row] !=
+                    api::EngineSqlTruthValue::true_value) {
+              continue;
+            }
+            const auto& value = input_batch.rows[row].values[value_column];
+            if (prepared.distinct) {
+              bool distinct_admitted = false;
+              const std::array<const api::EngineTypedValue*, 2> values = {
+                  &value, nullptr};
+              if (!AdmitPlanningAggregateDistinctTuple(
+                      values, 1,
+                      input_row_count,
+                      aggregate_work, distinct_memory_bound, &distinct_state,
+                      &distinct_admitted, &distinct_detail)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition COUNT(DISTINCT): " +
+                                  distinct_detail);
+              }
+              if (!distinct_admitted) {
+                continue;
+              }
+            }
+            if (value.state == api::EngineValueState::sql_null ||
+                value.is_null) {
+              continue;
+            }
+            ++count_value;
           }
           exec::DescriptorBatch output;
           output.columns.push_back(prepared.result_column);
@@ -15022,7 +15469,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               "canonical.aggregate.composed-global-count-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = aggregate_work;
+          auxiliary_memory =
+              prepared_registry_aggregate->distinct
+                  ? distinct_state.peak_memory_bytes
+                  : 0;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -15060,7 +15510,31 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             }
             filter_truth_values = std::move(materialized_filter);
           }
-          std::set<std::string> distinct_values;
+          std::uint64_t aggregate_work = input_row_count;
+          if (prepared.distinct &&
+              !CheckedMultiply(input_row_count, input_row_count,
+                               &aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition statistical DISTINCT work bound overflowed");
+          }
+          if (input_memory >
+              request.optimizer_request.resource.memory_budget_bytes) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition statistical input exceeds its memory bound");
+          }
+          PlanningAggregateDistinctState distinct_state;
+          std::string distinct_detail;
+          if (!InitializePlanningAggregateDistinctState(
+                  request.context, input_batch, prepared,
+                  request.optimizer_request.resource.memory_budget_bytes -
+                      input_memory,
+                  &distinct_state, &distinct_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          "composition statistical DISTINCT: " +
+                              distinct_detail);
+          }
           std::uint64_t non_null_count = 0;
           long double numeric_mean = 0.0L;
           long double numeric_m2 = 0.0L;
@@ -15072,6 +15546,23 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               continue;
             }
             const auto& value = input_batch.rows[row].values[value_column];
+            if (prepared.distinct) {
+              bool distinct_admitted = false;
+              const std::array<const api::EngineTypedValue*, 2> values = {
+                  &value, nullptr};
+              if (!AdmitPlanningAggregateDistinctTuple(
+                      values, 1,
+                      input_row_count,
+                      aggregate_work,
+                      request.optimizer_request.resource.memory_budget_bytes -
+                          input_memory,
+                      &distinct_state, &distinct_admitted, &distinct_detail)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition statistical DISTINCT: " +
+                                  distinct_detail);
+              }
+              if (!distinct_admitted) continue;
+            }
             if (value.state == api::EngineValueState::sql_null ||
                 value.is_null) {
               continue;
@@ -15080,17 +15571,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               return refuse(
                   std::string(kPayloadDiagnostic),
                   "composition statistical input is not canonical int64");
-            }
-            if (prepared.distinct) {
-              std::string key;
-              std::string distinct_detail;
-              if (!EncodeCanonicalScalarEqualityKey(
-                      value, &key, &distinct_detail)) {
-                return refuse(
-                    std::string(kPayloadDiagnostic),
-                    "composition statistical DISTINCT: " + distinct_detail);
-              }
-              if (!distinct_values.insert(std::move(key)).second) continue;
             }
             std::int64_t decoded = 0;
             const auto [end, error] = std::from_chars(
@@ -15117,14 +15597,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               return refuse(std::string(kPayloadDiagnostic),
                             "composition statistical state overflowed");
             }
-          }
-          std::uint64_t aggregate_work = input_row_count;
-          if (prepared.distinct &&
-              !CheckedMultiply(input_row_count, input_row_count,
-                               &aggregate_work)) {
-            return refuse(
-                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition statistical DISTINCT work bound overflowed");
           }
           if (!add_work(aggregate_work)) {
             return refuse(
@@ -15185,7 +15657,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               global_aggregate_profile.transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = aggregate_work;
+          auxiliary_memory = prepared_registry_aggregate->distinct
+                                 ? distinct_state.peak_memory_bytes
+                                 : 0;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -15213,7 +15687,29 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             }
             filter_truth_values = std::move(materialized_filter);
           }
-          std::set<std::string> distinct_values;
+          std::uint64_t aggregate_work = input_row_count;
+          if (prepared.distinct &&
+              !CheckedMultiply(input_row_count, input_row_count,
+                               &aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition AVG(DISTINCT) work bound overflowed");
+          }
+          if (input_memory >
+              request.optimizer_request.resource.memory_budget_bytes) {
+            return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                          "composition AVG input exceeds its memory bound");
+          }
+          PlanningAggregateDistinctState distinct_state;
+          std::string distinct_detail;
+          if (!InitializePlanningAggregateDistinctState(
+                  request.context, input_batch, prepared,
+                  request.optimizer_request.resource.memory_budget_bytes -
+                      input_memory,
+                  &distinct_state, &distinct_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          "composition AVG(DISTINCT): " + distinct_detail);
+          }
           long double real_sum = 0.0L;
           std::uint64_t non_null_count = 0;
           const auto value_column = prepared.value_columns.front();
@@ -15224,6 +15720,23 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               continue;
             }
             const auto& value = input_batch.rows[row].values[value_column];
+            if (prepared.distinct) {
+              bool distinct_admitted = false;
+              const std::array<const api::EngineTypedValue*, 2> values = {
+                  &value, nullptr};
+              if (!AdmitPlanningAggregateDistinctTuple(
+                      values, 1,
+                      input_row_count,
+                      aggregate_work,
+                      request.optimizer_request.resource.memory_budget_bytes -
+                          input_memory,
+                      &distinct_state, &distinct_admitted, &distinct_detail)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition AVG(DISTINCT): " +
+                                  distinct_detail);
+              }
+              if (!distinct_admitted) continue;
+            }
             if (value.state == api::EngineValueState::sql_null ||
                 value.is_null) {
               continue;
@@ -15231,17 +15744,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             if (value.descriptor.canonical_type_name != "int64") {
               return refuse(std::string(kPayloadDiagnostic),
                             "composition AVG input is not canonical int64");
-            }
-            if (prepared.distinct) {
-              std::string key;
-              std::string distinct_detail;
-              if (!EncodeCanonicalScalarEqualityKey(
-                      value, &key, &distinct_detail)) {
-                return refuse(std::string(kPayloadDiagnostic),
-                              "composition AVG(DISTINCT): " +
-                                  distinct_detail);
-              }
-              if (!distinct_values.insert(std::move(key)).second) continue;
             }
             std::int64_t decoded = 0;
             const auto [end, error] = std::from_chars(
@@ -15261,14 +15763,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                             "composition AVG state overflowed");
             }
             ++non_null_count;
-          }
-          std::uint64_t aggregate_work = input_row_count;
-          if (prepared.distinct &&
-              !CheckedMultiply(input_row_count, input_row_count,
-                               &aggregate_work)) {
-            return refuse(
-                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition AVG(DISTINCT) work bound overflowed");
           }
           if (!add_work(aggregate_work)) {
             return refuse(
@@ -15317,7 +15811,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               "canonical.aggregate.composed-global-avg-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = aggregate_work;
+          auxiliary_memory = prepared_registry_aggregate->distinct
+                                 ? distinct_state.peak_memory_bytes
+                                 : 0;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -15345,7 +15841,29 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             }
             filter_truth_values = std::move(materialized_filter);
           }
-          std::set<std::string> distinct_values;
+          std::uint64_t aggregate_work = input_row_count;
+          if (prepared.distinct &&
+              !CheckedMultiply(input_row_count, input_row_count,
+                               &aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition SUM(DISTINCT) work bound overflowed");
+          }
+          if (input_memory >
+              request.optimizer_request.resource.memory_budget_bytes) {
+            return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                          "composition SUM input exceeds its memory bound");
+          }
+          PlanningAggregateDistinctState distinct_state;
+          std::string distinct_detail;
+          if (!InitializePlanningAggregateDistinctState(
+                  request.context, input_batch, prepared,
+                  request.optimizer_request.resource.memory_budget_bytes -
+                      input_memory,
+                  &distinct_state, &distinct_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          "composition SUM(DISTINCT): " + distinct_detail);
+          }
           std::int64_t sum_value = 0;
           bool has_value = false;
           const auto value_column = prepared.value_columns.front();
@@ -15356,6 +15874,23 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               continue;
             }
             const auto& value = input_batch.rows[row].values[value_column];
+            if (prepared.distinct) {
+              bool distinct_admitted = false;
+              const std::array<const api::EngineTypedValue*, 2> values = {
+                  &value, nullptr};
+              if (!AdmitPlanningAggregateDistinctTuple(
+                      values, 1,
+                      input_row_count,
+                      aggregate_work,
+                      request.optimizer_request.resource.memory_budget_bytes -
+                          input_memory,
+                      &distinct_state, &distinct_admitted, &distinct_detail)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition SUM(DISTINCT): " +
+                                  distinct_detail);
+              }
+              if (!distinct_admitted) continue;
+            }
             if (value.state == api::EngineValueState::sql_null ||
                 value.is_null) {
               continue;
@@ -15363,17 +15898,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             if (value.descriptor.canonical_type_name != "int64") {
               return refuse(std::string(kPayloadDiagnostic),
                             "composition SUM input is not canonical int64");
-            }
-            if (prepared.distinct) {
-              std::string key;
-              std::string distinct_detail;
-              if (!EncodeCanonicalScalarEqualityKey(
-                      value, &key, &distinct_detail)) {
-                return refuse(std::string(kPayloadDiagnostic),
-                              "composition SUM(DISTINCT): " +
-                                  distinct_detail);
-              }
-              if (!distinct_values.insert(std::move(key)).second) continue;
             }
             std::int64_t decoded = 0;
             const auto [end, error] = std::from_chars(
@@ -15394,14 +15918,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             }
             sum_value += decoded;
             has_value = true;
-          }
-          std::uint64_t aggregate_work = input_row_count;
-          if (prepared.distinct &&
-              !CheckedMultiply(input_row_count, input_row_count,
-                               &aggregate_work)) {
-            return refuse(
-                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition SUM(DISTINCT) work bound overflowed");
           }
           if (!add_work(aggregate_work)) {
             return refuse(
@@ -15439,7 +15955,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               "canonical.aggregate.composed-global-sum-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = aggregate_work;
+          auxiliary_memory = prepared_registry_aggregate->distinct
+                                 ? distinct_state.peak_memory_bytes
+                                 : 0;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -15485,7 +16003,31 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                           "composition extremum comparison: " +
                               order_validation.detail);
           }
-          std::set<std::string> distinct_values;
+          std::uint64_t aggregate_work = input_row_count;
+          if (prepared.distinct &&
+              !CheckedMultiply(input_row_count, input_row_count,
+                               &aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition extremum DISTINCT work bound overflowed");
+          }
+          if (input_memory >
+              request.optimizer_request.resource.memory_budget_bytes) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition extremum input exceeds its memory bound");
+          }
+          PlanningAggregateDistinctState distinct_state;
+          std::string distinct_detail;
+          if (!InitializePlanningAggregateDistinctState(
+                  request.context, input_batch, prepared,
+                  request.optimizer_request.resource.memory_budget_bytes -
+                      input_memory,
+                  &distinct_state, &distinct_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          "composition extremum DISTINCT: " +
+                              distinct_detail);
+          }
           std::optional<api::EngineTypedValue> extremum;
           for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
             if (filter_truth_values.has_value() &&
@@ -15494,6 +16036,23 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               continue;
             }
             const auto& value = input_batch.rows[row].values[value_column];
+            if (prepared.distinct) {
+              bool distinct_admitted = false;
+              const std::array<const api::EngineTypedValue*, 2> values = {
+                  &value, nullptr};
+              if (!AdmitPlanningAggregateDistinctTuple(
+                      values, 1,
+                      input_row_count,
+                      aggregate_work,
+                      request.optimizer_request.resource.memory_budget_bytes -
+                          input_memory,
+                      &distinct_state, &distinct_admitted, &distinct_detail)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition extremum DISTINCT: " +
+                                  distinct_detail);
+              }
+              if (!distinct_admitted) continue;
+            }
             if (value.state == api::EngineValueState::sql_null ||
                 value.is_null) {
               continue;
@@ -15502,17 +16061,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               return refuse(std::string(kPayloadDiagnostic),
                             "composition extremum input is not canonical "
                             "int64");
-            }
-            if (prepared.distinct) {
-              std::string key;
-              std::string distinct_detail;
-              if (!EncodeCanonicalScalarEqualityKey(
-                      value, &key, &distinct_detail)) {
-                return refuse(std::string(kPayloadDiagnostic),
-                              "composition extremum DISTINCT: " +
-                                  distinct_detail);
-              }
-              if (!distinct_values.insert(std::move(key)).second) continue;
             }
             if (!extremum.has_value()) {
               extremum = value;
@@ -15530,14 +16078,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 (!minimum && compared.comparison > 0)) {
               extremum = value;
             }
-          }
-          std::uint64_t aggregate_work = input_row_count;
-          if (prepared.distinct &&
-              !CheckedMultiply(input_row_count, input_row_count,
-                               &aggregate_work)) {
-            return refuse(
-                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition extremum DISTINCT work bound overflowed");
           }
           if (!add_work(aggregate_work)) {
             return refuse(
@@ -15580,7 +16120,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   ? "canonical.aggregate.composed-global-min-expression.v1"
                   : "canonical.aggregate.composed-global-max-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = aggregate_work;
+          auxiliary_memory = prepared_registry_aggregate->distinct
+                                 ? distinct_state.peak_memory_bytes
+                                 : 0;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -15612,7 +16154,31 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             }
             filter_truth_values = std::move(materialized_filter);
           }
-          std::set<std::string> distinct_values;
+          std::uint64_t aggregate_work = input_row_count;
+          if (prepared.distinct &&
+              !CheckedMultiply(input_row_count, input_row_count,
+                               &aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition boolean aggregate DISTINCT work bound overflowed");
+          }
+          if (input_memory >
+              request.optimizer_request.resource.memory_budget_bytes) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition boolean aggregate input exceeds its memory bound");
+          }
+          PlanningAggregateDistinctState distinct_state;
+          std::string distinct_detail;
+          if (!InitializePlanningAggregateDistinctState(
+                  request.context, input_batch, prepared,
+                  request.optimizer_request.resource.memory_budget_bytes -
+                      input_memory,
+                  &distinct_state, &distinct_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          "composition boolean aggregate DISTINCT: " +
+                              distinct_detail);
+          }
           bool saw_value = false;
           bool saw_true = false;
           bool saw_false = false;
@@ -15624,6 +16190,23 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               continue;
             }
             const auto& value = input_batch.rows[row].values[value_column];
+            if (prepared.distinct) {
+              bool distinct_admitted = false;
+              const std::array<const api::EngineTypedValue*, 2> values = {
+                  &value, nullptr};
+              if (!AdmitPlanningAggregateDistinctTuple(
+                      values, 1,
+                      input_row_count,
+                      aggregate_work,
+                      request.optimizer_request.resource.memory_budget_bytes -
+                          input_memory,
+                      &distinct_state, &distinct_admitted, &distinct_detail)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition boolean aggregate DISTINCT: " +
+                                  distinct_detail);
+              }
+              if (!distinct_admitted) continue;
+            }
             if (value.state == api::EngineValueState::sql_null ||
                 value.is_null) {
               continue;
@@ -15632,17 +16215,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               return refuse(std::string(kPayloadDiagnostic),
                             "composition boolean aggregate input is not "
                             "canonical boolean");
-            }
-            if (prepared.distinct) {
-              std::string key;
-              std::string distinct_detail;
-              if (!EncodeCanonicalScalarEqualityKey(
-                      value, &key, &distinct_detail)) {
-                return refuse(std::string(kPayloadDiagnostic),
-                              "composition boolean aggregate DISTINCT: " +
-                                  distinct_detail);
-              }
-              if (!distinct_values.insert(std::move(key)).second) continue;
             }
             api::EngineSqlTruthValue truth =
                 api::EngineSqlTruthValue::unspecified;
@@ -15660,15 +16232,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                        truth == api::EngineSqlTruthValue::true_value;
             saw_false = saw_false ||
                         truth == api::EngineSqlTruthValue::false_value;
-          }
-          std::uint64_t aggregate_work = input_row_count;
-          if (prepared.distinct &&
-              !CheckedMultiply(input_row_count, input_row_count,
-                               &aggregate_work)) {
-            return refuse(
-                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition boolean aggregate DISTINCT work bound "
-                "overflowed");
           }
           if (!add_work(aggregate_work)) {
             return refuse(
@@ -15722,7 +16285,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 "canonical.aggregate.composed-global-every-expression.v1";
           }
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = aggregate_work;
+          auxiliary_memory = prepared_registry_aggregate->distinct
+                                 ? distinct_state.peak_memory_bytes
+                                 : 0;
           break;
         }
         if (pair_aggregate_profile.matched) {
@@ -15748,7 +16313,35 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             }
             filter_truth_values = std::move(materialized_filter);
           }
-          std::set<std::string> distinct_values;
+          std::uint64_t aggregate_work = input_row_count;
+          std::uint64_t distinct_generation_bound = input_row_count;
+          if ((prepared.distinct &&
+               (!CheckedMultiply(input_row_count, input_row_count,
+                                 &aggregate_work) ||
+                !CheckedMultiply(input_row_count,
+                                 prepared.value_columns.size(),
+                                 &distinct_generation_bound)))) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition pair statistical DISTINCT work bound overflowed");
+          }
+          if (input_memory >
+              request.optimizer_request.resource.memory_budget_bytes) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition pair statistical input exceeds its memory bound");
+          }
+          PlanningAggregateDistinctState distinct_state;
+          std::string distinct_detail;
+          if (!InitializePlanningAggregateDistinctState(
+                  request.context, input_batch, prepared,
+                  request.optimizer_request.resource.memory_budget_bytes -
+                      input_memory,
+                  &distinct_state, &distinct_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          "composition pair statistical DISTINCT: " +
+                              distinct_detail);
+          }
           std::uint64_t non_null_count = 0;
           long double mean_x = 0.0L;
           long double mean_y = 0.0L;
@@ -15765,6 +16358,21 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             }
             const auto& y_value = input_batch.rows[row].values[y_column];
             const auto& x_value = input_batch.rows[row].values[x_column];
+            if (prepared.distinct) {
+              bool distinct_admitted = false;
+              const std::array<const api::EngineTypedValue*, 2> values = {
+                  &y_value, &x_value};
+              if (!AdmitPlanningAggregateDistinctTuple(
+                      values, 2, distinct_generation_bound, aggregate_work,
+                      request.optimizer_request.resource.memory_budget_bytes -
+                          input_memory,
+                      &distinct_state, &distinct_admitted, &distinct_detail)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition pair statistical DISTINCT: " +
+                                  distinct_detail);
+              }
+              if (!distinct_admitted) continue;
+            }
             if (y_value.state == api::EngineValueState::sql_null ||
                 y_value.is_null ||
                 x_value.state == api::EngineValueState::sql_null ||
@@ -15799,16 +16407,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   std::string(kPayloadDiagnostic),
                   "composition pair statistical input or count is invalid");
             }
-            if (prepared.distinct) {
-              std::string key;
-              for (const auto decoded : {y_decoded, x_decoded}) {
-                const auto field = std::to_string(decoded);
-                key.append(std::to_string(field.size()));
-                key.push_back(':');
-                key.append(field);
-              }
-              if (!distinct_values.insert(std::move(key)).second) continue;
-            }
             ++non_null_count;
             const auto y = static_cast<long double>(y_decoded);
             const auto x = static_cast<long double>(x_decoded);
@@ -15829,15 +16427,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   std::string(kPayloadDiagnostic),
                   "composition pair statistical state overflowed");
             }
-          }
-          std::uint64_t aggregate_work = input_row_count;
-          if (prepared.distinct &&
-              !CheckedMultiply(input_row_count, input_row_count,
-                               &aggregate_work)) {
-            return refuse(
-                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition pair statistical DISTINCT work bound "
-                "overflowed");
           }
           if (!add_work(aggregate_work)) {
             return refuse(
@@ -15964,7 +16553,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               pair_aggregate_profile.transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = aggregate_work;
+          auxiliary_memory = prepared_registry_aggregate->distinct
+                                 ? distinct_state.peak_memory_bytes
+                                 : 0;
           break;
         }
         if (string_aggregate_profile.matched ||
@@ -17071,7 +17662,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     if (physical_kind == exec::PhysicalNodeKind::kAggregate &&
         !query_distinct &&
         (!CheckedMultiply(
-             static_cast<std::uint64_t>(state.batch.rows.size()),
+             input_row_count,
              sizeof(std::size_t), &aggregate_workspace_memory) ||
          !CheckedAdd(aggregate_workspace_memory,
                      kCanonicalAggregateKernelBaseMemoryBytes,
@@ -23072,6 +23663,17 @@ ExecuteCanonicalObjectFreePivotQuery(
               maximum_state_bytes;
           binding.aggregate_template.maximum_finalization_workspace_bytes =
               maximum_state_bytes;
+          std::string equality_detail;
+          if (!BindCanonicalAggregateEqualityTerms(
+                  mga_context,
+                  *inputs.front().materialized_output_batch,
+                  &binding.aggregate_template, &equality_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-PIVOT-EQUALITY-V1";
+            step.diagnostic.detail = std::move(equality_detail);
+            return step;
+          }
         }
         exec::CanonicalPivotRequest pivot_request;
         pivot_request.physical_dag = dag;
@@ -24299,6 +24901,16 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           aggregate_request.maximum_finalization_workspace_bytes =
               *aggregate_memory_bound;
           aggregate_request.mga_authority = mga_authority;
+          std::string equality_detail;
+          if (!BindCanonicalAggregateEqualityTerms(
+                  mga_context, input_batch, &aggregate_request,
+                  &equality_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-EQUALITY-V1";
+            step.diagnostic.detail = std::move(equality_detail);
+            return step;
+          }
           auto aggregate_result = exec::ExecuteCanonicalAggregateRuntime(
               aggregate_request, dag, input_batch);
           if (!aggregate_result.diagnostic.ok) {
