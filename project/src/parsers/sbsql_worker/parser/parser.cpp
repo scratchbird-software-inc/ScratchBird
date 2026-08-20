@@ -2921,7 +2921,8 @@ class NativeRelationalParser final {
 
   bool LooksLikeBoundedWindowSelect() const {
     if (tokens_.size() < 9 || tokens_[2]->text != "(") return false;
-    if (IsWord(*tokens_[1], "NTILE") || IsWord(*tokens_[1], "LAG")) {
+    if (IsWord(*tokens_[1], "NTILE") || IsWord(*tokens_[1], "LAG") ||
+        IsWord(*tokens_[1], "LEAD")) {
       return true;
     }
     return (IsWord(*tokens_[1], "ROW_NUMBER") ||
@@ -2937,11 +2938,12 @@ class NativeRelationalParser final {
   NativeRelationalAstDocument ParseWindowSelect() {
     // QOW-SOURCE-RCP-050-TYPED-WINDOW-AST-V1
     // The general ROW_NUMBER surface preserves the complete window
-    // specification. RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, NTILE, and LAG are
-    // admitted only for the exact global, one-direct-column ordering profile
-    // executed by the canonical spine. NTILE additionally requires one exact
-    // positive signed-int64 literal operand. LAG admits one direct signed-int64
-    // column with only its implicit offset and implicit NULL default.
+    // specification. RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, NTILE, LAG,
+    // and LEAD are admitted only for the exact global, one-direct-column
+    // ordering profile executed by the canonical spine. NTILE additionally
+    // requires one exact positive signed-int64 literal operand. LAG and LEAD
+    // admit one direct signed-int64 column with only their implicit offset and
+    // implicit NULL default.
     document_.status = NativeRelationalParseStatus::kRefused;
     if (cst_.messages.has_errors()) {
       document_.messages = cst_.messages;
@@ -2960,14 +2962,16 @@ class NativeRelationalParser final {
     const bool cume_dist_window = IsWord(function_token, "CUME_DIST");
     const bool ntile_window = IsWord(function_token, "NTILE");
     const bool lag_window = IsWord(function_token, "LAG");
+    const bool lead_window = IsWord(function_token, "LEAD");
+    const bool navigation_window = lag_window || lead_window;
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
     const bool strict_ordered_window =
-        peer_ranking_window || ntile_window || lag_window;
+        peer_ranking_window || ntile_window || navigation_window;
     const std::string function_name =
-        lag_window
-            ? "LAG"
+        navigation_window
+            ? (lag_window ? "LAG" : "LEAD")
             : (ntile_window
             ? "NTILE"
             : (cume_dist_window
@@ -2988,7 +2992,7 @@ class NativeRelationalParser final {
     function.operator_name = function_name;
     document_.expressions.push_back(std::move(function));
     std::optional<std::uint32_t> ntile_operand_expression_id;
-    std::optional<std::uint32_t> lag_operand_expression_id;
+    std::optional<std::uint32_t> navigation_operand_expression_id;
     if (ntile_window) {
       if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
         Refuse("ntile_operand_required",
@@ -3019,10 +3023,11 @@ class NativeRelationalParser final {
       operand.range = TokenSourceRange(operand_token);
       ntile_operand_expression_id = operand.expression_id;
       document_.expressions.push_back(std::move(operand));
-    } else if (lag_window) {
+    } else if (navigation_window) {
       if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
-        Refuse("lag_operand_required",
-               "LAG requires one direct signed-int64 column operand");
+        Refuse(lag_window ? "lag_operand_required" : "lead_operand_required",
+               function_name +
+                   " requires one direct signed-int64 column operand");
         return FinishRefusal();
       }
       const Token& operand_token = Consume();
@@ -3031,7 +3036,7 @@ class NativeRelationalParser final {
       operand.expression_kind = NativeExpressionAstKind::kIdentifier;
       operand.spelling = operand_token.text;
       operand.range = TokenSourceRange(operand_token);
-      lag_operand_expression_id = operand.expression_id;
+      navigation_operand_expression_id = operand.expression_id;
       document_.expressions.push_back(std::move(operand));
     }
     if (!RequireSymbol(")", "window_function_close_required",
@@ -3060,8 +3065,9 @@ class NativeRelationalParser final {
         document_.expressions[function_expression_id - 1];
     if (ntile_operand_expression_id.has_value()) {
       stored_function.child_expression_ids = {*ntile_operand_expression_id};
-    } else if (lag_operand_expression_id.has_value()) {
-      stored_function.child_expression_ids = {*lag_operand_expression_id};
+    } else if (navigation_operand_expression_id.has_value()) {
+      stored_function.child_expression_ids = {
+          *navigation_operand_expression_id};
     }
     stored_function.spelling = SourceSpelling(function_token, function_close);
     stored_function.range = Span(function_token, function_close);
@@ -3069,8 +3075,8 @@ class NativeRelationalParser final {
     NativeWindowDefinitionAstNode definition;
     definition.window_id = 1;
     std::vector<std::uint32_t> source_expression_ids;
-    if (lag_operand_expression_id.has_value()) {
-      source_expression_ids.push_back(*lag_operand_expression_id);
+    if (navigation_operand_expression_id.has_value()) {
+      source_expression_ids.push_back(*navigation_operand_expression_id);
     }
     const auto parse_identifier_list =
         [&](std::vector<std::uint32_t>* expression_ids,
@@ -3500,8 +3506,8 @@ class NativeRelationalParser final {
       const auto expected_output_name = ToLowerAscii(
           invocation.output_alias.has_value()
               ? invocation.output_alias->spelling
-              : (lag_window
-                     ? std::string("lag")
+              : (navigation_window
+                     ? std::string(lag_window ? "lag" : "lead")
                      : (ntile_window
                      ? std::string("ntile")
                      : (cume_dist_window
@@ -3569,8 +3575,9 @@ class NativeRelationalParser final {
     }
     if (strict_ordered_window) {
       if (document_.window_definitions.size() != 1) {
-        Refuse(lag_window
-                   ? "lag_window_shape_unsupported"
+        Refuse(navigation_window
+                   ? (lag_window ? "lag_window_shape_unsupported"
+                                 : "lead_window_shape_unsupported")
                    : (ntile_window
                    ? "ntile_window_shape_unsupported"
                    : (cume_dist_window
@@ -3595,8 +3602,9 @@ class NativeRelationalParser final {
           rank_definition.frame_end.has_value() ||
           rank_definition.exclusion !=
               NativeWindowFrameExclusion::kNoOthers) {
-        Refuse(lag_window
-                   ? "lag_window_shape_unsupported"
+        Refuse(navigation_window
+                   ? (lag_window ? "lag_window_shape_unsupported"
+                                 : "lead_window_shape_unsupported")
                    : (ntile_window
                    ? "ntile_window_shape_unsupported"
                    : (cume_dist_window
