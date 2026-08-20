@@ -80,6 +80,22 @@ bool RowNumberEncodedPayloadBytes(const std::size_t row_count,
   return true;
 }
 
+constexpr std::uint64_t kPercentRankRatioTextMaximumBytes = 36;
+constexpr std::uint64_t kPercentRankConversionWorkspaceMaximumBytes =
+    2 * kPercentRankRatioTextMaximumBytes;
+
+bool PercentRankEncodedPayloadBytes(const std::size_t row_count,
+                                    std::uint64_t* bytes) {
+  if (bytes == nullptr ||
+      row_count > std::numeric_limits<std::uint64_t>::max() /
+                      kPercentRankRatioTextMaximumBytes) {
+    return false;
+  }
+  *bytes = static_cast<std::uint64_t>(row_count) *
+           kPercentRankRatioTextMaximumBytes;
+  return true;
+}
+
 bool IsCanonicalUuid(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
       value[18] != '-' || value[23] != '-') {
@@ -687,24 +703,38 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
 }
 
 namespace {
-CanonicalDescriptorIntegerRankResult ExecuteCanonicalDescriptorIntegerRankBound(
-    const CanonicalDescriptorIntegerRankRequest& request,
+CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
+    const CanonicalDescriptorPeerRankingRequest& request,
     const TypedPhysicalNodeDag& execution_dag,
     const DescriptorBatch& execution_ordered_input_batch,
     const bool borrowed_execution_carriers) {
-  CanonicalDescriptorIntegerRankResult result;
-  const bool dense_rank =
-      request.builtin_id == "sb.window.dense_rank" ||
+  CanonicalDescriptorPeerRankingResult result;
+  const bool percent_rank =
+      request.builtin_id == "sb.window.percent_rank" ||
       request.function_uuid ==
-          "019de5fc-2400-741d-bef0-f079fd3ba494";
-  const std::string_view ranking_name = dense_rank ? "DENSE_RANK" : "RANK";
+          "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
+  const bool dense_rank =
+      !percent_rank &&
+      (request.builtin_id == "sb.window.dense_rank" ||
+       request.function_uuid ==
+           "019de5fc-2400-741d-bef0-f079fd3ba494");
+  const std::string_view ranking_name =
+      percent_rank ? "PERCENT_RANK" : (dense_rank ? "DENSE_RANK" : "RANK");
   const std::string_view expected_implementation =
-      dense_rank ? "window.dense-rank.v1" : "window.rank.v1";
+      percent_rank
+          ? "window.percent-rank.v1"
+          : (dense_rank ? "window.dense-rank.v1" : "window.rank.v1");
   const std::string_view expected_builtin =
-      dense_rank ? "sb.window.dense_rank" : "sb.window.rank";
+      percent_rank
+          ? "sb.window.percent_rank"
+          : (dense_rank ? "sb.window.dense_rank" : "sb.window.rank");
   const std::string_view expected_function_uuid =
-      dense_rank ? "019de5fc-2400-741d-bef0-f079fd3ba494"
-                 : "019de5fc-2400-7b94-870d-0dd789ca70ab";
+      percent_rank
+          ? "019de5fc-2400-7d86-86fe-96f3f27b5dd6"
+          : (dense_rank ? "019de5fc-2400-741d-bef0-f079fd3ba494"
+                        : "019de5fc-2400-7b94-870d-0dd789ca70ab");
+  const std::string_view expected_result_type =
+      percent_rank ? "real64" : "int64";
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
     result.diagnostic = std::move(diagnostic);
     result.output_batch = {};
@@ -805,7 +835,8 @@ CanonicalDescriptorIntegerRankResult ExecuteCanonicalDescriptorIntegerRankBound(
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
       request.ranking_column.descriptor_id == 0 ||
       request.ranking_column.nullable ||
-      request.ranking_column.descriptor.canonical_type_name != "int64" ||
+      request.ranking_column.descriptor.canonical_type_name !=
+          expected_result_type ||
       request.order_term.column >=
           execution_ordered_input_batch.columns.size()) {
     return refuse(Refusal(
@@ -824,7 +855,8 @@ CanonicalDescriptorIntegerRankResult ExecuteCanonicalDescriptorIntegerRankBound(
       static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-WINDOW-OVERFLOW-V1",
-        std::string(ranking_name) + " exceeds int64 result width"));
+        std::string(ranking_name) +
+            " exceeds its supported partition cardinality"));
   }
 
   const auto peer_comparison_count =
@@ -879,16 +911,22 @@ CanonicalDescriptorIntegerRankResult ExecuteCanonicalDescriptorIntegerRankBound(
         std::string(ranking_name) +
             " order-term binding receipt workspace was refused"));
   }
-  const auto peak_auxiliary_workspace_bytes =
+  const auto peak_auxiliary_workspace_bytes = std::max(
       std::max(peak_comparison_workspace_bytes,
-               binding_receipt_workspace_bytes);
+               binding_receipt_workspace_bytes),
+      percent_rank ? kPercentRankConversionWorkspaceMaximumBytes
+                   : std::uint64_t{0});
   std::uint64_t input_payload_bytes = 0;
   std::uint64_t rank_payload_bytes = 0;
   if (!RowNumberBatchPayloadBytes(execution_ordered_input_batch,
                                   &input_payload_bytes) ||
-      !RowNumberEncodedPayloadBytes(
-          execution_ordered_input_batch.rows.size(),
-          &rank_payload_bytes) ||
+      !(percent_rank
+            ? PercentRankEncodedPayloadBytes(
+                  execution_ordered_input_batch.rows.size(),
+                  &rank_payload_bytes)
+            : RowNumberEncodedPayloadBytes(
+                  execution_ordered_input_batch.rows.size(),
+                  &rank_payload_bytes)) ||
       selected_node->memory_bytes_required == 0 ||
       selected_node->memory_bytes_required > execution_dag.memory_budget_bytes ||
       selected_node->memory_bytes_required >
@@ -956,15 +994,30 @@ CanonicalDescriptorIntegerRankResult ExecuteCanonicalDescriptorIntegerRankBound(
         current_rank = dense_rank ? current_rank + 1 : row + 1;
       }
     }
-    CanonicalWindowIntegerRankValueRequest rank_request;
-    rank_request.function_abi_version = request.function_abi_version;
-    rank_request.builtin_id = request.builtin_id;
-    rank_request.function_uuid = request.function_uuid;
-    rank_request.output_descriptor = request.ranking_column.descriptor;
-    rank_request.one_based_rank = current_rank;
-    auto rank = ComputeCanonicalWindowIntegerRankValue(rank_request);
-    if (!rank.diagnostic.ok) return refuse(std::move(rank.diagnostic));
-    result.output_batch.rows[row].values.push_back(std::move(rank.value));
+    internal_api::EngineTypedValue value;
+    if (percent_rank) {
+      CanonicalWindowPercentRankValueRequest rank_request;
+      rank_request.function_abi_version = request.function_abi_version;
+      rank_request.builtin_id = request.builtin_id;
+      rank_request.function_uuid = request.function_uuid;
+      rank_request.output_descriptor = request.ranking_column.descriptor;
+      rank_request.one_based_rank = current_rank;
+      rank_request.partition_row_count = result.output_batch.rows.size();
+      auto rank = ComputeCanonicalWindowPercentRankValue(rank_request);
+      if (!rank.diagnostic.ok) return refuse(std::move(rank.diagnostic));
+      value = std::move(rank.value);
+    } else {
+      CanonicalWindowIntegerRankValueRequest rank_request;
+      rank_request.function_abi_version = request.function_abi_version;
+      rank_request.builtin_id = request.builtin_id;
+      rank_request.function_uuid = request.function_uuid;
+      rank_request.output_descriptor = request.ranking_column.descriptor;
+      rank_request.one_based_rank = current_rank;
+      auto rank = ComputeCanonicalWindowIntegerRankValue(rank_request);
+      if (!rank.diagnostic.ok) return refuse(std::move(rank.diagnostic));
+      value = std::move(rank.value);
+    }
+    result.output_batch.rows[row].values.push_back(std::move(value));
   }
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, selected_node->output_descriptor_ids);
@@ -985,17 +1038,17 @@ CanonicalDescriptorIntegerRankResult ExecuteCanonicalDescriptorIntegerRankBound(
 }
 }  // namespace
 
-CanonicalDescriptorIntegerRankResult ExecuteCanonicalDescriptorIntegerRank(
-    const CanonicalDescriptorIntegerRankRequest& request) {
-  return ExecuteCanonicalDescriptorIntegerRankBound(
+CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRanking(
+    const CanonicalDescriptorPeerRankingRequest& request) {
+  return ExecuteCanonicalDescriptorPeerRankingBound(
       request, request.physical_dag, request.ordered_input_batch, false);
 }
 
-CanonicalDescriptorIntegerRankResult ExecuteCanonicalDescriptorIntegerRank(
-    const CanonicalDescriptorIntegerRankRequest& request,
+CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRanking(
+    const CanonicalDescriptorPeerRankingRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch) {
-  return ExecuteCanonicalDescriptorIntegerRankBound(
+  return ExecuteCanonicalDescriptorPeerRankingBound(
       request, borrowed_execution_dag, borrowed_ordered_input_batch, true);
 }
 

@@ -1879,7 +1879,7 @@ struct CanonicalDescriptorRowNumberResult {
   PhysicalMgaStatementContext mga_statement_context;
 };
 
-struct CanonicalDescriptorIntegerRankRequest {
+struct CanonicalDescriptorPeerRankingRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch ordered_input_batch;
@@ -1894,7 +1894,7 @@ struct CanonicalDescriptorIntegerRankRequest {
   CanonicalExecutionMgaAuthority mga_authority;
 };
 
-struct CanonicalDescriptorIntegerRankResult {
+struct CanonicalDescriptorPeerRankingResult {
   DescriptorRuntimeDiagnostic diagnostic;
   DescriptorBatch output_batch;
   std::string selected_plan_uuid;
@@ -3069,10 +3069,10 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const CanonicalDescriptorRowNumberRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch);
-CanonicalDescriptorIntegerRankResult ExecuteCanonicalDescriptorIntegerRank(
-    const CanonicalDescriptorIntegerRankRequest& request);
-CanonicalDescriptorIntegerRankResult ExecuteCanonicalDescriptorIntegerRank(
-    const CanonicalDescriptorIntegerRankRequest& request,
+CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRanking(
+    const CanonicalDescriptorPeerRankingRequest& request);
+CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRanking(
+    const CanonicalDescriptorPeerRankingRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch);
 CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(

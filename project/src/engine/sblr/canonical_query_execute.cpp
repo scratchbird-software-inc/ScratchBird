@@ -6254,26 +6254,33 @@ struct PreparedGlobalRowNumberWindowBinding {
   std::vector<const api::RelationalOutputRecord*> outputs;
 };
 
-struct GlobalIntegerRankingWindowProfile {
+struct GlobalRankingWindowProfile {
   std::string_view semantic_variant_id;
   std::string_view builtin_id;
   std::string_view function_uuid;
   std::string_view display_name;
+  std::string_view result_type_name;
 };
 
-constexpr GlobalIntegerRankingWindowProfile kGlobalRowNumberProfile{
+constexpr GlobalRankingWindowProfile kGlobalRowNumberProfile{
     "window.row-number.v1", "sb.window.row_number",
-    "019de5fc-2400-7539-bcce-00eef3ae7220", "ROW_NUMBER"};
-constexpr GlobalIntegerRankingWindowProfile kGlobalRankProfile{
+    "019de5fc-2400-7539-bcce-00eef3ae7220", "ROW_NUMBER", "int64"};
+constexpr GlobalRankingWindowProfile kGlobalRankProfile{
     "window.rank.v1", "sb.window.rank",
-    "019de5fc-2400-7b94-870d-0dd789ca70ab", "RANK"};
-constexpr GlobalIntegerRankingWindowProfile kGlobalDenseRankProfile{
+    "019de5fc-2400-7b94-870d-0dd789ca70ab", "RANK", "int64"};
+constexpr GlobalRankingWindowProfile kGlobalDenseRankProfile{
     "window.dense-rank.v1", "sb.window.dense_rank",
-    "019de5fc-2400-741d-bef0-f079fd3ba494", "DENSE_RANK"};
+    "019de5fc-2400-741d-bef0-f079fd3ba494", "DENSE_RANK", "int64"};
+constexpr GlobalRankingWindowProfile kGlobalPercentRankProfile{
+    "window.percent-rank.v1", "sb.window.percent_rank",
+    "019de5fc-2400-7d86-86fe-96f3f27b5dd6", "PERCENT_RANK", "real64"};
+constexpr std::uint64_t kPercentRankRatioTextMaximumBytes = 36;
+constexpr std::uint64_t kPercentRankConversionWorkspaceMaximumBytes =
+    2 * kPercentRankRatioTextMaximumBytes;
 
 // The optional Project-root form preserves a narrower public SELECT list and
 // additionally binds every Window passthrough to its ordered input expression.
-PreparedGlobalRowNumberWindowBinding PrepareGlobalIntegerRankingWindowBinding(
+PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalPropertyCatalog& logical_properties,
     const api::RelationalDagNode& consumer,
@@ -6282,9 +6289,9 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalIntegerRankingWindowBinding(
     const PreparedSortRoot& prepared_sort,
     const std::size_t materialized_column_count,
     const std::size_t result_binding_count,
-    const std::string& int64_type_uuid,
+    const std::string& result_type_uuid,
     const std::string_view family_label,
-    const GlobalIntegerRankingWindowProfile& profile,
+    const GlobalRankingWindowProfile& profile,
     const bool allow_project_root = false) {
   PreparedGlobalRowNumberWindowBinding result;
   result.detail = std::string(family_label) + " " +
@@ -6470,8 +6477,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalIntegerRankingWindowBinding(
       !function->child_expression_ids.empty() ||
       function->result_descriptor_id !=
           invocations.front()->result_descriptor_id ||
-      result_descriptor == dag.descriptors.end() || int64_type_uuid.empty() ||
-      result_descriptor->type_uuid != int64_type_uuid ||
+      result_descriptor == dag.descriptors.end() || result_type_uuid.empty() ||
+      result_descriptor->type_uuid != result_type_uuid ||
       result_descriptor->nullability !=
           api::RelationalNullability::kNonNull ||
       consumer.output_descriptor_ids.size() !=
@@ -6537,7 +6544,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
     const std::string& int64_type_uuid,
     const std::string_view family_label,
     const bool allow_project_root = false) {
-  return PrepareGlobalIntegerRankingWindowBinding(
+  return PrepareGlobalRankingWindowBinding(
       dag, logical_properties, consumer, logical_consumer, previous_logical,
       prepared_sort, materialized_column_count, result_binding_count,
       int64_type_uuid, family_label, kGlobalRowNumberProfile,
@@ -9726,7 +9733,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
   return registration;
 }
 
-exec::CanonicalPhysicalExecutorRegistration MakeLiveIntegerRankRegistration(
+exec::CanonicalPhysicalExecutorRegistration MakeLivePeerRankingRegistration(
     exec::ExecutorColumnDescriptor ranking_column,
     exec::CanonicalDescriptorOrderTerm order_term,
     std::string order_term_binding_evidence_uuid,
@@ -9734,7 +9741,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveIntegerRankRegistration(
     std::string capability_uuid,
     const std::size_t maximum_input_row_count,
     const std::size_t maximum_peer_comparisons,
-    const GlobalIntegerRankingWindowProfile profile,
+    const GlobalRankingWindowProfile profile,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kWindow;
@@ -9796,7 +9803,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveIntegerRankRegistration(
           }
           execution_dag = &*scoped_execution_dag;
         }
-        exec::CanonicalDescriptorIntegerRankRequest request;
+        exec::CanonicalDescriptorPeerRankingRequest request;
         request.selected_physical_node_id = node.physical_node_id;
         request.order_term = order_term;
         request.ranking_column = ranking_column;
@@ -9810,7 +9817,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveIntegerRankRegistration(
         request.maximum_peer_comparisons = maximum_peer_comparisons;
         request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
-        auto window = exec::ExecuteCanonicalDescriptorIntegerRank(
+        auto window = exec::ExecuteCanonicalDescriptorPeerRanking(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
           step.diagnostic = std::move(window.diagnostic);
@@ -14032,7 +14039,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         ++window_count;
         if ((current->semantic_variant_id != "window.row-number.v1" &&
              current->semantic_variant_id != "window.rank.v1" &&
-             current->semantic_variant_id != "window.dense-rank.v1") ||
+             current->semantic_variant_id != "window.dense-rank.v1" &&
+             current->semantic_variant_id != "window.percent-rank.v1") ||
             current->logical_node_id != graph.root_logical_node_id ||
             current->bound_expression_ids.size() != 2 ||
             current->required_property_uuids.size() != 1 ||
@@ -14170,13 +14178,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::size_t grouped_aggregate_output_row_bound = 0;
   std::optional<PreparedSortRoot> prepared_sort;
   std::optional<exec::ExecutorColumnDescriptor> prepared_row_number;
-  std::optional<exec::ExecutorColumnDescriptor> prepared_integer_rank;
+  std::optional<exec::ExecutorColumnDescriptor> prepared_peer_ranking;
   std::optional<exec::CanonicalDescriptorOrderTerm>
-      prepared_integer_rank_order_term;
-  GlobalIntegerRankingWindowProfile prepared_integer_rank_profile;
+      prepared_peer_ranking_order_term;
+  GlobalRankingWindowProfile prepared_peer_ranking_profile;
   std::string row_number_order_evidence_uuid;
-  std::string integer_rank_order_term_binding_evidence_uuid;
-  std::size_t integer_rank_maximum_peer_comparisons = 0;
+  std::string peer_ranking_order_term_binding_evidence_uuid;
+  std::size_t peer_ranking_maximum_peer_comparisons = 0;
   std::size_t sort_input_row_count = 0;
   std::size_t sort_comparison_bound = 0;
   bool prepared_table_subquery = false;
@@ -17624,11 +17632,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             node.semantic_variant_id == "window.rank.v1";
         const bool dense_rank_window =
             node.semantic_variant_id == "window.dense-rank.v1";
-        const bool peer_ranking_window = rank_window || dense_rank_window;
+        const bool percent_rank_window =
+            node.semantic_variant_id == "window.percent-rank.v1";
+        const bool peer_ranking_window =
+            rank_window || dense_rank_window || percent_rank_window;
         const auto& ranking_profile =
-            dense_rank_window ? kGlobalDenseRankProfile
-                              : (rank_window ? kGlobalRankProfile
-                                             : kGlobalRowNumberProfile);
+            percent_rank_window
+                ? kGlobalPercentRankProfile
+                : (dense_rank_window
+                       ? kGlobalDenseRankProfile
+                       : (rank_window ? kGlobalRankProfile
+                                      : kGlobalRowNumberProfile));
         const std::string_view ranking_name = ranking_profile.display_name;
         const auto typed_consumer = std::ranges::find_if(
             request.relational_dag.nodes, [&](const auto& candidate) {
@@ -17651,20 +17665,20 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                         "composition " + std::string(ranking_name) +
                             " core datatype catalog is unavailable");
         }
-        const auto int64_type = std::ranges::find_if(
+        const auto result_type = std::ranges::find_if(
             core_manifest.manifest.descriptor_rows, [&](const auto& row) {
-              return row.stable_name == "int64";
+              return row.stable_name == ranking_profile.result_type_name;
             });
-        const auto int64_type_uuid =
-            int64_type == core_manifest.manifest.descriptor_rows.end()
+        const auto result_type_uuid =
+            result_type == core_manifest.manifest.descriptor_rows.end()
                 ? std::string{}
                 : scratchbird::core::uuid::UuidToString(
-                      int64_type->descriptor_uuid.value);
-        const auto ranking = PrepareGlobalIntegerRankingWindowBinding(
+                      result_type->descriptor_uuid.value);
+        const auto ranking = PrepareGlobalRankingWindowBinding(
             request.relational_dag,
             request.optimizer_request.logical_properties, *typed_consumer,
             node, input_node, *prepared_sort, input_batch.columns.size(),
-            input_bindings.size(), int64_type_uuid, "composition",
+            input_bindings.size(), result_type_uuid, "composition",
             ranking_profile);
         if (!ranking.ok) {
           return refuse(ranking.diagnostic_id, ranking.detail);
@@ -17673,14 +17687,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                                   std::numeric_limits<std::int64_t>::max())) {
           return refuse(std::string(kPayloadDiagnostic),
                         "composition " + std::string(ranking_name) +
-                            " exceeds int64 result width");
+                            " exceeds its supported partition cardinality");
         }
         const auto* output_descriptor = ranking.result_descriptor;
         api::EngineDescriptor descriptor;
         descriptor.descriptor_uuid.canonical =
             output_descriptor->descriptor_uuid;
         descriptor.descriptor_kind = "scalar";
-        descriptor.canonical_type_name = "int64";
+        descriptor.canonical_type_name =
+            std::string(ranking_profile.result_type_name);
         descriptor.encoded_descriptor =
             "type_uuid=" + output_descriptor->type_uuid +
             ";nullability=non_null";
@@ -17757,7 +17772,23 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             }
           }
           api::EngineTypedValue value;
-          if (peer_ranking_window) {
+          if (percent_rank_window) {
+            exec::CanonicalWindowPercentRankValueRequest rank_request;
+            rank_request.function_abi_version = 1;
+            rank_request.builtin_id = std::string(ranking_profile.builtin_id);
+            rank_request.function_uuid =
+                std::string(ranking_profile.function_uuid);
+            rank_request.output_descriptor = descriptor;
+            rank_request.one_based_rank = current_rank;
+            rank_request.partition_row_count = input_row_count;
+            auto rank =
+                exec::ComputeCanonicalWindowPercentRankValue(rank_request);
+            if (!rank.diagnostic.ok) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            rank.diagnostic.detail);
+            }
+            value = std::move(rank.value);
+          } else if (peer_ranking_window) {
             exec::CanonicalWindowIntegerRankValueRequest rank_request;
             rank_request.function_abi_version = 1;
             rank_request.builtin_id = std::string(ranking_profile.builtin_id);
@@ -17805,11 +17836,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         state.result_bindings = input_bindings;
         state.result_bindings.push_back(std::move(ranking_binding));
         if (peer_ranking_window) {
-          prepared_integer_rank = std::move(ranking_column);
-          prepared_integer_rank_order_term =
+          prepared_peer_ranking = std::move(ranking_column);
+          prepared_peer_ranking_order_term =
               prepared_sort->order_terms.front();
-          prepared_integer_rank_profile = ranking_profile;
-          integer_rank_maximum_peer_comparisons =
+          prepared_peer_ranking_profile = ranking_profile;
+          peer_ranking_maximum_peer_comparisons =
               std::max<std::size_t>(1, peer_comparison_count);
           auxiliary_memory = rank_comparison_workspace_bytes;
         } else {
@@ -17832,13 +17863,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 "composition " + std::string(ranking_name) +
                     " order-term receipt exceeds its memory budget");
           }
-          integer_rank_order_term_binding_evidence_uuid =
+          peer_ranking_order_term_binding_evidence_uuid =
               exec::ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
                   prepared_sort->order_terms.front(),
                   prepared_sort->ordering_property_uuid,
                   planned_receipt_workspace_bytes,
                   &actual_receipt_workspace_bytes);
-          if (integer_rank_order_term_binding_evidence_uuid.empty() ||
+          if (peer_ranking_order_term_binding_evidence_uuid.empty() ||
               actual_receipt_workspace_bytes !=
                   planned_receipt_workspace_bytes) {
             return refuse(
@@ -17848,16 +17879,34 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           auxiliary_memory =
               std::max(auxiliary_memory, actual_receipt_workspace_bytes);
+          if (percent_rank_window) {
+            auxiliary_memory = std::max(
+                auxiliary_memory,
+                kPercentRankConversionWorkspaceMaximumBytes);
+          }
+          std::uint64_t percent_rank_payload_reserve = 0;
+          if (percent_rank_window &&
+              (!CheckedMultiply(input_row_count,
+                                kPercentRankRatioTextMaximumBytes,
+                                &percent_rank_payload_reserve) ||
+               !CheckedAdd(auxiliary_memory, percent_rank_payload_reserve,
+                           &auxiliary_memory))) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition PERCENT_RANK payload reserve overflowed");
+          }
         }
         implementation_id = std::string(ranking_profile.semantic_variant_id);
         capability_uuid = peer_ranking_window
-                              ? integer_rank_order_term_binding_evidence_uuid
+                              ? peer_ranking_order_term_binding_evidence_uuid
                               : window_capability_uuid;
-        transformation_rule = dense_rank_window
-                                  ? "canonical.window.composed-dense-rank.v1"
-                                  : (rank_window
-                                         ? "canonical.window.composed-rank.v1"
-                                         : "canonical.window.composed-row-number.v1");
+        transformation_rule = percent_rank_window
+                                  ? "canonical.window.composed-percent-rank.v1"
+                                  : (dense_rank_window
+                                         ? "canonical.window.composed-dense-rank.v1"
+                                         : (rank_window
+                                                ? "canonical.window.composed-rank.v1"
+                                                : "canonical.window.composed-row-number.v1"));
         physical_kind = exec::PhysicalNodeKind::kWindow;
         required_property_uuids = node.required_property_uuids;
         delivered_property_uuids = node.delivered_property_uuids;
@@ -18603,16 +18652,16 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             *prepared_row_number, row_number_order_evidence_uuid,
             window_capability_uuid, sort_input_row_count, request.context));
   }
-  if (prepared_integer_rank.has_value() &&
-      prepared_integer_rank_order_term.has_value()) {
+  if (prepared_peer_ranking.has_value() &&
+      prepared_peer_ranking_order_term.has_value()) {
     execution_request.available_executors.push_back(
-        MakeLiveIntegerRankRegistration(
-            *prepared_integer_rank, *prepared_integer_rank_order_term,
-            integer_rank_order_term_binding_evidence_uuid,
+        MakeLivePeerRankingRegistration(
+            *prepared_peer_ranking, *prepared_peer_ranking_order_term,
+            peer_ranking_order_term_binding_evidence_uuid,
             row_number_order_evidence_uuid,
-            integer_rank_order_term_binding_evidence_uuid,
-            sort_input_row_count, integer_rank_maximum_peer_comparisons,
-            prepared_integer_rank_profile,
+            peer_ranking_order_term_binding_evidence_uuid,
+            sort_input_row_count, peer_ranking_maximum_peer_comparisons,
+            prepared_peer_ranking_profile,
             request.context));
   }
   if (prepared_table_subquery) {
@@ -50320,23 +50369,29 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          {plan::CanonicalLogicalPropertyKind::kOrdering}});
   }
   std::optional<exec::ExecutorColumnDescriptor> prepared_heap_row_number;
-  std::optional<exec::ExecutorColumnDescriptor> prepared_heap_integer_rank;
+  std::optional<exec::ExecutorColumnDescriptor> prepared_heap_peer_ranking;
   std::optional<exec::CanonicalDescriptorOrderTerm>
-      prepared_heap_integer_rank_order_term;
-  GlobalIntegerRankingWindowProfile prepared_heap_integer_rank_profile;
+      prepared_heap_peer_ranking_order_term;
+  GlobalRankingWindowProfile prepared_heap_peer_ranking_profile;
   std::string window_capability_uuid;
-  std::string heap_integer_rank_order_term_binding_evidence_uuid;
+  std::string heap_peer_ranking_order_term_binding_evidence_uuid;
   std::string window_order_evidence_uuid;
   if (window_composition) {
     const bool rank_window =
         window_node->semantic_variant_id == "window.rank.v1";
     const bool dense_rank_window =
         window_node->semantic_variant_id == "window.dense-rank.v1";
-    const bool peer_ranking_window = rank_window || dense_rank_window;
+    const bool percent_rank_window =
+        window_node->semantic_variant_id == "window.percent-rank.v1";
+    const bool peer_ranking_window =
+        rank_window || dense_rank_window || percent_rank_window;
     const auto& ranking_profile =
-        dense_rank_window ? kGlobalDenseRankProfile
-                          : (rank_window ? kGlobalRankProfile
-                                         : kGlobalRowNumberProfile);
+        percent_rank_window
+            ? kGlobalPercentRankProfile
+            : (dense_rank_window
+                   ? kGlobalDenseRankProfile
+                   : (rank_window ? kGlobalRankProfile
+                                  : kGlobalRowNumberProfile));
     const std::string_view ranking_name = ranking_profile.display_name;
     const auto logical_window = std::ranges::find_if(
         graph.nodes, [&](const auto& candidate) {
@@ -50354,20 +50409,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                     "object-backed " + std::string(ranking_name) +
                         " authority is unavailable");
     }
-    const auto int64_type = std::ranges::find_if(
+    const auto result_type = std::ranges::find_if(
         core_manifest.manifest.descriptor_rows, [&](const auto& row) {
-          return row.stable_name == "int64";
+          return row.stable_name == ranking_profile.result_type_name;
         });
-    const auto int64_type_uuid =
-        int64_type == core_manifest.manifest.descriptor_rows.end()
+    const auto result_type_uuid =
+        result_type == core_manifest.manifest.descriptor_rows.end()
             ? std::string{}
             : scratchbird::core::uuid::UuidToString(
-                  int64_type->descriptor_uuid.value);
-    const auto ranking = PrepareGlobalIntegerRankingWindowBinding(
+                  result_type->descriptor_uuid.value);
+    const auto ranking = PrepareGlobalRankingWindowBinding(
         dag, admission.request.logical_properties, *window_node,
         *logical_window, *logical_sort, heap_sort_binding,
         sort_node->output_descriptor_ids.size(),
-        sort_node->output_descriptor_ids.size(), int64_type_uuid, "heap",
+        sort_node->output_descriptor_ids.size(), result_type_uuid, "heap",
         ranking_profile, project_composition);
     if (!ranking.ok) {
       return refuse(ranking.diagnostic_id, ranking.detail);
@@ -50377,7 +50432,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     descriptor.descriptor_uuid.canonical =
         output_descriptor->descriptor_uuid;
     descriptor.descriptor_kind = "scalar";
-    descriptor.canonical_type_name = "int64";
+    descriptor.canonical_type_name =
+        std::string(ranking_profile.result_type_name);
     descriptor.encoded_descriptor =
         "type_uuid=" + output_descriptor->type_uuid +
         ";nullability=non_null";
@@ -50406,24 +50462,24 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                       "object-backed " + std::string(ranking_name) +
                           " order-term receipt exceeds its memory budget");
       }
-      heap_integer_rank_order_term_binding_evidence_uuid =
+      heap_peer_ranking_order_term_binding_evidence_uuid =
           exec::ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
               heap_descriptor_order_terms.front(), ordering_property_uuid,
               planned_receipt_workspace_bytes,
               &actual_receipt_workspace_bytes);
-      if (heap_integer_rank_order_term_binding_evidence_uuid.empty() ||
+      if (heap_peer_ranking_order_term_binding_evidence_uuid.empty() ||
           actual_receipt_workspace_bytes !=
               planned_receipt_workspace_bytes) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
                       "object-backed " + std::string(ranking_name) +
                           " order-term receipt is unresolved");
       }
-      prepared_heap_integer_rank = std::move(ranking_column);
-      prepared_heap_integer_rank_order_term =
+      prepared_heap_peer_ranking = std::move(ranking_column);
+      prepared_heap_peer_ranking_order_term =
           heap_descriptor_order_terms.front();
-      prepared_heap_integer_rank_profile = ranking_profile;
+      prepared_heap_peer_ranking_profile = ranking_profile;
       window_capability_uuid =
-          heap_integer_rank_order_term_binding_evidence_uuid;
+          heap_peer_ranking_order_term_binding_evidence_uuid;
     } else {
       prepared_heap_row_number = std::move(ranking_column);
       window_capability_uuid =
@@ -50438,10 +50494,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          window_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kWindow,
          exec::PhysicalNodeKind::kWindow,
-         dense_rank_window
-             ? "canonical.heap.window.dense-rank.v1"
-             : (rank_window ? "canonical.heap.window.rank.v1"
-                            : "canonical.heap.window.row-number.v1"),
+         percent_rank_window
+             ? "canonical.heap.window.percent-rank.v1"
+             : (dense_rank_window
+                    ? "canonical.heap.window.dense-rank.v1"
+                    : (rank_window ? "canonical.heap.window.rank.v1"
+                                   : "canonical.heap.window.row-number.v1")),
          1,
          planning_request.optimizer_request.resource.memory_budget_bytes,
          1, 1, window_node->required_property_uuids,
@@ -50623,9 +50681,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                  : (project_composition
                  ? "object-backed heap hidden-column PROJECT composition"
                  : (window_composition
-                        ? (prepared_heap_integer_rank.has_value()
+                        ? (prepared_heap_peer_ranking.has_value()
                                ? "object-backed heap " +
-                                     std::string(prepared_heap_integer_rank_profile
+                                     std::string(prepared_heap_peer_ranking_profile
                                                      .display_name) +
                                      " composition"
                                : "object-backed heap ROW_NUMBER composition")
@@ -50772,17 +50830,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
               input.context));
     }
     if (window_composition) {
-      if (prepared_heap_integer_rank.has_value() &&
-          prepared_heap_integer_rank_order_term.has_value()) {
+      if (prepared_heap_peer_ranking.has_value() &&
+          prepared_heap_peer_ranking_order_term.has_value()) {
         selected.available_executors.push_back(
-            MakeLiveIntegerRankRegistration(
-                *prepared_heap_integer_rank,
-                *prepared_heap_integer_rank_order_term,
-                heap_integer_rank_order_term_binding_evidence_uuid,
+            MakeLivePeerRankingRegistration(
+                *prepared_heap_peer_ranking,
+                *prepared_heap_peer_ranking_order_term,
+                heap_peer_ranking_order_term_binding_evidence_uuid,
                 window_order_evidence_uuid, window_capability_uuid,
                 maximum_output_rows,
                 std::max<std::size_t>(1, maximum_output_rows - 1),
-                prepared_heap_integer_rank_profile,
+                prepared_heap_peer_ranking_profile,
                 input.context));
       } else {
         selected.available_executors.push_back(
@@ -50897,10 +50955,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                             : (project_composition
                             ? "object-backed heap PROJECT selected DAG was not completed"
                             : (window_composition
-                                   ? (prepared_heap_integer_rank.has_value()
+                                   ? (prepared_heap_peer_ranking.has_value()
                                           ? "object-backed heap " +
                                                 std::string(
-                                                    prepared_heap_integer_rank_profile
+                                                    prepared_heap_peer_ranking_profile
                                                         .display_name) +
                                                 " selected DAG was not completed"
                                           : "object-backed heap ROW_NUMBER selected DAG was not completed")
