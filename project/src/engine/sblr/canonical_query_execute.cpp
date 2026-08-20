@@ -10245,6 +10245,13 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
             prepared->second.profile.implementation_id !=
                 node.implementation_id ||
             inputs.size() != 2 ||
+            node.input_physical_node_ids.size() != 2 ||
+            node.input_physical_node_ids[0] ==
+                node.input_physical_node_ids[1] ||
+            inputs[0].physical_node_id !=
+                node.input_physical_node_ids[0] ||
+            inputs[1].physical_node_id !=
+                node.input_physical_node_ids[1] ||
             !inputs[0].materialized_output_batch.has_value() ||
             !inputs[1].materialized_output_batch.has_value()) {
           step.diagnostic.ok = false;
@@ -17177,6 +17184,13 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         if (inputs.size() != 2 ||
+            node.input_physical_node_ids.size() != 2 ||
+            node.input_physical_node_ids[0] ==
+                node.input_physical_node_ids[1] ||
+            inputs[0].physical_node_id !=
+                node.input_physical_node_ids[0] ||
+            inputs[1].physical_node_id !=
+                node.input_physical_node_ids[1] ||
             !inputs[0].materialized_output_batch.has_value() ||
             !inputs[1].materialized_output_batch.has_value()) {
           step.diagnostic.ok = false;
@@ -17603,6 +17617,13 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
               prepared->second.profile.implementation_id !=
                   node.implementation_id ||
               inputs.size() != 2 ||
+              node.input_physical_node_ids.size() != 2 ||
+              node.input_physical_node_ids[0] ==
+                  node.input_physical_node_ids[1] ||
+              inputs[0].physical_node_id !=
+                  node.input_physical_node_ids[0] ||
+              inputs[1].physical_node_id !=
+                  node.input_physical_node_ids[1] ||
               !inputs[0].materialized_output_batch.has_value() ||
               !inputs[1].materialized_output_batch.has_value()) {
             step.diagnostic.ok = false;
@@ -17671,7 +17692,8 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
           set_request.maximum_output_row_count =
               std::max<std::size_t>(1, config.maximum_output_row_count);
           set_request.mga_authority =
-              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+              BuildCanonicalExecutionMgaAuthority(
+                  mga_context, set_request.physical_dag);
           auto set_result =
               config.profile.quantifier ==
                       exec::CanonicalSetOperationQuantifier::kAll
