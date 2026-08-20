@@ -2959,10 +2959,10 @@ class NativeRelationalParser final {
     // admit one direct exact signed-int64 or boolean column with only their
     // implicit offset and implicit NULL default. FIRST_VALUE and LAST_VALUE
     // admit the same exact value cohort and consume the effective implicit
-    // ordered frame. NTH_VALUE remains bounded to one direct signed-int64
-    // value column plus one exact positive signed-int64 literal position and
-    // normalizes omitted origin/NULL-treatment state to FROM FIRST RESPECT
-    // NULLS in the canonical execution route. Aggregate
+    // ordered frame. NTH_VALUE admits that same value cohort plus one exact
+    // positive signed-int64 literal position and normalizes omitted
+    // origin/NULL-treatment state to FROM FIRST RESPECT NULLS in the canonical
+    // execution route. Aggregate
     // Numeric aggregates admit one direct bounded-signed value column; boolean
     // aggregates admit one direct boolean value column. COUNT(identifier)
     // admits one direct engine-bound canonical value column of any type, while
@@ -3087,9 +3087,7 @@ class NativeRelationalParser final {
                        ? " requires one direct boolean column operand"
                        : (aggregate_window
                               ? " requires one direct bounded-signed column operand"
-                              : (nth_value_window
-                                     ? " requires one direct signed-int64 column operand"
-                                     : " requires one direct signed-int64 or boolean column operand")));
+                              : " requires one direct signed-int64 or boolean column operand"));
         Refuse(aggregate_window
                    ? "aggregate_window_operand_required"
                    : (first_value_window

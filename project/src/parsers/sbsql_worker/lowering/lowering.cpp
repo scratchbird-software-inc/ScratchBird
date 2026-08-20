@@ -36606,6 +36606,24 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         nth_value_window ? nth_position_argument : window_argument;
     const auto numeric_window_argument_descriptor =
         nth_value_window ? nth_position_descriptor : window_argument_descriptor;
+    const auto selected_order_expression =
+        selected_definition != definition_by_id.end() &&
+                native.window_definitions[selected_definition->second]
+                        .ordering_terms.size() == 1
+            ? expressions_by_id.find(
+                  native.window_definitions[selected_definition->second]
+                      .ordering_terms.front()
+                      .expression_id)
+            : expressions_by_id.end();
+    const auto selected_order_descriptor =
+        selected_order_expression == expressions_by_id.end()
+            ? native.descriptors.end()
+            : std::ranges::find_if(
+                  native.descriptors, [&](const auto& descriptor) {
+                    return descriptor.descriptor_id ==
+                           selected_order_expression->second
+                               ->result_descriptor_id;
+                  });
     std::uint64_t numeric_window_argument_value = 0;
     const char* numeric_window_argument_end = nullptr;
     std::errc numeric_window_argument_error = std::errc::invalid_argument;
@@ -36756,8 +36774,28 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               result_descriptor->descriptor_uuid ||
           numeric_window_argument_descriptor->descriptor_uuid ==
               expected_window_function_uuid ||
-          numeric_window_argument_descriptor->type_uuid !=
-              result_descriptor->type_uuid ||
+          (ntile_window &&
+           numeric_window_argument_descriptor->type_uuid !=
+               result_descriptor->type_uuid) ||
+          (nth_value_window &&
+           (selected_order_descriptor == native.descriptors.end() ||
+            selected_order_descriptor->canonical_type_name != "int64" ||
+            selected_order_descriptor->collation_uuid.has_value() ||
+            selected_order_descriptor->timezone_profile_id.has_value() ||
+            selected_order_descriptor->width_precision_scale.width
+                .has_value() ||
+            selected_order_descriptor->width_precision_scale.precision
+                .has_value() ||
+            selected_order_descriptor->width_precision_scale.scale
+                .has_value() ||
+            !selected_order_descriptor->element_profile.empty() ||
+            numeric_window_argument_descriptor->descriptor_id ==
+                selected_order_descriptor->descriptor_id ||
+            numeric_window_argument_descriptor->descriptor_uuid ==
+                selected_order_descriptor->descriptor_uuid ||
+            numeric_window_argument_descriptor->type_uuid !=
+                selected_order_descriptor->type_uuid)) ||
+          numeric_window_argument_descriptor->canonical_type_name != "int64" ||
           numeric_window_argument_descriptor->nullability !=
               BoundNullability::kNonNull ||
           numeric_window_argument_descriptor->collation_uuid.has_value() ||
@@ -36768,6 +36806,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               .has_value() ||
           numeric_window_argument_descriptor->width_precision_scale.scale
               .has_value() ||
+          !numeric_window_argument_descriptor->element_profile.empty() ||
           (nth_value_window &&
            (window_argument_descriptor == native.descriptors.end() ||
             numeric_window_argument_descriptor->descriptor_id ==

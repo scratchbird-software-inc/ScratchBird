@@ -1126,8 +1126,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         aggregate_window && !aggregate_count_window &&
         !aggregate_boolean_window;
     const bool navigation_window = lag_window || lead_window;
-    const bool direct_navigation_value_window =
-        navigation_window || first_value_window || last_value_window;
+    const bool navigation_value_window =
+        navigation_window || first_value_window || last_value_window ||
+        nth_value_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
         nth_value_window || aggregate_window;
@@ -1136,7 +1137,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     const auto canonical_int64_type_uuid =
         value_window ? CanonicalCoreDatatypeUuid("int64") : std::string{};
     const auto canonical_boolean_type_uuid =
-        (aggregate_boolean_window || direct_navigation_value_window)
+        (aggregate_boolean_window || navigation_value_window)
             ? CanonicalCoreDatatypeUuid("boolean")
             : std::string{};
     const std::array<std::string, 4> canonical_bounded_signed_type_uuids = {
@@ -1274,6 +1275,22 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                   relational.descriptors, [&](const auto& descriptor) {
                   return descriptor.descriptor_id ==
                            nth_position_argument->result_descriptor_id;
+                  });
+    const auto nth_order_argument =
+        nth_value_window && sort_node->bound_expression_ids.size() == 1
+            ? std::ranges::find_if(
+                  relational.expressions, [&](const auto& expression) {
+                    return expression.expression_id ==
+                           sort_node->bound_expression_ids.front();
+                  })
+            : relational.expressions.end();
+    const auto nth_order_descriptor =
+        nth_order_argument == relational.expressions.end()
+            ? relational.descriptors.end()
+            : std::ranges::find_if(
+                  relational.descriptors, [&](const auto& descriptor) {
+                    return descriptor.descriptor_id ==
+                           nth_order_argument->result_descriptor_id;
                   });
     const auto aggregate_order_argument =
         aggregate_window && sort_node->bound_expression_ids.size() == 1
@@ -1458,7 +1475,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
            (canonical_int64_type_uuid.empty() ||
             (ntile_argument_descriptor->type_uuid !=
                  canonical_int64_type_uuid &&
-             (!direct_navigation_value_window ||
+             (!navigation_value_window ||
               canonical_boolean_type_uuid.empty() ||
               ntile_argument_descriptor->type_uuid !=
                   canonical_boolean_type_uuid)) ||
@@ -1520,7 +1537,27 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                             aggregate_order_descriptor->descriptor_id) ==
               sort_node->output_descriptor_ids.end())) ||
         (nth_value_window &&
-         (nth_position_argument == relational.expressions.end() ||
+         (nth_order_argument == relational.expressions.end() ||
+          nth_order_argument->expression_kind !=
+              RelationalExpressionKind::kIdentifier ||
+          !nth_order_argument->child_expression_ids.empty() ||
+          !nth_order_argument->bound_name_uuid.has_value() ||
+          nth_order_argument->function_uuid.has_value() ||
+          nth_order_argument->literal_kind.has_value() ||
+          nth_order_argument->literal_or_parameter_ref.has_value() ||
+          nth_order_argument->operator_name.has_value() ||
+          nth_order_descriptor == relational.descriptors.end() ||
+          canonical_int64_type_uuid.empty() ||
+          nth_order_descriptor->type_uuid != canonical_int64_type_uuid ||
+          nth_order_descriptor->collation_uuid.has_value() ||
+          nth_order_descriptor->timezone_profile_id.has_value() ||
+          nth_order_descriptor->width.has_value() ||
+          nth_order_descriptor->precision.has_value() ||
+          nth_order_descriptor->scale.has_value() ||
+          std::ranges::find(sort_node->output_descriptor_ids,
+                            nth_order_descriptor->descriptor_id) ==
+              sort_node->output_descriptor_ids.end() ||
+          nth_position_argument == relational.expressions.end() ||
           nth_position_argument->expression_kind !=
               RelationalExpressionKind::kLiteral ||
           !nth_position_argument->child_expression_ids.empty() ||
@@ -1535,14 +1572,16 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
               ntile_argument_descriptor->descriptor_id ||
           nth_position_descriptor->descriptor_id ==
               result_descriptor->descriptor_id ||
+          nth_position_descriptor->descriptor_id ==
+              nth_order_descriptor->descriptor_id ||
           nth_position_descriptor->descriptor_uuid ==
               ntile_argument_descriptor->descriptor_uuid ||
           nth_position_descriptor->descriptor_uuid ==
               result_descriptor->descriptor_uuid ||
+          nth_position_descriptor->descriptor_uuid ==
+              nth_order_descriptor->descriptor_uuid ||
           nth_position_descriptor->descriptor_uuid == expected_function_uuid ||
-          canonical_int64_type_uuid.empty() ||
           nth_position_descriptor->type_uuid != canonical_int64_type_uuid ||
-          nth_position_descriptor->type_uuid != result_descriptor->type_uuid ||
           nth_position_descriptor->nullability !=
               RelationalNullability::kNonNull ||
           nth_position_descriptor->collation_uuid.has_value() ||

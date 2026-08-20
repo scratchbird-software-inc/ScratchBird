@@ -5425,20 +5425,33 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             lag_operand_descriptor->width_precision_scale.scale.has_value() ||
             !lag_operand_descriptor->element_profile.empty())))) ||
         (nth_value_window &&
-         (numeric_window_operand_descriptor == nullptr ||
+         (order_descriptor == nullptr ||
+          order_descriptor->canonical_type_name != "int64" ||
+          order_descriptor->collation_uuid.has_value() ||
+          order_descriptor->timezone_profile_id.has_value() ||
+          order_descriptor->width_precision_scale.width.has_value() ||
+          order_descriptor->width_precision_scale.precision.has_value() ||
+          order_descriptor->width_precision_scale.scale.has_value() ||
+          !order_descriptor->element_profile.empty() ||
+          numeric_window_operand_descriptor == nullptr ||
           lag_operand_descriptor == nullptr ||
           numeric_window_operand_descriptor->descriptor_id ==
               lag_operand_descriptor->descriptor_id ||
           numeric_window_operand_descriptor->descriptor_id ==
               function_descriptor->second->descriptor_id ||
+          numeric_window_operand_descriptor->descriptor_id ==
+              order_descriptor->descriptor_id ||
           numeric_window_operand_descriptor->descriptor_uuid ==
               lag_operand_descriptor->descriptor_uuid ||
           numeric_window_operand_descriptor->descriptor_uuid ==
               function_descriptor->second->descriptor_uuid ||
           numeric_window_operand_descriptor->descriptor_uuid ==
+              order_descriptor->descriptor_uuid ||
+          numeric_window_operand_descriptor->descriptor_uuid ==
               expected_function_uuid ||
           numeric_window_operand_descriptor->type_uuid !=
-              function_descriptor->second->type_uuid ||
+              order_descriptor->type_uuid ||
+          numeric_window_operand_descriptor->canonical_type_name != "int64" ||
           numeric_window_operand_descriptor->nullability !=
               BoundNullability::kNonNull ||
           numeric_window_operand_descriptor->collation_uuid.has_value() ||
@@ -5448,7 +5461,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           numeric_window_operand_descriptor->width_precision_scale.precision
               .has_value() ||
           numeric_window_operand_descriptor->width_precision_scale.scale
-              .has_value())) ||
+              .has_value() ||
+          !numeric_window_operand_descriptor->element_profile.empty())) ||
         result_output.output_id != source_count + 1 ||
         result_output.expression_id != function_binding.expression_id ||
         result_output.descriptor_id != function_binding.descriptor_id ||

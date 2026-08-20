@@ -6329,7 +6329,8 @@ bool DirectValueWindowUsesExactTypeV1(
       (expected_builtin_id != "sb.window.lag" &&
        expected_builtin_id != "sb.window.lead" &&
        expected_builtin_id != "sb.window.first_value" &&
-       expected_builtin_id != "sb.window.last_value")) {
+       expected_builtin_id != "sb.window.last_value" &&
+       expected_builtin_id != "sb.window.nth_value")) {
     return false;
   }
   const api::RelationalWindowInvocationRecord* exact_invocation = nullptr;
@@ -6338,9 +6339,12 @@ bool DirectValueWindowUsesExactTypeV1(
     if (exact_invocation != nullptr) return false;
     exact_invocation = &invocation;
   }
+  const std::size_t expected_argument_count =
+      expected_builtin_id == "sb.window.nth_value" ? 2U : 1U;
   if (exact_invocation == nullptr ||
       exact_invocation->builtin_id != expected_builtin_id ||
-      exact_invocation->argument_expression_ids.size() != 1) {
+      exact_invocation->argument_expression_ids.size() !=
+          expected_argument_count) {
     return false;
   }
   const auto argument = std::ranges::find_if(
@@ -6470,6 +6474,21 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       dag.nodes, [&](const auto& node) {
         return node.node_id == previous_logical.logical_node_id;
       });
+  const auto typed_order_expression =
+      typed_sort != dag.nodes.end() &&
+              typed_sort->bound_expression_ids.size() == 1
+          ? std::ranges::find_if(dag.expressions, [&](const auto& expression) {
+              return expression.expression_id ==
+                     typed_sort->bound_expression_ids.front();
+            })
+          : dag.expressions.end();
+  const auto typed_order_descriptor =
+      typed_order_expression == dag.expressions.end()
+          ? dag.descriptors.end()
+          : std::ranges::find_if(dag.descriptors, [&](const auto& descriptor) {
+              return descriptor.descriptor_id ==
+                     typed_order_expression->result_descriptor_id;
+            });
   const auto function =
       invocations.size() == 1
           ? std::ranges::find_if(dag.expressions, [&](const auto& expression) {
@@ -6492,10 +6511,11 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       profile.builtin_id == "sb.window.first_value";
   const bool last_value_window =
       profile.builtin_id == "sb.window.last_value";
-  const bool direct_navigation_value_window =
-      navigation_window || first_value_window || last_value_window;
   const bool nth_value_window =
       profile.builtin_id == "sb.window.nth_value";
+  const bool navigation_value_window =
+      navigation_window || first_value_window || last_value_window ||
+      nth_value_window;
   const bool aggregate_window =
       profile.semantic_variant_id == "window.aggregate-bridge.v1";
   const bool aggregate_count_window =
@@ -6848,7 +6868,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         (!aggregate_window &&
          (argument_descriptor->type_uuid != result_type_uuid ||
           (argument_descriptor->type_uuid != order_type_uuid &&
-           (!direct_navigation_value_window || boolean_type_uuid.empty() ||
+           (!navigation_value_window || boolean_type_uuid.empty() ||
             argument_descriptor->type_uuid != boolean_type_uuid)) ||
           result_descriptor->type_uuid != argument_descriptor->type_uuid ||
           argument_descriptor->collation_uuid.has_value() ||
@@ -6903,19 +6923,28 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           position->operator_name.has_value() ||
           !position->literal_or_parameter_ref.has_value() ||
           position_descriptor == dag.descriptors.end() ||
+          typed_order_expression == dag.expressions.end() ||
+          typed_order_expression->expression_kind !=
+              api::RelationalExpressionKind::kIdentifier ||
+          typed_order_descriptor == dag.descriptors.end() ||
+          typed_order_descriptor->type_uuid != order_type_uuid ||
           position_descriptor->descriptor_id ==
               argument_descriptor->descriptor_id ||
           position_descriptor->descriptor_id ==
               result_descriptor->descriptor_id ||
+          position_descriptor->descriptor_id ==
+              typed_order_descriptor->descriptor_id ||
           position_descriptor->descriptor_uuid ==
               argument_descriptor->descriptor_uuid ||
           position_descriptor->descriptor_uuid ==
               result_descriptor->descriptor_uuid ||
+          position_descriptor->descriptor_uuid ==
+              typed_order_descriptor->descriptor_uuid ||
           position_descriptor->descriptor_uuid == profile.function_uuid ||
           position_descriptor->descriptor_uuid ==
               prepared_sort.ordering_property_uuid ||
           position_descriptor->descriptor_uuid == *window_property_uuid ||
-          position_descriptor->type_uuid != result_type_uuid ||
+          position_descriptor->type_uuid != order_type_uuid ||
           position_descriptor->nullability !=
               api::RelationalNullability::kNonNull ||
           position_descriptor->collation_uuid.has_value() ||
@@ -18745,7 +18774,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 ? std::string{}
                 : scratchbird::core::uuid::UuidToString(
                       boolean_type->descriptor_uuid.value);
-        if (!aggregate_window && !nth_value_window &&
+        if (!aggregate_window &&
             DirectValueWindowUsesExactTypeV1(
                 request.relational_dag, node.logical_node_id,
                 ranking_profile.builtin_id, boolean_type_uuid)) {
@@ -52328,7 +52357,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             ? std::string{}
             : scratchbird::core::uuid::UuidToString(
                   boolean_type->descriptor_uuid.value);
-    if (!aggregate_window && !nth_value_window &&
+    if (!aggregate_window &&
         DirectValueWindowUsesExactTypeV1(
             dag, window_node->node_id, ranking_profile.builtin_id,
             boolean_type_uuid)) {

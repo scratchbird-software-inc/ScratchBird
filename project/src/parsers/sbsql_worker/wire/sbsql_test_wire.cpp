@@ -4541,15 +4541,16 @@ BuildEngineProjectedNativeBindingContext(
         }
       }
     }
-    const bool direct_navigation_value_window =
-        navigation_window || first_value_window || last_value_window;
-    const bool boolean_direct_navigation_value =
-        direct_navigation_value_window &&
+    const bool navigation_value_window =
+        navigation_window || first_value_window || last_value_window ||
+        nth_value_window;
+    const bool boolean_navigation_value =
+        navigation_value_window &&
         lag_operand_source_ordinal.has_value() &&
         *lag_operand_source_ordinal < context.descriptors.size() &&
         context.descriptors[*lag_operand_source_ordinal]
                 .canonical_type_name == "boolean";
-    if (boolean_direct_navigation_value) {
+    if (boolean_navigation_value) {
       result_profile = std::ranges::find_if(
           statement_context.descriptor_profiles, [](const auto& candidate) {
             return candidate.profile_kind == 6 && candidate.slot == 0;
@@ -4594,6 +4595,17 @@ BuildEngineProjectedNativeBindingContext(
             : (ntile_operand != nullptr
                    ? std::vector<std::uint32_t>{ntile_operand->expression_id}
                    : std::vector<std::uint32_t>{}));
+    std::optional<std::size_t> order_operand_source_ordinal;
+    if (strict_ordered_window && ast.window_definitions.size() == 1 &&
+        ast.window_definitions.front().ordering_terms.size() == 1) {
+      const auto order_source = std::ranges::find(
+          source_relation->output_expression_ids,
+          ast.window_definitions.front().ordering_terms.front().expression_id);
+      if (order_source != source_relation->output_expression_ids.end()) {
+        order_operand_source_ordinal = static_cast<std::size_t>(std::distance(
+            source_relation->output_expression_ids.begin(), order_source));
+      }
+    }
     const bool function_profile_invalid =
         aggregate_window
             ? (aggregate_function_profile ==
@@ -4622,7 +4634,7 @@ BuildEngineProjectedNativeBindingContext(
         result_profile == statement_context.descriptor_profiles.end() ||
         result_profile->nullable !=
             (value_window && !aggregate_count_window) ||
-        ((aggregate_boolean_window || boolean_direct_navigation_value) &&
+        ((aggregate_boolean_window || boolean_navigation_value) &&
          (!result_profile->collation_uuid.empty() ||
           result_profile->width != 0 || result_profile->precision != 0 ||
           result_profile->scale != 0)) ||
@@ -4658,7 +4670,15 @@ BuildEngineProjectedNativeBindingContext(
           ntile_operand_profile->descriptor_uuid ==
               result_profile->descriptor_uuid ||
           ntile_operand_profile->descriptor_uuid == expected_function_uuid ||
-          ntile_operand_profile->type_uuid != result_profile->type_uuid ||
+          order_profile == statement_context.descriptor_profiles.end() ||
+          ntile_operand_profile->type_uuid != order_profile->type_uuid ||
+          !order_operand_source_ordinal.has_value() ||
+          *order_operand_source_ordinal >= context.descriptors.size() ||
+          ntile_operand_profile->descriptor_uuid ==
+              context.descriptors[*order_operand_source_ordinal]
+                  .descriptor_uuid ||
+          ntile_operand_profile->descriptor_uuid ==
+              order_profile->descriptor_uuid ||
           (nth_value_window && lag_operand_source_ordinal.has_value() &&
            ntile_operand_profile->descriptor_uuid ==
                context.descriptors[*lag_operand_source_ordinal]
@@ -4693,7 +4713,7 @@ BuildEngineProjectedNativeBindingContext(
           (!aggregate_window &&
            context.descriptors[*lag_operand_source_ordinal]
                    .canonical_type_name !=
-               (boolean_direct_navigation_value ? "boolean" : "int64")) ||
+               (boolean_navigation_value ? "boolean" : "int64")) ||
           (!aggregate_window &&
            (context.descriptors[*lag_operand_source_ordinal]
                 .collation_uuid.has_value() ||
@@ -4821,10 +4841,14 @@ BuildEngineProjectedNativeBindingContext(
     if (ntile_window || nth_value_window) {
       const auto operand_binding_id =
           static_cast<std::uint32_t>(context.descriptors.size() + 1);
-      context.descriptors.push_back(
-          {operand_binding_id, ntile_operand_profile->descriptor_uuid,
-           ntile_operand_profile->type_uuid, BoundNullability::kNonNull,
-           std::nullopt, std::nullopt, {}});
+      NativeDescriptorBindingInput operand_descriptor;
+      operand_descriptor.descriptor_id = operand_binding_id;
+      operand_descriptor.descriptor_uuid =
+          ntile_operand_profile->descriptor_uuid;
+      operand_descriptor.type_uuid = ntile_operand_profile->type_uuid;
+      operand_descriptor.nullability = BoundNullability::kNonNull;
+      operand_descriptor.canonical_type_name = "int64";
+      context.descriptors.push_back(std::move(operand_descriptor));
       context.expressions.push_back(
           {operand_binding_id, operand_binding_id, std::nullopt, std::nullopt,
            bounded_numeric_operand->structural_literal_occurrence_id,

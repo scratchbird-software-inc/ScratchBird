@@ -1310,8 +1310,8 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
               .descriptor.canonical_type_name == "int64" &&
       request.result_column.descriptor.canonical_type_name == "int64";
   const bool exact_boolean_value =
-      !nth_value && source_type_uuid.has_value() &&
-      result_type_uuid.has_value() && !canonical_boolean_type_uuid.empty() &&
+      source_type_uuid.has_value() && result_type_uuid.has_value() &&
+      !canonical_boolean_type_uuid.empty() &&
       *source_type_uuid == canonical_boolean_type_uuid &&
       *result_type_uuid == canonical_boolean_type_uuid &&
       execution_ordered_input_batch.columns[request.value_column]
@@ -1350,13 +1350,15 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
           nth_operand->descriptor) &&
       nth_operand_type_uuid.has_value() &&
       *nth_operand_type_uuid == canonical_int64_type_uuid &&
-      *nth_operand_type_uuid == *result_type_uuid &&
       nth_operand_nullability.has_value() &&
       *nth_operand_nullability == "non_null" &&
       nth_operand->descriptor.descriptor_uuid.canonical !=
           *nth_operand_type_uuid &&
       nth_operand->descriptor.descriptor_uuid.canonical !=
           execution_ordered_input_batch.columns[request.value_column]
+              .descriptor.descriptor_uuid.canonical &&
+      nth_operand->descriptor.descriptor_uuid.canonical !=
+          execution_ordered_input_batch.columns[request.order_term.column]
               .descriptor.descriptor_uuid.canonical &&
       nth_operand->descriptor.descriptor_uuid.canonical !=
           request.result_column.descriptor.descriptor_uuid.canonical &&
