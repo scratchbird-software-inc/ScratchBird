@@ -5405,24 +5405,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             lag_operand_descriptor->canonical_type_name !=
                 function_descriptor->second->canonical_type_name ||
             lag_operand_descriptor->element_profile !=
-                function_descriptor->second->element_profile)) ||
-          (aggregate_count_window &&
-           (lag_operand_descriptor->canonical_type_name != "int64" &&
-            lag_operand_descriptor->canonical_type_name != "boolean")) ||
-          (aggregate_count_window &&
-           ((lag_operand_descriptor->canonical_type_name == "int64" &&
-             lag_operand_descriptor->type_uuid !=
-                 function_descriptor->second->type_uuid) ||
-            (lag_operand_descriptor->canonical_type_name == "boolean" &&
-             lag_operand_descriptor->type_uuid ==
-                 function_descriptor->second->type_uuid))) ||
-          (aggregate_count_window &&
-           (lag_operand_descriptor->collation_uuid.has_value() ||
-            lag_operand_descriptor->timezone_profile_id.has_value() ||
-            lag_operand_descriptor->width_precision_scale.width.has_value() ||
-            lag_operand_descriptor->width_precision_scale.precision.has_value() ||
-            lag_operand_descriptor->width_precision_scale.scale.has_value() ||
-            !lag_operand_descriptor->element_profile.empty())))) ||
+                function_descriptor->second->element_profile)))) ||
         (nth_value_window &&
          (numeric_window_operand_descriptor == nullptr ||
           lag_operand_descriptor == nullptr ||

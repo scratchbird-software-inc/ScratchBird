@@ -2963,10 +2963,12 @@ class NativeRelationalParser final {
     // literal position and normalizes omitted origin/NULL-treatment state to
     // FROM FIRST RESPECT NULLS in the canonical execution route. Aggregate
     // Numeric aggregates admit one direct signed-int64 value column; boolean
-    // aggregates admit one direct boolean value column. COUNT(*) carries no
-    // value expression and counts every row in the effective frame. All use the
-    // same exact implicit ordered frame and bind through the engine-owned
-    // aggregate registry rather than the native window-function registry.
+    // aggregates admit one direct boolean value column. COUNT(identifier)
+    // admits one direct engine-bound canonical value column of any type, while
+    // COUNT(*) carries no value expression and counts every row in the
+    // effective frame. All use the same exact implicit ordered frame and bind
+    // through the engine-owned aggregate registry rather than the native
+    // window-function registry.
     document_.status = NativeRelationalParseStatus::kRefused;
     if (cst_.messages.has_errors()) {
       document_.messages = cst_.messages;
@@ -3086,7 +3088,13 @@ class NativeRelationalParser final {
                                  : (lag_window ? "lag_operand_required"
                                                : "lead_operand_required")))),
                function_name +
-                   " requires one direct signed-int64 column operand");
+                   (IsWord(function_token, "COUNT")
+                        ? " requires one direct canonical column operand"
+                        : ((IsWord(function_token, "BOOL_AND") ||
+                            IsWord(function_token, "BOOL_OR") ||
+                            IsWord(function_token, "EVERY"))
+                               ? " requires one direct boolean column operand"
+                               : " requires one direct signed-int64 column operand")));
         return FinishRefusal();
       }
       const Token& operand_token = Consume();

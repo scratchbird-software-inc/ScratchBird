@@ -1801,8 +1801,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       request.result_column.descriptor_id);
   const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
   const auto canonical_boolean_type_uuid =
-      (boolean_window || count_window) ? CanonicalCoreDatatypeUuid("boolean")
-                                       : std::string{};
+      boolean_window ? CanonicalCoreDatatypeUuid("boolean") : std::string{};
   const bool value_column_in_range =
       request.value_column.has_value() &&
       *request.value_column < execution_ordered_input_batch.columns.size();
@@ -1843,49 +1842,43 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
            contains_field("timezone_profile_id") || contains_field("width") ||
            contains_field("precision") || contains_field("scale");
   };
-  const bool exact_value_result_contract =
-      count_star_window
-          ? !request.result_column.nullable &&
-                !has_auxiliary_type_fields(request.result_column.descriptor)
-          : !value_column_in_range || !source_type_uuid.has_value()
-          ? false
-          : count_window
-          ? !request.result_column.nullable &&
-                ((execution_ordered_input_batch.columns[*request.value_column]
-                              .descriptor.canonical_type_name == "int64" &&
-                  *source_type_uuid == canonical_int64_type_uuid) ||
-                 (execution_ordered_input_batch.columns[*request.value_column]
-                              .descriptor.canonical_type_name == "boolean" &&
-                  *source_type_uuid == canonical_boolean_type_uuid)) &&
-                !has_auxiliary_type_fields(
-                    execution_ordered_input_batch.columns[*request.value_column]
-                        .descriptor) &&
-                !has_auxiliary_type_fields(request.result_column.descriptor)
-          : boolean_window
-          ? request.result_column.nullable &&
-                execution_ordered_input_batch.columns[*request.value_column]
-                        .descriptor.canonical_type_name == "boolean" &&
-                *source_type_uuid == canonical_boolean_type_uuid &&
-                CanonicalDerivedDescriptorTypeMatches(
-                    execution_ordered_input_batch.columns[*request.value_column]
-                        .descriptor,
-                    execution_ordered_input_batch.columns[*request.value_column]
-                        .nullable,
-                    request.result_column.descriptor, true) &&
-                !has_auxiliary_type_fields(
-                    execution_ordered_input_batch.columns[*request.value_column]
-                        .descriptor) &&
-                !has_auxiliary_type_fields(request.result_column.descriptor)
-          : request.result_column.nullable &&
-                execution_ordered_input_batch.columns[*request.value_column]
-                        .descriptor.canonical_type_name == "int64" &&
-                *source_type_uuid == canonical_int64_type_uuid &&
-                CanonicalDerivedDescriptorTypeMatches(
-                    execution_ordered_input_batch.columns[*request.value_column]
-                        .descriptor,
-                    execution_ordered_input_batch.columns[*request.value_column]
-                        .nullable,
-                    request.result_column.descriptor, true);
+  bool exact_value_result_contract = false;
+  if (count_window) {
+    exact_value_result_contract =
+        (count_star_window ||
+         (value_column_in_range && source_type_uuid.has_value())) &&
+        !request.result_column.nullable &&
+        !has_auxiliary_type_fields(request.result_column.descriptor);
+  } else if (value_column_in_range && source_type_uuid.has_value() &&
+             boolean_window) {
+    exact_value_result_contract =
+        request.result_column.nullable &&
+        execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor.canonical_type_name == "boolean" &&
+        *source_type_uuid == canonical_boolean_type_uuid &&
+        CanonicalDerivedDescriptorTypeMatches(
+            execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor,
+            execution_ordered_input_batch.columns[*request.value_column]
+                .nullable,
+            request.result_column.descriptor, true) &&
+        !has_auxiliary_type_fields(
+            execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor) &&
+        !has_auxiliary_type_fields(request.result_column.descriptor);
+  } else if (value_column_in_range && source_type_uuid.has_value()) {
+    exact_value_result_contract =
+        request.result_column.nullable &&
+        execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor.canonical_type_name == "int64" &&
+        *source_type_uuid == canonical_int64_type_uuid &&
+        CanonicalDerivedDescriptorTypeMatches(
+            execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor,
+            execution_ordered_input_batch.columns[*request.value_column]
+                .nullable,
+            request.result_column.descriptor, true);
+  }
   if (selected_node->output_descriptor_ids !=
           expected_output_descriptor_ids ||
       (count_star_window ? request.value_column.has_value()

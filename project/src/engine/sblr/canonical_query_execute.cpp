@@ -6759,9 +6759,9 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
                                 argument_descriptor->descriptor_id);
     const bool exact_aggregate_argument_type =
         argument_descriptor != dag.descriptors.end() &&
-        (!aggregate_window ||
+        (!aggregate_window || aggregate_count_window ||
          argument_descriptor->type_uuid == result_type_uuid ||
-         (aggregate_count_window && !boolean_type_uuid.empty() &&
+         (!boolean_type_uuid.empty() &&
           argument_descriptor->type_uuid == boolean_type_uuid));
     if (argument == dag.expressions.end() ||
         argument->expression_kind !=
@@ -6781,11 +6781,12 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         argument_descriptor->descriptor_uuid == profile.function_uuid ||
         (aggregate_window &&
          (!exact_aggregate_argument_type ||
-          argument_descriptor->collation_uuid.has_value() ||
-          argument_descriptor->timezone_profile_id.has_value() ||
-          argument_descriptor->width.has_value() ||
-          argument_descriptor->precision.has_value() ||
-          argument_descriptor->scale.has_value() ||
+          (!aggregate_count_window &&
+           (argument_descriptor->collation_uuid.has_value() ||
+            argument_descriptor->timezone_profile_id.has_value() ||
+            argument_descriptor->width.has_value() ||
+            argument_descriptor->precision.has_value() ||
+            argument_descriptor->scale.has_value())) ||
           result_descriptor->collation_uuid.has_value() ||
           result_descriptor->timezone_profile_id.has_value() ||
           result_descriptor->width.has_value() ||
@@ -6805,7 +6806,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
                       " " + std::string(profile.display_name) +
                       " value is not one direct canonical " +
                       std::string(aggregate_count_window
-                                      ? "int64 or boolean"
+                                      ? "engine-bound"
                                       : profile.result_type_name) +
                       " column "
                       "with an exact distinct result descriptor";

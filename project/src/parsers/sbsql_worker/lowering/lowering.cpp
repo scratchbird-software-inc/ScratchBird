@@ -36799,25 +36799,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             window_argument_descriptor->canonical_type_name !=
                 result_descriptor->canonical_type_name ||
             window_argument_descriptor->element_profile !=
-                result_descriptor->element_profile)) ||
-          (aggregate_count_window &&
-           (window_argument_descriptor->canonical_type_name != "int64" &&
-            window_argument_descriptor->canonical_type_name != "boolean")) ||
-          (aggregate_count_window &&
-           ((window_argument_descriptor->canonical_type_name == "int64" &&
-             window_argument_descriptor->type_uuid !=
-                 result_descriptor->type_uuid) ||
-            (window_argument_descriptor->canonical_type_name == "boolean" &&
-             window_argument_descriptor->type_uuid ==
-                 result_descriptor->type_uuid))) ||
-          (aggregate_count_window &&
-           (window_argument_descriptor->collation_uuid.has_value() ||
-            window_argument_descriptor->timezone_profile_id.has_value() ||
-            window_argument_descriptor->width_precision_scale.width.has_value() ||
-            window_argument_descriptor->width_precision_scale.precision
-                .has_value() ||
-            window_argument_descriptor->width_precision_scale.scale.has_value() ||
-            !window_argument_descriptor->element_profile.empty()))))) {
+                result_descriptor->element_profile))))) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed window definition and registry receipt are not exact");
