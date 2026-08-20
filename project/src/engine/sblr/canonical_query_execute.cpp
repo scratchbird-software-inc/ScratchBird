@@ -31675,10 +31675,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       } else if (consumer->node_kind == api::RelationalDagNodeKind::kCte) {
         if (consumer->semantic_variant_id != "cte.bound.v1" ||
             !consumer->bound_expression_ids.empty() ||
+            !consumer->required_object_uuids.empty() ||
+            !consumer->required_property_uuids.empty() ||
+            !consumer->delivered_property_uuids.empty() ||
             consumer->output_descriptor_ids !=
-                previous_logical->output_descriptor_ids) {
-          return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
-                        "time-series CTE is not schema preserving");
+                previous_logical->output_descriptor_ids ||
+            logical_consumer->output_descriptor_ids !=
+                previous_logical->output_descriptor_ids ||
+            composition_state.batch.columns.size() !=
+                consumer->output_descriptor_ids.size()) {
+          return refuse(
+              "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+              "time-series nonrecursive CTE is not an exact "
+              "schema-preserving bound CTE");
+        }
+        const auto validated = exec::ValidateCanonicalDescriptorBatch(
+            composition_state.batch, consumer->output_descriptor_ids);
+        if (!validated.ok) {
+          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "time-series nonrecursive CTE input: " +
+                            validated.detail);
         }
         composition_nonrecursive_cte = true;
         composition_cte_implementation_id =
@@ -36224,10 +36240,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kCte) {
       if (consumer->semantic_variant_id != "cte.bound.v1" ||
           !consumer->bound_expression_ids.empty() ||
+          !consumer->required_object_uuids.empty() ||
+          !consumer->required_property_uuids.empty() ||
+          !consumer->delivered_property_uuids.empty() ||
           consumer->output_descriptor_ids !=
-              previous_logical->output_descriptor_ids) {
-        return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
-                      "search nonrecursive CTE is not schema preserving");
+              previous_logical->output_descriptor_ids ||
+          logical_consumer->output_descriptor_ids !=
+              previous_logical->output_descriptor_ids ||
+          composition_state.batch.columns.size() !=
+              consumer->output_descriptor_ids.size()) {
+        return refuse(
+            "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+            "search nonrecursive CTE is not an exact schema-preserving "
+            "bound CTE");
+      }
+      const auto validated = exec::ValidateCanonicalDescriptorBatch(
+          composition_state.batch, consumer->output_descriptor_ids);
+      if (!validated.ok) {
+        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                      "search nonrecursive CTE input: " +
+                          validated.detail);
       }
       prepared_nonrecursive_cte = true;
       cte_implementation_id = consumer->shareable
@@ -38380,10 +38412,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kCte) {
       if (consumer->semantic_variant_id != "cte.bound.v1" ||
           !consumer->bound_expression_ids.empty() ||
+          !consumer->required_object_uuids.empty() ||
+          !consumer->required_property_uuids.empty() ||
+          !consumer->delivered_property_uuids.empty() ||
           consumer->output_descriptor_ids !=
-              previous_logical->output_descriptor_ids) {
-        return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
-                      "key/value nonrecursive CTE is not schema preserving");
+              previous_logical->output_descriptor_ids ||
+          logical_consumer->output_descriptor_ids !=
+              previous_logical->output_descriptor_ids ||
+          composition_state.batch.columns.size() !=
+              consumer->output_descriptor_ids.size()) {
+        return refuse(
+            "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+            "key/value nonrecursive CTE is not an exact schema-preserving "
+            "bound CTE");
+      }
+      const auto validated = exec::ValidateCanonicalDescriptorBatch(
+          composition_state.batch, consumer->output_descriptor_ids);
+      if (!validated.ok) {
+        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                      "key/value nonrecursive CTE input: " +
+                          validated.detail);
       }
       prepared_nonrecursive_cte = true;
       cte_implementation_id =
