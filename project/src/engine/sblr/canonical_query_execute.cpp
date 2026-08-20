@@ -10348,13 +10348,12 @@ MakeLiveQueryDistinctRegistration(
         }
         exec::CanonicalDescriptorDistinctRequest distinct_request;
         distinct_request.selected_physical_node_id = node.physical_node_id;
-        distinct_request.equality_terms = equality_terms;
         distinct_request.maximum_value_comparisons =
             maximum_value_comparisons;
         distinct_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         auto distinct_result = exec::ExecuteCanonicalDescriptorDistinct(
-            distinct_request, *execution_dag, input_batch);
+            distinct_request, *execution_dag, input_batch, equality_terms);
         if (!distinct_result.diagnostic.ok) {
           step.diagnostic = std::move(distinct_result.diagnostic);
           return step;

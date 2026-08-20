@@ -771,7 +771,9 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinctBound(
     const CanonicalDescriptorDistinctRequest& request,
     const TypedPhysicalNodeDag& execution_dag,
     const DescriptorBatch& execution_input_batch,
-    const bool borrowed_execution_carriers) {
+    const std::vector<CanonicalDescriptorOrderTerm>& execution_equality_terms,
+    const bool borrowed_execution_carriers,
+    const bool borrowed_equality_terms) {
   CanonicalDescriptorDistinctResult result;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
     result = {};
@@ -788,6 +790,11 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinctBound(
        !DescriptorBatchCarrierIsExactDefault(request.input_batch))) {
     return distinct_refusal(
         "query DISTINCT request carries conflicting owned execution carriers");
+  }
+  if (borrowed_equality_terms &&
+      !DescriptorOrderTermsCarrierIsExactDefault(request.equality_terms)) {
+    return distinct_refusal(
+        "query DISTINCT request carries conflicting owned equality terms");
   }
 
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
@@ -828,8 +835,9 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinctBound(
   auto validation = ValidateCanonicalDescriptorBatch(
       execution_input_batch, input_node->output_descriptor_ids);
   if (!validation.ok) return refuse(std::move(validation));
-  if (request.equality_terms.size() != execution_input_batch.columns.size() ||
-      request.equality_terms.empty() ||
+  if (execution_equality_terms.size() !=
+          execution_input_batch.columns.size() ||
+      execution_equality_terms.empty() ||
       request.maximum_value_comparisons == 0) {
     return distinct_refusal(
         "query DISTINCT requires one bounded equality term per output column");
@@ -876,7 +884,7 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinctBound(
   // vector<bool> has implementation-defined packed storage and cannot support
   // an exact producer-memory receipt.
   std::vector<std::uint8_t> covered(execution_input_batch.columns.size(), 0);
-  for (const auto& term : request.equality_terms) {
+  for (const auto& term : execution_equality_terms) {
     if (term.column >= execution_input_batch.columns.size() ||
         covered[term.column] ||
         term.direction != CanonicalDescriptorOrderDirection::ascending ||
@@ -897,7 +905,7 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinctBound(
                               std::string* detail) {
     if (equal == nullptr || detail == nullptr) return false;
     *equal = true;
-    for (const auto& term : request.equality_terms) {
+    for (const auto& term : execution_equality_terms) {
       if (comparison_count >= request.maximum_value_comparisons) {
         *detail = "query DISTINCT value comparison bound was exceeded";
         return false;
@@ -1018,7 +1026,8 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinctBound(
 CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
     const CanonicalDescriptorDistinctRequest& request) {
   return ExecuteCanonicalDescriptorDistinctBound(
-      request, request.physical_dag, request.input_batch, false);
+      request, request.physical_dag, request.input_batch,
+      request.equality_terms, false, false);
 }
 
 CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
@@ -1026,7 +1035,18 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch) {
   return ExecuteCanonicalDescriptorDistinctBound(
-      request, borrowed_execution_dag, borrowed_input_batch, true);
+      request, borrowed_execution_dag, borrowed_input_batch,
+      request.equality_terms, true, false);
+}
+
+CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
+    const CanonicalDescriptorDistinctRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::vector<CanonicalDescriptorOrderTerm>& borrowed_equality_terms) {
+  return ExecuteCanonicalDescriptorDistinctBound(
+      request, borrowed_execution_dag, borrowed_input_batch,
+      borrowed_equality_terms, true, true);
 }
 
 // QOW-SOURCE-QRY-010-V1

@@ -2954,6 +2954,14 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
     const CanonicalDescriptorDistinctRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch);
+// The live canonical route may additionally borrow its immutable, already
+// bound equality authority. The request's owned equality-term carrier must
+// remain exact-default, and all borrowed carriers are consumed synchronously.
+CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
+    const CanonicalDescriptorDistinctRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::vector<CanonicalDescriptorOrderTerm>& borrowed_equality_terms);
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request);
 // Borrowed execution carriers are consumed synchronously and never retained.
