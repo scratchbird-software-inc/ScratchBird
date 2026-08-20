@@ -36086,7 +36086,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id != "window.ntile.v1" &&
            relation.semantic_variant_id != "window.lag.v1" &&
            relation.semantic_variant_id != "window.lead.v1" &&
-           relation.semantic_variant_id != "window.first-value.v1") ||
+           relation.semantic_variant_id != "window.first-value.v1" &&
+           relation.semantic_variant_id != "window.last-value.v1") ||
           native.window_definitions.empty() ||
           native.window_definitions.size() > 1024 ||
           native.window_invocations.size() != 1 ||
@@ -36328,6 +36329,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         "019de5fc-2400-7a06-bc3c-6747cf5be66f";
     constexpr std::string_view kFirstValueFunctionUuid =
         "019de5fc-2400-7264-90fb-d25bd0f806f2";
+    constexpr std::string_view kLastValueFunctionUuid =
+        "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
     const bool rank_window =
         window_relation->semantic_variant_id == "window.rank.v1";
     const bool dense_rank_window =
@@ -36344,8 +36347,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         window_relation->semantic_variant_id == "window.lead.v1";
     const bool first_value_window =
         window_relation->semantic_variant_id == "window.first-value.v1";
+    const bool last_value_window =
+        window_relation->semantic_variant_id == "window.last-value.v1";
     const bool navigation_window = lag_window || lead_window;
-    const bool value_window = navigation_window || first_value_window;
+    const bool value_window =
+        navigation_window || first_value_window || last_value_window;
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
@@ -36355,7 +36361,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         value_window
             ? (first_value_window
                    ? "sb.window.first_value"
-                   : (lag_window ? "sb.window.lag" : "sb.window.lead"))
+                   : (last_value_window
+                          ? "sb.window.last_value"
+                          : (lag_window ? "sb.window.lag" : "sb.window.lead")))
             : (ntile_window
             ? "sb.window.ntile"
             : (cume_dist_window
@@ -36370,7 +36378,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
-                   : (lag_window ? kLagFunctionUuid : kLeadFunctionUuid))
+                   : (last_value_window
+                          ? kLastValueFunctionUuid
+                          : (lag_window ? kLagFunctionUuid
+                                        : kLeadFunctionUuid)))
             : (ntile_window
             ? kNtileFunctionUuid
             : (cume_dist_window
@@ -39551,7 +39562,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   // input and a passthrough Window schema. Preserve the validated BoundAST
   // and synthesize only an emission view with a root Project for the exact
   // executable ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK/CUME_DIST/NTILE/LAG/
-  // LEAD/FIRST_VALUE cohort.
+  // LEAD/FIRST_VALUE/LAST_VALUE cohort.
   constexpr std::string_view kCatalogOrderingPropertyUuid =
       "019f0000-0000-7200-8000-00000000c701";
   constexpr std::string_view kRowNumberFunctionUuid =
@@ -39572,6 +39583,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       "019de5fc-2400-7a06-bc3c-6747cf5be66f";
   constexpr std::string_view kFirstValueFunctionUuid =
       "019de5fc-2400-7264-90fb-d25bd0f806f2";
+  constexpr std::string_view kLastValueFunctionUuid =
+      "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
   const bool normalize_rank_semantic =
       window_relation != nullptr &&
       window_relation->semantic_variant_id == "window.rank.v1";
@@ -39596,10 +39609,14 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const bool normalize_first_value_semantic =
       window_relation != nullptr &&
       window_relation->semantic_variant_id == "window.first-value.v1";
+  const bool normalize_last_value_semantic =
+      window_relation != nullptr &&
+      window_relation->semantic_variant_id == "window.last-value.v1";
   const bool normalize_navigation_semantic =
       normalize_lag_semantic || normalize_lead_semantic;
   const bool normalize_value_semantic =
-      normalize_navigation_semantic || normalize_first_value_semantic;
+      normalize_navigation_semantic || normalize_first_value_semantic ||
+      normalize_last_value_semantic;
   const bool normalize_peer_ranking_semantic =
       normalize_rank_semantic || normalize_dense_rank_semantic ||
       normalize_percent_rank_semantic || normalize_cume_dist_semantic;
@@ -39612,8 +39629,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       normalize_value_semantic
           ? (normalize_first_value_semantic
                  ? "sb.window.first_value"
-                 : (normalize_lag_semantic ? "sb.window.lag"
-                                           : "sb.window.lead"))
+                 : (normalize_last_value_semantic
+                        ? "sb.window.last_value"
+                        : (normalize_lag_semantic ? "sb.window.lag"
+                                                  : "sb.window.lead")))
           : (normalize_ntile_semantic
           ? "sb.window.ntile"
           : (normalize_cume_dist_semantic
@@ -39628,8 +39647,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       normalize_value_semantic
           ? (normalize_first_value_semantic
                  ? kFirstValueFunctionUuid
-                 : (normalize_lag_semantic ? kLagFunctionUuid
-                                           : kLeadFunctionUuid))
+                 : (normalize_last_value_semantic
+                        ? kLastValueFunctionUuid
+                        : (normalize_lag_semantic ? kLagFunctionUuid
+                                                  : kLeadFunctionUuid)))
           : (normalize_ntile_semantic
           ? kNtileFunctionUuid
           : (normalize_cume_dist_semantic
@@ -39709,7 +39730,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             (normalize_value_semantic
                  ? (normalize_first_value_semantic
                         ? "FIRST_VALUE"
-                        : (normalize_lag_semantic ? "LAG" : "LEAD"))
+                        : (normalize_last_value_semantic
+                               ? "LAST_VALUE"
+                               : (normalize_lag_semantic ? "LAG" : "LEAD")))
                  : (normalize_ntile_semantic
                  ? "NTILE"
                  : (normalize_cume_dist_semantic
@@ -39878,8 +39901,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             (normalize_value_semantic
                  ? (normalize_first_value_semantic
                         ? "window.first-value.v1"
-                        : (normalize_lag_semantic ? "window.lag.v1"
-                                                  : "window.lead.v1"))
+                        : (normalize_last_value_semantic
+                               ? "window.last-value.v1"
+                               : (normalize_lag_semantic
+                                      ? "window.lag.v1"
+                                      : "window.lead.v1")))
                  : (normalize_ntile_semantic
                  ? "window.ntile.v1"
                  : (normalize_cume_dist_semantic
@@ -43920,7 +43946,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
           !inserted && role == 1 && node.kind == 8 &&
           (node.semantic_variant_id == "window.lag.v1" ||
            node.semantic_variant_id == "window.lead.v1" ||
-           node.semantic_variant_id == "window.first-value.v1") &&
+           node.semantic_variant_id == "window.first-value.v1" ||
+           node.semantic_variant_id == "window.last-value.v1") &&
           node.bound_expression_ids.size() == 3 &&
           node.bound_expression_ids[0] == node.bound_expression_ids[1] &&
           node.bound_expression_ids[1] != node.bound_expression_ids[2];

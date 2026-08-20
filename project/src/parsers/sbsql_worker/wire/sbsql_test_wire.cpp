@@ -4300,6 +4300,8 @@ BuildEngineProjectedNativeBindingContext(
         "019de5fc-2400-7a06-bc3c-6747cf5be66f";
     constexpr std::string_view kFirstValueFunctionUuid =
         "019de5fc-2400-7264-90fb-d25bd0f806f2";
+    constexpr std::string_view kLastValueFunctionUuid =
+        "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
     const bool rank_window =
         function_expression != ast.expressions.end() &&
         function_expression->operator_name == "RANK";
@@ -4324,8 +4326,12 @@ BuildEngineProjectedNativeBindingContext(
     const bool first_value_window =
         function_expression != ast.expressions.end() &&
         function_expression->operator_name == "FIRST_VALUE";
+    const bool last_value_window =
+        function_expression != ast.expressions.end() &&
+        function_expression->operator_name == "LAST_VALUE";
     const bool navigation_window = lag_window || lead_window;
-    const bool value_window = navigation_window || first_value_window;
+    const bool value_window =
+        navigation_window || first_value_window || last_value_window;
     const bool recognized_ranking =
         function_expression != ast.expressions.end() &&
         (rank_window || dense_rank_window || percent_rank_window ||
@@ -4339,7 +4345,9 @@ BuildEngineProjectedNativeBindingContext(
     const std::string_view expected_operator =
         value_window
             ? (first_value_window ? "FIRST_VALUE"
-                                  : (lag_window ? "LAG" : "LEAD"))
+                                  : (last_value_window
+                                         ? "LAST_VALUE"
+                                         : (lag_window ? "LAG" : "LEAD")))
             : (ntile_window
             ? "NTILE"
             : (cume_dist_window
@@ -4353,7 +4361,9 @@ BuildEngineProjectedNativeBindingContext(
         value_window
             ? (first_value_window
                    ? "sb.window.first_value"
-                   : (lag_window ? "sb.window.lag" : "sb.window.lead"))
+                   : (last_value_window
+                          ? "sb.window.last_value"
+                          : (lag_window ? "sb.window.lag" : "sb.window.lead")))
             : (ntile_window
             ? "sb.window.ntile"
             : (cume_dist_window
@@ -4368,7 +4378,10 @@ BuildEngineProjectedNativeBindingContext(
         value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
-                   : (lag_window ? kLagFunctionUuid : kLeadFunctionUuid))
+                   : (last_value_window
+                          ? kLastValueFunctionUuid
+                          : (lag_window ? kLagFunctionUuid
+                                        : kLeadFunctionUuid)))
             : (ntile_window
             ? kNtileFunctionUuid
             : (cume_dist_window
@@ -4541,8 +4554,11 @@ BuildEngineProjectedNativeBindingContext(
             value_window
                 ? (first_value_window
                        ? "catalog_window_first_value_shape_invalid"
-                       : (lag_window ? "catalog_window_lag_shape_invalid"
-                                     : "catalog_window_lead_shape_invalid"))
+                       : (last_value_window
+                              ? "catalog_window_last_value_shape_invalid"
+                              : (lag_window
+                                     ? "catalog_window_lag_shape_invalid"
+                                     : "catalog_window_lead_shape_invalid")))
                 : (ntile_window
                 ? "catalog_window_ntile_shape_invalid"
                 : (cume_dist_window
@@ -4601,7 +4617,9 @@ BuildEngineProjectedNativeBindingContext(
             : (value_window
                    ? std::string(first_value_window
                                      ? "first_value"
-                                     : (lag_window ? "lag" : "lead"))
+                                     : (last_value_window
+                                            ? "last_value"
+                                            : (lag_window ? "lag" : "lead")))
                    : (ntile_window
                    ? std::string("ntile")
                    : (cume_dist_window
@@ -4694,7 +4712,10 @@ BuildEngineProjectedNativeBindingContext(
          value_window
              ? (first_value_window
                     ? "window.first-value.v1"
-                    : (lag_window ? "window.lag.v1" : "window.lead.v1"))
+                    : (last_value_window
+                           ? "window.last-value.v1"
+                           : (lag_window ? "window.lag.v1"
+                                         : "window.lead.v1")))
              : (ntile_window
              ? "window.ntile.v1"
              : (cume_dist_window
