@@ -4660,8 +4660,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool percent_rank_window =
         window_binding != context.relations.end() &&
         window_binding->semantic_variant_id == "window.percent-rank.v1";
+    const bool cume_dist_window =
+        window_binding != context.relations.end() &&
+        window_binding->semantic_variant_id == "window.cume-dist.v1";
     const bool peer_ranking_window =
-        rank_window || dense_rank_window || percent_rank_window;
+        rank_window || dense_rank_window || percent_rank_window ||
+        cume_dist_window;
     const bool recognized_ranking =
         window_binding != context.relations.end() &&
         (peer_ranking_window || window_binding->semantic_variant_id ==
@@ -4674,25 +4678,34 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         "019de5fc-2400-741d-bef0-f079fd3ba494";
     constexpr std::string_view kPercentRankFunctionUuid =
         "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
+    constexpr std::string_view kCumeDistFunctionUuid =
+        "019de5fc-2400-721c-be64-2568b64a02b9";
     const std::string_view expected_operator =
-        percent_rank_window
-            ? "PERCENT_RANK"
-            : (dense_rank_window ? "DENSE_RANK"
-                                 : (rank_window ? "RANK" : "ROW_NUMBER"));
+        cume_dist_window
+            ? "CUME_DIST"
+            : (percent_rank_window
+                   ? "PERCENT_RANK"
+                   : (dense_rank_window
+                          ? "DENSE_RANK"
+                          : (rank_window ? "RANK" : "ROW_NUMBER")));
     const std::string_view expected_builtin =
-        percent_rank_window
-            ? "sb.window.percent_rank"
-            : (dense_rank_window
-                   ? "sb.window.dense_rank"
-                   : (rank_window ? "sb.window.rank"
-                                  : "sb.window.row_number"));
+        cume_dist_window
+            ? "sb.window.cume_dist"
+            : (percent_rank_window
+                   ? "sb.window.percent_rank"
+                   : (dense_rank_window
+                          ? "sb.window.dense_rank"
+                          : (rank_window ? "sb.window.rank"
+                                         : "sb.window.row_number")));
     const std::string_view expected_function_uuid =
-        percent_rank_window
-            ? kPercentRankFunctionUuid
-            : (dense_rank_window
-                   ? kDenseRankFunctionUuid
-                   : (rank_window ? kRankFunctionUuid
-                                  : kRowNumberFunctionUuid));
+        cume_dist_window
+            ? kCumeDistFunctionUuid
+            : (percent_rank_window
+                   ? kPercentRankFunctionUuid
+                   : (dense_rank_window
+                          ? kDenseRankFunctionUuid
+                          : (rank_window ? kRankFunctionUuid
+                                         : kRowNumberFunctionUuid)));
     if (source_relation == ast.relations.end() ||
         ast.relations.size() != 2 + static_cast<std::size_t>(has_qualify) ||
         ast.root_relation_id !=

@@ -36081,7 +36081,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           (relation.semantic_variant_id != "window.row-number.v1" &&
            relation.semantic_variant_id != "window.rank.v1" &&
            relation.semantic_variant_id != "window.dense-rank.v1" &&
-           relation.semantic_variant_id != "window.percent-rank.v1") ||
+           relation.semantic_variant_id != "window.percent-rank.v1" &&
+           relation.semantic_variant_id != "window.cume-dist.v1") ||
           native.window_definitions.empty() ||
           native.window_definitions.size() > 1024 ||
           native.window_invocations.size() != 1 ||
@@ -36313,28 +36314,37 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         "019de5fc-2400-741d-bef0-f079fd3ba494";
     constexpr std::string_view kPercentRankFunctionUuid =
         "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
+    constexpr std::string_view kCumeDistFunctionUuid =
+        "019de5fc-2400-721c-be64-2568b64a02b9";
     const bool rank_window =
         window_relation->semantic_variant_id == "window.rank.v1";
     const bool dense_rank_window =
         window_relation->semantic_variant_id == "window.dense-rank.v1";
     const bool percent_rank_window =
         window_relation->semantic_variant_id == "window.percent-rank.v1";
+    const bool cume_dist_window =
+        window_relation->semantic_variant_id == "window.cume-dist.v1";
     const bool peer_ranking_window =
-        rank_window || dense_rank_window || percent_rank_window;
+        rank_window || dense_rank_window || percent_rank_window ||
+        cume_dist_window;
     const std::string_view expected_window_builtin =
-        percent_rank_window
-            ? "sb.window.percent_rank"
-            : (dense_rank_window
-                   ? "sb.window.dense_rank"
-                   : (rank_window ? "sb.window.rank"
-                                  : "sb.window.row_number"));
+        cume_dist_window
+            ? "sb.window.cume_dist"
+            : (percent_rank_window
+                   ? "sb.window.percent_rank"
+                   : (dense_rank_window
+                          ? "sb.window.dense_rank"
+                          : (rank_window ? "sb.window.rank"
+                                         : "sb.window.row_number")));
     const std::string_view expected_window_function_uuid =
-        percent_rank_window
-            ? kPercentRankFunctionUuid
-            : (dense_rank_window
-                   ? kDenseRankFunctionUuid
-                   : (rank_window ? kRankFunctionUuid
-                                  : kRowNumberFunctionUuid));
+        cume_dist_window
+            ? kCumeDistFunctionUuid
+            : (percent_rank_window
+                   ? kPercentRankFunctionUuid
+                   : (dense_rank_window
+                          ? kDenseRankFunctionUuid
+                          : (rank_window ? kRankFunctionUuid
+                                         : kRowNumberFunctionUuid)));
     const auto& invocation = native.window_invocations.front();
     const auto function = expressions_by_id.find(
         invocation.function_expression_id);
@@ -39377,7 +39387,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   // The canonical ranking executor requires an explicit ordered
   // input and a passthrough Window schema. Preserve the validated BoundAST
   // and synthesize only an emission view with a root Project for the exact
-  // executable ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK cohort.
+  // executable ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK/CUME_DIST cohort.
   constexpr std::string_view kCatalogOrderingPropertyUuid =
       "019f0000-0000-7200-8000-00000000c701";
   constexpr std::string_view kRowNumberFunctionUuid =
@@ -39388,6 +39398,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       "019de5fc-2400-741d-bef0-f079fd3ba494";
   constexpr std::string_view kPercentRankFunctionUuid =
       "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
+  constexpr std::string_view kCumeDistFunctionUuid =
+      "019de5fc-2400-721c-be64-2568b64a02b9";
   const bool normalize_rank_semantic =
       window_relation != nullptr &&
       window_relation->semantic_variant_id == "window.rank.v1";
@@ -39397,27 +39409,34 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const bool normalize_percent_rank_semantic =
       window_relation != nullptr &&
       window_relation->semantic_variant_id == "window.percent-rank.v1";
+  const bool normalize_cume_dist_semantic =
+      window_relation != nullptr &&
+      window_relation->semantic_variant_id == "window.cume-dist.v1";
   const bool normalize_peer_ranking_semantic =
       normalize_rank_semantic || normalize_dense_rank_semantic ||
-      normalize_percent_rank_semantic;
+      normalize_percent_rank_semantic || normalize_cume_dist_semantic;
   const bool normalize_ranking_semantic =
       window_relation != nullptr &&
       (normalize_peer_ranking_semantic ||
        window_relation->semantic_variant_id == "window.row-number.v1");
   const std::string_view normalized_ranking_builtin =
-      normalize_percent_rank_semantic
-          ? "sb.window.percent_rank"
-          : (normalize_dense_rank_semantic
-                 ? "sb.window.dense_rank"
-                 : (normalize_rank_semantic ? "sb.window.rank"
-                                            : "sb.window.row_number"));
+      normalize_cume_dist_semantic
+          ? "sb.window.cume_dist"
+          : (normalize_percent_rank_semantic
+                 ? "sb.window.percent_rank"
+                 : (normalize_dense_rank_semantic
+                        ? "sb.window.dense_rank"
+                        : (normalize_rank_semantic ? "sb.window.rank"
+                                                   : "sb.window.row_number")));
   const std::string_view normalized_ranking_function_uuid =
-      normalize_percent_rank_semantic
-          ? kPercentRankFunctionUuid
-          : (normalize_dense_rank_semantic
-                 ? kDenseRankFunctionUuid
-                 : (normalize_rank_semantic ? kRankFunctionUuid
-                                            : kRowNumberFunctionUuid));
+      normalize_cume_dist_semantic
+          ? kCumeDistFunctionUuid
+          : (normalize_percent_rank_semantic
+                 ? kPercentRankFunctionUuid
+                 : (normalize_dense_rank_semantic
+                        ? kDenseRankFunctionUuid
+                        : (normalize_rank_semantic ? kRankFunctionUuid
+                                                   : kRowNumberFunctionUuid)));
   std::vector<BoundRelationAstRecord> emitted_relations = native.relations;
   std::vector<BoundOutputAstRecord> emitted_outputs = native.outputs;
   std::uint32_t emitted_root_relation_id = native.root_relation_id;
@@ -39461,9 +39480,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     AddNativeRelationalLoweringError(
         &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
         std::string("typed ") +
-            (normalize_percent_rank_semantic
-                 ? "PERCENT_RANK"
-                 : (normalize_dense_rank_semantic ? "DENSE_RANK" : "RANK")) +
+            (normalize_cume_dist_semantic
+                 ? "CUME_DIST"
+                 : (normalize_percent_rank_semantic
+                        ? "PERCENT_RANK"
+                        : (normalize_dense_rank_semantic ? "DENSE_RANK"
+                                                         : "RANK"))) +
             " requires explicit canonical ordering normalization");
     return envelope;
   }
@@ -39621,12 +39643,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             std::vector<std::uint32_t>{emitted_window->relation_id} &&
         emitted_sort->semantic_variant_id == "sort.required-order.v1" &&
         emitted_window->semantic_variant_id ==
-            (normalize_percent_rank_semantic
-                 ? "window.percent-rank.v1"
-                 : (normalize_dense_rank_semantic
-                        ? "window.dense-rank.v1"
-                        : (normalize_rank_semantic ? "window.rank.v1"
-                                                   : "window.row-number.v1"))) &&
+            (normalize_cume_dist_semantic
+                 ? "window.cume-dist.v1"
+                 : (normalize_percent_rank_semantic
+                        ? "window.percent-rank.v1"
+                        : (normalize_dense_rank_semantic
+                               ? "window.dense-rank.v1"
+                               : (normalize_rank_semantic
+                                      ? "window.rank.v1"
+                                      : "window.row-number.v1")))) &&
         emitted_project->semantic_variant_id ==
             "project.catalog-visible-columns.v1" &&
         emitted_sort->output_expression_ids ==
