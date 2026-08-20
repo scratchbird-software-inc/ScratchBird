@@ -4282,10 +4282,23 @@ BuildEngineProjectedNativeBindingContext(
         ast.expressions, [&](const auto& candidate) {
           return candidate.expression_id == invocation.function_expression_id;
         });
+    constexpr std::string_view kRowNumberFunctionUuid =
+        "019de5fc-2400-7539-bcce-00eef3ae7220";
+    constexpr std::string_view kRankFunctionUuid =
+        "019de5fc-2400-7b94-870d-0dd789ca70ab";
+    const bool rank_window =
+        function_expression != ast.expressions.end() &&
+        function_expression->operator_name == "RANK";
+    const std::string_view expected_operator =
+        rank_window ? "RANK" : "ROW_NUMBER";
+    const std::string_view expected_builtin =
+        rank_window ? "sb.window.rank" : "sb.window.row_number";
+    const std::string_view expected_function_uuid =
+        rank_window ? kRankFunctionUuid : kRowNumberFunctionUuid;
     const auto function_profile = std::ranges::find_if(
         statement_context.window_function_profiles,
-        [](const auto& candidate) {
-          return candidate.builtin_id == "sb.window.row_number";
+        [&](const auto& candidate) {
+          return candidate.builtin_id == expected_builtin;
         });
     const auto result_profile = std::ranges::find_if(
         statement_context.descriptor_profiles, [](const auto& candidate) {
@@ -4294,16 +4307,41 @@ BuildEngineProjectedNativeBindingContext(
     if (function_expression == ast.expressions.end() ||
         function_expression->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
-        function_expression->operator_name != "ROW_NUMBER" ||
+        function_expression->operator_name != expected_operator ||
         !function_expression->child_expression_ids.empty() ||
         function_profile == statement_context.window_function_profiles.end() ||
         function_profile->abi_version != 1 || !function_profile->executable ||
+        function_profile->function_uuid != expected_function_uuid ||
         !CanonicalUuidBytes(function_profile->function_uuid).has_value() ||
         result_profile == statement_context.descriptor_profiles.end() ||
         result_profile->nullable ||
         !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
         !CanonicalUuidBytes(result_profile->type_uuid).has_value()) {
-      return fail("catalog_window_row_number_profile_unavailable");
+      return fail("catalog_window_ranking_profile_unavailable");
+    }
+    if (rank_window) {
+      const auto& definition = ast.window_definitions.front();
+      const auto order_expression = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return definition.ordering_terms.size() == 1 &&
+                   candidate.expression_id ==
+                       definition.ordering_terms.front().expression_id;
+          });
+      if (has_qualify || ast.window_definitions.size() != 1 ||
+          definition.name.has_value() || definition.base_name.has_value() ||
+          !definition.partition_expression_ids.empty() ||
+          definition.ordering_terms.size() != 1 ||
+          definition.frame_unit.has_value() ||
+          definition.frame_start.has_value() ||
+          definition.frame_end.has_value() ||
+          definition.exclusion != NativeWindowFrameExclusion::kNoOthers ||
+          order_expression == ast.expressions.end() ||
+          order_expression->expression_kind !=
+              NativeExpressionAstKind::kIdentifier ||
+          source_relation->output_expression_ids !=
+              std::vector<std::uint32_t>{order_expression->expression_id}) {
+        return fail("catalog_window_rank_shape_invalid");
+      }
     }
     const auto function_binding_id =
         static_cast<std::uint32_t>(context.descriptors.size() + 1);
@@ -4322,7 +4360,8 @@ BuildEngineProjectedNativeBindingContext(
     const auto window_output_name =
         invocation.output_alias.has_value()
             ? invocation.output_alias->spelling
-            : std::string("row_number");
+            : (rank_window ? std::string("rank")
+                           : std::string("row_number"));
     context.outputs.push_back(
         {static_cast<std::uint32_t>(context.outputs.size() + 1),
          function_binding_id,
@@ -4400,7 +4439,8 @@ BuildEngineProjectedNativeBindingContext(
     }
     context.catalog_relations.push_back(std::move(catalog_relation));
     context.relations.push_back(
-        {window_relation->relation_id, "window.row-number.v1"});
+        {window_relation->relation_id,
+         rank_window ? "window.rank.v1" : "window.row-number.v1"});
     if (has_qualify) {
       context.relations.push_back(
           {qualify_relation->relation_id,
