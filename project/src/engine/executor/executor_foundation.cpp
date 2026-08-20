@@ -7831,13 +7831,21 @@ RankingRealValue(
 
 }  // namespace
 
-CanonicalWindowRankValueResult ComputeCanonicalWindowRankValue(
-    const CanonicalWindowRankValueRequest& request) {
-  CanonicalWindowRankValueResult result;
+CanonicalWindowIntegerRankValueResult ComputeCanonicalWindowIntegerRankValue(
+    const CanonicalWindowIntegerRankValueRequest& request) {
+  CanonicalWindowIntegerRankValueResult result;
+  const bool dense_rank = request.builtin_id == "sb.window.dense_rank";
+  const auto function = dense_rank
+                            ? CanonicalWindowRankingFunction::dense_rank
+                            : CanonicalWindowRankingFunction::rank;
+  const std::string_view expected_builtin =
+      dense_rank ? "sb.window.dense_rank" : "sb.window.rank";
+  const std::string_view expected_uuid =
+      dense_rank ? kWindowDenseRankUuid : kWindowRankUuid;
+  const std::string_view display_name = dense_rank ? "DENSE_RANK" : "RANK";
   const auto refuse = [&](std::string detail) {
     result = {};
-    result.diagnostic = WindowRankingRefusal(
-        CanonicalWindowRankingFunction::rank, std::move(detail));
+    result.diagnostic = WindowRankingRefusal(function, std::move(detail));
     return result;
   };
   const auto type_uuid =
@@ -7845,8 +7853,8 @@ CanonicalWindowRankValueResult ComputeCanonicalWindowRankValue(
   const auto nullability =
       RankingDescriptorField(request.output_descriptor, "nullability");
   if (request.function_abi_version != 1 ||
-      request.builtin_id != "sb.window.rank" ||
-      request.function_uuid != kWindowRankUuid ||
+      request.builtin_id != expected_builtin ||
+      request.function_uuid != expected_uuid ||
       !IsCanonicalUuid(request.function_uuid) ||
       request.one_based_rank == 0 ||
       request.one_based_rank >
@@ -7862,9 +7870,9 @@ CanonicalWindowRankValueResult ComputeCanonicalWindowRankValue(
       request.output_descriptor.descriptor_uuid.canonical == *type_uuid ||
       request.output_descriptor.descriptor_uuid.canonical ==
           request.function_uuid) {
-    return refuse(
-        "RANK value lacks its exact registry identity, descriptor, or "
-        "positive int64 position");
+    return refuse(std::string(display_name) +
+                  " value lacks its exact registry identity, descriptor, "
+                  "or positive int64 position");
   }
   result.value = RankingInt64Value(request.output_descriptor,
                                    request.one_based_rank);
@@ -7949,13 +7957,14 @@ static CanonicalWindowRankingResult ExecuteCanonicalWindowRankingStrategy(
         break;
       case CanonicalWindowRankingFunction::rank:
         {
-          CanonicalWindowRankValueRequest rank_request;
+          CanonicalWindowIntegerRankValueRequest rank_request;
           rank_request.function_abi_version = 1;
           rank_request.builtin_id = "sb.window.rank";
           rank_request.function_uuid = request.function_uuid;
           rank_request.output_descriptor = request.output_descriptor;
           rank_request.one_based_rank = rank;
-          auto rank_value = ComputeCanonicalWindowRankValue(rank_request);
+          auto rank_value =
+              ComputeCanonicalWindowIntegerRankValue(rank_request);
           if (!rank_value.diagnostic.ok) {
             return refuse(rank_value.diagnostic.detail);
           }
@@ -7963,8 +7972,20 @@ static CanonicalWindowRankingResult ExecuteCanonicalWindowRankingStrategy(
         }
         break;
       case CanonicalWindowRankingFunction::dense_rank:
-        result.values.push_back(
-            RankingInt64Value(request.output_descriptor, dense_rank));
+        {
+          CanonicalWindowIntegerRankValueRequest rank_request;
+          rank_request.function_abi_version = 1;
+          rank_request.builtin_id = "sb.window.dense_rank";
+          rank_request.function_uuid = request.function_uuid;
+          rank_request.output_descriptor = request.output_descriptor;
+          rank_request.one_based_rank = dense_rank;
+          auto rank_value =
+              ComputeCanonicalWindowIntegerRankValue(rank_request);
+          if (!rank_value.diagnostic.ok) {
+            return refuse(rank_value.diagnostic.detail);
+          }
+          result.values.push_back(std::move(rank_value.value));
+        }
         break;
       case CanonicalWindowRankingFunction::percent_rank: {
         const auto value = partition_rows <= 1

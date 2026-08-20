@@ -815,7 +815,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
        (window_node->input_node_ids !=
             std::vector<std::uint32_t>{sort_node->node_id} ||
         (window_node->semantic_variant_id != "window.row-number.v1" &&
-         window_node->semantic_variant_id != "window.rank.v1") ||
+         window_node->semantic_variant_id != "window.rank.v1" &&
+         window_node->semantic_variant_id != "window.dense-rank.v1") ||
         window_node->bound_expression_ids.size() != 2 ||
         window_node->output_descriptor_ids.size() !=
             sort_node->output_descriptor_ids.size() + 1 ||
@@ -990,12 +991,20 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         "019de5fc-2400-7539-bcce-00eef3ae7220";
     constexpr std::string_view kRankFunctionUuid =
         "019de5fc-2400-7b94-870d-0dd789ca70ab";
+    constexpr std::string_view kDenseRankFunctionUuid =
+        "019de5fc-2400-741d-bef0-f079fd3ba494";
     const bool rank_window =
         window_node->semantic_variant_id == "window.rank.v1";
+    const bool dense_rank_window =
+        window_node->semantic_variant_id == "window.dense-rank.v1";
     const std::string_view expected_builtin_id =
-        rank_window ? "sb.window.rank" : "sb.window.row_number";
+        dense_rank_window
+            ? "sb.window.dense_rank"
+            : (rank_window ? "sb.window.rank" : "sb.window.row_number");
     const std::string_view expected_function_uuid =
-        rank_window ? kRankFunctionUuid : kRowNumberFunctionUuid;
+        dense_rank_window
+            ? kDenseRankFunctionUuid
+            : (rank_window ? kRankFunctionUuid : kRowNumberFunctionUuid);
     const auto ordering_property_uuid =
         sort_node->delivered_property_uuids.front();
     const auto window_property_uuid = std::ranges::find_if(
@@ -1126,8 +1135,10 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         window_outputs.back()->output_name_utf8 !=
             relational.window_invocations.front().output_name_utf8) {
       return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
-                    rank_window ? "heap_rank_window_binding"
-                                : "heap_row_number_window_binding");
+                    dense_rank_window
+                        ? "heap_dense_rank_window_binding"
+                        : (rank_window ? "heap_rank_window_binding"
+                                       : "heap_row_number_window_binding"));
     }
   }
   const auto& node = *scan_node;

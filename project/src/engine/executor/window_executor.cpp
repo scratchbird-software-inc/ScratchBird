@@ -687,12 +687,24 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
 }
 
 namespace {
-CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
-    const CanonicalDescriptorRankRequest& request,
+CanonicalDescriptorIntegerRankResult ExecuteCanonicalDescriptorIntegerRankBound(
+    const CanonicalDescriptorIntegerRankRequest& request,
     const TypedPhysicalNodeDag& execution_dag,
     const DescriptorBatch& execution_ordered_input_batch,
     const bool borrowed_execution_carriers) {
-  CanonicalDescriptorRankResult result;
+  CanonicalDescriptorIntegerRankResult result;
+  const bool dense_rank =
+      request.builtin_id == "sb.window.dense_rank" ||
+      request.function_uuid ==
+          "019de5fc-2400-741d-bef0-f079fd3ba494";
+  const std::string_view ranking_name = dense_rank ? "DENSE_RANK" : "RANK";
+  const std::string_view expected_implementation =
+      dense_rank ? "window.dense-rank.v1" : "window.rank.v1";
+  const std::string_view expected_builtin =
+      dense_rank ? "sb.window.dense_rank" : "sb.window.rank";
+  const std::string_view expected_function_uuid =
+      dense_rank ? "019de5fc-2400-741d-bef0-f079fd3ba494"
+                 : "019de5fc-2400-7b94-870d-0dd789ca70ab";
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
     result.diagnostic = std::move(diagnostic);
     result.output_batch = {};
@@ -704,7 +716,8 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
            request.ordered_input_batch))) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1",
-        "RANK request carries conflicting owned execution carriers"));
+        std::string(ranking_name) +
+            " request carries conflicting owned execution carriers"));
   }
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
       request.mga_authority, execution_dag);
@@ -712,8 +725,10 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
           execution_dag.root_physical_node_id) {
-    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
-                          "selected RANK window node is not the root"));
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.INVALID_HANDLE",
+        "selected " + std::string(ranking_name) +
+            " window node is not the root"));
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;
@@ -725,10 +740,11 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
   }
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kWindow ||
-      selected_node->implementation_id != "window.rank.v1" ||
+      selected_node->implementation_id != expected_implementation ||
       selected_node->input_physical_node_ids.size() != 1) {
-    return refuse(Refusal("QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1",
-                          "RANK requires one selected window node"));
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1",
+        std::string(ranking_name) + " requires one selected window node"));
   }
   for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
@@ -763,9 +779,8 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
           std::vector<std::string>{ordering_property_uuid} ||
       !exact_window_property ||
       request.function_abi_version != 1 ||
-      request.builtin_id != "sb.window.rank" ||
-      request.function_uuid !=
-          "019de5fc-2400-7b94-870d-0dd789ca70ab" ||
+      request.builtin_id != expected_builtin ||
+      request.function_uuid != expected_function_uuid ||
       !IsCanonicalUuid(request.function_uuid) ||
       selected_node->executor_capability_abi_version != 1 ||
       !selected_node->engine_capability_validated ||
@@ -781,19 +796,22 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
       request.deterministic_order_evidence_uuid == *window_property) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
-        "RANK input lacks exact ordering/window property evidence"));
+        std::string(ranking_name) +
+            " input lacks exact ordering/window property evidence"));
   }
   std::vector<std::uint32_t> output_descriptor_ids =
       input_node->output_descriptor_ids;
-  output_descriptor_ids.push_back(request.rank_column.descriptor_id);
+  output_descriptor_ids.push_back(request.ranking_column.descriptor_id);
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
-      request.rank_column.descriptor_id == 0 ||
-      request.rank_column.nullable ||
-      request.rank_column.descriptor.canonical_type_name != "int64" ||
+      request.ranking_column.descriptor_id == 0 ||
+      request.ranking_column.nullable ||
+      request.ranking_column.descriptor.canonical_type_name != "int64" ||
       request.order_term.column >=
           execution_ordered_input_batch.columns.size()) {
-    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
-                          "RANK output or order descriptor is not bound"));
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.INVALID_HANDLE",
+        std::string(ranking_name) +
+            " output or order descriptor is not bound"));
   }
   const auto order_validation = ValidateCanonicalDescriptorOrderTerm(
       request.order_term,
@@ -804,8 +822,9 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
   if (!input_validation.ok) return refuse(std::move(input_validation));
   if (execution_ordered_input_batch.rows.size() >
       static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
-    return refuse(Refusal("QOW-DIAG-QRY-007-WINDOW-OVERFLOW-V1",
-                          "RANK exceeds int64 result width"));
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-WINDOW-OVERFLOW-V1",
+        std::string(ranking_name) + " exceeds int64 result width"));
   }
 
   const auto peer_comparison_count =
@@ -816,7 +835,8 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
       peer_comparison_count > request.maximum_peer_comparisons) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-        "RANK adjacent-peer comparison bound was exceeded"));
+        std::string(ranking_name) +
+            " adjacent-peer comparison bound was exceeded"));
   }
   std::uint64_t peak_comparison_workspace_bytes = 0;
   for (std::size_t row = 1;
@@ -840,7 +860,8 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
                 right_plan.peak_workspace_bytes) {
       return refuse(Refusal(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-          "RANK comparison workspace bound overflowed or was refused"));
+          std::string(ranking_name) +
+              " comparison workspace bound overflowed or was refused"));
     }
     pair_workspace =
         static_cast<std::uint64_t>(left_plan.peak_workspace_bytes) +
@@ -855,7 +876,8 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
           &binding_receipt_workspace_bytes)) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-        "RANK order-term binding receipt workspace was refused"));
+        std::string(ranking_name) +
+            " order-term binding receipt workspace was refused"));
   }
   const auto peak_auxiliary_workspace_bytes =
       std::max(peak_comparison_workspace_bytes,
@@ -874,7 +896,8 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
               std::numeric_limits<std::size_t>::max())) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-        "RANK memory grant or runtime payload accounting is invalid"));
+        std::string(ranking_name) +
+            " memory grant or runtime payload accounting is invalid"));
   }
   auto remaining_memory_bytes = selected_node->memory_bytes_required;
   const auto charge = [&](const std::uint64_t bytes) {
@@ -887,7 +910,8 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
       !charge(peak_auxiliary_workspace_bytes)) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-        "RANK runtime materialization exceeds its selected node grant"));
+        std::string(ranking_name) +
+            " runtime materialization exceeds its selected node grant"));
   }
   std::uint64_t actual_binding_receipt_workspace_bytes = 0;
   const auto expected_order_term_binding_evidence_uuid =
@@ -904,12 +928,13 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
           selected_node->executor_capability_uuid) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
-        "RANK order term differs from optimizer-published capability "
-        "evidence"));
+        std::string(ranking_name) +
+            " order term differs from optimizer-published capability "
+            "evidence"));
   }
 
   result.output_batch.columns = execution_ordered_input_batch.columns;
-  result.output_batch.columns.push_back(request.rank_column);
+  result.output_batch.columns.push_back(request.ranking_column);
   result.output_batch.rows = execution_ordered_input_batch.rows;
   std::size_t current_rank = 1;
   for (std::size_t row = 0; row < result.output_batch.rows.size(); ++row) {
@@ -924,17 +949,20 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
       if (compared.comparison > 0) {
         return refuse(Refusal(
             "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
-            "RANK input is not ordered by its canonical term"));
+            std::string(ranking_name) +
+                " input is not ordered by its canonical term"));
       }
-      if (compared.comparison != 0) current_rank = row + 1;
+      if (compared.comparison != 0) {
+        current_rank = dense_rank ? current_rank + 1 : row + 1;
+      }
     }
-    CanonicalWindowRankValueRequest rank_request;
+    CanonicalWindowIntegerRankValueRequest rank_request;
     rank_request.function_abi_version = request.function_abi_version;
     rank_request.builtin_id = request.builtin_id;
     rank_request.function_uuid = request.function_uuid;
-    rank_request.output_descriptor = request.rank_column.descriptor;
+    rank_request.output_descriptor = request.ranking_column.descriptor;
     rank_request.one_based_rank = current_rank;
-    auto rank = ComputeCanonicalWindowRankValue(rank_request);
+    auto rank = ComputeCanonicalWindowIntegerRankValue(rank_request);
     if (!rank.diagnostic.ok) return refuse(std::move(rank.diagnostic));
     result.output_batch.rows[row].values.push_back(std::move(rank.value));
   }
@@ -957,17 +985,17 @@ CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
 }
 }  // namespace
 
-CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRank(
-    const CanonicalDescriptorRankRequest& request) {
-  return ExecuteCanonicalDescriptorRankBound(
+CanonicalDescriptorIntegerRankResult ExecuteCanonicalDescriptorIntegerRank(
+    const CanonicalDescriptorIntegerRankRequest& request) {
+  return ExecuteCanonicalDescriptorIntegerRankBound(
       request, request.physical_dag, request.ordered_input_batch, false);
 }
 
-CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRank(
-    const CanonicalDescriptorRankRequest& request,
+CanonicalDescriptorIntegerRankResult ExecuteCanonicalDescriptorIntegerRank(
+    const CanonicalDescriptorIntegerRankRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch) {
-  return ExecuteCanonicalDescriptorRankBound(
+  return ExecuteCanonicalDescriptorIntegerRankBound(
       request, borrowed_execution_dag, borrowed_ordered_input_batch, true);
 }
 

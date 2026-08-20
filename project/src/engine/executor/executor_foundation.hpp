@@ -61,7 +61,7 @@ enum class CanonicalWindowRankingFunction : std::uint8_t {
   ntile,
 };
 
-struct CanonicalWindowRankValueRequest {
+struct CanonicalWindowIntegerRankValueRequest {
   std::uint16_t function_abi_version = 0;
   std::string builtin_id;
   std::string function_uuid;
@@ -69,7 +69,7 @@ struct CanonicalWindowRankValueRequest {
   std::uint64_t one_based_rank = 0;
 };
 
-struct CanonicalWindowRankValueResult {
+struct CanonicalWindowIntegerRankValueResult {
   DescriptorRuntimeDiagnostic diagnostic;
   scratchbird::engine::internal_api::EngineTypedValue value;
 };
@@ -559,8 +559,8 @@ Batch AddFirstValueWindow(const Batch& input, std::size_t order_column, std::siz
 Batch AddLastValueWindow(const Batch& input, std::size_t order_column, std::size_t value_column);
 CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
     const CanonicalWindowRankingRequest& request);
-CanonicalWindowRankValueResult ComputeCanonicalWindowRankValue(
-    const CanonicalWindowRankValueRequest& request);
+CanonicalWindowIntegerRankValueResult ComputeCanonicalWindowIntegerRankValue(
+    const CanonicalWindowIntegerRankValueRequest& request);
 CanonicalWindowValueResult ExecuteCanonicalWindowValue(
     const CanonicalWindowValueRequest& request);
 CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
