@@ -164,31 +164,23 @@ EngineEvaluatePredicateResult EngineEvaluatePredicate(
     case EngineComparisonPredicateOperator::less_than_or_equal:
     case EngineComparisonPredicateOperator::greater_than:
     case EngineComparisonPredicateOperator::greater_than_or_equal: {
-      const auto type_id =
-          scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
-              request.left_value.descriptor.canonical_type_name);
-      if (type_id ==
-          scratchbird::core::datatypes::CanonicalTypeId::character) {
-        EngineCompareScalarValuesRequest compare_request;
+      if (!request.left_value.isSqlNull() &&
+          !request.right_value.isSqlNull()) {
+        EngineCompareCanonicalScalarValuesRequest compare_request;
         compare_request.context = request.context;
         compare_request.left_value = request.left_value;
         compare_request.right_value = request.right_value;
-        const auto compared = EngineCompareScalarValues(compare_request);
+        const auto compared =
+            EngineCompareCanonicalScalarValues(compare_request);
         if (!compared.ok) {
           const std::string detail =
               compared.diagnostics.empty()
-                  ? "catalog-bound character comparison refused"
+                  ? "canonical scalar comparison authority refused"
                   : (compared.diagnostics.front().code + ":" +
                      compared.diagnostics.front().detail);
           return refuse(detail);
         }
         comparison = compared.comparison;
-      } else if (!request.left_value.isSqlNull() &&
-                 !request.right_value.isSqlNull() &&
-                 !QowCompareCanonicalNonCollatedScalarsV1(
-                     request.left_value, request.right_value, &comparison,
-                     &refusal_detail)) {
-        return refuse(std::move(refusal_detail));
       }
       if (!QowEvaluateCanonicalComparisonTruthV1(
               request.left_value, request.right_value, comparison,

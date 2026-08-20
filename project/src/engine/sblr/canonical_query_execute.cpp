@@ -236,95 +236,25 @@ bool CompareCanonicalQueryScalarsV1(
   *comparison = 0;
   diagnostic_id->clear();
   refusal_detail->clear();
-  const auto type_id = dt::CanonicalTypeIdFromStableName(
-      left.descriptor.canonical_type_name);
-  if (type_id == dt::CanonicalTypeId::character) {
-    api::EngineCompareScalarValuesRequest request;
-    request.context = context;
-    request.left_value = left;
-    request.right_value = right;
-    const auto compared = api::EngineCompareScalarValues(request);
-    if (!compared.ok) {
-      if (!compared.diagnostics.empty()) {
-        *diagnostic_id = compared.diagnostics.front().code;
-        *refusal_detail = compared.diagnostics.front().detail;
-      } else {
-        *diagnostic_id =
-            "QOW-DIAG-RCP024-COLLATION-AUTHORITY-REFUSAL-V1";
-        *refusal_detail = "collation comparison was refused";
-      }
-      return false;
-    }
-    *comparison = compared.comparison < 0
-                      ? -1
-                      : (compared.comparison > 0 ? 1 : 0);
-    return true;
-  }
-
-  const bool left_timezone_bound =
-      left.descriptor.encoded_descriptor.find("timezone_profile_id=") !=
-      std::string::npos;
-  const bool right_timezone_bound =
-      right.descriptor.encoded_descriptor.find("timezone_profile_id=") !=
-      std::string::npos;
-  if (left_timezone_bound || right_timezone_bound) {
-    const bool supported_timezone_type =
-        type_id == dt::CanonicalTypeId::time ||
-        type_id == dt::CanonicalTypeId::timestamp;
-    if (!left_timezone_bound || !right_timezone_bound ||
-        !supported_timezone_type ||
-        dt::CanonicalTypeIdFromStableName(
-            right.descriptor.canonical_type_name) != type_id) {
+  api::EngineCompareCanonicalScalarValuesRequest request;
+  request.context = context;
+  request.left_value = left;
+  request.right_value = right;
+  const auto compared = api::EngineCompareCanonicalScalarValues(request);
+  if (!compared.ok) {
+    if (!compared.diagnostics.empty()) {
+      *diagnostic_id = compared.diagnostics.front().code;
+      *refusal_detail = compared.diagnostics.front().detail;
+    } else {
       *diagnostic_id =
-          "QOW-DIAG-RCP024-TIMEZONE-COMPARISON-REFUSAL-V1";
-      *refusal_detail =
-          "timezone comparison operands do not share one supported temporal "
-          "profile";
-      return false;
+          "QOW-DIAG-RCP024-COMPARISON-AUTHORITY-REFUSAL-V1";
+      *refusal_detail = "canonical scalar comparison was refused";
     }
-    api::EngineNormalizeTimezoneScalarRequest left_request;
-    left_request.context = context;
-    left_request.input_value = left;
-    const auto left_result = api::EngineNormalizeTimezoneScalar(left_request);
-    api::EngineNormalizeTimezoneScalarRequest right_request;
-    right_request.context = context;
-    right_request.input_value = right;
-    const auto right_result = api::EngineNormalizeTimezoneScalar(right_request);
-    if (!left_result.ok || !right_result.ok) {
-      const auto* failed = !left_result.ok ? &left_result : &right_result;
-      if (!failed->diagnostics.empty()) {
-        *diagnostic_id = failed->diagnostics.front().code;
-        *refusal_detail = failed->diagnostics.front().detail;
-      } else {
-        *diagnostic_id =
-            "QOW-DIAG-RCP024-TIMEZONE-AUTHORITY-REFUSAL-V1";
-        *refusal_detail = "timezone normalization was refused";
-      }
-      return false;
-    }
-    if (!left_result.comparable_utc_key_available ||
-        !right_result.comparable_utc_key_available) {
-      *diagnostic_id =
-          "QOW-DIAG-RCP024-TIMEZONE-COMPARISON-REFUSAL-V1";
-      *refusal_detail =
-          "named-zone operands require a resolved transition instant";
-      return false;
-    }
-    const auto left_key = std::tie(
-        left_result.comparable_utc_whole_seconds,
-        left_result.comparable_fractional_picoseconds);
-    const auto right_key = std::tie(
-        right_result.comparable_utc_whole_seconds,
-        right_result.comparable_fractional_picoseconds);
-    *comparison = left_key < right_key ? -1 : (right_key < left_key ? 1 : 0);
-    return true;
-  }
-
-  if (!api::QowCompareCanonicalNonCollatedScalarsV1(
-          left, right, comparison, refusal_detail)) {
-    *diagnostic_id = "QOW-DIAG-RCP024-COMPARISON-REFUSAL-V1";
     return false;
   }
+  *comparison = compared.comparison < 0
+                    ? -1
+                    : (compared.comparison > 0 ? 1 : 0);
   return true;
 }
 

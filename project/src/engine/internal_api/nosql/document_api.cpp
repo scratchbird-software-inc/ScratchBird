@@ -645,26 +645,19 @@ DocumentMatchResult CompareDocumentValue(
   int ordering = 0;
   std::string refusal_detail;
   if (!left.isSqlNull() && !request.comparison_value.isSqlNull()) {
-    if (scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
-            request.comparison_value.descriptor.canonical_type_name) ==
-        scratchbird::core::datatypes::CanonicalTypeId::character) {
-      EngineCompareScalarValuesRequest compare_request;
-      compare_request.context = request.context;
-      compare_request.left_value = left;
-      compare_request.right_value = request.comparison_value;
-      const auto compared = EngineCompareScalarValues(compare_request);
-      if (!compared.ok) {
-        return {false, false,
-                compared.diagnostics.empty()
-                    ? "catalog-bound character comparison refused"
-                    : compared.diagnostics.front().detail};
-      }
-      ordering = compared.comparison;
-    } else if (!QowCompareCanonicalNonCollatedScalarsV1(
-                   left, request.comparison_value, &ordering,
-                   &refusal_detail)) {
-      return {false, false, refusal_detail};
+    EngineCompareCanonicalScalarValuesRequest compare_request;
+    compare_request.context = request.context;
+    compare_request.left_value = left;
+    compare_request.right_value = request.comparison_value;
+    const auto compared =
+        EngineCompareCanonicalScalarValues(compare_request);
+    if (!compared.ok) {
+      return {false, false,
+              compared.diagnostics.empty()
+                  ? "canonical document scalar comparison refused"
+                  : compared.diagnostics.front().detail};
     }
+    ordering = compared.comparison;
   }
   EngineSqlTruthValue truth = EngineSqlTruthValue::unknown;
   if (operation == EngineComparisonPredicateOperator::unspecified) {

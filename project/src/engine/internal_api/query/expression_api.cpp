@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <limits>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #if !defined(SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY) && \
@@ -2563,6 +2564,138 @@ EngineNormalizeTimezoneScalarResult EngineNormalizeTimezoneScalar(
       {"timezone_seed_version", resolved.authority.seed_pack_version});
   result.evidence.push_back(
       {"timezone_epoch", std::to_string(result.timezone_epoch)});
+  return result;
+}
+
+EngineCompareCanonicalScalarValuesResult EngineCompareCanonicalScalarValues(
+    const EngineCompareCanonicalScalarValuesRequest& request) {
+  constexpr const char* kOperation = "query.compare_canonical_scalar_values";
+  const EngineTypedValue left =
+      RequestInputValue(request, request.left_value);
+  const EngineTypedValue right =
+      RequestSecondValue(request, request.right_value);
+  const auto refuse = [&](std::string detail) {
+    return ApiFailure<EngineCompareCanonicalScalarValuesResult>(
+        request.context, kOperation,
+        MakeEngineApiDiagnostic(
+            "QOW-DIAG-QRY-008-COMPARISON-AUTHORITY-REFUSAL-V1",
+            "engine.query.typed_scalar_comparison_refused",
+            std::move(detail)));
+  };
+  const auto propagate_failure = [&](const EngineApiResult& failed) {
+    EngineCompareCanonicalScalarValuesResult result;
+    static_cast<EngineApiResult&>(result) = failed;
+    result.operation_id = kOperation;
+    return result;
+  };
+
+  const auto left_type = dt::CanonicalTypeIdFromStableName(
+      left.descriptor.canonical_type_name);
+  const auto right_type = dt::CanonicalTypeIdFromStableName(
+      right.descriptor.canonical_type_name);
+  const auto left_timezone_profile = DescriptorField(
+      left.descriptor.encoded_descriptor, "timezone_profile_id");
+  const auto right_timezone_profile = DescriptorField(
+      right.descriptor.encoded_descriptor, "timezone_profile_id");
+  if (left_type == dt::CanonicalTypeId::unknown ||
+      left_type != right_type ||
+      left_timezone_profile != right_timezone_profile) {
+    return refuse(
+        "comparison operands do not share one canonical scalar type and "
+        "timezone profile");
+  }
+
+  if (left.isSqlNull() || right.isSqlNull()) {
+    EngineSqlTruthValue truth = EngineSqlTruthValue::unspecified;
+    std::string detail;
+    if (!QowEvaluateCanonicalComparisonTruthV1(
+            left, right, 0, EngineComparisonPredicateOperator::equal,
+            &truth, &detail) || truth != EngineSqlTruthValue::unknown) {
+      return refuse(detail.empty()
+                        ? "canonical NULL comparison was not unknown"
+                        : std::move(detail));
+    }
+    auto result = ApiSuccess<EngineCompareCanonicalScalarValuesResult>(
+        request.context, kOperation);
+    result.evidence.push_back(
+        {"sql_truth_value", EngineSqlTruthValueName(truth)});
+    return result;
+  }
+
+  if (left_type == dt::CanonicalTypeId::character) {
+    EngineCompareScalarValuesRequest collated_request;
+    collated_request.context = request.context;
+    collated_request.left_value = left;
+    collated_request.right_value = right;
+    const auto collated = EngineCompareScalarValues(collated_request);
+    if (!collated.ok) return propagate_failure(collated);
+    if (collated.comparison < -1 || collated.comparison > 1) {
+      return refuse(
+          "collation authority returned a noncanonical scalar order");
+    }
+    auto result = ApiSuccess<EngineCompareCanonicalScalarValuesResult>(
+        request.context, kOperation);
+    result.comparison = collated.comparison;
+    result.evidence = collated.evidence;
+    return result;
+  }
+
+  if (!left_timezone_profile.empty()) {
+    if (left_type != dt::CanonicalTypeId::time &&
+        left_type != dt::CanonicalTypeId::timestamp) {
+      return refuse(
+          "timezone comparison operands do not share one supported temporal "
+          "profile");
+    }
+    EngineNormalizeTimezoneScalarRequest left_request;
+    left_request.context = request.context;
+    left_request.input_value = left;
+    const auto left_normalized =
+        EngineNormalizeTimezoneScalar(left_request);
+    if (!left_normalized.ok) return propagate_failure(left_normalized);
+    EngineNormalizeTimezoneScalarRequest right_request;
+    right_request.context = request.context;
+    right_request.input_value = right;
+    const auto right_normalized =
+        EngineNormalizeTimezoneScalar(right_request);
+    if (!right_normalized.ok) return propagate_failure(right_normalized);
+    if (left_normalized.timezone_epoch != right_normalized.timezone_epoch ||
+        !left_normalized.comparable_utc_key_available ||
+        !right_normalized.comparable_utc_key_available) {
+      return refuse(
+          left_normalized.timezone_epoch != right_normalized.timezone_epoch
+              ? "timezone comparison authority changed between operands"
+              : "named-zone operands require a resolved transition instant");
+    }
+    const auto left_key = std::tie(
+        left_normalized.comparable_utc_whole_seconds,
+        left_normalized.comparable_fractional_picoseconds);
+    const auto right_key = std::tie(
+        right_normalized.comparable_utc_whole_seconds,
+        right_normalized.comparable_fractional_picoseconds);
+    auto result = ApiSuccess<EngineCompareCanonicalScalarValuesResult>(
+        request.context, kOperation);
+    result.comparison =
+        left_key < right_key ? -1 : (right_key < left_key ? 1 : 0);
+    result.evidence.push_back(
+        {"timezone_epoch", std::to_string(left_normalized.timezone_epoch)});
+    return result;
+  }
+
+  int comparison = 0;
+  std::string detail;
+  if (!QowCompareCanonicalNonCollatedScalarsV1(
+          left, right, &comparison, &detail)) {
+    return refuse(std::move(detail));
+  }
+  if (comparison < -1 || comparison > 1) {
+    return refuse("canonical scalar comparator returned a noncanonical order");
+  }
+  auto result = ApiSuccess<EngineCompareCanonicalScalarValuesResult>(
+      request.context, kOperation);
+  result.comparison = comparison;
+  result.evidence.push_back(
+      {"comparison_authority", "canonical_noncollated"});
   return result;
 }
 
