@@ -80,19 +80,19 @@ bool RowNumberEncodedPayloadBytes(const std::size_t row_count,
   return true;
 }
 
-constexpr std::uint64_t kPercentRankRatioTextMaximumBytes = 36;
-constexpr std::uint64_t kPercentRankConversionWorkspaceMaximumBytes =
-    2 * kPercentRankRatioTextMaximumBytes;
+constexpr std::uint64_t kRealRankingRatioTextMaximumBytes = 36;
+constexpr std::uint64_t kRealRankingConversionWorkspaceMaximumBytes =
+    2 * kRealRankingRatioTextMaximumBytes;
 
-bool PercentRankEncodedPayloadBytes(const std::size_t row_count,
+bool RealRankingEncodedPayloadBytes(const std::size_t row_count,
                                     std::uint64_t* bytes) {
   if (bytes == nullptr ||
       row_count > std::numeric_limits<std::uint64_t>::max() /
-                      kPercentRankRatioTextMaximumBytes) {
+                      kRealRankingRatioTextMaximumBytes) {
     return false;
   }
   *bytes = static_cast<std::uint64_t>(row_count) *
-           kPercentRankRatioTextMaximumBytes;
+           kRealRankingRatioTextMaximumBytes;
   return true;
 }
 
@@ -709,32 +709,47 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
     const DescriptorBatch& execution_ordered_input_batch,
     const bool borrowed_execution_carriers) {
   CanonicalDescriptorPeerRankingResult result;
-  const bool percent_rank =
-      request.builtin_id == "sb.window.percent_rank" ||
+  const bool cume_dist =
+      request.builtin_id == "sb.window.cume_dist" ||
       request.function_uuid ==
-          "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
+          "019de5fc-2400-721c-be64-2568b64a02b9";
+  const bool percent_rank =
+      !cume_dist &&
+      (request.builtin_id == "sb.window.percent_rank" ||
+       request.function_uuid ==
+           "019de5fc-2400-7d86-86fe-96f3f27b5dd6");
   const bool dense_rank =
-      !percent_rank &&
+      !cume_dist && !percent_rank &&
       (request.builtin_id == "sb.window.dense_rank" ||
        request.function_uuid ==
            "019de5fc-2400-741d-bef0-f079fd3ba494");
+  const bool real_ranking = percent_rank || cume_dist;
   const std::string_view ranking_name =
-      percent_rank ? "PERCENT_RANK" : (dense_rank ? "DENSE_RANK" : "RANK");
+      cume_dist
+          ? "CUME_DIST"
+          : (percent_rank ? "PERCENT_RANK"
+                          : (dense_rank ? "DENSE_RANK" : "RANK"));
   const std::string_view expected_implementation =
-      percent_rank
-          ? "window.percent-rank.v1"
-          : (dense_rank ? "window.dense-rank.v1" : "window.rank.v1");
+      cume_dist
+          ? "window.cume-dist.v1"
+          : (percent_rank
+                 ? "window.percent-rank.v1"
+                 : (dense_rank ? "window.dense-rank.v1" : "window.rank.v1"));
   const std::string_view expected_builtin =
-      percent_rank
-          ? "sb.window.percent_rank"
-          : (dense_rank ? "sb.window.dense_rank" : "sb.window.rank");
+      cume_dist
+          ? "sb.window.cume_dist"
+          : (percent_rank
+                 ? "sb.window.percent_rank"
+                 : (dense_rank ? "sb.window.dense_rank" : "sb.window.rank"));
   const std::string_view expected_function_uuid =
-      percent_rank
-          ? "019de5fc-2400-7d86-86fe-96f3f27b5dd6"
-          : (dense_rank ? "019de5fc-2400-741d-bef0-f079fd3ba494"
-                        : "019de5fc-2400-7b94-870d-0dd789ca70ab");
+      cume_dist
+          ? "019de5fc-2400-721c-be64-2568b64a02b9"
+          : (percent_rank
+                 ? "019de5fc-2400-7d86-86fe-96f3f27b5dd6"
+                 : (dense_rank ? "019de5fc-2400-741d-bef0-f079fd3ba494"
+                               : "019de5fc-2400-7b94-870d-0dd789ca70ab"));
   const std::string_view expected_result_type =
-      percent_rank ? "real64" : "int64";
+      real_ranking ? "real64" : "int64";
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
     result.diagnostic = std::move(diagnostic);
     result.output_batch = {};
@@ -914,14 +929,14 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
   const auto peak_auxiliary_workspace_bytes = std::max(
       std::max(peak_comparison_workspace_bytes,
                binding_receipt_workspace_bytes),
-      percent_rank ? kPercentRankConversionWorkspaceMaximumBytes
+      real_ranking ? kRealRankingConversionWorkspaceMaximumBytes
                    : std::uint64_t{0});
   std::uint64_t input_payload_bytes = 0;
   std::uint64_t rank_payload_bytes = 0;
   if (!RowNumberBatchPayloadBytes(execution_ordered_input_batch,
                                   &input_payload_bytes) ||
-      !(percent_rank
-            ? PercentRankEncodedPayloadBytes(
+      !(real_ranking
+            ? RealRankingEncodedPayloadBytes(
                   execution_ordered_input_batch.rows.size(),
                   &rank_payload_bytes)
             : RowNumberEncodedPayloadBytes(
@@ -974,50 +989,88 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
   result.output_batch.columns = execution_ordered_input_batch.columns;
   result.output_batch.columns.push_back(request.ranking_column);
   result.output_batch.rows = execution_ordered_input_batch.rows;
-  std::size_t current_rank = 1;
-  for (std::size_t row = 0; row < result.output_batch.rows.size(); ++row) {
-    if (row != 0) {
-      const auto compared = CompareCanonicalDescriptorOrderValues(
-          execution_ordered_input_batch.rows[row - 1]
-              .values[request.order_term.column],
-          execution_ordered_input_batch.rows[row]
-              .values[request.order_term.column],
-          request.order_term);
-      if (!compared.diagnostic.ok) return refuse(compared.diagnostic);
-      if (compared.comparison > 0) {
-        return refuse(Refusal(
-            "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
-            std::string(ranking_name) +
-                " input is not ordered by its canonical term"));
+  if (cume_dist) {
+    std::size_t peer_begin = 0;
+    for (std::size_t row = 1; row <= result.output_batch.rows.size(); ++row) {
+      bool peer_complete = row == result.output_batch.rows.size();
+      if (!peer_complete) {
+        const auto compared = CompareCanonicalDescriptorOrderValues(
+            execution_ordered_input_batch.rows[row - 1]
+                .values[request.order_term.column],
+            execution_ordered_input_batch.rows[row]
+                .values[request.order_term.column],
+            request.order_term);
+        if (!compared.diagnostic.ok) return refuse(compared.diagnostic);
+        if (compared.comparison > 0) {
+          return refuse(Refusal(
+              "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
+              std::string(ranking_name) +
+                  " input is not ordered by its canonical term"));
+        }
+        peer_complete = compared.comparison != 0;
       }
-      if (compared.comparison != 0) {
-        current_rank = dense_rank ? current_rank + 1 : row + 1;
+      if (!peer_complete) continue;
+      for (std::size_t peer_row = peer_begin; peer_row < row; ++peer_row) {
+        CanonicalWindowCumeDistValueRequest rank_request;
+        rank_request.function_abi_version = request.function_abi_version;
+        rank_request.builtin_id = request.builtin_id;
+        rank_request.function_uuid = request.function_uuid;
+        rank_request.output_descriptor = request.ranking_column.descriptor;
+        rank_request.cumulative_row_count = row;
+        rank_request.partition_row_count = result.output_batch.rows.size();
+        auto rank = ComputeCanonicalWindowCumeDistValue(rank_request);
+        if (!rank.diagnostic.ok) return refuse(std::move(rank.diagnostic));
+        result.output_batch.rows[peer_row].values.push_back(
+            std::move(rank.value));
       }
+      peer_begin = row;
     }
-    internal_api::EngineTypedValue value;
-    if (percent_rank) {
-      CanonicalWindowPercentRankValueRequest rank_request;
-      rank_request.function_abi_version = request.function_abi_version;
-      rank_request.builtin_id = request.builtin_id;
-      rank_request.function_uuid = request.function_uuid;
-      rank_request.output_descriptor = request.ranking_column.descriptor;
-      rank_request.one_based_rank = current_rank;
-      rank_request.partition_row_count = result.output_batch.rows.size();
-      auto rank = ComputeCanonicalWindowPercentRankValue(rank_request);
-      if (!rank.diagnostic.ok) return refuse(std::move(rank.diagnostic));
-      value = std::move(rank.value);
-    } else {
-      CanonicalWindowIntegerRankValueRequest rank_request;
-      rank_request.function_abi_version = request.function_abi_version;
-      rank_request.builtin_id = request.builtin_id;
-      rank_request.function_uuid = request.function_uuid;
-      rank_request.output_descriptor = request.ranking_column.descriptor;
-      rank_request.one_based_rank = current_rank;
-      auto rank = ComputeCanonicalWindowIntegerRankValue(rank_request);
-      if (!rank.diagnostic.ok) return refuse(std::move(rank.diagnostic));
-      value = std::move(rank.value);
+  } else {
+    std::size_t current_rank = 1;
+    for (std::size_t row = 0; row < result.output_batch.rows.size(); ++row) {
+      if (row != 0) {
+        const auto compared = CompareCanonicalDescriptorOrderValues(
+            execution_ordered_input_batch.rows[row - 1]
+                .values[request.order_term.column],
+            execution_ordered_input_batch.rows[row]
+                .values[request.order_term.column],
+            request.order_term);
+        if (!compared.diagnostic.ok) return refuse(compared.diagnostic);
+        if (compared.comparison > 0) {
+          return refuse(Refusal(
+              "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
+              std::string(ranking_name) +
+                  " input is not ordered by its canonical term"));
+        }
+        if (compared.comparison != 0) {
+          current_rank = dense_rank ? current_rank + 1 : row + 1;
+        }
+      }
+      internal_api::EngineTypedValue value;
+      if (percent_rank) {
+        CanonicalWindowPercentRankValueRequest rank_request;
+        rank_request.function_abi_version = request.function_abi_version;
+        rank_request.builtin_id = request.builtin_id;
+        rank_request.function_uuid = request.function_uuid;
+        rank_request.output_descriptor = request.ranking_column.descriptor;
+        rank_request.one_based_rank = current_rank;
+        rank_request.partition_row_count = result.output_batch.rows.size();
+        auto rank = ComputeCanonicalWindowPercentRankValue(rank_request);
+        if (!rank.diagnostic.ok) return refuse(std::move(rank.diagnostic));
+        value = std::move(rank.value);
+      } else {
+        CanonicalWindowIntegerRankValueRequest rank_request;
+        rank_request.function_abi_version = request.function_abi_version;
+        rank_request.builtin_id = request.builtin_id;
+        rank_request.function_uuid = request.function_uuid;
+        rank_request.output_descriptor = request.ranking_column.descriptor;
+        rank_request.one_based_rank = current_rank;
+        auto rank = ComputeCanonicalWindowIntegerRankValue(rank_request);
+        if (!rank.diagnostic.ok) return refuse(std::move(rank.diagnostic));
+        value = std::move(rank.value);
+      }
+      result.output_batch.rows[row].values.push_back(std::move(value));
     }
-    result.output_batch.rows[row].values.push_back(std::move(value));
   }
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, selected_node->output_descriptor_ids);

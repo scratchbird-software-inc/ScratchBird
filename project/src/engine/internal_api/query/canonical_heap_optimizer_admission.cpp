@@ -817,7 +817,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         (window_node->semantic_variant_id != "window.row-number.v1" &&
          window_node->semantic_variant_id != "window.rank.v1" &&
          window_node->semantic_variant_id != "window.dense-rank.v1" &&
-         window_node->semantic_variant_id != "window.percent-rank.v1") ||
+         window_node->semantic_variant_id != "window.percent-rank.v1" &&
+         window_node->semantic_variant_id != "window.cume-dist.v1") ||
         window_node->bound_expression_ids.size() != 2 ||
         window_node->output_descriptor_ids.size() !=
             sort_node->output_descriptor_ids.size() + 1 ||
@@ -996,26 +997,34 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         "019de5fc-2400-741d-bef0-f079fd3ba494";
     constexpr std::string_view kPercentRankFunctionUuid =
         "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
+    constexpr std::string_view kCumeDistFunctionUuid =
+        "019de5fc-2400-721c-be64-2568b64a02b9";
     const bool rank_window =
         window_node->semantic_variant_id == "window.rank.v1";
     const bool dense_rank_window =
         window_node->semantic_variant_id == "window.dense-rank.v1";
     const bool percent_rank_window =
         window_node->semantic_variant_id == "window.percent-rank.v1";
+    const bool cume_dist_window =
+        window_node->semantic_variant_id == "window.cume-dist.v1";
     const std::string_view expected_builtin_id =
-        percent_rank_window
-            ? "sb.window.percent_rank"
-            : (dense_rank_window
-                   ? "sb.window.dense_rank"
-                   : (rank_window ? "sb.window.rank"
-                                  : "sb.window.row_number"));
+        cume_dist_window
+            ? "sb.window.cume_dist"
+            : (percent_rank_window
+                   ? "sb.window.percent_rank"
+                   : (dense_rank_window
+                          ? "sb.window.dense_rank"
+                          : (rank_window ? "sb.window.rank"
+                                         : "sb.window.row_number")));
     const std::string_view expected_function_uuid =
-        percent_rank_window
-            ? kPercentRankFunctionUuid
-            : (dense_rank_window
-                   ? kDenseRankFunctionUuid
-                   : (rank_window ? kRankFunctionUuid
-                                  : kRowNumberFunctionUuid));
+        cume_dist_window
+            ? kCumeDistFunctionUuid
+            : (percent_rank_window
+                   ? kPercentRankFunctionUuid
+                   : (dense_rank_window
+                          ? kDenseRankFunctionUuid
+                          : (rank_window ? kRankFunctionUuid
+                                         : kRowNumberFunctionUuid)));
     const auto ordering_property_uuid =
         sort_node->delivered_property_uuids.front();
     const auto window_property_uuid = std::ranges::find_if(
@@ -1146,13 +1155,15 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         window_outputs.back()->output_name_utf8 !=
             relational.window_invocations.front().output_name_utf8) {
       return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
-                    percent_rank_window
-                        ? "heap_percent_rank_window_binding"
-                        : (dense_rank_window
-                               ? "heap_dense_rank_window_binding"
-                               : (rank_window
-                                      ? "heap_rank_window_binding"
-                                      : "heap_row_number_window_binding")));
+                    cume_dist_window
+                        ? "heap_cume_dist_window_binding"
+                        : (percent_rank_window
+                               ? "heap_percent_rank_window_binding"
+                               : (dense_rank_window
+                                      ? "heap_dense_rank_window_binding"
+                                      : (rank_window
+                                             ? "heap_rank_window_binding"
+                                             : "heap_row_number_window_binding"))));
     }
   }
   const auto& node = *scan_node;

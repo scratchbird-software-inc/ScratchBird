@@ -88,6 +88,20 @@ struct CanonicalWindowPercentRankValueResult {
   scratchbird::engine::internal_api::EngineTypedValue value;
 };
 
+struct CanonicalWindowCumeDistValueRequest {
+  std::uint16_t function_abi_version = 0;
+  std::string builtin_id;
+  std::string function_uuid;
+  scratchbird::engine::internal_api::EngineDescriptor output_descriptor;
+  std::uint64_t cumulative_row_count = 0;
+  std::uint64_t partition_row_count = 0;
+};
+
+struct CanonicalWindowCumeDistValueResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  scratchbird::engine::internal_api::EngineTypedValue value;
+};
+
 struct CanonicalWindowRankingRequest {
   CanonicalWindowFrameResult frames;
   CanonicalWindowRankingFunction function =
@@ -577,6 +591,8 @@ CanonicalWindowIntegerRankValueResult ComputeCanonicalWindowIntegerRankValue(
     const CanonicalWindowIntegerRankValueRequest& request);
 CanonicalWindowPercentRankValueResult ComputeCanonicalWindowPercentRankValue(
     const CanonicalWindowPercentRankValueRequest& request);
+CanonicalWindowCumeDistValueResult ComputeCanonicalWindowCumeDistValue(
+    const CanonicalWindowCumeDistValueRequest& request);
 CanonicalWindowValueResult ExecuteCanonicalWindowValue(
     const CanonicalWindowValueRequest& request);
 CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(

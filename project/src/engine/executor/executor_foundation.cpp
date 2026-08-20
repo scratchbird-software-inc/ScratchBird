@@ -7930,6 +7930,54 @@ CanonicalWindowPercentRankValueResult ComputeCanonicalWindowPercentRankValue(
   return result;
 }
 
+CanonicalWindowCumeDistValueResult ComputeCanonicalWindowCumeDistValue(
+    const CanonicalWindowCumeDistValueRequest& request) {
+  CanonicalWindowCumeDistValueResult result;
+  const auto refuse = [&](std::string detail) {
+    result = {};
+    result.diagnostic = WindowRankingRefusal(
+        CanonicalWindowRankingFunction::cume_dist, std::move(detail));
+    return result;
+  };
+  const auto type_uuid =
+      RankingDescriptorField(request.output_descriptor, "type_uuid");
+  const auto nullability =
+      RankingDescriptorField(request.output_descriptor, "nullability");
+  if (request.function_abi_version != 1 ||
+      request.builtin_id != "sb.window.cume_dist" ||
+      request.function_uuid != kWindowCumeDistUuid ||
+      !IsCanonicalUuid(request.function_uuid) ||
+      request.partition_row_count == 0 ||
+      request.cumulative_row_count == 0 ||
+      request.cumulative_row_count > request.partition_row_count ||
+      request.partition_row_count >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::int64_t>::max()) ||
+      !IsCanonicalUuid(
+          request.output_descriptor.descriptor_uuid.canonical) ||
+      request.output_descriptor.descriptor_kind != "scalar" ||
+      request.output_descriptor.canonical_type_name != "real64" ||
+      request.output_descriptor.encoded_descriptor.empty() ||
+      !type_uuid.has_value() || !IsCanonicalUuid(*type_uuid) ||
+      !nullability.has_value() || *nullability != "non_null" ||
+      request.output_descriptor.descriptor_uuid.canonical == *type_uuid ||
+      request.output_descriptor.descriptor_uuid.canonical ==
+          request.function_uuid) {
+    return refuse(
+        "CUME_DIST value lacks its exact registry identity, descriptor, "
+        "cumulative row count, or partition cardinality");
+  }
+  const auto value = RankingRealValue(request.output_descriptor,
+                                      request.cumulative_row_count,
+                                      request.partition_row_count);
+  if (!value.has_value()) {
+    return refuse("CUME_DIST result conversion failed");
+  }
+  result.value = *value;
+  result.diagnostic = {};
+  return result;
+}
+
 // QOW-SOURCE-WIN-006-V1
 // Ranking functions consume the exact partition and typed peer ranges created
 // by QOW-401 after QOW-402 has validated the complete frame and exclusion.

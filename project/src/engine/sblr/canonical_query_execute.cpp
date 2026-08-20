@@ -6274,9 +6274,12 @@ constexpr GlobalRankingWindowProfile kGlobalDenseRankProfile{
 constexpr GlobalRankingWindowProfile kGlobalPercentRankProfile{
     "window.percent-rank.v1", "sb.window.percent_rank",
     "019de5fc-2400-7d86-86fe-96f3f27b5dd6", "PERCENT_RANK", "real64"};
-constexpr std::uint64_t kPercentRankRatioTextMaximumBytes = 36;
-constexpr std::uint64_t kPercentRankConversionWorkspaceMaximumBytes =
-    2 * kPercentRankRatioTextMaximumBytes;
+constexpr GlobalRankingWindowProfile kGlobalCumeDistProfile{
+    "window.cume-dist.v1", "sb.window.cume_dist",
+    "019de5fc-2400-721c-be64-2568b64a02b9", "CUME_DIST", "real64"};
+constexpr std::uint64_t kRealRankingRatioTextMaximumBytes = 36;
+constexpr std::uint64_t kRealRankingConversionWorkspaceMaximumBytes =
+    2 * kRealRankingRatioTextMaximumBytes;
 
 // The optional Project-root form preserves a narrower public SELECT list and
 // additionally binds every Window passthrough to its ordered input expression.
@@ -14040,7 +14043,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         if ((current->semantic_variant_id != "window.row-number.v1" &&
              current->semantic_variant_id != "window.rank.v1" &&
              current->semantic_variant_id != "window.dense-rank.v1" &&
-             current->semantic_variant_id != "window.percent-rank.v1") ||
+             current->semantic_variant_id != "window.percent-rank.v1" &&
+             current->semantic_variant_id != "window.cume-dist.v1") ||
             current->logical_node_id != graph.root_logical_node_id ||
             current->bound_expression_ids.size() != 2 ||
             current->required_property_uuids.size() != 1 ||
@@ -17634,15 +17638,22 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             node.semantic_variant_id == "window.dense-rank.v1";
         const bool percent_rank_window =
             node.semantic_variant_id == "window.percent-rank.v1";
+        const bool cume_dist_window =
+            node.semantic_variant_id == "window.cume-dist.v1";
         const bool peer_ranking_window =
-            rank_window || dense_rank_window || percent_rank_window;
+            rank_window || dense_rank_window || percent_rank_window ||
+            cume_dist_window;
+        const bool real_ranking_window =
+            percent_rank_window || cume_dist_window;
         const auto& ranking_profile =
-            percent_rank_window
-                ? kGlobalPercentRankProfile
-                : (dense_rank_window
-                       ? kGlobalDenseRankProfile
-                       : (rank_window ? kGlobalRankProfile
-                                      : kGlobalRowNumberProfile));
+            cume_dist_window
+                ? kGlobalCumeDistProfile
+                : (percent_rank_window
+                       ? kGlobalPercentRankProfile
+                       : (dense_rank_window
+                              ? kGlobalDenseRankProfile
+                              : (rank_window ? kGlobalRankProfile
+                                             : kGlobalRowNumberProfile)));
         const std::string_view ranking_name = ranking_profile.display_name;
         const auto typed_consumer = std::ranges::find_if(
             request.relational_dag.nodes, [&](const auto& candidate) {
@@ -17721,6 +17732,33 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 std::nullopt};
         exec::DescriptorBatch output = input_batch;
         output.columns.push_back(ranking_column);
+        std::string cume_dist_detail;
+        const auto append_cume_dist_group =
+            [&](const std::size_t peer_begin,
+                const std::size_t peer_end_exclusive) {
+              for (std::size_t peer_row = peer_begin;
+                   peer_row < peer_end_exclusive; ++peer_row) {
+                exec::CanonicalWindowCumeDistValueRequest rank_request;
+                rank_request.function_abi_version = 1;
+                rank_request.builtin_id =
+                    std::string(ranking_profile.builtin_id);
+                rank_request.function_uuid =
+                    std::string(ranking_profile.function_uuid);
+                rank_request.output_descriptor = descriptor;
+                rank_request.cumulative_row_count = peer_end_exclusive;
+                rank_request.partition_row_count = input_row_count;
+                auto rank =
+                    exec::ComputeCanonicalWindowCumeDistValue(rank_request);
+                if (!rank.diagnostic.ok) {
+                  cume_dist_detail = rank.diagnostic.detail;
+                  return false;
+                }
+                output.rows[peer_row].values.push_back(
+                    std::move(rank.value));
+              }
+              return true;
+            };
+        std::size_t peer_begin = 0;
         std::size_t current_rank = 1;
         std::uint64_t rank_comparison_workspace_bytes = 0;
         for (std::size_t row = 0; row < output.rows.size(); ++row) {
@@ -17768,9 +17806,19 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                             " input is not canonically ordered");
             }
             if (compared.comparison != 0) {
-              current_rank = dense_rank_window ? current_rank + 1 : row + 1;
+              if (cume_dist_window) {
+                if (!append_cume_dist_group(peer_begin, row)) {
+                  return refuse(std::string(kPayloadDiagnostic),
+                                cume_dist_detail);
+                }
+                peer_begin = row;
+              } else {
+                current_rank =
+                    dense_rank_window ? current_rank + 1 : row + 1;
+              }
             }
           }
+          if (cume_dist_window) continue;
           api::EngineTypedValue value;
           if (percent_rank_window) {
             exec::CanonicalWindowPercentRankValueRequest rank_request;
@@ -17809,6 +17857,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             value.encoded_value = std::to_string(row + 1);
           }
           output.rows[row].values.push_back(std::move(value));
+        }
+        if (cume_dist_window &&
+            !append_cume_dist_group(peer_begin, output.rows.size())) {
+          return refuse(std::string(kPayloadDiagnostic), cume_dist_detail);
         }
         const auto canonical = exec::ValidateCanonicalDescriptorBatch(
             output, node.output_descriptor_ids);
@@ -17879,34 +17931,38 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           auxiliary_memory =
               std::max(auxiliary_memory, actual_receipt_workspace_bytes);
-          if (percent_rank_window) {
+          if (real_ranking_window) {
             auxiliary_memory = std::max(
                 auxiliary_memory,
-                kPercentRankConversionWorkspaceMaximumBytes);
+                kRealRankingConversionWorkspaceMaximumBytes);
           }
-          std::uint64_t percent_rank_payload_reserve = 0;
-          if (percent_rank_window &&
+          std::uint64_t real_ranking_payload_reserve = 0;
+          if (real_ranking_window &&
               (!CheckedMultiply(input_row_count,
-                                kPercentRankRatioTextMaximumBytes,
-                                &percent_rank_payload_reserve) ||
-               !CheckedAdd(auxiliary_memory, percent_rank_payload_reserve,
+                                kRealRankingRatioTextMaximumBytes,
+                                &real_ranking_payload_reserve) ||
+               !CheckedAdd(auxiliary_memory, real_ranking_payload_reserve,
                            &auxiliary_memory))) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition PERCENT_RANK payload reserve overflowed");
+                "composition " + std::string(ranking_name) +
+                    " payload reserve overflowed");
           }
         }
         implementation_id = std::string(ranking_profile.semantic_variant_id);
         capability_uuid = peer_ranking_window
                               ? peer_ranking_order_term_binding_evidence_uuid
                               : window_capability_uuid;
-        transformation_rule = percent_rank_window
-                                  ? "canonical.window.composed-percent-rank.v1"
-                                  : (dense_rank_window
-                                         ? "canonical.window.composed-dense-rank.v1"
-                                         : (rank_window
-                                                ? "canonical.window.composed-rank.v1"
-                                                : "canonical.window.composed-row-number.v1"));
+        transformation_rule =
+            cume_dist_window
+                ? "canonical.window.composed-cume-dist.v1"
+                : (percent_rank_window
+                       ? "canonical.window.composed-percent-rank.v1"
+                       : (dense_rank_window
+                              ? "canonical.window.composed-dense-rank.v1"
+                              : (rank_window
+                                     ? "canonical.window.composed-rank.v1"
+                                     : "canonical.window.composed-row-number.v1")));
         physical_kind = exec::PhysicalNodeKind::kWindow;
         required_property_uuids = node.required_property_uuids;
         delivered_property_uuids = node.delivered_property_uuids;
@@ -50383,15 +50439,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         window_node->semantic_variant_id == "window.dense-rank.v1";
     const bool percent_rank_window =
         window_node->semantic_variant_id == "window.percent-rank.v1";
+    const bool cume_dist_window =
+        window_node->semantic_variant_id == "window.cume-dist.v1";
     const bool peer_ranking_window =
-        rank_window || dense_rank_window || percent_rank_window;
+        rank_window || dense_rank_window || percent_rank_window ||
+        cume_dist_window;
     const auto& ranking_profile =
-        percent_rank_window
-            ? kGlobalPercentRankProfile
-            : (dense_rank_window
-                   ? kGlobalDenseRankProfile
-                   : (rank_window ? kGlobalRankProfile
-                                  : kGlobalRowNumberProfile));
+        cume_dist_window
+            ? kGlobalCumeDistProfile
+            : (percent_rank_window
+                   ? kGlobalPercentRankProfile
+                   : (dense_rank_window
+                          ? kGlobalDenseRankProfile
+                          : (rank_window ? kGlobalRankProfile
+                                         : kGlobalRowNumberProfile)));
     const std::string_view ranking_name = ranking_profile.display_name;
     const auto logical_window = std::ranges::find_if(
         graph.nodes, [&](const auto& candidate) {
@@ -50494,12 +50555,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          window_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kWindow,
          exec::PhysicalNodeKind::kWindow,
-         percent_rank_window
-             ? "canonical.heap.window.percent-rank.v1"
-             : (dense_rank_window
-                    ? "canonical.heap.window.dense-rank.v1"
-                    : (rank_window ? "canonical.heap.window.rank.v1"
-                                   : "canonical.heap.window.row-number.v1")),
+         cume_dist_window
+             ? "canonical.heap.window.cume-dist.v1"
+             : (percent_rank_window
+                    ? "canonical.heap.window.percent-rank.v1"
+                    : (dense_rank_window
+                           ? "canonical.heap.window.dense-rank.v1"
+                           : (rank_window ? "canonical.heap.window.rank.v1"
+                                          : "canonical.heap.window.row-number.v1"))),
          1,
          planning_request.optimizer_request.resource.memory_budget_bytes,
          1, 1, window_node->required_property_uuids,
