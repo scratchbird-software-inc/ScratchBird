@@ -92,12 +92,40 @@ bool SortReceiptRequestCarriersAreExactDefault(
              request.mga_authority);
 }
 
-bool CanonicalSortBatchMemoryBytes(const DescriptorBatch& batch,
-                                   std::uint64_t* bytes) {
+bool CanonicalDescriptorBatchMemoryBytes(const DescriptorBatch& batch,
+                                         std::uint64_t* bytes) {
   if (bytes == nullptr) return false;
   *bytes = 1;
   for (const auto& row : batch.rows) {
     for (const auto& value : row.values) {
+      if (value.encoded_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.encoded_value.size();
+      if (value.binary_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.binary_value.size();
+    }
+  }
+  return true;
+}
+
+bool CanonicalDescriptorBatchRangeMemoryBytes(
+    const DescriptorBatch& batch,
+    const std::size_t first_row,
+    const std::size_t row_count,
+    std::uint64_t* bytes) {
+  if (bytes == nullptr || first_row > batch.rows.size() ||
+      row_count > batch.rows.size() - first_row) {
+    return false;
+  }
+  *bytes = 1;
+  for (std::size_t row_index = first_row;
+       row_index < first_row + row_count; ++row_index) {
+    for (const auto& value : batch.rows[row_index].values) {
       if (value.encoded_value.size() >
           std::numeric_limits<std::uint64_t>::max() - *bytes) {
         return false;
@@ -563,7 +591,6 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimitBound(
       execution_input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
 
-  result.output_batch.columns = execution_input_batch.columns;
   const auto row_count = execution_input_batch.rows.size();
   const auto offset = request.offset > row_count
                           ? row_count
@@ -572,6 +599,35 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimitBound(
   const auto take = request.limit > remaining
                         ? remaining
                         : static_cast<std::size_t>(request.limit);
+
+  std::uint64_t input_memory_bytes = 0;
+  std::uint64_t output_memory_bytes = 0;
+  if (!CanonicalDescriptorBatchMemoryBytes(execution_input_batch,
+                                           &input_memory_bytes) ||
+      !CanonicalDescriptorBatchRangeMemoryBytes(
+          execution_input_batch, offset, take, &output_memory_bytes) ||
+      selected_node->memory_bytes_required == 0 ||
+      selected_node->memory_bytes_required > execution_dag.memory_budget_bytes ||
+      selected_node->memory_bytes_required >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max())) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "limit memory grant or runtime payload accounting is invalid"));
+  }
+  auto remaining_memory_bytes = selected_node->memory_bytes_required;
+  const auto charge = [&](const std::uint64_t bytes) {
+    if (bytes > remaining_memory_bytes) return false;
+    remaining_memory_bytes -= bytes;
+    return true;
+  };
+  if (!charge(input_memory_bytes) || !charge(output_memory_bytes)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "limit runtime materialization exceeds the selected node memory grant"));
+  }
+
+  result.output_batch.columns = execution_input_batch.columns;
   result.output_batch.rows.reserve(take);
   result.output_batch.rows.insert(
       result.output_batch.rows.end(),
@@ -1022,9 +1078,11 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
 
   std::uint64_t input_memory_bytes = 0;
   std::uint64_t order_memory_bytes = 0;
-  if (!CanonicalSortBatchMemoryBytes(*input_batch, &input_memory_bytes) ||
+  if (!CanonicalDescriptorBatchMemoryBytes(*input_batch,
+                                           &input_memory_bytes) ||
       (separate_order_key_batch &&
-       !CanonicalSortBatchMemoryBytes(*order_batch, &order_memory_bytes)) ||
+       !CanonicalDescriptorBatchMemoryBytes(*order_batch,
+                                            &order_memory_bytes)) ||
       selected_node->memory_bytes_required == 0 ||
       selected_node->memory_bytes_required > physical_dag->memory_budget_bytes ||
       selected_node->memory_bytes_required >

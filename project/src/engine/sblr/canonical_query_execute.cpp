@@ -6619,6 +6619,32 @@ bool AddBatchMemoryBytes(const exec::DescriptorBatch& batch,
   return true;
 }
 
+bool AddBatchRowRangeMemoryBytes(const exec::DescriptorBatch& batch,
+                                 const std::size_t first_row,
+                                 const std::size_t row_count,
+                                 std::uint64_t* memory_bytes) {
+  if (memory_bytes == nullptr || first_row > batch.rows.size() ||
+      row_count > batch.rows.size() - first_row) {
+    return false;
+  }
+  for (std::size_t row_index = first_row;
+       row_index < first_row + row_count; ++row_index) {
+    for (const auto& value : batch.rows[row_index].values) {
+      if (value.encoded_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *memory_bytes) {
+        return false;
+      }
+      *memory_bytes += value.encoded_value.size();
+      if (value.binary_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *memory_bytes) {
+        return false;
+      }
+      *memory_bytes += value.binary_value.size();
+    }
+  }
+  return true;
+}
+
 bool CheckedAdd(const std::uint64_t left, const std::uint64_t right,
                 std::uint64_t* result) {
   if (result == nullptr ||
@@ -16113,11 +16139,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                     "composition node exceeds the admitted memory budget");
     }
     if ((physical_kind == exec::PhysicalNodeKind::kFilter ||
-         physical_kind == exec::PhysicalNodeKind::kSort) &&
+         physical_kind == exec::PhysicalNodeKind::kSort ||
+         physical_kind == exec::PhysicalNodeKind::kLimit) &&
         !planning_values_exact) {
       // The preceding complex aggregate owns its live result values.  The
       // planning batch is only a schema/cardinality placeholder, so bind the
-      // dynamic FILTER or SORT to the full selected budget and let its
+      // dynamic FILTER, SORT, or LIMIT to the full selected budget and let its
       // issuer/executor charge exact callback payloads and auxiliary state.
       operator_memory =
           request.optimizer_request.resource.memory_budget_bytes;
@@ -23330,10 +23357,12 @@ ExecuteCanonicalObjectFreeLimitQuery(
           ? input_row_count
           : static_cast<std::size_t>(row_limit);
   std::uint64_t input_memory = 1;
+  std::uint64_t output_memory = 1;
   std::uint64_t total_memory = 0;
   if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
-      !CheckedAdd(input_memory, output_row_bound == 0 ? 0 : input_memory,
-                  &total_memory)) {
+      !AddBatchRowRangeMemoryBytes(input.batch, 0, output_row_bound,
+                                   &output_memory) ||
+      !CheckedAdd(input_memory, output_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live LIMIT input or output size overflowed");
   }
@@ -27170,6 +27199,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             composition_fetch_first_rows_only
                 ? "canonical.time-series.fetch.first-rows-only.v1"
                 : "canonical.time-series.limit.bound-count-offset.v1";
+        profile.memory_bytes_required = planning.memory_budget_bytes;
       } else {
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                       "time-series consumer kind is not prepared");
@@ -31709,6 +31739,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
           fetch_first_rows_only
               ? "canonical.search.fetch.first-rows-only.v1"
               : "canonical.search.limit.bound-count-offset.v1";
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else {
       return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                     "search consumer kind is not prepared");
@@ -33862,6 +33893,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
           fetch_first_rows_only
               ? "canonical.key-value.fetch.first-rows-only.v1"
               : "canonical.key-value.limit.bound-count-offset.v1";
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else {
       return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                     "key/value consumer kind is not prepared");
@@ -36264,6 +36296,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           fetch_first_rows_only
               ? "canonical.graph.fetch.first-rows-only.v1"
               : "canonical.graph.limit.bound-count-offset.v1";
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else {
       return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                     "graph consumer kind is not yet prepared");
@@ -38871,6 +38904,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
               fetch_first_rows_only
                   ? "canonical.document-unnest.fetch.first-rows-only.v1"
                   : "canonical.document-unnest.limit.bound-count-offset.v1";
+          consumer_profile.memory_bytes_required =
+              planning.memory_budget_bytes;
           break;
         }
         default:
@@ -47721,7 +47756,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          expected_arity == 1
              ? "canonical.heap.limit.bound-count.v1"
              : "canonical.heap.limit.bound-count-offset.v1",
-         1, 1024, 1, 1});
+         1,
+         planning_request.optimizer_request.resource.memory_budget_bytes,
+         1, 1});
   }
   for (auto& profile : profiles) {
     if (!profile.implementation_id.starts_with("scan.heap")) {
