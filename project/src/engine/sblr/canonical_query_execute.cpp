@@ -3634,12 +3634,6 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             "global JSON_OBJECT_AGG key must be a canonical text column";
         return result;
       }
-      if (is_json_object_agg && argument_ordinal == 1 &&
-          input_type != "int64") {
-        result.detail =
-            "global JSON_OBJECT_AGG value must be a canonical int64 column";
-        return result;
-      }
       if (is_approx_median && input_type != "int64") {
         result.detail =
             "global APPROX_MEDIAN input must be a canonical int64 column";
