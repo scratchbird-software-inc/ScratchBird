@@ -6920,6 +6920,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
       if (member.opcode_code == 1628 && member.operation_id == "engine.op.ddl_purge_system_history") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_PURGE_SYSTEM_HISTORY");
       if (member.opcode_code == 1629 && member.operation_id == "engine.op.ddl_set_index_optimizer_eligibility") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY");
       if (member.opcode_code == 1630 && member.operation_id == "engine.op.ddl_set_table_type_enforcement") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT");
+      if (member.opcode_code == 1631 && member.operation_id == "engine.op.database_serialize_logical_snapshot") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DATABASE_SERIALIZE_LOGICAL_SNAPSHOT");
       if (member_entry != nullptr) {
         member.requires_security_context =
             member_entry->requires_security_context;
