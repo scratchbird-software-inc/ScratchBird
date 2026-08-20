@@ -655,7 +655,7 @@ bool RuntimeMaterializedBatchMemoryBytes(const exec::DescriptorBatch& batch,
   return true;
 }
 
-void PublishRecursiveCteRuntimeMemoryObservation(
+void PublishRuntimeMemoryObservation(
     exec::CanonicalPhysicalDispatchStepResult* step,
     const std::uint64_t current_memory_bytes,
     const std::uint64_t peak_memory_bytes) {
@@ -5404,12 +5404,21 @@ bool MaterializeExpressionSortBatch(
     const exec::DescriptorBatch& input_batch,
     const CanonicalRelationalExpressionRuntimeServices& expression_services,
     exec::DescriptorBatch* sort_batch,
-    std::string* detail) {
+    std::string* detail,
+    const std::uint64_t maximum_batch_bytes =
+        std::numeric_limits<std::uint64_t>::max()) {
   if (sort_batch == nullptr || detail == nullptr || expressions.empty() ||
-      input_batch.columns.empty() || input_batch.rows.empty()) {
+      input_batch.columns.empty()) {
     if (detail != nullptr) {
       *detail = "expression SORT materialization request is incomplete";
     }
+    return false;
+  }
+  std::uint64_t materialized_bytes = 0;
+  if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
+                                           &materialized_bytes) ||
+      materialized_bytes > maximum_batch_bytes) {
+    *detail = "expression SORT input exceeds its materialization ceiling";
     return false;
   }
   *sort_batch = input_batch;
@@ -5438,6 +5447,34 @@ bool MaterializeExpressionSortBatch(
           return false;
         }
       }
+      exec::DescriptorBatch expression_value_batch;
+      expression_value_batch.columns.push_back(
+          expression.materialized_column);
+      exec::DescriptorTuple expression_value_row;
+      expression_value_row.values.push_back(std::move(value));
+      expression_value_batch.rows.push_back(
+          std::move(expression_value_row));
+      const auto value_validation =
+          exec::ValidateDescriptorBatch(expression_value_batch);
+      if (!value_validation.ok) {
+        *detail = value_validation.diagnostic_code + ":" +
+                  value_validation.detail;
+        *sort_batch = {};
+        return false;
+      }
+      value = std::move(
+          expression_value_batch.rows.front().values.front());
+      std::uint64_t value_bytes = 0;
+      if (!CheckedAdd(value.encoded_value.size(), value.binary_value.size(),
+                      &value_bytes) ||
+          !CheckedAdd(materialized_bytes, value_bytes,
+                      &materialized_bytes) ||
+          materialized_bytes > maximum_batch_bytes) {
+        *detail =
+            "expression SORT value exceeds its materialization ceiling";
+        *sort_batch = {};
+        return false;
+      }
       sort_row.values.push_back(std::move(value));
     }
   }
@@ -5449,26 +5486,8 @@ bool MaterializeExpressionSortBatch(
   }
   const auto canonical =
       exec::ValidateCanonicalDescriptorBatch(*sort_batch, descriptor_ids);
-  exec::DescriptorBatch expression_values;
-  expression_values.columns.reserve(expressions.size());
-  expression_values.columns.insert(
-      expression_values.columns.end(),
-      sort_batch->columns.end() - expressions.size(),
-      sort_batch->columns.end());
-  expression_values.rows.reserve(sort_batch->rows.size());
-  for (const auto& row : sort_batch->rows) {
-    exec::DescriptorTuple expression_row;
-    expression_row.values.reserve(expressions.size());
-    expression_row.values.insert(
-        expression_row.values.end(),
-        row.values.end() - expressions.size(), row.values.end());
-    expression_values.rows.push_back(std::move(expression_row));
-  }
-  const auto values = exec::ValidateDescriptorBatch(expression_values);
-  if (!canonical.ok || !values.ok) {
-    *detail = !canonical.ok
-                  ? canonical.diagnostic_code + ":" + canonical.detail
-                  : values.diagnostic_code + ":" + values.detail;
+  if (!canonical.ok) {
+    *detail = canonical.diagnostic_code + ":" + canonical.detail;
     *sort_batch = {};
     return false;
   }
@@ -6903,6 +6922,7 @@ constexpr std::uint64_t kCanonicalAggregateKernelBaseMemoryBytes = 1024;
 struct ExpressionSortKeyReceiptIssueResult {
   exec::DescriptorRuntimeDiagnostic diagnostic;
   std::shared_ptr<const exec::CanonicalDescriptorSortKeyReceipt> receipt;
+  std::uint64_t actual_order_key_batch_bytes = 0;
 };
 
 struct FilterPredicateReceiptIssueResult {
@@ -7202,7 +7222,11 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       const std::string& deterministic_tie_evidence_uuid,
       const std::size_t maximum_pair_comparisons,
       const std::uint64_t maximum_order_key_batch_bytes,
-      const exec::CanonicalExecutionMgaAuthority& mga_authority) {
+      const exec::CanonicalExecutionMgaAuthority& mga_authority,
+      std::uint64_t* actual_order_key_batch_bytes = nullptr) {
+    if (actual_order_key_batch_bytes != nullptr) {
+      *actual_order_key_batch_bytes = 0;
+    }
     auto issued = IssueBound(
         relational_dag, expressions, input_batch, expression_services,
         physical_dag, selected_physical_node_id, order_terms,
@@ -7213,6 +7237,9 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       exec::CanonicalDescriptorSortResult result;
       result.diagnostic = std::move(issued.diagnostic);
       return result;
+    }
+    if (actual_order_key_batch_bytes != nullptr) {
+      *actual_order_key_batch_bytes = issued.actual_order_key_batch_bytes;
     }
     exec::CanonicalDescriptorSortRequest request;
     request.order_key_receipt = std::move(issued.receipt);
@@ -7242,6 +7269,7 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
           "QOW-DIAG-QRY-010-ORDER-KEY-RECEIPT-REFUSAL-V1";
       result.diagnostic.detail = std::move(detail);
       result.receipt.reset();
+      result.actual_order_key_batch_bytes = 0;
       return result;
     };
 
@@ -7294,6 +7322,41 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     if (!validation.ok) {
       result.diagnostic = std::move(validation);
       return result;
+    }
+
+    std::uint64_t input_memory_bytes = 0;
+    std::uint64_t comparison_memory_bytes = 0;
+    std::uint64_t row_order_memory_bytes = 0;
+    std::uint64_t fixed_memory_bytes = 0;
+    if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
+                                             &input_memory_bytes) ||
+        !CheckedMultiply(input_batch.rows.size(), input_batch.rows.size(),
+                         &comparison_memory_bytes) ||
+        !CheckedMultiply(input_batch.rows.size(), sizeof(std::size_t),
+                         &row_order_memory_bytes) ||
+        !CheckedAdd(input_memory_bytes, input_memory_bytes,
+                    &fixed_memory_bytes) ||
+        !CheckedAdd(fixed_memory_bytes, comparison_memory_bytes,
+                    &fixed_memory_bytes) ||
+        !CheckedAdd(fixed_memory_bytes, row_order_memory_bytes,
+                    &fixed_memory_bytes) ||
+        selected_node->memory_bytes_required == 0 ||
+        selected_node->memory_bytes_required > physical_dag.memory_budget_bytes ||
+        selected_node->memory_bytes_required >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::size_t>::max()) ||
+        fixed_memory_bytes >= selected_node->memory_bytes_required) {
+      return refuse(
+          "expression order-key fixed runtime state exceeds the selected "
+          "sort-node memory grant");
+    }
+    const auto selected_order_key_batch_bytes = std::min(
+        maximum_order_key_batch_bytes,
+        selected_node->memory_bytes_required - fixed_memory_bytes);
+    if (selected_order_key_batch_bytes == 0) {
+      return refuse(
+          "expression order-key batch has no selected sort-node memory "
+          "allowance");
     }
 
     const auto logical_node = std::ranges::find_if(
@@ -7371,7 +7434,8 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     std::string materialization_detail;
     if (!MaterializeExpressionSortBatch(
             relational_dag, expressions, input_batch, expression_services,
-            &order_key_batch, &materialization_detail)) {
+            &order_key_batch, &materialization_detail,
+            selected_order_key_batch_bytes)) {
       return refuse("expression order-key materialization: " +
                     materialization_detail);
     }
@@ -7379,7 +7443,7 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     std::uint64_t pair_comparisons = 0;
     if (!AddBatchMemoryBytes(order_key_batch,
                              &actual_order_key_batch_bytes) ||
-        actual_order_key_batch_bytes > maximum_order_key_batch_bytes ||
+        actual_order_key_batch_bytes > selected_order_key_batch_bytes ||
         !CheckedMultiply(input_batch.rows.size(), input_batch.rows.size(),
                          &pair_comparisons) ||
         pair_comparisons > maximum_pair_comparisons) {
@@ -7414,7 +7478,7 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
           deterministic_tie_evidence_uuid;
       receipt->maximum_pair_comparisons_ = maximum_pair_comparisons;
       receipt->maximum_order_key_batch_bytes_ =
-          maximum_order_key_batch_bytes;
+          selected_order_key_batch_bytes;
       receipt->mga_authority_ = mga_authority;
       receipt->exact_current_revalidated_before_issue_ = true;
       receipt->borrowed_execution_carriers_ =
@@ -7423,6 +7487,7 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     } catch (const std::bad_alloc&) {
       return refuse("expression order-key receipt allocation failed");
     }
+    result.actual_order_key_batch_bytes = actual_order_key_batch_bytes;
     result.diagnostic = {};
     return result;
   }
@@ -10679,14 +10744,10 @@ MakeLiveExpressionSortRegistration(
     api::TypedRelationalDag relational_dag,
     CanonicalRelationalExpressionRuntimeServices expression_services,
     api::EngineRequestContext mga_context) {
-  std::uint64_t maximum_order_key_batch_bytes = 1;
-  if (!prepared.expression_ordering || prepared.expressions.empty() ||
-      prepared.order_terms.size() != prepared.expressions.size() ||
-      prepared.ordering_property_uuid.empty() ||
-      !AddBatchMemoryBytes(prepared.expression_input_batch,
-                           &maximum_order_key_batch_bytes)) {
-    maximum_order_key_batch_bytes = 0;
-  }
+  const bool prepared_expression_ordering =
+      prepared.expression_ordering && !prepared.expressions.empty() &&
+      prepared.order_terms.size() == prepared.expressions.size() &&
+      !prepared.ordering_property_uuid.empty();
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kSort;
   registration.implementation_id = "sort.typed.expression-row.v1";
@@ -10694,6 +10755,7 @@ MakeLiveExpressionSortRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 = true;
   registration.execute =
       [order_terms = std::move(prepared.order_terms),
        expressions = std::move(prepared.expressions),
@@ -10702,7 +10764,7 @@ MakeLiveExpressionSortRegistration(
        deterministic_tie_evidence_uuid =
            std::move(deterministic_tie_evidence_uuid),
        maximum_input_row_count, maximum_pair_comparisons,
-       maximum_order_key_batch_bytes,
+       prepared_expression_ordering,
        relational_dag = std::move(relational_dag),
        expression_services = std::move(expression_services),
        mga_context = std::move(mga_context)](
@@ -10716,7 +10778,7 @@ MakeLiveExpressionSortRegistration(
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
-        if (inputs.size() != 1 ||
+        if (!prepared_expression_ordering || inputs.size() != 1 ||
             !inputs.front().materialized_output_batch.has_value() ||
             inputs.front().materialized_output_batch->rows.size() >
                 maximum_input_row_count) {
@@ -10737,13 +10799,15 @@ MakeLiveExpressionSortRegistration(
         }
         const auto mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        std::uint64_t actual_order_key_batch_bytes = 0;
         auto sorted = CanonicalDescriptorSortKeyReceiptIssuer::
             IssueAndExecuteBorrowed(
                 relational_dag, expressions, input_batch,
                 expression_services, dag, node.physical_node_id,
                 order_terms, ordering_property_uuid,
                 deterministic_tie_evidence_uuid, maximum_pair_comparisons,
-                maximum_order_key_batch_bytes, mga_authority);
+                dag.memory_budget_bytes, mga_authority,
+                &actual_order_key_batch_bytes);
         if (!sorted.diagnostic.ok) {
           step.diagnostic = std::move(sorted.diagnostic);
           return step;
@@ -10755,6 +10819,35 @@ MakeLiveExpressionSortRegistration(
           step.diagnostic = output_validation;
           return step;
         }
+        std::uint64_t input_memory_bytes = 0;
+        std::uint64_t current_memory_bytes = 0;
+        std::uint64_t comparison_memory_bytes = 0;
+        std::uint64_t row_order_memory_bytes = 0;
+        std::uint64_t peak_memory_bytes = 0;
+        if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
+                                                 &input_memory_bytes) ||
+            !RuntimeMaterializedBatchMemoryBytes(sorted.output_batch,
+                                                 &current_memory_bytes) ||
+            !CheckedMultiply(input_batch.rows.size(),
+                             input_batch.rows.size(),
+                             &comparison_memory_bytes) ||
+            !CheckedMultiply(input_batch.rows.size(), sizeof(std::size_t),
+                             &row_order_memory_bytes) ||
+            !CheckedAdd(input_memory_bytes, input_memory_bytes,
+                        &peak_memory_bytes) ||
+            !CheckedAdd(peak_memory_bytes, actual_order_key_batch_bytes,
+                        &peak_memory_bytes) ||
+            !CheckedAdd(peak_memory_bytes, comparison_memory_bytes,
+                        &peak_memory_bytes) ||
+            !CheckedAdd(peak_memory_bytes, row_order_memory_bytes,
+                        &peak_memory_bytes)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "expression SORT runtime memory observation overflowed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
@@ -10762,6 +10855,8 @@ MakeLiveExpressionSortRegistration(
         step.materialized_output_batch = std::move(sorted.output_batch);
         step.mga_statement_context =
             std::move(sorted.mga_statement_context);
+        PublishRuntimeMemoryObservation(
+            &step, current_memory_bytes, peak_memory_bytes);
         return step;
       };
   return registration;
@@ -11858,7 +11953,7 @@ MakeLiveRecursiveCteRegistration(
         step.mga_statement_context = std::move(result_mga);
         step.data_access_observation_known = true;
         step.data_access_observed = false;
-        PublishRecursiveCteRuntimeMemoryObservation(
+        PublishRuntimeMemoryObservation(
             &step, current_live_memory_bytes, peak_live_memory_bytes);
         return step;
       };
@@ -15441,7 +15536,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           return refuse(std::string(kPayloadDiagnostic), prepared.detail);
         }
         std::uint64_t expression_work = 0;
-        std::uint64_t expression_memory = 0;
+        std::uint64_t expression_memory = 1;
         if (prepared.expression_ordering &&
             (!CheckedMultiply(input_row_count, prepared.expressions.size(),
                               &expression_work) ||
@@ -15463,10 +15558,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             !CheckedAdd(comparison_bound, row_order_memory,
                         &auxiliary_memory) ||
             (prepared.expression_ordering &&
-             (!CheckedAdd(auxiliary_memory, expression_memory,
-                          &auxiliary_memory) ||
-              !CheckedAdd(auxiliary_memory, expression_memory,
-                          &auxiliary_memory))) ||
+             !CheckedAdd(auxiliary_memory, expression_memory,
+                         &auxiliary_memory)) ||
             !add_work(comparison_bound)) {
           return refuse(
               "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
@@ -16019,12 +16112,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                     "composition node exceeds the admitted memory budget");
     }
-    if (physical_kind == exec::PhysicalNodeKind::kFilter &&
+    if ((physical_kind == exec::PhysicalNodeKind::kFilter ||
+         physical_kind == exec::PhysicalNodeKind::kSort) &&
         !planning_values_exact) {
       // The preceding complex aggregate owns its live result values.  The
       // planning batch is only a schema/cardinality placeholder, so bind the
-      // FILTER to the full selected budget and let its issuer/executor charge
-      // the exact retained input, truth vector, and copied output at runtime.
+      // dynamic FILTER or SORT to the full selected budget and let its
+      // issuer/executor charge exact callback payloads and auxiliary state.
       operator_memory =
           request.optimizer_request.resource.memory_budget_bytes;
     }
@@ -23526,8 +23620,7 @@ ExecuteCanonicalObjectFreeSortQuery(
                        &row_order_memory) ||
       !CheckedAdd(input_memory, input_memory, &total_memory) ||
       (prepared_root.expression_ordering &&
-       (!CheckedAdd(total_memory, expression_memory, &total_memory) ||
-        !CheckedAdd(total_memory, expression_memory, &total_memory))) ||
+       !CheckedAdd(total_memory, expression_memory, &total_memory)) ||
       !CheckedAdd(total_memory, comparison_count, &total_memory) ||
       !CheckedAdd(total_memory, row_order_memory, &total_memory) ||
       comparison_count > std::numeric_limits<std::size_t>::max()) {
@@ -23601,105 +23694,24 @@ ExecuteCanonicalObjectFreeSortQuery(
   auto values_registration = MakeLiveValuesRegistration(
       std::move(values_batches), values_capability_uuid,
       "QOW-DIAG-RELATIONAL-LIVE-SORT-VALUES-V1", "SORT");
+  auto result_bindings = std::move(prepared_root.result_bindings);
 
-  exec::CanonicalPhysicalExecutorRegistration sort_registration;
-  sort_registration.node_kind = exec::PhysicalNodeKind::kSort;
-  sort_registration.implementation_id = sort_implementation_id;
-  sort_registration.executor_capability_uuid = sort_capability_uuid;
-  sort_registration.executor_capability_abi_version = 1;
-  sort_registration.engine_owned = true;
-  sort_registration.accepts_optimizer_publication_v2 = true;
-  sort_registration.execute =
-      [order_terms = prepared_root.order_terms,
-       expression_ordering = prepared_root.expression_ordering,
-       expressions = prepared_root.expressions,
-       ordering_property_uuid = prepared_root.ordering_property_uuid,
-       relational_dag = request.relational_dag,
-       expression_services = request.expression_services,
-       deterministic_tie_evidence_uuid, input_row_count,
-       maximum_order_key_batch_bytes = expression_memory,
-       maximum_pair_comparisons =
-           std::max<std::size_t>(1, static_cast<std::size_t>(comparison_count)),
-       mga_context = request.context](
-          const exec::TypedPhysicalNodeDag& dag,
-          const exec::PhysicalNodeRecord& node,
-          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
-        exec::CanonicalPhysicalDispatchStepResult step;
-        step.selected_plan_uuid = dag.selected_plan_uuid;
-        step.mga_statement_context = dag.mga_statement_context;
-        step.executed_physical_node_id = node.physical_node_id;
-        step.causal_counter_id = node.causal_counter_id;
-        step.output_descriptor_ids = node.output_descriptor_ids;
-        step.authority.engine_mga_snapshot_bound = true;
-        if (inputs.size() != 1 ||
-            !inputs.front().materialized_output_batch.has_value()) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-SORT-INPUT-V1";
-          step.diagnostic.detail =
-              "SORT executor did not receive one typed input batch";
-          return step;
-        }
-        const auto& input_batch = *inputs.front().materialized_output_batch;
-        if (input_batch.rows.size() != input_row_count) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-SORT-INPUT-V1";
-          step.diagnostic.detail =
-              "SORT input cardinality differs from its selected cost";
-          return step;
-        }
-        const auto mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-
-        exec::CanonicalDescriptorSortResult sort_result;
-        if (expression_ordering) {
-          const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
-              input_batch, inputs.front().output_descriptor_ids);
-          if (!input_validation.ok) {
-            step.diagnostic = input_validation;
-            return step;
-          }
-          sort_result = CanonicalDescriptorSortKeyReceiptIssuer::
-              IssueAndExecuteBorrowed(
-                  relational_dag, expressions, input_batch,
-                  expression_services, dag, node.physical_node_id,
-                  order_terms, ordering_property_uuid,
-                  deterministic_tie_evidence_uuid, maximum_pair_comparisons,
-                  maximum_order_key_batch_bytes, mga_authority);
-        } else {
-          exec::CanonicalDescriptorSortRequest sort_request;
-          sort_request.selected_physical_node_id = node.physical_node_id;
-          sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
-          sort_request.mga_authority = mga_authority;
-          sort_result = exec::ExecuteCanonicalDescriptorSort(
-              sort_request, dag, input_batch, order_terms,
-              deterministic_tie_evidence_uuid);
-        }
-        if (!sort_result.diagnostic.ok) {
-          step.diagnostic = std::move(sort_result.diagnostic);
-          return step;
-        }
-        exec::DescriptorBatch output_batch =
-            std::move(sort_result.output_batch);
-        if (expression_ordering) {
-          const auto output_validation =
-              exec::ValidateCanonicalDescriptorBatch(
-                  output_batch, node.output_descriptor_ids);
-          if (!output_validation.ok) {
-            step.diagnostic = output_validation;
-            return step;
-          }
-        }
-        step.result_handle_id = node.physical_node_id;
-        step.input_row_count = input_batch.rows.size();
-        step.rows_examined = input_batch.rows.size();
-        step.output_row_count = output_batch.rows.size();
-        step.materialized_output_batch = std::move(output_batch);
-        step.mga_statement_context =
-            std::move(sort_result.mga_statement_context);
-        return step;
-      };
+  auto sort_registration =
+      prepared_root.expression_ordering
+          ? MakeLiveExpressionSortRegistration(
+                std::move(prepared_root), deterministic_tie_evidence_uuid,
+                sort_capability_uuid, input_row_count,
+                std::max<std::size_t>(
+                    1, static_cast<std::size_t>(comparison_count)),
+                request.relational_dag, request.expression_services,
+                request.context)
+          : MakeLiveSortRegistration(
+                std::move(prepared_root.order_terms),
+                deterministic_tie_evidence_uuid,
+                sort_capability_uuid, input_row_count,
+                std::max<std::size_t>(
+                    1, static_cast<std::size_t>(comparison_count)),
+                request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
   execution_request.pre_access_statistics_snapshot_uuid =
@@ -23732,7 +23744,7 @@ ExecuteCanonicalObjectFreeSortQuery(
   execution_request.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   execution_request.result_publication_request.column_bindings =
-      std::move(prepared_root.result_bindings);
+      std::move(result_bindings);
   execution_request.result_publication_request.maximum_row_count =
       std::max<std::size_t>(1, input_row_count);
 
@@ -26981,6 +26993,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             logical_consumer->delivered_property_uuids;
         profile.supported_property_kinds = {
             plan::CanonicalLogicalPropertyKind::kOrdering};
+        profile.memory_bytes_required = planning.memory_budget_bytes;
       } else if (consumer->node_kind ==
                  api::RelationalDagNodeKind::kWindow) {
         if (!composition_sort.has_value()) {
@@ -31486,6 +31499,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
           logical_consumer->delivered_property_uuids;
       consumer_profile.supported_property_kinds = {
           plan::CanonicalLogicalPropertyKind::kOrdering};
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kWindow) {
       if (!prepared_sort.has_value()) {
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
@@ -33677,6 +33691,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
           logical_consumer->delivered_property_uuids;
       consumer_profile.supported_property_kinds = {
           plan::CanonicalLogicalPropertyKind::kOrdering};
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kWindow) {
       if (!prepared_sort.has_value()) {
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
@@ -35906,6 +35921,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           logical_consumer->delivered_property_uuids;
       consumer_profile.supported_property_kinds = {
           plan::CanonicalLogicalPropertyKind::kOrdering};
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kWindow) {
       constexpr std::string_view kRowNumberFunctionUuid =
           "019de5fc-2400-7539-bcce-00eef3ae7220";
@@ -38503,6 +38519,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
               logical_consumer->delivered_property_uuids;
           consumer_profile.supported_property_kinds = {
               plan::CanonicalLogicalPropertyKind::kOrdering};
+          consumer_profile.memory_bytes_required =
+              planning.memory_budget_bytes;
           break;
         }
         case api::RelationalDagNodeKind::kWindow: {
@@ -47617,7 +47635,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         {sort_node->node_id, "sort.typed.terms.v1", sort_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kSort,
          exec::PhysicalNodeKind::kSort,
-         "canonical.heap.sort.required-order.v1", 1, 1024, 1, 1, {},
+         "canonical.heap.sort.required-order.v1", 1,
+         planning_request.optimizer_request.resource.memory_budget_bytes,
+         1, 1, {},
          {ordering_property_uuid},
          {plan::CanonicalLogicalPropertyKind::kOrdering}});
   }

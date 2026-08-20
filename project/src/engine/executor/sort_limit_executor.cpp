@@ -92,6 +92,27 @@ bool SortReceiptRequestCarriersAreExactDefault(
              request.mga_authority);
 }
 
+bool CanonicalSortBatchMemoryBytes(const DescriptorBatch& batch,
+                                   std::uint64_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = 1;
+  for (const auto& row : batch.rows) {
+    for (const auto& value : row.values) {
+      if (value.encoded_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.encoded_value.size();
+      if (value.binary_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.binary_value.size();
+    }
+  }
+  return true;
+}
+
 bool IsCanonicalUuid(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
       value[18] != '-' || value[23] != '-') {
@@ -999,6 +1020,39 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
     return order_refusal("order comparison resource bound was exceeded");
   }
 
+  std::uint64_t input_memory_bytes = 0;
+  std::uint64_t order_memory_bytes = 0;
+  if (!CanonicalSortBatchMemoryBytes(*input_batch, &input_memory_bytes) ||
+      (separate_order_key_batch &&
+       !CanonicalSortBatchMemoryBytes(*order_batch, &order_memory_bytes)) ||
+      selected_node->memory_bytes_required == 0 ||
+      selected_node->memory_bytes_required > physical_dag->memory_budget_bytes ||
+      selected_node->memory_bytes_required >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max()) ||
+      row_count > std::numeric_limits<std::uint64_t>::max() /
+                      sizeof(std::size_t)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "sort memory grant or runtime payload accounting is invalid"));
+  }
+  auto remaining_memory_bytes = selected_node->memory_bytes_required;
+  const auto charge = [&](const std::uint64_t bytes) {
+    if (bytes > remaining_memory_bytes) return false;
+    remaining_memory_bytes -= bytes;
+    return true;
+  };
+  const auto matrix_memory_bytes = static_cast<std::uint64_t>(matrix_size);
+  const auto row_order_memory_bytes =
+      static_cast<std::uint64_t>(row_count) * sizeof(std::size_t);
+  if (!charge(input_memory_bytes) || !charge(input_memory_bytes) ||
+      (separate_order_key_batch && !charge(order_memory_bytes)) ||
+      !charge(matrix_memory_bytes) || !charge(row_order_memory_bytes)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "sort runtime materialization exceeds the selected node memory grant"));
+  }
+
   std::vector<std::int8_t> comparisons(matrix_size, 0);
   for (std::size_t row = 0; row < row_count; ++row) {
     for (const auto& term : *order_terms) {
@@ -1037,10 +1091,12 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
 
   std::vector<std::size_t> row_order(row_count);
   std::iota(row_order.begin(), row_order.end(), 0);
-  std::stable_sort(row_order.begin(), row_order.end(),
-                   [&](const std::size_t left, const std::size_t right) {
-                     return comparisons[left * row_count + right] < 0;
-                   });
+  std::sort(row_order.begin(), row_order.end(),
+            [&](const std::size_t left, const std::size_t right) {
+              const auto comparison =
+                  comparisons[left * row_count + right];
+              return comparison < 0 || (comparison == 0 && left < right);
+            });
 
   result.output_batch.columns = input_batch->columns;
   result.output_batch.rows.reserve(row_count);
