@@ -4672,12 +4672,16 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool lead_window =
         window_binding != context.relations.end() &&
         window_binding->semantic_variant_id == "window.lead.v1";
+    const bool first_value_window =
+        window_binding != context.relations.end() &&
+        window_binding->semantic_variant_id == "window.first-value.v1";
     const bool navigation_window = lag_window || lead_window;
+    const bool value_window = navigation_window || first_value_window;
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
     const bool strict_ordered_window =
-        peer_ranking_window || ntile_window || navigation_window;
+        peer_ranking_window || ntile_window || value_window;
     const bool recognized_ranking =
         window_binding != context.relations.end() &&
         (strict_ordered_window || window_binding->semantic_variant_id ==
@@ -4698,9 +4702,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         "019de5fc-2400-782c-8436-9ac310301738";
     constexpr std::string_view kLeadFunctionUuid =
         "019de5fc-2400-7a06-bc3c-6747cf5be66f";
+    constexpr std::string_view kFirstValueFunctionUuid =
+        "019de5fc-2400-7264-90fb-d25bd0f806f2";
     const std::string_view expected_operator =
-        navigation_window
-            ? (lag_window ? "LAG" : "LEAD")
+        value_window
+            ? (first_value_window ? "FIRST_VALUE"
+                                  : (lag_window ? "LAG" : "LEAD"))
             : (ntile_window
             ? "NTILE"
             : (cume_dist_window
@@ -4711,8 +4718,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                           ? "DENSE_RANK"
                           : (rank_window ? "RANK" : "ROW_NUMBER")))));
     const std::string_view expected_builtin =
-        navigation_window
-            ? (lag_window ? "sb.window.lag" : "sb.window.lead")
+        value_window
+            ? (first_value_window
+                   ? "sb.window.first_value"
+                   : (lag_window ? "sb.window.lag" : "sb.window.lead"))
             : (ntile_window
             ? "sb.window.ntile"
             : (cume_dist_window
@@ -4724,8 +4733,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                           : (rank_window ? "sb.window.rank"
                                          : "sb.window.row_number")))));
     const std::string_view expected_function_uuid =
-        navigation_window
-            ? (lag_window ? kLagFunctionUuid : kLeadFunctionUuid)
+        value_window
+            ? (first_value_window
+                   ? kFirstValueFunctionUuid
+                   : (lag_window ? kLagFunctionUuid : kLeadFunctionUuid))
             : (ntile_window
             ? kNtileFunctionUuid
             : (cume_dist_window
@@ -4887,7 +4898,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           return candidate.expression_id == invocation.function_expression_id;
         });
     std::vector<std::uint32_t> expected_strict_source_expression_ids;
-    if (navigation_window && strict_function_ast != ast.expressions.end() &&
+    if (value_window && strict_function_ast != ast.expressions.end() &&
         strict_function_ast->child_expression_ids.size() == 1) {
       expected_strict_source_expression_ids.push_back(
           strict_function_ast->child_expression_ids.front());
@@ -5151,7 +5162,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     std::optional<std::uint32_t> bound_lag_operand_id;
     const NativeDescriptorBindingInput* lag_operand_descriptor = nullptr;
-    if (navigation_window) {
+    if (value_window) {
       const NativeExpressionAstNode* operand_ast = nullptr;
       if (function_ast != ast.expressions.end() &&
           function_ast->child_expression_ids.size() == 1) {
@@ -5195,10 +5206,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       lag_operand_descriptor = descriptor->second;
     }
     const auto bound_window_operand_id =
-        navigation_window ? bound_lag_operand_id : bound_ntile_operand_id;
+        value_window ? bound_lag_operand_id : bound_ntile_operand_id;
     const auto* window_operand_descriptor =
-        navigation_window ? lag_operand_descriptor
-                          : ntile_operand_descriptor;
+        value_window ? lag_operand_descriptor : ntile_operand_descriptor;
     const auto function_binding_index =
         source_count + offset_ast_ids.size() +
         static_cast<std::size_t>(ntile_window);
@@ -5208,7 +5218,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const auto function_descriptor =
         descriptor_by_id.find(function_binding.descriptor_id);
     const std::vector<std::uint32_t> expected_function_ast_children =
-        (ntile_window || navigation_window) &&
+        (ntile_window || value_window) &&
                 bound_window_operand_id.has_value()
             ? std::vector<std::uint32_t>{
                   function_ast->child_expression_ids.front()}
@@ -5240,9 +5250,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             expected_function_uuid ||
         function_descriptor->second->type_uuid == expected_function_uuid ||
         function_descriptor->second->nullability !=
-            (navigation_window ? BoundNullability::kNullable
-                               : BoundNullability::kNonNull) ||
-        (!navigation_window &&
+            (value_window ? BoundNullability::kNullable
+                          : BoundNullability::kNonNull) ||
+        (!value_window &&
          (function_descriptor->second->collation_uuid.has_value() ||
           function_descriptor->second->timezone_profile_id.has_value())) ||
         (ntile_window &&
@@ -5253,7 +5263,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               function_descriptor->second->descriptor_uuid ||
           ntile_operand_descriptor->type_uuid !=
               function_descriptor->second->type_uuid)) ||
-        (navigation_window &&
+        (value_window &&
          (window_operand_descriptor == nullptr ||
           window_operand_descriptor->descriptor_id ==
               function_descriptor->second->descriptor_id ||
@@ -5493,7 +5503,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       append_bound_expression(ast_to_bound.at(expression_id));
     }
     if (bound_window_operand_id.has_value()) {
-      if (navigation_window) {
+      if (value_window) {
         // The optimizer contract carries separate order and value roles even
         // when both roles bind the same source expression.
         bound_window.bound_expression_ids.push_back(
