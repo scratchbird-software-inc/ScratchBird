@@ -36335,8 +36335,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
     constexpr std::string_view kNthValueFunctionUuid =
         "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
-    constexpr std::string_view kSumFunctionUuid =
-        "019de5fc-2400-72e4-8549-82b2eef5a777";
     const bool rank_window =
         window_relation->semantic_variant_id == "window.rank.v1";
     const bool dense_rank_window =
@@ -36357,20 +36355,27 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         window_relation->semantic_variant_id == "window.last-value.v1";
     const bool nth_value_window =
         window_relation->semantic_variant_id == "window.nth-value.v1";
-    const bool aggregate_sum_window =
+    const bool aggregate_window =
         window_relation->semantic_variant_id == "window.aggregate-bridge.v1";
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
-        nth_value_window || aggregate_sum_window;
+        nth_value_window || aggregate_window;
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
     const bool strict_ordered_window =
         peer_ranking_window || ntile_window || value_window;
+    const auto& invocation = native.window_invocations.front();
+    const bool exact_int64_aggregate_builtin =
+        invocation.builtin_id == "sb.aggregate.sum" ||
+        invocation.builtin_id == "sb.aggregate.min" ||
+        invocation.builtin_id == "sb.aggregate.max";
     const std::string_view expected_window_builtin =
-        aggregate_sum_window
-            ? "sb.aggregate.sum"
+        aggregate_window
+            ? (exact_int64_aggregate_builtin
+                   ? std::string_view{invocation.builtin_id}
+                   : std::string_view{})
             : (value_window
             ? (first_value_window
                    ? "sb.window.first_value"
@@ -36391,8 +36396,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                           : (rank_window ? "sb.window.rank"
                                          : "sb.window.row_number"))))));
     const std::string_view expected_window_function_uuid =
-        aggregate_sum_window
-            ? kSumFunctionUuid
+        aggregate_window
+            ? std::string_view{invocation.bound_function_uuid}
             : (value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
@@ -36412,7 +36417,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                           ? kDenseRankFunctionUuid
                           : (rank_window ? kRankFunctionUuid
                                          : kRowNumberFunctionUuid))))));
-    const auto& invocation = native.window_invocations.front();
     const auto function = expressions_by_id.find(
         invocation.function_expression_id);
     const auto has_bound_expression = [&](const std::uint32_t expression_id) {
@@ -36652,7 +36656,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       return order_expression != expressions_by_id.end() &&
              order_expression->second->expression_kind ==
                  NativeExpressionAstKind::kIdentifier &&
-             (!aggregate_sum_window ||
+             (!aggregate_window ||
               (order_descriptor != native.descriptors.end() &&
                result_descriptor != native.descriptors.end() &&
                order_descriptor->type_uuid == result_descriptor->type_uuid &&
@@ -36660,6 +36664,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                !order_descriptor->timezone_profile_id.has_value()));
     }();
     if (!references_exact || !strict_ordered_shape_exact ||
+        (aggregate_window && !exact_int64_aggregate_builtin) ||
         function == expressions_by_id.end() ||
         function->second->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
@@ -39629,7 +39634,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   // input and a passthrough Window schema. Preserve the validated BoundAST
   // and synthesize only an emission view with a root Project for the exact
   // executable ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK/CUME_DIST/NTILE/LAG/
-  // LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE and exact aggregate SUM cohort.
+  // LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE and exact aggregate SUM/MIN/MAX
+  // cohort.
   constexpr std::string_view kCatalogOrderingPropertyUuid =
       "019f0000-0000-7200-8000-00000000c701";
   constexpr std::string_view kRowNumberFunctionUuid =
@@ -39654,8 +39660,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
   constexpr std::string_view kNthValueFunctionUuid =
       "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
-  constexpr std::string_view kSumFunctionUuid =
-      "019de5fc-2400-72e4-8549-82b2eef5a777";
   const bool normalize_rank_semantic =
       window_relation != nullptr &&
       window_relation->semantic_variant_id == "window.rank.v1";
@@ -39686,7 +39690,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const bool normalize_nth_value_semantic =
       window_relation != nullptr &&
       window_relation->semantic_variant_id == "window.nth-value.v1";
-  const bool normalize_aggregate_sum_semantic =
+  const bool normalize_aggregate_window_semantic =
       window_relation != nullptr &&
       window_relation->semantic_variant_id == "window.aggregate-bridge.v1";
   const bool normalize_navigation_semantic =
@@ -39694,7 +39698,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const bool normalize_value_semantic =
       normalize_navigation_semantic || normalize_first_value_semantic ||
       normalize_last_value_semantic || normalize_nth_value_semantic ||
-      normalize_aggregate_sum_semantic;
+      normalize_aggregate_window_semantic;
   const bool normalize_peer_ranking_semantic =
       normalize_rank_semantic || normalize_dense_rank_semantic ||
       normalize_percent_rank_semantic || normalize_cume_dist_semantic;
@@ -39703,9 +39707,22 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       (normalize_peer_ranking_semantic || normalize_ntile_semantic ||
        normalize_value_semantic ||
        window_relation->semantic_variant_id == "window.row-number.v1");
+  const auto* normalized_aggregate_invocation =
+      normalize_aggregate_window_semantic &&
+              native.window_invocations.size() == 1
+          ? &native.window_invocations.front()
+          : nullptr;
+  const bool normalized_int64_aggregate_builtin =
+      normalized_aggregate_invocation != nullptr &&
+      (normalized_aggregate_invocation->builtin_id == "sb.aggregate.sum" ||
+       normalized_aggregate_invocation->builtin_id == "sb.aggregate.min" ||
+       normalized_aggregate_invocation->builtin_id == "sb.aggregate.max");
   const std::string_view normalized_ranking_builtin =
-      normalize_aggregate_sum_semantic
-          ? "sb.aggregate.sum"
+      normalize_aggregate_window_semantic
+          ? (normalized_int64_aggregate_builtin
+                 ? std::string_view{
+                       normalized_aggregate_invocation->builtin_id}
+                 : std::string_view{})
           : (normalize_value_semantic
           ? (normalize_first_value_semantic
                  ? "sb.window.first_value"
@@ -39726,8 +39743,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                         : (normalize_rank_semantic ? "sb.window.rank"
                                                    : "sb.window.row_number"))))));
   const std::string_view normalized_ranking_function_uuid =
-      normalize_aggregate_sum_semantic
-          ? kSumFunctionUuid
+      normalize_aggregate_window_semantic
+          ? (normalized_int64_aggregate_builtin
+                 ? std::string_view{
+                       normalized_aggregate_invocation->bound_function_uuid}
+                 : std::string_view{})
           : (normalize_value_semantic
           ? (normalize_first_value_semantic
                  ? kFirstValueFunctionUuid
@@ -39769,6 +39789,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       native.window_definitions.front().exclusion ==
           NativeWindowFrameExclusion::kNoOthers &&
       native.window_invocations.front().function_abi_version == 1 &&
+      (!normalize_aggregate_window_semantic ||
+       normalized_int64_aggregate_builtin) &&
       native.window_invocations.front().builtin_id ==
           normalized_ranking_builtin &&
       native.window_invocations.front().bound_function_uuid ==
@@ -39818,8 +39840,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
         std::string("typed ") +
             (normalize_value_semantic
-                 ? (normalize_aggregate_sum_semantic
-                        ? "SUM"
+                 ? (normalize_aggregate_window_semantic
+                        ? (normalized_ranking_builtin == "sb.aggregate.sum"
+                               ? "SUM"
+                               : (normalized_ranking_builtin ==
+                                          "sb.aggregate.min"
+                                      ? "MIN"
+                                      : "MAX"))
                         : (normalize_first_value_semantic
                         ? "FIRST_VALUE"
                         : (normalize_last_value_semantic
@@ -39993,7 +40020,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             std::vector<std::uint32_t>{emitted_window->relation_id} &&
         emitted_sort->semantic_variant_id == "sort.required-order.v1" &&
         emitted_window->semantic_variant_id ==
-            (normalize_aggregate_sum_semantic
+            (normalize_aggregate_window_semantic
                  ? "window.aggregate-bridge.v1"
                  : (normalize_value_semantic
                  ? (normalize_first_value_semantic

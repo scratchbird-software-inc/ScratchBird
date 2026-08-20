@@ -1067,24 +1067,32 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         window_node->semantic_variant_id == "window.last-value.v1";
     const bool nth_value_window =
         window_node->semantic_variant_id == "window.nth-value.v1";
-    const bool aggregate_sum_window =
+    const bool aggregate_window =
         window_node->semantic_variant_id == "window.aggregate-bridge.v1";
-    const auto* aggregate_sum_row =
-        aggregate_sum_window
-            ? executor::LookupCanonicalAggregateByFunctionV1(
-                  executor::CanonicalAggregateFunction::sum)
+    const auto* aggregate_window_row =
+        aggregate_window && relational.window_invocations.size() == 1
+            ? executor::LookupCanonicalAggregateByUuidV1(
+                  relational.window_invocations.front().function_uuid)
             : nullptr;
+    const bool exact_int64_unary_aggregate =
+        aggregate_window_row != nullptr &&
+        (aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::sum ||
+         aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::min ||
+         aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::max);
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
-        nth_value_window || aggregate_sum_window;
+        nth_value_window || aggregate_window;
     const auto canonical_int64_type_uuid =
         value_window ? CanonicalCoreDatatypeUuid("int64") : std::string{};
     const std::string_view expected_builtin_id =
-        aggregate_sum_window
-            ? (aggregate_sum_row == nullptr
+        aggregate_window
+            ? (aggregate_window_row == nullptr
                    ? std::string_view{}
-                   : std::string_view{aggregate_sum_row->builtin_id})
+                   : std::string_view{aggregate_window_row->builtin_id})
             : value_window
             ? (first_value_window
                    ? "sb.window.first_value"
@@ -1105,10 +1113,10 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                           : (rank_window ? "sb.window.rank"
                                          : "sb.window.row_number")))));
     const std::string_view expected_function_uuid =
-        aggregate_sum_window
-            ? (aggregate_sum_row == nullptr
+        aggregate_window
+            ? (aggregate_window_row == nullptr
                    ? std::string_view{}
-                   : std::string_view{aggregate_sum_row->function_uuid})
+                   : std::string_view{aggregate_window_row->function_uuid})
             : value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
@@ -1205,7 +1213,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                            nth_position_argument->result_descriptor_id;
                   });
     const auto aggregate_order_argument =
-        aggregate_sum_window && sort_node->bound_expression_ids.size() == 1
+        aggregate_window && sort_node->bound_expression_ids.size() == 1
             ? std::ranges::find_if(
                   relational.expressions, [&](const auto& expression) {
                     return expression.expression_id ==
@@ -1296,10 +1304,11 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             window_node->node_id ||
         relational.window_invocations.front().window_definition_id !=
             relational.window_definitions.front().window_id ||
-        (aggregate_sum_window &&
-         (aggregate_sum_row == nullptr || !aggregate_sum_row->executable ||
-          !aggregate_sum_row->aggregate_as_window ||
-          aggregate_sum_row->abi_version != 1)) ||
+        (aggregate_window &&
+         (!exact_int64_unary_aggregate ||
+          !aggregate_window_row->executable ||
+          !aggregate_window_row->aggregate_as_window ||
+          aggregate_window_row->abi_version != 1)) ||
         relational.window_invocations.front().function_abi_version != 1 ||
         relational.window_invocations.front().builtin_id !=
             expected_builtin_id ||
@@ -1383,7 +1392,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
           std::ranges::find(sort_node->output_descriptor_ids,
                             ntile_argument_descriptor->descriptor_id) ==
               sort_node->output_descriptor_ids.end())) ||
-        (aggregate_sum_window &&
+        (aggregate_window &&
          (aggregate_order_argument == relational.expressions.end() ||
           aggregate_order_argument->expression_kind !=
               RelationalExpressionKind::kIdentifier ||
@@ -1445,8 +1454,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         window_outputs.back()->output_name_utf8 !=
             relational.window_invocations.front().output_name_utf8) {
       return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
-                    aggregate_sum_window
-                        ? "heap_aggregate_sum_window_binding"
+                    aggregate_window
+                        ? "heap_int64_aggregate_window_binding"
                         : value_window
                         ? (first_value_window
                                ? "heap_first_value_window_binding"

@@ -2921,7 +2921,8 @@ class NativeRelationalParser final {
 
   bool LooksLikeBoundedWindowSelect() const {
     if (tokens_.size() < 9 || tokens_[2]->text != "(") return false;
-    if (IsWord(*tokens_[1], "SUM")) {
+    if (IsWord(*tokens_[1], "SUM") || IsWord(*tokens_[1], "MIN") ||
+        IsWord(*tokens_[1], "MAX")) {
       return tokens_.size() > 6 && tokens_[4]->text == ")" &&
              IsWord(*tokens_[5], "OVER") &&
              (tokens_[6]->text == "(" ||
@@ -2948,7 +2949,8 @@ class NativeRelationalParser final {
     // QOW-SOURCE-RCP-050-TYPED-WINDOW-AST-V1
     // The general ROW_NUMBER surface preserves the complete window
     // specification. RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, NTILE, LAG,
-    // LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE, and aggregate SUM are admitted
+    // LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE, and the exact aggregate
+    // SUM/MIN/MAX cohort are admitted
     // only for the exact global,
     // one-direct-column
     // ordering profile executed by the canonical spine. NTILE additionally
@@ -2959,7 +2961,7 @@ class NativeRelationalParser final {
     // frame. NTH_VALUE additionally requires one exact positive signed-int64
     // literal position and normalizes omitted origin/NULL-treatment state to
     // FROM FIRST RESPECT NULLS in the canonical execution route. Aggregate
-    // SUM admits one direct signed-int64 value column and the same exact
+    // SUM/MIN/MAX admit one direct signed-int64 value column and the same exact
     // implicit ordered frame, then binds through the engine-owned aggregate
     // registry rather than the native window-function registry.
     document_.status = NativeRelationalParseStatus::kRefused;
@@ -2984,19 +2986,21 @@ class NativeRelationalParser final {
     const bool first_value_window = IsWord(function_token, "FIRST_VALUE");
     const bool last_value_window = IsWord(function_token, "LAST_VALUE");
     const bool nth_value_window = IsWord(function_token, "NTH_VALUE");
-    const bool aggregate_sum_window = IsWord(function_token, "SUM");
+    const bool aggregate_window = IsWord(function_token, "SUM") ||
+                                  IsWord(function_token, "MIN") ||
+                                  IsWord(function_token, "MAX");
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
-        nth_value_window || aggregate_sum_window;
+        nth_value_window || aggregate_window;
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
     const bool strict_ordered_window =
         peer_ranking_window || ntile_window || value_window;
     const std::string function_name =
-        aggregate_sum_window
-            ? "SUM"
+        aggregate_window
+            ? CanonicalTokenText(function_token)
             : (value_window
             ? (first_value_window ? "FIRST_VALUE"
                                   : (last_value_window
@@ -3059,8 +3063,8 @@ class NativeRelationalParser final {
       document_.expressions.push_back(std::move(operand));
     } else if (value_window) {
       if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
-        Refuse(aggregate_sum_window
-                   ? "aggregate_sum_window_operand_required"
+        Refuse(aggregate_window
+                   ? "aggregate_window_operand_required"
                    : (first_value_window
                    ? "first_value_operand_required"
                    : (last_value_window
@@ -3602,8 +3606,8 @@ class NativeRelationalParser final {
       const auto expected_output_name = ToLowerAscii(
           invocation.output_alias.has_value()
               ? invocation.output_alias->spelling
-              : (aggregate_sum_window
-                     ? std::string("sum")
+              : (aggregate_window
+                     ? ToLowerAscii(function_name)
                      : (value_window
                      ? std::string(first_value_window
                                        ? "first_value"
@@ -3680,8 +3684,8 @@ class NativeRelationalParser final {
     }
     if (strict_ordered_window) {
       if (document_.window_definitions.size() != 1) {
-        Refuse(aggregate_sum_window
-                   ? "aggregate_sum_window_shape_unsupported"
+        Refuse(aggregate_window
+                   ? "aggregate_window_shape_unsupported"
                    : (value_window
                    ? (first_value_window
                           ? "first_value_window_shape_unsupported"
@@ -3716,8 +3720,8 @@ class NativeRelationalParser final {
           rank_definition.frame_end.has_value() ||
           rank_definition.exclusion !=
               NativeWindowFrameExclusion::kNoOthers) {
-        Refuse(aggregate_sum_window
-                   ? "aggregate_sum_window_shape_unsupported"
+        Refuse(aggregate_window
+                   ? "aggregate_window_shape_unsupported"
                    : (value_window
                    ? (first_value_window
                           ? "first_value_window_shape_unsupported"

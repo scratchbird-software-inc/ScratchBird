@@ -4681,13 +4681,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool nth_value_window =
         window_binding != context.relations.end() &&
         window_binding->semantic_variant_id == "window.nth-value.v1";
-    const bool aggregate_sum_window =
+    const bool aggregate_window =
         window_binding != context.relations.end() &&
         window_binding->semantic_variant_id == "window.aggregate-bridge.v1";
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
-        nth_value_window || aggregate_sum_window;
+        nth_value_window || aggregate_window;
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
@@ -4719,11 +4719,23 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
     constexpr std::string_view kNthValueFunctionUuid =
         "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
-    constexpr std::string_view kSumFunctionUuid =
-        "019de5fc-2400-72e4-8549-82b2eef5a777";
+    const auto aggregate_function_ast =
+        aggregate_window && ast.window_invocations.size() == 1
+            ? std::ranges::find_if(ast.expressions, [&](const auto& candidate) {
+                return candidate.expression_id ==
+                       ast.window_invocations.front().function_expression_id;
+              })
+            : ast.expressions.end();
+    const std::string_view aggregate_operator =
+        aggregate_function_ast != ast.expressions.end() &&
+                (aggregate_function_ast->operator_name == "SUM" ||
+                 aggregate_function_ast->operator_name == "MIN" ||
+                 aggregate_function_ast->operator_name == "MAX")
+            ? aggregate_function_ast->operator_name
+            : std::string_view{};
     const std::string_view expected_operator =
-        aggregate_sum_window
-            ? "SUM"
+        aggregate_window
+            ? aggregate_operator
             : (value_window
             ? (first_value_window ? "FIRST_VALUE"
                                   : (last_value_window
@@ -4742,8 +4754,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                           ? "DENSE_RANK"
                           : (rank_window ? "RANK" : "ROW_NUMBER"))))));
     const std::string_view expected_builtin =
-        aggregate_sum_window
-            ? "sb.aggregate.sum"
+        aggregate_window
+            ? (aggregate_operator == "SUM"
+                   ? "sb.aggregate.sum"
+                   : (aggregate_operator == "MIN" ? "sb.aggregate.min"
+                                                   : "sb.aggregate.max"))
             : (value_window
             ? (first_value_window
                    ? "sb.window.first_value"
@@ -4764,8 +4779,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                           : (rank_window ? "sb.window.rank"
                                          : "sb.window.row_number"))))));
     const std::string_view expected_function_uuid =
-        aggregate_sum_window
-            ? kSumFunctionUuid
+        aggregate_window
+            ? (context.window_functions.size() == 1
+                   ? std::string_view{
+                         context.window_functions.front().function_uuid}
+                   : std::string_view{})
             : (value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid

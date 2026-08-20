@@ -1703,15 +1703,18 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       request.aggregate_descriptor.function,
       request.aggregate_descriptor.builtin_id,
       request.aggregate_descriptor.function_uuid);
+  const bool exact_int64_unary_window =
+      aggregate_registry_row != nullptr &&
+      (aggregate_registry_row->function == CanonicalAggregateFunction::sum ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::min ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::max);
   if (request.aggregate_descriptor.count_star ||
-      request.aggregate_descriptor.function !=
-          CanonicalAggregateFunction::sum ||
-      aggregate_registry_row == nullptr ||
+      !exact_int64_unary_window ||
       !aggregate_registry_row->executable ||
       !aggregate_registry_row->aggregate_as_window) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
-        "aggregate window requires the exact executable SUM registry row"));
+        "aggregate window requires one exact executable int64 unary registry row"));
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;
@@ -1729,7 +1732,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       selected_node->input_physical_node_ids.size() != 1) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-PHYSICAL",
-        "SUM window requires one exact frame-recompute window node"));
+        "int64 aggregate window requires one exact frame-recompute window node"));
   }
   for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
@@ -1773,7 +1776,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       !IsCanonicalUuid(request.frame_property_binding_evidence_uuid)) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
-        "SUM window lacks exact ordering, frame, capability, or property evidence"));
+        "int64 aggregate window lacks exact ordering, frame, capability, or property evidence"));
   }
 
   std::vector<std::uint32_t> expected_output_descriptor_ids =
@@ -1825,7 +1828,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
           request.result_column.descriptor, true)) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-DESCRIPTOR",
-        "SUM window source and nullable result descriptors are not exact int64"));
+        "int64 aggregate window source and nullable result descriptors are not exact"));
   }
   const auto input_validation = ValidateCanonicalDescriptorBatch(
       execution_ordered_input_batch, input_node->output_descriptor_ids);
@@ -1854,7 +1857,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       if (independent_identities[left] == independent_identities[right]) {
         return refuse(Refusal(
             "QOW-DIAG-WINDOW-PROPERTY-BINDING",
-            "SUM window evidence identities are not independent"));
+            "int64 aggregate window evidence identities are not independent"));
       }
     }
   }
@@ -1871,7 +1874,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       actual_receipt_workspace_bytes != planned_receipt_workspace_bytes) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-PROPERTY-BINDING",
-        "SUM window order-term binding receipt is not exact"));
+        "int64 aggregate window order-term binding receipt is not exact"));
   }
 
   // Refuse before QOW-401/QOW-402 or the aggregate facade can allocate pair
@@ -1931,7 +1934,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
             std::numeric_limits<std::uint64_t>::max()) {
       return refuse(Refusal(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-          "SUM window order comparison workspace is not bounded"));
+          "int64 aggregate window order comparison workspace is not bounded"));
     }
     maximum_order_key_workspace_bytes = std::max(
         maximum_order_key_workspace_bytes,
@@ -2018,7 +2021,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       planned_peak_memory_bytes > selected_node->memory_bytes_required) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-        "SUM window runtime materialization exceeds its selected node grant"));
+        "int64 aggregate window runtime materialization exceeds its selected node grant"));
   }
 
   CanonicalWindowPartitionOrderRequest partition_request;
@@ -2066,7 +2069,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
           CanonicalWindowFrameExclusion::no_others) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-FRAME",
-        "SUM window did not resolve the canonical peer-inclusive ordered default frame"));
+        "int64 aggregate window did not resolve the canonical peer-inclusive ordered default frame"));
   }
   std::size_t effective_frame_row_reference_count = 0;
   for (const auto& frame : frames.effective_frames) {
@@ -2074,7 +2077,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
         std::numeric_limits<std::size_t>::max() -
             effective_frame_row_reference_count) {
       return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                            "SUM window frame reference count overflowed"));
+                            "int64 aggregate window frame reference count overflowed"));
     }
     effective_frame_row_reference_count +=
         frame.effective_row_indices.size();
@@ -2082,12 +2085,29 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
   if (effective_frame_row_reference_count >
       request.maximum_effective_row_references) {
     return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                          "SUM window frame reference bound was exceeded"));
+                          "int64 aggregate window frame reference bound was exceeded"));
   }
 
   CanonicalWindowAggregateRequest aggregate_request;
   aggregate_request.frames = std::move(frames);
-  aggregate_request.function = CanonicalWindowAggregateFunction::int64_sum;
+  switch (aggregate_registry_row->function) {
+    case CanonicalAggregateFunction::sum:
+      aggregate_request.function =
+          CanonicalWindowAggregateFunction::int64_sum;
+      break;
+    case CanonicalAggregateFunction::min:
+      aggregate_request.function =
+          CanonicalWindowAggregateFunction::int64_min;
+      break;
+    case CanonicalAggregateFunction::max:
+      aggregate_request.function =
+          CanonicalWindowAggregateFunction::int64_max;
+      break;
+    default:
+      return refuse(Refusal(
+          "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
+          "aggregate window registry function is outside the int64 unary cohort"));
+  }
   aggregate_request.function_uuid =
       request.aggregate_descriptor.function_uuid;
   aggregate_request.value_expression_descriptor_id =
@@ -2125,7 +2145,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       aggregate.causal_counter_id != selected_node->causal_counter_id) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
-        "SUM window did not consume its exact frame-recompute aggregate payload"));
+        "int64 aggregate window did not consume its exact frame-recompute payload"));
   }
 
   std::uint64_t observed_auxiliary_workspace_bytes =
@@ -2150,7 +2170,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       observed_peak_memory_bytes > selected_node->memory_bytes_required) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-        "SUM window observed aggregate state exceeded its selected node grant"));
+        "int64 aggregate window observed state exceeded its selected node grant"));
   }
 
   result.output_batch =

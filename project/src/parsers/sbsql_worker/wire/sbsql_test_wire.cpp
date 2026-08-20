@@ -4334,13 +4334,15 @@ BuildEngineProjectedNativeBindingContext(
     const bool nth_value_window =
         function_expression != ast.expressions.end() &&
         function_expression->operator_name == "NTH_VALUE";
-    const bool aggregate_sum_window =
+    const bool aggregate_window =
         function_expression != ast.expressions.end() &&
-        function_expression->operator_name == "SUM";
+        (function_expression->operator_name == "SUM" ||
+         function_expression->operator_name == "MIN" ||
+         function_expression->operator_name == "MAX");
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
-        nth_value_window || aggregate_sum_window;
+        nth_value_window || aggregate_window;
     const bool recognized_ranking =
         function_expression != ast.expressions.end() &&
         (rank_window || dense_rank_window || percent_rank_window ||
@@ -4352,8 +4354,8 @@ BuildEngineProjectedNativeBindingContext(
     const bool strict_ordered_window =
         peer_ranking_window || ntile_window || value_window;
     const std::string_view expected_operator =
-        aggregate_sum_window
-            ? "SUM"
+        aggregate_window
+            ? std::string_view(function_expression->operator_name)
             : (value_window
             ? (first_value_window ? "FIRST_VALUE"
                                   : (last_value_window
@@ -4372,8 +4374,12 @@ BuildEngineProjectedNativeBindingContext(
                           ? "DENSE_RANK"
                           : (rank_window ? "RANK" : "ROW_NUMBER"))))));
     const std::string_view expected_builtin =
-        aggregate_sum_window
-            ? "sb.aggregate.sum"
+        aggregate_window
+            ? (function_expression->operator_name == "SUM"
+                   ? "sb.aggregate.sum"
+                   : (function_expression->operator_name == "MIN"
+                          ? "sb.aggregate.min"
+                          : "sb.aggregate.max"))
             : (value_window
             ? (first_value_window
                    ? "sb.window.first_value"
@@ -4394,8 +4400,12 @@ BuildEngineProjectedNativeBindingContext(
                           : (rank_window ? "sb.window.rank"
                                          : "sb.window.row_number"))))));
     const std::string_view expected_function_uuid =
-        aggregate_sum_window
-            ? std::string_view(statement_context.sum_function_uuid)
+        aggregate_window
+            ? (function_expression->operator_name == "SUM"
+                   ? std::string_view(statement_context.sum_function_uuid)
+                   : (function_expression->operator_name == "MIN"
+                          ? std::string_view(statement_context.min_function_uuid)
+                          : std::string_view(statement_context.max_function_uuid)))
             : (value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
@@ -4503,7 +4513,7 @@ BuildEngineProjectedNativeBindingContext(
                    ? std::vector<std::uint32_t>{ntile_operand->expression_id}
                    : std::vector<std::uint32_t>{}));
     const bool function_profile_invalid =
-        aggregate_sum_window
+        aggregate_window
             ? (aggregate_function_profile ==
                    statement_context.aggregate_function_profiles.end() ||
                aggregate_function_profile->abi_version != 1 ||
@@ -4617,7 +4627,7 @@ BuildEngineProjectedNativeBindingContext(
           order_expression == ast.expressions.end() ||
           order_expression->expression_kind !=
               NativeExpressionAstKind::kIdentifier ||
-          (aggregate_sum_window &&
+          (aggregate_window &&
            (order_source_ordinal >= context.descriptors.size() ||
             context.descriptors[order_source_ordinal].type_uuid !=
                 result_profile->type_uuid ||
@@ -4638,7 +4648,9 @@ BuildEngineProjectedNativeBindingContext(
           }()) {
         return fail(
             value_window
-                ? (first_value_window
+                ? (aggregate_window
+                       ? "catalog_window_aggregate_shape_invalid"
+                       : (first_value_window
                        ? "catalog_window_first_value_shape_invalid"
                        : (last_value_window
                               ? "catalog_window_last_value_shape_invalid"
@@ -4646,7 +4658,7 @@ BuildEngineProjectedNativeBindingContext(
                                      ? "catalog_window_nth_value_shape_invalid"
                                      : (lag_window
                                             ? "catalog_window_lag_shape_invalid"
-                                            : "catalog_window_lead_shape_invalid"))))
+                                            : "catalog_window_lead_shape_invalid")))))
                 : (ntile_window
                 ? "catalog_window_ntile_shape_invalid"
                 : (cume_dist_window
@@ -4692,16 +4704,16 @@ BuildEngineProjectedNativeBindingContext(
     }
     context.descriptors.push_back(std::move(function_descriptor));
     const auto function_abi_version =
-        aggregate_sum_window ? aggregate_function_profile->abi_version
+        aggregate_window ? aggregate_function_profile->abi_version
                              : window_function_profile->abi_version;
     const auto& function_builtin_id =
-        aggregate_sum_window ? aggregate_function_profile->builtin_id
+        aggregate_window ? aggregate_function_profile->builtin_id
                              : window_function_profile->builtin_id;
     const auto& function_uuid =
-        aggregate_sum_window ? aggregate_function_profile->function_uuid
+        aggregate_window ? aggregate_function_profile->function_uuid
                              : window_function_profile->function_uuid;
     const bool function_executable =
-        aggregate_sum_window ? aggregate_function_profile->executable
+        aggregate_window ? aggregate_function_profile->executable
                              : window_function_profile->executable;
     context.expressions.push_back(
         {function_binding_id, function_binding_id,
@@ -4714,8 +4726,13 @@ BuildEngineProjectedNativeBindingContext(
     const auto window_output_name =
         invocation.output_alias.has_value()
             ? invocation.output_alias->spelling
-            : (aggregate_sum_window
-                   ? std::string("sum")
+            : (aggregate_window
+                   ? std::string(function_expression->operator_name == "SUM"
+                                     ? "sum"
+                                     : (function_expression->operator_name ==
+                                                "MIN"
+                                            ? "min"
+                                            : "max"))
                    : (value_window
                    ? std::string(first_value_window
                                      ? "first_value"
@@ -4814,7 +4831,7 @@ BuildEngineProjectedNativeBindingContext(
     context.catalog_relations.push_back(std::move(catalog_relation));
     context.relations.push_back(
         {window_relation->relation_id,
-         aggregate_sum_window
+         aggregate_window
              ? "window.aggregate-bridge.v1"
              : (value_window
              ? (first_value_window
