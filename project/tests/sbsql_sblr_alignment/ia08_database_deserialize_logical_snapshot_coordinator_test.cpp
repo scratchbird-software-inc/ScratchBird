@@ -1,0 +1,4 @@
+#include "sblr_database_deserialize_logical_snapshot_coordinator.hpp"
+#include <cassert>
+using namespace scratchbird::engine::internal_api;
+int main(){EngineRequestContext c;c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;c.statement_uuid.canonical="r";c.trace_tags={"private_database_deserialize_logical_snapshot_binder"};auto x=CompileSblrDatabaseDeserializeLogicalSnapshotDescriptor(c,"r",1,1,1);assert(x.ok);bool cancel=true;c.query_cancellation_requested=[&](){return cancel;};c.trace_tags={"private_database_deserialize_logical_snapshot"};auto y=ConsumeSblrDatabaseDeserializeLogicalSnapshotDescriptor(c,x.descriptor);assert(!y.ok&&y.diagnostic.code=="PROCESS.CANCELLED");cancel=false;auto z=ConsumeSblrDatabaseDeserializeLogicalSnapshotDescriptor(c,x.descriptor);assert(z.ok);auto stale=ConsumeSblrDatabaseDeserializeLogicalSnapshotDescriptor(c,x.descriptor);assert(!stale.ok&&stale.diagnostic.code=="MGA.TRANSACTION.STALE");return 0;}
