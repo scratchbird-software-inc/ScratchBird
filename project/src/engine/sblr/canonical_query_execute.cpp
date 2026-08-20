@@ -11462,6 +11462,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         if (inputs.size() != 1 ||
+            node.input_physical_node_ids.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
             !inputs.front().materialized_output_batch.has_value() ||
             inputs.front().materialized_output_batch->rows.size() >
                 maximum_input_row_count ||
@@ -11473,10 +11476,28 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
               "nonrecursive CTE did not receive its exact typed input";
           return step;
         }
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id, &*scoped_execution_dag,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-CTE-INPUT-V1";
+            step.diagnostic.detail =
+                "nonrecursive CTE execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
         const auto authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         const auto before =
-            exec::RevalidateCanonicalExecutionMgaAuthority(authority, dag);
+            exec::RevalidateCanonicalExecutionMgaAuthority(
+                authority, *execution_dag);
         if (!before.ok) {
           step.diagnostic = before;
           return step;
@@ -11490,7 +11511,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
           return step;
         }
         const auto after =
-            exec::RevalidateCanonicalExecutionMgaAuthority(authority, dag);
+            exec::RevalidateCanonicalExecutionMgaAuthority(
+                authority, *execution_dag);
         if (!after.ok) {
           step.diagnostic = after;
           return step;
@@ -11631,14 +11653,32 @@ MakeLiveRecursiveCteTermRegistration(
               "recursive CTE term binding did not preserve its schema";
           return step;
         }
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id, &*scoped_execution_dag,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-RECURSIVE-CTE-INPUT-V1";
+            step.diagnostic.detail =
+                "recursive CTE term execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
         exec::DescriptorBatch output;
         output.columns = prepared.columns;
         const auto validated = exec::ValidateCanonicalDescriptorBatch(
             output, node.output_descriptor_ids);
         const auto authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         const auto revalidated =
-            exec::RevalidateCanonicalExecutionMgaAuthority(authority, dag);
+            exec::RevalidateCanonicalExecutionMgaAuthority(
+                authority, *execution_dag);
         if (!validated.ok || !revalidated.ok) {
           step.diagnostic = validated.ok ? revalidated : validated;
           return step;
@@ -11718,6 +11758,24 @@ MakeLiveRecursiveCteRegistration(
           return step;
         }
 
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id, &*scoped_execution_dag,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-RECURSIVE-CTE-INPUT-V1";
+            step.diagnostic.detail =
+                "recursive CTE execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
+
         std::uint64_t retained_input_payload_bytes = 0;
         std::uint64_t anchor_input_payload_bytes = 0;
         for (std::size_t input_index = 0; input_index < inputs.size();
@@ -11755,12 +11813,12 @@ MakeLiveRecursiveCteRegistration(
         }
 
         const auto recursive_term_node = std::ranges::find_if(
-            dag.nodes, [&](const auto& candidate) {
+            execution_dag->nodes, [&](const auto& candidate) {
               return node.input_physical_node_ids.size() == 2 &&
                      candidate.physical_node_id ==
                          node.input_physical_node_ids[1];
             });
-        if (recursive_term_node == dag.nodes.end() ||
+        if (recursive_term_node == execution_dag->nodes.end() ||
             !LiveRecursiveCteTermNodeBound(
                 prepared.term, *recursive_term_node,
                 recursive_term_capability_uuid)) {
@@ -11772,19 +11830,19 @@ MakeLiveRecursiveCteRegistration(
           return step;
         }
         const auto cancellation_policy = std::ranges::find_if(
-            dag.admission_evidence,
+            execution_dag->admission_evidence,
             [](const exec::PhysicalAdmissionEvidence& evidence) {
               return evidence.stage ==
                      exec::PhysicalAdmissionStage::kPolicyCapability;
             });
         const auto cancellation_policy_count = std::ranges::count_if(
-            dag.admission_evidence,
+            execution_dag->admission_evidence,
             [](const exec::PhysicalAdmissionEvidence& evidence) {
               return evidence.stage ==
                      exec::PhysicalAdmissionStage::kPolicyCapability;
             });
         if (cancellation_policy_count != 1 ||
-            cancellation_policy == dag.admission_evidence.end() ||
+            cancellation_policy == execution_dag->admission_evidence.end() ||
             cancellation_policy->evidence_uuid.empty()) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
@@ -11794,25 +11852,25 @@ MakeLiveRecursiveCteRegistration(
           return step;
         }
         const auto resource_evidence = std::ranges::find_if(
-            dag.admission_evidence,
+            execution_dag->admission_evidence,
             [](const exec::PhysicalAdmissionEvidence& evidence) {
               return evidence.stage ==
                      exec::PhysicalAdmissionStage::kResource;
             });
         const auto resource_evidence_count = std::ranges::count_if(
-            dag.admission_evidence,
+            execution_dag->admission_evidence,
             [](const exec::PhysicalAdmissionEvidence& evidence) {
               return evidence.stage ==
                      exec::PhysicalAdmissionStage::kResource;
             });
         if (resource_evidence_count != 1 ||
-            resource_evidence == dag.admission_evidence.end() ||
+            resource_evidence == execution_dag->admission_evidence.end() ||
             resource_evidence->evidence_uuid.empty() ||
             prepared.planned_peak_memory_bytes == 0 ||
             prepared.planned_resident_structural_bytes == 0 ||
             node.memory_bytes_required !=
                 prepared.planned_peak_memory_bytes ||
-            node.memory_bytes_required > dag.memory_budget_bytes ||
+            node.memory_bytes_required > execution_dag->memory_budget_bytes ||
             retained_input_payload_bytes >
                 node.memory_bytes_required ||
             anchor_input_payload_bytes >
@@ -11941,10 +11999,10 @@ MakeLiveRecursiveCteRegistration(
                 return std::move(executed.generated);
               };
           recursive.mga_authority = BuildCanonicalExecutionMgaAuthority(
-              mga_context, dag);
+              mga_context, *execution_dag);
           auto result =
               exec::ExecuteCanonicalRecursiveCteSearchCycle(
-                  recursive, dag, node.physical_node_id);
+                  recursive, *execution_dag, node.physical_node_id);
           diagnostic = std::move(result.diagnostic);
           output = std::move(result.output_batch);
           result_mga = std::move(result.mga_statement_context);
@@ -12019,10 +12077,10 @@ MakeLiveRecursiveCteRegistration(
                 return std::move(executed.generated.batch);
               };
           working.mga_authority = BuildCanonicalExecutionMgaAuthority(
-              mga_context, dag);
+              mga_context, *execution_dag);
           auto result =
               exec::ExecuteCanonicalRecursiveCteUnion(
-                  recursive, dag, node.physical_node_id);
+                  recursive, *execution_dag, node.physical_node_id);
           diagnostic = std::move(result.working_result.diagnostic);
           output = std::move(result.working_result.output_batch);
           result_mga = std::move(result.mga_statement_context);
