@@ -8504,11 +8504,35 @@ BuildCanonicalRelationalExpressionRuntimeServices(
           return true;
         }
 
-        auto normalized_left = left;
-        auto normalized_right = right;
-        const bool timezone_bound =
+        const auto left_type = dt::CanonicalTypeIdFromStableName(
+            left.descriptor.canonical_type_name);
+        const auto right_type = dt::CanonicalTypeIdFromStableName(
+            right.descriptor.canonical_type_name);
+        const bool left_timezone_bound =
             left.descriptor.encoded_descriptor.find(
                 "timezone_profile_id=") != std::string::npos;
+        const bool right_timezone_bound =
+            right.descriptor.encoded_descriptor.find(
+                "timezone_profile_id=") != std::string::npos;
+        const bool timezone_bound =
+            left_timezone_bound || right_timezone_bound;
+        const bool supported_timezone_type =
+            left_type == dt::CanonicalTypeId::time ||
+            left_type == dt::CanonicalTypeId::timestamp;
+        if (timezone_bound &&
+            (!left_timezone_bound || !right_timezone_bound ||
+             !supported_timezone_type ||
+             right_type != left_type)) {
+          *diagnostic_id =
+              "QOW-DIAG-RCP024-TIMEZONE-COMPARISON-REFUSAL-V1";
+          *refusal_detail =
+              "timezone comparison operands do not share one timestamp "
+              "profile";
+          return false;
+        }
+
+        auto normalized_left = left;
+        auto normalized_right = right;
         if (timezone_bound) {
           api::EngineNormalizeTimezoneScalarRequest left_request;
           left_request.context = context;

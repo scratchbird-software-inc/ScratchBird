@@ -764,6 +764,28 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
       table.materialized_row_count > request.maximum_comparison_count) {
     return refuse("quantified comparison resource bound was exceeded");
   }
+  namespace dt = scratchbird::core::datatypes;
+  const bool descriptor_bound_comparison =
+      dt::CanonicalTypeIdFromStableName(
+          request.left_value.descriptor.canonical_type_name) ==
+          dt::CanonicalTypeId::character ||
+      dt::CanonicalTypeIdFromStableName(
+          right_column.descriptor.canonical_type_name) ==
+          dt::CanonicalTypeId::character ||
+      request.left_value.descriptor.encoded_descriptor.find(
+          "timezone_profile_id=") != std::string::npos ||
+      right_column.descriptor.encoded_descriptor.find(
+          "timezone_profile_id=") != std::string::npos;
+  if (request.comparison_authority_engine_owned !=
+          descriptor_bound_comparison ||
+      (request.comparison_authority_engine_owned &&
+       request.precomputed_comparisons.size() !=
+           table.materialized_row_count) ||
+      (!request.comparison_authority_engine_owned &&
+       !request.precomputed_comparisons.empty())) {
+    return refuse(
+        "quantified comparison authority carrier is not exact");
+  }
   if (request.result_expression_descriptor_id == 0 ||
       request.result_column.descriptor_id !=
           request.result_expression_descriptor_id ||
@@ -806,7 +828,9 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
 
   std::vector<api::EngineSqlTruthValue> comparison_truths;
   comparison_truths.reserve(table.materialized_row_count);
-  for (const auto& row : table.output_batch.rows) {
+  for (std::size_t row_index = 0;
+       row_index < table.output_batch.rows.size(); ++row_index) {
+    const auto& row = table.output_batch.rows[row_index];
     const auto& right_value = row.values.front();
     api::EngineCanonicalExpressionEvaluationRequest expression_request;
     expression_request.consumer =
@@ -816,6 +840,19 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     expression_request.right_value = right_value;
     expression_request.result_descriptor =
         request.result_column.descriptor;
+    if (request.comparison_authority_engine_owned) {
+      const auto& comparison =
+          request.precomputed_comparisons[row_index];
+      const bool null_comparison = request.left_value.isSqlNull() ||
+                                   right_value.isSqlNull();
+      if (comparison.has_value() == null_comparison ||
+          (comparison.has_value() &&
+           (*comparison < -1 || *comparison > 1))) {
+        return refuse(
+            "quantified comparison authority row is not canonical");
+      }
+      expression_request.precomputed_comparison = comparison;
+    }
     api::EngineCanonicalExpressionEvaluationResult expression_result;
     std::string expression_detail;
     if (!api::QowEvaluateCanonicalTypedExpressionV1(

@@ -1449,6 +1449,52 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
   return result;
 }
 
+bool BindCanonicalRelationalComparisonAuthorityV1(
+    const api::EngineTypedValue& left,
+    const api::EngineTypedValue& right,
+    const CanonicalRelationalExpressionRuntimeServices& services,
+    std::optional<int>* precomputed_comparison,
+    std::string* refusal_detail) {
+  if (precomputed_comparison == nullptr || refusal_detail == nullptr) {
+    return false;
+  }
+  precomputed_comparison->reset();
+  const bool descriptor_bound_comparison =
+      dt::CanonicalTypeIdFromStableName(
+          left.descriptor.canonical_type_name) ==
+          dt::CanonicalTypeId::character ||
+      dt::CanonicalTypeIdFromStableName(
+          right.descriptor.canonical_type_name) ==
+          dt::CanonicalTypeId::character ||
+      left.descriptor.encoded_descriptor.find("timezone_profile_id=") !=
+          std::string::npos ||
+      right.descriptor.encoded_descriptor.find("timezone_profile_id=") !=
+          std::string::npos;
+  if (!descriptor_bound_comparison || left.isSqlNull() ||
+      right.isSqlNull()) {
+    return true;
+  }
+  if (!services.comparison_evaluator) {
+    *refusal_detail =
+        "QOW-DIAG-RCP024-COMPARISON-AUTHORITY-REFUSAL-V1:descriptor-bound "
+        "comparison authority is unavailable";
+    return false;
+  }
+  int comparison = 0;
+  std::string diagnostic_id;
+  if (!services.comparison_evaluator(
+          left, right, &comparison, &diagnostic_id, refusal_detail)) {
+    *refusal_detail =
+        (diagnostic_id.empty()
+             ? "QOW-DIAG-RCP024-COMPARISON-AUTHORITY-REFUSAL-V1"
+             : diagnostic_id) +
+        ":" + *refusal_detail;
+    return false;
+  }
+  *precomputed_comparison = comparison;
+  return true;
+}
+
 CanonicalRelationalExpressionRuntime::CanonicalRelationalExpressionRuntime(
     const api::TypedRelationalDag& dag,
     CanonicalRelationalExpressionRuntimeServices services)
@@ -2796,33 +2842,10 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     scalar_request.left_value = std::move(left);
     scalar_request.right_value = std::move(right);
     scalar_request.result_descriptor = result_descriptor;
-    const bool descriptor_bound_comparison =
-        dt::CanonicalTypeIdFromStableName(operand_type) ==
-            dt::CanonicalTypeId::character ||
-        scalar_request.left_value.descriptor.encoded_descriptor.find(
-            "timezone_profile_id=") != std::string::npos;
-    if (descriptor_bound_comparison &&
-        !scalar_request.left_value.isSqlNull() &&
-        !scalar_request.right_value.isSqlNull()) {
-      if (!services_.comparison_evaluator) {
-        *refusal_detail =
-            "QOW-DIAG-RCP024-COMPARISON-AUTHORITY-REFUSAL-V1:descriptor-bound "
-            "comparison authority is unavailable";
-        return false;
-      }
-      int comparison = 0;
-      std::string diagnostic_id;
-      if (!services_.comparison_evaluator(
-              scalar_request.left_value, scalar_request.right_value,
-              &comparison, &diagnostic_id, refusal_detail)) {
-        *refusal_detail =
-            (diagnostic_id.empty()
-                 ? "QOW-DIAG-RCP024-COMPARISON-AUTHORITY-REFUSAL-V1"
-                 : diagnostic_id) +
-            ":" + *refusal_detail;
-        return false;
-      }
-      scalar_request.precomputed_comparison = comparison;
+    if (!BindCanonicalRelationalComparisonAuthorityV1(
+            scalar_request.left_value, scalar_request.right_value, services_,
+            &scalar_request.precomputed_comparison, refusal_detail)) {
+      return false;
     }
     api::EngineCanonicalExpressionEvaluationResult scalar_result;
     if (!evaluate_scalar(scalar_request, &scalar_result)) {

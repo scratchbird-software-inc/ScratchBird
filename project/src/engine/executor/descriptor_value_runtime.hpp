@@ -500,6 +500,12 @@ struct CanonicalQuantifiedSubqueryRequest {
   std::uint32_t result_expression_descriptor_id = 0;
   ExecutorColumnDescriptor result_column;
   std::size_t maximum_comparison_count = 1048576;
+  // Character and timezone-profile comparisons are evaluated by the
+  // engine-owned descriptor authority before entering this generic executor.
+  // The carrier is aligned one-for-one with the materialized subquery rows;
+  // SQL NULL rows deliberately carry std::nullopt.
+  bool comparison_authority_engine_owned = false;
+  std::vector<std::optional<int>> precomputed_comparisons;
 };
 
 struct CanonicalQuantifiedSubqueryResult {

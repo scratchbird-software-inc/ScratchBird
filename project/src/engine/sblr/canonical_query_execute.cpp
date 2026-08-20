@@ -1598,6 +1598,7 @@ struct PreparedPredicateSubqueryRoot {
       api::EngineComparisonPredicateOperator::unspecified;
   exec::CanonicalQuantifiedSubqueryQuantifier quantifier =
       exec::CanonicalQuantifiedSubqueryQuantifier::kAny;
+  bool comparison_authority_required{false};
   std::string implementation_id;
   std::string transformation_id;
 };
@@ -11620,6 +11621,7 @@ MakeLivePredicateSubqueryRegistration(
     PreparedPredicateSubqueryRoot prepared,
     std::string capability_uuid,
     const std::size_t maximum_input_row_count,
+    CanonicalRelationalExpressionRuntimeServices expression_services,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kSubquery;
@@ -11630,6 +11632,7 @@ MakeLivePredicateSubqueryRegistration(
   registration.accepts_optimizer_publication_v2 = true;
   registration.execute =
       [prepared = std::move(prepared), maximum_input_row_count,
+       expression_services = std::move(expression_services),
        mga_context = std::move(mga_context)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
@@ -11727,6 +11730,35 @@ MakeLivePredicateSubqueryRegistration(
           result_mga = std::move(exists.mga_statement_context);
         } else {
           exec::CanonicalQuantifiedSubqueryRequest quantified_request;
+          if (prepared.comparison_authority_required) {
+            const auto& authority_input =
+                *inputs.front().materialized_output_batch;
+            const auto authority_validation =
+                exec::ValidateCanonicalDescriptorBatch(
+                    authority_input, table_input->output_descriptor_ids);
+            if (!authority_validation.ok) {
+              step.diagnostic = authority_validation;
+              return step;
+            }
+            quantified_request.comparison_authority_engine_owned = true;
+            quantified_request.precomputed_comparisons.reserve(
+                authority_input.rows.size());
+            for (const auto& row : authority_input.rows) {
+              std::optional<int> comparison;
+              if (!BindCanonicalRelationalComparisonAuthorityV1(
+                      prepared.left_value, row.values.front(),
+                      expression_services, &comparison, &detail)) {
+                step.diagnostic.ok = false;
+                step.diagnostic.diagnostic_code =
+                    "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-"
+                    "COMPARISON-AUTHORITY-V1";
+                step.diagnostic.detail = std::move(detail);
+                return step;
+              }
+              quantified_request.precomputed_comparisons.push_back(
+                  comparison);
+            }
+          }
           quantified_request.table_request = std::move(table_request);
           quantified_request.left_operand_column =
               prepared.left_operand_column;
@@ -16436,6 +16468,35 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             prepared.comparison_operator =
                 predicate_profile.comparison_operator;
             prepared.quantifier = predicate_profile.quantifier;
+            prepared.comparison_authority_required =
+                dt::CanonicalTypeIdFromStableName(
+                    prepared.left_value.descriptor.canonical_type_name) ==
+                    dt::CanonicalTypeId::character ||
+                dt::CanonicalTypeIdFromStableName(
+                    input_batch.columns.front()
+                        .descriptor.canonical_type_name) ==
+                    dt::CanonicalTypeId::character ||
+                prepared.left_value.descriptor.encoded_descriptor.find(
+                    "timezone_profile_id=") != std::string::npos ||
+                input_batch.columns.front()
+                        .descriptor.encoded_descriptor.find(
+                            "timezone_profile_id=") != std::string::npos;
+
+            if (prepared.comparison_authority_required) {
+              std::uint64_t comparison_authority_memory = 0;
+              if (!CheckedMultiply(
+                      static_cast<std::uint64_t>(input_row_count),
+                      sizeof(std::optional<int>),
+                      &comparison_authority_memory) ||
+                  !CheckedAdd(auxiliary_memory,
+                              comparison_authority_memory,
+                              &auxiliary_memory)) {
+                return refuse(
+                    "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "quantified comparison authority carrier size "
+                    "overflowed");
+              }
+            }
 
             api::EngineCanonicalExpressionOperation operation =
                 api::EngineCanonicalExpressionOperation::equal;
@@ -16474,7 +16535,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               evaluation.result_descriptor =
                   prepared.result_column.descriptor;
               api::EngineCanonicalExpressionEvaluationResult evaluated;
-              if (!api::QowEvaluateCanonicalTypedExpressionV1(
+              if (!BindCanonicalRelationalComparisonAuthorityV1(
+                      evaluation.left_value, evaluation.right_value,
+                      request.expression_services,
+                      &evaluation.precomputed_comparison, &detail) ||
+                  !api::QowEvaluateCanonicalTypedExpressionV1(
                       evaluation, &evaluated, &detail)) {
                 return refuse(
                     std::string(kPayloadDiagnostic),
@@ -16982,7 +17047,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         MakeLivePredicateSubqueryRegistration(
             std::move(*prepared_predicate_subquery),
             subquery_capability_uuid,
-            predicate_subquery_input_row_count, request.context));
+            predicate_subquery_input_row_count,
+            request.expression_services, request.context));
   }
   if (prepared_nonrecursive_cte) {
     execution_request.available_executors.push_back(

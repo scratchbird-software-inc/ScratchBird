@@ -139,6 +139,16 @@ struct CanonicalRelationalExpressionRuntimeServices {
       comparison_evaluator;
 };
 
+// Binds the engine-owned comparison result required by character and
+// timezone-profile operands.  Core non-collated comparisons and SQL NULL do
+// not require a precomputed result.
+bool BindCanonicalRelationalComparisonAuthorityV1(
+    const internal_api::EngineTypedValue& left,
+    const internal_api::EngineTypedValue& right,
+    const CanonicalRelationalExpressionRuntimeServices& services,
+    std::optional<int>* precomputed_comparison,
+    std::string* refusal_detail);
+
 // Object-free first consumer of the canonical relational expression graph.
 // Parameters remain refused until an engine-owned value binding exists;
 // functions, collations, temporal profiles, and non-core descriptor types are
