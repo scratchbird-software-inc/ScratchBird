@@ -7101,7 +7101,7 @@ LiveJoinPredicateScratchBound BoundLiveJoinPredicateScratchBytes(
       }
       case api::RelationalExpressionKind::kFunctionCall: {
         // POINT is the sole functionless built-in in this runtime and has a
-        // fixed 16-byte result. External function callbacks have no payload
+        // fixed 24-byte SBP1 result. External function callbacks have no payload
         // ceiling in this ABI and therefore remain fail-closed here.
         if (record.function_uuid.has_value() ||
             record.operator_name != "POINT" ||
@@ -7113,7 +7113,7 @@ LiveJoinPredicateScratchBound BoundLiveJoinPredicateScratchBytes(
         std::uint64_t output = 0;
         bounded = bound_expression(record.child_expression_ids[0], &left) &&
                   bound_expression(record.child_expression_ids[1], &right) &&
-                  CheckedAdd(16, declared_extent, &output) &&
+                  CheckedAdd(24, declared_extent, &output) &&
                   finish_binary(left, right, output, 4);
         break;
       }
