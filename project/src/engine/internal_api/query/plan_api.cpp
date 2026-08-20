@@ -2545,10 +2545,20 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                     "planning_fields_require_wire_v2");
     }
     std::unordered_set<std::uint32_t> bound_expression_ids;
-    for (const auto expression_id : node.bound_expression_ids) {
+    for (std::size_t role = 0; role < node.bound_expression_ids.size();
+         ++role) {
+      const auto expression_id = node.bound_expression_ids[role];
+      const bool inserted = bound_expression_ids.insert(expression_id).second;
+      const bool exact_same_column_lag_role =
+          !inserted && role == 1 &&
+          node.node_kind == RelationalDagNodeKind::kWindow &&
+          node.semantic_variant_id == "window.lag.v1" &&
+          node.bound_expression_ids.size() == 3 &&
+          node.bound_expression_ids[0] == node.bound_expression_ids[1] &&
+          node.bound_expression_ids[1] != node.bound_expression_ids[2];
       if (expression_id == 0 ||
           !expressions_by_id.contains(expression_id) ||
-          !bound_expression_ids.insert(expression_id).second) {
+          (!inserted && !exact_same_column_lag_role)) {
         return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
                       "bound_expression_ids");
       }

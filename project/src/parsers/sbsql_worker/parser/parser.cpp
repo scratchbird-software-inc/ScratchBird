@@ -2921,7 +2921,7 @@ class NativeRelationalParser final {
 
   bool LooksLikeBoundedWindowSelect() const {
     if (tokens_.size() < 9 || tokens_[2]->text != "(") return false;
-    if (IsWord(*tokens_[1], "NTILE")) {
+    if (IsWord(*tokens_[1], "NTILE") || IsWord(*tokens_[1], "LAG")) {
       return true;
     }
     return (IsWord(*tokens_[1], "ROW_NUMBER") ||
@@ -2937,10 +2937,11 @@ class NativeRelationalParser final {
   NativeRelationalAstDocument ParseWindowSelect() {
     // QOW-SOURCE-RCP-050-TYPED-WINDOW-AST-V1
     // The general ROW_NUMBER surface preserves the complete window
-    // specification. RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, and NTILE are
+    // specification. RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, NTILE, and LAG are
     // admitted only for the exact global, one-direct-column ordering profile
     // executed by the canonical spine. NTILE additionally requires one exact
-    // positive signed-int64 literal operand.
+    // positive signed-int64 literal operand. LAG admits one direct signed-int64
+    // column with only its implicit offset and implicit NULL default.
     document_.status = NativeRelationalParseStatus::kRefused;
     if (cst_.messages.has_errors()) {
       document_.messages = cst_.messages;
@@ -2958,12 +2959,16 @@ class NativeRelationalParser final {
     const bool percent_rank_window = IsWord(function_token, "PERCENT_RANK");
     const bool cume_dist_window = IsWord(function_token, "CUME_DIST");
     const bool ntile_window = IsWord(function_token, "NTILE");
+    const bool lag_window = IsWord(function_token, "LAG");
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
-    const bool strict_ordered_window = peer_ranking_window || ntile_window;
+    const bool strict_ordered_window =
+        peer_ranking_window || ntile_window || lag_window;
     const std::string function_name =
-        ntile_window
+        lag_window
+            ? "LAG"
+            : (ntile_window
             ? "NTILE"
             : (cume_dist_window
             ? "CUME_DIST"
@@ -2971,7 +2976,7 @@ class NativeRelationalParser final {
                    ? "PERCENT_RANK"
                    : (dense_rank_window
                           ? "DENSE_RANK"
-                          : (rank_window ? "RANK" : "ROW_NUMBER"))));
+                          : (rank_window ? "RANK" : "ROW_NUMBER")))));
     if (!RequireSymbol("(", "window_function_open_required",
                        function_name + " requires an opening parenthesis")) {
       return FinishRefusal();
@@ -2983,6 +2988,7 @@ class NativeRelationalParser final {
     function.operator_name = function_name;
     document_.expressions.push_back(std::move(function));
     std::optional<std::uint32_t> ntile_operand_expression_id;
+    std::optional<std::uint32_t> lag_operand_expression_id;
     if (ntile_window) {
       if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
         Refuse("ntile_operand_required",
@@ -3013,6 +3019,20 @@ class NativeRelationalParser final {
       operand.range = TokenSourceRange(operand_token);
       ntile_operand_expression_id = operand.expression_id;
       document_.expressions.push_back(std::move(operand));
+    } else if (lag_window) {
+      if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+        Refuse("lag_operand_required",
+               "LAG requires one direct signed-int64 column operand");
+        return FinishRefusal();
+      }
+      const Token& operand_token = Consume();
+      NativeExpressionAstNode operand;
+      operand.expression_id = NextExpressionId();
+      operand.expression_kind = NativeExpressionAstKind::kIdentifier;
+      operand.spelling = operand_token.text;
+      operand.range = TokenSourceRange(operand_token);
+      lag_operand_expression_id = operand.expression_id;
+      document_.expressions.push_back(std::move(operand));
     }
     if (!RequireSymbol(")", "window_function_close_required",
                        function_name + " requires a closing parenthesis")) {
@@ -3040,6 +3060,8 @@ class NativeRelationalParser final {
         document_.expressions[function_expression_id - 1];
     if (ntile_operand_expression_id.has_value()) {
       stored_function.child_expression_ids = {*ntile_operand_expression_id};
+    } else if (lag_operand_expression_id.has_value()) {
+      stored_function.child_expression_ids = {*lag_operand_expression_id};
     }
     stored_function.spelling = SourceSpelling(function_token, function_close);
     stored_function.range = Span(function_token, function_close);
@@ -3047,6 +3069,9 @@ class NativeRelationalParser final {
     NativeWindowDefinitionAstNode definition;
     definition.window_id = 1;
     std::vector<std::uint32_t> source_expression_ids;
+    if (lag_operand_expression_id.has_value()) {
+      source_expression_ids.push_back(*lag_operand_expression_id);
+    }
     const auto parse_identifier_list =
         [&](std::vector<std::uint32_t>* expression_ids,
             std::vector<NativeOrderingAstTerm>* ordering_terms) -> bool {
@@ -3475,7 +3500,9 @@ class NativeRelationalParser final {
       const auto expected_output_name = ToLowerAscii(
           invocation.output_alias.has_value()
               ? invocation.output_alias->spelling
-              : (ntile_window
+              : (lag_window
+                     ? std::string("lag")
+                     : (ntile_window
                      ? std::string("ntile")
                      : (cume_dist_window
                      ? std::string("cume_dist")
@@ -3485,7 +3512,7 @@ class NativeRelationalParser final {
                                    ? std::string("dense_rank")
                                    : (rank_window
                                           ? std::string("rank")
-                                          : std::string("row_number")))))));
+                                          : std::string("row_number"))))))));
       if (ToLowerAscii(output_reference.text) != expected_output_name) {
         Refuse("qualify_window_output_unresolved",
                "QUALIFY may reference only the selected window result in this bounded profile");
@@ -3542,7 +3569,9 @@ class NativeRelationalParser final {
     }
     if (strict_ordered_window) {
       if (document_.window_definitions.size() != 1) {
-        Refuse(ntile_window
+        Refuse(lag_window
+                   ? "lag_window_shape_unsupported"
+                   : (ntile_window
                    ? "ntile_window_shape_unsupported"
                    : (cume_dist_window
                    ? "cume_dist_window_shape_unsupported"
@@ -3550,7 +3579,7 @@ class NativeRelationalParser final {
                           ? "percent_rank_window_shape_unsupported"
                           : (dense_rank_window
                                  ? "dense_rank_window_shape_unsupported"
-                                 : "rank_window_shape_unsupported"))),
+                                 : "rank_window_shape_unsupported")))),
                "typed " + function_name +
                    " requires one inline direct-column ORDER BY key");
         return FinishRefusal();
@@ -3566,7 +3595,9 @@ class NativeRelationalParser final {
           rank_definition.frame_end.has_value() ||
           rank_definition.exclusion !=
               NativeWindowFrameExclusion::kNoOthers) {
-        Refuse(ntile_window
+        Refuse(lag_window
+                   ? "lag_window_shape_unsupported"
+                   : (ntile_window
                    ? "ntile_window_shape_unsupported"
                    : (cume_dist_window
                    ? "cume_dist_window_shape_unsupported"
@@ -3574,7 +3605,7 @@ class NativeRelationalParser final {
                           ? "percent_rank_window_shape_unsupported"
                           : (dense_rank_window
                                  ? "dense_rank_window_shape_unsupported"
-                                 : "rank_window_shape_unsupported"))),
+                                 : "rank_window_shape_unsupported")))),
                "typed " + function_name +
                    " requires one inline direct-column ORDER BY key");
         return FinishRefusal();

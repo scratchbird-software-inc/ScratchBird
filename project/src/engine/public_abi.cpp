@@ -3201,13 +3201,43 @@ sb_engine_status_t AcquireStatementContextReceipt(
         {entry.abi_version, entry.builtin_id, entry.function_uuid, true});
   }
 
-  std::string numeric_type_uuid;
+  // Numeric statement descriptors represent the canonical signed-int64
+  // scalar profile. The profile descriptor UUIDs remain statement-owned, but
+  // their type identity is owned by the core datatype catalog.
+  const auto core_manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto int64_count =
+      core_manifest.ok()
+          ? std::ranges::count_if(
+                core_manifest.manifest.descriptor_rows,
+                [](const auto& row) { return row.stable_name == "int64"; })
+          : 0;
+  const auto int64_row =
+      core_manifest.ok()
+          ? std::ranges::find_if(
+                core_manifest.manifest.descriptor_rows,
+                [](const auto& row) { return row.stable_name == "int64"; })
+          : core_manifest.manifest.descriptor_rows.end();
+  if (!core_manifest.ok() || int64_count != 1 ||
+      int64_row == core_manifest.manifest.descriptor_rows.end() ||
+      !int64_row->descriptor_uuid.valid()) {
+    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
+        snapshot.snapshot_uuid);
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4040,
+        "ENGINE.STATEMENT_CONTEXT.MATERIALIZED_CONTEXT_INCOMPLETE",
+        "engine.statement_context.materialized_context_incomplete",
+        "statement_numeric_descriptor_type");
+  }
+  const auto numeric_type_uuid = scratchbird::core::uuid::UuidToString(
+      int64_row->descriptor_uuid.value);
   std::string text_type_uuid;
   std::string boolean_type_uuid;
   std::string json_type_uuid;
   std::string text_list_type_uuid;
-  if (!issue_identity(&numeric_type_uuid) ||
-      !issue_identity(&text_type_uuid) ||
+  if (numeric_type_uuid.empty() || !issue_identity(&text_type_uuid) ||
       !issue_identity(&boolean_type_uuid) ||
       !issue_identity(&json_type_uuid) ||
       !issue_identity(&text_list_type_uuid)) {
@@ -3283,8 +3313,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
   // owns the REAL64 type identity; the statement-context issuer owns the two
   // distinct result-slot descriptor identities. No parser-side pairing or
   // descriptor reuse is permitted.
-  const auto core_manifest =
-      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   const auto real64_count =
       core_manifest.ok()
           ? std::ranges::count_if(

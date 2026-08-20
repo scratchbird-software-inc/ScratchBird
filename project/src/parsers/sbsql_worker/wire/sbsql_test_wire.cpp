@@ -4294,6 +4294,8 @@ BuildEngineProjectedNativeBindingContext(
         "019de5fc-2400-721c-be64-2568b64a02b9";
     constexpr std::string_view kNtileFunctionUuid =
         "019de5fc-2400-7047-9474-232ca488c094";
+    constexpr std::string_view kLagFunctionUuid =
+        "019de5fc-2400-782c-8436-9ac310301738";
     const bool rank_window =
         function_expression != ast.expressions.end() &&
         function_expression->operator_name == "RANK";
@@ -4309,17 +4311,23 @@ BuildEngineProjectedNativeBindingContext(
     const bool ntile_window =
         function_expression != ast.expressions.end() &&
         function_expression->operator_name == "NTILE";
+    const bool lag_window =
+        function_expression != ast.expressions.end() &&
+        function_expression->operator_name == "LAG";
     const bool recognized_ranking =
         function_expression != ast.expressions.end() &&
         (rank_window || dense_rank_window || percent_rank_window ||
-         cume_dist_window || ntile_window ||
+         cume_dist_window || ntile_window || lag_window ||
          function_expression->operator_name == "ROW_NUMBER");
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
-    const bool strict_ordered_window = peer_ranking_window || ntile_window;
+    const bool strict_ordered_window =
+        peer_ranking_window || ntile_window || lag_window;
     const std::string_view expected_operator =
-        ntile_window
+        lag_window
+            ? "LAG"
+            : (ntile_window
             ? "NTILE"
             : (cume_dist_window
             ? "CUME_DIST"
@@ -4327,9 +4335,11 @@ BuildEngineProjectedNativeBindingContext(
                    ? "PERCENT_RANK"
                    : (dense_rank_window
                           ? "DENSE_RANK"
-                          : (rank_window ? "RANK" : "ROW_NUMBER"))));
+                          : (rank_window ? "RANK" : "ROW_NUMBER")))));
     const std::string_view expected_builtin =
-        ntile_window
+        lag_window
+            ? "sb.window.lag"
+            : (ntile_window
             ? "sb.window.ntile"
             : (cume_dist_window
             ? "sb.window.cume_dist"
@@ -4338,9 +4348,11 @@ BuildEngineProjectedNativeBindingContext(
                    : (dense_rank_window
                           ? "sb.window.dense_rank"
                           : (rank_window ? "sb.window.rank"
-                                         : "sb.window.row_number"))));
+                                         : "sb.window.row_number")))));
     const std::string_view expected_function_uuid =
-        ntile_window
+        lag_window
+            ? kLagFunctionUuid
+            : (ntile_window
             ? kNtileFunctionUuid
             : (cume_dist_window
             ? kCumeDistFunctionUuid
@@ -4349,7 +4361,7 @@ BuildEngineProjectedNativeBindingContext(
                    : (dense_rank_window
                           ? kDenseRankFunctionUuid
                           : (rank_window ? kRankFunctionUuid
-                                         : kRowNumberFunctionUuid))));
+                                         : kRowNumberFunctionUuid)))));
     const auto function_profile = std::ranges::find_if(
         statement_context.window_function_profiles,
         [&](const auto& candidate) {
@@ -4358,7 +4370,10 @@ BuildEngineProjectedNativeBindingContext(
     const auto result_profile = std::ranges::find_if(
         statement_context.descriptor_profiles, [&](const auto& candidate) {
           return candidate.profile_kind ==
-                     ((percent_rank_window || cume_dist_window) ? 11 : 1) &&
+                     (lag_window
+                          ? 2
+                          : ((percent_rank_window || cume_dist_window) ? 11
+                                                                       : 1)) &&
                  candidate.slot == 0;
         });
     const NativeExpressionAstNode* ntile_operand = nullptr;
@@ -4369,6 +4384,25 @@ BuildEngineProjectedNativeBindingContext(
                    function_expression->child_expression_ids.front();
           });
       if (operand != ast.expressions.end()) ntile_operand = &*operand;
+    }
+    const NativeExpressionAstNode* lag_operand = nullptr;
+    std::optional<std::size_t> lag_operand_source_ordinal;
+    if (lag_window && function_expression->child_expression_ids.size() == 1) {
+      const auto operand = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id ==
+                   function_expression->child_expression_ids.front();
+          });
+      if (operand != ast.expressions.end()) {
+        lag_operand = &*operand;
+        const auto source_operand = std::ranges::find(
+            source_relation->output_expression_ids, operand->expression_id);
+        if (source_operand != source_relation->output_expression_ids.end()) {
+          lag_operand_source_ordinal = static_cast<std::size_t>(
+              std::distance(source_relation->output_expression_ids.begin(),
+                            source_operand));
+        }
+      }
     }
     const auto ntile_operand_profile = std::ranges::find_if(
         statement_context.descriptor_profiles, [](const auto& candidate) {
@@ -4386,9 +4420,11 @@ BuildEngineProjectedNativeBindingContext(
       ntile_operand_error = parsed.ec;
     }
     const std::vector<std::uint32_t> expected_function_children =
-        ntile_operand == nullptr
-            ? std::vector<std::uint32_t>{}
-            : std::vector<std::uint32_t>{ntile_operand->expression_id};
+        lag_operand != nullptr
+            ? std::vector<std::uint32_t>{lag_operand->expression_id}
+            : (ntile_operand != nullptr
+                   ? std::vector<std::uint32_t>{ntile_operand->expression_id}
+                   : std::vector<std::uint32_t>{});
     if (!recognized_ranking ||
         function_expression->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
@@ -4400,9 +4436,11 @@ BuildEngineProjectedNativeBindingContext(
         function_profile->function_uuid != expected_function_uuid ||
         !CanonicalUuidBytes(function_profile->function_uuid).has_value() ||
         result_profile == statement_context.descriptor_profiles.end() ||
-        result_profile->nullable ||
+        result_profile->nullable != lag_window ||
         !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
         !CanonicalUuidBytes(result_profile->type_uuid).has_value() ||
+        result_profile->descriptor_uuid == expected_function_uuid ||
+        result_profile->type_uuid == expected_function_uuid ||
         (ntile_window &&
          (ntile_operand == nullptr ||
           ntile_operand->expression_kind !=
@@ -4429,7 +4467,26 @@ BuildEngineProjectedNativeBindingContext(
           ntile_operand_profile->descriptor_uuid ==
               result_profile->descriptor_uuid ||
           ntile_operand_profile->descriptor_uuid == expected_function_uuid ||
-          ntile_operand_profile->type_uuid != result_profile->type_uuid))) {
+          ntile_operand_profile->type_uuid != result_profile->type_uuid)) ||
+        (lag_window &&
+         (lag_operand == nullptr ||
+          !lag_operand_source_ordinal.has_value() ||
+          *lag_operand_source_ordinal >= context.expressions.size() ||
+          *lag_operand_source_ordinal >= context.descriptors.size() ||
+          lag_operand->expression_kind !=
+              NativeExpressionAstKind::kIdentifier ||
+          !lag_operand->child_expression_ids.empty() ||
+          !lag_operand->operator_name.empty() || lag_operand->spelling.empty() ||
+          context.expressions[*lag_operand_source_ordinal]
+              .function_uuid.has_value() ||
+          !context.expressions[*lag_operand_source_ordinal]
+               .bound_name_uuid.has_value() ||
+          context.descriptors[*lag_operand_source_ordinal].descriptor_uuid ==
+              result_profile->descriptor_uuid ||
+          context.descriptors[*lag_operand_source_ordinal].descriptor_uuid ==
+              expected_function_uuid ||
+          context.descriptors[*lag_operand_source_ordinal].type_uuid !=
+              result_profile->type_uuid))) {
       return fail("catalog_window_ranking_profile_unavailable");
     }
     if (strict_ordered_window) {
@@ -4451,10 +4508,21 @@ BuildEngineProjectedNativeBindingContext(
           order_expression == ast.expressions.end() ||
           order_expression->expression_kind !=
               NativeExpressionAstKind::kIdentifier ||
-          source_relation->output_expression_ids !=
-              std::vector<std::uint32_t>{order_expression->expression_id}) {
+          source_relation->output_expression_ids != [&] {
+            std::vector<std::uint32_t> expected;
+            if (lag_operand != nullptr) {
+              expected.push_back(lag_operand->expression_id);
+            }
+            if (expected.empty() ||
+                expected.back() != order_expression->expression_id) {
+              expected.push_back(order_expression->expression_id);
+            }
+            return expected;
+          }()) {
         return fail(
-            ntile_window
+            lag_window
+                ? "catalog_window_lag_shape_invalid"
+                : (ntile_window
                 ? "catalog_window_ntile_shape_invalid"
                 : (cume_dist_window
                 ? "catalog_window_cume_dist_shape_invalid"
@@ -4462,7 +4530,7 @@ BuildEngineProjectedNativeBindingContext(
                        ? "catalog_window_percent_rank_shape_invalid"
                        : (dense_rank_window
                               ? "catalog_window_dense_rank_shape_invalid"
-                              : "catalog_window_rank_shape_invalid"))));
+                              : "catalog_window_rank_shape_invalid")))));
       }
     }
     if (ntile_window) {
@@ -4480,10 +4548,24 @@ BuildEngineProjectedNativeBindingContext(
     }
     const auto function_binding_id =
         static_cast<std::uint32_t>(context.descriptors.size() + 1);
-    context.descriptors.push_back(
-        {function_binding_id, result_profile->descriptor_uuid,
-         result_profile->type_uuid, BoundNullability::kNonNull, std::nullopt,
-         std::nullopt, {}});
+    NativeDescriptorBindingInput function_descriptor;
+    function_descriptor.descriptor_id = function_binding_id;
+    function_descriptor.descriptor_uuid = result_profile->descriptor_uuid;
+    function_descriptor.type_uuid = result_profile->type_uuid;
+    function_descriptor.nullability =
+        lag_window ? BoundNullability::kNullable
+                   : BoundNullability::kNonNull;
+    if (lag_window) {
+      const auto& source_descriptor =
+          context.descriptors[*lag_operand_source_ordinal];
+      function_descriptor.type_uuid = source_descriptor.type_uuid;
+      function_descriptor.collation_uuid = source_descriptor.collation_uuid;
+      function_descriptor.timezone_profile_id =
+          source_descriptor.timezone_profile_id;
+      function_descriptor.width_precision_scale =
+          source_descriptor.width_precision_scale;
+    }
+    context.descriptors.push_back(std::move(function_descriptor));
     context.expressions.push_back(
         {function_binding_id, function_binding_id,
          function_profile->function_uuid, std::nullopt});
@@ -4495,7 +4577,9 @@ BuildEngineProjectedNativeBindingContext(
     const auto window_output_name =
         invocation.output_alias.has_value()
             ? invocation.output_alias->spelling
-            : (ntile_window
+            : (lag_window
+                   ? std::string("lag")
+                   : (ntile_window
                    ? std::string("ntile")
                    : (cume_dist_window
                    ? std::string("cume_dist")
@@ -4505,7 +4589,7 @@ BuildEngineProjectedNativeBindingContext(
                                  ? std::string("dense_rank")
                                  : (rank_window
                                         ? std::string("rank")
-                                        : std::string("row_number"))))));
+                                        : std::string("row_number")))))));
     context.outputs.push_back(
         {static_cast<std::uint32_t>(context.outputs.size() + 1),
          function_binding_id,
@@ -4584,7 +4668,9 @@ BuildEngineProjectedNativeBindingContext(
     context.catalog_relations.push_back(std::move(catalog_relation));
     context.relations.push_back(
         {window_relation->relation_id,
-         ntile_window
+         lag_window
+             ? "window.lag.v1"
+             : (ntile_window
              ? "window.ntile.v1"
              : (cume_dist_window
              ? "window.cume-dist.v1"
@@ -4593,7 +4679,7 @@ BuildEngineProjectedNativeBindingContext(
                     : (dense_rank_window
                            ? "window.dense-rank.v1"
                            : (rank_window ? "window.rank.v1"
-                                          : "window.row-number.v1"))))});
+                                          : "window.row-number.v1")))))});
     if (has_qualify) {
       context.relations.push_back(
           {qualify_relation->relation_id,
