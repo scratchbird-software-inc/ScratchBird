@@ -10650,6 +10650,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         if (inputs.size() != 1 ||
+            node.input_physical_node_ids.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
             !inputs.front().materialized_output_batch.has_value() ||
             inputs.front().materialized_output_batch->rows.size() >
                 maximum_input_row_count) {
@@ -10661,13 +10664,29 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
           return step;
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id, &*scoped_execution_dag,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SORT-INPUT-V1";
+            step.diagnostic.detail = "SORT execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
         exec::CanonicalDescriptorSortRequest sort_request;
         sort_request.selected_physical_node_id = node.physical_node_id;
         sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
         sort_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         auto sort_result = exec::ExecuteCanonicalDescriptorSort(
-            sort_request, dag, input_batch, order_terms,
+            sort_request, *execution_dag, input_batch, order_terms,
             deterministic_tie_evidence_uuid);
         if (!sort_result.diagnostic.ok) {
           step.diagnostic = std::move(sort_result.diagnostic);
@@ -10718,6 +10737,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         if (inputs.size() != 1 ||
+            node.input_physical_node_ids.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
             !inputs.front().materialized_output_batch.has_value() ||
             inputs.front().materialized_output_batch->rows.size() >
                 maximum_input_row_count ||
@@ -10731,6 +10753,23 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
           return step;
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id, &*scoped_execution_dag,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-INPUT-V1";
+            step.diagnostic.detail =
+                "object-backed SORT execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
         std::vector<exec::CanonicalDescriptorOrderTerm> order_terms;
         order_terms.reserve(logical_terms.size());
         for (std::size_t ordinal = 0; ordinal < logical_terms.size(); ++ordinal) {
@@ -10760,9 +10799,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
         sort_request.selected_physical_node_id = node.physical_node_id;
         sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
         sort_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         auto sorted = exec::ExecuteCanonicalDescriptorSort(
-            sort_request, dag, input_batch, order_terms,
+            sort_request, *execution_dag, input_batch, order_terms,
             deterministic_tie_evidence_uuid);
         if (!sorted.diagnostic.ok) {
           step.diagnostic = std::move(sorted.diagnostic);
@@ -10825,6 +10864,9 @@ MakeLiveExpressionSortRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         if (!prepared_expression_ordering || inputs.size() != 1 ||
+            node.input_physical_node_ids.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
             !inputs.front().materialized_output_batch.has_value() ||
             inputs.front().materialized_output_batch->rows.size() >
                 maximum_input_row_count) {
@@ -10843,16 +10885,33 @@ MakeLiveExpressionSortRegistration(
           step.diagnostic = input_validation;
           return step;
         }
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id, &*scoped_execution_dag,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SORT-INPUT-V1";
+            step.diagnostic.detail =
+                "expression SORT execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
         const auto mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         std::uint64_t actual_order_key_batch_bytes = 0;
         auto sorted = CanonicalDescriptorSortKeyReceiptIssuer::
             IssueAndExecuteBorrowed(
                 relational_dag, expressions, input_batch,
-                expression_services, dag, node.physical_node_id,
+                expression_services, *execution_dag, node.physical_node_id,
                 order_terms, ordering_property_uuid,
                 deterministic_tie_evidence_uuid, maximum_pair_comparisons,
-                dag.memory_budget_bytes, mga_authority,
+                execution_dag->memory_budget_bytes, mga_authority,
                 &actual_order_key_batch_bytes);
         if (!sorted.diagnostic.ok) {
           step.diagnostic = std::move(sorted.diagnostic);
