@@ -7626,7 +7626,9 @@ bool CanonicalWindowFrameEvidenceValid(
       (frames.operator_local_parent_implementation_id == "window.lag.v1" ||
        frames.operator_local_parent_implementation_id == "window.lead.v1" ||
        frames.operator_local_parent_implementation_id ==
-           "window.first-value.v1") &&
+           "window.first-value.v1" ||
+       frames.operator_local_parent_implementation_id ==
+           "window.last-value.v1") &&
       selected_node != nullptr && selected_input_node != nullptr &&
       selected_node->implementation_id ==
           frames.operator_local_parent_implementation_id &&
@@ -8542,7 +8544,12 @@ static CanonicalWindowValueResult ExecuteCanonicalWindowValueStrategy(
         request.frames.operator_local_parent_implementation_id ==
             "window.first-value.v1" &&
         request.function == CanonicalWindowValueFunction::first_value;
-    if ((!exact_lag && !exact_lead && !exact_first_value) ||
+    const bool exact_last_value =
+        request.frames.operator_local_parent_implementation_id ==
+            "window.last-value.v1" &&
+        request.function == CanonicalWindowValueFunction::last_value;
+    if ((!exact_lag && !exact_lead && !exact_first_value &&
+         !exact_last_value) ||
         selected_node == request.frames.physical_dag.nodes.end() ||
         selected_node->output_descriptor_ids.empty() ||
         request.result_column.descriptor_id == 0 ||

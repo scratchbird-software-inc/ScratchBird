@@ -245,7 +245,9 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
       request.operator_local_parent_implementation_id == "window.lag.v1" ||
       request.operator_local_parent_implementation_id == "window.lead.v1" ||
       request.operator_local_parent_implementation_id ==
-          "window.first-value.v1";
+          "window.first-value.v1" ||
+      request.operator_local_parent_implementation_id ==
+          "window.last-value.v1";
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kWindow ||
       selected_node->implementation_id !=
@@ -1107,19 +1109,28 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       request.builtin_id == "sb.window.first_value" &&
       request.function_uuid ==
           "019de5fc-2400-7264-90fb-d25bd0f806f2";
+  const bool last_value =
+      request.builtin_id == "sb.window.last_value" &&
+      request.function_uuid ==
+          "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
   const std::string_view implementation_id =
       lag ? "window.lag.v1"
           : (lead ? "window.lead.v1"
-                  : (first_value ? "window.first-value.v1" : ""));
+                  : (first_value
+                         ? "window.first-value.v1"
+                         : (last_value ? "window.last-value.v1" : "")));
   const auto function =
       lag ? CanonicalWindowValueFunction::lag
           : (lead ? CanonicalWindowValueFunction::lead
-                  : CanonicalWindowValueFunction::first_value);
+                  : (first_value ? CanonicalWindowValueFunction::first_value
+                                 : CanonicalWindowValueFunction::last_value));
   const std::string_view display_name =
-      lag ? "LAG" : (lead ? "LEAD" : "FIRST_VALUE");
+      lag ? "LAG"
+          : (lead ? "LEAD" : (first_value ? "FIRST_VALUE" : "LAST_VALUE"));
   if (request.function_abi_version != 1 ||
       static_cast<unsigned>(lag) + static_cast<unsigned>(lead) +
-              static_cast<unsigned>(first_value) !=
+              static_cast<unsigned>(first_value) +
+              static_cast<unsigned>(last_value) !=
           1 ||
       !IsCanonicalUuid(request.function_uuid)) {
     return refuse(Refusal(
@@ -1321,11 +1332,12 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
     maximum_value_payload_bytes =
         std::max(maximum_value_payload_bytes, value_payload_bytes);
   }
-  if (first_value) {
+  if (first_value || last_value) {
     if (!checked_multiply(maximum_value_payload_bytes, row_count_u64,
                           &result_value_payload_bytes)) {
       return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                            "FIRST_VALUE result payload accounting overflowed"));
+                            std::string(display_name) +
+                                " result payload accounting overflowed"));
     }
   } else {
     result_value_payload_bytes = navigation_payload_bytes;
@@ -1471,7 +1483,8 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       !values.effective_frame_membership_consumed &&
       values.frame_and_exclusion_ignored_for_navigation;
   const bool exact_frame_value_consumption =
-      first_value && !values.used_implicit_navigation_offset &&
+      (first_value || last_value) &&
+      !values.used_implicit_navigation_offset &&
       !values.explicit_navigation_default_present &&
       !values.partition_metadata_consumed_for_navigation &&
       values.effective_frame_membership_consumed &&

@@ -1964,7 +1964,8 @@ struct CanonicalDescriptorNavigationWindowResult {
 };
 
 // Retain the exact LAG carrier names for source compatibility while the
-// canonical value-window carrier is shared by LAG, LEAD, and FIRST_VALUE.
+// canonical value-window carrier is shared by LAG, LEAD, FIRST_VALUE, and
+// LAST_VALUE.
 using CanonicalDescriptorLagWindowRequest =
     CanonicalDescriptorNavigationWindowRequest;
 using CanonicalDescriptorLagWindowResult =
