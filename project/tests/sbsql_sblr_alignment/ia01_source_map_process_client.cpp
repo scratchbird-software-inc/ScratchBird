@@ -313,6 +313,8 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlPurgeSystemHistoryForWire():begun; }()
                     : operation == "ddl-set-index-optimizer-eligibility"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlSetIndexOptimizerEligibilityForWire():begun; }()
+                    : operation == "ddl-set-table-type-enforcement"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlSetTableTypeEnforcementForWire():begun; }()
                     : operation == "ddl-drop-function"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropFunctionForWire():begun; }()
                     : operation == "ddl-alter-view"

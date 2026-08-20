@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_ddl_set_table_type_enforcement_coordinator.hpp"
+#include <cassert>
+int main(){namespace a=scratchbird::engine::internal_api;a::EngineRequestContext c;c.statement_uuid.canonical="019d0000-0000-7000-8000-000000002736";c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags={"private_ddl_set_table_type_enforcement_binder"};auto q=a::CompileSblrDdlSetTableTypeEnforcementDescriptor(c,c.statement_uuid.canonical,1,1,1);assert(q.ok);a::EngineRequestContext x=c;x.trace_tags={"private_ddl_set_table_type_enforcement"};x.query_cancellation_requested=[](){return true;};auto r=a::ConsumeSblrDdlSetTableTypeEnforcementDescriptor(x,q.descriptor);assert(!r.ok&&r.diagnostic.code=="PROCESS.CANCELLED");return 0;}

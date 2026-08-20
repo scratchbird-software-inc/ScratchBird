@@ -193,6 +193,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlDropAggregateForWire();
   PipelineResult RunDdlPurgeSystemHistoryForWire();
   PipelineResult RunDdlSetIndexOptimizerEligibilityForWire();
+  PipelineResult RunDdlSetTableTypeEnforcementForWire();
   PipelineResult RunDdlCreateSchemaForWire();
   PipelineResult RunDdlCreateTableForWire();
   PipelineResult RunDdlCreateIndexForWire();

@@ -464,6 +464,7 @@ add_library(sb_engine_internal_api
   sblr_ddl_drop_aggregate_coordinator.cpp
   sblr_ddl_purge_system_history_coordinator.cpp
   sblr_ddl_set_index_optimizer_eligibility_coordinator.cpp
+  sblr_ddl_set_table_type_enforcement_coordinator.cpp
   sblr_ddl_alter_rewrite_rule_coordinator.cpp
   sblr_ddl_drop_trigger_coordinator.cpp
   sblr_aggregate_coordinator.cpp

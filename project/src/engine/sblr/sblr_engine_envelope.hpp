@@ -107,6 +107,7 @@ enum class SblrValueKind : std::uint16_t {
   ddl_drop_aggregate_descriptor = 116,
   system_history_purge_descriptor = 117,
   index_optimizer_eligibility_descriptor = 118,
+  table_type_enforcement_descriptor = 119,
   sequence_setval_descriptor = 65,
   numeric_operation_descriptor = 66,
   advanced_datatype_family_descriptor = 67,

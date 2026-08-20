@@ -673,6 +673,7 @@ void ApplyDdlAlterAggregateContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DDL_A
 void ApplyDdlDropAggregateContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DDL_DROP_AGGREGATE")return;e->operation_id="engine.op.ddl_drop_aggregate";e->operand_contract="aggregate_drop_descriptor";e->result_contract="ddl_result";e->executor_id="engine.op.ddl_drop_aggregate";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
 void ApplyDdlPurgeSystemHistoryContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DDL_PURGE_SYSTEM_HISTORY")return;e->operation_id="engine.op.ddl_purge_system_history";e->operand_contract="system_history_purge_descriptor";e->result_contract="management_operation_result";e->executor_id="engine.op.ddl_purge_system_history";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
 void ApplyDdlSetIndexOptimizerEligibilityContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY")return;e->operation_id="engine.op.ddl_set_index_optimizer_eligibility";e->operand_contract="index_optimizer_eligibility_descriptor";e->result_contract="ddl_result";e->executor_id="engine.op.ddl_set_index_optimizer_eligibility";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
+void ApplyDdlSetTableTypeEnforcementContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT")return;e->operation_id="engine.op.ddl_set_table_type_enforcement";e->operand_contract="table_type_enforcement_descriptor";e->result_contract="management_operation_result";e->executor_id="engine.op.ddl_set_table_type_enforcement";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
 
 // IA10B-LOCAL-METRICS-READ-WIRE-V1.  This is the one local observation
 // reader admitted by the Core closure; it is deliberately distinct from all
@@ -764,6 +765,7 @@ SblrOpcodeEntry CanonicalEntry(std::string operation_id,
   ApplyDdlDropAggregateContract(&entry);
   ApplyDdlPurgeSystemHistoryContract(&entry);
   ApplyDdlSetIndexOptimizerEligibilityContract(&entry);
+  ApplyDdlSetTableTypeEnforcementContract(&entry);
   ApplyStatementBatchContract(&entry);
   ApplyAtomicCasContract(&entry);
   ApplyAtomicRmwContract(&entry);
@@ -1148,6 +1150,7 @@ CanonicalEntry("engine.op.ddl_create_or_replace_srs", "SBLR_DDL_CREATE_OR_REPLAC
       CanonicalEntry("engine.op.ddl_drop_aggregate", "SBLR_DDL_DROP_AGGREGATE", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_purge_system_history", "SBLR_DDL_PURGE_SYSTEM_HISTORY", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_set_index_optimizer_eligibility", "SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
+      CanonicalEntry("engine.op.ddl_set_table_type_enforcement", "SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_trigger", "SBLR_DDL_DROP_TRIGGER", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_index", "SBLR_DDL_DROP_INDEX", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("kv.structured.stream_read", "SBLR_KV_STRUCTURED_STREAM_READ", "kv-structured-execution", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
@@ -1761,6 +1764,7 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
     return result;
   }
   if (code == 1629 && operation_id == "engine.op.ddl_set_index_optimizer_eligibility" && opcode == "SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY") { result.entry = LookupSblrOpcode("SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY"); result.ok = result.entry != nullptr; return result; }
+  if (code == 1630 && operation_id == "engine.op.ddl_set_table_type_enforcement" && opcode == "SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT") { result.entry = LookupSblrOpcode("SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT"); result.ok = result.entry != nullptr; return result; }
   if (code == 1029 && operation_id == "engine.op.udr_invoke" &&
       opcode == "SBLR_UDR_INVOKE") {
     result.entry = LookupSblrOpcode("SBLR_UDR_INVOKE");

@@ -1077,6 +1077,7 @@ SessionOperationResult HandleCoordinateDdlAlterAggregate(ServerSessionRegistry*,
 SessionOperationResult HandleCoordinateDdlDropAggregate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlPurgeSystemHistory(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlSetIndexOptimizerEligibility(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateDdlSetTableTypeEnforcement(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateTable(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateIndex(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlDropIndex(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

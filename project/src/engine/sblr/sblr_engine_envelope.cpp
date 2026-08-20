@@ -52,6 +52,7 @@
 #include "sblr_ddl_drop_aggregate_runtime.hpp"
 #include "sblr_ddl_purge_system_history_runtime.hpp"
 #include "sblr_ddl_set_index_optimizer_eligibility_runtime.hpp"
+#include "sblr_ddl_set_table_type_enforcement_runtime.hpp"
 #include "sblr_ddl_create_function_runtime.hpp"
 #include "sblr_ddl_alter_function_runtime.hpp"
 #include "sblr_ddl_drop_function_runtime.hpp"
@@ -612,6 +613,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::ddl_drop_aggregate_descriptor: { SblrDdlDropAggregateDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropAggregateDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::system_history_purge_descriptor: { SblrDdlPurgeSystemHistoryDescriptorV1 operand; std::string detail; return DecodeSblrDdlPurgeSystemHistoryDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::index_optimizer_eligibility_descriptor: { SblrDdlSetIndexOptimizerEligibilityDescriptorV1 operand; std::string detail; return DecodeSblrDdlSetIndexOptimizerEligibilityDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::table_type_enforcement_descriptor: { SblrDdlSetTableTypeEnforcementDescriptorV1 operand; std::string detail; return DecodeSblrDdlSetTableTypeEnforcementDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::group_descriptor: { SblrGroupDescriptorV1 operand; std::string detail; return DecodeSblrGroupDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::sort_descriptor: { SblrSortDescriptorV1 operand; std::string detail; return DecodeSblrSortDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::limit_descriptor: { SblrLimitDescriptorV1 operand; std::string detail; return DecodeSblrLimitDescriptorV1(data,size,&operand,&detail,true); }
