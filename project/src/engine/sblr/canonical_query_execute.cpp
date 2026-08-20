@@ -11443,6 +11443,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
     const std::size_t maximum_input_row_count,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
+  const bool inline_cte =
+      implementation_id == "cte.bound.inline.typed.v1";
+  const bool materialized_cte =
+      implementation_id == "cte.bound.materialize.typed.v1";
   registration.node_kind = exec::PhysicalNodeKind::kCte;
   registration.implementation_id = std::move(implementation_id);
   registration.executor_capability_uuid = std::move(capability_uuid);
@@ -11450,7 +11454,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
   registration.execute =
-      [maximum_input_row_count, mga_context = std::move(mga_context)](
+      [inline_cte, materialized_cte, maximum_input_row_count,
+       mga_context = std::move(mga_context)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -11493,6 +11498,41 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
           }
           execution_dag = &*scoped_execution_dag;
         }
+        const auto& input_batch =
+            *inputs.front().materialized_output_batch;
+        std::uint64_t input_memory_bytes = 0;
+        if ((!inline_cte && !materialized_cte) ||
+            !RuntimeMaterializedBatchMemoryBytes(
+                input_batch, &input_memory_bytes) ||
+            node.memory_bytes_required == 0 ||
+            node.memory_bytes_required > execution_dag->memory_budget_bytes ||
+            node.memory_bytes_required >
+                static_cast<std::uint64_t>(
+                    std::numeric_limits<std::size_t>::max())) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail =
+              "nonrecursive CTE memory grant or runtime payload accounting "
+              "is invalid";
+          return step;
+        }
+        auto remaining_memory_bytes = node.memory_bytes_required;
+        const auto charge = [&](const std::uint64_t bytes) {
+          if (bytes > remaining_memory_bytes) return false;
+          remaining_memory_bytes -= bytes;
+          return true;
+        };
+        if (!charge(input_memory_bytes) || !charge(input_memory_bytes) ||
+            (materialized_cte && !charge(input_memory_bytes))) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail =
+              "nonrecursive CTE materialization exceeds the selected node "
+              "memory grant";
+          return step;
+        }
         const auto authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         const auto before =
@@ -11502,8 +11542,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
           step.diagnostic = before;
           return step;
         }
-        exec::DescriptorBatch output =
-            *inputs.front().materialized_output_batch;
+        exec::DescriptorBatch output = input_batch;
         const auto validated = exec::ValidateCanonicalDescriptorBatch(
             output, node.output_descriptor_ids);
         if (!validated.ok) {
@@ -16357,16 +16396,18 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     const bool dynamic_table_subquery =
         physical_kind == exec::PhysicalNodeKind::kSubquery &&
         implementation_id == "subquery.table.materialize.typed.v1";
+    const bool dynamic_nonrecursive_cte =
+        physical_kind == exec::PhysicalNodeKind::kCte;
     if ((physical_kind == exec::PhysicalNodeKind::kFilter ||
          physical_kind == exec::PhysicalNodeKind::kSort ||
          physical_kind == exec::PhysicalNodeKind::kLimit ||
-         dynamic_table_subquery) &&
+         dynamic_table_subquery || dynamic_nonrecursive_cte) &&
         !planning_values_exact) {
       // The preceding complex aggregate owns its live result values.  The
       // planning batch is only a schema/cardinality placeholder, so bind the
-      // dynamic FILTER, SORT, LIMIT, or TABLE-subquery to the full selected
-      // budget and let its issuer/executor charge exact callback payloads and
-      // auxiliary state.
+      // dynamic FILTER, SORT, LIMIT, TABLE-subquery, or nonrecursive CTE to
+      // the full selected budget and let its issuer/executor charge exact
+      // callback payloads and auxiliary state.
       operator_memory =
           request.optimizer_request.resource.memory_budget_bytes;
     }
@@ -16380,6 +16421,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         auxiliary_memory;
     profiles.back().runtime_peak_from_callback_batches =
         !planning_values_exact;
+    profiles.back().runtime_auxiliary_from_first_input_batch =
+        dynamic_nonrecursive_cte &&
+        implementation_id == "cte.bound.materialize.typed.v1";
   }
 
   if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
@@ -27367,6 +27411,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             consumer->shareable
                 ? "canonical.time-series.cte.materialize.v1"
                 : "canonical.time-series.cte.inline.v1";
+        profile.memory_bytes_required = planning.memory_budget_bytes;
         profile.runtime_auxiliary_from_first_input_batch =
             consumer->shareable;
       } else if (consumer->node_kind ==
@@ -31912,6 +31957,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
           consumer->shareable
               ? "canonical.search.cte.materialize.v1"
               : "canonical.search.cte.inline.v1";
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
       consumer_profile.runtime_auxiliary_from_first_input_batch =
           consumer->shareable;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kLimit) {
@@ -34066,6 +34112,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
           consumer->shareable
               ? "canonical.key-value.cte.materialize.v1"
               : "canonical.key-value.cte.inline.v1";
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
       consumer_profile.runtime_auxiliary_from_first_input_batch =
           consumer->shareable;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kLimit) {
@@ -36469,6 +36516,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           consumer->shareable
               ? "canonical.graph.cte.composed-materialize.v1"
               : "canonical.graph.cte.composed-inline.v1";
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
       consumer_profile.runtime_auxiliary_from_first_input_batch =
           consumer->shareable;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kLimit) {
@@ -39072,6 +39120,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
               consumer->shareable
                   ? "canonical.document-unnest.cte.composed-materialize.v1"
                   : "canonical.document-unnest.cte.composed-inline.v1";
+          consumer_profile.memory_bytes_required =
+              planning.memory_budget_bytes;
           consumer_profile.runtime_auxiliary_from_first_input_batch =
               consumer->shareable;
           break;
