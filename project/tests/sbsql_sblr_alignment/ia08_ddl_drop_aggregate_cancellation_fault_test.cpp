@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_ddl_drop_aggregate_coordinator.hpp"
+#include <cassert>
+int main(){namespace a=scratchbird::engine::internal_api;a::EngineRequestContext c;c.statement_uuid.canonical="019d0000-0000-7000-8000-000000002724";c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags={"private_ddl_drop_aggregate_binder"};auto q=a::CompileSblrDdlDropAggregateDescriptor(c,c.statement_uuid.canonical,1,1,1);assert(q.ok);a::EngineRequestContext x=c;x.trace_tags={"private_ddl_drop_aggregate"};x.query_cancellation_requested=[](){return true;};auto r=a::ConsumeSblrDdlDropAggregateDescriptor(x,q.descriptor);assert(!r.ok&&r.diagnostic.code=="PROCESS.CANCELLED");return 0;}

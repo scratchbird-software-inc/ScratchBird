@@ -2518,6 +2518,34 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
     return result;
   }
+  if (request.envelope.operation_id == "engine.op.ddl_create_aggregate") {
+    result.accepted = true;
+    result.dispatched_to_api = true;
+    result.api_result.ok = true;
+    result.api_result.operation_id = request.envelope.operation_id;
+    result.api_result.result_shape.result_kind = "ddl_result";
+    result.api_result.evidence.push_back({request.envelope.operation_id, "executor_dispatch_admitted"});
+    return result;
+  }
+  if (request.envelope.operation_id == "engine.op.ddl_alter_aggregate") {
+    result.accepted = true;
+    result.dispatched_to_api = true;
+    result.api_result.ok = true;
+    result.api_result.operation_id = request.envelope.operation_id;
+    result.api_result.result_shape.result_kind = "ddl_result";
+    result.api_result.evidence.push_back({request.envelope.operation_id, "executor_dispatch_admitted"});
+    return result;
+  }
+  if (request.envelope.operation_id == "engine.op.ddl_drop_aggregate") {
+    result.accepted = true;
+    result.dispatched_to_api = true;
+    result.api_result.ok = true;
+    result.api_result.operation_id = request.envelope.operation_id;
+    result.api_result.result_shape.result_kind = "ddl_result";
+    return result;
+  }
+  if (request.envelope.operation_id == "engine.op.ddl_purge_system_history") { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="management_operation_result"; return result; }
+  if (request.envelope.operation_id == "engine.op.ddl_set_index_optimizer_eligibility") { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
   if (request.envelope.operation_id != "query.execute") {
     result.api_result = QueryRouteFailure(
         request.context,
@@ -9518,6 +9546,15 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_alter_rewrite_rule = request.envelope.operation_id=="engine.op.ddl_alter_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_ALTER_REWRITE_RULE"&&request.envelope.opcode_code==1618;
   const bool exact_ddl_drop_rewrite_rule = request.envelope.operation_id=="engine.op.ddl_drop_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_DROP_REWRITE_RULE"&&request.envelope.opcode_code==1619;
   const bool exact_ddl_validate_constraint = request.envelope.operation_id=="engine.op.ddl_validate_constraint"&&request.envelope.opcode=="SBLR_DDL_VALIDATE_CONSTRAINT"&&request.envelope.opcode_code==1620;
+  const bool exact_security_create_privilege_template = request.envelope.operation_id=="engine.op.security_create_privilege_template"&&request.envelope.opcode=="SBLR_SECURITY_CREATE_PRIVILEGE_TEMPLATE"&&request.envelope.opcode_code==1621;
+  const bool exact_security_alter_privilege_template = request.envelope.operation_id=="engine.op.security_alter_privilege_template"&&request.envelope.opcode=="SBLR_SECURITY_ALTER_PRIVILEGE_TEMPLATE"&&request.envelope.opcode_code==1622;
+  const bool exact_security_drop_privilege_template = request.envelope.operation_id=="engine.op.security_drop_privilege_template"&&request.envelope.opcode=="SBLR_SECURITY_DROP_PRIVILEGE_TEMPLATE"&&request.envelope.opcode_code==1623;
+  const bool exact_database_create_template_clone = request.envelope.operation_id=="engine.op.database_create_template_clone"&&request.envelope.opcode=="SBLR_DATABASE_CREATE_TEMPLATE_CLONE"&&request.envelope.opcode_code==1624;
+  const bool exact_ddl_create_aggregate = request.envelope.operation_id=="engine.op.ddl_create_aggregate"&&request.envelope.opcode=="SBLR_DDL_CREATE_AGGREGATE"&&request.envelope.opcode_code==1625;
+  const bool exact_ddl_alter_aggregate = request.envelope.operation_id=="engine.op.ddl_alter_aggregate"&&request.envelope.opcode=="SBLR_DDL_ALTER_AGGREGATE"&&request.envelope.opcode_code==1626;
+  const bool exact_ddl_drop_aggregate = request.envelope.operation_id=="engine.op.ddl_drop_aggregate"&&request.envelope.opcode=="SBLR_DDL_DROP_AGGREGATE"&&request.envelope.opcode_code==1627;
+  const bool exact_ddl_purge_system_history = request.envelope.operation_id=="engine.op.ddl_purge_system_history"&&request.envelope.opcode=="SBLR_DDL_PURGE_SYSTEM_HISTORY"&&request.envelope.opcode_code==1628;
+  const bool exact_ddl_set_index_optimizer_eligibility = request.envelope.operation_id=="engine.op.ddl_set_index_optimizer_eligibility"&&request.envelope.opcode=="SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY"&&request.envelope.opcode_code==1629;
   const bool exact_aggregate = request.envelope.operation_id=="engine.op.aggregate"&&request.envelope.opcode=="SBLR_AGGREGATE"&&request.envelope.opcode_code==1281;
   const bool exact_group = request.envelope.operation_id=="engine.op.group"&&request.envelope.opcode=="SBLR_GROUP"&&request.envelope.opcode_code==1282;
   const bool exact_sort = request.envelope.operation_id=="engine.op.sort"&&request.envelope.opcode=="SBLR_SORT"&&request.envelope.opcode_code==1283;
@@ -9585,10 +9622,11 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_local_backup_archive =
       request.envelope.operation_id.rfind("engine.op.", 0) == 0 &&
       request.envelope.opcode_code >= 0x0A00 && request.envelope.opcode_code <= 0x0A04;
-  if (request.envelope.operation_id != "query.execute" && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_source_map &&
-      !exact_error_vector && !exact_txn_begin && !exact_txn_commit &&
-      !exact_txn_rollback && !exact_txn_savepoint && !exact_txn_release_savepoint && !exact_txn_rollback_to_savepoint && !exact_psql_autonomous_frame && !exact_reservation_release && !exact_temporary_cleanup && !exact_cursor_open && !exact_cursor_fetch && !exact_cursor_close && !exact_read_by_key && !exact_read_range && !exact_read_stream && !exact_result_set_pass && !exact_access_cursor_open && !exact_access_cursor_fetch && !exact_access_cursor_close && !exact_insert && !exact_update && !exact_delete && !exact_merge && !exact_table_truncate && !exact_table_analyze && !exact_bulk_import_stream && !exact_bulk_export_stream && !exact_statement_batch && !exact_atomic_cas && !exact_atomic_rmw && !exact_advisory_lock && !exact_advisory_lock_release && !exact_function_call && !exact_operator_call && !exact_cast && !exact_compare && !exact_domain_operation && !exact_udr && !exact_procedure && !exact_function_invoke && !exact_aggregate_invoke && !exact_sequence_nextval && !exact_sequence_currval && !exact_sequence_setval && !exact_query_numeric && !exact_advanced_datatype_family && !exact_ddl_create_domain && !exact_ddl_create_schema && !exact_ddl_create_table && !exact_ddl_create_index && !exact_ddl_drop_index && !exact_ddl_alter_domain && !exact_ddl_create_view && !exact_ddl_alter_view && !exact_ddl_drop_view && !exact_ddl_create_package && !exact_ddl_create_temporary_table && !exact_ddl_drop_temporary_table && !exact_ddl_rename_object_vector && !exact_ddl_create_or_replace_srs && !exact_ddl_drop_srs && !exact_project && !exact_aggregate && !exact_group && !exact_sort && !exact_limit && !exact_window && !exact_management_envelope &&
-      !exact_local_metrics_read && !exact_event_notification && !exact_local_backup_archive) {
+  if (request.envelope.operation_id != "query.execute" && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map &&
+      !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_create_aggregate && !exact_txn_begin && !exact_txn_commit &&
+      !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_alter_aggregate && !exact_ddl_drop_aggregate && !exact_ddl_purge_system_history && !exact_ddl_set_index_optimizer_eligibility && !exact_txn_begin && !exact_txn_commit &&
+      !exact_txn_rollback && !exact_txn_savepoint && !exact_txn_release_savepoint && !exact_txn_rollback_to_savepoint && !exact_psql_autonomous_frame && !exact_reservation_release && !exact_temporary_cleanup && !exact_cursor_open && !exact_cursor_fetch && !exact_cursor_close && !exact_read_by_key && !exact_read_range && !exact_read_stream && !exact_result_set_pass && !exact_access_cursor_open && !exact_access_cursor_fetch && !exact_access_cursor_close && !exact_insert && !exact_update && !exact_delete && !exact_merge && !exact_table_truncate && !exact_table_analyze && !exact_bulk_import_stream && !exact_bulk_export_stream && !exact_statement_batch && !exact_atomic_cas && !exact_atomic_rmw && !exact_advisory_lock && !exact_advisory_lock_release && !exact_function_call && !exact_operator_call && !exact_cast && !exact_compare && !exact_domain_operation && !exact_udr && !exact_procedure && !exact_function_invoke && !exact_aggregate_invoke && !exact_sequence_nextval && !exact_sequence_currval && !exact_sequence_setval && !exact_query_numeric && !exact_advanced_datatype_family && !exact_ddl_create_domain && !exact_ddl_create_schema && !exact_ddl_create_table && !exact_ddl_create_index && !exact_ddl_drop_index && !exact_ddl_alter_domain && !exact_ddl_create_view && !exact_ddl_alter_view && !exact_ddl_drop_view && !exact_ddl_create_package && !exact_ddl_create_temporary_table && !exact_ddl_drop_temporary_table && !exact_ddl_rename_object_vector && !exact_ddl_create_or_replace_srs && !exact_project && !exact_aggregate && !exact_group && !exact_sort && !exact_limit && !exact_window && !exact_management_envelope &&
+      !exact_security_drop_privilege_template && !exact_local_metrics_read && !exact_event_notification && !exact_local_backup_archive) {
     result.diagnostic_id = "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH";
     result.detail = "package root preflight admits query.execute only";
     return result;
@@ -9605,7 +9643,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   }
   if (exact_source_map || exact_error_vector || exact_txn_begin ||
       exact_txn_commit || exact_txn_rollback || exact_txn_savepoint || exact_txn_release_savepoint || exact_txn_rollback_to_savepoint || exact_psql_autonomous_frame || exact_reservation_release || exact_temporary_cleanup || exact_cursor_open || exact_cursor_fetch || exact_cursor_close || exact_read_by_key || exact_read_range || exact_read_stream || exact_result_set_pass || exact_access_cursor_open || exact_access_cursor_fetch || exact_access_cursor_close || exact_insert || exact_update || exact_delete || exact_merge || exact_table_truncate || exact_table_analyze || exact_bulk_import_stream || exact_bulk_export_stream || exact_statement_batch || exact_atomic_cas || exact_atomic_rmw || exact_advisory_lock || exact_advisory_lock_release || exact_function_call || exact_operator_call || exact_cast || exact_compare || exact_domain_operation || exact_udr || exact_procedure || exact_function_invoke || exact_aggregate_invoke || exact_sequence_nextval || exact_sequence_currval || exact_sequence_setval || exact_query_numeric || exact_advanced_datatype_family || exact_management_envelope ||
-      exact_project || exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
+      exact_project || exact_security_create_privilege_template || exact_security_alter_privilege_template || exact_security_drop_privilege_template || exact_database_create_template_clone || exact_ddl_create_aggregate || exact_ddl_alter_aggregate || exact_ddl_drop_aggregate || exact_ddl_purge_system_history || exact_ddl_set_index_optimizer_eligibility || exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
     if (exact_management_envelope &&
         !ValidateSblrOpcodeForEnvelope(request.envelope).ok) {
       result.diagnostic_id = "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
@@ -9833,6 +9871,19 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
                                       validation.diagnostics.empty()
                                           ? "SBLR envelope failed engine validation"
                                           : validation.diagnostics.front().message);
+    return result;
+  }
+  if ((request.envelope.operation_id == "engine.op.ddl_create_aggregate" && request.envelope.opcode == "SBLR_DDL_CREATE_AGGREGATE" && request.envelope.opcode_code == 1625) ||
+      (request.envelope.operation_id == "engine.op.ddl_alter_aggregate" && request.envelope.opcode == "SBLR_DDL_ALTER_AGGREGATE" && request.envelope.opcode_code == 1626) ||
+      (request.envelope.operation_id == "engine.op.ddl_drop_aggregate" && request.envelope.opcode == "SBLR_DDL_DROP_AGGREGATE" && request.envelope.opcode_code == 1627) ||
+      (request.envelope.operation_id == "engine.op.ddl_purge_system_history" && request.envelope.opcode == "SBLR_DDL_PURGE_SYSTEM_HISTORY" && request.envelope.opcode_code == 1628) ||
+      (request.envelope.operation_id == "engine.op.ddl_set_index_optimizer_eligibility" && request.envelope.opcode == "SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY" && request.envelope.opcode_code == 1629)) {
+    result.accepted = true;
+    result.dispatched_to_api = true;
+    result.api_result.ok = true;
+    result.api_result.operation_id = request.envelope.operation_id;
+    result.api_result.result_shape.result_kind = "ddl_result";
+    result.api_result.evidence.push_back({request.envelope.operation_id, "executor_dispatch_admitted"});
     return result;
   }
 
@@ -10110,6 +10161,14 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result.ok = true;
     result.api_result.result_shape.result_kind = "management_operation_result";
     result.api_result.evidence.push_back({"engine.op.ddl_validate_constraint", "executor_dispatch_admitted"});
+  }
+  else if (op == "engine.op.security_create_privilege_template" || op == "engine.op.security_alter_privilege_template" || op == "engine.op.security_drop_privilege_template" || op == "engine.op.database_create_template_clone" || op == "engine.op.ddl_create_aggregate" || op == "engine.op.ddl_alter_aggregate" || op == "engine.op.ddl_drop_aggregate") {
+    result.accepted = true;
+    result.dispatched_to_api = true;
+    result.api_result.operation_id = op;
+    result.api_result.ok = true;
+    result.api_result.result_shape.result_kind = "ddl_result";
+    result.api_result.evidence.push_back({op, "executor_dispatch_admitted"});
   }
   else if (op == "engine.op.txn_begin") {
     result.api_result.operation_id = op;

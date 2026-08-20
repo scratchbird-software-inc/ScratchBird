@@ -43,6 +43,15 @@
 #include "sblr_ddl_alter_rewrite_rule_runtime.hpp"
 #include "sblr_ddl_drop_rewrite_rule_runtime.hpp"
 #include "sblr_ddl_validate_constraint_runtime.hpp"
+#include "sblr_security_create_privilege_template_runtime.hpp"
+#include "sblr_security_alter_privilege_template_runtime.hpp"
+#include "sblr_security_drop_privilege_template_runtime.hpp"
+#include "sblr_database_create_template_clone_runtime.hpp"
+#include "sblr_ddl_create_aggregate_runtime.hpp"
+#include "sblr_ddl_alter_aggregate_runtime.hpp"
+#include "sblr_ddl_drop_aggregate_runtime.hpp"
+#include "sblr_ddl_purge_system_history_runtime.hpp"
+#include "sblr_ddl_set_index_optimizer_eligibility_runtime.hpp"
 #include "sblr_ddl_create_function_runtime.hpp"
 #include "sblr_ddl_alter_function_runtime.hpp"
 #include "sblr_ddl_drop_function_runtime.hpp"
@@ -572,6 +581,9 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::merge_descriptor: { SblrMergeDescriptorV1 operand; std::string detail; return DecodeSblrMergeDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::truncate_table_descriptor: { SblrTableTruncateDescriptorV1 operand; std::string detail; return DecodeSblrTableTruncateDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::analyze_table_descriptor: { SblrTableAnalyzeDescriptorV1 operand; std::string detail; return DecodeSblrTableAnalyzeDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::privilege_template_descriptor: { SblrSecurityCreatePrivilegeTemplateDescriptorV1 operand; std::string detail; return DecodeSblrSecurityCreatePrivilegeTemplateDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::privilege_template_alter_descriptor: { SblrSecurityAlterPrivilegeTemplateDescriptorV1 operand; std::string detail; return DecodeSblrSecurityAlterPrivilegeTemplateDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::privilege_template_drop_descriptor: { SblrSecurityDropPrivilegeTemplateDescriptorV1 operand; std::string detail; return DecodeSblrSecurityDropPrivilegeTemplateDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::bulk_import_stream_descriptor: { SblrBulkImportStreamDescriptorV1 operand; std::string detail; return DecodeSblrBulkImportStreamDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::bulk_export_stream_descriptor: { SblrBulkExportStreamDescriptorV1 operand; std::string detail; return DecodeSblrBulkExportStreamDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::statement_batch_descriptor: { SblrStatementBatchDescriptorV1 operand; std::string detail; return DecodeSblrStatementBatchDescriptorV1(data,size,&operand,&detail,true); }
@@ -595,6 +607,11 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::advanced_datatype_family_descriptor: { SblrAdvancedDatatypeFamilyDescriptorV1 operand; std::string detail; return DecodeSblrAdvancedDatatypeFamilyDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::projection_descriptor: { SblrProjectDescriptorV1 operand; std::string detail; return DecodeSblrProjectDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::aggregate_descriptor: { SblrAggregateDescriptorV1 operand; std::string detail; return DecodeSblrAggregateDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::ddl_create_aggregate_descriptor: { SblrDdlCreateAggregateDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateAggregateDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::ddl_alter_aggregate_descriptor: { SblrDdlAlterAggregateDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterAggregateDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::ddl_drop_aggregate_descriptor: { SblrDdlDropAggregateDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropAggregateDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::system_history_purge_descriptor: { SblrDdlPurgeSystemHistoryDescriptorV1 operand; std::string detail; return DecodeSblrDdlPurgeSystemHistoryDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::index_optimizer_eligibility_descriptor: { SblrDdlSetIndexOptimizerEligibilityDescriptorV1 operand; std::string detail; return DecodeSblrDdlSetIndexOptimizerEligibilityDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::group_descriptor: { SblrGroupDescriptorV1 operand; std::string detail; return DecodeSblrGroupDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::sort_descriptor: { SblrSortDescriptorV1 operand; std::string detail; return DecodeSblrSortDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::limit_descriptor: { SblrLimitDescriptorV1 operand; std::string detail; return DecodeSblrLimitDescriptorV1(data,size,&operand,&detail,true); }
@@ -633,6 +650,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::rewrite_rule_alter_descriptor: { SblrDdlAlterRewriteRuleDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterRewriteRuleDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::rewrite_rule_drop_descriptor: { SblrDdlDropRewriteRuleDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropRewriteRuleDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::constraint_validation_descriptor: { SblrDdlValidateConstraintDescriptorV1 operand; std::string detail; return DecodeSblrDdlValidateConstraintDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::template_database_creation_descriptor: { SblrDatabaseCreateTemplateCloneDescriptorV1 operand; std::string detail; return DecodeSblrDatabaseCreateTemplateCloneDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::alter_function_descriptor: { SblrDdlAlterFunctionDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterFunctionDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::drop_view_descriptor: { SblrDdlDropViewDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropViewDescriptorV1(data,size,&operand,&detail,true); }
   }

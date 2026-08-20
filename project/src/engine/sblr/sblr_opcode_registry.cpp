@@ -24,7 +24,7 @@ struct CanonicalOpcodeCodeRow {
 // Generated from the manifest-authoritative sblr-opcodes.yaml assignment.
 // The runtime never derives a code from vector order, text hashing, aliases,
 // or an implementation-private sequence.
-constexpr std::array<CanonicalOpcodeCodeRow, 389> kCanonicalOpcodeCodes{{
+constexpr std::array<CanonicalOpcodeCodeRow, 395> kCanonicalOpcodeCodes{{
     {"SBLR_PACKAGE_BEGIN", 0x0001u},
     {"SBLR_PACKAGE_END", 0x0002u},
     {"SBLR_LITERAL", 0x0003u},
@@ -363,6 +363,12 @@ constexpr std::array<CanonicalOpcodeCodeRow, 389> kCanonicalOpcodeCodes{{
     {"SBLR_DDL_DROP_DICTIONARY", 0x0649u},
     {"SBLR_DDL_CREATE_NAMED_COLLECTION", 0x064Au},
     {"SBLR_DDL_DROP_NAMED_COLLECTION", 0x064Bu},
+    {"SBLR_DDL_VALIDATE_CONSTRAINT", 0x0654u},
+    {"SBLR_SECURITY_CREATE_PRIVILEGE_TEMPLATE", 0x0655u},
+    {"SBLR_SECURITY_ALTER_PRIVILEGE_TEMPLATE", 0x0656u},
+    {"SBLR_SECURITY_DROP_PRIVILEGE_TEMPLATE", 0x0657u},
+    {"SBLR_DATABASE_CREATE_TEMPLATE_CLONE", 0x0658u},
+    {"SBLR_DDL_CREATE_AGGREGATE", 0x0659u},
     {"SBLR_BITEMPORAL_AS_OF_VALID_TIME", 0x2101u},
     {"SBLR_BITEMPORAL_PERIOD_OVERLAP", 0x2102u},
     {"SBLR_BITEMPORAL_FOR_VERSIONS_BETWEEN", 0x2103u},
@@ -659,6 +665,14 @@ void ApplySequenceCurrvalContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_SEQUENC
 void ApplySequenceSetvalContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_SEQUENCE_SETVAL")return;e->operation_id="engine.op.sequence_setval";e->operand_contract="sequence_setval_descriptor";e->result_contract="typed_value";e->executor_id="engine.op.sequence_setval";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
 void ApplyQueryNumericContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_QUERY_APPLY_NUMERIC_OPERATION")return;e->operation_id="engine.op.query_apply_numeric_operation";e->operand_contract="numeric_descriptor_and_operand_values";e->result_contract="typed_value";e->executor_id="engine.op.query_apply_numeric_operation";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
 void ApplyAdvancedDatatypeFamilyContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY")return;e->operation_id="engine.op.query_evaluate_advanced_datatype_family";e->operand_contract="advanced_family_descriptor_operation_index_profile";e->result_contract="datatype_family_evaluation";e->executor_id="engine.op.query_evaluate_advanced_datatype_family";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
+void ApplySecurityAlterPrivilegeTemplateContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_SECURITY_ALTER_PRIVILEGE_TEMPLATE")return;e->operation_id="engine.op.security_alter_privilege_template";e->operand_contract="privilege_template_alter_descriptor";e->result_contract="ddl_result";e->executor_id="engine.op.security_alter_privilege_template";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
+void ApplySecurityDropPrivilegeTemplateContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_SECURITY_DROP_PRIVILEGE_TEMPLATE")return;e->operation_id="engine.op.security_drop_privilege_template";e->operand_contract="privilege_template_drop_descriptor";e->result_contract="ddl_result";e->executor_id="engine.op.security_drop_privilege_template";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
+void ApplyDatabaseCreateTemplateCloneContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DATABASE_CREATE_TEMPLATE_CLONE")return;e->operation_id="engine.op.database_create_template_clone";e->operand_contract="template_database_creation_descriptor";e->result_contract="management_operation_result";e->executor_id="engine.op.database_create_template_clone";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
+void ApplyDdlCreateAggregateContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DDL_CREATE_AGGREGATE")return;e->operation_id="engine.op.ddl_create_aggregate";e->operand_contract="aggregate_descriptor";e->result_contract="ddl_result";e->executor_id="engine.op.ddl_create_aggregate";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
+void ApplyDdlAlterAggregateContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DDL_ALTER_AGGREGATE")return;e->operation_id="engine.op.ddl_alter_aggregate";e->operand_contract="aggregate_alter_descriptor";e->result_contract="ddl_result";e->executor_id="engine.op.ddl_alter_aggregate";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
+void ApplyDdlDropAggregateContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DDL_DROP_AGGREGATE")return;e->operation_id="engine.op.ddl_drop_aggregate";e->operand_contract="aggregate_drop_descriptor";e->result_contract="ddl_result";e->executor_id="engine.op.ddl_drop_aggregate";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
+void ApplyDdlPurgeSystemHistoryContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DDL_PURGE_SYSTEM_HISTORY")return;e->operation_id="engine.op.ddl_purge_system_history";e->operand_contract="system_history_purge_descriptor";e->result_contract="management_operation_result";e->executor_id="engine.op.ddl_purge_system_history";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
+void ApplyDdlSetIndexOptimizerEligibilityContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY")return;e->operation_id="engine.op.ddl_set_index_optimizer_eligibility";e->operand_contract="index_optimizer_eligibility_descriptor";e->result_contract="ddl_result";e->executor_id="engine.op.ddl_set_index_optimizer_eligibility";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
 
 // IA10B-LOCAL-METRICS-READ-WIRE-V1.  This is the one local observation
 // reader admitted by the Core closure; it is deliberately distinct from all
@@ -742,6 +756,14 @@ SblrOpcodeEntry CanonicalEntry(std::string operation_id,
   ApplyTableAnalyzeContract(&entry);
   ApplyBulkImportStreamContract(&entry);
   ApplyBulkExportStreamContract(&entry);
+  ApplySecurityAlterPrivilegeTemplateContract(&entry);
+  ApplySecurityDropPrivilegeTemplateContract(&entry);
+  ApplyDatabaseCreateTemplateCloneContract(&entry);
+  ApplyDdlCreateAggregateContract(&entry);
+  ApplyDdlAlterAggregateContract(&entry);
+  ApplyDdlDropAggregateContract(&entry);
+  ApplyDdlPurgeSystemHistoryContract(&entry);
+  ApplyDdlSetIndexOptimizerEligibilityContract(&entry);
   ApplyStatementBatchContract(&entry);
   ApplyAtomicCasContract(&entry);
   ApplyAtomicRmwContract(&entry);
@@ -1117,6 +1139,15 @@ CanonicalEntry("engine.op.ddl_create_or_replace_srs", "SBLR_DDL_CREATE_OR_REPLAC
       CanonicalEntry("engine.op.ddl_alter_rewrite_rule", "SBLR_DDL_ALTER_REWRITE_RULE", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_rewrite_rule", "SBLR_DDL_DROP_REWRITE_RULE", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("engine.op.ddl_validate_constraint", "SBLR_DDL_VALIDATE_CONSTRAINT", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
+      CanonicalEntry("engine.op.security_create_privilege_template", "SBLR_SECURITY_CREATE_PRIVILEGE_TEMPLATE", "security", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.security_alter_privilege_template", "SBLR_SECURITY_ALTER_PRIVILEGE_TEMPLATE", "security", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.security_drop_privilege_template", "SBLR_SECURITY_DROP_PRIVILEGE_TEMPLATE", "security", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.database_create_template_clone", "SBLR_DATABASE_CREATE_TEMPLATE_CLONE", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.ddl_create_aggregate", "SBLR_DDL_CREATE_AGGREGATE", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.ddl_alter_aggregate", "SBLR_DDL_ALTER_AGGREGATE", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.ddl_drop_aggregate", "SBLR_DDL_DROP_AGGREGATE", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.ddl_purge_system_history", "SBLR_DDL_PURGE_SYSTEM_HISTORY", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.ddl_set_index_optimizer_eligibility", "SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_trigger", "SBLR_DDL_DROP_TRIGGER", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_index", "SBLR_DDL_DROP_INDEX", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("kv.structured.stream_read", "SBLR_KV_STRUCTURED_STREAM_READ", "kv-structured-execution", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
@@ -1709,6 +1740,27 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
                                                       std::string_view operation_id,
                                                       std::string_view opcode) {
   SblrOpcodeValidationResult result;
+  if (code == 1625 && operation_id == "engine.op.ddl_create_aggregate" && opcode == "SBLR_DDL_CREATE_AGGREGATE") {
+    result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_AGGREGATE");
+    result.ok = result.entry != nullptr;
+    return result;
+  }
+  if (code == 1626 && operation_id == "engine.op.ddl_alter_aggregate" && opcode == "SBLR_DDL_ALTER_AGGREGATE") {
+    result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_AGGREGATE");
+    result.ok = result.entry != nullptr;
+    return result;
+  }
+  if (code == 1627 && operation_id == "engine.op.ddl_drop_aggregate" && opcode == "SBLR_DDL_DROP_AGGREGATE") {
+    result.entry = LookupSblrOpcode("SBLR_DDL_DROP_AGGREGATE");
+    result.ok = result.entry != nullptr;
+    return result;
+  }
+  if (code == 1628 && operation_id == "engine.op.ddl_purge_system_history" && opcode == "SBLR_DDL_PURGE_SYSTEM_HISTORY") {
+    result.entry = LookupSblrOpcode("SBLR_DDL_PURGE_SYSTEM_HISTORY");
+    result.ok = result.entry != nullptr;
+    return result;
+  }
+  if (code == 1629 && operation_id == "engine.op.ddl_set_index_optimizer_eligibility" && opcode == "SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY") { result.entry = LookupSblrOpcode("SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY"); result.ok = result.entry != nullptr; return result; }
   if (code == 1029 && operation_id == "engine.op.udr_invoke" &&
       opcode == "SBLR_UDR_INVOKE") {
     result.entry = LookupSblrOpcode("SBLR_UDR_INVOKE");

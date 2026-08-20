@@ -130,6 +130,15 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_ddl_alter_rewrite_rule_runtime.cpp
   sblr_ddl_drop_rewrite_rule_runtime.cpp
   sblr_ddl_validate_constraint_runtime.cpp
+  sblr_security_create_privilege_template_runtime.cpp
+  sblr_security_alter_privilege_template_runtime.cpp
+  sblr_security_drop_privilege_template_runtime.cpp
+  sblr_database_create_template_clone_runtime.cpp
+  sblr_ddl_create_aggregate_runtime.cpp
+  sblr_ddl_alter_aggregate_runtime.cpp
+  sblr_ddl_drop_aggregate_runtime.cpp
+  sblr_ddl_purge_system_history_runtime.cpp
+  sblr_ddl_set_index_optimizer_eligibility_runtime.cpp
   sblr_ddl_drop_trigger_runtime.cpp
   sblr_return_result_set_runtime.cpp
   sblr_sequence_currval_runtime.cpp

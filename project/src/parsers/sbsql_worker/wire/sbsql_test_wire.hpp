@@ -184,6 +184,15 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlAlterRewriteRuleForWire();
   PipelineResult RunDdlDropRewriteRuleForWire();
   PipelineResult RunDdlValidateConstraintForWire();
+  PipelineResult RunSecurityCreatePrivilegeTemplateForWire();
+  PipelineResult RunSecurityAlterPrivilegeTemplateForWire();
+  PipelineResult RunSecurityDropPrivilegeTemplateForWire();
+  PipelineResult RunDatabaseCreateTemplateCloneForWire();
+  PipelineResult RunDdlCreateAggregateForWire();
+  PipelineResult RunDdlAlterAggregateForWire();
+  PipelineResult RunDdlDropAggregateForWire();
+  PipelineResult RunDdlPurgeSystemHistoryForWire();
+  PipelineResult RunDdlSetIndexOptimizerEligibilityForWire();
   PipelineResult RunDdlCreateSchemaForWire();
   PipelineResult RunDdlCreateTableForWire();
   PipelineResult RunDdlCreateIndexForWire();

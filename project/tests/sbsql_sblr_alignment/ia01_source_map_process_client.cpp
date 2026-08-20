@@ -295,6 +295,24 @@ int main(int argc, char** argv) {
                           ? session.RunDdlDropRewriteRuleForWire()
                     : operation == "ddl-validate-constraint"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlValidateConstraintForWire():begun; }()
+                    : operation == "security-create-privilege-template"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSecurityCreatePrivilegeTemplateForWire():begun; }()
+                    : operation == "security-alter-privilege-template"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSecurityAlterPrivilegeTemplateForWire():begun; }()
+                    : operation == "security-drop-privilege-template"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunSecurityDropPrivilegeTemplateForWire():begun; }()
+                    : operation == "database-create-template-clone"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDatabaseCreateTemplateCloneForWire():begun; }()
+                    : operation == "ddl-create-aggregate"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateAggregateForWire():begun; }()
+                    : operation == "ddl-alter-aggregate"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterAggregateForWire():begun; }()
+                    : operation == "ddl-drop-aggregate"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropAggregateForWire():begun; }()
+                    : operation == "ddl-purge-system-history"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlPurgeSystemHistoryForWire():begun; }()
+                    : operation == "ddl-set-index-optimizer-eligibility"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlSetIndexOptimizerEligibilityForWire():begun; }()
                     : operation == "ddl-drop-function"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropFunctionForWire():begun; }()
                     : operation == "ddl-alter-view"

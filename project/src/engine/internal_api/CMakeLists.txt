@@ -455,6 +455,15 @@ add_library(sb_engine_internal_api
   sblr_ddl_create_rewrite_rule_coordinator.cpp
   sblr_ddl_drop_rewrite_rule_coordinator.cpp
   sblr_ddl_validate_constraint_coordinator.cpp
+  sblr_security_create_privilege_template_coordinator.cpp
+  sblr_security_alter_privilege_template_coordinator.cpp
+  sblr_security_drop_privilege_template_coordinator.cpp
+  sblr_database_create_template_clone_coordinator.cpp
+  sblr_ddl_create_aggregate_coordinator.cpp
+  sblr_ddl_alter_aggregate_coordinator.cpp
+  sblr_ddl_drop_aggregate_coordinator.cpp
+  sblr_ddl_purge_system_history_coordinator.cpp
+  sblr_ddl_set_index_optimizer_eligibility_coordinator.cpp
   sblr_ddl_alter_rewrite_rule_coordinator.cpp
   sblr_ddl_drop_trigger_coordinator.cpp
   sblr_aggregate_coordinator.cpp
