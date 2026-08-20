@@ -3004,6 +3004,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool is_ordered_single_collection = is_array_agg || is_json_agg;
   const bool is_ordered_collection =
       is_ordered_single_collection || is_json_object_agg;
+  const bool has_widened_independent_order_argument =
+      is_listagg_profile || is_ordered_collection;
   const bool is_hypothetical_rank =
       function == exec::CanonicalAggregateFunction::rank;
   const bool is_hypothetical_dense_rank =
@@ -3052,11 +3054,12 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   std::array<std::string, kBoundedSignedTypeNames.size()>
       bounded_signed_source_type_uuids;
   std::string bounded_signed_result_type_uuid;
-  if (is_bounded_signed_integer_aggregate) {
+  if (is_bounded_signed_integer_aggregate ||
+      has_widened_independent_order_argument) {
     const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
     if (!core_manifest.ok()) {
       result.detail =
-          "global bounded-signed aggregate core datatype catalog is "
+          "global bounded-signed aggregate/order core datatype catalog is "
           "unavailable";
       return result;
     }
@@ -3075,7 +3078,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           row == core_manifest.manifest.descriptor_rows.end() ||
           !row->descriptor_uuid.valid()) {
         result.detail =
-            "global bounded-signed aggregate core datatype cohort is "
+            "global bounded-signed aggregate/order core datatype cohort is "
             "incomplete";
         return result;
       }
@@ -3083,13 +3086,15 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           scratchbird::core::uuid::UuidToString(row->descriptor_uuid.value);
       if (bounded_signed_source_type_uuids[index].empty()) {
         result.detail =
-            "global bounded-signed aggregate core datatype identity is "
+            "global bounded-signed aggregate/order core datatype identity is "
             "unavailable";
         return result;
       }
     }
-    bounded_signed_result_type_uuid =
-        bounded_signed_source_type_uuids.back();
+    if (is_bounded_signed_integer_aggregate) {
+      bounded_signed_result_type_uuid =
+          bounded_signed_source_type_uuids.back();
+    }
   }
   if (root.output_descriptor_ids.size() != 1 ||
       root.bound_expression_ids.size() != 1 ||
@@ -3197,6 +3202,52 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
 
   if (!count_star) {
     CanonicalRelationalExpressionRuntime expression_runtime(dag);
+    const auto exact_bounded_signed_input =
+        [&](const std::uint32_t expression_descriptor_id,
+            const std::size_t value_column,
+            const std::string_view input_type) {
+          const auto source_type =
+              std::ranges::find(kBoundedSignedTypeNames, input_type);
+          const auto source_descriptor = std::ranges::find_if(
+              dag.descriptors, [&](const auto& candidate) {
+                return candidate.descriptor_id == expression_descriptor_id;
+              });
+          const auto& source_column = input.batch.columns[value_column];
+          const auto source_index = static_cast<std::size_t>(std::distance(
+              kBoundedSignedTypeNames.begin(), source_type));
+          return source_type != kBoundedSignedTypeNames.end() &&
+                 source_descriptor != dag.descriptors.end() &&
+                 source_index < bounded_signed_source_type_uuids.size() &&
+                 source_descriptor->descriptor_uuid ==
+                     source_column.descriptor.descriptor_uuid.canonical &&
+                 source_descriptor->descriptor_uuid !=
+                     source_descriptor->type_uuid &&
+                 source_descriptor->descriptor_uuid !=
+                     aggregate->function_uuid &&
+                 source_descriptor->descriptor_uuid !=
+                     descriptor->descriptor_uuid &&
+                 source_descriptor->type_uuid ==
+                     bounded_signed_source_type_uuids[source_index] &&
+                 source_descriptor->nullability ==
+                     (source_column.nullable
+                          ? api::RelationalNullability::kNullable
+                          : api::RelationalNullability::kNonNull) &&
+                 !source_descriptor->collation_uuid.has_value() &&
+                 !source_descriptor->timezone_profile_id.has_value() &&
+                 !source_descriptor->width.has_value() &&
+                 !source_descriptor->precision.has_value() &&
+                 !source_descriptor->scale.has_value() &&
+                 source_column.descriptor.descriptor_kind == "scalar" &&
+                 exec::IsCanonicalBoundedSignedIntegerDescriptor(
+                     source_column.descriptor) &&
+                 api::QowCanonicalDescriptorIdentityV1(
+                     source_column.descriptor) &&
+                 source_column.descriptor.encoded_descriptor ==
+                     "type_uuid=" +
+                         bounded_signed_source_type_uuids[source_index] +
+                         ";nullability=" +
+                         (source_column.nullable ? "nullable" : "non_null");
+        };
     for (std::size_t argument_ordinal = 0;
          argument_ordinal < expression->child_expression_ids.size();
          ++argument_ordinal) {
@@ -3500,56 +3551,15 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         result.filter_descriptor_id = argument->result_descriptor_id;
         continue;
       }
-      if (is_bounded_signed_integer_aggregate) {
-        const auto source_type = std::ranges::find(
-            kBoundedSignedTypeNames, std::string_view(input_type));
-        const auto source_descriptor = std::ranges::find_if(
-            dag.descriptors, [&](const auto& candidate) {
-              return candidate.descriptor_id ==
-                     argument->result_descriptor_id;
-            });
-        const auto& source_column = input.batch.columns[value_column];
-        const auto source_index =
-            static_cast<std::size_t>(std::distance(
-                kBoundedSignedTypeNames.begin(), source_type));
-        const bool exact_source_type =
-            source_type != kBoundedSignedTypeNames.end() &&
-            source_descriptor != dag.descriptors.end() &&
-            source_index < bounded_signed_source_type_uuids.size() &&
-            source_descriptor->descriptor_uuid ==
-                source_column.descriptor.descriptor_uuid.canonical &&
-            source_descriptor->descriptor_uuid !=
-                source_descriptor->type_uuid &&
-            source_descriptor->descriptor_uuid != aggregate->function_uuid &&
-            source_descriptor->descriptor_uuid !=
-                descriptor->descriptor_uuid &&
-            source_descriptor->type_uuid ==
-                bounded_signed_source_type_uuids[source_index] &&
-            source_descriptor->nullability ==
-                (source_column.nullable
-                     ? api::RelationalNullability::kNullable
-                     : api::RelationalNullability::kNonNull) &&
-            !source_descriptor->collation_uuid.has_value() &&
-            !source_descriptor->timezone_profile_id.has_value() &&
-            !source_descriptor->width.has_value() &&
-            !source_descriptor->precision.has_value() &&
-            !source_descriptor->scale.has_value() &&
-            source_column.descriptor.descriptor_kind == "scalar" &&
-            exec::IsCanonicalBoundedSignedIntegerDescriptor(
-                source_column.descriptor) &&
-            api::QowCanonicalDescriptorIdentityV1(
-                source_column.descriptor) &&
-            source_column.descriptor.encoded_descriptor ==
-                "type_uuid=" +
-                    bounded_signed_source_type_uuids[source_index] +
-                    ";nullability=" +
-                    (source_column.nullable ? "nullable" : "non_null");
-        if (!exact_source_type) {
-          result.detail =
-              "global bounded-signed aggregate input is not one exact core "
-              "bounded-signed column";
-          return result;
-        }
+      const bool exact_bounded_signed_argument =
+          exact_bounded_signed_input(argument->result_descriptor_id,
+                                     value_column, input_type);
+      if (is_bounded_signed_integer_aggregate &&
+          !exact_bounded_signed_argument) {
+        result.detail =
+            "global bounded-signed aggregate input is not one exact core "
+            "bounded-signed column";
+        return result;
       }
       const bool is_order_argument =
           (is_ordered_string_agg && argument_ordinal == 2) ||
@@ -3561,12 +3571,19 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             is_approx_percentile) &&
            argument_ordinal == 1);
       if (is_order_argument) {
-        if (input_type != "int64") {
-          result.detail = is_ordered_set
-                              ? "global ordered-set value/order input must be "
-                                "a canonical int64 column"
-                              : "global aggregate order input must be a "
-                                "canonical int64 column";
+        const bool int64_coupled_order =
+            is_ordered_set || is_ordered_string_agg;
+        if ((int64_coupled_order && input_type != "int64") ||
+            (!int64_coupled_order && !exact_bounded_signed_argument)) {
+          result.detail =
+              is_ordered_set
+                  ? "global ordered-set value/order input must be a canonical "
+                    "int64 column"
+                  : (is_ordered_string_agg
+                         ? "global aggregate order input must be a canonical "
+                           "int64 column"
+                         : "global aggregate order input must be one exact "
+                           "core bounded-signed column");
           return result;
         }
         exec::CanonicalDescriptorOrderTerm order_term;
