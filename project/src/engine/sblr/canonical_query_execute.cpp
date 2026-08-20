@@ -27061,6 +27061,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         profile.supported_property_kinds = {
             plan::CanonicalLogicalPropertyKind::kOrdering,
             plan::CanonicalLogicalPropertyKind::kWindow};
+        profile.memory_bytes_required = planning.memory_budget_bytes;
       } else if (consumer->node_kind ==
                  api::RelationalDagNodeKind::kAggregate) {
         const auto aggregate_profile =
@@ -31565,6 +31566,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       consumer_profile.supported_property_kinds = {
           plan::CanonicalLogicalPropertyKind::kOrdering,
           plan::CanonicalLogicalPropertyKind::kWindow};
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind ==
                api::RelationalDagNodeKind::kAggregate) {
       const auto grouped_profile =
@@ -33757,6 +33759,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       consumer_profile.supported_property_kinds = {
           plan::CanonicalLogicalPropertyKind::kOrdering,
           plan::CanonicalLogicalPropertyKind::kWindow};
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind ==
                api::RelationalDagNodeKind::kAggregate) {
       const auto aggregate_profile = MatchLiveUnaryAggregateExpressionProfile(
@@ -36124,6 +36127,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       consumer_profile.supported_property_kinds = {
           plan::CanonicalLogicalPropertyKind::kOrdering,
           plan::CanonicalLogicalPropertyKind::kWindow};
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind ==
                api::RelationalDagNodeKind::kAggregate) {
       const auto aggregate_profile = MatchLiveUnaryAggregateExpressionProfile(
@@ -38716,6 +38720,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
           consumer_profile.supported_property_kinds = {
               plan::CanonicalLogicalPropertyKind::kOrdering,
               plan::CanonicalLogicalPropertyKind::kWindow};
+          consumer_profile.memory_bytes_required =
+              planning.memory_budget_bytes;
           break;
         }
         case api::RelationalDagNodeKind::kAggregate: {

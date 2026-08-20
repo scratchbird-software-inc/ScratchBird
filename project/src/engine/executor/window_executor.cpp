@@ -33,6 +33,53 @@ bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
          batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
 }
 
+bool RowNumberBatchPayloadBytes(const DescriptorBatch& batch,
+                                std::uint64_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = 1;
+  for (const auto& row : batch.rows) {
+    for (const auto& value : row.values) {
+      if (value.encoded_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.encoded_value.size();
+      if (value.binary_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.binary_value.size();
+    }
+  }
+  return true;
+}
+
+bool RowNumberEncodedPayloadBytes(const std::size_t row_count,
+                                  std::uint64_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = 0;
+  const auto maximum_row = static_cast<std::uint64_t>(row_count);
+  std::uint64_t first = 1;
+  std::uint64_t width = 1;
+  while (first <= maximum_row) {
+    if (first > std::numeric_limits<std::uint64_t>::max() / 10) {
+      return false;
+    }
+    const auto last = std::min(maximum_row, first * 10 - 1);
+    const auto count = last - first + 1;
+    if (count > std::numeric_limits<std::uint64_t>::max() / width ||
+        count * width >
+            std::numeric_limits<std::uint64_t>::max() - *bytes) {
+      return false;
+    }
+    *bytes += count * width;
+    if (last == maximum_row) break;
+    first *= 10;
+    ++width;
+  }
+  return true;
+}
+
 bool IsCanonicalUuid(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
       value[18] != '-' || value[23] != '-') {
@@ -568,6 +615,35 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
       static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
     return refuse(Refusal("QOW-DIAG-QRY-007-WINDOW-OVERFLOW-V1",
                           "ROW_NUMBER exceeds int64 result width"));
+  }
+
+  std::uint64_t input_payload_bytes = 0;
+  std::uint64_t row_number_payload_bytes = 0;
+  if (!RowNumberBatchPayloadBytes(execution_ordered_input_batch,
+                                  &input_payload_bytes) ||
+      !RowNumberEncodedPayloadBytes(
+          execution_ordered_input_batch.rows.size(),
+          &row_number_payload_bytes) ||
+      selected_node->memory_bytes_required == 0 ||
+      selected_node->memory_bytes_required > execution_dag.memory_budget_bytes ||
+      selected_node->memory_bytes_required >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max())) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "ROW_NUMBER memory grant or runtime payload accounting is invalid"));
+  }
+  auto remaining_memory_bytes = selected_node->memory_bytes_required;
+  const auto charge = [&](const std::uint64_t bytes) {
+    if (bytes > remaining_memory_bytes) return false;
+    remaining_memory_bytes -= bytes;
+    return true;
+  };
+  if (!charge(input_payload_bytes) || !charge(input_payload_bytes) ||
+      !charge(row_number_payload_bytes)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "ROW_NUMBER runtime materialization exceeds its selected node grant"));
   }
 
   result.output_batch.columns = execution_ordered_input_batch.columns;
