@@ -3623,9 +3623,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             "global LISTAGG input must be a canonical text column";
         return result;
       }
-      if (is_ordered_single_collection && input_type != "text") {
+      if (is_array_agg && input_type != "text") {
         result.detail =
-            "global ARRAY_AGG/JSON_AGG input must be a canonical text column";
+            "global ARRAY_AGG input must be a canonical text column";
         return result;
       }
       if (is_json_object_agg && argument_ordinal == 0 &&
