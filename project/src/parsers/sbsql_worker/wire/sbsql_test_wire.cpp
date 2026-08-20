@@ -4497,6 +4497,10 @@ BuildEngineProjectedNativeBindingContext(
         statement_context.descriptor_profiles, [](const auto& candidate) {
           return candidate.profile_kind == 1 && candidate.slot == 0;
         });
+    const auto boolean_value_profile = std::ranges::find_if(
+        statement_context.descriptor_profiles, [](const auto& candidate) {
+          return candidate.profile_kind == 6 && candidate.slot == 0;
+        });
     const NativeExpressionAstNode* ntile_operand = nullptr;
     if (ntile_window && function_expression->child_expression_ids.size() == 1) {
       const auto operand = std::ranges::find_if(
@@ -4651,9 +4655,26 @@ BuildEngineProjectedNativeBindingContext(
               result_profile->descriptor_uuid ||
           context.descriptors[*lag_operand_source_ordinal].descriptor_uuid ==
               expected_function_uuid ||
-          context.descriptors[*lag_operand_source_ordinal].type_uuid !=
-              result_profile->type_uuid ||
+          (!aggregate_count_window &&
+           context.descriptors[*lag_operand_source_ordinal].type_uuid !=
+               result_profile->type_uuid) ||
+          (aggregate_count_window &&
+           !((context.descriptors[*lag_operand_source_ordinal]
+                      .canonical_type_name == "int64" &&
+              context.descriptors[*lag_operand_source_ordinal].type_uuid ==
+                  result_profile->type_uuid) ||
+             (context.descriptors[*lag_operand_source_ordinal]
+                      .canonical_type_name == "boolean" &&
+              boolean_value_profile !=
+                  statement_context.descriptor_profiles.end() &&
+              boolean_value_profile->nullable &&
+              CanonicalUuidBytes(boolean_value_profile->descriptor_uuid)
+                  .has_value() &&
+              CanonicalUuidBytes(boolean_value_profile->type_uuid).has_value() &&
+              context.descriptors[*lag_operand_source_ordinal].type_uuid ==
+                  boolean_value_profile->type_uuid))) ||
           (aggregate_window &&
+           !aggregate_count_window &&
            context.descriptors[*lag_operand_source_ordinal]
                    .canonical_type_name !=
                (aggregate_boolean_window ? "boolean" : "int64")) ||
@@ -4781,7 +4802,9 @@ BuildEngineProjectedNativeBindingContext(
         value_window && !aggregate_count_window
             ? BoundNullability::kNullable
             : BoundNullability::kNonNull;
-    if (value_window && !aggregate_count_window) {
+    if (aggregate_count_window) {
+      function_descriptor.canonical_type_name = "int64";
+    } else if (value_window) {
       const auto& source_descriptor =
           context.descriptors[*lag_operand_source_ordinal];
       function_descriptor.type_uuid = source_descriptor.type_uuid;

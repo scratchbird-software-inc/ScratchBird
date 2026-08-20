@@ -1799,7 +1799,8 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       request.result_column.descriptor_id);
   const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
   const auto canonical_boolean_type_uuid =
-      boolean_window ? CanonicalCoreDatatypeUuid("boolean") : std::string{};
+      (boolean_window || count_window) ? CanonicalCoreDatatypeUuid("boolean")
+                                       : std::string{};
   const auto source_type_uuid =
       request.value_column < execution_ordered_input_batch.columns.size()
           ? CanonicalDescriptorField(
@@ -1844,9 +1845,12 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
           ? false
           : count_window
           ? !request.result_column.nullable &&
-                execution_ordered_input_batch.columns[request.value_column]
-                        .descriptor.canonical_type_name == "int64" &&
-                *source_type_uuid == canonical_int64_type_uuid &&
+                ((execution_ordered_input_batch.columns[request.value_column]
+                              .descriptor.canonical_type_name == "int64" &&
+                  *source_type_uuid == canonical_int64_type_uuid) ||
+                 (execution_ordered_input_batch.columns[request.value_column]
+                              .descriptor.canonical_type_name == "boolean" &&
+                  *source_type_uuid == canonical_boolean_type_uuid)) &&
                 !has_auxiliary_type_fields(
                     execution_ordered_input_batch.columns[request.value_column]
                         .descriptor) &&

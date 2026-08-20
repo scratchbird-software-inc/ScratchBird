@@ -6386,6 +6386,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
     const std::size_t result_binding_count,
     const std::string& result_type_uuid,
     const std::string& order_type_uuid,
+    const std::string& boolean_type_uuid,
     const std::string_view family_label,
     const GlobalRankingWindowProfile& profile,
     const bool allow_project_root = false) {
@@ -6748,6 +6749,12 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
             ? previous_logical.output_descriptor_ids.end()
             : std::ranges::find(previous_logical.output_descriptor_ids,
                                 argument_descriptor->descriptor_id);
+    const bool exact_aggregate_argument_type =
+        argument_descriptor != dag.descriptors.end() &&
+        (!aggregate_window ||
+         argument_descriptor->type_uuid == result_type_uuid ||
+         (aggregate_count_window && !boolean_type_uuid.empty() &&
+          argument_descriptor->type_uuid == boolean_type_uuid));
     if (argument == dag.expressions.end() ||
         argument->expression_kind !=
             api::RelationalExpressionKind::kIdentifier ||
@@ -6765,7 +6772,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
             result_descriptor->descriptor_uuid ||
         argument_descriptor->descriptor_uuid == profile.function_uuid ||
         (aggregate_window &&
-         (argument_descriptor->type_uuid != result_type_uuid ||
+         (!exact_aggregate_argument_type ||
           argument_descriptor->collation_uuid.has_value() ||
           argument_descriptor->timezone_profile_id.has_value() ||
           argument_descriptor->width.has_value() ||
@@ -6789,7 +6796,10 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       result.detail = std::string(family_label) +
                       " " + std::string(profile.display_name) +
                       " value is not one direct canonical " +
-                      std::string(profile.result_type_name) + " column "
+                      std::string(aggregate_count_window
+                                      ? "int64 or boolean"
+                                      : profile.result_type_name) +
+                      " column "
                       "with an exact distinct result descriptor";
       return result;
     }
@@ -6936,7 +6946,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
   return PrepareGlobalRankingWindowBinding(
       dag, logical_properties, consumer, logical_consumer, previous_logical,
       prepared_sort, materialized_column_count, result_binding_count,
-      int64_type_uuid, int64_type_uuid, family_label, kGlobalRowNumberProfile,
+      int64_type_uuid, int64_type_uuid, int64_type_uuid, family_label,
+      kGlobalRowNumberProfile,
       allow_project_root);
 }
 
@@ -18603,6 +18614,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         const auto order_type = std::ranges::find_if(
             core_manifest.manifest.descriptor_rows,
             [](const auto& row) { return row.stable_name == "int64"; });
+        const auto boolean_type = std::ranges::find_if(
+            core_manifest.manifest.descriptor_rows,
+            [](const auto& row) { return row.stable_name == "boolean"; });
         const auto result_type_uuid =
             result_type == core_manifest.manifest.descriptor_rows.end()
                 ? std::string{}
@@ -18613,12 +18627,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 ? std::string{}
                 : scratchbird::core::uuid::UuidToString(
                       order_type->descriptor_uuid.value);
+        const auto boolean_type_uuid =
+            boolean_type == core_manifest.manifest.descriptor_rows.end()
+                ? std::string{}
+                : scratchbird::core::uuid::UuidToString(
+                      boolean_type->descriptor_uuid.value);
         const auto ranking = PrepareGlobalRankingWindowBinding(
             request.relational_dag,
             request.optimizer_request.logical_properties, *typed_consumer,
             node, input_node, *prepared_sort, input_batch.columns.size(),
             input_bindings.size(), result_type_uuid, order_type_uuid,
-            "composition", ranking_profile);
+            boolean_type_uuid, "composition", ranking_profile);
         if (!ranking.ok) {
           return refuse(ranking.diagnostic_id, ranking.detail);
         }
@@ -52106,6 +52125,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     const auto order_type = std::ranges::find_if(
         core_manifest.manifest.descriptor_rows,
         [](const auto& row) { return row.stable_name == "int64"; });
+    const auto boolean_type = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows,
+        [](const auto& row) { return row.stable_name == "boolean"; });
     const auto result_type_uuid =
         result_type == core_manifest.manifest.descriptor_rows.end()
             ? std::string{}
@@ -52116,12 +52138,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             ? std::string{}
             : scratchbird::core::uuid::UuidToString(
                   order_type->descriptor_uuid.value);
+    const auto boolean_type_uuid =
+        boolean_type == core_manifest.manifest.descriptor_rows.end()
+            ? std::string{}
+            : scratchbird::core::uuid::UuidToString(
+                  boolean_type->descriptor_uuid.value);
     const auto ranking = PrepareGlobalRankingWindowBinding(
         dag, admission.request.logical_properties, *window_node,
         *logical_window, *logical_sort, heap_sort_binding,
         sort_node->output_descriptor_ids.size(),
         sort_node->output_descriptor_ids.size(), result_type_uuid,
-        order_type_uuid, "heap", ranking_profile, project_composition);
+        order_type_uuid, boolean_type_uuid, "heap", ranking_profile,
+        project_composition);
     if (!ranking.ok) {
       return refuse(ranking.diagnostic_id, ranking.detail);
     }
