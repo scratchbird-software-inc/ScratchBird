@@ -589,16 +589,17 @@ ValidateCanonicalLogicalRelationalGraph(
          ++role) {
       const auto expression_id = node.bound_expression_ids[role];
       const bool inserted = expression_ids.insert(expression_id).second;
-      const bool exact_same_column_navigation_role =
+      const bool exact_same_column_value_window_role =
           !inserted && role == 1 &&
           node.node_kind == CanonicalLogicalRelationalNodeKind::kWindow &&
           (node.semantic_variant_id == "window.lag.v1" ||
-           node.semantic_variant_id == "window.lead.v1") &&
+           node.semantic_variant_id == "window.lead.v1" ||
+           node.semantic_variant_id == "window.first-value.v1") &&
           node.bound_expression_ids.size() == 3 &&
           node.bound_expression_ids[0] == node.bound_expression_ids[1] &&
           node.bound_expression_ids[1] != node.bound_expression_ids[2];
       if (expression_id == 0 ||
-          (!inserted && !exact_same_column_navigation_role)) {
+          (!inserted && !exact_same_column_value_window_role)) {
         return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
                       node.logical_node_id, "bound_expression_ids");
       }

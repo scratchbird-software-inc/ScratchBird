@@ -618,7 +618,9 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
   const bool operator_local_stage =
       input.operator_local_stage &&
       (input.operator_local_parent_implementation_id == "window.lag.v1" ||
-       input.operator_local_parent_implementation_id == "window.lead.v1") &&
+       input.operator_local_parent_implementation_id == "window.lead.v1" ||
+       input.operator_local_parent_implementation_id ==
+           "window.first-value.v1") &&
       selected_node != nullptr && selected_input_node != nullptr &&
       selected_node->implementation_id ==
           input.operator_local_parent_implementation_id &&
