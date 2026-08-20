@@ -538,6 +538,11 @@ struct CanonicalCorrelatedSubqueryRequest {
   std::size_t maximum_scope_execution_count = 1048576;
   std::size_t maximum_comparison_count = 1048576;
   std::size_t maximum_result_row_count = 1048576;
+  // Descriptor-bound equality is issued by the engine comparison authority
+  // over the validated outer-major Cartesian key order. SQL NULL pairs carry
+  // std::nullopt and never compare equal.
+  bool comparison_authority_engine_owned = false;
+  std::vector<std::optional<int>> precomputed_equality_comparisons;
   std::function<bool()> cancellation_requested;
   std::string cancellation_evidence_uuid;
   CanonicalExecutionMgaAuthority mga_authority;

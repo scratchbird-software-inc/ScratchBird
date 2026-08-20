@@ -139,6 +139,12 @@ struct CanonicalRelationalExpressionRuntimeServices {
       comparison_evaluator;
 };
 
+// Character and timezone-profile descriptors must be compared by the bound
+// engine catalog/resource service rather than the generic scalar comparator.
+bool CanonicalRelationalComparisonAuthorityRequiredV1(
+    const internal_api::EngineDescriptor& left,
+    const internal_api::EngineDescriptor& right);
+
 // Binds the engine-owned comparison result required by character and
 // timezone-profile operands.  Core non-collated comparisons and SQL NULL do
 // not require a precomputed result.

@@ -931,7 +931,8 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
 // the inner descriptor shape; scope results retain physical outer-row identity
 // and deterministic inner order without granting the parser execution
 // authority. The legacy int64 implementation identity remains an exact alias
-// of the shared non-collated typed comparison route.
+// of the shared typed equality route; character and timezone-profile keys
+// arrive with an engine-issued comparison carrier.
 namespace {
 CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubqueryBound(
     const CanonicalCorrelatedSubqueryRequest& request,
@@ -1098,6 +1099,54 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubqueryBound(
       request.maximum_result_row_count == 0) {
     return refuse("correlated subquery resource bound was exceeded");
   }
+  const bool descriptor_bound_comparison =
+      outer_type == dt::CanonicalTypeId::character ||
+      inner_type == dt::CanonicalTypeId::character ||
+      outer_column.descriptor.encoded_descriptor.find(
+          "timezone_profile_id=") != std::string::npos ||
+      inner_column.descriptor.encoded_descriptor.find(
+          "timezone_profile_id=") != std::string::npos;
+  if (request.comparison_authority_engine_owned !=
+          descriptor_bound_comparison ||
+      (request.comparison_authority_engine_owned &&
+       request.precomputed_equality_comparisons.size() !=
+           outer_count * inner_count) ||
+      (!request.comparison_authority_engine_owned &&
+       !request.precomputed_equality_comparisons.empty())) {
+    return refuse(
+        "correlated comparison authority carrier is not exact");
+  }
+  if (descriptor_bound_comparison) {
+    for (std::size_t outer_index = 0; outer_index < outer_count;
+         ++outer_index) {
+      const auto& outer_value =
+          outer_batch.rows[outer_index]
+              .values[request.outer_binding_column];
+      for (std::size_t inner_index = 0; inner_index < inner_count;
+           ++inner_index) {
+        const auto authority_cancellation =
+            poll_cancellation(
+                "while validating correlated comparison authority");
+        if (!authority_cancellation.diagnostic.ok) {
+          return refuse_poll(authority_cancellation);
+        }
+        const auto& inner_value =
+            inner_batch.rows[inner_index]
+                .values[request.inner_reference_column];
+        const auto& comparison =
+            request.precomputed_equality_comparisons[
+                outer_index * inner_count + inner_index];
+        const bool null_comparison = outer_value.isSqlNull() ||
+                                     inner_value.isSqlNull();
+        if (comparison.has_value() == null_comparison ||
+            (comparison.has_value() &&
+             (*comparison < -1 || *comparison > 1))) {
+          return refuse(
+              "correlated comparison authority row is not canonical");
+        }
+      }
+    }
+  }
 
   std::optional<CorrelatedCancellationPoll> key_cancellation;
   const auto validate_keys = [&](const DescriptorBatch& batch,
@@ -1120,21 +1169,23 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubqueryBound(
     }
     return std::string{};
   };
-  if (const auto detail =
-          validate_keys(outer_batch, request.outer_binding_column);
-      !detail.empty()) {
-    return refuse("correlated outer key refused: " + detail);
-  }
-  if (key_cancellation.has_value()) {
-    return refuse_poll(std::move(*key_cancellation));
-  }
-  if (const auto detail =
-          validate_keys(inner_batch, request.inner_reference_column);
-      !detail.empty()) {
-    return refuse("correlated inner key refused: " + detail);
-  }
-  if (key_cancellation.has_value()) {
-    return refuse_poll(std::move(*key_cancellation));
+  if (!descriptor_bound_comparison) {
+    if (const auto detail =
+            validate_keys(outer_batch, request.outer_binding_column);
+        !detail.empty()) {
+      return refuse("correlated outer key refused: " + detail);
+    }
+    if (key_cancellation.has_value()) {
+      return refuse_poll(std::move(*key_cancellation));
+    }
+    if (const auto detail =
+            validate_keys(inner_batch, request.inner_reference_column);
+        !detail.empty()) {
+      return refuse("correlated inner key refused: " + detail);
+    }
+    if (key_cancellation.has_value()) {
+      return refuse_poll(std::move(*key_cancellation));
+    }
   }
 
   std::vector<CanonicalCorrelatedScopeResult> scopes;
@@ -1176,8 +1227,11 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubqueryBound(
         ++comparison_count;
         int comparison = 0;
         std::string detail;
-        if (!api::QowCompareCanonicalNonCollatedScalarsV1(
-                outer_value, inner_value, &comparison, &detail)) {
+        if (descriptor_bound_comparison) {
+          comparison = *request.precomputed_equality_comparisons[
+              outer_index * inner_count + inner_index];
+        } else if (!api::QowCompareCanonicalNonCollatedScalarsV1(
+                       outer_value, inner_value, &comparison, &detail)) {
           return refuse("correlated key comparison refused: " + detail);
         }
         if (comparison == 0) {

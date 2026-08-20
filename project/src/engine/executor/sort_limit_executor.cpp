@@ -276,9 +276,11 @@ bool CompareOrderValues(
   const auto timezone_profile = DescriptorField(
       left.descriptor.encoded_descriptor, "timezone_profile_id");
   bool timezone_normalized = false;
+  std::pair<std::int64_t, std::uint64_t> left_timezone_key;
+  std::pair<std::int64_t, std::uint64_t> right_timezone_key;
   if (!has_null && !timezone_profile.empty()) {
     const auto normalize = [&](const auto& value,
-                               std::string* normalized_value) {
+                               auto* comparable_key) {
       dt::ReferenceTemporalWireProfileRequest request;
       request.reference_engine = "scratchbird_native";
       request.reference_type_or_family =
@@ -294,11 +296,18 @@ bool CompareOrderValues(
                               : normalized.diagnostic.diagnostic_code;
         return false;
       }
-      *normalized_value = normalized.normalized_value;
+      if (!normalized.comparable_utc_key_available) {
+        *refusal_detail =
+            "named-zone order requires a resolved transition instant";
+        return false;
+      }
+      *comparable_key = {
+          normalized.comparable_utc_whole_seconds,
+          normalized.comparable_fractional_picoseconds};
       return true;
     };
-    if (!normalize(left, &left_encoded) ||
-        !normalize(right, &right_encoded)) {
+    if (!normalize(left, &left_timezone_key) ||
+        !normalize(right, &right_timezone_key)) {
       return false;
     }
     timezone_normalized = true;
@@ -368,9 +377,9 @@ bool CompareOrderValues(
       *comparison = numeric.comparison;
     } else {
       if (timezone_normalized) {
-        *comparison = left_encoded < right_encoded
+        *comparison = left_timezone_key < right_timezone_key
                           ? -1
-                          : (left_encoded > right_encoded ? 1 : 0);
+                          : (right_timezone_key < left_timezone_key ? 1 : 0);
         *comparison = *comparison < 0 ? -1 : (*comparison > 0 ? 1 : 0);
         if (term.direction ==
             CanonicalDescriptorOrderDirection::descending) {

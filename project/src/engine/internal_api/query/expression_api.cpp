@@ -2525,12 +2525,37 @@ EngineNormalizeTimezoneScalarResult EngineNormalizeTimezoneScalar(
           &timezone_offset_minutes, &used_timezone_seed, &refusal_detail)) {
     return refuse(std::move(refusal_detail));
   }
+  dt::ReferenceTemporalWireProfileResult comparable;
+  if (!input.isSqlNull()) {
+    dt::ReferenceTemporalWireProfileRequest comparable_request;
+    comparable_request.reference_engine = "scratchbird_native";
+    comparable_request.reference_type_or_family =
+        input.descriptor.canonical_type_name;
+    comparable_request.wire_profile = DescriptorField(
+        input.descriptor.encoded_descriptor, "timezone_profile_id");
+    comparable_request.encoded_value = input.encoded_value;
+    comparable_request.timezone_seed = timezone_seed;
+    comparable = dt::ValidateReferenceTemporalWireProfile(
+        comparable_request);
+    if (!comparable.ok()) {
+      return refuse(
+          comparable.diagnostic.diagnostic_code.empty()
+              ? "canonical timezone comparable-key binding refused"
+              : comparable.diagnostic.diagnostic_code);
+    }
+  }
   auto result = ApiSuccess<EngineNormalizeTimezoneScalarResult>(
       request.context, "query.normalize_timezone_scalar");
   result.value = std::move(output);
   result.timezone_identifier = std::move(timezone_identifier);
   result.timezone_offset_minutes = timezone_offset_minutes;
   result.used_timezone_seed = used_timezone_seed;
+  result.comparable_utc_key_available =
+      comparable.comparable_utc_key_available;
+  result.comparable_utc_whole_seconds =
+      comparable.comparable_utc_whole_seconds;
+  result.comparable_fractional_picoseconds =
+      comparable.comparable_fractional_picoseconds;
   result.timezone_epoch = resolved.authority.timezone_epoch;
   result.result_shape.result_kind = "typed_value";
   result.result_shape.columns.push_back(result.value.descriptor);

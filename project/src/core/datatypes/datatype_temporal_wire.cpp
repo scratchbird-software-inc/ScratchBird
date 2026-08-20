@@ -302,6 +302,93 @@ std::string NormalizedEnvelope(const ReferenceTemporalWireProfileRequest& reques
   return out.str();
 }
 
+constexpr std::int64_t TemporalDaysFromCivil(const int year,
+                                             const unsigned month,
+                                             const unsigned day) {
+  const int adjusted_year = year - (month <= 2 ? 1 : 0);
+  const int era =
+      (adjusted_year >= 0 ? adjusted_year : adjusted_year - 399) / 400;
+  const unsigned year_of_era =
+      static_cast<unsigned>(adjusted_year - era * 400);
+  const unsigned adjusted_month = month > 2 ? month - 3 : month + 9;
+  const unsigned day_of_year =
+      (153 * adjusted_month + 2) / 5 + day - 1;
+  const unsigned day_of_era =
+      year_of_era * 365 + year_of_era / 4 - year_of_era / 100 +
+      day_of_year;
+  return static_cast<std::int64_t>(era) * 146097 +
+         static_cast<std::int64_t>(day_of_era) - 719468;
+}
+
+bool BindComparableUtcKey(const ParsedTemporalWire& parsed,
+                          ReferenceTemporalWireProfileResult* result) {
+  if (result == nullptr || !parsed.has_offset || parsed.has_zone_name) {
+    return false;
+  }
+  const std::size_t time_begin =
+      parsed.canonical_type_id == CanonicalTypeId::timestamp ? 11 : 0;
+  int hour = 0;
+  int minute = 0;
+  int second = 0;
+  if ((parsed.canonical_type_id != CanonicalTypeId::time &&
+       parsed.canonical_type_id != CanonicalTypeId::timestamp) ||
+      parsed.local_value.size() < time_begin + 8 ||
+      !ParseFixedDigits(parsed.local_value, time_begin, 2, &hour) ||
+      !ParseFixedDigits(parsed.local_value, time_begin + 3, 2, &minute) ||
+      !ParseFixedDigits(parsed.local_value, time_begin + 6, 2, &second)) {
+    return false;
+  }
+
+  std::uint64_t fractional_picoseconds = 0;
+  std::size_t offset = time_begin + 8;
+  if (offset < parsed.local_value.size() &&
+      parsed.local_value[offset] == '.') {
+    ++offset;
+    const auto fraction_begin = offset;
+    while (offset < parsed.local_value.size() &&
+           std::isdigit(static_cast<unsigned char>(
+               parsed.local_value[offset]))) {
+      fractional_picoseconds =
+          fractional_picoseconds * 10 +
+          static_cast<std::uint64_t>(parsed.local_value[offset] - '0');
+      ++offset;
+    }
+    const auto digits = offset - fraction_begin;
+    if (digits == 0 || digits > 12) return false;
+    for (std::size_t index = digits; index < 12; ++index) {
+      fractional_picoseconds *= 10;
+    }
+  }
+  if (offset != parsed.local_value.size()) return false;
+
+  constexpr std::int64_t kSecondsPerDay = 86'400;
+  std::int64_t whole_seconds =
+      static_cast<std::int64_t>(hour) * 3600 +
+      static_cast<std::int64_t>(minute) * 60 + second -
+      static_cast<std::int64_t>(parsed.offset_minutes) * 60;
+  if (parsed.canonical_type_id == CanonicalTypeId::time) {
+    whole_seconds %= kSecondsPerDay;
+    if (whole_seconds < 0) whole_seconds += kSecondsPerDay;
+  } else {
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    if (!ParseFixedDigits(parsed.local_value, 0, 4, &year) ||
+        !ParseFixedDigits(parsed.local_value, 5, 2, &month) ||
+        !ParseFixedDigits(parsed.local_value, 8, 2, &day)) {
+      return false;
+    }
+    whole_seconds +=
+        TemporalDaysFromCivil(year, static_cast<unsigned>(month),
+                              static_cast<unsigned>(day)) *
+        kSecondsPerDay;
+  }
+  result->comparable_utc_key_available = true;
+  result->comparable_utc_whole_seconds = whole_seconds;
+  result->comparable_fractional_picoseconds = fractional_picoseconds;
+  return true;
+}
+
 }  // namespace
 
 ReferenceTemporalWireProfileResult ValidateReferenceTemporalWireProfile(const ReferenceTemporalWireProfileRequest& request) {
@@ -332,6 +419,7 @@ ReferenceTemporalWireProfileResult ValidateReferenceTemporalWireProfile(const Re
   result.timezone_identifier = parsed.has_zone_name ? parsed.zone_name : parsed.offset_text;
   result.timezone_offset_minutes = parsed.offset_minutes;
   result.used_timezone_seed = parsed.has_zone_name;
+  BindComparableUtcKey(parsed, &result);
   result.diagnostic = MakeTemporalWireDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
   return result;
 }

@@ -268,14 +268,18 @@ bool CompareCanonicalQueryScalarsV1(
       right.descriptor.encoded_descriptor.find("timezone_profile_id=") !=
       std::string::npos;
   if (left_timezone_bound || right_timezone_bound) {
+    const bool supported_timezone_type =
+        type_id == dt::CanonicalTypeId::time ||
+        type_id == dt::CanonicalTypeId::timestamp;
     if (!left_timezone_bound || !right_timezone_bound ||
-        type_id != dt::CanonicalTypeId::timestamp ||
+        !supported_timezone_type ||
         dt::CanonicalTypeIdFromStableName(
             right.descriptor.canonical_type_name) != type_id) {
       *diagnostic_id =
           "QOW-DIAG-RCP024-TIMEZONE-COMPARISON-REFUSAL-V1";
       *refusal_detail =
-          "timezone comparison operands do not share one timestamp profile";
+          "timezone comparison operands do not share one supported temporal "
+          "profile";
       return false;
     }
     api::EngineNormalizeTimezoneScalarRequest left_request;
@@ -298,21 +302,21 @@ bool CompareCanonicalQueryScalarsV1(
       }
       return false;
     }
-    std::int64_t left_instant_ns = 0;
-    std::int64_t right_instant_ns = 0;
-    if (!ParseTimeSeriesEndpointNsV1(left_result.value.encoded_value,
-                                     &left_instant_ns) ||
-        !ParseTimeSeriesEndpointNsV1(right_result.value.encoded_value,
-                                     &right_instant_ns)) {
+    if (!left_result.comparable_utc_key_available ||
+        !right_result.comparable_utc_key_available) {
       *diagnostic_id =
           "QOW-DIAG-RCP024-TIMEZONE-COMPARISON-REFUSAL-V1";
       *refusal_detail =
-          "normalized timezone operands have no comparable UTC instant";
+          "named-zone operands require a resolved transition instant";
       return false;
     }
-    *comparison = left_instant_ns < right_instant_ns
-                      ? -1
-                      : (left_instant_ns > right_instant_ns ? 1 : 0);
+    const auto left_key = std::tie(
+        left_result.comparable_utc_whole_seconds,
+        left_result.comparable_fractional_picoseconds);
+    const auto right_key = std::tie(
+        right_result.comparable_utc_whole_seconds,
+        right_result.comparable_fractional_picoseconds);
+    *comparison = left_key < right_key ? -1 : (right_key < left_key ? 1 : 0);
     return true;
   }
 
@@ -865,12 +869,35 @@ void PublishOrdinaryRuntimeObservations(
             } else if (node.node_kind == exec::PhysicalNodeKind::kJoin &&
                        inputs.size() == 2) {
               std::uint64_t pairs = 0;
+              const bool correlated_equality =
+                  node.implementation_id ==
+                      "join.lateral-inner.correlated.typed.v1" ||
+                  node.implementation_id ==
+                      "join.lateral-left.correlated.typed.v1" ||
+                  node.implementation_id ==
+                      "join.cross-apply.correlated.typed.v1" ||
+                  node.implementation_id ==
+                      "join.outer-apply.correlated.typed.v1";
+              const bool descriptor_bound_correlation =
+                  correlated_equality &&
+                  !inputs[0].materialized_output_batch->columns.empty() &&
+                  !inputs[1].materialized_output_batch->columns.empty() &&
+                  CanonicalRelationalComparisonAuthorityRequiredV1(
+                      inputs[0]
+                          .materialized_output_batch->columns.front()
+                          .descriptor,
+                      inputs[1]
+                          .materialized_output_batch->columns.front()
+                          .descriptor);
+              const std::uint64_t pair_memory_bytes =
+                  descriptor_bound_correlation
+                      ? sizeof(std::optional<int>)
+                      : sizeof(api::EngineSqlTruthValue);
               if (!CheckedMultiply(
                       inputs[0].materialized_output_batch->rows.size(),
                       inputs[1].materialized_output_batch->rows.size(),
                       &pairs) ||
-                  !CheckedMultiply(pairs,
-                                   sizeof(api::EngineSqlTruthValue),
+                  !CheckedMultiply(pairs, pair_memory_bytes,
                                    &runtime_work_bytes)) {
                 step.diagnostic.ok = false;
               }
@@ -1699,6 +1726,8 @@ struct PreparedCorrelatedSubqueryRoot {
   std::size_t inner_row_count{0};
   std::size_t pair_count{0};
   std::size_t output_row_bound{0};
+  bool comparison_authority_required{false};
+  std::uint64_t comparison_authority_memory_bytes{0};
   std::string implementation_id;
   std::string transformation_id;
 };
@@ -7171,6 +7200,19 @@ struct FilterPredicateReceiptIssueResult {
 
 }  // namespace
 
+#if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+bool CompareCanonicalRelationalScalarsV1(
+    const api::EngineRequestContext& context,
+    const api::EngineTypedValue& left,
+    const api::EngineTypedValue& right,
+    int* comparison,
+    std::string* diagnostic_id,
+    std::string* refusal_detail) {
+  return CompareCanonicalQueryScalarsV1(
+      context, left, right, comparison, diagnostic_id, refusal_detail);
+}
+#endif
+
 class CanonicalDescriptorFilterPredicateReceiptIssuer {
  public:
   static FilterPredicateReceiptIssueResult Issue(
@@ -9805,10 +9847,175 @@ WithMultilegResultDescriptorRebindingV1(
   return registration;
 }
 
+struct BoundCanonicalCorrelatedComparisonAuthorityV1 {
+  bool ok{false};
+  bool required{false};
+  bool cancellation_observed{false};
+  std::string diagnostic_id;
+  std::string detail;
+  std::vector<std::optional<int>> comparisons;
+};
+
+BoundCanonicalCorrelatedComparisonAuthorityV1
+BindCanonicalCorrelatedComparisonAuthorityV1(
+    const exec::DescriptorBatch& outer,
+    const std::vector<std::uint32_t>& expected_outer_descriptor_ids,
+    const std::size_t outer_binding_column,
+    const exec::DescriptorBatch& inner,
+    const std::vector<std::uint32_t>& expected_inner_descriptor_ids,
+    const std::size_t inner_reference_column,
+    const std::size_t maximum_pair_count,
+    const std::uint64_t maximum_authority_memory_bytes,
+    const CanonicalRelationalExpressionRuntimeServices& expression_services,
+    const std::function<bool()>& cancellation_requested) {
+  BoundCanonicalCorrelatedComparisonAuthorityV1 result;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.diagnostic_id = std::move(diagnostic_id);
+    result.detail = std::move(detail);
+    result.comparisons.clear();
+    return result;
+  };
+  bool outer_validation_cancelled = false;
+  const auto outer_validation = exec::ValidateCanonicalDescriptorBatch(
+      outer, expected_outer_descriptor_ids, cancellation_requested,
+      &outer_validation_cancelled);
+  if (!outer_validation.ok) {
+    result.cancellation_observed = outer_validation_cancelled;
+    return refuse(outer_validation.diagnostic_code,
+                  outer_validation.detail);
+  }
+  bool inner_validation_cancelled = false;
+  const auto inner_validation = exec::ValidateCanonicalDescriptorBatch(
+      inner, expected_inner_descriptor_ids, cancellation_requested,
+      &inner_validation_cancelled);
+  if (!inner_validation.ok) {
+    result.cancellation_observed = inner_validation_cancelled;
+    return refuse(inner_validation.diagnostic_code,
+                  inner_validation.detail);
+  }
+  if (outer_binding_column >= outer.columns.size() ||
+      inner_reference_column >= inner.columns.size()) {
+    return refuse(
+        "QOW-DIAG-RELATIONAL-LIVE-CORRELATION-AUTHORITY-V1",
+        "correlation comparison authority columns are unresolved");
+  }
+  result.required = CanonicalRelationalComparisonAuthorityRequiredV1(
+      outer.columns[outer_binding_column].descriptor,
+      inner.columns[inner_reference_column].descriptor);
+  if (!result.required) {
+    result.ok = true;
+    return result;
+  }
+
+  std::uint64_t pair_count = 0;
+  std::uint64_t authority_memory_bytes = 0;
+  if (!CheckedMultiply(outer.rows.size(), inner.rows.size(), &pair_count) ||
+      pair_count > maximum_pair_count ||
+      !CheckedMultiply(pair_count, sizeof(std::optional<int>),
+                       &authority_memory_bytes) ||
+      authority_memory_bytes > maximum_authority_memory_bytes ||
+      pair_count > std::numeric_limits<std::size_t>::max()) {
+    return refuse(
+        "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+        "correlation comparison authority exceeds its selected memory or "
+        "pair bound");
+  }
+
+  const auto poll_cancellation = [&]() {
+    if (!cancellation_requested) return false;
+    try {
+      if (!cancellation_requested()) return false;
+      result.cancellation_observed = true;
+      result.diagnostic_id =
+          "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1";
+      result.detail =
+          "correlation comparison authority binding was cancelled";
+      return true;
+    } catch (const std::exception& exception) {
+      result.diagnostic_id =
+          "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+      result.detail =
+          std::string("correlation comparison authority cancellation probe "
+                      "threw: ") +
+          exception.what();
+      return true;
+    } catch (...) {
+      result.diagnostic_id =
+          "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+      result.detail =
+          "correlation comparison authority cancellation probe threw a "
+          "non-standard exception";
+      return true;
+    }
+  };
+  const auto validate_keys = [&](const exec::DescriptorBatch& batch,
+                                 const std::size_t column) {
+    for (const auto& row : batch.rows) {
+      if (poll_cancellation()) return false;
+      const auto& value = row.values[column];
+      if (value.isSqlNull()) continue;
+      std::optional<int> comparison;
+      if (!BindCanonicalRelationalComparisonAuthorityV1(
+              value, value, expression_services, &comparison,
+              &result.detail) ||
+          !comparison.has_value() || *comparison < -1 || *comparison > 1) {
+        if (result.diagnostic_id.empty()) {
+          result.diagnostic_id =
+              "QOW-DIAG-RELATIONAL-LIVE-CORRELATION-AUTHORITY-V1";
+        }
+        if (result.detail.empty()) {
+          result.detail =
+              "correlation key authority self-validation was not canonical";
+        }
+        return false;
+      }
+    }
+    return true;
+  };
+  if (!validate_keys(outer, outer_binding_column) ||
+      !validate_keys(inner, inner_reference_column)) {
+    result.comparisons.clear();
+    return result;
+  }
+
+  result.comparisons.reserve(static_cast<std::size_t>(pair_count));
+  for (const auto& outer_row : outer.rows) {
+    const auto& outer_value = outer_row.values[outer_binding_column];
+    for (const auto& inner_row : inner.rows) {
+      if (poll_cancellation()) {
+        result.comparisons.clear();
+        return result;
+      }
+      const auto& inner_value = inner_row.values[inner_reference_column];
+      std::optional<int> comparison;
+      if (!BindCanonicalRelationalComparisonAuthorityV1(
+              outer_value, inner_value, expression_services, &comparison,
+              &result.detail) ||
+          (comparison.has_value() &&
+           (*comparison < -1 || *comparison > 1)) ||
+          (comparison.has_value() !=
+           (!outer_value.isSqlNull() && !inner_value.isSqlNull()))) {
+        result.diagnostic_id =
+            "QOW-DIAG-RELATIONAL-LIVE-CORRELATION-AUTHORITY-V1";
+        if (result.detail.empty()) {
+          result.detail =
+              "correlation pair authority result was not canonical";
+        }
+        result.comparisons.clear();
+        return result;
+      }
+      result.comparisons.push_back(comparison);
+    }
+  }
+  result.ok = true;
+  return result;
+}
+
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveCorrelatedSubqueryRegistration(
     const PreparedCorrelatedSubqueryRoot prepared,
     std::string capability_uuid,
+    CanonicalRelationalExpressionRuntimeServices expression_services,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kSubquery;
@@ -9818,7 +10025,8 @@ MakeLiveCorrelatedSubqueryRegistration(
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
   registration.execute =
-      [prepared, mga_context = std::move(mga_context)](
+      [prepared, expression_services = std::move(expression_services),
+       mga_context = std::move(mga_context)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -9911,6 +10119,41 @@ MakeLiveCorrelatedSubqueryRegistration(
             return true;
           }
         };
+        auto comparison_authority =
+            BindCanonicalCorrelatedComparisonAuthorityV1(
+                *inputs[0].materialized_output_batch,
+                inputs[0].output_descriptor_ids,
+                prepared.outer_binding_column,
+                *inputs[1].materialized_output_batch,
+                inputs[1].output_descriptor_ids,
+                prepared.inner_reference_column,
+                prepared.pair_count, node.memory_bytes_required,
+                expression_services, cancellation_requested);
+        if (!comparison_authority.ok) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              comparison_authority.diagnostic_id;
+          step.diagnostic.detail =
+              std::move(comparison_authority.detail);
+          step.cancellation_observed =
+              comparison_authority.cancellation_observed;
+          step.transient_state_cleanup_proven = true;
+          if (step.cancellation_observed) {
+            step.cancellation_evidence_uuid = cancellation_evidence_uuid;
+          }
+          return step;
+        }
+        if (comparison_authority.required !=
+            prepared.comparison_authority_required) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-CORRELATION-AUTHORITY-V1";
+          step.diagnostic.detail =
+              "correlated comparison authority requirement changed after "
+              "planning";
+          return step;
+        }
+
         exec::CanonicalCorrelatedSubqueryRequest correlated_request;
         correlated_request.selected_physical_node_id = node.physical_node_id;
         correlated_request.borrowed_outer_batch =
@@ -9932,6 +10175,10 @@ MakeLiveCorrelatedSubqueryRegistration(
             std::max<std::size_t>(1, prepared.pair_count);
         correlated_request.maximum_result_row_count =
             std::max<std::size_t>(1, prepared.output_row_bound);
+        correlated_request.comparison_authority_engine_owned =
+            comparison_authority.required;
+        correlated_request.precomputed_equality_comparisons =
+            std::move(comparison_authority.comparisons);
         correlated_request.cancellation_requested = cancellation_requested;
         correlated_request.cancellation_evidence_uuid =
             cancellation_evidence_uuid;
@@ -10015,6 +10262,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
     const PreparedCorrelatedSubqueryRoot prepared,
     const LiveLateralSubqueryProfile profile,
     std::string capability_uuid,
+    CanonicalRelationalExpressionRuntimeServices expression_services,
     api::EngineRequestContext mga_context,
     const bool runtime_bounded_inputs = false) {
   exec::CanonicalPhysicalExecutorRegistration registration;
@@ -10025,7 +10273,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
   registration.execute =
-      [prepared, profile, mga_context = std::move(mga_context),
+      [prepared, profile,
+       expression_services = std::move(expression_services),
+       mga_context = std::move(mga_context),
        runtime_bounded_inputs](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
@@ -10173,6 +10423,42 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
           inner_reference_descriptor_id = inner_columns.front().descriptor_id;
         }
 
+        auto comparison_authority =
+            BindCanonicalCorrelatedComparisonAuthorityV1(
+                *inputs[0].materialized_output_batch,
+                inputs[0].output_descriptor_ids,
+                outer_binding_column,
+                *inputs[1].materialized_output_batch,
+                inputs[1].output_descriptor_ids,
+                inner_reference_column,
+                prepared.pair_count, node.memory_bytes_required,
+                expression_services, cancellation_requested);
+        if (!comparison_authority.ok) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              comparison_authority.diagnostic_id;
+          step.diagnostic.detail =
+              std::move(comparison_authority.detail);
+          step.cancellation_observed =
+              comparison_authority.cancellation_observed;
+          step.transient_state_cleanup_proven = true;
+          if (step.cancellation_observed) {
+            step.cancellation_evidence_uuid = cancellation_evidence_uuid;
+          }
+          return step;
+        }
+        if (!runtime_bounded_inputs &&
+            comparison_authority.required !=
+                prepared.comparison_authority_required) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-CORRELATION-AUTHORITY-V1";
+          step.diagnostic.detail =
+              "LATERAL/APPLY comparison authority requirement changed "
+              "after planning";
+          return step;
+        }
+
         auto correlated_dag = operator_dag;
         auto correlated_root = std::ranges::find_if(
             correlated_dag.nodes, [&](const auto& candidate) {
@@ -10226,6 +10512,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
             std::max<std::size_t>(1, prepared.pair_count);
         correlated_request.maximum_result_row_count =
             std::max<std::size_t>(1, prepared.output_row_bound);
+        correlated_request.comparison_authority_engine_owned =
+            comparison_authority.required;
+        correlated_request.precomputed_equality_comparisons =
+            std::move(comparison_authority.comparisons);
         correlated_request.cancellation_requested = cancellation_requested;
         correlated_request.cancellation_evidence_uuid =
             cancellation_evidence_uuid;
@@ -13227,6 +13517,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     MaterializedValues values;
     std::size_t pair_count{0};
     std::size_t matched_row_count{0};
+    bool comparison_authority_required{false};
+    std::uint64_t comparison_authority_memory_bytes{0};
   };
   const auto materialize_correlation =
       [&](const MaterializedValues& outer,
@@ -13270,6 +13562,38 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         }
         planning.pair_count =
             outer.batch.rows.size() * inner.batch.rows.size();
+        planning.comparison_authority_required =
+            CanonicalRelationalComparisonAuthorityRequiredV1(
+                outer.batch.columns.front().descriptor,
+                inner.batch.columns.front().descriptor);
+        if (planning.comparison_authority_required &&
+            !CheckedMultiply(
+                static_cast<std::uint64_t>(planning.pair_count),
+                sizeof(std::optional<int>),
+                &planning.comparison_authority_memory_bytes)) {
+          planning.values.detail =
+              "correlation comparison authority carrier size overflowed";
+          return planning;
+        }
+
+        const auto compare_keys =
+            [&](const api::EngineTypedValue& left,
+                const api::EngineTypedValue& right,
+                int* comparison,
+                std::string* detail) {
+              std::optional<int> precomputed;
+              if (!BindCanonicalRelationalComparisonAuthorityV1(
+                      left, right, request.expression_services,
+                      &precomputed, detail)) {
+                return false;
+              }
+              if (precomputed.has_value()) {
+                *comparison = *precomputed;
+                return true;
+              }
+              return api::QowCompareCanonicalNonCollatedScalarsV1(
+                  left, right, comparison, detail);
+            };
 
         const auto validate_keys = [&](const exec::DescriptorBatch& batch) {
           for (const auto& row : batch.rows) {
@@ -13279,8 +13603,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             }
             int comparison = 0;
             std::string detail;
-            if (!api::QowCompareCanonicalNonCollatedScalarsV1(
-                    value, value, &comparison, &detail)) {
+            if (!compare_keys(value, value, &comparison, &detail)) {
               planning.values.detail = detail;
               return false;
             }
@@ -13346,7 +13669,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               if (inner_key.state == api::EngineValueState::sql_null) continue;
               int comparison = 0;
               std::string detail;
-              if (!api::QowCompareCanonicalNonCollatedScalarsV1(
+              if (!compare_keys(
                       outer_key, inner_key, &comparison, &detail)) {
                 planning.values.detail = detail;
                 return planning;
@@ -13901,6 +14224,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         join_right_values->batch.rows.size();
     prepared.pair_count = correlated.pair_count;
     prepared.output_row_bound = correlated.values.batch.rows.size();
+    prepared.comparison_authority_required =
+        correlated.comparison_authority_required;
+    prepared.comparison_authority_memory_bytes =
+        correlated.comparison_authority_memory_bytes;
     prepared.implementation_id =
         reverse_chain.front()->semantic_variant_id ==
                 "subquery.correlated-int64-equality.v1"
@@ -13920,6 +14247,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         !CheckedAdd(correlated_memory, outer_memory,
                     &correlated_memory) ||
         !CheckedAdd(correlated_memory, inner_memory,
+                    &correlated_memory) ||
+        !CheckedAdd(correlated_memory,
+                    prepared.comparison_authority_memory_bytes,
                     &correlated_memory) ||
         correlated_memory >
             request.optimizer_request.resource.memory_budget_bytes ||
@@ -13954,6 +14284,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          exec::PhysicalNodeKind::kSubquery,
          prepared.transformation_id,
          prepared.output_row_bound, correlated_memory, 2, 2});
+    profiles.back().runtime_accounted_auxiliary_memory_bytes =
+        prepared.comparison_authority_memory_bytes;
   } else if (reverse_chain.front()->node_kind ==
              plan::CanonicalLogicalRelationalNodeKind::kJoin) {
     join_left_values = MaterializeValues(
@@ -14006,6 +14338,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           join_right_values->batch.rows.size();
       prepared.pair_count = lateral.pair_count;
       prepared.output_row_bound = lateral.values.batch.rows.size();
+      prepared.comparison_authority_required =
+          lateral.comparison_authority_required;
+      prepared.comparison_authority_memory_bytes =
+          lateral.comparison_authority_memory_bytes;
       prepared_lateral_subquery = prepared;
       state = std::move(lateral.values);
       join_pair_count = prepared.pair_count;
@@ -14021,6 +14357,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           !AddBatchMemoryBytes(state.batch, &lateral_memory) ||
           !CheckedAdd(lateral_memory, left_memory, &lateral_memory) ||
           !CheckedAdd(lateral_memory, right_memory, &lateral_memory) ||
+          !CheckedAdd(lateral_memory,
+                      prepared.comparison_authority_memory_bytes,
+                      &lateral_memory) ||
           lateral_memory >
               request.optimizer_request.resource.memory_budget_bytes ||
           !CheckedAdd(prepared.outer_row_count,
@@ -14054,6 +14393,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
            exec::PhysicalNodeKind::kJoin,
            lateral_subquery_profile.transformation_id,
            prepared.output_row_bound, lateral_memory, 2, 2});
+      profiles.back().runtime_accounted_auxiliary_memory_bytes =
+          prepared.comparison_authority_memory_bytes;
     } else {
     prepared_join = PrepareJoinRoot(
         request.relational_dag, *reverse_chain.front(), *join_left_node,
@@ -16469,18 +16810,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 predicate_profile.comparison_operator;
             prepared.quantifier = predicate_profile.quantifier;
             prepared.comparison_authority_required =
-                dt::CanonicalTypeIdFromStableName(
-                    prepared.left_value.descriptor.canonical_type_name) ==
-                    dt::CanonicalTypeId::character ||
-                dt::CanonicalTypeIdFromStableName(
-                    input_batch.columns.front()
-                        .descriptor.canonical_type_name) ==
-                    dt::CanonicalTypeId::character ||
-                prepared.left_value.descriptor.encoded_descriptor.find(
-                    "timezone_profile_id=") != std::string::npos ||
-                input_batch.columns.front()
-                        .descriptor.encoded_descriptor.find(
-                            "timezone_profile_id=") != std::string::npos;
+                CanonicalRelationalComparisonAuthorityRequiredV1(
+                    prepared.left_value.descriptor,
+                    input_batch.columns.front().descriptor);
 
             if (prepared.comparison_authority_required) {
               std::uint64_t comparison_authority_memory = 0;
@@ -16939,13 +17271,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     execution_request.available_executors.push_back(
         MakeLiveCorrelatedSubqueryRegistration(
             *prepared_correlated_subquery, subquery_capability_uuid,
-            request.context));
+            request.expression_services, request.context));
   }
   if (prepared_lateral_subquery.has_value()) {
     execution_request.available_executors.push_back(
         MakeLiveLateralSubqueryRegistration(
             *prepared_lateral_subquery, lateral_subquery_profile,
-            join_capability_uuid, request.context));
+            join_capability_uuid, request.expression_services,
+            request.context));
   }
   std::unordered_set<std::string> registered_set_implementations;
   for (const auto& [node_id, prepared] : prepared_set_nodes) {
@@ -45767,9 +46100,20 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
     prepared.inner_row_count = maximum_rows;
     prepared.pair_count = static_cast<std::size_t>(maximum_pairs);
     prepared.output_row_bound = maximum_rows;
+    CanonicalRelationalExpressionRuntimeServices lateral_services;
+    lateral_services.comparison_evaluator =
+        [context = input.context](const api::EngineTypedValue& left,
+                                  const api::EngineTypedValue& right,
+                                  int* comparison,
+                                  std::string* diagnostic_id,
+                                  std::string* refusal_detail) {
+          return CompareCanonicalQueryScalarsV1(
+              context, left, right, comparison, diagnostic_id,
+              refusal_detail);
+        };
     join_registration = MakeLiveLateralSubqueryRegistration(
         prepared, lateral_profile, join_capability_uuid,
-        input.context, true);
+        std::move(lateral_services), input.context, true);
   } else {
     CanonicalRelationalExpressionRuntimeServices predicate_services;
     predicate_services.comparison_evaluator =

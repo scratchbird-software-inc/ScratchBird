@@ -1449,6 +1449,19 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
   return result;
 }
 
+bool CanonicalRelationalComparisonAuthorityRequiredV1(
+    const api::EngineDescriptor& left,
+    const api::EngineDescriptor& right) {
+  return dt::CanonicalTypeIdFromStableName(left.canonical_type_name) ==
+             dt::CanonicalTypeId::character ||
+         dt::CanonicalTypeIdFromStableName(right.canonical_type_name) ==
+             dt::CanonicalTypeId::character ||
+         left.encoded_descriptor.find("timezone_profile_id=") !=
+             std::string::npos ||
+         right.encoded_descriptor.find("timezone_profile_id=") !=
+             std::string::npos;
+}
+
 bool BindCanonicalRelationalComparisonAuthorityV1(
     const api::EngineTypedValue& left,
     const api::EngineTypedValue& right,
@@ -1459,18 +1472,9 @@ bool BindCanonicalRelationalComparisonAuthorityV1(
     return false;
   }
   precomputed_comparison->reset();
-  const bool descriptor_bound_comparison =
-      dt::CanonicalTypeIdFromStableName(
-          left.descriptor.canonical_type_name) ==
-          dt::CanonicalTypeId::character ||
-      dt::CanonicalTypeIdFromStableName(
-          right.descriptor.canonical_type_name) ==
-          dt::CanonicalTypeId::character ||
-      left.descriptor.encoded_descriptor.find("timezone_profile_id=") !=
-          std::string::npos ||
-      right.descriptor.encoded_descriptor.find("timezone_profile_id=") !=
-          std::string::npos;
-  if (!descriptor_bound_comparison || left.isSqlNull() ||
+  if (!CanonicalRelationalComparisonAuthorityRequiredV1(
+          left.descriptor, right.descriptor) ||
+      left.isSqlNull() ||
       right.isSqlNull()) {
     return true;
   }
