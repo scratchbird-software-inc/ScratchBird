@@ -2815,6 +2815,14 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch);
+// The live canonical route may additionally borrow its immutable, already
+// bound result descriptor. The request's owned count-column carrier must
+// remain exact-default, and all borrowed carriers are consumed synchronously.
+CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
+    const CanonicalDescriptorCountRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const ExecutorColumnDescriptor& borrowed_count_column);
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request);
 // Borrowed execution carriers are consumed synchronously and are never

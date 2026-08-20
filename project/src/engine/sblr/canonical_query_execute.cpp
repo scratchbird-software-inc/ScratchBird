@@ -10430,12 +10430,11 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
           execution_dag = &*scoped_execution_dag;
         }
         aggregate_request.selected_physical_node_id = node.physical_node_id;
-        aggregate_request.count_column = result_column;
         aggregate_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, *execution_dag);
         auto aggregate_result = exec::ExecuteCanonicalDescriptorCountStar(
-            aggregate_request, *execution_dag, input_batch);
+            aggregate_request, *execution_dag, input_batch, result_column);
         if (!aggregate_result.diagnostic.ok) {
           step.diagnostic = std::move(aggregate_result.diagnostic);
           return step;
@@ -23678,10 +23677,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
         if (count_star) {
           exec::CanonicalDescriptorCountRequest aggregate_request;
           aggregate_request.selected_physical_node_id = node.physical_node_id;
-          aggregate_request.count_column = result_column;
           aggregate_request.mga_authority = mga_authority;
           auto aggregate_result = exec::ExecuteCanonicalDescriptorCountStar(
-              aggregate_request, dag, input_batch);
+              aggregate_request, dag, input_batch, result_column);
           if (!aggregate_result.diagnostic.ok) {
             step.diagnostic = std::move(aggregate_result.diagnostic);
             return step;
@@ -27683,6 +27681,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         profile.transformation_rule_id =
             aggregate_profile.transformation_id;
         profile.estimated_rows = 1;
+        profile.memory_bytes_required = planning.memory_budget_bytes;
       } else if (consumer->node_kind == api::RelationalDagNodeKind::kCte) {
         if (consumer->semantic_variant_id != "cte.bound.v1" ||
             !consumer->bound_expression_ids.empty() ||
@@ -32231,6 +32230,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       consumer_profile.transformation_rule_id =
           aggregate_profile.transformation_id;
       consumer_profile.estimated_rows = 1;
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kCte) {
       if (consumer->semantic_variant_id != "cte.bound.v1" ||
           !consumer->bound_expression_ids.empty() ||
@@ -34386,6 +34386,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       consumer_profile.transformation_rule_id =
           aggregate_profile.transformation_id;
       consumer_profile.estimated_rows = 1;
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kCte) {
       if (consumer->semantic_variant_id != "cte.bound.v1" ||
           !consumer->bound_expression_ids.empty() ||
@@ -36777,6 +36778,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       consumer_profile.transformation_rule_id =
           aggregate_profile.transformation_id;
       consumer_profile.estimated_rows = 1;
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kCte) {
       if (consumer->semantic_variant_id != "cte.bound.v1" ||
           !consumer->bound_expression_ids.empty() ||
@@ -39379,6 +39381,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
           consumer_profile.transformation_rule_id =
               aggregate_profile.transformation_id;
           consumer_profile.estimated_rows = 1;
+          consumer_profile.memory_bytes_required =
+              planning.memory_budget_bytes;
           break;
         }
         case api::RelationalDagNodeKind::kCte: {
@@ -48192,7 +48196,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          aggregate_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kAggregate,
          exec::PhysicalNodeKind::kAggregate,
-         aggregate_profile.transformation_id, 1, 1024, 1, 1});
+         aggregate_profile.transformation_id, 1,
+         aggregate_profile.count_star
+             ? planning_request.optimizer_request.resource.memory_budget_bytes
+             : 1024,
+         1, 1});
   }
   std::vector<plan::CanonicalLogicalPropertyOrderingTerm> heap_order_terms;
   std::vector<std::size_t> heap_order_columns;

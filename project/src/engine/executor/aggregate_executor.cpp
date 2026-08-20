@@ -50,6 +50,26 @@ bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
          batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
 }
 
+bool ExecutorColumnDescriptorCarrierIsExactDefault(
+    const ExecutorColumnDescriptor& column) {
+  const ExecutorColumnDescriptor empty;
+  const auto exact_empty_string = [](const std::string& value,
+                                     const std::string& baseline) {
+    return value.empty() && value.capacity() == baseline.capacity();
+  };
+  return exact_empty_string(column.stable_name, empty.stable_name) &&
+         exact_empty_string(column.descriptor.descriptor_uuid.canonical,
+                            empty.descriptor.descriptor_uuid.canonical) &&
+         exact_empty_string(column.descriptor.descriptor_kind,
+                            empty.descriptor.descriptor_kind) &&
+         exact_empty_string(column.descriptor.canonical_type_name,
+                            empty.descriptor.canonical_type_name) &&
+         exact_empty_string(column.descriptor.encoded_descriptor,
+                            empty.descriptor.encoded_descriptor) &&
+         column.nullable == empty.nullable &&
+         column.descriptor_id == empty.descriptor_id;
+}
+
 using scratchbird::engine::internal_api::EngineTypedValue;
 using scratchbird::engine::internal_api::EngineValueState;
 
@@ -3779,7 +3799,9 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
     const CanonicalDescriptorCountRequest& request,
     const TypedPhysicalNodeDag& execution_dag,
     const DescriptorBatch& execution_input_batch,
-    const bool borrowed_execution_carriers) {
+    const ExecutorColumnDescriptor& execution_count_column,
+    const bool borrowed_execution_carriers,
+    const bool borrowed_count_column) {
   using scratchbird::engine::internal_api::EngineTypedValue;
   using scratchbird::engine::internal_api::EngineValueState;
 
@@ -3795,6 +3817,12 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-AGGREGATE-PHYSICAL-ROUTE-V1",
         "COUNT(*) request carries conflicting owned execution carriers"));
+  }
+  if (borrowed_count_column &&
+      !ExecutorColumnDescriptorCarrierIsExactDefault(request.count_column)) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-AGGREGATE-PHYSICAL-ROUTE-V1",
+        "COUNT(*) request carries a conflicting owned result descriptor"));
   }
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
       request.mga_authority, execution_dag);
@@ -3832,10 +3860,10 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
   }
   if (input_node == nullptr ||
       selected_node->output_descriptor_ids.size() != 1 ||
-      request.count_column.descriptor_id !=
+      execution_count_column.descriptor_id !=
           selected_node->output_descriptor_ids.front() ||
-      request.count_column.nullable ||
-      request.count_column.descriptor.canonical_type_name != "int64") {
+      execution_count_column.nullable ||
+      execution_count_column.descriptor.canonical_type_name != "int64") {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "COUNT(*) output descriptor is not bound int64"));
   }
@@ -3849,13 +3877,46 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
                           "COUNT(*) exceeds int64 result width"));
   }
 
+  const auto node_memory_grant =
+      AggregateNodeMemoryGrant(execution_dag, *selected_node);
+  std::size_t input_payload_bytes = 0;
+  std::size_t output_payload_bytes = 1;
+  auto remaining_count = execution_input_batch.rows.size();
+  do {
+    if (!CheckedAggregateFinalizationAdd(&output_payload_bytes, 1)) {
+      return refuse(Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "COUNT(*) output payload accounting overflowed"));
+    }
+    remaining_count /= 10;
+  } while (remaining_count != 0);
+  std::size_t peak_live_payload_bytes = 0;
+  if (!node_memory_grant.has_value() ||
+      !AggregateBatchPayloadBytes(execution_input_batch,
+                                  &input_payload_bytes) ||
+      !CheckedAggregateFinalizationAdd(&peak_live_payload_bytes,
+                                       input_payload_bytes) ||
+      !CheckedAggregateFinalizationAdd(&peak_live_payload_bytes,
+                                       sizeof(std::int64_t)) ||
+      !CheckedAggregateFinalizationAdd(&peak_live_payload_bytes,
+                                       output_payload_bytes) ||
+      peak_live_payload_bytes > *node_memory_grant) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "COUNT(*) runtime materialization exceeds the selected node memory "
+        "grant"));
+  }
+
   EngineTypedValue count_value;
-  count_value.descriptor = request.count_column.descriptor;
+  count_value.descriptor = execution_count_column.descriptor;
   count_value.encoded_value =
       std::to_string(execution_input_batch.rows.size());
   count_value.state = EngineValueState::value;
-  result.output_batch.columns = {request.count_column};
-  result.output_batch.rows = {{{std::move(count_value)}}};
+  result.output_batch.columns.reserve(1);
+  result.output_batch.columns.push_back(execution_count_column);
+  result.output_batch.rows.resize(1);
+  result.output_batch.rows.front().values.reserve(1);
+  result.output_batch.rows.front().values.push_back(std::move(count_value));
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, selected_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
@@ -3875,7 +3936,8 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request) {
   return ExecuteCanonicalDescriptorCountStarBound(
-      request, request.physical_dag, request.input_batch, false);
+      request, request.physical_dag, request.input_batch,
+      request.count_column, false, false);
 }
 
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
@@ -3883,7 +3945,18 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch) {
   return ExecuteCanonicalDescriptorCountStarBound(
-      request, borrowed_execution_dag, borrowed_input_batch, true);
+      request, borrowed_execution_dag, borrowed_input_batch,
+      request.count_column, true, false);
+}
+
+CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
+    const CanonicalDescriptorCountRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const ExecutorColumnDescriptor& borrowed_count_column) {
+  return ExecuteCanonicalDescriptorCountStarBound(
+      request, borrowed_execution_dag, borrowed_input_batch,
+      borrowed_count_column, true, true);
 }
 
 // QOW-SOURCE-QRY-011-REGISTRY-V1
