@@ -274,6 +274,99 @@ struct TypedPhysicalNodeDag {
   bool causal_identity_validated{false};
 };
 
+inline bool TypedPhysicalNodeDagCarrierIsExactDefault(
+    const TypedPhysicalNodeDag& dag) {
+  const TypedPhysicalNodeDag empty;
+  const auto exact_empty_string = [](const std::string& value,
+                                     const std::string& baseline) {
+    return value.empty() && value.capacity() == baseline.capacity();
+  };
+  const auto& context = dag.mga_statement_context;
+  const auto& empty_context = empty.mga_statement_context;
+  const bool exact_empty_context_storage =
+      exact_empty_string(context.statement_uuid,
+                         empty_context.statement_uuid) &&
+      exact_empty_string(context.owning_transaction_uuid,
+                         empty_context.owning_transaction_uuid) &&
+      exact_empty_string(context.statement_snapshot_uuid,
+                         empty_context.statement_snapshot_uuid) &&
+      exact_empty_string(context.statement_metadata_snapshot_uuid,
+                         empty_context.statement_metadata_snapshot_uuid) &&
+      exact_empty_string(context.snapshot_kind,
+                         empty_context.snapshot_kind) &&
+      exact_empty_string(context.statement_timestamp,
+                         empty_context.statement_timestamp) &&
+      context.active_excluded_local_transaction_ids.empty() &&
+      context.active_excluded_local_transaction_ids.capacity() ==
+          empty_context.active_excluded_local_transaction_ids.capacity() &&
+      context.in_doubt_excluded_local_transaction_ids.empty() &&
+      context.in_doubt_excluded_local_transaction_ids.capacity() ==
+          empty_context.in_doubt_excluded_local_transaction_ids.capacity();
+  return dag.abi_version == empty.abi_version &&
+         exact_empty_string(dag.selected_plan_uuid,
+                            empty.selected_plan_uuid) &&
+         dag.root_physical_node_id == empty.root_physical_node_id &&
+         dag.local_transaction_id == empty.local_transaction_id &&
+         dag.statement_snapshot_id == empty.statement_snapshot_id &&
+         PhysicalMgaStatementContextEqual(context, empty_context) &&
+         exact_empty_context_storage && dag.admission_evidence.empty() &&
+         dag.admission_evidence.capacity() ==
+             empty.admission_evidence.capacity() &&
+         dag.nodes.empty() && dag.nodes.capacity() == empty.nodes.capacity() &&
+         exact_empty_string(dag.bound_sblr_tree_uuid,
+                            empty.bound_sblr_tree_uuid) &&
+         exact_empty_string(dag.catalog_epoch_uuid,
+                            empty.catalog_epoch_uuid) &&
+         exact_empty_string(dag.security_context_uuid,
+                            empty.security_context_uuid) &&
+         exact_empty_string(dag.capability_snapshot_uuid,
+                            empty.capability_snapshot_uuid) &&
+         exact_empty_string(dag.resource_snapshot_uuid,
+                            empty.resource_snapshot_uuid) &&
+         exact_empty_string(dag.statistics_snapshot_uuid,
+                            empty.statistics_snapshot_uuid) &&
+         exact_empty_string(dag.route_snapshot_uuid,
+                            empty.route_snapshot_uuid) &&
+         dag.catalog_generation == empty.catalog_generation &&
+         dag.security_epoch == empty.security_epoch &&
+         dag.policy_epoch == empty.policy_epoch &&
+         dag.resource_epoch == empty.resource_epoch &&
+         dag.statistics_generation == empty.statistics_generation &&
+         dag.route_epoch == empty.route_epoch &&
+         dag.route_generation == empty.route_generation &&
+         dag.memory_budget_bytes == empty.memory_budget_bytes &&
+         dag.spill_allowed == empty.spill_allowed &&
+         dag.optimizer_published == empty.optimizer_published &&
+         dag.immutable_node_identity_validated ==
+             empty.immutable_node_identity_validated &&
+         dag.capability_validated_before_access ==
+             empty.capability_validated_before_access &&
+         dag.data_access_observed == empty.data_access_observed &&
+         dag.parser_execution_authority_claimed ==
+             empty.parser_execution_authority_claimed &&
+         dag.transaction_finality_authority_claimed ==
+             empty.transaction_finality_authority_claimed &&
+         dag.publication_contract_version ==
+             empty.publication_contract_version &&
+         exact_empty_string(dag.selected_plan_signature,
+                            empty.selected_plan_signature) &&
+         dag.selected_scalar_score == empty.selected_scalar_score &&
+         dag.published_node_count == empty.published_node_count &&
+         dag.first_causal_counter_id == empty.first_causal_counter_id &&
+         dag.complete_cost_vectors_retained ==
+             empty.complete_cost_vectors_retained &&
+         dag.descriptor_contract_validated ==
+             empty.descriptor_contract_validated &&
+         dag.property_contract_validated ==
+             empty.property_contract_validated &&
+         dag.dependency_contract_validated ==
+             empty.dependency_contract_validated &&
+         dag.resource_contract_validated ==
+             empty.resource_contract_validated &&
+         dag.mga_contract_validated == empty.mga_contract_validated &&
+         dag.causal_identity_validated == empty.causal_identity_validated;
+}
+
 struct PhysicalNodeAbiLimits {
   std::size_t maximum_nodes{131072};
   std::size_t maximum_depth{256};

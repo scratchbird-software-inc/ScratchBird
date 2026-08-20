@@ -51,6 +51,69 @@ struct CanonicalRelationalExpressionRowBinding {
   std::vector<CanonicalRelationalExpressionRowSlotBinding> slots;
 };
 
+// Upper envelope for one descriptor-exact materialized row slot.  The
+// expression-memory preflight consumes maxima rather than a particular row so
+// planning and execution can bind the same finite predicate program.
+struct CanonicalPredicateRowValueEnvelope {
+  internal_api::EngineDescriptor descriptor;
+  std::uint64_t maximum_encoded_value_bytes{0};
+  std::uint64_t maximum_binary_value_bytes{0};
+  bool any_non_null{false};
+};
+
+struct CanonicalPredicateCallbackRequirements {
+  bool descriptor_type_resolution_may_execute{false};
+  bool collation_comparison_may_execute{false};
+  bool timezone_normalization_may_execute{false};
+  bool function_evaluator_may_execute{false};
+};
+
+// Ordinary typed-operator logical-memory contract for one prepared row
+// predicate.  Logical carrier entries and their dynamic strings are counted;
+// allocator buckets, node links, reserved capacity, process RSS, and the
+// engine-owned erased-callable service targets are not.  Any service that may
+// execute is surfaced through callbacks and keeps callback_memory_complete
+// false until a separately bounded callback ABI is present.
+// Stage-A callers may inspect this result, but live admission must not consume
+// it until callback_memory_complete is also true.
+// `ok` means this finite memory analysis succeeded; it does not replace the
+// descriptor-batch or scalar semantic validation at the execution seam.
+struct CanonicalPredicateLogicalMemoryBound {
+  bool ok{false};
+  bool core_bound_complete{false};
+  bool core_bound_exact{false};
+  bool callback_memory_complete{false};
+
+  std::size_t dag_expression_count{0};
+  std::size_t dag_descriptor_count{0};
+  std::size_t reachable_expression_count{0};
+  std::size_t reachable_descriptor_count{0};
+  std::size_t reachable_edge_count{0};
+  std::size_t maximum_expression_depth{0};
+  std::size_t row_slot_count{0};
+  std::size_t unique_row_ordinal_count{0};
+
+  std::uint64_t runtime_resident_structural_bytes{0};
+  std::uint64_t prepare_row_binding_peak_structural_bytes{0};
+  std::uint64_t active_row_binding_resident_bytes{0};
+  std::uint64_t evaluation_peak_value_bytes{0};
+  std::uint64_t evaluation_peak_transient_structural_bytes{0};
+  std::uint64_t callback_handoff_peak_bytes{0};
+  std::uint64_t core_expression_peak_bytes{0};
+
+  CanonicalPredicateCallbackRequirements callbacks;
+  std::string detail;
+};
+
+CanonicalPredicateLogicalMemoryBound
+BoundCanonicalRowPredicateLogicalMemoryV1(
+    const internal_api::TypedRelationalDag& dag,
+    std::uint32_t root_expression_id,
+    const CanonicalRelationalExpressionRowBinding& row_binding,
+    const std::vector<CanonicalPredicateRowValueEnvelope>& row_values,
+    internal_api::EngineCanonicalExpressionConsumer consumer,
+    const std::function<bool()>& abort_requested = {});
+
 // RCP-024 catalog/runtime handoff. The expression evaluator retains ownership
 // of descriptor, NULL, cast, comparison, and consumer semantics; these
 // callbacks provide only engine-owned identities or calculated scalar values
@@ -75,6 +138,22 @@ struct CanonicalRelationalExpressionRuntimeServices {
                      std::string* refusal_detail)>
       comparison_evaluator;
 };
+
+// Character and timezone-profile descriptors must be compared by the bound
+// engine catalog/resource service rather than the generic scalar comparator.
+bool CanonicalRelationalComparisonAuthorityRequiredV1(
+    const internal_api::EngineDescriptor& left,
+    const internal_api::EngineDescriptor& right);
+
+// Binds the engine-owned comparison result required by character and
+// timezone-profile operands.  Core non-collated comparisons and SQL NULL do
+// not require a precomputed result.
+bool BindCanonicalRelationalComparisonAuthorityV1(
+    const internal_api::EngineTypedValue& left,
+    const internal_api::EngineTypedValue& right,
+    const CanonicalRelationalExpressionRuntimeServices& services,
+    std::optional<int>* precomputed_comparison,
+    std::string* refusal_detail);
 
 // Object-free first consumer of the canonical relational expression graph.
 // Parameters remain refused until an engine-owned value binding exists;

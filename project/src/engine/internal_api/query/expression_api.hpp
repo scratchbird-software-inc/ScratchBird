@@ -305,10 +305,27 @@ struct EngineNormalizeTimezoneScalarResult : EngineApiResult {
   std::string timezone_identifier;
   int timezone_offset_minutes = 0;
   bool used_timezone_seed = false;
+  bool comparable_utc_key_available = false;
+  std::int64_t comparable_utc_whole_seconds = 0;
+  std::uint64_t comparable_fractional_picoseconds = 0;
   EngineApiU64 timezone_epoch = 0;
 };
 EngineNormalizeTimezoneScalarResult EngineNormalizeTimezoneScalar(
     const EngineNormalizeTimezoneScalarRequest& request);
+
+// Engine-owned comparison authority for canonical relational scalars.
+// Character values resolve their bound collation; timezone-profile values
+// consume the normalization authority's comparable UTC key; core scalar
+// families retain the canonical non-collated comparator.
+struct EngineCompareCanonicalScalarValuesRequest : EngineApiRequest {
+  EngineTypedValue left_value;
+  EngineTypedValue right_value;
+};
+struct EngineCompareCanonicalScalarValuesResult : EngineApiResult {
+  int comparison = 0;
+};
+EngineCompareCanonicalScalarValuesResult EngineCompareCanonicalScalarValues(
+    const EngineCompareCanonicalScalarValuesRequest& request);
 
 struct EngineExtractValueRequest : EngineApiRequest {
   EngineTypedValue input_value;

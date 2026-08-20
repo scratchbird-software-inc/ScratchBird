@@ -11,6 +11,7 @@
 // SB-DATATYPE-TEMPORAL-WIRE-ANCHOR
 #include "datatype_descriptor.hpp"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -48,6 +49,9 @@ struct ReferenceTemporalWireProfileResult {
   std::string timezone_identifier;
   int timezone_offset_minutes = 0;
   bool used_timezone_seed = false;
+  bool comparable_utc_key_available = false;
+  std::int64_t comparable_utc_whole_seconds = 0;
+  std::uint64_t comparable_fractional_picoseconds = 0;
   DiagnosticRecord diagnostic;
 
   bool ok() const {

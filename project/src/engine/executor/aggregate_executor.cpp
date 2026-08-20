@@ -8,6 +8,7 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include "aggregate_executor_internal.hpp"
 #include "datatype_document.hpp"
 #include "datatype_operations.hpp"
 #include "temp_spill_executor.hpp"
@@ -40,6 +41,33 @@ DescriptorRuntimeDiagnostic Refusal(std::string code,
   diagnostic.diagnostic_code = std::move(code);
   diagnostic.detail = std::move(detail);
   return diagnostic;
+}
+
+bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
+  const DescriptorBatch empty;
+  return batch.columns.empty() &&
+         batch.columns.capacity() == empty.columns.capacity() &&
+         batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
+}
+
+bool ExecutorColumnDescriptorCarrierIsExactDefault(
+    const ExecutorColumnDescriptor& column) {
+  const ExecutorColumnDescriptor empty;
+  const auto exact_empty_string = [](const std::string& value,
+                                     const std::string& baseline) {
+    return value.empty() && value.capacity() == baseline.capacity();
+  };
+  return exact_empty_string(column.stable_name, empty.stable_name) &&
+         exact_empty_string(column.descriptor.descriptor_uuid.canonical,
+                            empty.descriptor.descriptor_uuid.canonical) &&
+         exact_empty_string(column.descriptor.descriptor_kind,
+                            empty.descriptor.descriptor_kind) &&
+         exact_empty_string(column.descriptor.canonical_type_name,
+                            empty.descriptor.canonical_type_name) &&
+         exact_empty_string(column.descriptor.encoded_descriptor,
+                            empty.descriptor.encoded_descriptor) &&
+         column.nullable == empty.nullable &&
+         column.descriptor_id == empty.descriptor_id;
 }
 
 using scratchbird::engine::internal_api::EngineTypedValue;
@@ -1400,6 +1428,7 @@ bool MergeCanonicalAggregateCoreBounded(
 
 bool ValidateCanonicalAggregateResultType(
     const CanonicalAggregateRuntimeRequest& request,
+    const DescriptorBatch& input_batch,
     DescriptorRuntimeDiagnostic* diagnostic) {
   const auto function = request.descriptor.function;
   if (function == CanonicalAggregateFunction::count) {
@@ -1445,7 +1474,7 @@ bool ValidateCanonicalAggregateResultType(
   } else if (function == CanonicalAggregateFunction::sum &&
              !request.value_columns.empty()) {
     const auto& input =
-        request.input_batch.columns[request.value_columns.front()];
+        input_batch.columns[request.value_columns.front()];
     if (request.result_column.nullable &&
         ((IsCanonicalBoundedSignedIntegerDescriptor(input.descriptor) &&
           IsType(request.result_column, "int64")) ||
@@ -1462,7 +1491,7 @@ bool ValidateCanonicalAggregateResultType(
               function == CanonicalAggregateFunction::max) &&
              !request.value_columns.empty()) {
     const auto& input =
-        request.input_batch.columns[request.value_columns.front()];
+        input_batch.columns[request.value_columns.front()];
     if (request.result_column.nullable &&
         ((IsCanonicalBoundedSignedIntegerDescriptor(input.descriptor) &&
           IsType(request.result_column, "int64")) ||
@@ -1498,7 +1527,7 @@ bool ValidateCanonicalAggregateResultType(
   } else if (function == CanonicalAggregateFunction::mode &&
              !request.value_columns.empty()) {
     const auto& input =
-        request.input_batch.columns[request.value_columns.front()];
+        input_batch.columns[request.value_columns.front()];
     if (request.result_column.nullable &&
         ((IsCanonicalBoundedSignedIntegerDescriptor(input.descriptor) &&
           IsType(request.result_column, "int64")) ||
@@ -1507,7 +1536,7 @@ bool ValidateCanonicalAggregateResultType(
       return true;
     }
   } else if (!request.value_columns.empty()) {
-    const auto& input = request.input_batch.columns[request.value_columns[0]];
+    const auto& input = input_batch.columns[request.value_columns[0]];
     if (request.result_column.descriptor.canonical_type_name ==
             input.descriptor.canonical_type_name &&
         request.result_column.nullable) {
@@ -1521,6 +1550,7 @@ bool ValidateCanonicalAggregateResultType(
 
 bool ValidateCanonicalAggregateInputType(
     const CanonicalAggregateRuntimeRequest& request,
+    const DescriptorBatch& input_batch,
     DescriptorRuntimeDiagnostic* diagnostic) {
   if (request.descriptor.count_star ||
       request.descriptor.function == CanonicalAggregateFunction::count) {
@@ -1529,7 +1559,7 @@ bool ValidateCanonicalAggregateInputType(
   if (IsCanonicalPairStatisticalFunction(request.descriptor.function)) {
     for (const auto column : request.value_columns) {
       const auto& descriptor =
-          request.input_batch.columns[column].descriptor;
+          input_batch.columns[column].descriptor;
       if (!IsCanonicalBoundedSignedIntegerDescriptor(descriptor) &&
           descriptor.canonical_type_name != "real64") {
         *diagnostic = Refusal(
@@ -1542,7 +1572,7 @@ bool ValidateCanonicalAggregateInputType(
   }
   if (request.descriptor.function ==
       CanonicalAggregateFunction::json_object_agg) {
-    const auto& key_type = request.input_batch
+    const auto& key_type = input_batch
                                .columns[request.value_columns.front()]
                                .descriptor.canonical_type_name;
     if (key_type == "text" || key_type == "varchar" ||
@@ -1555,7 +1585,7 @@ bool ValidateCanonicalAggregateInputType(
   }
   if (request.descriptor.function == CanonicalAggregateFunction::string_agg ||
       request.descriptor.function == CanonicalAggregateFunction::listagg) {
-    const auto& type = request.input_batch
+    const auto& type = input_batch
                            .columns[request.value_columns.front()]
                            .descriptor.canonical_type_name;
     if (type == "text" || type == "varchar" || type == "char") return true;
@@ -1569,11 +1599,11 @@ bool ValidateCanonicalAggregateInputType(
   }
   if (IsCanonicalHypotheticalSetFunction(request.descriptor.function) ||
       IsCanonicalQuantileFunction(request.descriptor.function)) {
-    const auto& type = request.input_batch
+    const auto& type = input_batch
                            .columns[request.value_columns.front()]
                            .descriptor.canonical_type_name;
     if (IsCanonicalBoundedSignedIntegerDescriptor(
-            request.input_batch
+            input_batch
                 .columns[request.value_columns.front()]
                 .descriptor) ||
         type == "real64") {
@@ -1591,7 +1621,7 @@ bool ValidateCanonicalAggregateInputType(
   if (request.descriptor.function ==
       CanonicalAggregateFunction::approx_top_k) {
     const auto& type =
-        request.input_batch.columns[request.value_columns.front()]
+        input_batch.columns[request.value_columns.front()]
             .descriptor.canonical_type_name;
     if (type == "text" || type == "varchar" || type == "char") {
       return true;
@@ -1601,7 +1631,7 @@ bool ValidateCanonicalAggregateInputType(
         "APPROX_TOP_K requires a canonical text input descriptor");
     return false;
   }
-  const auto& type = request.input_batch
+  const auto& type = input_batch
                          .columns[request.value_columns.front()]
                          .descriptor.canonical_type_name;
   if (request.descriptor.function == CanonicalAggregateFunction::sum ||
@@ -1609,7 +1639,7 @@ bool ValidateCanonicalAggregateInputType(
       IsCanonicalUnivariateStatisticalFunction(
           request.descriptor.function)) {
     if (IsCanonicalBoundedSignedIntegerDescriptor(
-            request.input_batch
+            input_batch
                 .columns[request.value_columns.front()]
                 .descriptor) ||
         type == "real64") {
@@ -2727,12 +2757,13 @@ struct PreparedAggregateTransitions {
 
 AggregateTransitionValuesView BindAggregateTransitionValues(
     const CanonicalAggregateRuntimeRequest& request,
+    const DescriptorBatch& input_batch,
     const std::size_t input_row) {
   AggregateTransitionValuesView values;
   values.size = request.value_columns.size();
   for (std::size_t index = 0; index < values.size; ++index) {
     values.values[index] =
-        &request.input_batch.rows[input_row]
+        &input_batch.rows[input_row]
              .values[request.value_columns[index]];
   }
   return values;
@@ -2763,6 +2794,7 @@ bool AggregateDistinctKeyAllocationBound(
 
 bool PrepareCanonicalAggregateTransitions(
     const CanonicalAggregateRuntimeRequest& request,
+    const DescriptorBatch& input_batch,
     const std::size_t maximum_live_bytes,
     PreparedAggregateTransitions* prepared,
     DescriptorRuntimeDiagnostic* diagnostic) {
@@ -2770,9 +2802,9 @@ bool PrepareCanonicalAggregateTransitions(
   using scratchbird::engine::internal_api::QowPredicateConsumerPassesV1;
   if (prepared == nullptr || diagnostic == nullptr) return false;
   *prepared = {};
-  prepared->input_row_count = request.input_batch.rows.size();
+  prepared->input_row_count = input_batch.rows.size();
   std::size_t admitted_row_count = 0;
-  for (std::size_t row = 0; row < request.input_batch.rows.size(); ++row) {
+  for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
     bool passes = true;
     if (request.filter_truth_values.has_value()) {
       std::string detail;
@@ -2812,7 +2844,7 @@ bool PrepareCanonicalAggregateTransitions(
   }
   if (request.distinct) distinct_keys.reserve(admitted_row_count);
   std::size_t retained_distinct_key_bytes = 0;
-  for (std::size_t row = 0; row < request.input_batch.rows.size(); ++row) {
+  for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
     bool passes = true;
     if (request.filter_truth_values.has_value()) {
       std::string detail;
@@ -2826,7 +2858,8 @@ bool PrepareCanonicalAggregateTransitions(
     }
     if (!passes) continue;
     ++prepared->filtered_row_count;
-    const auto values = BindAggregateTransitionValues(request, row);
+    const auto values =
+        BindAggregateTransitionValues(request, input_batch, row);
     if (request.distinct) {
       std::size_t key_allocation_bound = 0;
       if (!AggregateDistinctKeyAllocationBound(values,
@@ -2886,9 +2919,9 @@ bool PrepareCanonicalAggregateTransitions(
       int comparison = 0;
       for (const auto& term : request.aggregate_order_terms) {
         const auto compared = CompareCanonicalDescriptorOrderValues(
-            request.input_batch.rows[moving_row]
+            input_batch.rows[moving_row]
                 .values[term.column],
-            request.input_batch.rows[prepared->transitions[insertion - 1]]
+            input_batch.rows[prepared->transitions[insertion - 1]]
                 .values[term.column],
             term);
         ++prepared->order_comparison_count;
@@ -2913,6 +2946,7 @@ bool PrepareCanonicalAggregateTransitions(
 
 bool BuildCanonicalAggregateCoreState(
     const CanonicalAggregateRuntimeRequest& request,
+    const DescriptorBatch& input_batch,
     const std::vector<std::size_t>& transitions,
     const std::size_t maximum_state_bytes,
     CanonicalAggregateCoreState* state,
@@ -2936,8 +2970,8 @@ bool BuildCanonicalAggregateCoreState(
     }
     for (const auto input_row : transitions) {
       if (!TransitionCanonicalAggregateCoreBounded(
-              request.descriptor,
-              BindAggregateTransitionValues(request, input_row),
+          request.descriptor,
+              BindAggregateTransitionValues(request, input_batch, input_row),
               maximum_state_bytes, state, diagnostic)) {
         return false;
       }
@@ -2974,7 +3008,8 @@ bool BuildCanonicalAggregateCoreState(
     if (other_state_bytes > maximum_state_bytes ||
         !TransitionCanonicalAggregateCoreBounded(
             request.descriptor,
-            BindAggregateTransitionValues(request, transitions[index]),
+            BindAggregateTransitionValues(
+                request, input_batch, transitions[index]),
             maximum_state_bytes - other_state_bytes, partition,
             diagnostic)) {
       return false;
@@ -3759,8 +3794,14 @@ bool IsCanonicalAggregateStateSpillUuid(const std::string_view value) {
 // First canonical implementation in this module: global COUNT(*).  It counts
 // physical input rows (including rows containing SQL NULL), returns one row on
 // empty input, and uses the bound non-null int64 descriptor for its result.
-CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
-    const CanonicalDescriptorCountRequest& request) {
+namespace {
+CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
+    const CanonicalDescriptorCountRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const ExecutorColumnDescriptor& execution_count_column,
+    const bool borrowed_execution_carriers,
+    const bool borrowed_count_column) {
   using scratchbird::engine::internal_api::EngineTypedValue;
   using scratchbird::engine::internal_api::EngineValueState;
 
@@ -3770,33 +3811,47 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     result.output_batch = {};
     return result;
   };
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(request.input_batch))) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-AGGREGATE-PHYSICAL-ROUTE-V1",
+        "COUNT(*) request carries conflicting owned execution carriers"));
+  }
+  if (borrowed_count_column &&
+      !ExecutorColumnDescriptorCarrierIsExactDefault(request.count_column)) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-AGGREGATE-PHYSICAL-ROUTE-V1",
+        "COUNT(*) request carries a conflicting owned result descriptor"));
+  }
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id) {
+          execution_dag.root_physical_node_id) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "selected aggregate node is not the root"));
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;
   const PhysicalNodeRecord* input_node = nullptr;
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == request.selected_physical_node_id) {
       selected_node = &node;
     }
   }
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kAggregate ||
+      selected_node->implementation_id != "aggregate.count-star.v1" ||
       selected_node->input_physical_node_ids.size() != 1) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-AGGREGATE-PHYSICAL-ROUTE-V1",
-        "COUNT(*) requires one selected aggregate node"));
+        "COUNT(*) requires its selected canonical aggregate implementation"));
   }
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
         selected_node->input_physical_node_ids.front()) {
       input_node = &node;
@@ -3805,43 +3860,103 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
   }
   if (input_node == nullptr ||
       selected_node->output_descriptor_ids.size() != 1 ||
-      request.count_column.descriptor_id !=
+      execution_count_column.descriptor_id !=
           selected_node->output_descriptor_ids.front() ||
-      request.count_column.nullable ||
-      request.count_column.descriptor.canonical_type_name != "int64") {
+      execution_count_column.nullable ||
+      execution_count_column.descriptor.canonical_type_name != "int64") {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "COUNT(*) output descriptor is not bound int64"));
   }
   auto input_validation = ValidateCanonicalDescriptorBatch(
-      request.input_batch, input_node->output_descriptor_ids);
+      execution_input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
 
-  if (request.input_batch.rows.size() >
+  if (execution_input_batch.rows.size() >
       static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
     return refuse(Refusal("QOW-DIAG-QRY-007-AGGREGATE-OVERFLOW-V1",
                           "COUNT(*) exceeds int64 result width"));
   }
 
+  const auto node_memory_grant =
+      AggregateNodeMemoryGrant(execution_dag, *selected_node);
+  std::size_t input_payload_bytes = 0;
+  std::size_t output_payload_bytes = 1;
+  auto remaining_count = execution_input_batch.rows.size();
+  do {
+    if (!CheckedAggregateFinalizationAdd(&output_payload_bytes, 1)) {
+      return refuse(Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "COUNT(*) output payload accounting overflowed"));
+    }
+    remaining_count /= 10;
+  } while (remaining_count != 0);
+  std::size_t peak_live_payload_bytes = 0;
+  if (!node_memory_grant.has_value() ||
+      !AggregateBatchPayloadBytes(execution_input_batch,
+                                  &input_payload_bytes) ||
+      !CheckedAggregateFinalizationAdd(&peak_live_payload_bytes,
+                                       input_payload_bytes) ||
+      !CheckedAggregateFinalizationAdd(&peak_live_payload_bytes,
+                                       sizeof(std::int64_t)) ||
+      !CheckedAggregateFinalizationAdd(&peak_live_payload_bytes,
+                                       output_payload_bytes) ||
+      peak_live_payload_bytes > *node_memory_grant) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "COUNT(*) runtime materialization exceeds the selected node memory "
+        "grant"));
+  }
+
   EngineTypedValue count_value;
-  count_value.descriptor = request.count_column.descriptor;
+  count_value.descriptor = execution_count_column.descriptor;
   count_value.encoded_value =
-      std::to_string(request.input_batch.rows.size());
+      std::to_string(execution_input_batch.rows.size());
   count_value.state = EngineValueState::value;
-  result.output_batch.columns = {request.count_column};
-  result.output_batch.rows = {{{std::move(count_value)}}};
+  result.output_batch.columns.reserve(1);
+  result.output_batch.columns.push_back(execution_count_column);
+  result.output_batch.rows.resize(1);
+  result.output_batch.rows.front().values.reserve(1);
+  result.output_batch.rows.front().values.push_back(std::move(count_value));
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, selected_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
-  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
   result.mga_statement_context = request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
+    const CanonicalDescriptorCountRequest& request) {
+  return ExecuteCanonicalDescriptorCountStarBound(
+      request, request.physical_dag, request.input_batch,
+      request.count_column, false, false);
+}
+
+CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
+    const CanonicalDescriptorCountRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalDescriptorCountStarBound(
+      request, borrowed_execution_dag, borrowed_input_batch,
+      request.count_column, true, false);
+}
+
+CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
+    const CanonicalDescriptorCountRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const ExecutorColumnDescriptor& borrowed_count_column) {
+  return ExecuteCanonicalDescriptorCountStarBound(
+      request, borrowed_execution_dag, borrowed_input_batch,
+      borrowed_count_column, true, true);
 }
 
 // QOW-SOURCE-QRY-011-REGISTRY-V1
@@ -3980,9 +4095,39 @@ struct CanonicalAggregateExecutionMemoryScope {
   std::optional<std::size_t> maximum_final_output_bytes;
 };
 
+static bool CanonicalAggregateRuntimeImplementationMatches(
+    const std::string_view implementation_id,
+    const detail::CanonicalAggregateRuntimeExecutionContext context) {
+  using Context = detail::CanonicalAggregateRuntimeExecutionContext;
+  switch (context) {
+    case Context::ordinary_non_window:
+      return implementation_id == "aggregate.registry-core.v1" ||
+             implementation_id == "aggregate.registry.serial.v1" ||
+             implementation_id == "aggregate.registry-state-spill.v1" ||
+             implementation_id == "aggregate.registry-grouping-sets.v1" ||
+             implementation_id ==
+                 "aggregate.registry-grouping-sets-state-spill.v1";
+    case Context::state_exchange:
+      return implementation_id == "aggregate.registry-state-exchange.v1";
+    case Context::window_frame_recompute:
+      return implementation_id ==
+             "window.aggregate-registry-frame-recompute.v1";
+    case Context::window_moving_inverse:
+      return implementation_id ==
+             "window.aggregate-registry-moving-inverse.v1";
+    case Context::window_state_spill:
+      return implementation_id ==
+             "window.aggregate-registry-state-spill.v1";
+  }
+  return false;
+}
+
 static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
     const CanonicalAggregateRuntimeRequest& request,
-    const bool state_exchange_execution_context,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers,
+    const detail::CanonicalAggregateRuntimeExecutionContext context,
     const CanonicalAggregateExecutionMemoryScope memory_scope = {}) {
   CanonicalAggregateRuntimeResult result;
   result.descriptor = request.descriptor;
@@ -3993,6 +4138,13 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
     result.diagnostic = std::move(diagnostic);
     return result;
   };
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(request.input_batch))) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-PHYSICAL-V1",
+        "aggregate request carries conflicting owned execution carriers"));
+  }
 
   const auto* entry = LookupCanonicalAggregateExactV1(
       request.descriptor.abi_version, request.descriptor.function,
@@ -4019,19 +4171,19 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   }
 
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id) {
+          execution_dag.root_physical_node_id) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "selected aggregate node is not the root"));
   }
   const PhysicalNodeRecord* aggregate_node = nullptr;
   const PhysicalNodeRecord* input_node = nullptr;
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == request.selected_physical_node_id) {
       aggregate_node = &node;
     }
@@ -4045,6 +4197,9 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   const bool state_exchange_selected =
       aggregate_node->implementation_id ==
       "aggregate.registry-state-exchange.v1";
+  const bool state_exchange_execution_context =
+      context ==
+      detail::CanonicalAggregateRuntimeExecutionContext::state_exchange;
   if (state_exchange_selected != state_exchange_execution_context) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-STRATEGY-V1",
@@ -4052,7 +4207,14 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
             ? "selected aggregate state exchange requires the exchange runtime"
             : "aggregate state exchange payload does not match the selected implementation"));
   }
-  for (const auto& node : request.physical_dag.nodes) {
+  if (!CanonicalAggregateRuntimeImplementationMatches(
+          aggregate_node->implementation_id, context)) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-PHYSICAL-V1",
+        "selected aggregate implementation does not match its canonical "
+        "runtime context"));
+  }
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
         aggregate_node->input_physical_node_ids.front()) {
       input_node = &node;
@@ -4067,11 +4229,11 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
                           "aggregate input or result handle is unresolved"));
   }
   auto input_validation = ValidateCanonicalDescriptorBatch(
-      request.input_batch, input_node->output_descriptor_ids);
+      execution_input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
 
   const auto node_memory_grant =
-      AggregateNodeMemoryGrant(request.physical_dag, *aggregate_node);
+      AggregateNodeMemoryGrant(execution_dag, *aggregate_node);
   std::size_t input_payload_bytes = 0;
   std::size_t filter_memory_bytes = 0;
   if (!node_memory_grant.has_value() ||
@@ -4085,7 +4247,7 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   const auto retained_memory_bytes =
       request.retained_memory_bytes + memory_scope.retained_memory_bytes;
   if (!node_memory_grant.has_value() ||
-      !AggregateBatchPayloadBytes(request.input_batch,
+      !AggregateBatchPayloadBytes(execution_input_batch,
                                   &input_payload_bytes) ||
       (request.filter_truth_values.has_value() &&
        !CheckedAggregateFinalizationMultiply(
@@ -4170,8 +4332,8 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   }
   for (std::size_t index = 0; index < request.value_columns.size(); ++index) {
     const auto column = request.value_columns[index];
-    if (column >= request.input_batch.columns.size() ||
-        request.input_batch.columns[column].descriptor_id !=
+    if (column >= execution_input_batch.columns.size() ||
+        execution_input_batch.columns[column].descriptor_id !=
             request.value_expression_descriptor_ids[index]) {
       return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                             "aggregate value expression handle is unresolved"));
@@ -4187,12 +4349,14 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   }
   if (request.maximum_transition_count == 0 ||
       request.maximum_state_bytes == 0 || maximum_state_bytes == 0 ||
-      request.input_batch.rows.size() > request.maximum_transition_count) {
+      execution_input_batch.rows.size() >
+          request.maximum_transition_count) {
     return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                           "aggregate transition, state, or finalization bound is exceeded"));
   }
   if (request.filter_truth_values.has_value() &&
-      request.filter_truth_values->size() != request.input_batch.rows.size()) {
+      request.filter_truth_values->size() !=
+          execution_input_batch.rows.size()) {
     return refuse(Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
                           "aggregate FILTER cardinality is not bound"));
   }
@@ -4217,12 +4381,12 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
                           "aggregate order-term bound is exceeded"));
   }
   for (const auto& term : request.aggregate_order_terms) {
-    if (term.column >= request.input_batch.columns.size()) {
+    if (term.column >= execution_input_batch.columns.size()) {
       return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                             "aggregate order term column is unresolved"));
     }
     auto validation = ValidateCanonicalDescriptorOrderTerm(
-        term, request.input_batch.columns[term.column]);
+        term, execution_input_batch.columns[term.column]);
     if (!validation.ok) return refuse(std::move(validation));
   }
   const auto function = request.descriptor.function;
@@ -4277,16 +4441,18 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   }
 
   DescriptorRuntimeDiagnostic type_diagnostic;
-  if (!ValidateCanonicalAggregateInputType(request, &type_diagnostic)) {
+  if (!ValidateCanonicalAggregateInputType(
+          request, execution_input_batch, &type_diagnostic)) {
     return refuse(std::move(type_diagnostic));
   }
-  if (!ValidateCanonicalAggregateResultType(request, &type_diagnostic)) {
+  if (!ValidateCanonicalAggregateResultType(
+          request, execution_input_batch, &type_diagnostic)) {
     return refuse(std::move(type_diagnostic));
   }
 
   PreparedAggregateTransitions prepared;
   DescriptorRuntimeDiagnostic state_diagnostic;
-  if (!PrepareCanonicalAggregateTransitions(request,
+  if (!PrepareCanonicalAggregateTransitions(request, execution_input_batch,
                                             memory_after_fixed_inputs,
                                             &prepared,
                                             &state_diagnostic)) {
@@ -4318,7 +4484,8 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
       maximum_state_bytes,
       memory_after_fixed_inputs - prepared.retained_bytes);
   if (!BuildCanonicalAggregateCoreState(
-          request, prepared.transitions, live_state_limit, &state,
+          request, execution_input_batch, prepared.transitions,
+          live_state_limit, &state,
           &state_diagnostic)) {
     return refuse(std::move(state_diagnostic));
   }
@@ -4347,7 +4514,7 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
       result.output_batch, aggregate_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
@@ -4367,7 +4534,7 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   result.authority.owns_parser_execution = false;
   result.authority.owns_visibility_outside_engine_mga = false;
   result.authority.wal_is_transaction_or_recovery_authority = false;
-  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = aggregate_node->physical_node_id;
   result.causal_counter_id = aggregate_node->causal_counter_id;
   result.mga_statement_context = request.mga_authority.statement_context;
@@ -4376,7 +4543,20 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
 
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request) {
-  return ExecuteCanonicalAggregateRuntimeSelected(request, false, {});
+  return ExecuteCanonicalAggregateRuntimeSelected(
+      request, request.physical_dag, request.input_batch, false,
+      detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
+      {});
+}
+
+CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
+    const CanonicalAggregateRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalAggregateRuntimeSelected(
+      request, borrowed_execution_dag, borrowed_input_batch, true,
+      detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
+      {});
 }
 
 CanonicalAggregateRuntimeResult
@@ -4384,7 +4564,33 @@ ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
     const CanonicalAggregateRuntimeRequest& request,
     const std::size_t exact_final_output_ceiling) {
   return ExecuteCanonicalAggregateRuntimeSelected(
-      request, false, {0, exact_final_output_ceiling});
+      request, request.physical_dag, request.input_batch, false,
+      detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
+      {0, exact_final_output_ceiling});
+}
+
+CanonicalAggregateRuntimeResult
+ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
+    const CanonicalAggregateRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::size_t exact_final_output_ceiling) {
+  return ExecuteCanonicalAggregateRuntimeSelected(
+      request, borrowed_execution_dag, borrowed_input_batch, true,
+      detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
+      {0, exact_final_output_ceiling});
+}
+
+CanonicalAggregateRuntimeResult
+detail::ExecuteCanonicalAggregateRuntimeBorrowedForContext(
+    const CanonicalAggregateRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const detail::CanonicalAggregateRuntimeExecutionContext context,
+    const std::optional<std::size_t> exact_final_output_ceiling) {
+  return ExecuteCanonicalAggregateRuntimeSelected(
+      request, borrowed_execution_dag, borrowed_input_batch, true, context,
+      {0, exact_final_output_ceiling});
 }
 
 // QOW-SOURCE-QRY-011-REGISTRY-STATE-SPILL-V1
@@ -4393,8 +4599,12 @@ ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
 // the ordinary canonical finalizer. The optimizer-selected physical node and
 // exact MGA/security/recheck contract govern the route; temporary metadata
 // never owns row visibility, transaction finality, or recovery.
-CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
-    const CanonicalAggregateStateSpillRequest& request) {
+static CanonicalAggregateStateSpillResult
+ExecuteCanonicalAggregateStateSpillSelected(
+    const CanonicalAggregateStateSpillRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   CanonicalAggregateStateSpillResult result;
   const auto refuse = [&](std::string code, std::string detail) {
     result.diagnostic.ok = false;
@@ -4406,28 +4616,24 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
     return result;
   };
 
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(
+           request.aggregate_request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(
+           request.aggregate_request.input_batch))) {
+    return refuse(
+        "QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-AUTHORITY-V1",
+        "aggregate spill request carries conflicting owned execution carriers");
+  }
+
   const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.aggregate_request.mga_authority,
-      request.aggregate_request.physical_dag);
+      request.aggregate_request.mga_authority, execution_dag);
   if (!entry_authority.ok) {
     return refuse(entry_authority.diagnostic_code, entry_authority.detail);
   }
 
-  auto baseline = ExecuteCanonicalAggregateRuntimeSelected(
-      request.aggregate_request, false,
-      {request.retained_memory_bytes, std::nullopt});
-  if (!baseline.diagnostic.ok) {
-    return refuse(baseline.diagnostic.diagnostic_code,
-                  baseline.diagnostic.detail);
-  }
-  if (!PhysicalMgaStatementContextEqual(
-          baseline.mga_statement_context,
-          request.aggregate_request.mga_authority.statement_context)) {
-    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-MGA-V1",
-                  "aggregate spill baseline returned a different MGA statement context");
-  }
   const PhysicalNodeRecord* selected_node = nullptr;
-  for (const auto& node : request.aggregate_request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
         request.aggregate_request.selected_physical_node_id) {
       selected_node = &node;
@@ -4441,12 +4647,33 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
            "window.aggregate-registry-state-spill.v1" &&
        selected_node->implementation_id !=
            "aggregate.registry-grouping-sets-state-spill.v1") ||
-      !request.aggregate_request.physical_dag.spill_allowed) {
+      !execution_dag.spill_allowed) {
     return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-STRATEGY-V1",
                   "aggregate state spill was not selected and permitted by the physical plan");
   }
+  const auto runtime_context =
+      selected_node->implementation_id ==
+              "window.aggregate-registry-state-spill.v1"
+          ? detail::CanonicalAggregateRuntimeExecutionContext::
+                window_state_spill
+          : detail::CanonicalAggregateRuntimeExecutionContext::
+                ordinary_non_window;
+  auto baseline = ExecuteCanonicalAggregateRuntimeSelected(
+      request.aggregate_request, execution_dag, execution_input_batch,
+      borrowed_execution_carriers, runtime_context,
+      {request.retained_memory_bytes, std::nullopt});
+  if (!baseline.diagnostic.ok) {
+    return refuse(baseline.diagnostic.diagnostic_code,
+                  baseline.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          baseline.mga_statement_context,
+          request.aggregate_request.mga_authority.statement_context)) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-MGA-V1",
+                  "aggregate spill baseline returned a different MGA statement context");
+  }
   const auto node_memory_grant = AggregateNodeMemoryGrant(
-      request.aggregate_request.physical_dag, *selected_node);
+      execution_dag, *selected_node);
   if (request.retained_memory_bytes >
       std::numeric_limits<std::size_t>::max() -
           request.aggregate_request.retained_memory_bytes) {
@@ -4472,7 +4699,7 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
       enclosing_retained_memory_bytes + filter_memory_bytes;
   std::size_t input_payload_bytes = 0;
   if (!node_memory_grant.has_value() ||
-      !AggregateBatchPayloadBytes(request.aggregate_request.input_batch,
+      !AggregateBatchPayloadBytes(execution_input_batch,
                                   &input_payload_bytes) ||
       combined_retained_memory_bytes > *node_memory_grant ||
       input_payload_bytes >
@@ -4543,18 +4770,19 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
 
   PreparedAggregateTransitions prepared;
   DescriptorRuntimeDiagnostic state_diagnostic;
-  if (!PrepareCanonicalAggregateTransitions(request.aggregate_request,
-                                            replay_state_limit,
-                                            &prepared,
-                                            &state_diagnostic)) {
+  if (!PrepareCanonicalAggregateTransitions(
+          request.aggregate_request, execution_input_batch,
+          replay_state_limit,
+          &prepared, &state_diagnostic)) {
     return refuse(state_diagnostic.diagnostic_code, state_diagnostic.detail);
   }
   CanonicalAggregateCoreState state;
   if (prepared.retained_bytes > replay_state_limit ||
       !BuildCanonicalAggregateCoreState(
-          request.aggregate_request, prepared.transitions,
+          request.aggregate_request, execution_input_batch,
+          prepared.transitions,
           replay_state_limit - prepared.retained_bytes, &state,
-                                        &state_diagnostic)) {
+          &state_diagnostic)) {
     return refuse(state_diagnostic.diagnostic_code, state_diagnostic.detail);
   }
   const auto serialized_source_state_bytes =
@@ -4840,8 +5068,7 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
   restored.peak_finalization_workspace_bytes =
       finalization_receipt.peak_workspace_bytes;
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.aggregate_request.mga_authority,
-      request.aggregate_request.physical_dag);
+      request.aggregate_request.mga_authority, execution_dag);
   if (!result_authority.ok) {
     return refuse(result_authority.diagnostic_code, result_authority.detail);
   }
@@ -4854,6 +5081,21 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
   return result;
 }
 
+CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
+    const CanonicalAggregateStateSpillRequest& request) {
+  return ExecuteCanonicalAggregateStateSpillSelected(
+      request, request.aggregate_request.physical_dag,
+      request.aggregate_request.input_batch, false);
+}
+
+CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
+    const CanonicalAggregateStateSpillRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalAggregateStateSpillSelected(
+      request, borrowed_execution_dag, borrowed_input_batch, true);
+}
+
 // QOW-SOURCE-QRY-011-REGISTRY-STATE-EXCHANGE-V1
 // Materialize one complete transition state per optimizer-bound worker,
 // serialize each state across an explicit exchange boundary, restore it at
@@ -4861,8 +5103,12 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
 // authority used by serial, local-combine, spill, grouped, and window routes.
 // The exchange carries no transaction-finality, recovery, visibility, or
 // parser-execution authority of its own.
-CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
-    const CanonicalAggregateStateExchangeRequest& request) {
+static CanonicalAggregateStateExchangeResult
+ExecuteCanonicalAggregateStateExchangeSelected(
+    const CanonicalAggregateStateExchangeRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   CanonicalAggregateStateExchangeResult result;
   const auto refuse = [&](std::string code, std::string detail) {
     result.diagnostic.ok = false;
@@ -4876,9 +5122,18 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     return result;
   };
 
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(
+           request.aggregate_request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(
+           request.aggregate_request.input_batch))) {
+    return refuse(
+        "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-AUTHORITY-V1",
+        "aggregate exchange request carries conflicting owned execution carriers");
+  }
+
   const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.aggregate_request.mga_authority,
-      request.aggregate_request.physical_dag);
+      request.aggregate_request.mga_authority, execution_dag);
   if (!entry_authority.ok) {
     return refuse(entry_authority.diagnostic_code, entry_authority.detail);
   }
@@ -4921,7 +5176,9 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   }
 
   auto baseline = ExecuteCanonicalAggregateRuntimeSelected(
-      request.aggregate_request, true, {});
+      request.aggregate_request, execution_dag, execution_input_batch,
+      borrowed_execution_carriers,
+      detail::CanonicalAggregateRuntimeExecutionContext::state_exchange, {});
   if (!baseline.diagnostic.ok) {
     return refuse(baseline.diagnostic.diagnostic_code,
                   baseline.diagnostic.detail);
@@ -4934,48 +5191,60 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   }
 
   const auto selected_node = std::ranges::find_if(
-      request.aggregate_request.physical_dag.nodes,
+      execution_dag.nodes,
       [&](const auto& node) {
         return node.physical_node_id ==
                request.aggregate_request.selected_physical_node_id;
       });
   std::size_t input_payload_bytes = 0;
-  if (selected_node == request.aggregate_request.physical_dag.nodes.end() ||
-      !AggregateBatchPayloadBytes(request.aggregate_request.input_batch,
-                                  &input_payload_bytes)) {
+  std::size_t filter_memory_bytes = 0;
+  std::size_t transition_ordinal_memory_bytes = 0;
+  if (selected_node == execution_dag.nodes.end() ||
+      !AggregateBatchPayloadBytes(execution_input_batch,
+                                  &input_payload_bytes) ||
+      (request.aggregate_request.filter_truth_values.has_value() &&
+       !CheckedAggregateFinalizationMultiply(
+           request.aggregate_request.filter_truth_values->size(),
+           sizeof(scratchbird::engine::internal_api::EngineSqlTruthValue),
+           &filter_memory_bytes)) ||
+      !CheckedAggregateFinalizationMultiply(
+          baseline.transition_row_indices.capacity(), sizeof(std::size_t),
+          &transition_ordinal_memory_bytes)) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                   "aggregate exchange selected-node grant is unresolved");
   }
   const auto node_memory_grant = AggregateNodeMemoryGrant(
-      request.aggregate_request.physical_dag, *selected_node);
+      execution_dag, *selected_node);
   if (!node_memory_grant.has_value() ||
       request.aggregate_request.retained_memory_bytes >
           *node_memory_grant ||
       input_payload_bytes >
           *node_memory_grant -
               request.aggregate_request.retained_memory_bytes ||
+      filter_memory_bytes >
+          *node_memory_grant -
+              request.aggregate_request.retained_memory_bytes -
+              input_payload_bytes ||
       baseline.final_output_bytes >
           *node_memory_grant -
               request.aggregate_request.retained_memory_bytes -
-              input_payload_bytes) {
+              input_payload_bytes - filter_memory_bytes ||
+      transition_ordinal_memory_bytes >
+          *node_memory_grant -
+              request.aggregate_request.retained_memory_bytes -
+              input_payload_bytes - filter_memory_bytes -
+              baseline.final_output_bytes) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                   "aggregate exchange selected-node grant is exhausted");
   }
   const auto exchange_fixed_memory =
       request.aggregate_request.retained_memory_bytes +
-      input_payload_bytes + baseline.final_output_bytes;
-  PreparedAggregateTransitions prepared;
+      input_payload_bytes + filter_memory_bytes + baseline.final_output_bytes +
+      transition_ordinal_memory_bytes;
   DescriptorRuntimeDiagnostic state_diagnostic;
-  if (!PrepareCanonicalAggregateTransitions(
-          request.aggregate_request,
-          *node_memory_grant - exchange_fixed_memory,
-                                            &prepared,
-                                            &state_diagnostic)) {
-    return refuse(state_diagnostic.diagnostic_code, state_diagnostic.detail);
-  }
   const auto maximum_state_bytes = std::min(
       request.aggregate_request.maximum_state_bytes,
-      *node_memory_grant - exchange_fixed_memory - prepared.retained_bytes);
+      *node_memory_grant - exchange_fixed_memory);
 
   struct ExchangedPartialState {
     std::uint64_t generation = 0;
@@ -4989,8 +5258,9 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   result.worker_state_bytes.reserve(worker_count);
   result.worker_serialized_state_bytes.reserve(worker_count);
 
-  const auto base_partition_size = prepared.transitions.size() / worker_count;
-  const auto extra_partition_count = prepared.transitions.size() % worker_count;
+  const auto& canonical_transitions = baseline.transition_row_indices;
+  const auto base_partition_size = canonical_transitions.size() / worker_count;
+  const auto extra_partition_count = canonical_transitions.size() % worker_count;
   std::size_t partition_begin = 0;
   for (std::size_t worker = 0; worker < worker_count; ++worker) {
     const auto partition_size =
@@ -4999,7 +5269,7 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     CanonicalAggregateCoreState partial_state;
     const auto live_partial_capacity_limit =
         *node_memory_grant - exchange_fixed_memory -
-        prepared.retained_bytes - result.serialized_state_bytes;
+        result.serialized_state_bytes;
     if (!ReserveCanonicalAggregateCoreState(
             request.aggregate_request.descriptor, partition_size,
             std::min(maximum_state_bytes, live_partial_capacity_limit),
@@ -5011,23 +5281,19 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
          transition < partition_end; ++transition) {
       const auto live_partial_state_limit =
           *node_memory_grant - exchange_fixed_memory -
-          prepared.retained_bytes - result.serialized_state_bytes;
+          result.serialized_state_bytes;
       if (!TransitionCanonicalAggregateCoreBounded(
               request.aggregate_request.descriptor,
               BindAggregateTransitionValues(
-                  request.aggregate_request,
-                  prepared.transitions[transition]),
+                  request.aggregate_request, execution_input_batch,
+                  canonical_transitions[transition]),
               live_partial_state_limit, &partial_state,
               &state_diagnostic)) {
         return refuse(state_diagnostic.diagnostic_code,
                       state_diagnostic.detail);
       }
-      if (prepared.retained_bytes >
-              *node_memory_grant - exchange_fixed_memory ||
-          EstimateCanonicalAggregateStateBytes(partial_state) >
-              std::min(maximum_state_bytes,
-                       *node_memory_grant - exchange_fixed_memory -
-                           prepared.retained_bytes)) {
+      if (EstimateCanonicalAggregateStateBytes(partial_state) >
+          maximum_state_bytes) {
         return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                       "aggregate exchange partial-state byte bound is exceeded");
       }
@@ -5038,11 +5304,10 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     const auto partial_state_bytes =
         EstimateCanonicalAggregateStateBytes(partial_state);
     if (result.serialized_state_bytes >
-            *node_memory_grant - exchange_fixed_memory -
-                prepared.retained_bytes ||
+            *node_memory_grant - exchange_fixed_memory ||
         partial_state_bytes >
             *node_memory_grant - exchange_fixed_memory -
-                prepared.retained_bytes - result.serialized_state_bytes) {
+                result.serialized_state_bytes) {
       return refuse(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
           "aggregate exchange worker state exhausted the selected-node grant");
@@ -5050,7 +5315,7 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     const auto live_serialized_state_limit = std::min(
         request.maximum_serialized_state_bytes_per_worker,
         *node_memory_grant - exchange_fixed_memory -
-            prepared.retained_bytes - result.serialized_state_bytes -
+            result.serialized_state_bytes -
             partial_state_bytes);
     if (!SerializeCanonicalAggregateCoreState(
             request.aggregate_request, partial_state,
@@ -5070,15 +5335,12 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
           "combined aggregate exchange state byte bound is exceeded");
     }
     if (result.serialized_state_bytes >
-            *node_memory_grant - exchange_fixed_memory -
-                prepared.retained_bytes ||
+            *node_memory_grant - exchange_fixed_memory ||
         serialized.size() >
             *node_memory_grant - exchange_fixed_memory -
-                prepared.retained_bytes -
                 result.serialized_state_bytes ||
         partial_state_bytes >
             *node_memory_grant - exchange_fixed_memory -
-                prepared.retained_bytes -
                 result.serialized_state_bytes - serialized.size()) {
       return refuse(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
@@ -5094,13 +5356,11 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
                          request.aggregate_request.descriptor.function,
                          std::move(serialized)});
   }
-  if (partition_begin != prepared.transitions.size()) {
+  if (partition_begin != canonical_transitions.size()) {
     return refuse(
         "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-PARTITION-V1",
         "aggregate exchange partitions do not cover the prepared transitions");
   }
-  std::vector<std::size_t>().swap(prepared.transitions);
-  prepared.retained_bytes = 0;
   result.partial_state_count = exchanged.size();
   result.states_serialized = true;
 
@@ -5211,7 +5471,6 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   }
   const auto merged_state_bytes =
       EstimateCanonicalAggregateStateBytes(merged_state);
-  std::vector<std::size_t>().swap(prepared.transitions);
   decltype(exchanged)().swap(exchanged);
   if (merged_state_bytes >
       *node_memory_grant - exchange_fixed_memory) {
@@ -5270,8 +5529,7 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   merged.peak_finalization_workspace_bytes =
       finalization_receipt.peak_workspace_bytes;
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.aggregate_request.mga_authority,
-      request.aggregate_request.physical_dag);
+      request.aggregate_request.mga_authority, execution_dag);
   if (!result_authority.ok) {
     return refuse(result_authority.diagnostic_code, result_authority.detail);
   }
@@ -5284,8 +5542,24 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   return result;
 }
 
+CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
+    const CanonicalAggregateStateExchangeRequest& request) {
+  return ExecuteCanonicalAggregateStateExchangeSelected(
+      request, request.aggregate_request.physical_dag,
+      request.aggregate_request.input_batch, false);
+}
+
+CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
+    const CanonicalAggregateStateExchangeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalAggregateStateExchangeSelected(
+      request, borrowed_execution_dag, borrowed_input_batch, true);
+}
+
 CanonicalAggregateRuntimeRequest CloneCanonicalAggregateRequestWithoutRows(
-    const CanonicalAggregateRuntimeRequest& source);
+    const CanonicalAggregateRuntimeRequest& source,
+    bool copy_execution_carriers = true);
 
 // QOW-SOURCE-QRY-011-REGISTRY-MOVING-INVERSE-V1
 // Maintain one exact COUNT/SUM/AVG state across an ordered sequence of window
@@ -5293,8 +5567,12 @@ CanonicalAggregateRuntimeRequest CloneCanonicalAggregateRequestWithoutRows(
 // explicitly admitted inverse transition, and every output uses the same
 // canonical finalizer.  Unsupported functions and modifiers fail closed
 // rather than relabelling frame recomputation as inverse execution.
-CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
-    const CanonicalAggregateMovingRuntimeRequest& request) {
+static CanonicalAggregateMovingRuntimeResult
+ExecuteCanonicalAggregateMovingRuntimeSelected(
+    const CanonicalAggregateMovingRuntimeRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   using scratchbird::engine::internal_api::EnginePredicateConsumer;
   using scratchbird::engine::internal_api::QowPredicateConsumerPassesV1;
 
@@ -5310,8 +5588,15 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     return result;
   };
   const auto& aggregate = request.aggregate_request;
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(aggregate.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(aggregate.input_batch))) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-INVERSE-AUTHORITY-V1",
+        "moving aggregate request carries conflicting owned execution carriers"));
+  }
   const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
-      aggregate.mga_authority, aggregate.physical_dag);
+      aggregate.mga_authority, execution_dag);
   if (!entry_authority.ok) return refuse(entry_authority);
   const auto* entry = LookupCanonicalAggregateExactV1(
       aggregate.descriptor.abi_version, aggregate.descriptor.function,
@@ -5349,13 +5634,13 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   if (aggregate.descriptor.function == CanonicalAggregateFunction::sum ||
       aggregate.descriptor.function == CanonicalAggregateFunction::avg) {
     if (aggregate.value_columns.size() != 1 ||
-        aggregate.value_columns.front() >= aggregate.input_batch.columns.size()) {
+        aggregate.value_columns.front() >= execution_input_batch.columns.size()) {
       return refuse(Refusal(
           "QOW-DIAG-QRY-011-REGISTRY-INVERSE-TYPE-V1",
           "moving SUM and AVG inverse state requires one numeric input"));
     }
     const auto& value_descriptor =
-        aggregate.input_batch.columns[aggregate.value_columns.front()]
+        execution_input_batch.columns[aggregate.value_columns.front()]
             .descriptor;
     if (!IsCanonicalBoundedSignedIntegerDescriptor(value_descriptor) &&
         value_descriptor.canonical_type_name != "real64") {
@@ -5366,26 +5651,33 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     }
   }
   if (aggregate.filter_truth_values.has_value() &&
-      aggregate.filter_truth_values->size() != aggregate.input_batch.rows.size()) {
+      aggregate.filter_truth_values->size() != execution_input_batch.rows.size()) {
     return refuse(Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
                           "moving aggregate FILTER cardinality is not bound"));
   }
   std::vector<std::uint32_t> input_descriptor_ids;
-  input_descriptor_ids.reserve(aggregate.input_batch.columns.size());
-  for (const auto& column : aggregate.input_batch.columns) {
+  input_descriptor_ids.reserve(execution_input_batch.columns.size());
+  for (const auto& column : execution_input_batch.columns) {
     input_descriptor_ids.push_back(column.descriptor_id);
   }
   auto input_validation = ValidateCanonicalDescriptorBatch(
-      aggregate.input_batch, input_descriptor_ids);
+      execution_input_batch, input_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
   const auto aggregate_node = std::ranges::find_if(
-      aggregate.physical_dag.nodes, [&](const auto& node) {
+      execution_dag.nodes, [&](const auto& node) {
         return node.physical_node_id == aggregate.selected_physical_node_id;
       });
+  if (aggregate_node == execution_dag.nodes.end() ||
+      aggregate_node->node_kind != PhysicalNodeKind::kAggregate ||
+      aggregate_node->implementation_id !=
+          "window.aggregate-registry-moving-inverse.v1") {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-INVERSE-AUTHORITY-V1",
+        "moving aggregate selected physical implementation is not exact"));
+  }
   std::size_t input_payload_bytes = 0;
   std::size_t filter_memory_bytes = 0;
-  if (aggregate_node == aggregate.physical_dag.nodes.end() ||
-      !AggregateBatchPayloadBytes(aggregate.input_batch,
+  if (!AggregateBatchPayloadBytes(execution_input_batch,
                                   &input_payload_bytes) ||
       (aggregate.filter_truth_values.has_value() &&
        !CheckedAggregateFinalizationMultiply(
@@ -5397,7 +5689,7 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
         "moving aggregate selected-node memory grant is unresolved"));
   }
   const auto node_memory_grant =
-      AggregateNodeMemoryGrant(aggregate.physical_dag, *aggregate_node);
+      AggregateNodeMemoryGrant(execution_dag, *aggregate_node);
   if (!node_memory_grant.has_value() ||
       aggregate.retained_memory_bytes > *node_memory_grant ||
       input_payload_bytes >
@@ -5430,7 +5722,7 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   for (const auto& frame : request.effective_frame_row_indices) {
     if (!std::is_sorted(frame.begin(), frame.end()) ||
         std::adjacent_find(frame.begin(), frame.end()) != frame.end() ||
-        (!frame.empty() && frame.back() >= aggregate.input_batch.rows.size())) {
+        (!frame.empty() && frame.back() >= execution_input_batch.rows.size())) {
       return refuse(Refusal(
           "QOW-DIAG-QRY-011-REGISTRY-INVERSE-FRAME-V1",
           "moving aggregate frame rows are not sorted unique input handles"));
@@ -5438,10 +5730,13 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   }
 
   auto preflight_request =
-      CloneCanonicalAggregateRequestWithoutRows(aggregate);
+      CloneCanonicalAggregateRequestWithoutRows(aggregate, false);
+  DescriptorBatch preflight_input_batch;
+  preflight_input_batch.columns = execution_input_batch.columns;
   auto preflight = ExecuteCanonicalAggregateRuntimeSelected(
-      preflight_request, false,
-      {input_payload_bytes + filter_memory_bytes, std::nullopt});
+      preflight_request, execution_dag, preflight_input_batch, true,
+      detail::CanonicalAggregateRuntimeExecutionContext::window_moving_inverse,
+      {input_payload_bytes - 1 + filter_memory_bytes, std::nullopt});
   if (!preflight.diagnostic.ok) {
     return refuse(preflight.diagnostic);
   }
@@ -5476,7 +5771,8 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     return true;
   };
   const auto transition_values = [&](const std::size_t row) {
-    return BindAggregateTransitionValues(aggregate, row);
+    return BindAggregateTransitionValues(
+        aggregate, execution_input_batch, row);
   };
   const auto within_total = [](const std::size_t next,
                                const std::size_t current,
@@ -5601,7 +5897,7 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     result.values.push_back(std::move(row.values.front()));
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      aggregate.mga_authority, aggregate.physical_dag);
+      aggregate.mga_authority, execution_dag);
   if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
@@ -5615,6 +5911,21 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   result.causal_counter_id = preflight.causal_counter_id;
   result.mga_statement_context = aggregate.mga_authority.statement_context;
   return result;
+}
+
+CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
+    const CanonicalAggregateMovingRuntimeRequest& request) {
+  return ExecuteCanonicalAggregateMovingRuntimeSelected(
+      request, request.aggregate_request.physical_dag,
+      request.aggregate_request.input_batch, false);
+}
+
+CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
+    const CanonicalAggregateMovingRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalAggregateMovingRuntimeSelected(
+      request, borrowed_execution_dag, borrowed_input_batch, true);
 }
 
 // QOW-SOURCE-QRY-011-GROUPING-EXPANSION-V1
@@ -5780,12 +6091,15 @@ ComputeCanonicalAggregateGroupingMetadata(
 }
 
 CanonicalAggregateRuntimeRequest CloneCanonicalAggregateRequestWithoutRows(
-    const CanonicalAggregateRuntimeRequest& source) {
+    const CanonicalAggregateRuntimeRequest& source,
+    const bool copy_execution_carriers) {
   CanonicalAggregateRuntimeRequest clone;
-  clone.physical_dag = source.physical_dag;
+  if (copy_execution_carriers) {
+    clone.physical_dag = source.physical_dag;
+    clone.input_batch.columns = source.input_batch.columns;
+  }
   clone.selected_physical_node_id = source.selected_physical_node_id;
   clone.descriptor = source.descriptor;
-  clone.input_batch.columns = source.input_batch.columns;
   clone.value_columns = source.value_columns;
   clone.value_expression_descriptor_ids =
       source.value_expression_descriptor_ids;
@@ -5830,11 +6144,13 @@ CanonicalAggregateRuntimeRequest CloneCanonicalAggregateRequestWithoutRows(
 static CanonicalGroupedAggregateRuntimeResult
 ExecuteCanonicalGroupedAggregateRuntimeSelected(
     const CanonicalGroupedAggregateRuntimeRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers,
     const bool spill_execution_context,
     const std::size_t retained_memory_bytes = 0,
     const std::optional<std::size_t> maximum_combined_output_override =
         std::nullopt,
-    const DescriptorBatch* shared_input_batch = nullptr,
     const std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>*
         shared_filter_truth_values = nullptr) {
   using scratchbird::engine::internal_api::EngineTypedValue;
@@ -5868,9 +6184,13 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   };
 
   const auto& aggregate = request.aggregate_request;
-  const auto& input_batch =
-      shared_input_batch == nullptr ? aggregate.input_batch
-                                    : *shared_input_batch;
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(aggregate.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(aggregate.input_batch))) {
+    return grouped_refusal(
+        "grouped aggregate request carries conflicting owned execution carriers");
+  }
+  const auto& input_batch = execution_input_batch;
   const auto* filter_truth_values =
       shared_filter_truth_values != nullptr
           ? shared_filter_truth_values
@@ -5910,19 +6230,19 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   }
 
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      aggregate.mga_authority, aggregate.physical_dag);
+      aggregate.mga_authority, execution_dag);
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
   if (aggregate.selected_physical_node_id == 0 ||
       aggregate.selected_physical_node_id !=
-          aggregate.physical_dag.root_physical_node_id) {
+          execution_dag.root_physical_node_id) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "selected grouped aggregate node is not the root"));
   }
   const PhysicalNodeRecord* aggregate_node = nullptr;
   const PhysicalNodeRecord* input_node = nullptr;
-  for (const auto& node : aggregate.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == aggregate.selected_physical_node_id) {
       aggregate_node = &node;
     }
@@ -5950,7 +6270,7 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
             ? "selected grouped state spill requires the spill runtime"
             : "grouped spill payload does not match the selected implementation");
   }
-  for (const auto& node : aggregate.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
         aggregate_node->input_physical_node_ids.front()) {
       input_node = &node;
@@ -5970,7 +6290,7 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
       input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
   const auto node_memory_grant =
-      AggregateNodeMemoryGrant(aggregate.physical_dag, *aggregate_node);
+      AggregateNodeMemoryGrant(execution_dag, *aggregate_node);
   std::size_t input_payload_bytes = 0;
   std::size_t source_filter_bytes = 0;
   if (!node_memory_grant.has_value() ||
@@ -6094,29 +6414,29 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   result.grouping_set_transition_count =
       row_count * request.grouping_sets.size();
 
-  const auto make_kernel_request = [&]() {
-    auto kernel_request =
-        CloneCanonicalAggregateRequestWithoutRows(aggregate);
-    // The grouped node's complete output was validated above.  Its internal
-    // registry-state kernel publishes only the aggregate field, so project
-    // that already-bound field while retaining the exact plan/node/MGA IDs.
-    for (auto& node : kernel_request.physical_dag.nodes) {
-      if (node.physical_node_id == kernel_request.selected_physical_node_id) {
-        node.output_descriptor_ids = {
-            kernel_request.result_column.descriptor_id};
-        break;
-      }
+  // The grouped node's complete output was validated above. Its internal
+  // registry-state kernel publishes only the aggregate field, so derive that
+  // physical view once and borrow it across synchronous preflight/group calls.
+  auto kernel_dag = execution_dag;
+  for (auto& node : kernel_dag.nodes) {
+    if (node.physical_node_id == aggregate.selected_physical_node_id) {
+      node.output_descriptor_ids = {aggregate.result_column.descriptor_id};
+      break;
     }
-    return kernel_request;
+  }
+  const auto make_kernel_request = [&]() {
+    return CloneCanonicalAggregateRequestWithoutRows(aggregate, false);
   };
   auto preflight_request = make_kernel_request();
-  preflight_request.input_batch.rows.clear();
+  DescriptorBatch preflight_input_batch;
+  preflight_input_batch.columns = input_batch.columns;
   if (preflight_request.filter_truth_values.has_value()) {
     preflight_request.filter_truth_values =
         std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>{};
   }
   auto preflight = ExecuteCanonicalAggregateRuntimeSelected(
-      preflight_request, false,
+      preflight_request, kernel_dag, preflight_input_batch, true,
+      detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
       {retained_memory_bytes + input_payload_bytes + source_filter_bytes,
        std::nullopt});
   if (!preflight.diagnostic.ok) {
@@ -6256,10 +6576,11 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   std::size_t retained_output_payload_bytes = 0;
   for (const auto& group : working_groups) {
     auto group_request = make_kernel_request();
+    DescriptorBatch group_input_batch;
+    group_input_batch.columns = input_batch.columns;
     const auto remaining_finalization_bytes =
         maximum_combined_final_output_bytes -
         result.combined_final_output_bytes;
-    group_request.input_batch.rows.clear();
     const auto copy_fixed_memory =
         retained_memory_bytes + aggregate.retained_memory_bytes +
         input_payload_bytes + source_filter_bytes;
@@ -6300,9 +6621,9 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
           "grouped aggregate input or FILTER copy exceeds the selected-node grant"));
     }
-    group_request.input_batch.rows.reserve(group.source_rows.size());
+    group_input_batch.rows.reserve(group.source_rows.size());
     for (const auto row : group.source_rows) {
-      group_request.input_batch.rows.push_back(input_batch.rows[row]);
+      group_input_batch.rows.push_back(input_batch.rows[row]);
     }
     if (filter_truth_values != nullptr) {
       std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>
@@ -6345,7 +6666,8 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
           "grouped aggregate retained output exhausted the selected-node grant"));
     }
     auto aggregate_result = ExecuteCanonicalAggregateRuntimeSelected(
-        group_request, false,
+        group_request, kernel_dag, group_input_batch, true,
+        detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
         {scope_retained_memory + retained_output_payload_bytes +
              group_key_payload_bytes,
          remaining_finalization_bytes});
@@ -6450,7 +6772,7 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
       result.output_batch, aggregate_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      aggregate.mga_authority, aggregate.physical_dag);
+      aggregate.mga_authority, execution_dag);
   if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
@@ -6463,7 +6785,7 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   result.authority.owns_parser_execution = false;
   result.authority.owns_visibility_outside_engine_mga = false;
   result.authority.wal_is_transaction_or_recovery_authority = false;
-  result.selected_plan_uuid = aggregate.physical_dag.selected_plan_uuid;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = aggregate_node->physical_node_id;
   result.causal_counter_id = aggregate_node->causal_counter_id;
   result.mga_statement_context = aggregate.mga_authority.statement_context;
@@ -6472,7 +6794,17 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
 
 CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
     const CanonicalGroupedAggregateRuntimeRequest& request) {
-  return ExecuteCanonicalGroupedAggregateRuntimeSelected(request, false, 0);
+  return ExecuteCanonicalGroupedAggregateRuntimeSelected(
+      request, request.aggregate_request.physical_dag,
+      request.aggregate_request.input_batch, false, false, 0);
+}
+
+CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
+    const CanonicalGroupedAggregateRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalGroupedAggregateRuntimeSelected(
+      request, borrowed_execution_dag, borrowed_input_batch, true, false, 0);
 }
 
 // QOW-SOURCE-QRY-011-GROUPED-SET-V1
@@ -6482,6 +6814,9 @@ CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
 static CanonicalGroupedAggregateSetRuntimeResult
 ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
     const CanonicalGroupedAggregateSetRuntimeRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers,
     const bool spill_execution_context,
     const std::size_t retained_memory_bytes = 0) {
   CanonicalGroupedAggregateSetRuntimeResult result;
@@ -6526,13 +6861,19 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
 
   const auto& first = request.first_aggregate;
   const auto& common = first.aggregate_request;
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(common.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(common.input_batch))) {
+    return set_refusal(
+        "grouped aggregate-set request carries conflicting owned execution carriers");
+  }
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      common.mga_authority, common.physical_dag);
+      common.mga_authority, execution_dag);
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
   const PhysicalNodeRecord* aggregate_node = nullptr;
-  for (const auto& node : common.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == common.selected_physical_node_id) {
       aggregate_node = &node;
       break;
@@ -6540,7 +6881,7 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
   }
   if (common.selected_physical_node_id == 0 ||
       common.selected_physical_node_id !=
-          common.physical_dag.root_physical_node_id ||
+          execution_dag.root_physical_node_id ||
       aggregate_node == nullptr ||
       aggregate_node->node_kind != PhysicalNodeKind::kAggregate ||
       aggregate_node->output_descriptor_ids.size() !=
@@ -6567,10 +6908,10 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
   }
 
   const auto node_memory_grant =
-      AggregateNodeMemoryGrant(common.physical_dag, *aggregate_node);
+      AggregateNodeMemoryGrant(execution_dag, *aggregate_node);
   std::size_t input_payload_bytes = 0;
   if (!node_memory_grant.has_value() ||
-      !AggregateBatchPayloadBytes(common.input_batch,
+      !AggregateBatchPayloadBytes(execution_input_batch,
                                   &input_payload_bytes) ||
       retained_memory_bytes > *node_memory_grant ||
       common.retained_memory_bytes >
@@ -6592,29 +6933,11 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
       &common};
   aggregate_specs.reserve(aggregate_count);
   const auto has_shadow_authority = [](const auto& specification) {
-    const auto& dag = specification.physical_dag;
     return specification.selected_physical_node_id != 0 ||
            specification.retained_memory_bytes != 0 ||
-           !specification.input_batch.columns.empty() ||
-           !specification.input_batch.rows.empty() || dag.abi_version != 1 ||
-           !dag.selected_plan_uuid.empty() || dag.root_physical_node_id != 0 ||
-           dag.local_transaction_id != 0 || dag.statement_snapshot_id != 0 ||
-           !dag.admission_evidence.empty() || !dag.nodes.empty() ||
-           !dag.bound_sblr_tree_uuid.empty() ||
-           !dag.catalog_epoch_uuid.empty() ||
-           !dag.security_context_uuid.empty() ||
-           !dag.capability_snapshot_uuid.empty() ||
-           !dag.resource_snapshot_uuid.empty() ||
-           !dag.statistics_snapshot_uuid.empty() ||
-           !dag.route_snapshot_uuid.empty() || dag.catalog_generation != 0 ||
-           dag.security_epoch != 0 || dag.policy_epoch != 0 ||
-           dag.resource_epoch != 0 || dag.statistics_generation != 0 ||
-           dag.route_epoch != 0 || dag.route_generation != 0 ||
-           dag.memory_budget_bytes != 0 || dag.spill_allowed ||
-           dag.optimizer_published || dag.immutable_node_identity_validated ||
-           dag.capability_validated_before_access || dag.data_access_observed ||
-           dag.parser_execution_authority_claimed ||
-           dag.transaction_finality_authority_claimed;
+           !TypedPhysicalNodeDagCarrierIsExactDefault(
+               specification.physical_dag) ||
+           !DescriptorBatchCarrierIsExactDefault(specification.input_batch);
   };
   for (const auto& specification : request.additional_aggregates) {
     if (has_shadow_authority(specification)) {
@@ -6622,7 +6945,7 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
           "additional aggregate carries shadow physical or input authority");
     }
     const auto additional_authority = RevalidateCanonicalExecutionMgaAuthority(
-        specification.mga_authority, common.physical_dag);
+        specification.mga_authority, execution_dag);
     if (!additional_authority.ok ||
         !PhysicalMgaStatementContextEqual(
             specification.mga_authority.statement_context,
@@ -6659,7 +6982,7 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
   for (const auto* specification : aggregate_specs) {
     if (!specification->filter_truth_values.has_value()) continue;
     if (specification->filter_truth_values->size() !=
-        common.input_batch.rows.size()) {
+        execution_input_batch.rows.size()) {
       return set_refusal(
           "aggregate-set FILTER cardinality is not bound to the common input");
     }
@@ -6715,16 +7038,14 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
         first.maximum_combined_final_output_bytes;
     grouped_request.maximum_output_rows = first.maximum_output_rows;
     grouped_request.aggregate_request =
-        CloneCanonicalAggregateRequestWithoutRows(*aggregate_specs[index]);
+        CloneCanonicalAggregateRequestWithoutRows(*aggregate_specs[index],
+                                                   false);
     if (aggregate_specs[index]->filter_truth_values.has_value()) {
       grouped_request.aggregate_request.filter_truth_values =
           std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>{};
     }
-    grouped_request.aggregate_request.physical_dag = common.physical_dag;
     grouped_request.aggregate_request.selected_physical_node_id =
         common.selected_physical_node_id;
-    grouped_request.aggregate_request.input_batch.columns =
-        common.input_batch.columns;
     grouped_request.aggregate_request.retained_memory_bytes =
         common.retained_memory_bytes;
     grouped_request.aggregate_request.mga_authority = common.mga_authority;
@@ -6741,7 +7062,8 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
           "aggregate-set current FILTER memory size overflowed"));
     }
-    for (auto& node : grouped_request.aggregate_request.physical_dag.nodes) {
+    auto grouped_execution_dag = execution_dag;
+    for (auto& node : grouped_execution_dag.nodes) {
       if (node.physical_node_id == common.selected_physical_node_id) {
         node.output_descriptor_ids.clear();
         for (const auto& column : first.group_result_columns) {
@@ -6753,10 +7075,11 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
       }
     }
     auto execution = ExecuteCanonicalGroupedAggregateRuntimeSelected(
-        grouped_request, spill_execution_context,
+        grouped_request, grouped_execution_dag, execution_input_batch, true,
+        spill_execution_context,
         retained_memory_bytes + retained_execution_payload_bytes +
             total_source_filter_bytes - current_source_filter_bytes,
-        remaining_final_output_bytes, &common.input_batch,
+        remaining_final_output_bytes,
         aggregate_specs[index]->filter_truth_values.has_value()
             ? &*aggregate_specs[index]->filter_truth_values
             : nullptr);
@@ -6907,7 +7230,7 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
       result.output_batch, aggregate_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      common.mga_authority, common.physical_dag);
+      common.mga_authority, execution_dag);
   if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
@@ -6921,7 +7244,7 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
   result.authority.owns_parser_execution = false;
   result.authority.owns_visibility_outside_engine_mga = false;
   result.authority.wal_is_transaction_or_recovery_authority = false;
-  result.selected_plan_uuid = common.physical_dag.selected_plan_uuid;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = aggregate_node->physical_node_id;
   result.causal_counter_id = aggregate_node->causal_counter_id;
   result.mga_statement_context = common.mga_authority.statement_context;
@@ -6931,8 +7254,18 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
 CanonicalGroupedAggregateSetRuntimeResult
 ExecuteCanonicalGroupedAggregateSetRuntime(
     const CanonicalGroupedAggregateSetRuntimeRequest& request) {
-  return ExecuteCanonicalGroupedAggregateSetRuntimeSelected(request, false,
-                                                             0);
+  return ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
+      request, request.first_aggregate.aggregate_request.physical_dag,
+      request.first_aggregate.aggregate_request.input_batch, false, false, 0);
+}
+
+CanonicalGroupedAggregateSetRuntimeResult
+ExecuteCanonicalGroupedAggregateSetRuntime(
+    const CanonicalGroupedAggregateSetRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
+      request, borrowed_execution_dag, borrowed_input_batch, true, false, 0);
 }
 
 // QOW-SOURCE-QRY-011-GROUPED-SET-STATE-SPILL-V1
@@ -6974,7 +7307,8 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
   }
 
   auto baseline = ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
-      request.grouped_request, true, 0);
+      request.grouped_request, entry_common.physical_dag,
+      entry_common.input_batch, false, true, 0);
   if (!baseline.diagnostic.ok) {
     return refuse(baseline.diagnostic.diagnostic_code,
                   baseline.diagnostic.detail);
@@ -7155,15 +7489,15 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
                       "grouped aggregate replay copy exceeds the selected-node grant");
       }
       auto aggregate =
-          CloneCanonicalAggregateRequestWithoutRows(source_aggregate);
-      aggregate.physical_dag = common.physical_dag;
+          CloneCanonicalAggregateRequestWithoutRows(source_aggregate, false);
       aggregate.selected_physical_node_id =
           common.selected_physical_node_id;
-      aggregate.input_batch.columns = common.input_batch.columns;
       aggregate.retained_memory_bytes = common.retained_memory_bytes;
-      aggregate.input_batch.rows.reserve(group.source_row_indices.size());
+      DescriptorBatch group_input_batch;
+      group_input_batch.columns = common.input_batch.columns;
+      group_input_batch.rows.reserve(group.source_row_indices.size());
       for (const auto row : group.source_row_indices) {
-        aggregate.input_batch.rows.push_back(common.input_batch.rows[row]);
+        group_input_batch.rows.push_back(common.input_batch.rows[row]);
       }
       if (full_filter != nullptr) {
         std::vector<EngineSqlTruthValue> group_filter;
@@ -7173,7 +7507,8 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
         }
         aggregate.filter_truth_values = std::move(group_filter);
       }
-      for (auto& node : aggregate.physical_dag.nodes) {
+      auto replay_execution_dag = common.physical_dag;
+      for (auto& node : replay_execution_dag.nodes) {
         if (node.physical_node_id == aggregate.selected_physical_node_id) {
           node.output_descriptor_ids = {
               aggregate.result_column.descriptor_id};
@@ -7201,7 +7536,8 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
           request.cleanup_after_cancellation;
       state_request.restart_recovery_proof_available =
           request.restart_recovery_proof_available;
-      auto state = ExecuteCanonicalAggregateStateSpill(state_request);
+      auto state = ExecuteCanonicalAggregateStateSpill(
+          state_request, replay_execution_dag, group_input_batch);
 
       result.spilled = result.spilled || state.spilled;
       result.spill_reopened = result.spill_reopened || state.spill_reopened;

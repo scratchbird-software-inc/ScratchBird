@@ -17,6 +17,19 @@
 
 namespace scratchbird::engine::sblr {
 
+#if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+// Shared engine-owned scalar comparison callback for canonical relational
+// consumers. Character and timezone-profile values remain behind catalog and
+// resource authority; core scalar values use the generic comparator.
+bool CompareCanonicalRelationalScalarsV1(
+    const scratchbird::engine::internal_api::EngineRequestContext& context,
+    const scratchbird::engine::internal_api::EngineTypedValue& left,
+    const scratchbird::engine::internal_api::EngineTypedValue& right,
+    int* comparison,
+    std::string* diagnostic_id,
+    std::string* refusal_detail);
+#endif
+
 struct CanonicalObjectFreeValuesExecutionRequest {
   scratchbird::engine::internal_api::EngineRequestContext context;
   scratchbird::engine::internal_api::TypedRelationalDag relational_dag;

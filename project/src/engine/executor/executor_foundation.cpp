@@ -9,6 +9,7 @@
 #include "executor_foundation.hpp"
 
 #include "descriptor_value_runtime.hpp"
+#include "aggregate_executor_internal.hpp"
 #include "temp_spill_executor.hpp"
 
 #include <algorithm>
@@ -54,6 +55,27 @@ bool IsCanonicalUuid(const std::string_view value) {
   return true;
 }
 
+std::string_view CanonicalBoundJoinImplementationId(
+    const CanonicalAcceptedJoinKind kind) {
+  switch (kind) {
+    case CanonicalAcceptedJoinKind::kCross:
+      return "join.cross.3vl.nested.v1";
+    case CanonicalAcceptedJoinKind::kInner:
+      return "join.inner.3vl.nested.v1";
+    case CanonicalAcceptedJoinKind::kLeftOuter:
+      return "join.left-outer.3vl.nested.v1";
+    case CanonicalAcceptedJoinKind::kRightOuter:
+      return "join.right-outer.3vl.nested.v1";
+    case CanonicalAcceptedJoinKind::kFullOuter:
+      return "join.full-outer.3vl.nested.v1";
+    case CanonicalAcceptedJoinKind::kLeftSemi:
+      return "join.left-semi.3vl.nested.v1";
+    case CanonicalAcceptedJoinKind::kLeftAnti:
+      return "join.left-anti.3vl.nested.v1";
+  }
+  return {};
+}
+
 std::optional<std::size_t> FoundationNodeMemoryGrant(
     const TypedPhysicalNodeDag& dag, const std::uint64_t node_id) {
   const auto node = std::ranges::find_if(
@@ -92,14 +114,152 @@ bool FoundationBatchPayloadBytes(const DescriptorBatch& batch,
   return true;
 }
 
+bool FoundationTuplePayloadBytes(const DescriptorTuple& tuple,
+                                 std::size_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = 0;
+  for (const auto& value : tuple.values) {
+    if (*bytes > std::numeric_limits<std::size_t>::max() -
+                     value.encoded_value.size()) {
+      return false;
+    }
+    *bytes += value.encoded_value.size();
+    if (*bytes > std::numeric_limits<std::size_t>::max() -
+                     value.binary_value.size()) {
+      return false;
+    }
+    *bytes += value.binary_value.size();
+  }
+  return true;
+}
+
+// SET memory receipts use the engine's deterministic logical-payload ABI:
+// retained encoded/binary bytes plus explicitly charged operator work state.
+// Materialized-batch carrier slots, descriptor/result-receipt metadata, and
+// implementation-dependent container links or allocator capacity are outside
+// this ABI, matching ordinary typed-operator payload observations. It does not
+// claim allocator/RSS exactness.
+struct FoundationSetMemoryLedger {
+  bool enforced = false;
+  std::size_t grant_bytes = 0;
+  std::size_t live_payload_bytes = 0;
+  std::size_t peak_payload_bytes = 0;
+  std::size_t live_structural_bytes = 0;
+  std::size_t peak_memory_bytes = 0;
+  std::string refusal_detail;
+
+  bool Observe(const std::size_t next_payload,
+               const std::size_t next_structural,
+               const std::string_view phase) {
+    if (next_structural >
+        std::numeric_limits<std::size_t>::max() - next_payload) {
+      refusal_detail =
+          "set-operation logical memory accounting overflowed " +
+          std::string(phase);
+      return false;
+    }
+    const auto next_memory = next_payload + next_structural;
+    if (next_memory > grant_bytes) {
+      refusal_detail =
+          "set-operation logical memory exceeded its selected-node grant " +
+          std::string(phase);
+      return false;
+    }
+    live_payload_bytes = next_payload;
+    live_structural_bytes = next_structural;
+    peak_payload_bytes = std::max(peak_payload_bytes, next_payload);
+    peak_memory_bytes = std::max(peak_memory_bytes, next_memory);
+    return true;
+  }
+
+  bool RetainPayload(const std::size_t bytes,
+                     const std::string_view phase) {
+    if (!enforced) return true;
+    if (bytes > std::numeric_limits<std::size_t>::max() -
+                    live_payload_bytes) {
+      refusal_detail =
+          "set-operation logical payload accounting overflowed " +
+          std::string(phase);
+      return false;
+    }
+    return Observe(live_payload_bytes + bytes, live_structural_bytes, phase);
+  }
+
+  bool ReplacePayload(const std::size_t old_bytes,
+                      const std::size_t new_bytes,
+                      const std::string_view phase) {
+    if (!enforced) return true;
+    if (old_bytes > live_payload_bytes ||
+        new_bytes > std::numeric_limits<std::size_t>::max() -
+                        live_payload_bytes) {
+      refusal_detail =
+          "set-operation logical payload replacement is invalid " +
+          std::string(phase);
+      return false;
+    }
+    const auto previous_payload_bytes = live_payload_bytes;
+    // The replacement value is materialized while the retained old value is
+    // still live. Observe that overlap before publishing the post-move state.
+    if (!Observe(previous_payload_bytes + new_bytes,
+                 live_structural_bytes, phase)) {
+      return false;
+    }
+    live_payload_bytes =
+        previous_payload_bytes - old_bytes + new_bytes;
+    return true;
+  }
+
+  bool ReleasePayload(const std::size_t bytes,
+                      const std::string_view phase) {
+    if (!enforced) return true;
+    if (bytes > live_payload_bytes) {
+      refusal_detail =
+          "set-operation logical payload accounting underflowed " +
+          std::string(phase);
+      return false;
+    }
+    live_payload_bytes -= bytes;
+    return true;
+  }
+
+  bool RetainStructural(const std::size_t bytes,
+                        const std::string_view phase) {
+    if (!enforced) return true;
+    if (bytes > std::numeric_limits<std::size_t>::max() -
+                    live_structural_bytes) {
+      refusal_detail =
+          "set-operation logical structural accounting overflowed " +
+          std::string(phase);
+      return false;
+    }
+    return Observe(live_payload_bytes, live_structural_bytes + bytes, phase);
+  }
+
+  bool ReleaseStructural(const std::size_t bytes,
+                         const std::string_view phase) {
+    if (!enforced) return true;
+    if (bytes > live_structural_bytes) {
+      refusal_detail =
+          "set-operation logical structural accounting underflowed " +
+          std::string(phase);
+      return false;
+    }
+    live_structural_bytes -= bytes;
+    return true;
+  }
+};
+
 CanonicalAggregateRuntimeRequest
 CloneFoundationAggregateRequestWithoutRowsOrFilter(
-    const CanonicalAggregateRuntimeRequest& source) {
+    const CanonicalAggregateRuntimeRequest& source,
+    const bool copy_execution_carriers = true) {
   CanonicalAggregateRuntimeRequest clone;
-  clone.physical_dag = source.physical_dag;
+  if (copy_execution_carriers) {
+    clone.physical_dag = source.physical_dag;
+    clone.input_batch.columns = source.input_batch.columns;
+  }
   clone.selected_physical_node_id = source.selected_physical_node_id;
   clone.descriptor = source.descriptor;
-  clone.input_batch.columns = source.input_batch.columns;
   clone.value_columns = source.value_columns;
   clone.value_expression_descriptor_ids =
       source.value_expression_descriptor_ids;
@@ -390,69 +550,6 @@ void RequireResolvedColumnHandles(
 }
 
 }  // namespace
-
-// QOW-SOURCE-QRY-010-FETCH-TOP-PROFILE-V1
-// The native SBSQL development profile admits only FETCH FIRST <bound count>
-// ROWS ONLY.  WITH TIES and donor TOP variants stay explicit refusals rather
-// than silently degrading to an ordinary limit.
-CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
-    const CanonicalDescriptorFetchProfileRequest& request) {
-  CanonicalDescriptorFetchProfileResult result;
-  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
-  if (!entry_authority.ok) {
-    result.diagnostic = entry_authority;
-    return result;
-  }
-  if (request.form !=
-          CanonicalFetchTopProfileForm::fetch_first_rows_only ||
-      !request.row_count_is_bound) {
-    result.diagnostic.ok = false;
-    result.diagnostic.diagnostic_code =
-        "QOW-DIAG-QRY-010-FETCH-TOP-PROFILE-REFUSAL-V1";
-    result.diagnostic.detail =
-        "only bound native FETCH FIRST ROWS ONLY is admitted";
-    return result;
-  }
-
-  CanonicalDescriptorLimitRequest limit_request;
-  limit_request.physical_dag = request.physical_dag;
-  limit_request.selected_physical_node_id =
-      request.selected_physical_node_id;
-  limit_request.input_batch = request.input_batch;
-  limit_request.limit = request.row_count;
-  limit_request.offset = request.offset;
-  limit_request.mga_authority = request.mga_authority;
-  auto limited = ExecuteCanonicalDescriptorLimit(limit_request);
-  if (limited.diagnostic.ok &&
-      !PhysicalMgaStatementContextEqual(
-          limited.mga_statement_context,
-          request.mga_authority.statement_context)) {
-    limited.diagnostic.ok = false;
-    limited.diagnostic.diagnostic_code =
-        "QOW-DIAG-QRY-010-FETCH-TOP-MGA-V1";
-    limited.diagnostic.detail =
-        "FETCH nested limit returned a different MGA statement context";
-  }
-  if (limited.diagnostic.ok) {
-    const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-        request.mga_authority, request.physical_dag);
-    if (!result_authority.ok) limited.diagnostic = result_authority;
-  }
-  if (!limited.diagnostic.ok) {
-    result.diagnostic = std::move(limited.diagnostic);
-    return result;
-  }
-  result.diagnostic = std::move(limited.diagnostic);
-  result.output_batch = std::move(limited.output_batch);
-  result.selected_plan_uuid = std::move(limited.selected_plan_uuid);
-  result.executed_physical_node_id = limited.executed_physical_node_id;
-  result.causal_counter_id = limited.causal_counter_id;
-  if (result.diagnostic.ok) {
-    result.mga_statement_context = request.mga_authority.statement_context;
-  }
-  return result;
-}
 
 // QOW-SOURCE-QRY-011-STATE-V1
 // Build one descriptor-bound SUM(int64) transition state.  SQL NULL inputs do
@@ -1993,6 +2090,8 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
         selected_node->physical_node_id !=
             key_request.physical_dag.root_physical_node_id ||
         selected_node->node_kind != PhysicalNodeKind::kJoin ||
+        selected_node->implementation_id !=
+            CanonicalBoundJoinImplementationId(request.join_kind) ||
         selected_node->input_physical_node_ids.size() != 2 ||
         selected_node->input_physical_node_ids[0] ==
             selected_node->input_physical_node_ids[1]) {
@@ -4373,12 +4472,38 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     result.selected_plan_uuid.clear();
     result.executed_physical_node_id = 0;
     result.causal_counter_id = 0;
+    result.output_payload_bytes = 0;
+    result.peak_live_payload_bytes = 0;
+    result.resident_structural_bytes = 0;
+    result.current_live_memory_bytes = 0;
+    result.peak_live_memory_bytes = 0;
+    result.memory_grant_bytes = 0;
+    result.memory_grant_evidence_uuid.clear();
     return result;
   };
 
   if (request.quantifier != admitted_quantifier) {
     return refuse("set-operation quantifier and entry point differ");
   }
+  const bool borrowed_left = request.borrowed_left_batch != nullptr;
+  const bool borrowed_right = request.borrowed_right_batch != nullptr;
+  const DescriptorBatch empty_batch;
+  const auto exact_default_batch = [&](const DescriptorBatch& batch) {
+    return batch.columns.empty() &&
+           batch.columns.capacity() == empty_batch.columns.capacity() &&
+           batch.rows.empty() &&
+           batch.rows.capacity() == empty_batch.rows.capacity();
+  };
+  if (borrowed_left != borrowed_right ||
+      (borrowed_left &&
+       (!exact_default_batch(request.left_batch) ||
+        !exact_default_batch(request.right_batch)))) {
+    return refuse("set-operation input ownership carriage is inconsistent");
+  }
+  const auto& left_batch = borrowed_left ? *request.borrowed_left_batch
+                                         : request.left_batch;
+  const auto& right_batch = borrowed_right ? *request.borrowed_right_batch
+                                           : request.right_batch;
   const bool bound_collation =
       request.equality_profile ==
       CanonicalSetOperationEqualityProfile::kNullEqualBoundCollation;
@@ -4419,8 +4544,47 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   }
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kSetOperation ||
-      selected_node->input_physical_node_ids.size() != 2) {
-    return refuse("set operation requires one selected binary physical node");
+      selected_node->input_physical_node_ids.size() != 2 ||
+      selected_node->input_physical_node_ids[0] ==
+          selected_node->input_physical_node_ids[1]) {
+    return refuse(
+        "set operation requires one selected binary physical node with "
+        "two distinct inputs");
+  }
+
+  std::size_t memory_grant_bytes = 0;
+  std::string memory_grant_evidence_uuid;
+  if (request.enforce_payload_memory_grant) {
+    if (request.physical_dag.memory_budget_bytes == 0 ||
+        selected_node->memory_bytes_required == 0 ||
+        selected_node->memory_bytes_required >
+            request.physical_dag.memory_budget_bytes ||
+        selected_node->memory_bytes_required >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::size_t>::max())) {
+      return refuse(
+          "set-operation selected-node memory grant is invalid",
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT");
+    }
+    const PhysicalAdmissionEvidence* resource_evidence = nullptr;
+    for (const auto& evidence : request.physical_dag.admission_evidence) {
+      if (evidence.stage != PhysicalAdmissionStage::kResource) continue;
+      if (resource_evidence != nullptr) {
+        return refuse(
+            "set-operation resource evidence is not unique",
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT");
+      }
+      resource_evidence = &evidence;
+    }
+    if (resource_evidence == nullptr ||
+        resource_evidence->evidence_uuid.empty()) {
+      return refuse(
+          "set-operation resource evidence is absent",
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT");
+    }
+    memory_grant_bytes =
+        static_cast<std::size_t>(selected_node->memory_bytes_required);
+    memory_grant_evidence_uuid = resource_evidence->evidence_uuid;
   }
 
   const std::string expected_implementation = [&] {
@@ -4491,36 +4655,70 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   }
 
   auto validation = ValidateCanonicalDescriptorBatch(
-      request.left_batch, left_node->output_descriptor_ids);
+      left_batch, left_node->output_descriptor_ids);
   if (!validation.ok) {
     return refuse(validation.diagnostic_code + ":" + validation.detail);
   }
   validation = ValidateCanonicalDescriptorBatch(
-      request.right_batch, right_node->output_descriptor_ids);
+      right_batch, right_node->output_descriptor_ids);
   if (!validation.ok) {
     return refuse(validation.diagnostic_code + ":" + validation.detail);
   }
-  DescriptorBatch output_schema;
-  output_schema.columns = request.result_columns;
-  validation = ValidateCanonicalDescriptorBatch(
-      output_schema, selected_node->output_descriptor_ids);
-  if (!validation.ok) {
-    return refuse(validation.diagnostic_code + ":" + validation.detail);
+  {
+    DescriptorBatch output_schema;
+    output_schema.columns = request.result_columns;
+    validation = ValidateCanonicalDescriptorBatch(
+        output_schema, selected_node->output_descriptor_ids);
+    if (!validation.ok) {
+      return refuse(validation.diagnostic_code + ":" + validation.detail);
+    }
   }
 
   // QOW-SOURCE-QRY-016-ARITY-V1
   // Arity is decided from the three already-bound descriptor vectors, never
   // from the first physical row. Empty operands therefore retain the same
   // exact refusal behavior as populated operands.
-  if (request.left_batch.columns.size() != request.right_batch.columns.size() ||
-      request.left_batch.columns.size() != request.result_columns.size()) {
+  if (left_batch.columns.size() != right_batch.columns.size() ||
+      left_batch.columns.size() != request.result_columns.size()) {
     return refuse("set-operation input and result arity differ",
                   "QOW-DIAG-QRY-016-ARITY-REFUSAL-V1");
   }
 
-  DescriptorBatch aligned_right = request.right_batch;
+  FoundationSetMemoryLedger memory_ledger;
+  memory_ledger.enforced = request.enforce_payload_memory_grant;
+  memory_ledger.grant_bytes = memory_grant_bytes;
+  const auto refuse_memory = [&]() {
+    return refuse(memory_ledger.refusal_detail.empty()
+                      ? "set-operation logical memory receipt is invalid"
+                      : std::move(memory_ledger.refusal_detail),
+                  "SBLR.PLAN_TREE.RESOURCE_LIMIT");
+  };
+  std::size_t left_input_payload_bytes = 0;
+  std::size_t right_input_payload_bytes = 0;
+  if (memory_ledger.enforced &&
+      (!FoundationBatchPayloadBytes(left_batch, &left_input_payload_bytes) ||
+       !FoundationBatchPayloadBytes(right_batch,
+                                    &right_input_payload_bytes) ||
+       !memory_ledger.RetainPayload(
+           left_input_payload_bytes,
+           "while retaining the left operand") ||
+       !memory_ledger.RetainPayload(
+           right_input_payload_bytes,
+           "while retaining the right operand"))) {
+    return refuse_memory();
+  }
+
+  std::optional<DescriptorBatch> aligned_right_storage;
+  const DescriptorBatch* aligned_right = &right_batch;
+  if (memory_ledger.enforced &&
+      right_batch.columns.size() >
+          std::numeric_limits<std::size_t>::max() / sizeof(std::size_t)) {
+    memory_ledger.refusal_detail =
+        "set-operation result mapping size overflowed";
+    return refuse_memory();
+  }
   std::vector<std::size_t> right_to_result_column_indices(
-      request.right_batch.columns.size());
+      right_batch.columns.size());
   std::iota(right_to_result_column_indices.begin(),
             right_to_result_column_indices.end(), 0);
 
@@ -4528,17 +4726,45 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   // BY NAME maps only the names from already-bound output descriptor records.
   // The aligned values retain their UUID-addressed descriptors, and duplicate,
   // missing, or result-order-drifted names refuse before multiset evaluation.
+  std::size_t aligned_right_payload_bytes = 0;
   if (request.alignment == CanonicalSetOperationAlignment::kByName) {
-    std::map<std::string, std::size_t> left_names;
-    std::map<std::string, std::size_t> right_names;
-    std::map<std::string, std::size_t> result_names;
+    using NameMap = std::map<std::string, std::size_t>;
+    NameMap left_names;
+    NameMap right_names;
+    NameMap result_names;
+    std::size_t name_map_payload_bytes = 0;
+    std::size_t name_map_structural_bytes = 0;
+    const auto retain_name_entry = [&](const std::string& name) {
+      if (!memory_ledger.enforced) return true;
+      constexpr std::size_t kNameEntryStructuralBytes =
+          sizeof(std::string) + sizeof(std::size_t);
+      if (name.size() > std::numeric_limits<std::size_t>::max() -
+                            name_map_payload_bytes ||
+          kNameEntryStructuralBytes >
+              std::numeric_limits<std::size_t>::max() -
+                  name_map_structural_bytes) {
+        memory_ledger.refusal_detail =
+            "set-operation BY NAME entry size overflowed";
+        return false;
+      }
+      if (!memory_ledger.RetainPayload(
+              name.size(), "while retaining BY NAME lookup keys") ||
+          !memory_ledger.RetainStructural(
+              kNameEntryStructuralBytes,
+              "while retaining BY NAME lookup slots")) {
+        return false;
+      }
+      name_map_payload_bytes += name.size();
+      name_map_structural_bytes += kNameEntryStructuralBytes;
+      return true;
+    };
     for (std::size_t column = 0; column < request.result_columns.size();
          ++column) {
       if (!left_names
-               .emplace(request.left_batch.columns[column].stable_name, column)
+               .emplace(left_batch.columns[column].stable_name, column)
                .second ||
           !right_names
-               .emplace(request.right_batch.columns[column].stable_name, column)
+               .emplace(right_batch.columns[column].stable_name, column)
                .second ||
           !result_names
                .emplace(request.result_columns[column].stable_name, column)
@@ -4546,16 +4772,31 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
         return refuse("BY NAME requires unique bound column names",
                       "QOW-DIAG-QRY-016-BY-NAME-REFUSAL-V1");
       }
-      if (request.left_batch.columns[column].stable_name !=
+      if (left_batch.columns[column].stable_name !=
           request.result_columns[column].stable_name) {
         return refuse("BY NAME result order must follow the left operand",
                       "QOW-DIAG-QRY-016-BY-NAME-REFUSAL-V1");
       }
+      if (!retain_name_entry(left_batch.columns[column].stable_name) ||
+          !retain_name_entry(right_batch.columns[column].stable_name) ||
+          !retain_name_entry(
+              request.result_columns[column].stable_name)) {
+        return refuse_memory();
+      }
     }
-    aligned_right.columns.clear();
-    aligned_right.rows.assign(request.right_batch.rows.size(), {});
-    aligned_right.columns.reserve(request.result_columns.size());
-    for (auto& row : aligned_right.rows) {
+    if (memory_ledger.enforced) {
+      aligned_right_payload_bytes = right_input_payload_bytes;
+    }
+    if (!memory_ledger.RetainPayload(
+            aligned_right_payload_bytes,
+            "while retaining the BY NAME aligned right operand")) {
+      return refuse_memory();
+    }
+    aligned_right_storage.emplace();
+    auto& aligned = *aligned_right_storage;
+    aligned.rows.assign(right_batch.rows.size(), {});
+    aligned.columns.reserve(request.result_columns.size());
+    for (auto& row : aligned.rows) {
       row.values.reserve(request.result_columns.size());
     }
     for (std::size_t result_column = 0;
@@ -4568,11 +4809,10 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       }
       const auto right_column = found->second;
       right_to_result_column_indices[right_column] = result_column;
-      aligned_right.columns.push_back(
-          request.right_batch.columns[right_column]);
-      for (std::size_t row = 0; row < request.right_batch.rows.size(); ++row) {
-        aligned_right.rows[row].values.push_back(
-            request.right_batch.rows[row].values[right_column]);
+      aligned.columns.push_back(right_batch.columns[right_column]);
+      for (std::size_t row = 0; row < right_batch.rows.size(); ++row) {
+        aligned.rows[row].values.push_back(
+            right_batch.rows[row].values[right_column]);
       }
     }
     if (left_names.size() != right_names.size() ||
@@ -4580,6 +4820,26 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       return refuse("BY NAME operand column sets differ",
                     "QOW-DIAG-QRY-016-BY-NAME-REFUSAL-V1");
     }
+    if (memory_ledger.enforced) {
+      std::size_t measured_aligned_right_payload_bytes = 0;
+      if (!FoundationBatchPayloadBytes(
+              aligned, &measured_aligned_right_payload_bytes) ||
+          measured_aligned_right_payload_bytes !=
+              aligned_right_payload_bytes) {
+        memory_ledger.refusal_detail =
+            "set-operation BY NAME aligned payload receipt drifted";
+        return refuse_memory();
+      }
+    }
+    if (!memory_ledger.ReleasePayload(
+            name_map_payload_bytes,
+            "after releasing BY NAME lookup keys") ||
+        !memory_ledger.ReleaseStructural(
+            name_map_structural_bytes,
+            "after releasing BY NAME lookup slots")) {
+      return refuse_memory();
+    }
+    aligned_right = &aligned;
   }
 
   namespace dt = scratchbird::core::datatypes;
@@ -4591,8 +4851,8 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   // core-classified lossless implicit conversions may reach set equality;
   // explicit-only, lossy, forbidden, and unknown conversions are refusals.
   for (std::size_t column = 0; column < request.result_columns.size(); ++column) {
-    const auto& left = request.left_batch.columns[column];
-    const auto& right = aligned_right.columns[column];
+    const auto& left = left_batch.columns[column];
+    const auto& right = aligned_right->columns[column];
     const auto& output = request.result_columns[column];
     bool compatible = left.descriptor.descriptor_kind == "scalar" &&
                       right.descriptor.descriptor_kind == "scalar" &&
@@ -4648,16 +4908,23 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
               ? "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1"
               : std::string{});
     }
-    reconciled_type_names.push_back(output.descriptor.canonical_type_name);
+    reconciled_type_names.push_back(
+        output.descriptor.canonical_type_name);
   }
 
-  DescriptorBatch reconciled_left = request.left_batch;
-  DescriptorBatch reconciled_right = aligned_right;
+  std::optional<DescriptorBatch> reconciled_left_storage;
+  std::optional<DescriptorBatch> reconciled_ordinal_right_storage;
+  const DescriptorBatch* execution_left = &left_batch;
+  const DescriptorBatch* execution_right = aligned_right;
   std::size_t coerced_value_count = 0;
+  std::size_t reconciled_left_payload_bytes = 0;
+  std::size_t reconciled_ordinal_right_payload_bytes = 0;
   if (reconcile_types) {
     std::string reconciliation_detail;
-    const auto reconcile_batch = [&](DescriptorBatch* batch) {
-      if (batch == nullptr) return false;
+    const auto reconcile_batch = [&](DescriptorBatch* batch,
+                                     std::size_t* component_payload_bytes,
+                                     const std::string_view phase) {
+      if (batch == nullptr || component_payload_bytes == nullptr) return false;
       for (std::size_t column = 0; column < batch->columns.size(); ++column) {
         const auto source_type = dt::CanonicalTypeIdFromStableName(
             batch->columns[column].descriptor.canonical_type_name);
@@ -4690,6 +4957,37 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
                     : cast.diagnostic.diagnostic_code;
             return false;
           }
+          if (memory_ledger.enforced) {
+            const auto old_encoded_bytes =
+                row.values[column].encoded_value.size();
+            const auto old_binary_bytes =
+                row.values[column].binary_value.size();
+            if (old_binary_bytes >
+                    std::numeric_limits<std::size_t>::max() -
+                        old_encoded_bytes) {
+              memory_ledger.refusal_detail =
+                  "set-operation reconciliation payload size overflowed";
+              return false;
+            }
+            const auto old_payload_bytes =
+                old_encoded_bytes + old_binary_bytes;
+            const auto new_payload_bytes = cast.value.encoded_value.size();
+            if (old_payload_bytes > *component_payload_bytes ||
+                new_payload_bytes >
+                    std::numeric_limits<std::size_t>::max() -
+                        (*component_payload_bytes - old_payload_bytes) ||
+                !memory_ledger.ReplacePayload(
+                    old_payload_bytes, new_payload_bytes, phase)) {
+              if (memory_ledger.refusal_detail.empty()) {
+                memory_ledger.refusal_detail =
+                    "set-operation reconciliation payload receipt drifted";
+              }
+              return false;
+            }
+            *component_payload_bytes =
+                *component_payload_bytes - old_payload_bytes +
+                new_payload_bytes;
+          }
           if (source_type != target_type) ++coerced_value_count;
           row.values[column].descriptor =
               request.result_columns[column].descriptor;
@@ -4706,13 +5004,68 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       }
       return true;
     };
-    if (!reconcile_batch(&reconciled_left) ||
-        !reconcile_batch(&reconciled_right)) {
+    if (memory_ledger.enforced) {
+      reconciled_left_payload_bytes = left_input_payload_bytes;
+      if (!memory_ledger.RetainPayload(
+              reconciled_left_payload_bytes,
+              "before retaining the reconciled left operand")) {
+        return refuse_memory();
+      }
+    }
+    reconciled_left_storage.emplace(left_batch);
+    DescriptorBatch* mutable_right = nullptr;
+    std::size_t* mutable_right_payload_bytes = nullptr;
+    if (aligned_right_storage.has_value()) {
+      mutable_right = &*aligned_right_storage;
+      mutable_right_payload_bytes = &aligned_right_payload_bytes;
+    } else {
+      if (memory_ledger.enforced) {
+        reconciled_ordinal_right_payload_bytes =
+            right_input_payload_bytes;
+        if (!memory_ledger.RetainPayload(
+                reconciled_ordinal_right_payload_bytes,
+                "before retaining the reconciled right operand")) {
+          return refuse_memory();
+        }
+      }
+      reconciled_ordinal_right_storage.emplace(right_batch);
+      mutable_right = &*reconciled_ordinal_right_storage;
+      mutable_right_payload_bytes =
+          &reconciled_ordinal_right_payload_bytes;
+    }
+    if (!reconcile_batch(&*reconciled_left_storage,
+                         &reconciled_left_payload_bytes,
+                         "while reconciling the left operand") ||
+        !reconcile_batch(mutable_right, mutable_right_payload_bytes,
+                         "while reconciling the right operand")) {
+      if (!memory_ledger.refusal_detail.empty()) return refuse_memory();
       return refuse(std::move(reconciliation_detail),
                     "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1");
     }
+    execution_left = &*reconciled_left_storage;
+    execution_right = mutable_right;
   }
+  const auto& reconciled_left = *execution_left;
+  const auto& reconciled_right = *execution_right;
 
+  std::size_t collation_lookup_structural_bytes = 0;
+  if (memory_ledger.enforced) {
+    if (request.result_columns.size() >
+        std::numeric_limits<std::size_t>::max() /
+            sizeof(const CanonicalSetOperationCollationBinding*)) {
+      memory_ledger.refusal_detail =
+          "set-operation collation lookup size overflowed";
+      return refuse_memory();
+    }
+    collation_lookup_structural_bytes =
+        request.result_columns.size() *
+        sizeof(const CanonicalSetOperationCollationBinding*);
+    if (!memory_ledger.RetainStructural(
+            collation_lookup_structural_bytes,
+            "while retaining the collation lookup")) {
+      return refuse_memory();
+    }
+  }
   std::vector<const CanonicalSetOperationCollationBinding*> collation_by_column(
       request.result_columns.size(), nullptr);
 
@@ -4792,14 +5145,33 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     return refuse("set-operation output resource bound is zero");
   }
   if (!distinct && request.operation == CanonicalSetOperationKind::kUnion &&
-      (request.left_batch.rows.size() > request.maximum_output_row_count ||
-       request.right_batch.rows.size() >
+      (left_batch.rows.size() > request.maximum_output_row_count ||
+       right_batch.rows.size() >
            request.maximum_output_row_count -
-               request.left_batch.rows.size())) {
+               left_batch.rows.size())) {
     return refuse("UNION ALL output resource bound was exceeded");
   }
 
   using RowKey = std::vector<std::string>;
+  const auto measure_row_key = [&](const RowKey& key,
+                                   std::size_t* payload_bytes,
+                                   std::size_t* inner_structural_bytes) {
+    if (payload_bytes == nullptr || inner_structural_bytes == nullptr ||
+        key.size() > std::numeric_limits<std::size_t>::max() /
+                         sizeof(std::string)) {
+      return false;
+    }
+    *payload_bytes = 0;
+    *inner_structural_bytes = key.size() * sizeof(std::string);
+    for (const auto& field : key) {
+      if (field.size() > std::numeric_limits<std::size_t>::max() -
+                             *payload_bytes) {
+        return false;
+      }
+      *payload_bytes += field.size();
+    }
+    return true;
+  };
   const auto append_key_field = [](std::string* encoded,
                                    const std::string_view field) {
     encoded->append(std::to_string(field.size()));
@@ -4880,17 +5252,36 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     }
     return true;
   };
-  const auto retag_row = [&](const DescriptorTuple& source) {
-    DescriptorTuple output;
-    output.values = source.values;
-    for (std::size_t column = 0; column < output.values.size(); ++column) {
-      output.values[column].descriptor = request.result_columns[column].descriptor;
-    }
-    return output;
-  };
-
   std::vector<RowKey> left_keys;
   std::vector<RowKey> right_keys;
+  std::size_t left_key_outer_structural_bytes = 0;
+  std::size_t right_key_outer_structural_bytes = 0;
+  std::size_t left_key_inner_structural_bytes = 0;
+  std::size_t right_key_inner_structural_bytes = 0;
+  std::size_t left_key_payload_bytes = 0;
+  std::size_t right_key_payload_bytes = 0;
+  if (memory_ledger.enforced) {
+    if (reconciled_left.rows.size() >
+            std::numeric_limits<std::size_t>::max() / sizeof(RowKey) ||
+        reconciled_right.rows.size() >
+            std::numeric_limits<std::size_t>::max() / sizeof(RowKey)) {
+      memory_ledger.refusal_detail =
+          "set-operation row-key slot size overflowed";
+      return refuse_memory();
+    }
+    left_key_outer_structural_bytes =
+        reconciled_left.rows.size() * sizeof(RowKey);
+    right_key_outer_structural_bytes =
+        reconciled_right.rows.size() * sizeof(RowKey);
+    if (!memory_ledger.RetainStructural(
+            left_key_outer_structural_bytes,
+            "before retaining the left row-key slots") ||
+        !memory_ledger.RetainStructural(
+            right_key_outer_structural_bytes,
+            "before retaining the right row-key slots")) {
+      return refuse_memory();
+    }
+  }
   left_keys.reserve(reconciled_left.rows.size());
   right_keys.reserve(reconciled_right.rows.size());
   std::string key_detail;
@@ -4899,6 +5290,32 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     if (!typed_row_key(row, &key, &key_detail)) {
       return refuse(std::move(key_detail));
     }
+    if (memory_ledger.enforced) {
+      std::size_t key_payload_bytes = 0;
+      std::size_t key_structural_bytes = 0;
+      if (!measure_row_key(key, &key_payload_bytes,
+                           &key_structural_bytes) ||
+          key_payload_bytes >
+              std::numeric_limits<std::size_t>::max() -
+                  left_key_payload_bytes ||
+          key_structural_bytes >
+              std::numeric_limits<std::size_t>::max() -
+                  left_key_inner_structural_bytes) {
+        memory_ledger.refusal_detail =
+            "set-operation left row-key size overflowed";
+        return refuse_memory();
+      }
+      if (!memory_ledger.RetainPayload(
+              key_payload_bytes,
+              "while retaining a left row key") ||
+          !memory_ledger.RetainStructural(
+              key_structural_bytes,
+              "while retaining a left row-key field slot")) {
+        return refuse_memory();
+      }
+      left_key_payload_bytes += key_payload_bytes;
+      left_key_inner_structural_bytes += key_structural_bytes;
+    }
     left_keys.push_back(std::move(key));
   }
   for (const auto& row : reconciled_right.rows) {
@@ -4906,10 +5323,63 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     if (!typed_row_key(row, &key, &key_detail)) {
       return refuse(std::move(key_detail));
     }
+    if (memory_ledger.enforced) {
+      std::size_t key_payload_bytes = 0;
+      std::size_t key_structural_bytes = 0;
+      if (!measure_row_key(key, &key_payload_bytes,
+                           &key_structural_bytes) ||
+          key_payload_bytes >
+              std::numeric_limits<std::size_t>::max() -
+                  right_key_payload_bytes ||
+          key_structural_bytes >
+              std::numeric_limits<std::size_t>::max() -
+                  right_key_inner_structural_bytes) {
+        memory_ledger.refusal_detail =
+            "set-operation right row-key size overflowed";
+        return refuse_memory();
+      }
+      if (!memory_ledger.RetainPayload(
+              key_payload_bytes,
+              "while retaining a right row key") ||
+          !memory_ledger.RetainStructural(
+              key_structural_bytes,
+              "while retaining a right row-key field slot")) {
+        return refuse_memory();
+      }
+      right_key_payload_bytes += key_payload_bytes;
+      right_key_inner_structural_bytes += key_structural_bytes;
+    }
     right_keys.push_back(std::move(key));
   }
 
   std::size_t equality_comparison_count = 0;
+  const auto replace_key_payload =
+      [&](std::string* field, std::string replacement,
+          std::size_t* component_payload_bytes) {
+        if (field == nullptr || component_payload_bytes == nullptr) {
+          return false;
+        }
+        if (memory_ledger.enforced) {
+          const auto old_bytes = field->size();
+          const auto new_bytes = replacement.size();
+          if (old_bytes > *component_payload_bytes ||
+              new_bytes > std::numeric_limits<std::size_t>::max() -
+                              (*component_payload_bytes - old_bytes) ||
+              !memory_ledger.ReplacePayload(
+                  old_bytes, new_bytes,
+                  "while replacing a bound-collation row key")) {
+            if (memory_ledger.refusal_detail.empty()) {
+              memory_ledger.refusal_detail =
+                  "set-operation collation key payload receipt drifted";
+            }
+            return false;
+          }
+          *component_payload_bytes =
+              *component_payload_bytes - old_bytes + new_bytes;
+        }
+        *field = std::move(replacement);
+        return true;
+      };
   if (bound_collation) {
     namespace dt = scratchbird::core::datatypes;
     for (std::size_t column = 0; column < request.result_columns.size();
@@ -4918,6 +5388,7 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       if (binding == nullptr) continue;
       std::vector<const scratchbird::engine::internal_api::EngineTypedValue*>
           representatives;
+      std::size_t representative_structural_bytes = 0;
       const auto classify = [&](const auto& value,
                                 std::string* equality_key) {
         if (equality_key == nullptr) return false;
@@ -4953,37 +5424,158 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
             return true;
           }
         }
+        if (memory_ledger.enforced) {
+          constexpr std::size_t kRepresentativeBytes =
+              sizeof(const scratchbird::engine::internal_api::
+                         EngineTypedValue*);
+          if (kRepresentativeBytes >
+                  std::numeric_limits<std::size_t>::max() -
+                      representative_structural_bytes ||
+              !memory_ledger.RetainStructural(
+                  sizeof(const scratchbird::engine::internal_api::
+                             EngineTypedValue*),
+                  "while retaining a collation representative")) {
+            return false;
+          }
+          representative_structural_bytes += kRepresentativeBytes;
+        }
         representatives.push_back(&value);
         *equality_key =
             "collation:" + std::to_string(representatives.size() - 1);
         return true;
       };
       for (std::size_t row = 0; row < reconciled_left.rows.size(); ++row) {
+        std::string equality_key;
         if (!classify(reconciled_left.rows[row].values[column],
-                      &left_keys[row][column])) {
+                      &equality_key) ||
+            !replace_key_payload(&left_keys[row][column],
+                                 std::move(equality_key),
+                                 &left_key_payload_bytes)) {
+          if (!memory_ledger.refusal_detail.empty()) return refuse_memory();
           return refuse(std::move(key_detail),
                         "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1");
         }
       }
       for (std::size_t row = 0; row < reconciled_right.rows.size(); ++row) {
+        std::string equality_key;
         if (!classify(reconciled_right.rows[row].values[column],
-                      &right_keys[row][column])) {
+                      &equality_key) ||
+            !replace_key_payload(&right_keys[row][column],
+                                 std::move(equality_key),
+                                 &right_key_payload_bytes)) {
+          if (!memory_ledger.refusal_detail.empty()) return refuse_memory();
           return refuse(std::move(key_detail),
                         "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1");
         }
       }
+      if (!memory_ledger.ReleaseStructural(
+              representative_structural_bytes,
+              "after releasing collation representatives")) {
+        return refuse_memory();
+      }
     }
   }
 
+  enum class SetEmitStatus : std::uint8_t {
+    kOk = 1,
+    kOutputBound,
+    kMemoryRefusal,
+  };
   DescriptorBatch output;
   output.columns = request.result_columns;
+  std::size_t output_payload_bytes = 0;
+  if (memory_ledger.enforced) {
+    output_payload_bytes = 1;
+    if (!memory_ledger.RetainPayload(
+            output_payload_bytes,
+            "while retaining the output batch")) {
+      return refuse_memory();
+    }
+  }
   const auto emit_row = [&](const DescriptorTuple& source) {
     if (output.rows.size() >= request.maximum_output_row_count) {
-      return false;
+      return SetEmitStatus::kOutputBound;
     }
-    output.rows.push_back(retag_row(source));
-    return true;
+    if (memory_ledger.enforced) {
+      std::size_t row_payload_bytes = 0;
+      if (!FoundationTuplePayloadBytes(source, &row_payload_bytes) ||
+          row_payload_bytes >
+              std::numeric_limits<std::size_t>::max() -
+                  output_payload_bytes) {
+        memory_ledger.refusal_detail =
+            "set-operation output payload size overflowed";
+        return SetEmitStatus::kMemoryRefusal;
+      }
+      if (!memory_ledger.RetainPayload(
+              row_payload_bytes,
+              "while retaining an output row")) {
+        return SetEmitStatus::kMemoryRefusal;
+      }
+      output_payload_bytes += row_payload_bytes;
+    }
+    output.rows.push_back(source);
+    auto& output_row = output.rows.back();
+    for (std::size_t column = 0; column < output_row.values.size(); ++column) {
+      output_row.values[column].descriptor =
+          request.result_columns[column].descriptor;
+    }
+    return SetEmitStatus::kOk;
   };
+  const auto retain_branch_key =
+      [&](const RowKey& key, const std::size_t mapped_structural_bytes,
+          std::size_t* branch_payload_bytes,
+          std::size_t* branch_structural_bytes) {
+        if (!memory_ledger.enforced) return true;
+        std::size_t key_payload_bytes = 0;
+        std::size_t key_inner_structural_bytes = 0;
+        if (branch_payload_bytes == nullptr ||
+            branch_structural_bytes == nullptr ||
+            !measure_row_key(key, &key_payload_bytes,
+                             &key_inner_structural_bytes) ||
+            key_inner_structural_bytes >
+                std::numeric_limits<std::size_t>::max() - sizeof(RowKey) ||
+            mapped_structural_bytes >
+                std::numeric_limits<std::size_t>::max() -
+                    sizeof(RowKey) - key_inner_structural_bytes) {
+          memory_ledger.refusal_detail =
+              "set-operation branch key size overflowed";
+          return false;
+        }
+        const auto key_structural_bytes =
+            sizeof(RowKey) + key_inner_structural_bytes +
+            mapped_structural_bytes;
+        if (key_payload_bytes >
+                std::numeric_limits<std::size_t>::max() -
+                    *branch_payload_bytes ||
+            key_structural_bytes >
+                std::numeric_limits<std::size_t>::max() -
+                    *branch_structural_bytes) {
+          memory_ledger.refusal_detail =
+              "set-operation branch state size overflowed";
+          return false;
+        }
+        if (!memory_ledger.RetainPayload(
+                key_payload_bytes,
+                "while retaining a branch membership key") ||
+            !memory_ledger.RetainStructural(
+                key_structural_bytes,
+                "while retaining a branch membership slot")) {
+          return false;
+        }
+        *branch_payload_bytes += key_payload_bytes;
+        *branch_structural_bytes += key_structural_bytes;
+        return true;
+      };
+  const auto release_branch_state =
+      [&](const std::size_t branch_payload_bytes,
+          const std::size_t branch_structural_bytes) {
+        return memory_ledger.ReleasePayload(
+                   branch_payload_bytes,
+                   "after releasing branch membership keys") &&
+               memory_ledger.ReleaseStructural(
+                   branch_structural_bytes,
+                   "after releasing branch membership slots");
+      };
   std::size_t consumed_right_multiplicity_count = 0;
   std::size_t eliminated_duplicate_row_count = 0;
 
@@ -4993,9 +5585,21 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   // cannot hide malformed transport or value state.
   if (distinct && request.operation == CanonicalSetOperationKind::kUnion) {
     std::set<RowKey> emitted;
+    std::size_t branch_payload_bytes = 0;
+    std::size_t branch_structural_bytes = 0;
     for (std::size_t index = 0; index < left_keys.size(); ++index) {
-      if (emitted.insert(left_keys[index]).second) {
-        if (!emit_row(reconciled_left.rows[index])) {
+      if (!emitted.contains(left_keys[index])) {
+        if (!retain_branch_key(left_keys[index], 0,
+                               &branch_payload_bytes,
+                               &branch_structural_bytes)) {
+          return refuse_memory();
+        }
+        emitted.insert(left_keys[index]);
+        const auto emitted_row = emit_row(reconciled_left.rows[index]);
+        if (emitted_row == SetEmitStatus::kMemoryRefusal) {
+          return refuse_memory();
+        }
+        if (emitted_row == SetEmitStatus::kOutputBound) {
           return refuse("set-operation output resource bound was exceeded");
         }
       } else {
@@ -5003,17 +5607,42 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       }
     }
     for (std::size_t index = 0; index < right_keys.size(); ++index) {
-      if (emitted.insert(right_keys[index]).second) {
-        if (!emit_row(reconciled_right.rows[index])) {
+      if (!emitted.contains(right_keys[index])) {
+        if (!retain_branch_key(right_keys[index], 0,
+                               &branch_payload_bytes,
+                               &branch_structural_bytes)) {
+          return refuse_memory();
+        }
+        emitted.insert(right_keys[index]);
+        const auto emitted_row = emit_row(reconciled_right.rows[index]);
+        if (emitted_row == SetEmitStatus::kMemoryRefusal) {
+          return refuse_memory();
+        }
+        if (emitted_row == SetEmitStatus::kOutputBound) {
           return refuse("set-operation output resource bound was exceeded");
         }
       } else {
         ++eliminated_duplicate_row_count;
       }
     }
+    emitted.clear();
+    if (!release_branch_state(branch_payload_bytes,
+                              branch_structural_bytes)) {
+      return refuse_memory();
+    }
   } else if (distinct) {
-    std::set<RowKey> right_membership(right_keys.begin(), right_keys.end());
+    std::set<RowKey> right_membership;
     std::set<RowKey> emitted;
+    std::size_t branch_payload_bytes = 0;
+    std::size_t branch_structural_bytes = 0;
+    for (const auto& key : right_keys) {
+      if (right_membership.contains(key)) continue;
+      if (!retain_branch_key(key, 0, &branch_payload_bytes,
+                             &branch_structural_bytes)) {
+        return refuse_memory();
+      }
+      right_membership.insert(key);
+    }
     for (std::size_t index = 0; index < left_keys.size(); ++index) {
       const bool present_on_right =
           right_membership.contains(left_keys[index]);
@@ -5022,29 +5651,67 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
               ? present_on_right
               : !present_on_right;
       if (!candidate) continue;
-      if (emitted.insert(left_keys[index]).second) {
-        if (!emit_row(reconciled_left.rows[index])) {
+      if (!emitted.contains(left_keys[index])) {
+        if (!retain_branch_key(left_keys[index], 0,
+                               &branch_payload_bytes,
+                               &branch_structural_bytes)) {
+          return refuse_memory();
+        }
+        emitted.insert(left_keys[index]);
+        const auto emitted_row = emit_row(reconciled_left.rows[index]);
+        if (emitted_row == SetEmitStatus::kMemoryRefusal) {
+          return refuse_memory();
+        }
+        if (emitted_row == SetEmitStatus::kOutputBound) {
           return refuse("set-operation output resource bound was exceeded");
         }
       } else {
         ++eliminated_duplicate_row_count;
       }
     }
+    right_membership.clear();
+    emitted.clear();
+    if (!release_branch_state(branch_payload_bytes,
+                              branch_structural_bytes)) {
+      return refuse_memory();
+    }
   } else if (request.operation == CanonicalSetOperationKind::kUnion) {
     output.rows.reserve(left_keys.size() + right_keys.size());
     for (const auto& row : reconciled_left.rows) {
-      if (!emit_row(row)) {
+      const auto emitted_row = emit_row(row);
+      if (emitted_row == SetEmitStatus::kMemoryRefusal) {
+        return refuse_memory();
+      }
+      if (emitted_row == SetEmitStatus::kOutputBound) {
         return refuse("set-operation output resource bound was exceeded");
       }
     }
     for (const auto& row : reconciled_right.rows) {
-      if (!emit_row(row)) {
+      const auto emitted_row = emit_row(row);
+      if (emitted_row == SetEmitStatus::kMemoryRefusal) {
+        return refuse_memory();
+      }
+      if (emitted_row == SetEmitStatus::kOutputBound) {
         return refuse("set-operation output resource bound was exceeded");
       }
     }
   } else {
     std::map<RowKey, std::size_t> right_multiplicity;
-    for (const auto& key : right_keys) ++right_multiplicity[key];
+    std::size_t branch_payload_bytes = 0;
+    std::size_t branch_structural_bytes = 0;
+    for (const auto& key : right_keys) {
+      auto found = right_multiplicity.find(key);
+      if (found == right_multiplicity.end()) {
+        if (!retain_branch_key(key, sizeof(std::size_t),
+                               &branch_payload_bytes,
+                               &branch_structural_bytes)) {
+          return refuse_memory();
+        }
+        right_multiplicity.emplace(key, 1);
+      } else {
+        ++found->second;
+      }
+    }
     for (std::size_t index = 0; index < left_keys.size(); ++index) {
       auto found = right_multiplicity.find(left_keys[index]);
       const bool consumes =
@@ -5057,10 +5724,82 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
           request.operation == CanonicalSetOperationKind::kIntersect
               ? consumes
               : !consumes;
-      if (emit && !emit_row(reconciled_left.rows[index])) {
-        return refuse("set-operation output resource bound was exceeded");
+      if (emit) {
+        const auto emitted_row = emit_row(reconciled_left.rows[index]);
+        if (emitted_row == SetEmitStatus::kMemoryRefusal) {
+          return refuse_memory();
+        }
+        if (emitted_row == SetEmitStatus::kOutputBound) {
+          return refuse("set-operation output resource bound was exceeded");
+        }
       }
     }
+    right_multiplicity.clear();
+    if (!release_branch_state(branch_payload_bytes,
+                              branch_structural_bytes)) {
+      return refuse_memory();
+    }
+  }
+
+  std::vector<RowKey>().swap(left_keys);
+  std::vector<RowKey>().swap(right_keys);
+  if (!memory_ledger.ReleasePayload(
+          left_key_payload_bytes,
+          "after releasing left row-key payload") ||
+      !memory_ledger.ReleasePayload(
+          right_key_payload_bytes,
+          "after releasing right row-key payload") ||
+      !memory_ledger.ReleaseStructural(
+          left_key_inner_structural_bytes,
+          "after releasing left row-key field slots") ||
+      !memory_ledger.ReleaseStructural(
+          right_key_inner_structural_bytes,
+          "after releasing right row-key field slots") ||
+      !memory_ledger.ReleaseStructural(
+          left_key_outer_structural_bytes,
+          "after releasing left row-key outer slots") ||
+      !memory_ledger.ReleaseStructural(
+          right_key_outer_structural_bytes,
+          "after releasing right row-key outer slots")) {
+    return refuse_memory();
+  }
+  std::vector<const CanonicalSetOperationCollationBinding*>().swap(
+      collation_by_column);
+  if (!memory_ledger.ReleaseStructural(
+          collation_lookup_structural_bytes,
+          "after releasing the collation lookup")) {
+    return refuse_memory();
+  }
+  reconciled_left_storage.reset();
+  if (!memory_ledger.ReleasePayload(
+          reconciled_left_payload_bytes,
+          "after releasing the reconciled left operand")) {
+    return refuse_memory();
+  }
+  reconciled_ordinal_right_storage.reset();
+  if (!memory_ledger.ReleasePayload(
+          reconciled_ordinal_right_payload_bytes,
+          "after releasing the reconciled right operand")) {
+    return refuse_memory();
+  }
+  aligned_right_storage.reset();
+  if (!memory_ledger.ReleasePayload(
+          aligned_right_payload_bytes,
+          "after releasing the BY NAME aligned right operand") ||
+      !memory_ledger.ReleasePayload(
+          left_input_payload_bytes,
+          "after consuming the left operand") ||
+      !memory_ledger.ReleasePayload(
+          right_input_payload_bytes,
+          "after consuming the right operand")) {
+    return refuse_memory();
+  }
+  if (memory_ledger.enforced &&
+      (memory_ledger.live_structural_bytes != 0 ||
+       memory_ledger.live_payload_bytes != output_payload_bytes)) {
+    memory_ledger.refusal_detail =
+        "set-operation final logical memory receipt drifted";
+    return refuse_memory();
   }
   if (output.rows.size() > request.maximum_output_row_count) {
     return refuse("set-operation output resource bound was exceeded");
@@ -5069,6 +5808,20 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       output, selected_node->output_descriptor_ids);
   if (!validation.ok) {
     return refuse(validation.diagnostic_code + ":" + validation.detail);
+  }
+  if (memory_ledger.enforced) {
+    std::size_t measured_output_payload_bytes = 0;
+    if (!FoundationBatchPayloadBytes(
+            output, &measured_output_payload_bytes) ||
+        measured_output_payload_bytes != output_payload_bytes ||
+        memory_ledger.peak_payload_bytes < output_payload_bytes ||
+        memory_ledger.peak_memory_bytes <
+            memory_ledger.live_payload_bytes ||
+        memory_ledger.peak_memory_bytes > memory_grant_bytes) {
+      memory_ledger.refusal_detail =
+          "set-operation final logical memory observation is invalid";
+      return refuse_memory();
+    }
   }
 
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
@@ -5079,8 +5832,8 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
 
   result.diagnostic = {};
   result.output_batch = std::move(output);
-  result.left_input_row_count = request.left_batch.rows.size();
-  result.right_input_row_count = request.right_batch.rows.size();
+  result.left_input_row_count = left_batch.rows.size();
+  result.right_input_row_count = right_batch.rows.size();
   result.consumed_right_multiplicity_count =
       consumed_right_multiplicity_count;
   result.eliminated_duplicate_row_count =
@@ -5095,6 +5848,21 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
   result.mga_statement_context = request.mga_authority.statement_context;
+  if (memory_ledger.enforced) {
+    result.output_payload_bytes = output_payload_bytes;
+    result.peak_live_payload_bytes =
+        memory_ledger.peak_payload_bytes;
+    result.resident_structural_bytes =
+        memory_ledger.live_structural_bytes;
+    result.current_live_memory_bytes =
+        memory_ledger.live_payload_bytes +
+        memory_ledger.live_structural_bytes;
+    result.peak_live_memory_bytes =
+        memory_ledger.peak_memory_bytes;
+    result.memory_grant_bytes = memory_grant_bytes;
+    result.memory_grant_evidence_uuid =
+        std::move(memory_grant_evidence_uuid);
+  }
   return result;
 }
 
@@ -5203,15 +5971,7 @@ CanonicalPivotResult ExecuteCanonicalPivot(
     }
   }
   const auto input_validation = ValidateCanonicalDescriptorBatch(
-      request.input_batch,
-      [&] {
-        std::vector<std::uint32_t> ids;
-        ids.reserve(request.input_batch.columns.size());
-        for (const auto& column : request.input_batch.columns) {
-          ids.push_back(column.descriptor_id);
-        }
-        return ids;
-      }());
+      request.input_batch, pivot_input_node->output_descriptor_ids);
   if (!input_validation.ok) {
     return refuse(input_validation.diagnostic_code,
                   input_validation.detail);
@@ -5545,13 +6305,12 @@ CanonicalPivotResult ExecuteCanonicalPivot(
         }
         auto aggregate_request =
             CloneFoundationAggregateRequestWithoutRowsOrFilter(
-                binding.aggregate_template);
-        aggregate_request.input_batch.columns = request.input_batch.columns;
-        aggregate_request.input_batch.rows.reserve(
-            group.item_rows[item].size());
+                binding.aggregate_template, false);
+        DescriptorBatch aggregate_input;
+        aggregate_input.columns = request.input_batch.columns;
+        aggregate_input.rows.reserve(group.item_rows[item].size());
         for (const auto row : group.item_rows[item]) {
-          aggregate_request.input_batch.rows.push_back(
-              request.input_batch.rows[row]);
+          aggregate_input.rows.push_back(request.input_batch.rows[row]);
         }
         aggregate_request.result_column =
             binding.result_columns_by_item[item];
@@ -5604,7 +6363,7 @@ CanonicalPivotResult ExecuteCanonicalPivot(
         input_node.implementation_id = "values.materialize.canonical.v1";
         input_node.input_physical_node_ids.clear();
         input_node.output_descriptor_ids.clear();
-        for (const auto& column : aggregate_request.input_batch.columns) {
+        for (const auto& column : aggregate_input.columns) {
           input_node.output_descriptor_ids.push_back(column.descriptor_id);
         }
         PhysicalNodeRecord aggregate_node = *pivot_node;
@@ -5619,11 +6378,11 @@ CanonicalPivotResult ExecuteCanonicalPivot(
         aggregate_dag.nodes = {std::move(input_node),
                                std::move(aggregate_node)};
         aggregate_dag.root_physical_node_id = 2;
-        aggregate_request.physical_dag = std::move(aggregate_dag);
         aggregate_request.selected_physical_node_id = 2;
         auto aggregated =
             ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
-                aggregate_request, remaining_finalization_bytes);
+                aggregate_request, aggregate_dag, aggregate_input,
+                remaining_finalization_bytes);
         if (!aggregated.diagnostic.ok ||
             aggregated.output_batch.rows.size() != 1 ||
             aggregated.output_batch.rows.front().values.size() != 1) {
@@ -5731,6 +6490,23 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
     return refuse("QOW-DIAG-QRY-019-UNPIVOT-PHYSICAL-V1",
                   "UNPIVOT is not the exact selected unary physical root");
   }
+  const PhysicalNodeRecord* unpivot_input_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        unpivot_node->input_physical_node_ids.front()) {
+      unpivot_input_node = &node;
+      break;
+    }
+  }
+  if (unpivot_input_node == nullptr) {
+    return refuse("QOW-DIAG-QRY-019-UNPIVOT-PHYSICAL-V1",
+                  "UNPIVOT selected input physical node is absent");
+  }
+  if (request.null_policy != CanonicalPivotNullPolicy::kInclude &&
+      request.null_policy != CanonicalPivotNullPolicy::kExclude) {
+    return refuse("QOW-DIAG-QRY-019-UNPIVOT-BINDING-V1",
+                  "UNPIVOT NULL policy is not canonical");
+  }
   if (request.group_columns.empty() || request.in_items.empty() ||
       request.maximum_output_row_count == 0 ||
       request.maximum_output_cell_count == 0) {
@@ -5776,18 +6552,21 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
     }
   }
   const auto input_validation = ValidateCanonicalDescriptorBatch(
-      request.input_batch,
-      [&] {
-        std::vector<std::uint32_t> ids;
-        ids.reserve(request.input_batch.columns.size());
-        for (const auto& column : request.input_batch.columns) {
-          ids.push_back(column.descriptor_id);
-        }
-        return ids;
-      }());
+      request.input_batch, unpivot_input_node->output_descriptor_ids);
   if (!input_validation.ok) {
     return refuse(input_validation.diagnostic_code,
                   input_validation.detail);
+  }
+  const auto node_memory_grant = FoundationNodeMemoryGrant(
+      request.physical_dag, request.selected_physical_node_id);
+  std::size_t input_payload_bytes = 0;
+  if (!node_memory_grant.has_value() ||
+      !FoundationBatchPayloadBytes(request.input_batch,
+                                   &input_payload_bytes) ||
+      input_payload_bytes > *node_memory_grant) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "UNPIVOT selected-node memory grant is invalid or "
+                  "exhausted");
   }
   if (request.input_batch.rows.size() != 0 &&
       request.in_items.size() >
@@ -5806,6 +6585,23 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
   DescriptorBatch output;
   output.columns = request.result_columns;
   std::size_t excluded = 0;
+  std::size_t retained_output_payload_bytes = 0;
+  const auto charge_output_value = [&](const auto& value) {
+    if (retained_output_payload_bytes >
+        std::numeric_limits<std::size_t>::max() -
+            value.encoded_value.size()) {
+      return false;
+    }
+    retained_output_payload_bytes += value.encoded_value.size();
+    if (retained_output_payload_bytes >
+        std::numeric_limits<std::size_t>::max() -
+            value.binary_value.size()) {
+      return false;
+    }
+    retained_output_payload_bytes += value.binary_value.size();
+    return retained_output_payload_bytes <=
+           *node_memory_grant - input_payload_bytes;
+  };
   for (const auto& input_row : request.input_batch.rows) {
     for (const auto& item : request.in_items) {
       const bool all_null = std::ranges::all_of(
@@ -5831,6 +6627,11 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
                         cast_diagnostic.diagnostic_code + ":" +
                             cast_diagnostic.detail);
         }
+        if (!charge_output_value(value)) {
+          return refuse(
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+              "UNPIVOT retained output exhausted the selected-node grant");
+        }
         output_row.values.push_back(std::move(value));
       }
       DescriptorRuntimeDiagnostic label_diagnostic;
@@ -5842,6 +6643,11 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
         return refuse("QOW-DIAG-QRY-019-UNPIVOT-IN-V1",
                       label_diagnostic.diagnostic_code + ":" +
                           label_diagnostic.detail);
+      }
+      if (!charge_output_value(label)) {
+        return refuse(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "UNPIVOT retained output exhausted the selected-node grant");
       }
       output_row.values.push_back(std::move(label));
       for (std::size_t value = 0; value < value_column_count; ++value) {
@@ -5855,6 +6661,11 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
           return refuse("QOW-DIAG-QRY-019-UNPIVOT-DESCRIPTOR-V1",
                         cast_diagnostic.diagnostic_code + ":" +
                             cast_diagnostic.detail);
+        }
+        if (!charge_output_value(reshaped)) {
+          return refuse(
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+              "UNPIVOT retained output exhausted the selected-node grant");
         }
         output_row.values.push_back(std::move(reshaped));
       }
@@ -6759,13 +7570,26 @@ bool CanonicalWindowDefaultFrameEvidenceValid(
 bool CanonicalWindowFrameEvidenceValid(
     const CanonicalWindowFrameResult& frames) {
   const auto row_count = frames.ordered_batch.rows.size();
-  std::vector<std::uint32_t> descriptor_ids;
-  descriptor_ids.reserve(frames.ordered_batch.columns.size());
-  for (const auto& column : frames.ordered_batch.columns) {
-    descriptor_ids.push_back(column.descriptor_id);
+  const PhysicalNodeRecord* selected_node = nullptr;
+  for (const auto& node : frames.physical_dag.nodes) {
+    if (node.physical_node_id == frames.executed_physical_node_id) {
+      selected_node = &node;
+      break;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kWindow ||
+      selected_node->implementation_id !=
+          "window.partition-order-peer.v1" ||
+      selected_node->input_physical_node_ids.size() != 1 ||
+      selected_node->physical_node_id !=
+          frames.physical_dag.root_physical_node_id ||
+      frames.selected_plan_uuid != frames.physical_dag.selected_plan_uuid ||
+      frames.causal_counter_id != selected_node->causal_counter_id) {
+    return false;
   }
   const auto batch_diagnostic = ValidateCanonicalDescriptorBatch(
-      frames.ordered_batch, descriptor_ids);
+      frames.ordered_batch, selected_node->output_descriptor_ids);
   if (!frames.diagnostic.ok || !frames.every_frame_operand_consumed ||
       !frames.empty_state_uses_optional_bounds ||
       !frames.base_frame_constructed_before_exclusion ||
@@ -7736,6 +8560,10 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
   CanonicalRegistryWindowAggregateStateStrategy selected_state_strategy =
       CanonicalRegistryWindowAggregateStateStrategy::unknown;
   bool aggregate_state_spill_required = false;
+  using AggregateRuntimeContext =
+      detail::CanonicalAggregateRuntimeExecutionContext;
+  auto aggregate_runtime_context =
+      AggregateRuntimeContext::window_frame_recompute;
   if (aggregate_node->implementation_id.rfind(
           "window.aggregate-registry-", 0) != 0) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-PHYSICAL",
@@ -7749,11 +8577,15 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
              "window.aggregate-registry-moving-inverse.v1") {
     selected_state_strategy =
         CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+    aggregate_runtime_context =
+        AggregateRuntimeContext::window_moving_inverse;
   } else if (aggregate_node->implementation_id ==
              "window.aggregate-registry-state-spill.v1") {
     selected_state_strategy =
         CanonicalRegistryWindowAggregateStateStrategy::state_spill;
     aggregate_state_spill_required = true;
+    aggregate_runtime_context =
+        AggregateRuntimeContext::window_state_spill;
   } else {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-STRATEGY",
                   "optimizer selected an unknown aggregate window state implementation");
@@ -7824,20 +8656,21 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
       aggregate_template.retained_memory_bytes + input_payload_bytes +
       source_filter_bytes;
 
-  const auto make_frame_request = [&]() {
-    auto aggregate =
-        CloneFoundationAggregateRequestWithoutRowsOrFilter(
-            aggregate_template);
-    aggregate.input_batch.columns = request.frames.ordered_batch.columns;
-    return aggregate;
+  const auto make_borrowed_frame_request = [&]() {
+    return CloneFoundationAggregateRequestWithoutRowsOrFilter(
+        aggregate_template, false);
   };
-  auto preflight_request = make_frame_request();
+  auto preflight_request = make_borrowed_frame_request();
   preflight_request.retained_memory_bytes = base_retained_memory_bytes;
   if (preflight_request.filter_truth_values.has_value()) {
     preflight_request.filter_truth_values =
         std::vector<api::EngineSqlTruthValue>{};
   }
-  auto preflight = ExecuteCanonicalAggregateRuntime(preflight_request);
+  DescriptorBatch preflight_input_batch;
+  preflight_input_batch.columns = request.frames.ordered_batch.columns;
+  auto preflight = detail::ExecuteCanonicalAggregateRuntimeBorrowedForContext(
+      preflight_request, aggregate_template.physical_dag,
+      preflight_input_batch, aggregate_runtime_context);
   if (!preflight.diagnostic.ok) {
     return refuse(preflight.diagnostic.diagnostic_code,
                   preflight.diagnostic.detail);
@@ -7908,24 +8741,22 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
 
   if (selected_state_strategy ==
       CanonicalRegistryWindowAggregateStateStrategy::moving_inverse) {
-    if (input_payload_bytes >
-            *node_memory_grant - base_retained_memory_bytes ||
-        source_filter_bytes >
-            *node_memory_grant - base_retained_memory_bytes -
-                input_payload_bytes) {
+    const auto moving_retained_memory_bytes =
+        aggregate_template.retained_memory_bytes + source_filter_bytes;
+    if (source_filter_bytes >
+        *node_memory_grant - moving_retained_memory_bytes -
+            input_payload_bytes) {
       return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
-                    "moving aggregate input or FILTER copy exceeds its selected-node grant");
+                    "moving aggregate FILTER copy exceeds its selected-node grant");
     }
     CanonicalAggregateMovingRuntimeRequest moving_request;
-    moving_request.aggregate_request = make_frame_request();
-    moving_request.aggregate_request.input_batch.rows =
-        request.frames.ordered_batch.rows;
+    moving_request.aggregate_request = make_borrowed_frame_request();
     if (template_filter_truth_values != nullptr) {
       moving_request.aggregate_request.filter_truth_values =
           *template_filter_truth_values;
     }
     moving_request.aggregate_request.retained_memory_bytes =
-        base_retained_memory_bytes;
+        moving_retained_memory_bytes;
     moving_request.effective_frame_row_indices = result.frame_row_indices;
     moving_request.maximum_output_rows = request.maximum_output_rows;
     moving_request.maximum_addition_transition_count =
@@ -7937,7 +8768,9 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
     moving_request.maximum_combined_final_output_bytes =
         maximum_combined_final_output_bytes;
     moving_request.cancellation_requested = request.cancellation_requested;
-    auto moving = ExecuteCanonicalAggregateMovingRuntime(moving_request);
+    auto moving = ExecuteCanonicalAggregateMovingRuntime(
+        moving_request, aggregate_template.physical_dag,
+        request.frames.ordered_batch);
     if (!moving.diagnostic.ok) {
       return refuse(moving.diagnostic.diagnostic_code,
                     moving.diagnostic.detail);
@@ -7974,7 +8807,9 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
   } else {
     std::size_t retained_output_payload_bytes = 0;
     for (const auto& frame : request.frames.effective_frames) {
-      auto aggregate = make_frame_request();
+      auto aggregate = make_borrowed_frame_request();
+      DescriptorBatch frame_input_batch;
+      frame_input_batch.columns = request.frames.ordered_batch.columns;
       const auto remaining_finalization_bytes =
           maximum_combined_final_output_bytes -
           result.combined_final_output_bytes;
@@ -8019,9 +8854,9 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
         return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
                       "aggregate window frame input or FILTER exceeds its selected-node grant");
       }
-      aggregate.input_batch.rows.reserve(frame.effective_row_indices.size());
+      frame_input_batch.rows.reserve(frame.effective_row_indices.size());
       for (const auto row : frame.effective_row_indices) {
-        aggregate.input_batch.rows.push_back(
+        frame_input_batch.rows.push_back(
             request.frames.ordered_batch.rows[row]);
       }
       if (template_filter_truth_values != nullptr) {
@@ -8033,8 +8868,10 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
         aggregate.filter_truth_values = std::move(filter);
       }
       auto frame_result =
-          ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
-              aggregate, remaining_finalization_bytes);
+          detail::ExecuteCanonicalAggregateRuntimeBorrowedForContext(
+              aggregate, aggregate_template.physical_dag,
+              frame_input_batch, aggregate_runtime_context,
+              remaining_finalization_bytes);
       if (!frame_result.diagnostic.ok) {
         return refuse(frame_result.diagnostic.diagnostic_code,
                       frame_result.diagnostic.detail);
@@ -8407,12 +9244,13 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
 
     auto aggregate =
         CloneFoundationAggregateRequestWithoutRowsOrFilter(
-            aggregate_template);
-    aggregate.input_batch.columns =
+            aggregate_template, false);
+    DescriptorBatch frame_input_batch;
+    frame_input_batch.columns =
         aggregate_request.frames.ordered_batch.columns;
-    aggregate.input_batch.rows.reserve(frame.size());
+    frame_input_batch.rows.reserve(frame.size());
     for (const auto row : frame) {
-      aggregate.input_batch.rows.push_back(
+      frame_input_batch.rows.push_back(
           aggregate_request.frames.ordered_batch.rows[row]);
     }
     if (template_filter_truth_values != nullptr) {
@@ -8442,7 +9280,9 @@ ExecuteCanonicalRegistryWindowAggregateSpillStrategy(
         request.cleanup_after_cancellation;
     state_request.restart_recovery_proof_available =
         request.restart_recovery_proof_available;
-    auto state = ExecuteCanonicalAggregateStateSpill(state_request);
+    auto state = ExecuteCanonicalAggregateStateSpill(
+        state_request, aggregate_template.physical_dag,
+        frame_input_batch);
 
     result.spilled = result.spilled || state.spilled;
     result.spill_reopened = result.spill_reopened || state.spill_reopened;

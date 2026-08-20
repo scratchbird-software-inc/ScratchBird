@@ -32,6 +32,34 @@ DescriptorRuntimeDiagnostic TableSubqueryRefusal(std::string detail) {
   return diagnostic;
 }
 
+bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
+  const DescriptorBatch empty;
+  return batch.columns.empty() &&
+         batch.columns.capacity() == empty.columns.capacity() &&
+         batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
+}
+
+bool CanonicalSubqueryBatchMemoryBytes(const DescriptorBatch& batch,
+                                       std::uint64_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = 1;
+  for (const auto& row : batch.rows) {
+    for (const auto& value : row.values) {
+      if (value.encoded_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.encoded_value.size();
+      if (value.binary_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.binary_value.size();
+    }
+  }
+  return true;
+}
+
 struct CorrelatedCancellationPoll {
   DescriptorRuntimeDiagnostic diagnostic;
   bool cancelled = false;
@@ -114,8 +142,43 @@ CorrelatedBatchValidation ValidateCorrelatedBatch(
 // context and immutable descriptor handles; parser or donor syntax is never
 // consulted here. Validation and the resource bound complete before any
 // result batch is published.
-CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
-    const CanonicalTableSubqueryRequest& request) {
+namespace {
+enum class TableSubqueryExecutionRoute : std::uint8_t {
+  table = 1,
+  scalar,
+  row,
+  exists,
+  quantified,
+};
+
+bool TableSubqueryImplementationMatches(
+    const TableSubqueryExecutionRoute route,
+    const std::string_view implementation_id) {
+  switch (route) {
+    case TableSubqueryExecutionRoute::table:
+      return implementation_id == "subquery.table.materialize.typed.v1";
+    case TableSubqueryExecutionRoute::scalar:
+      return implementation_id == "subquery.scalar.cardinality.typed.v1";
+    case TableSubqueryExecutionRoute::row:
+      return implementation_id == "subquery.row.cardinality.typed.v1";
+    case TableSubqueryExecutionRoute::exists:
+      return implementation_id == "subquery.exists.typed.v1";
+    case TableSubqueryExecutionRoute::quantified:
+      return implementation_id == "subquery.quantified.typed.v1" ||
+             implementation_id ==
+                 "subquery.quantified.int64.typed.v1";
+  }
+  return false;
+}
+
+CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
+    const CanonicalTableSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const TableSubqueryExecutionRoute execution_route,
+    const bool borrowed_execution_dag,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_input_batch) {
   CanonicalTableSubqueryResult result;
   const auto refuse = [&](std::string detail) {
     result.diagnostic = TableSubqueryRefusal(std::move(detail));
@@ -127,19 +190,30 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
     return result;
   };
 
+  if (borrowed_execution_dag &&
+      !TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag)) {
+    return refuse(
+        "table subquery request carries conflicting physical DAG authority");
+  }
+  if (borrowed_input_batch &&
+      !DescriptorBatchCarrierIsExactDefault(request.input_batch)) {
+    return refuse(
+        "table subquery request carries conflicting input batch ownership");
+  }
+
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!authority_validation.ok)
     return refuse(authority_validation.diagnostic_code + ":" +
                   authority_validation.detail);
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id) {
+          scoped_root_physical_node_id) {
     return refuse("selected table-subquery node is not the physical root");
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == request.selected_physical_node_id) {
       selected_node = &node;
       break;
@@ -147,13 +221,16 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
   }
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kSubquery ||
+      !TableSubqueryImplementationMatches(
+          execution_route, selected_node->implementation_id) ||
       selected_node->input_physical_node_ids.size() != 1) {
-    return refuse("table subquery requires one selected subquery node");
+    return refuse(
+        "table subquery requires its selected canonical implementation");
   }
 
   const auto input_id = selected_node->input_physical_node_ids.front();
   const PhysicalNodeRecord* input_node = nullptr;
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == input_id) {
       input_node = &node;
       break;
@@ -168,18 +245,49 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
   }
 
   auto input_validation = ValidateCanonicalDescriptorBatch(
-      request.input_batch, input_node->output_descriptor_ids);
+      execution_input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) {
     return refuse(input_validation.diagnostic_code + ":" +
                   input_validation.detail);
   }
   if (request.maximum_materialized_row_count == 0 ||
-      request.input_batch.rows.size() >
+      execution_input_batch.rows.size() >
           request.maximum_materialized_row_count) {
     return refuse("table-subquery materialization row bound was exceeded");
   }
 
-  DescriptorBatch materialized = request.input_batch;
+  if (execution_route == TableSubqueryExecutionRoute::table) {
+    std::uint64_t input_memory_bytes = 0;
+    if (!CanonicalSubqueryBatchMemoryBytes(execution_input_batch,
+                                           &input_memory_bytes) ||
+        selected_node->memory_bytes_required == 0 ||
+        selected_node->memory_bytes_required >
+            execution_dag.memory_budget_bytes ||
+        selected_node->memory_bytes_required >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::size_t>::max())) {
+      auto refusal = refuse(
+          "table-subquery memory grant or runtime payload accounting is "
+          "invalid");
+      refusal.diagnostic.diagnostic_code = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+      return refusal;
+    }
+    auto remaining_memory_bytes = selected_node->memory_bytes_required;
+    const auto charge = [&](const std::uint64_t bytes) {
+      if (bytes > remaining_memory_bytes) return false;
+      remaining_memory_bytes -= bytes;
+      return true;
+    };
+    if (!charge(input_memory_bytes) || !charge(input_memory_bytes)) {
+      auto refusal = refuse(
+          "table-subquery materialization exceeds the selected node memory "
+          "grant");
+      refusal.diagnostic.diagnostic_code = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+      return refusal;
+    }
+  }
+
+  DescriptorBatch materialized = execution_input_batch;
   auto output_validation = ValidateCanonicalDescriptorBatch(
       materialized, selected_node->output_descriptor_ids);
   if (!output_validation.ok) {
@@ -187,7 +295,7 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
                   output_validation.detail);
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
@@ -195,11 +303,42 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
   result.diagnostic = {};
   result.output_batch = std::move(materialized);
   result.materialized_row_count = result.output_batch.rows.size();
-  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
   result.mga_statement_context = request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
+    const CanonicalTableSubqueryRequest& request) {
+  return ExecuteCanonicalTableSubqueryBound(
+      request, request.physical_dag,
+      request.physical_dag.root_physical_node_id,
+      TableSubqueryExecutionRoute::table, false,
+      request.input_batch, false);
+}
+
+CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
+    const CanonicalTableSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id) {
+  return ExecuteCanonicalTableSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id,
+      TableSubqueryExecutionRoute::table, true,
+      request.input_batch, false);
+}
+
+CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
+    const CanonicalTableSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalTableSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id,
+      TableSubqueryExecutionRoute::table, true,
+      borrowed_input_batch, true);
 }
 
 // QOW-SOURCE-QRY-013-SCALAR-V1
@@ -207,8 +346,13 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
 // table-subquery result. Zero rows produce one typed SQL NULL, one row
 // preserves its value, and more than one row fails before any scalar result is
 // published.
-CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
-    const CanonicalScalarSubqueryRequest& request) {
+namespace {
+CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubqueryBound(
+    const CanonicalScalarSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   using scratchbird::engine::internal_api::EngineTypedValue;
   using scratchbird::engine::internal_api::EngineValueState;
 
@@ -226,7 +370,10 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
     return result;
   };
 
-  auto table = ExecuteCanonicalTableSubquery(request.table_request);
+  auto table = ExecuteCanonicalTableSubqueryBound(
+      request.table_request, execution_dag, scoped_root_physical_node_id,
+      TableSubqueryExecutionRoute::scalar, borrowed_execution_carriers,
+      execution_input_batch, borrowed_execution_carriers);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
@@ -284,7 +431,7 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.table_request.mga_authority,
-      request.table_request.physical_dag);
+      execution_dag);
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
@@ -304,8 +451,12 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
 // Enforce the row-subquery cardinality contract over the canonical table
 // result. Zero rows produce one typed all-NULL row, one row preserves every
 // field, and more than one row fails before any row value is published.
-CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
-    const CanonicalRowSubqueryRequest& request) {
+CanonicalRowSubqueryResult ExecuteCanonicalRowSubqueryBound(
+    const CanonicalRowSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   using scratchbird::engine::internal_api::EngineTypedValue;
   using scratchbird::engine::internal_api::EngineValueState;
 
@@ -323,7 +474,10 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
     return result;
   };
 
-  auto table = ExecuteCanonicalTableSubquery(request.table_request);
+  auto table = ExecuteCanonicalTableSubqueryBound(
+      request.table_request, execution_dag, scoped_root_physical_node_id,
+      TableSubqueryExecutionRoute::row, borrowed_execution_carriers,
+      execution_input_batch, borrowed_execution_carriers);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
@@ -396,7 +550,7 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.table_request.mga_authority,
-      request.table_request.physical_dag);
+      execution_dag);
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
@@ -410,6 +564,43 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
   result.mga_statement_context =
       request.table_request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
+    const CanonicalScalarSubqueryRequest& request) {
+  return ExecuteCanonicalScalarSubqueryBound(
+      request, request.table_request.physical_dag,
+      request.table_request.physical_dag.root_physical_node_id,
+      request.table_request.input_batch, false);
+}
+
+CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
+    const CanonicalScalarSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalScalarSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id,
+      borrowed_input_batch, true);
+}
+
+CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
+    const CanonicalRowSubqueryRequest& request) {
+  return ExecuteCanonicalRowSubqueryBound(
+      request, request.table_request.physical_dag,
+      request.table_request.physical_dag.root_physical_node_id,
+      request.table_request.input_batch, false);
+}
+
+CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
+    const CanonicalRowSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalRowSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id,
+      borrowed_input_batch, true);
 }
 
 // QOW-SOURCE-QRY-013-EXISTS-V1
@@ -436,7 +627,11 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
     return result;
   };
 
-  auto table = ExecuteCanonicalTableSubquery(request.table_request);
+  auto table = ExecuteCanonicalTableSubqueryBound(
+      request.table_request, request.table_request.physical_dag,
+      request.table_request.physical_dag.root_physical_node_id,
+      TableSubqueryExecutionRoute::exists, false,
+      request.table_request.input_batch, false);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
@@ -522,7 +717,11 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     return result;
   };
 
-  auto table = ExecuteCanonicalTableSubquery(request.table_request);
+  auto table = ExecuteCanonicalTableSubqueryBound(
+      request.table_request, request.table_request.physical_dag,
+      request.table_request.physical_dag.root_physical_node_id,
+      TableSubqueryExecutionRoute::quantified, false,
+      request.table_request.input_batch, false);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
@@ -564,6 +763,28 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
   if (request.maximum_comparison_count == 0 ||
       table.materialized_row_count > request.maximum_comparison_count) {
     return refuse("quantified comparison resource bound was exceeded");
+  }
+  namespace dt = scratchbird::core::datatypes;
+  const bool descriptor_bound_comparison =
+      dt::CanonicalTypeIdFromStableName(
+          request.left_value.descriptor.canonical_type_name) ==
+          dt::CanonicalTypeId::character ||
+      dt::CanonicalTypeIdFromStableName(
+          right_column.descriptor.canonical_type_name) ==
+          dt::CanonicalTypeId::character ||
+      request.left_value.descriptor.encoded_descriptor.find(
+          "timezone_profile_id=") != std::string::npos ||
+      right_column.descriptor.encoded_descriptor.find(
+          "timezone_profile_id=") != std::string::npos;
+  if (request.comparison_authority_engine_owned !=
+          descriptor_bound_comparison ||
+      (request.comparison_authority_engine_owned &&
+       request.precomputed_comparisons.size() !=
+           table.materialized_row_count) ||
+      (!request.comparison_authority_engine_owned &&
+       !request.precomputed_comparisons.empty())) {
+    return refuse(
+        "quantified comparison authority carrier is not exact");
   }
   if (request.result_expression_descriptor_id == 0 ||
       request.result_column.descriptor_id !=
@@ -607,7 +828,9 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
 
   std::vector<api::EngineSqlTruthValue> comparison_truths;
   comparison_truths.reserve(table.materialized_row_count);
-  for (const auto& row : table.output_batch.rows) {
+  for (std::size_t row_index = 0;
+       row_index < table.output_batch.rows.size(); ++row_index) {
+    const auto& row = table.output_batch.rows[row_index];
     const auto& right_value = row.values.front();
     api::EngineCanonicalExpressionEvaluationRequest expression_request;
     expression_request.consumer =
@@ -617,6 +840,19 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     expression_request.right_value = right_value;
     expression_request.result_descriptor =
         request.result_column.descriptor;
+    if (request.comparison_authority_engine_owned) {
+      const auto& comparison =
+          request.precomputed_comparisons[row_index];
+      const bool null_comparison = request.left_value.isSqlNull() ||
+                                   right_value.isSqlNull();
+      if (comparison.has_value() == null_comparison ||
+          (comparison.has_value() &&
+           (*comparison < -1 || *comparison > 1))) {
+        return refuse(
+            "quantified comparison authority row is not canonical");
+      }
+      expression_request.precomputed_comparison = comparison;
+    }
     api::EngineCanonicalExpressionEvaluationResult expression_result;
     std::string expression_detail;
     if (!api::QowEvaluateCanonicalTypedExpressionV1(
@@ -695,9 +931,14 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
 // the inner descriptor shape; scope results retain physical outer-row identity
 // and deterministic inner order without granting the parser execution
 // authority. The legacy int64 implementation identity remains an exact alias
-// of the shared non-collated typed comparison route.
-CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
-    const CanonicalCorrelatedSubqueryRequest& request) {
+// of the shared typed equality route; character and timezone-profile keys
+// arrive with an engine-issued comparison carrier.
+namespace {
+CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubqueryBound(
+    const CanonicalCorrelatedSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const bool borrowed_execution_dag) {
   namespace api = scratchbird::engine::internal_api;
 
   CanonicalCorrelatedSubqueryResult result;
@@ -733,26 +974,31 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     return PollCorrelatedCancellation(request.cancellation_requested, phase);
   };
 
+  if (borrowed_execution_dag &&
+      !TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag)) {
+    return refuse(
+        "correlated subquery request carries conflicting physical DAG authority");
+  }
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!authority_validation.ok)
     return refuse(authority_validation.diagnostic_code + ":" +
                   authority_validation.detail);
   if (!CorrelatedCancellationEvidenceBound(
-          request.physical_dag, request.cancellation_requested,
+          execution_dag, request.cancellation_requested,
           request.cancellation_evidence_uuid)) {
     return refuse("correlated cancellation evidence is not bound");
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id) {
+          scoped_root_physical_node_id) {
     return refuse("selected correlated subquery is not the physical root");
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;
   const PhysicalNodeRecord* outer_node = nullptr;
   const PhysicalNodeRecord* inner_node = nullptr;
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id == request.selected_physical_node_id) {
       selected_node = &node;
       break;
@@ -767,10 +1013,12 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kSubquery ||
       !correlated_implementation ||
-      selected_node->input_physical_node_ids.size() != 2) {
+      selected_node->input_physical_node_ids.size() != 2 ||
+      selected_node->input_physical_node_ids[0] ==
+          selected_node->input_physical_node_ids[1]) {
     return refuse("correlated subquery physical profile is not bound");
   }
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
         selected_node->input_physical_node_ids[0]) {
       outer_node = &node;
@@ -851,6 +1099,54 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
       request.maximum_result_row_count == 0) {
     return refuse("correlated subquery resource bound was exceeded");
   }
+  const bool descriptor_bound_comparison =
+      outer_type == dt::CanonicalTypeId::character ||
+      inner_type == dt::CanonicalTypeId::character ||
+      outer_column.descriptor.encoded_descriptor.find(
+          "timezone_profile_id=") != std::string::npos ||
+      inner_column.descriptor.encoded_descriptor.find(
+          "timezone_profile_id=") != std::string::npos;
+  if (request.comparison_authority_engine_owned !=
+          descriptor_bound_comparison ||
+      (request.comparison_authority_engine_owned &&
+       request.precomputed_equality_comparisons.size() !=
+           outer_count * inner_count) ||
+      (!request.comparison_authority_engine_owned &&
+       !request.precomputed_equality_comparisons.empty())) {
+    return refuse(
+        "correlated comparison authority carrier is not exact");
+  }
+  if (descriptor_bound_comparison) {
+    for (std::size_t outer_index = 0; outer_index < outer_count;
+         ++outer_index) {
+      const auto& outer_value =
+          outer_batch.rows[outer_index]
+              .values[request.outer_binding_column];
+      for (std::size_t inner_index = 0; inner_index < inner_count;
+           ++inner_index) {
+        const auto authority_cancellation =
+            poll_cancellation(
+                "while validating correlated comparison authority");
+        if (!authority_cancellation.diagnostic.ok) {
+          return refuse_poll(authority_cancellation);
+        }
+        const auto& inner_value =
+            inner_batch.rows[inner_index]
+                .values[request.inner_reference_column];
+        const auto& comparison =
+            request.precomputed_equality_comparisons[
+                outer_index * inner_count + inner_index];
+        const bool null_comparison = outer_value.isSqlNull() ||
+                                     inner_value.isSqlNull();
+        if (comparison.has_value() == null_comparison ||
+            (comparison.has_value() &&
+             (*comparison < -1 || *comparison > 1))) {
+          return refuse(
+              "correlated comparison authority row is not canonical");
+        }
+      }
+    }
+  }
 
   std::optional<CorrelatedCancellationPoll> key_cancellation;
   const auto validate_keys = [&](const DescriptorBatch& batch,
@@ -873,21 +1169,23 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     }
     return std::string{};
   };
-  if (const auto detail =
-          validate_keys(outer_batch, request.outer_binding_column);
-      !detail.empty()) {
-    return refuse("correlated outer key refused: " + detail);
-  }
-  if (key_cancellation.has_value()) {
-    return refuse_poll(std::move(*key_cancellation));
-  }
-  if (const auto detail =
-          validate_keys(inner_batch, request.inner_reference_column);
-      !detail.empty()) {
-    return refuse("correlated inner key refused: " + detail);
-  }
-  if (key_cancellation.has_value()) {
-    return refuse_poll(std::move(*key_cancellation));
+  if (!descriptor_bound_comparison) {
+    if (const auto detail =
+            validate_keys(outer_batch, request.outer_binding_column);
+        !detail.empty()) {
+      return refuse("correlated outer key refused: " + detail);
+    }
+    if (key_cancellation.has_value()) {
+      return refuse_poll(std::move(*key_cancellation));
+    }
+    if (const auto detail =
+            validate_keys(inner_batch, request.inner_reference_column);
+        !detail.empty()) {
+      return refuse("correlated inner key refused: " + detail);
+    }
+    if (key_cancellation.has_value()) {
+      return refuse_poll(std::move(*key_cancellation));
+    }
   }
 
   std::vector<CanonicalCorrelatedScopeResult> scopes;
@@ -929,8 +1227,11 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
         ++comparison_count;
         int comparison = 0;
         std::string detail;
-        if (!api::QowCompareCanonicalNonCollatedScalarsV1(
-                outer_value, inner_value, &comparison, &detail)) {
+        if (descriptor_bound_comparison) {
+          comparison = *request.precomputed_equality_comparisons[
+              outer_index * inner_count + inner_index];
+        } else if (!api::QowCompareCanonicalNonCollatedScalarsV1(
+                       outer_value, inner_value, &comparison, &detail)) {
           return refuse("correlated key comparison refused: " + detail);
         }
         if (comparison == 0) {
@@ -962,7 +1263,7 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     return refuse_poll(std::move(cancellation));
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      request.mga_authority, execution_dag);
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
@@ -976,11 +1277,27 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
   if (request.cancellation_requested) {
     result.cancellation_evidence_uuid = request.cancellation_evidence_uuid;
   }
-  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
   result.mga_statement_context = request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
+    const CanonicalCorrelatedSubqueryRequest& request) {
+  return ExecuteCanonicalCorrelatedSubqueryBound(
+      request, request.physical_dag,
+      request.physical_dag.root_physical_node_id, false);
+}
+
+CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
+    const CanonicalCorrelatedSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id) {
+  return ExecuteCanonicalCorrelatedSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id, true);
 }
 
 // QOW-SOURCE-QRY-013-LATERAL-V1
@@ -1107,7 +1424,9 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kJoin ||
       selected_node->implementation_id != expected_implementation ||
-      selected_node->input_physical_node_ids.size() != 2) {
+      selected_node->input_physical_node_ids.size() != 2 ||
+      selected_node->input_physical_node_ids[0] ==
+          selected_node->input_physical_node_ids[1]) {
     return refuse("LATERAL/APPLY physical profile is not exactly bound");
   }
   for (const auto& node : request.physical_dag.nodes) {

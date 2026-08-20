@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -537,6 +538,971 @@ bool SamePersistedRowDescriptor(
 }
 
 }  // namespace
+
+CanonicalPredicateLogicalMemoryBound
+BoundCanonicalRowPredicateLogicalMemoryV1(
+    const api::TypedRelationalDag& dag,
+    const std::uint32_t root_expression_id,
+    const CanonicalRelationalExpressionRowBinding& row_binding,
+    const std::vector<CanonicalPredicateRowValueEnvelope>& row_values,
+    const api::EngineCanonicalExpressionConsumer consumer,
+    const std::function<bool()>& abort_requested) {
+  CanonicalPredicateLogicalMemoryBound result;
+  result.dag_expression_count = dag.expressions.size();
+  result.dag_descriptor_count = dag.descriptors.size();
+  result.row_slot_count = row_binding.slots.size();
+  const auto cancelled = [&] {
+    if (!abort_requested || !abort_requested()) return false;
+    result.detail = "predicate logical-memory preflight was cancelled";
+    return true;
+  };
+  const auto add = [](const std::uint64_t left, const std::uint64_t right,
+                      std::uint64_t* output) {
+    if (output == nullptr ||
+        right > std::numeric_limits<std::uint64_t>::max() - left) {
+      return false;
+    }
+    *output = left + right;
+    return true;
+  };
+  const auto multiply = [](const std::uint64_t left,
+                           const std::uint64_t right,
+                           std::uint64_t* output) {
+    if (output == nullptr ||
+        (left != 0 &&
+         right > std::numeric_limits<std::uint64_t>::max() / left)) {
+      return false;
+    }
+    *output = left * right;
+    return true;
+  };
+  const auto account = [&](std::uint64_t* total,
+                           const std::uint64_t bytes) {
+    return add(*total, bytes, total);
+  };
+  const auto account_count = [&](std::uint64_t* total,
+                                 const std::size_t count,
+                                 const std::size_t bytes) {
+    std::uint64_t product = 0;
+    return multiply(count, bytes, &product) && account(total, product);
+  };
+  const auto account_string = [&](std::uint64_t* total,
+                                  const std::string_view value) {
+    return account(total, value.size()) && account(total, 1);
+  };
+  const auto descriptor_dynamic_bytes = [&](const api::EngineDescriptor& d,
+                                            std::uint64_t* bytes) {
+    *bytes = 0;
+    return account_string(bytes, d.descriptor_uuid.canonical) &&
+           account_string(bytes, d.descriptor_kind) &&
+           account_string(bytes, d.canonical_type_name) &&
+           account_string(bytes, d.encoded_descriptor);
+  };
+  const auto value_envelope_bytes = [&](
+                                        const CanonicalPredicateRowValueEnvelope&
+                                            envelope,
+                                        std::uint64_t* bytes) {
+    std::uint64_t dynamic = 0;
+    *bytes = sizeof(api::EngineTypedValue);
+    return descriptor_dynamic_bytes(envelope.descriptor, &dynamic) &&
+           account(bytes, dynamic) &&
+           account(bytes, envelope.maximum_encoded_value_bytes) &&
+           account(bytes, envelope.maximum_binary_value_bytes);
+  };
+
+  std::unordered_map<std::uint32_t,
+                     const api::RelationalExpressionRecord*>
+      expressions;
+  expressions.reserve(dag.expressions.size());
+  for (const auto& expression : dag.expressions) {
+    if (cancelled()) return result;
+    if (expression.expression_id == 0 ||
+        !expressions.emplace(expression.expression_id, &expression).second) {
+      result.detail = "predicate expression identity is not unique";
+      return result;
+    }
+  }
+  std::unordered_map<std::uint32_t,
+                     const api::RelationalTypeDescriptor*>
+      descriptors;
+  descriptors.reserve(dag.descriptors.size());
+  for (const auto& descriptor : dag.descriptors) {
+    if (cancelled()) return result;
+    if (descriptor.descriptor_id == 0 ||
+        !descriptors.emplace(descriptor.descriptor_id, &descriptor).second) {
+      result.detail = "predicate descriptor identity is not unique";
+      return result;
+    }
+  }
+  if (!expressions.contains(root_expression_id) ||
+      row_binding.row_descriptor_ids.empty() ||
+      row_binding.row_descriptor_ids.size() != row_values.size()) {
+    result.detail =
+        "predicate root or descriptor-exact row envelope is absent";
+    return result;
+  }
+  if (consumer != api::EngineCanonicalExpressionConsumer::filter &&
+      consumer != api::EngineCanonicalExpressionConsumer::aggregate &&
+      consumer != api::EngineCanonicalExpressionConsumer::join &&
+      consumer != api::EngineCanonicalExpressionConsumer::projection) {
+    result.detail = "predicate expression consumer is not canonical";
+    return result;
+  }
+
+  const auto build_expected_descriptor = [&](
+      const api::RelationalTypeDescriptor& source,
+      const std::string_view type_name, api::EngineDescriptor* descriptor) {
+    if (descriptor == nullptr || type_name.empty() || type_name == "null") {
+      return false;
+    }
+    descriptor->descriptor_uuid.canonical = source.descriptor_uuid;
+    descriptor->descriptor_kind = "scalar";
+    descriptor->canonical_type_name = type_name;
+    const char* nullability = "unknown";
+    if (source.nullability == api::RelationalNullability::kNonNull) {
+      nullability = "non_null";
+    } else if (source.nullability == api::RelationalNullability::kNullable) {
+      nullability = "nullable";
+    }
+    descriptor->encoded_descriptor =
+        "type_uuid=" + source.type_uuid + ";nullability=" + nullability;
+    if (source.collation_uuid.has_value()) {
+      descriptor->encoded_descriptor +=
+          ";collation_uuid=" + *source.collation_uuid;
+    }
+    if (source.timezone_profile_id.has_value()) {
+      descriptor->encoded_descriptor +=
+          ";timezone_profile_id=" + *source.timezone_profile_id;
+    }
+    if (source.width.has_value()) {
+      descriptor->encoded_descriptor +=
+          ";width=" + std::to_string(*source.width);
+    }
+    if (source.precision.has_value()) {
+      descriptor->encoded_descriptor +=
+          ";precision=" + std::to_string(*source.precision);
+    }
+    if (source.scale.has_value()) {
+      descriptor->encoded_descriptor +=
+          ";scale=" + std::to_string(*source.scale);
+    }
+    return true;
+  };
+
+  std::uint64_t resident = sizeof(CanonicalRelationalExpressionRuntime);
+  if (!account_count(
+          &resident, dag.expressions.size(),
+          sizeof(std::pair<const std::uint32_t,
+                           const api::RelationalExpressionRecord*>)) ||
+      !account_count(
+          &resident, dag.descriptors.size(),
+          sizeof(std::pair<const std::uint32_t,
+                           const api::RelationalTypeDescriptor*>))) {
+    result.detail = "predicate runtime resident-memory bound overflowed";
+    return result;
+  }
+
+  std::unordered_set<std::uint32_t> row_descriptor_ids;
+  std::uint64_t maximum_expected_descriptor = 0;
+  for (std::size_t ordinal = 0;
+       ordinal < row_binding.row_descriptor_ids.size(); ++ordinal) {
+    if (cancelled()) return result;
+    const auto descriptor_id = row_binding.row_descriptor_ids[ordinal];
+    std::uint64_t descriptor_bytes = 0;
+    std::uint64_t expected_descriptor_bytes = 0;
+    const auto descriptor = descriptors.find(descriptor_id);
+    api::EngineDescriptor expected_descriptor;
+    if (descriptor_id == 0 || !descriptors.contains(descriptor_id) ||
+        !row_descriptor_ids.insert(descriptor_id).second ||
+        descriptor->second->nullability ==
+            api::RelationalNullability::kUnknown ||
+        row_values[ordinal].descriptor.canonical_type_name.empty() ||
+        !build_expected_descriptor(
+            *descriptor->second,
+            row_values[ordinal].descriptor.canonical_type_name,
+            &expected_descriptor) ||
+        (!SameDescriptor(expected_descriptor,
+                         row_values[ordinal].descriptor) &&
+         !SamePersistedRowDescriptor(*descriptor->second,
+                                     row_values[ordinal].descriptor)) ||
+        !descriptor_dynamic_bytes(row_values[ordinal].descriptor,
+                                  &descriptor_bytes) ||
+        !descriptor_dynamic_bytes(expected_descriptor,
+                                  &expected_descriptor_bytes)) {
+      result.detail =
+          "predicate row descriptor envelope is unresolved or ambiguous";
+      return result;
+    }
+    std::uint64_t expected_bytes = sizeof(api::EngineDescriptor);
+    if (!account(&expected_bytes,
+                 std::max(descriptor_bytes, expected_descriptor_bytes))) {
+      result.detail = "predicate expected descriptor bound overflowed";
+      return result;
+    }
+    maximum_expected_descriptor =
+        std::max(maximum_expected_descriptor, expected_bytes);
+  }
+
+  std::unordered_map<std::uint32_t,
+                     const CanonicalPredicateRowValueEnvelope*>
+      bound_values;
+  std::unordered_map<std::size_t,
+                     CanonicalRelationalExpressionRowSlotKind>
+      bound_ordinals;
+  std::unordered_set<std::uint32_t> bound_expression_ids;
+  for (const auto& slot : row_binding.slots) {
+    if (cancelled()) return result;
+    const auto expression = expressions.find(slot.expression_id);
+    const auto [ordinal, inserted_ordinal] =
+        bound_ordinals.emplace(slot.row_ordinal, slot.slot_kind);
+    if (slot.expression_id == 0 ||
+        !bound_expression_ids.insert(slot.expression_id).second ||
+        (!inserted_ordinal &&
+         (ordinal->second !=
+              CanonicalRelationalExpressionRowSlotKind::input_identifier ||
+          slot.slot_kind !=
+              CanonicalRelationalExpressionRowSlotKind::input_identifier)) ||
+        expression == expressions.end() || slot.descriptor_id == 0 ||
+        expression->second->result_descriptor_id != slot.descriptor_id ||
+        slot.row_ordinal >= row_values.size() ||
+        row_binding.row_descriptor_ids[slot.row_ordinal] !=
+            slot.descriptor_id) {
+      result.detail = "predicate row slot binding is not descriptor-exact";
+      return result;
+    }
+    const auto& record = *expression->second;
+    const bool materialized_function =
+        record.expression_kind == api::RelationalExpressionKind::kFunctionCall &&
+        record.function_uuid.has_value() &&
+        IsCanonicalUuid(*record.function_uuid) &&
+        !record.bound_name_uuid.has_value() &&
+        !record.literal_kind.has_value() &&
+        !record.operator_name.has_value() &&
+        !record.literal_or_parameter_ref.has_value();
+    const bool grouping_key =
+        consumer == api::EngineCanonicalExpressionConsumer::aggregate &&
+        record.expression_kind == api::RelationalExpressionKind::kIdentifier &&
+        record.child_expression_ids.empty() &&
+        record.bound_name_uuid.has_value() &&
+        IsCanonicalUuid(*record.bound_name_uuid) &&
+        !record.function_uuid.has_value() && !record.literal_kind.has_value() &&
+        !record.operator_name.has_value() &&
+        !record.literal_or_parameter_ref.has_value();
+    const bool input_identifier =
+        (consumer == api::EngineCanonicalExpressionConsumer::join ||
+         consumer == api::EngineCanonicalExpressionConsumer::filter ||
+         consumer == api::EngineCanonicalExpressionConsumer::projection) &&
+        record.expression_kind == api::RelationalExpressionKind::kIdentifier &&
+        record.child_expression_ids.empty() &&
+        record.bound_name_uuid.has_value() &&
+        IsCanonicalUuid(*record.bound_name_uuid) &&
+        !record.function_uuid.has_value() && !record.literal_kind.has_value() &&
+        !record.operator_name.has_value() &&
+        !record.literal_or_parameter_ref.has_value();
+    const bool exact_kind =
+        (slot.slot_kind ==
+             CanonicalRelationalExpressionRowSlotKind::materialized_function &&
+         materialized_function) ||
+        (slot.slot_kind ==
+             CanonicalRelationalExpressionRowSlotKind::grouping_key &&
+         grouping_key) ||
+        (slot.slot_kind ==
+             CanonicalRelationalExpressionRowSlotKind::input_identifier &&
+         input_identifier);
+    if (!exact_kind ||
+        !bound_values
+             .emplace(slot.expression_id, &row_values[slot.row_ordinal])
+             .second) {
+      result.detail =
+          "predicate row slot kind does not match its bound expression";
+      return result;
+    }
+  }
+  result.unique_row_ordinal_count = bound_ordinals.size();
+
+  static const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  std::unordered_map<std::uint32_t, std::string> descriptor_type_names;
+  const auto resolve_core_type = [&](const std::uint32_t descriptor_id,
+                                     std::string* type_name) {
+    const auto descriptor = descriptors.find(descriptor_id);
+    if (descriptor == descriptors.end() ||
+        !IsCanonicalUuid(descriptor->second->type_uuid) ||
+        !core_manifest.ok()) {
+      return false;
+    }
+    const auto row = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows, [&](const auto& candidate) {
+          return TypedUuidText(candidate.descriptor_uuid) ==
+                 descriptor->second->type_uuid;
+        });
+    if (row == core_manifest.manifest.descriptor_rows.end()) return false;
+    *type_name = row->stable_name;
+    return true;
+  };
+  const auto descriptor_value_bytes = [&](const std::uint32_t descriptor_id,
+                                          const std::uint64_t payload_bytes,
+                                          std::uint64_t* bytes) {
+    const auto descriptor = descriptors.find(descriptor_id);
+    if (descriptor == descriptors.end()) return false;
+    std::string type_name;
+    if (!resolve_core_type(descriptor_id, &type_name)) {
+      result.callbacks.descriptor_type_resolution_may_execute = true;
+      result.core_bound_complete = false;
+      return false;
+    }
+    descriptor_type_names.emplace(descriptor_id, type_name);
+    api::EngineDescriptor built;
+    if (!build_expected_descriptor(*descriptor->second, type_name, &built)) {
+      return false;
+    }
+    std::uint64_t dynamic = 0;
+    *bytes = sizeof(api::EngineTypedValue);
+    return descriptor_dynamic_bytes(built, &dynamic) &&
+           account(bytes, dynamic) && account(bytes, payload_bytes);
+  };
+
+  struct EvaluationBound {
+    std::uint64_t output_value_bytes{0};
+    std::uint64_t peak_live_value_bytes{0};
+    std::size_t maximum_depth{0};
+    bool may_be_non_null{false};
+    std::string canonical_type_name;
+  };
+  std::unordered_map<std::uint32_t, EvaluationBound> memo;
+  std::unordered_set<std::uint32_t> visiting;
+  std::unordered_set<std::uint32_t> reachable_descriptors;
+  std::size_t reachable_edges = 0;
+  std::function<bool(std::uint32_t, EvaluationBound*)> bound_expression;
+  bound_expression = [&](const std::uint32_t expression_id,
+                         EvaluationBound* output) {
+    if (cancelled()) return false;
+    const auto cached = memo.find(expression_id);
+    if (cached != memo.end()) {
+      *output = cached->second;
+      return true;
+    }
+    if (!visiting.insert(expression_id).second) {
+      result.detail = "predicate expression graph is cyclic";
+      return false;
+    }
+    const auto leave = [&](const bool ok) {
+      visiting.erase(expression_id);
+      return ok;
+    };
+    const auto expression = expressions.find(expression_id);
+    if (expression == expressions.end() ||
+        !descriptors.contains(expression->second->result_descriptor_id)) {
+      result.detail = "predicate expression or result descriptor is absent";
+      return leave(false);
+    }
+    const auto& record = *expression->second;
+    reachable_descriptors.insert(record.result_descriptor_id);
+    EvaluationBound computed;
+    const auto slot = bound_values.find(expression_id);
+    if (slot != bound_values.end()) {
+      if (!value_envelope_bytes(*slot->second,
+                                &computed.output_value_bytes)) {
+        result.detail = "predicate row value envelope overflowed";
+        return leave(false);
+      }
+      computed.peak_live_value_bytes = computed.output_value_bytes;
+      computed.maximum_depth = 1;
+      computed.may_be_non_null = slot->second->any_non_null;
+      computed.canonical_type_name =
+          slot->second->descriptor.canonical_type_name;
+      memo.emplace(expression_id, computed);
+      *output = computed;
+      return leave(true);
+    }
+
+    const bool has_function = record.function_uuid.has_value();
+    const bool has_name = record.bound_name_uuid.has_value();
+    const bool has_literal = record.literal_kind.has_value();
+    const bool has_operator = record.operator_name.has_value();
+    const bool has_payload = record.literal_or_parameter_ref.has_value();
+    bool exact_shape = false;
+    switch (record.expression_kind) {
+      case api::RelationalExpressionKind::kLiteral:
+        exact_shape = record.child_expression_ids.empty() && has_literal &&
+                      has_payload && !has_function && !has_name &&
+                      !has_operator;
+        break;
+      case api::RelationalExpressionKind::kParenthesized:
+        exact_shape = record.child_expression_ids.size() == 1 &&
+                      !has_function && !has_name && !has_literal &&
+                      !has_operator && !has_payload;
+        break;
+      case api::RelationalExpressionKind::kUnary:
+        exact_shape = record.child_expression_ids.size() == 1 &&
+                      has_operator && !has_function && !has_name &&
+                      !has_literal && !has_payload;
+        break;
+      case api::RelationalExpressionKind::kBinary:
+        exact_shape = record.child_expression_ids.size() == 2 &&
+                      has_operator && !has_function && !has_name &&
+                      !has_literal && !has_payload;
+        break;
+      case api::RelationalExpressionKind::kParameter:
+      case api::RelationalExpressionKind::kIdentifier:
+      case api::RelationalExpressionKind::kFunctionCall:
+        exact_shape = false;
+        break;
+    }
+    if (!exact_shape) {
+      if (record.expression_kind ==
+              api::RelationalExpressionKind::kFunctionCall &&
+          record.function_uuid.has_value()) {
+        result.callbacks.function_evaluator_may_execute = true;
+      }
+      result.detail =
+          "predicate expression is malformed or lacks a prepared row slot";
+      return leave(false);
+    }
+
+    if (record.child_expression_ids.size() >
+        std::numeric_limits<std::size_t>::max() - reachable_edges) {
+      result.detail = "predicate reachable edge count overflowed";
+      return leave(false);
+    }
+    reachable_edges += record.child_expression_ids.size();
+    const auto declared_extent = [&] {
+      const auto& descriptor =
+          *descriptors.at(record.result_descriptor_id);
+      return static_cast<std::uint64_t>(descriptor.width.value_or(0)) +
+             static_cast<std::uint64_t>(descriptor.precision.value_or(0)) +
+             static_cast<std::uint64_t>(descriptor.scale.value_or(0)) + 64;
+    }();
+    const auto finish_leaf = [&](const std::uint64_t payload,
+                                 const bool may_be_non_null) {
+      if (!descriptor_value_bytes(record.result_descriptor_id, payload,
+                                  &computed.output_value_bytes)) {
+        return false;
+      }
+      computed.peak_live_value_bytes = computed.output_value_bytes;
+      computed.maximum_depth = 1;
+      computed.may_be_non_null = may_be_non_null;
+      const auto name = descriptor_type_names.find(record.result_descriptor_id);
+      if (name != descriptor_type_names.end()) {
+        computed.canonical_type_name = name->second;
+      }
+      return true;
+    };
+    const auto finish_unary = [&](const EvaluationBound& child,
+                                  const std::uint64_t payload,
+                                  const std::uint64_t copies) {
+      if (!descriptor_value_bytes(record.result_descriptor_id, payload,
+                                  &computed.output_value_bytes)) {
+        return false;
+      }
+      std::uint64_t frame = 0;
+      if (!add(child.output_value_bytes, computed.output_value_bytes, &frame) ||
+          !multiply(frame, copies, &frame)) {
+        return false;
+      }
+      computed.peak_live_value_bytes =
+          std::max(child.peak_live_value_bytes, frame);
+      if (child.maximum_depth == std::numeric_limits<std::size_t>::max()) {
+        return false;
+      }
+      computed.maximum_depth = child.maximum_depth + 1;
+      computed.may_be_non_null = child.may_be_non_null;
+      const auto name = descriptor_type_names.find(record.result_descriptor_id);
+      if (name != descriptor_type_names.end()) {
+        computed.canonical_type_name = name->second;
+      }
+      return true;
+    };
+    const auto finish_binary = [&](const EvaluationBound& left,
+                                   const EvaluationBound& right,
+                                   const std::uint64_t payload,
+                                   const std::uint64_t copies) {
+      if (!descriptor_value_bytes(record.result_descriptor_id, payload,
+                                  &computed.output_value_bytes)) {
+        return false;
+      }
+      std::uint64_t right_phase = 0;
+      std::uint64_t frame = 0;
+      if (!add(left.output_value_bytes, right.peak_live_value_bytes,
+               &right_phase) ||
+          !add(left.output_value_bytes, right.output_value_bytes, &frame) ||
+          !add(frame, computed.output_value_bytes, &frame) ||
+          !multiply(frame, copies, &frame)) {
+        return false;
+      }
+      computed.peak_live_value_bytes = std::max(
+          {left.peak_live_value_bytes, right_phase, frame});
+      const auto child_depth =
+          std::max(left.maximum_depth, right.maximum_depth);
+      if (child_depth == std::numeric_limits<std::size_t>::max()) {
+        return false;
+      }
+      computed.maximum_depth = child_depth + 1;
+      computed.may_be_non_null =
+          left.may_be_non_null || right.may_be_non_null;
+      const auto name = descriptor_type_names.find(record.result_descriptor_id);
+      if (name != descriptor_type_names.end()) {
+        computed.canonical_type_name = name->second;
+      }
+      return true;
+    };
+
+    bool bounded = false;
+    switch (record.expression_kind) {
+      case api::RelationalExpressionKind::kLiteral: {
+        std::uint64_t payload = declared_extent;
+        bounded = account(&payload,
+                          record.literal_or_parameter_ref->size()) &&
+                  finish_leaf(
+                      payload,
+                      *record.literal_kind !=
+                          api::RelationalLiteralKind::kNull);
+        if (bounded &&
+            !multiply(computed.output_value_bytes, 4,
+                      &computed.peak_live_value_bytes)) {
+          bounded = false;
+        }
+        if (bounded &&
+            !LiteralKindAdmitsType(*record.literal_kind,
+                                   computed.canonical_type_name)) {
+          bounded = false;
+        }
+        if (bounded &&
+            *record.literal_kind == api::RelationalLiteralKind::kUuid &&
+            !IsCanonicalUuid(*record.literal_or_parameter_ref)) {
+          bounded = false;
+        }
+        if (bounded &&
+            *record.literal_kind == api::RelationalLiteralKind::kBoolean) {
+          const auto boolean =
+              UpperAscii(*record.literal_or_parameter_ref);
+          bounded = boolean == "TRUE" || boolean == "FALSE";
+        }
+        break;
+      }
+      case api::RelationalExpressionKind::kParenthesized: {
+        EvaluationBound child;
+        bounded = bound_expression(record.child_expression_ids.front(),
+                                   &child) &&
+                  finish_unary(child, child.output_value_bytes, 3) &&
+                  SameCanonicalType(child.canonical_type_name,
+                                    computed.canonical_type_name);
+        break;
+      }
+      case api::RelationalExpressionKind::kUnary: {
+        const auto operation = UpperAscii(*record.operator_name);
+        if (operation != "+" && operation != "-" && operation != "NOT") {
+          break;
+        }
+        EvaluationBound child;
+        std::uint64_t payload = declared_extent;
+        bounded = bound_expression(record.child_expression_ids.front(),
+                                   &child) &&
+                  account(&payload, child.output_value_bytes) &&
+                  finish_unary(child, payload, 4);
+        const auto child_record =
+            expressions.at(record.child_expression_ids.front());
+        const bool null_marker =
+            operation == "NOT" &&
+            child_record->expression_kind ==
+                api::RelationalExpressionKind::kLiteral &&
+            child_record->literal_kind == api::RelationalLiteralKind::kNull;
+        if (bounded && null_marker) {
+          // IS NOT NULL carries this unary node as a syntax marker; the
+          // canonical evaluator does not execute it as boolean NOT.
+        } else if (bounded && operation == "NOT") {
+          bounded =
+              dt::CanonicalTypeIdFromStableName(child.canonical_type_name) ==
+                  dt::CanonicalTypeId::boolean &&
+              dt::CanonicalTypeIdFromStableName(
+                  computed.canonical_type_name) ==
+                  dt::CanonicalTypeId::boolean;
+        } else if (bounded) {
+          bounded = IsNumericType(dt::CanonicalTypeIdFromStableName(
+                        child.canonical_type_name)) &&
+                    SameCanonicalType(child.canonical_type_name,
+                                      computed.canonical_type_name);
+        }
+        break;
+      }
+      case api::RelationalExpressionKind::kBinary: {
+        const auto operation = UpperAscii(*record.operator_name);
+        const bool arithmetic = operation == "+" || operation == "-" ||
+                                operation == "*" || operation == "/" ||
+                                operation == "%";
+        const bool logical = operation == "AND" || operation == "OR" ||
+                             operation == "XOR";
+        const bool concat = operation == "||";
+        const bool match = operation == "LIKE" || operation == "ILIKE";
+        const bool comparison = IsComparisonOperator(operation) ||
+                                operation == "IS";
+        if (!arithmetic && !logical && !concat && !match && !comparison) {
+          break;
+        }
+        EvaluationBound left;
+        EvaluationBound right;
+        std::uint64_t payload = declared_extent;
+        if (!bound_expression(record.child_expression_ids[0], &left) ||
+            !bound_expression(record.child_expression_ids[1], &right)) {
+          break;
+        }
+        if (logical || match || comparison) {
+          if (!account(&payload, 8)) break;
+        } else if (!account(&payload, left.output_value_bytes) ||
+                   !account(&payload, right.output_value_bytes)) {
+          break;
+        }
+        if (match ||
+            (IsComparisonOperator(operation) &&
+             (dt::CanonicalTypeIdFromStableName(left.canonical_type_name) ==
+                  dt::CanonicalTypeId::character ||
+              dt::CanonicalTypeIdFromStableName(right.canonical_type_name) ==
+                  dt::CanonicalTypeId::character))) {
+          result.callbacks.collation_comparison_may_execute = true;
+        }
+        const auto left_descriptor = descriptors.at(
+            expressions.at(record.child_expression_ids[0])
+                ->result_descriptor_id);
+        const auto right_descriptor = descriptors.at(
+            expressions.at(record.child_expression_ids[1])
+                ->result_descriptor_id);
+        if (IsComparisonOperator(operation) && left.may_be_non_null &&
+            right.may_be_non_null &&
+            (left_descriptor->timezone_profile_id.has_value() ||
+             right_descriptor->timezone_profile_id.has_value())) {
+          result.callbacks.timezone_normalization_may_execute = true;
+        }
+        if (match || IsComparisonOperator(operation)) {
+          std::uint64_t handoff = 0;
+          if (!add(left.output_value_bytes, right.output_value_bytes,
+                   &handoff)) {
+            break;
+          }
+          result.callback_handoff_peak_bytes =
+              std::max(result.callback_handoff_peak_bytes, handoff);
+        }
+        bounded = finish_binary(left, right, payload, match ? 6 : 4);
+        if (!bounded) break;
+        const auto left_type =
+            dt::CanonicalTypeIdFromStableName(left.canonical_type_name);
+        const auto right_type =
+            dt::CanonicalTypeIdFromStableName(right.canonical_type_name);
+        const auto result_type =
+            dt::CanonicalTypeIdFromStableName(computed.canonical_type_name);
+        if (arithmetic) {
+          bounded = IsNumericType(left_type) &&
+                    IsNumericType(right_type) &&
+                    SameCanonicalType(left.canonical_type_name,
+                                      right.canonical_type_name) &&
+                    SameCanonicalType(left.canonical_type_name,
+                                      computed.canonical_type_name) &&
+                    (operation != "%" ||
+                     IsBoundedSignedIntegerType(left.canonical_type_name));
+        } else if (logical) {
+          bounded = left_type == dt::CanonicalTypeId::boolean &&
+                    right_type == dt::CanonicalTypeId::boolean &&
+                    result_type == dt::CanonicalTypeId::boolean;
+        } else if (concat) {
+          bounded = left_type == dt::CanonicalTypeId::character &&
+                    right_type == dt::CanonicalTypeId::character &&
+                    result_type == dt::CanonicalTypeId::character;
+        } else if (match) {
+          bounded = left_type == dt::CanonicalTypeId::character &&
+                    right_type == dt::CanonicalTypeId::character &&
+                    result_type == dt::CanonicalTypeId::boolean;
+        } else if (operation == "IS") {
+          const auto right_expression =
+              expressions.at(record.child_expression_ids[1]);
+          bool null_right =
+              right_expression->expression_kind ==
+                  api::RelationalExpressionKind::kLiteral &&
+              right_expression->literal_kind ==
+                  api::RelationalLiteralKind::kNull;
+          if (!null_right &&
+              right_expression->expression_kind ==
+                  api::RelationalExpressionKind::kUnary &&
+              right_expression->operator_name.has_value() &&
+              UpperAscii(*right_expression->operator_name) == "NOT" &&
+              right_expression->child_expression_ids.size() == 1) {
+            const auto null_child = expressions.find(
+                right_expression->child_expression_ids.front());
+            null_right =
+                null_child != expressions.end() &&
+                null_child->second->expression_kind ==
+                    api::RelationalExpressionKind::kLiteral &&
+                null_child->second->literal_kind ==
+                    api::RelationalLiteralKind::kNull;
+          }
+          bounded = null_right &&
+                    left.canonical_type_name != "null" &&
+                    left_type != dt::CanonicalTypeId::unknown &&
+                    result_type == dt::CanonicalTypeId::boolean;
+        } else {
+          bounded = result_type == dt::CanonicalTypeId::boolean &&
+                    SameCanonicalType(left.canonical_type_name,
+                                      right.canonical_type_name) &&
+                    IsAdmittedComparisonType(left.canonical_type_name);
+        }
+        break;
+      }
+      case api::RelationalExpressionKind::kParameter:
+      case api::RelationalExpressionKind::kIdentifier:
+      case api::RelationalExpressionKind::kFunctionCall:
+        break;
+    }
+    if (!bounded) {
+      if (record.expression_kind ==
+              api::RelationalExpressionKind::kFunctionCall &&
+          record.function_uuid.has_value()) {
+        result.callbacks.function_evaluator_may_execute = true;
+      }
+      if (result.detail.empty()) {
+        result.detail =
+            "predicate is outside prepared row-expression admission or its "
+            "logical-memory bound overflowed";
+      }
+      return leave(false);
+    }
+    memo.emplace(expression_id, computed);
+    *output = computed;
+    return leave(true);
+  };
+
+  EvaluationBound root;
+  result.core_bound_complete = true;
+  if (!bound_expression(root_expression_id, &root)) return result;
+  if (dt::CanonicalTypeIdFromStableName(root.canonical_type_name) !=
+      dt::CanonicalTypeId::boolean) {
+    result.detail = "predicate root type is not canonical boolean";
+    return result;
+  }
+  result.reachable_expression_count = memo.size();
+  result.reachable_descriptor_count = reachable_descriptors.size();
+  result.reachable_edge_count = reachable_edges;
+  result.maximum_expression_depth = root.maximum_depth;
+  for (const auto& [expression_id, ignored] : bound_values) {
+    (void)ignored;
+    if (!memo.contains(expression_id)) {
+      result.detail = "predicate row slot is outside the reachable graph";
+      return result;
+    }
+  }
+
+  for (const auto descriptor_id : reachable_descriptors) {
+    std::string type_name;
+    const auto bound_slot = std::ranges::find_if(
+        row_binding.slots, [&](const auto& slot) {
+          return slot.descriptor_id == descriptor_id;
+        });
+    if (bound_slot != row_binding.slots.end()) {
+      type_name = row_values[bound_slot->row_ordinal]
+                      .descriptor.canonical_type_name;
+    } else if (!resolve_core_type(descriptor_id, &type_name)) {
+      result.callbacks.descriptor_type_resolution_may_execute = true;
+      result.core_bound_complete = false;
+      continue;
+    }
+    std::uint64_t entry_bytes =
+        sizeof(std::pair<const std::uint32_t, std::string>);
+    if (!account_string(&entry_bytes, type_name) ||
+        !account(&resident, entry_bytes)) {
+      result.detail = "predicate descriptor-type cache bound overflowed";
+      return result;
+    }
+  }
+  result.runtime_resident_structural_bytes = resident;
+
+  std::uint64_t pending_entries = 0;
+  if (!add(reachable_edges, 1, &pending_entries)) {
+    result.detail = "predicate pending carrier bound overflowed";
+    return result;
+  }
+  std::uint64_t row_descriptor_resident =
+      sizeof(std::unordered_set<std::uint32_t>);
+  std::uint64_t prepare_descriptors = 0;
+  std::uint64_t prepare_binding =
+      sizeof(std::unordered_map<
+          std::uint32_t, const api::EngineTypedValue*>) +
+      sizeof(std::unordered_map<
+          std::size_t, CanonicalRelationalExpressionRowSlotKind>) +
+      sizeof(std::unordered_set<std::uint32_t>) +
+      sizeof(std::unordered_set<std::uint32_t>) +
+      sizeof(std::vector<std::uint32_t>);
+  if (!account_count(&row_descriptor_resident, row_descriptor_ids.size(),
+                     sizeof(std::uint32_t)) ||
+      !add(row_descriptor_resident, maximum_expected_descriptor,
+           &prepare_descriptors) ||
+      !account(&prepare_descriptors, sizeof(std::string)) ||
+      !account_count(
+          &prepare_binding, bound_values.size(),
+          sizeof(std::pair<const std::uint32_t,
+                           const api::EngineTypedValue*>)) ||
+      !account_count(
+          &prepare_binding, bound_ordinals.size(),
+          sizeof(std::pair<const std::size_t,
+                           CanonicalRelationalExpressionRowSlotKind>)) ||
+      !account_count(&prepare_binding, bound_expression_ids.size(),
+                     sizeof(std::uint32_t)) ||
+      !account_count(&prepare_binding, memo.size(),
+                     sizeof(std::uint32_t)) ||
+      !account_count(&prepare_binding, pending_entries,
+                     sizeof(std::uint32_t)) ||
+      !account(&prepare_binding, row_descriptor_resident)) {
+    result.detail = "predicate row-binding carrier bound overflowed";
+    return result;
+  }
+  result.prepare_row_binding_peak_structural_bytes =
+      std::max(prepare_descriptors, prepare_binding);
+  result.active_row_binding_resident_bytes =
+      sizeof(std::unordered_map<
+          std::uint32_t, const api::EngineTypedValue*>);
+  if (!account_count(
+          &result.active_row_binding_resident_bytes, bound_values.size(),
+          sizeof(std::pair<const std::uint32_t,
+                           const api::EngineTypedValue*>))) {
+    result.detail = "predicate active row-binding bound overflowed";
+    return result;
+  }
+  result.evaluation_peak_value_bytes = root.peak_live_value_bytes;
+  std::size_t maximum_transient_string_bytes = 1;
+  std::uint64_t maximum_transient_descriptor_dynamic_bytes = 0;
+  for (const auto& [expression_id, ignored] : memo) {
+    (void)ignored;
+    const auto& record = *expressions.at(expression_id);
+    if (record.operator_name.has_value()) {
+      maximum_transient_string_bytes =
+          std::max(maximum_transient_string_bytes,
+                   record.operator_name->size());
+    }
+    const auto type_name =
+        descriptor_type_names.find(record.result_descriptor_id);
+    if (type_name != descriptor_type_names.end()) {
+      maximum_transient_string_bytes =
+          std::max(maximum_transient_string_bytes,
+                   type_name->second.size());
+    }
+    api::EngineDescriptor transient_descriptor;
+    const auto slot = bound_values.find(expression_id);
+    if (slot != bound_values.end()) {
+      transient_descriptor = slot->second->descriptor;
+    } else if (!build_expected_descriptor(
+                   *descriptors.at(record.result_descriptor_id),
+                   memo.at(expression_id).canonical_type_name,
+                   &transient_descriptor)) {
+      result.detail = "predicate transient descriptor is unresolved";
+      return result;
+    }
+    std::uint64_t descriptor_dynamic = 0;
+    if (!descriptor_dynamic_bytes(transient_descriptor,
+                                  &descriptor_dynamic)) {
+      result.detail = "predicate transient descriptor bound overflowed";
+      return result;
+    }
+    maximum_transient_descriptor_dynamic_bytes =
+        std::max(maximum_transient_descriptor_dynamic_bytes,
+                 descriptor_dynamic);
+  }
+  std::uint64_t per_frame_structural_bytes =
+      sizeof(api::EngineCanonicalExpressionEvaluationRequest) +
+      sizeof(api::EngineCanonicalExpressionEvaluationResult) +
+      4 * sizeof(api::EngineTypedValue) +
+      2 * sizeof(api::EngineDescriptor) + 6 * sizeof(std::string);
+  std::uint64_t per_frame_dynamic_string_bytes = 0;
+  std::uint64_t string_with_terminator = 0;
+  std::uint64_t per_frame_dynamic_descriptor_bytes = 0;
+  if (!add(maximum_transient_string_bytes, 1,
+           &string_with_terminator) ||
+      !multiply(string_with_terminator, 6,
+                &per_frame_dynamic_string_bytes) ||
+      !multiply(maximum_transient_descriptor_dynamic_bytes, 4,
+                &per_frame_dynamic_descriptor_bytes) ||
+      !account(&per_frame_structural_bytes,
+               per_frame_dynamic_string_bytes) ||
+      !account(&per_frame_structural_bytes,
+               per_frame_dynamic_descriptor_bytes) ||
+      !multiply(root.maximum_depth, per_frame_structural_bytes,
+                &result.evaluation_peak_transient_structural_bytes) ||
+      !account_count(&result.evaluation_peak_transient_structural_bytes,
+                     root.maximum_depth, sizeof(std::uint32_t))) {
+    result.detail = "predicate evaluation stack bound overflowed";
+    return result;
+  }
+  std::uint64_t evaluation_phase = 0;
+  if (!add(result.active_row_binding_resident_bytes,
+           result.evaluation_peak_value_bytes, &evaluation_phase) ||
+      !account(&evaluation_phase,
+               result.evaluation_peak_transient_structural_bytes) ||
+      !account(&evaluation_phase, result.callback_handoff_peak_bytes)) {
+    result.detail = "predicate evaluation phase bound overflowed";
+    return result;
+  }
+  std::uint64_t transient_peak =
+      std::max(result.prepare_row_binding_peak_structural_bytes,
+               evaluation_phase);
+  if (!add(result.runtime_resident_structural_bytes, transient_peak,
+           &result.core_expression_peak_bytes)) {
+    result.detail = "predicate core expression peak overflowed";
+    return result;
+  }
+  result.callback_memory_complete =
+      !result.callbacks.descriptor_type_resolution_may_execute &&
+      !result.callbacks.collation_comparison_may_execute &&
+      !result.callbacks.timezone_normalization_may_execute &&
+      !result.callbacks.function_evaluator_may_execute;
+  result.core_bound_exact = false;
+  result.ok = true;
+  result.detail.clear();
+  return result;
+}
+
+bool CanonicalRelationalComparisonAuthorityRequiredV1(
+    const api::EngineDescriptor& left,
+    const api::EngineDescriptor& right) {
+  return dt::CanonicalTypeIdFromStableName(left.canonical_type_name) ==
+             dt::CanonicalTypeId::character ||
+         dt::CanonicalTypeIdFromStableName(right.canonical_type_name) ==
+             dt::CanonicalTypeId::character ||
+         left.encoded_descriptor.find("timezone_profile_id=") !=
+             std::string::npos ||
+         right.encoded_descriptor.find("timezone_profile_id=") !=
+             std::string::npos;
+}
+
+bool BindCanonicalRelationalComparisonAuthorityV1(
+    const api::EngineTypedValue& left,
+    const api::EngineTypedValue& right,
+    const CanonicalRelationalExpressionRuntimeServices& services,
+    std::optional<int>* precomputed_comparison,
+    std::string* refusal_detail) {
+  if (precomputed_comparison == nullptr || refusal_detail == nullptr) {
+    return false;
+  }
+  precomputed_comparison->reset();
+  if (!CanonicalRelationalComparisonAuthorityRequiredV1(
+          left.descriptor, right.descriptor) ||
+      left.isSqlNull() ||
+      right.isSqlNull()) {
+    return true;
+  }
+  if (!services.comparison_evaluator) {
+    *refusal_detail =
+        "QOW-DIAG-RCP024-COMPARISON-AUTHORITY-REFUSAL-V1:descriptor-bound "
+        "comparison authority is unavailable";
+    return false;
+  }
+  int comparison = 0;
+  std::string diagnostic_id;
+  if (!services.comparison_evaluator(
+          left, right, &comparison, &diagnostic_id, refusal_detail)) {
+    *refusal_detail =
+        (diagnostic_id.empty()
+             ? "QOW-DIAG-RCP024-COMPARISON-AUTHORITY-REFUSAL-V1"
+             : diagnostic_id) +
+        ":" + *refusal_detail;
+    return false;
+  }
+  *precomputed_comparison = comparison;
+  return true;
+}
 
 CanonicalRelationalExpressionRuntime::CanonicalRelationalExpressionRuntime(
     const api::TypedRelationalDag& dag,
@@ -1934,33 +2900,10 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     scalar_request.left_value = std::move(left);
     scalar_request.right_value = std::move(right);
     scalar_request.result_descriptor = result_descriptor;
-    const bool descriptor_bound_comparison =
-        dt::CanonicalTypeIdFromStableName(operand_type) ==
-            dt::CanonicalTypeId::character ||
-        scalar_request.left_value.descriptor.encoded_descriptor.find(
-            "timezone_profile_id=") != std::string::npos;
-    if (descriptor_bound_comparison &&
-        !scalar_request.left_value.isSqlNull() &&
-        !scalar_request.right_value.isSqlNull()) {
-      if (!services_.comparison_evaluator) {
-        *refusal_detail =
-            "QOW-DIAG-RCP024-COMPARISON-AUTHORITY-REFUSAL-V1:descriptor-bound "
-            "comparison authority is unavailable";
-        return false;
-      }
-      int comparison = 0;
-      std::string diagnostic_id;
-      if (!services_.comparison_evaluator(
-              scalar_request.left_value, scalar_request.right_value,
-              &comparison, &diagnostic_id, refusal_detail)) {
-        *refusal_detail =
-            (diagnostic_id.empty()
-                 ? "QOW-DIAG-RCP024-COMPARISON-AUTHORITY-REFUSAL-V1"
-                 : diagnostic_id) +
-            ":" + *refusal_detail;
-        return false;
-      }
-      scalar_request.precomputed_comparison = comparison;
+    if (!BindCanonicalRelationalComparisonAuthorityV1(
+            scalar_request.left_value, scalar_request.right_value, services_,
+            &scalar_request.precomputed_comparison, refusal_detail)) {
+      return false;
     }
     api::EngineCanonicalExpressionEvaluationResult scalar_result;
     if (!evaluate_scalar(scalar_request, &scalar_result)) {

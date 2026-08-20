@@ -344,6 +344,12 @@ class CanonicalDescriptorFilterPredicateReceipt {
       CanonicalDescriptorFilterPredicateReceiptIssuer;
   friend CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
       const CanonicalDescriptorFilterRequest& request);
+  friend CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilterBound(
+      const CanonicalDescriptorFilterRequest& request,
+      const TypedPhysicalNodeDag& borrowed_execution_dag,
+      std::uint64_t scoped_root_physical_node_id,
+      const DescriptorBatch& borrowed_input_batch,
+      bool borrowed_execution_carriers);
 
   CanonicalDescriptorFilterPredicateReceipt() = default;
 
@@ -363,6 +369,7 @@ class CanonicalDescriptorFilterPredicateReceipt {
   std::size_t maximum_input_row_count_ = 0;
   CanonicalExecutionMgaAuthority mga_authority_;
   bool exact_current_revalidated_before_issue_ = false;
+  bool borrowed_execution_carriers_ = false;
 };
 
 struct CanonicalDescriptorFilterRequest {
@@ -493,6 +500,12 @@ struct CanonicalQuantifiedSubqueryRequest {
   std::uint32_t result_expression_descriptor_id = 0;
   ExecutorColumnDescriptor result_column;
   std::size_t maximum_comparison_count = 1048576;
+  // Character and timezone-profile comparisons are evaluated by the
+  // engine-owned descriptor authority before entering this generic executor.
+  // The carrier is aligned one-for-one with the materialized subquery rows;
+  // SQL NULL rows deliberately carry std::nullopt.
+  bool comparison_authority_engine_owned = false;
+  std::vector<std::optional<int>> precomputed_comparisons;
 };
 
 struct CanonicalQuantifiedSubqueryResult {
@@ -525,6 +538,11 @@ struct CanonicalCorrelatedSubqueryRequest {
   std::size_t maximum_scope_execution_count = 1048576;
   std::size_t maximum_comparison_count = 1048576;
   std::size_t maximum_result_row_count = 1048576;
+  // Descriptor-bound equality is issued by the engine comparison authority
+  // over the validated outer-major Cartesian key order. SQL NULL pairs carry
+  // std::nullopt and never compare equal.
+  bool comparison_authority_engine_owned = false;
+  std::vector<std::optional<int>> precomputed_equality_comparisons;
   std::function<bool()> cancellation_requested;
   std::string cancellation_evidence_uuid;
   CanonicalExecutionMgaAuthority mga_authority;
@@ -1686,6 +1704,10 @@ struct CanonicalSetOperationAllRequest {
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch left_batch;
   DescriptorBatch right_batch;
+  // Live selected-DAG dispatch may synchronously borrow its already
+  // materialized operands instead of duplicating both batches in the request.
+  const DescriptorBatch* borrowed_left_batch = nullptr;
+  const DescriptorBatch* borrowed_right_batch = nullptr;
   std::vector<ExecutorColumnDescriptor> result_columns;
   CanonicalSetOperationKind operation = CanonicalSetOperationKind::kUnion;
   CanonicalSetOperationAlignment alignment =
@@ -1700,6 +1722,10 @@ struct CanonicalSetOperationAllRequest {
   std::size_t maximum_equality_comparison_count = 1048576;
   std::size_t maximum_output_row_count = 1048576;
   CanonicalExecutionMgaAuthority mga_authority;
+  // Canonical live dispatch activates exact logical-payload accounting only
+  // after binding the selected node's immutable resource grant. Direct
+  // contract callers remain source compatible until they opt in.
+  bool enforce_payload_memory_grant = false;
 };
 
 struct CanonicalSetOperationAllResult {
@@ -1718,6 +1744,13 @@ struct CanonicalSetOperationAllResult {
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
   PhysicalMgaStatementContext mga_statement_context;
+  std::size_t output_payload_bytes = 0;
+  std::size_t peak_live_payload_bytes = 0;
+  std::size_t resident_structural_bytes = 0;
+  std::size_t current_live_memory_bytes = 0;
+  std::size_t peak_live_memory_bytes = 0;
+  std::size_t memory_grant_bytes = 0;
+  std::string memory_grant_evidence_uuid;
 };
 
 enum class CanonicalSetOperationNestingRule : std::uint8_t {
@@ -2329,6 +2362,10 @@ class CanonicalDescriptorSortKeyReceipt {
       CanonicalDescriptorSortKeyReceiptIssuer;
   friend CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
       const CanonicalDescriptorSortRequest& request);
+  friend CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+      const CanonicalDescriptorSortRequest& request,
+      const TypedPhysicalNodeDag& borrowed_execution_dag,
+      const DescriptorBatch& borrowed_input_batch);
 
   CanonicalDescriptorSortKeyReceipt() = default;
 
@@ -2345,6 +2382,7 @@ class CanonicalDescriptorSortKeyReceipt {
   std::uint64_t maximum_order_key_batch_bytes_ = 0;
   CanonicalExecutionMgaAuthority mga_authority_;
   bool exact_current_revalidated_before_issue_ = false;
+  bool borrowed_execution_carriers_ = false;
 };
 
 struct CanonicalDescriptorSortRequest {
@@ -2352,7 +2390,8 @@ struct CanonicalDescriptorSortRequest {
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch input_batch;
   // Expression ordering uses only an engine-issued receipt that owns the
-  // exact payload/key pair. Ordinary input-column ordering leaves this null.
+  // exact materialized key sidecar and either owns or synchronously binds the
+  // execution payload. Ordinary input-column ordering leaves this null.
   std::shared_ptr<const CanonicalDescriptorSortKeyReceipt> order_key_receipt;
   std::vector<CanonicalDescriptorOrderTerm> order_terms;
   std::string deterministic_tie_evidence_uuid;
@@ -2679,31 +2718,98 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     bool* cancellation_observed = nullptr);
 CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
     const CanonicalDescriptorProjectionRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG, input-batch, and projected-column
+// carriers must remain in their exact default states.
+CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
+    const CanonicalDescriptorProjectionRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::vector<std::size_t>& borrowed_projected_columns);
 CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
     const CanonicalDescriptorFilterRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. They are accepted only with an engine-issued receipt whose owned
+// DAG and input-batch carriers remain exact-default.
+CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
+    const CanonicalDescriptorFilterRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
     const CanonicalDescriptorLimitRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG and input carriers must remain in their
+// exact default states.
+CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
+    const CanonicalDescriptorLimitRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
     const CanonicalTableSubqueryRequest& request);
+// The borrowed DAG is consumed synchronously and is never retained. The
+// request's owned DAG carrier must remain in its exact default state.
+CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
+    const CanonicalTableSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id);
+// Both borrowed carriers are consumed synchronously and are never retained.
+// The request's owned DAG and input-batch carriers must remain in their exact
+// default states.
+CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
+    const CanonicalTableSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
     const CanonicalScalarSubqueryRequest& request);
+// Borrowed scalar/row carriers are consumed synchronously and never retained.
+// Their nested table request must keep its owned DAG and input batch exact
+// default.
+CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
+    const CanonicalScalarSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
     const CanonicalRowSubqueryRequest& request);
+CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
+    const CanonicalRowSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
     const CanonicalExistsSubqueryRequest& request);
 CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     const CanonicalQuantifiedSubqueryRequest& request);
 CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     const CanonicalCorrelatedSubqueryRequest& request);
+// The borrowed DAG is consumed synchronously and is never retained. The
+// request's owned DAG carrier must remain in its exact default state.
+CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
+    const CanonicalCorrelatedSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id);
 CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     const CanonicalLateralSubqueryRequest& request);
 CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     const CanonicalRecursiveCteWorkingRequest& request);
 CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
     const CanonicalRecursiveCteUnionRequest& request);
+// Borrowed-DAG entry points execute synchronously and never retain the DAG.
+// The request's owned DAG carrier must remain in its exact default state.
+CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
+    const CanonicalRecursiveCteUnionRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id);
 CanonicalRecursiveCteSearchCycleResult
 ExecuteCanonicalRecursiveCteSearchCycle(
     const CanonicalRecursiveCteSearchCycleRequest& request);
+CanonicalRecursiveCteSearchCycleResult
+ExecuteCanonicalRecursiveCteSearchCycle(
+    const CanonicalRecursiveCteSearchCycleRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id);
 CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
     const CanonicalRecursiveCteResourceRequest& request);
 CanonicalRecursiveCteCancellationResult
@@ -2719,20 +2825,80 @@ CanonicalSetOperationNestingResult ExecuteCanonicalSetOperationNesting(
     const CanonicalSetOperationNestingRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG and input carriers must remain in their
+// exact default states.
+CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
+    const CanonicalDescriptorFetchProfileRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG and input carriers must remain in their
+// exact default states.
+CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
+    const CanonicalDescriptorCountRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
+// The live canonical route may additionally borrow its immutable, already
+// bound result descriptor. The request's owned count-column carrier must
+// remain exact-default, and all borrowed carriers are consumed synchronously.
+CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
+    const CanonicalDescriptorCountRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const ExecutorColumnDescriptor& borrowed_count_column);
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG and input carriers must remain in their
+// exact default states.
+CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
+    const CanonicalAggregateRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalAggregateRuntimeResult
 ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
     const CanonicalAggregateRuntimeRequest& request,
     std::size_t exact_final_output_ceiling);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG and input carriers must remain in their
+// exact default states.
+CanonicalAggregateRuntimeResult
+ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
+    const CanonicalAggregateRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    std::size_t exact_final_output_ceiling);
 CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
     const CanonicalAggregateStateSpillRequest& request);
+// Borrowed execution carriers are consumed synchronously through spill,
+// reopen, and finalization and are never retained. The nested aggregate
+// request's owned DAG and input carriers must remain exact-default.
+CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
+    const CanonicalAggregateStateSpillRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     const CanonicalAggregateStateExchangeRequest& request);
+// Borrowed execution carriers are consumed synchronously through worker-state
+// serialization, restore, deterministic merge, and finalization and are never
+// retained. The nested aggregate request's owned DAG and input carriers must
+// remain exact-default.
+CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
+    const CanonicalAggregateStateExchangeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     const CanonicalAggregateMovingRuntimeRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The nested aggregate request's owned DAG and input carriers must
+// remain in their exact default states.
+CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
+    const CanonicalAggregateMovingRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalAggregateGroupingExpansionResult
 ExpandCanonicalAggregateGroupingSets(
     const CanonicalAggregateGroupingExpansionRequest& request);
@@ -2742,9 +2908,24 @@ ComputeCanonicalAggregateGroupingMetadata(
     const CanonicalAggregateGroupingSet& grouping_set);
 CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
     const CanonicalGroupedAggregateRuntimeRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The aggregate request's owned DAG and input carriers must remain
+// in their exact default states.
+CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
+    const CanonicalGroupedAggregateRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalGroupedAggregateSetRuntimeResult
 ExecuteCanonicalGroupedAggregateSetRuntime(
     const CanonicalGroupedAggregateSetRuntimeRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The first aggregate request's owned DAG and input carriers must
+// remain in their exact default states.
+CanonicalGroupedAggregateSetRuntimeResult
+ExecuteCanonicalGroupedAggregateSetRuntime(
+    const CanonicalGroupedAggregateSetRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalPivotResult ExecuteCanonicalPivot(
     const CanonicalPivotRequest& request);
 CanonicalUnpivotResult ExecuteCanonicalUnpivot(
@@ -2791,10 +2972,51 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
     const CanonicalJoinMgaRequest& request);
 CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const CanonicalDescriptorRowNumberRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG and ordered-input carriers must remain in
+// their exact default states.
+CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
+    const CanonicalDescriptorRowNumberRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_ordered_input_batch);
 CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
     const CanonicalDescriptorDistinctRequest& request);
+// Borrowed execution carriers are consumed synchronously and are never
+// retained. The request's owned DAG and input carriers must remain in their
+// exact default states.
+CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
+    const CanonicalDescriptorDistinctRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
+// The live canonical route may additionally borrow its immutable, already
+// bound equality authority. The request's owned equality-term carrier must
+// remain exact-default, and all borrowed carriers are consumed synchronously.
+CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
+    const CanonicalDescriptorDistinctRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::vector<CanonicalDescriptorOrderTerm>& borrowed_equality_terms);
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request);
+// Borrowed execution carriers are consumed synchronously and never retained.
+// The request's owned DAG and input carriers must remain in their exact
+// default states. An expression order-key receipt, when present, must be the
+// borrowed-execution form and continues to own its derived key sidecar and
+// ordering semantics.
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch);
+// Ordinary input-column ordering may additionally borrow its immutable order
+// terms and deterministic tie receipt. All owned execution and semantic
+// carriers in the request must remain exact-default, and no expression
+// order-key receipt may be set.
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::vector<CanonicalDescriptorOrderTerm>& borrowed_order_terms,
+    const std::string& borrowed_deterministic_tie_evidence_uuid);
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
     const CanonicalDescriptorOrderTerm& term,
     const ExecutorColumnDescriptor& column);

@@ -601,6 +601,8 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
   }
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kWindow ||
+      selected_node->implementation_id !=
+          "window.partition-order-peer.v1" ||
       selected_node->physical_node_id !=
           input.physical_dag.root_physical_node_id) {
     return false;
