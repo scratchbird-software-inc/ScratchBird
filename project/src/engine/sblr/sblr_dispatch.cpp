@@ -9557,6 +9557,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_purge_system_history = request.envelope.operation_id=="engine.op.ddl_purge_system_history"&&request.envelope.opcode=="SBLR_DDL_PURGE_SYSTEM_HISTORY"&&request.envelope.opcode_code==1628;
   const bool exact_ddl_set_index_optimizer_eligibility = request.envelope.operation_id=="engine.op.ddl_set_index_optimizer_eligibility"&&request.envelope.opcode=="SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY"&&request.envelope.opcode_code==1629;
   const bool exact_ddl_set_table_type_enforcement = request.envelope.operation_id=="engine.op.ddl_set_table_type_enforcement"&&request.envelope.opcode=="SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT"&&request.envelope.opcode_code==1630;
+  const bool exact_database_serialize_logical_snapshot = request.envelope.operation_id=="engine.op.database_serialize_logical_snapshot"&&request.envelope.opcode=="SBLR_DATABASE_SERIALIZE_LOGICAL_SNAPSHOT"&&request.envelope.opcode_code==1631;
   const bool exact_aggregate = request.envelope.operation_id=="engine.op.aggregate"&&request.envelope.opcode=="SBLR_AGGREGATE"&&request.envelope.opcode_code==1281;
   const bool exact_group = request.envelope.operation_id=="engine.op.group"&&request.envelope.opcode=="SBLR_GROUP"&&request.envelope.opcode_code==1282;
   const bool exact_sort = request.envelope.operation_id=="engine.op.sort"&&request.envelope.opcode=="SBLR_SORT"&&request.envelope.opcode_code==1283;
@@ -9880,7 +9881,8 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
       (request.envelope.operation_id == "engine.op.ddl_drop_aggregate" && request.envelope.opcode == "SBLR_DDL_DROP_AGGREGATE" && request.envelope.opcode_code == 1627) ||
       (request.envelope.operation_id == "engine.op.ddl_purge_system_history" && request.envelope.opcode == "SBLR_DDL_PURGE_SYSTEM_HISTORY" && request.envelope.opcode_code == 1628) ||
       (request.envelope.operation_id == "engine.op.ddl_set_index_optimizer_eligibility" && request.envelope.opcode == "SBLR_DDL_SET_INDEX_OPTIMIZER_ELIGIBILITY" && request.envelope.opcode_code == 1629) ||
-      (request.envelope.operation_id == "engine.op.ddl_set_table_type_enforcement" && request.envelope.opcode == "SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT" && request.envelope.opcode_code == 1630)) {
+      (request.envelope.operation_id == "engine.op.ddl_set_table_type_enforcement" && request.envelope.opcode == "SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT" && request.envelope.opcode_code == 1630) ||
+      (request.envelope.operation_id == "engine.op.database_serialize_logical_snapshot" && request.envelope.opcode == "SBLR_DATABASE_SERIALIZE_LOGICAL_SNAPSHOT" && request.envelope.opcode_code == 1631)) {
     result.accepted = true;
     result.dispatched_to_api = true;
     result.api_result.ok = true;
