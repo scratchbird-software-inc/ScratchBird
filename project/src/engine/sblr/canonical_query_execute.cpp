@@ -8495,7 +8495,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         const auto batch = batches.find(node.relational_node_id);
-        if (!inputs.empty() || batch == batches.end()) {
+        if (!node.input_physical_node_ids.empty() || !inputs.empty() ||
+            batch == batches.end()) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code = diagnostic_id;
           step.diagnostic.detail = operation_name +
@@ -25163,7 +25164,7 @@ ExecuteCanonicalObjectFreeValuesQuery(
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
-        if (!inputs.empty()) {
+        if (!node.input_physical_node_ids.empty() || !inputs.empty()) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-VALUES-INPUT-V1";
