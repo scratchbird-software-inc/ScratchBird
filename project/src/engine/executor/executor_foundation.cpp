@@ -4337,6 +4337,13 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     result.selected_plan_uuid.clear();
     result.executed_physical_node_id = 0;
     result.causal_counter_id = 0;
+    result.output_payload_bytes = 0;
+    result.peak_live_payload_bytes = 0;
+    result.resident_structural_bytes = 0;
+    result.current_live_memory_bytes = 0;
+    result.peak_live_memory_bytes = 0;
+    result.memory_grant_bytes = 0;
+    result.memory_grant_evidence_uuid.clear();
     return result;
   };
 
@@ -4408,6 +4415,43 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     return refuse(
         "set operation requires one selected binary physical node with "
         "two distinct inputs");
+  }
+
+  if (request.enforce_payload_memory_grant) {
+    if (request.physical_dag.memory_budget_bytes == 0 ||
+        selected_node->memory_bytes_required == 0 ||
+        selected_node->memory_bytes_required >
+            request.physical_dag.memory_budget_bytes ||
+        selected_node->memory_bytes_required >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::size_t>::max())) {
+      return refuse(
+          "set-operation selected-node memory grant is invalid",
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT");
+    }
+    const PhysicalAdmissionEvidence* resource_evidence = nullptr;
+    for (const auto& evidence : request.physical_dag.admission_evidence) {
+      if (evidence.stage != PhysicalAdmissionStage::kResource) continue;
+      if (resource_evidence != nullptr) {
+        return refuse(
+            "set-operation resource evidence is not unique",
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT");
+      }
+      resource_evidence = &evidence;
+    }
+    if (resource_evidence == nullptr ||
+        resource_evidence->evidence_uuid.empty()) {
+      return refuse(
+          "set-operation resource evidence is absent",
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT");
+    }
+    // The opt-in contract is fail-closed until the quantified kernel binds
+    // every retained logical-payload phase to this exact grant. This refusal
+    // is removed atomically with the complete ledger; no caller can obtain a
+    // successful zero-actual memory receipt in the interim.
+    return refuse(
+        "set-operation exact payload memory ledger is not active",
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT");
   }
 
   const std::string expected_implementation = [&] {

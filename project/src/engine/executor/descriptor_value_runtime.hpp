@@ -1711,6 +1711,10 @@ struct CanonicalSetOperationAllRequest {
   std::size_t maximum_equality_comparison_count = 1048576;
   std::size_t maximum_output_row_count = 1048576;
   CanonicalExecutionMgaAuthority mga_authority;
+  // Canonical live dispatch activates exact logical-payload accounting only
+  // after binding the selected node's immutable resource grant. Direct
+  // contract callers remain source compatible until they opt in.
+  bool enforce_payload_memory_grant = false;
 };
 
 struct CanonicalSetOperationAllResult {
@@ -1729,6 +1733,13 @@ struct CanonicalSetOperationAllResult {
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
   PhysicalMgaStatementContext mga_statement_context;
+  std::size_t output_payload_bytes = 0;
+  std::size_t peak_live_payload_bytes = 0;
+  std::size_t resident_structural_bytes = 0;
+  std::size_t current_live_memory_bytes = 0;
+  std::size_t peak_live_memory_bytes = 0;
+  std::size_t memory_grant_bytes = 0;
+  std::string memory_grant_evidence_uuid;
 };
 
 enum class CanonicalSetOperationNestingRule : std::uint8_t {
