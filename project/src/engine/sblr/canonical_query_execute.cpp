@@ -10065,6 +10065,9 @@ MakeLiveQueryDistinctRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         if (inputs.size() != 1 ||
+            node.input_physical_node_ids.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
             !inputs.front().materialized_output_batch.has_value() ||
             inputs.front().materialized_output_batch->rows.size() >
                 maximum_input_row_count) {
@@ -10076,15 +10079,32 @@ MakeLiveQueryDistinctRegistration(
           return step;
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id, &*scoped_execution_dag,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-DISTINCT-INPUT-V1";
+            step.diagnostic.detail =
+                "query DISTINCT execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
         exec::CanonicalDescriptorDistinctRequest distinct_request;
         distinct_request.selected_physical_node_id = node.physical_node_id;
         distinct_request.equality_terms = equality_terms;
         distinct_request.maximum_value_comparisons =
             maximum_value_comparisons;
         distinct_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         auto distinct_result = exec::ExecuteCanonicalDescriptorDistinct(
-            distinct_request, dag, input_batch);
+            distinct_request, *execution_dag, input_batch);
         if (!distinct_result.diagnostic.ok) {
           step.diagnostic = std::move(distinct_result.diagnostic);
           return step;
