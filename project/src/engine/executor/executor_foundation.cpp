@@ -114,6 +114,141 @@ bool FoundationBatchPayloadBytes(const DescriptorBatch& batch,
   return true;
 }
 
+bool FoundationTuplePayloadBytes(const DescriptorTuple& tuple,
+                                 std::size_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = 0;
+  for (const auto& value : tuple.values) {
+    if (*bytes > std::numeric_limits<std::size_t>::max() -
+                     value.encoded_value.size()) {
+      return false;
+    }
+    *bytes += value.encoded_value.size();
+    if (*bytes > std::numeric_limits<std::size_t>::max() -
+                     value.binary_value.size()) {
+      return false;
+    }
+    *bytes += value.binary_value.size();
+  }
+  return true;
+}
+
+// SET memory receipts use the engine's deterministic logical-payload ABI:
+// retained encoded/binary bytes plus explicitly charged operator work state.
+// Materialized-batch carrier slots, descriptor/result-receipt metadata, and
+// implementation-dependent container links or allocator capacity are outside
+// this ABI, matching ordinary typed-operator payload observations. It does not
+// claim allocator/RSS exactness.
+struct FoundationSetMemoryLedger {
+  bool enforced = false;
+  std::size_t grant_bytes = 0;
+  std::size_t live_payload_bytes = 0;
+  std::size_t peak_payload_bytes = 0;
+  std::size_t live_structural_bytes = 0;
+  std::size_t peak_memory_bytes = 0;
+  std::string refusal_detail;
+
+  bool Observe(const std::size_t next_payload,
+               const std::size_t next_structural,
+               const std::string_view phase) {
+    if (next_structural >
+        std::numeric_limits<std::size_t>::max() - next_payload) {
+      refusal_detail =
+          "set-operation logical memory accounting overflowed " +
+          std::string(phase);
+      return false;
+    }
+    const auto next_memory = next_payload + next_structural;
+    if (next_memory > grant_bytes) {
+      refusal_detail =
+          "set-operation logical memory exceeded its selected-node grant " +
+          std::string(phase);
+      return false;
+    }
+    live_payload_bytes = next_payload;
+    live_structural_bytes = next_structural;
+    peak_payload_bytes = std::max(peak_payload_bytes, next_payload);
+    peak_memory_bytes = std::max(peak_memory_bytes, next_memory);
+    return true;
+  }
+
+  bool RetainPayload(const std::size_t bytes,
+                     const std::string_view phase) {
+    if (!enforced) return true;
+    if (bytes > std::numeric_limits<std::size_t>::max() -
+                    live_payload_bytes) {
+      refusal_detail =
+          "set-operation logical payload accounting overflowed " +
+          std::string(phase);
+      return false;
+    }
+    return Observe(live_payload_bytes + bytes, live_structural_bytes, phase);
+  }
+
+  bool ReplacePayload(const std::size_t old_bytes,
+                      const std::size_t new_bytes,
+                      const std::string_view phase) {
+    if (!enforced) return true;
+    if (old_bytes > live_payload_bytes ||
+        new_bytes > std::numeric_limits<std::size_t>::max() -
+                        live_payload_bytes) {
+      refusal_detail =
+          "set-operation logical payload replacement is invalid " +
+          std::string(phase);
+      return false;
+    }
+    const auto previous_payload_bytes = live_payload_bytes;
+    // The replacement value is materialized while the retained old value is
+    // still live. Observe that overlap before publishing the post-move state.
+    if (!Observe(previous_payload_bytes + new_bytes,
+                 live_structural_bytes, phase)) {
+      return false;
+    }
+    live_payload_bytes =
+        previous_payload_bytes - old_bytes + new_bytes;
+    return true;
+  }
+
+  bool ReleasePayload(const std::size_t bytes,
+                      const std::string_view phase) {
+    if (!enforced) return true;
+    if (bytes > live_payload_bytes) {
+      refusal_detail =
+          "set-operation logical payload accounting underflowed " +
+          std::string(phase);
+      return false;
+    }
+    live_payload_bytes -= bytes;
+    return true;
+  }
+
+  bool RetainStructural(const std::size_t bytes,
+                        const std::string_view phase) {
+    if (!enforced) return true;
+    if (bytes > std::numeric_limits<std::size_t>::max() -
+                    live_structural_bytes) {
+      refusal_detail =
+          "set-operation logical structural accounting overflowed " +
+          std::string(phase);
+      return false;
+    }
+    return Observe(live_payload_bytes, live_structural_bytes + bytes, phase);
+  }
+
+  bool ReleaseStructural(const std::size_t bytes,
+                         const std::string_view phase) {
+    if (!enforced) return true;
+    if (bytes > live_structural_bytes) {
+      refusal_detail =
+          "set-operation logical structural accounting underflowed " +
+          std::string(phase);
+      return false;
+    }
+    live_structural_bytes -= bytes;
+    return true;
+  }
+};
+
 CanonicalAggregateRuntimeRequest
 CloneFoundationAggregateRequestWithoutRowsOrFilter(
     const CanonicalAggregateRuntimeRequest& source,
@@ -4417,6 +4552,8 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
         "two distinct inputs");
   }
 
+  std::size_t memory_grant_bytes = 0;
+  std::string memory_grant_evidence_uuid;
   if (request.enforce_payload_memory_grant) {
     if (request.physical_dag.memory_budget_bytes == 0 ||
         selected_node->memory_bytes_required == 0 ||
@@ -4445,13 +4582,9 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
           "set-operation resource evidence is absent",
           "SBLR.PLAN_TREE.RESOURCE_LIMIT");
     }
-    // The opt-in contract is fail-closed until the quantified kernel binds
-    // every retained logical-payload phase to this exact grant. This refusal
-    // is removed atomically with the complete ledger; no caller can obtain a
-    // successful zero-actual memory receipt in the interim.
-    return refuse(
-        "set-operation exact payload memory ledger is not active",
-        "SBLR.PLAN_TREE.RESOURCE_LIMIT");
+    memory_grant_bytes =
+        static_cast<std::size_t>(selected_node->memory_bytes_required);
+    memory_grant_evidence_uuid = resource_evidence->evidence_uuid;
   }
 
   const std::string expected_implementation = [&] {
@@ -4531,12 +4664,14 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   if (!validation.ok) {
     return refuse(validation.diagnostic_code + ":" + validation.detail);
   }
-  DescriptorBatch output_schema;
-  output_schema.columns = request.result_columns;
-  validation = ValidateCanonicalDescriptorBatch(
-      output_schema, selected_node->output_descriptor_ids);
-  if (!validation.ok) {
-    return refuse(validation.diagnostic_code + ":" + validation.detail);
+  {
+    DescriptorBatch output_schema;
+    output_schema.columns = request.result_columns;
+    validation = ValidateCanonicalDescriptorBatch(
+        output_schema, selected_node->output_descriptor_ids);
+    if (!validation.ok) {
+      return refuse(validation.diagnostic_code + ":" + validation.detail);
+    }
   }
 
   // QOW-SOURCE-QRY-016-ARITY-V1
@@ -4549,8 +4684,39 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
                   "QOW-DIAG-QRY-016-ARITY-REFUSAL-V1");
   }
 
+  FoundationSetMemoryLedger memory_ledger;
+  memory_ledger.enforced = request.enforce_payload_memory_grant;
+  memory_ledger.grant_bytes = memory_grant_bytes;
+  const auto refuse_memory = [&]() {
+    return refuse(memory_ledger.refusal_detail.empty()
+                      ? "set-operation logical memory receipt is invalid"
+                      : std::move(memory_ledger.refusal_detail),
+                  "SBLR.PLAN_TREE.RESOURCE_LIMIT");
+  };
+  std::size_t left_input_payload_bytes = 0;
+  std::size_t right_input_payload_bytes = 0;
+  if (memory_ledger.enforced &&
+      (!FoundationBatchPayloadBytes(left_batch, &left_input_payload_bytes) ||
+       !FoundationBatchPayloadBytes(right_batch,
+                                    &right_input_payload_bytes) ||
+       !memory_ledger.RetainPayload(
+           left_input_payload_bytes,
+           "while retaining the left operand") ||
+       !memory_ledger.RetainPayload(
+           right_input_payload_bytes,
+           "while retaining the right operand"))) {
+    return refuse_memory();
+  }
+
   std::optional<DescriptorBatch> aligned_right_storage;
   const DescriptorBatch* aligned_right = &right_batch;
+  if (memory_ledger.enforced &&
+      right_batch.columns.size() >
+          std::numeric_limits<std::size_t>::max() / sizeof(std::size_t)) {
+    memory_ledger.refusal_detail =
+        "set-operation result mapping size overflowed";
+    return refuse_memory();
+  }
   std::vector<std::size_t> right_to_result_column_indices(
       right_batch.columns.size());
   std::iota(right_to_result_column_indices.begin(),
@@ -4560,10 +4726,38 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   // BY NAME maps only the names from already-bound output descriptor records.
   // The aligned values retain their UUID-addressed descriptors, and duplicate,
   // missing, or result-order-drifted names refuse before multiset evaluation.
+  std::size_t aligned_right_payload_bytes = 0;
   if (request.alignment == CanonicalSetOperationAlignment::kByName) {
-    std::map<std::string, std::size_t> left_names;
-    std::map<std::string, std::size_t> right_names;
-    std::map<std::string, std::size_t> result_names;
+    using NameMap = std::map<std::string, std::size_t>;
+    NameMap left_names;
+    NameMap right_names;
+    NameMap result_names;
+    std::size_t name_map_payload_bytes = 0;
+    std::size_t name_map_structural_bytes = 0;
+    const auto retain_name_entry = [&](const std::string& name) {
+      if (!memory_ledger.enforced) return true;
+      constexpr std::size_t kNameEntryStructuralBytes =
+          sizeof(std::string) + sizeof(std::size_t);
+      if (name.size() > std::numeric_limits<std::size_t>::max() -
+                            name_map_payload_bytes ||
+          kNameEntryStructuralBytes >
+              std::numeric_limits<std::size_t>::max() -
+                  name_map_structural_bytes) {
+        memory_ledger.refusal_detail =
+            "set-operation BY NAME entry size overflowed";
+        return false;
+      }
+      if (!memory_ledger.RetainPayload(
+              name.size(), "while retaining BY NAME lookup keys") ||
+          !memory_ledger.RetainStructural(
+              kNameEntryStructuralBytes,
+              "while retaining BY NAME lookup slots")) {
+        return false;
+      }
+      name_map_payload_bytes += name.size();
+      name_map_structural_bytes += kNameEntryStructuralBytes;
+      return true;
+    };
     for (std::size_t column = 0; column < request.result_columns.size();
          ++column) {
       if (!left_names
@@ -4583,6 +4777,20 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
         return refuse("BY NAME result order must follow the left operand",
                       "QOW-DIAG-QRY-016-BY-NAME-REFUSAL-V1");
       }
+      if (!retain_name_entry(left_batch.columns[column].stable_name) ||
+          !retain_name_entry(right_batch.columns[column].stable_name) ||
+          !retain_name_entry(
+              request.result_columns[column].stable_name)) {
+        return refuse_memory();
+      }
+    }
+    if (memory_ledger.enforced) {
+      aligned_right_payload_bytes = right_input_payload_bytes;
+    }
+    if (!memory_ledger.RetainPayload(
+            aligned_right_payload_bytes,
+            "while retaining the BY NAME aligned right operand")) {
+      return refuse_memory();
     }
     aligned_right_storage.emplace();
     auto& aligned = *aligned_right_storage;
@@ -4611,6 +4819,25 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
         left_names.size() != result_names.size()) {
       return refuse("BY NAME operand column sets differ",
                     "QOW-DIAG-QRY-016-BY-NAME-REFUSAL-V1");
+    }
+    if (memory_ledger.enforced) {
+      std::size_t measured_aligned_right_payload_bytes = 0;
+      if (!FoundationBatchPayloadBytes(
+              aligned, &measured_aligned_right_payload_bytes) ||
+          measured_aligned_right_payload_bytes !=
+              aligned_right_payload_bytes) {
+        memory_ledger.refusal_detail =
+            "set-operation BY NAME aligned payload receipt drifted";
+        return refuse_memory();
+      }
+    }
+    if (!memory_ledger.ReleasePayload(
+            name_map_payload_bytes,
+            "after releasing BY NAME lookup keys") ||
+        !memory_ledger.ReleaseStructural(
+            name_map_structural_bytes,
+            "after releasing BY NAME lookup slots")) {
+      return refuse_memory();
     }
     aligned_right = &aligned;
   }
@@ -4681,7 +4908,8 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
               ? "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1"
               : std::string{});
     }
-    reconciled_type_names.push_back(output.descriptor.canonical_type_name);
+    reconciled_type_names.push_back(
+        output.descriptor.canonical_type_name);
   }
 
   std::optional<DescriptorBatch> reconciled_left_storage;
@@ -4689,10 +4917,14 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   const DescriptorBatch* execution_left = &left_batch;
   const DescriptorBatch* execution_right = aligned_right;
   std::size_t coerced_value_count = 0;
+  std::size_t reconciled_left_payload_bytes = 0;
+  std::size_t reconciled_ordinal_right_payload_bytes = 0;
   if (reconcile_types) {
     std::string reconciliation_detail;
-    const auto reconcile_batch = [&](DescriptorBatch* batch) {
-      if (batch == nullptr) return false;
+    const auto reconcile_batch = [&](DescriptorBatch* batch,
+                                     std::size_t* component_payload_bytes,
+                                     const std::string_view phase) {
+      if (batch == nullptr || component_payload_bytes == nullptr) return false;
       for (std::size_t column = 0; column < batch->columns.size(); ++column) {
         const auto source_type = dt::CanonicalTypeIdFromStableName(
             batch->columns[column].descriptor.canonical_type_name);
@@ -4725,6 +4957,37 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
                     : cast.diagnostic.diagnostic_code;
             return false;
           }
+          if (memory_ledger.enforced) {
+            const auto old_encoded_bytes =
+                row.values[column].encoded_value.size();
+            const auto old_binary_bytes =
+                row.values[column].binary_value.size();
+            if (old_binary_bytes >
+                    std::numeric_limits<std::size_t>::max() -
+                        old_encoded_bytes) {
+              memory_ledger.refusal_detail =
+                  "set-operation reconciliation payload size overflowed";
+              return false;
+            }
+            const auto old_payload_bytes =
+                old_encoded_bytes + old_binary_bytes;
+            const auto new_payload_bytes = cast.value.encoded_value.size();
+            if (old_payload_bytes > *component_payload_bytes ||
+                new_payload_bytes >
+                    std::numeric_limits<std::size_t>::max() -
+                        (*component_payload_bytes - old_payload_bytes) ||
+                !memory_ledger.ReplacePayload(
+                    old_payload_bytes, new_payload_bytes, phase)) {
+              if (memory_ledger.refusal_detail.empty()) {
+                memory_ledger.refusal_detail =
+                    "set-operation reconciliation payload receipt drifted";
+              }
+              return false;
+            }
+            *component_payload_bytes =
+                *component_payload_bytes - old_payload_bytes +
+                new_payload_bytes;
+          }
           if (source_type != target_type) ++coerced_value_count;
           row.values[column].descriptor =
               request.result_columns[column].descriptor;
@@ -4741,16 +5004,41 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       }
       return true;
     };
+    if (memory_ledger.enforced) {
+      reconciled_left_payload_bytes = left_input_payload_bytes;
+      if (!memory_ledger.RetainPayload(
+              reconciled_left_payload_bytes,
+              "before retaining the reconciled left operand")) {
+        return refuse_memory();
+      }
+    }
     reconciled_left_storage.emplace(left_batch);
     DescriptorBatch* mutable_right = nullptr;
+    std::size_t* mutable_right_payload_bytes = nullptr;
     if (aligned_right_storage.has_value()) {
       mutable_right = &*aligned_right_storage;
+      mutable_right_payload_bytes = &aligned_right_payload_bytes;
     } else {
+      if (memory_ledger.enforced) {
+        reconciled_ordinal_right_payload_bytes =
+            right_input_payload_bytes;
+        if (!memory_ledger.RetainPayload(
+                reconciled_ordinal_right_payload_bytes,
+                "before retaining the reconciled right operand")) {
+          return refuse_memory();
+        }
+      }
       reconciled_ordinal_right_storage.emplace(right_batch);
       mutable_right = &*reconciled_ordinal_right_storage;
+      mutable_right_payload_bytes =
+          &reconciled_ordinal_right_payload_bytes;
     }
-    if (!reconcile_batch(&*reconciled_left_storage) ||
-        !reconcile_batch(mutable_right)) {
+    if (!reconcile_batch(&*reconciled_left_storage,
+                         &reconciled_left_payload_bytes,
+                         "while reconciling the left operand") ||
+        !reconcile_batch(mutable_right, mutable_right_payload_bytes,
+                         "while reconciling the right operand")) {
+      if (!memory_ledger.refusal_detail.empty()) return refuse_memory();
       return refuse(std::move(reconciliation_detail),
                     "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1");
     }
@@ -4760,6 +5048,24 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   const auto& reconciled_left = *execution_left;
   const auto& reconciled_right = *execution_right;
 
+  std::size_t collation_lookup_structural_bytes = 0;
+  if (memory_ledger.enforced) {
+    if (request.result_columns.size() >
+        std::numeric_limits<std::size_t>::max() /
+            sizeof(const CanonicalSetOperationCollationBinding*)) {
+      memory_ledger.refusal_detail =
+          "set-operation collation lookup size overflowed";
+      return refuse_memory();
+    }
+    collation_lookup_structural_bytes =
+        request.result_columns.size() *
+        sizeof(const CanonicalSetOperationCollationBinding*);
+    if (!memory_ledger.RetainStructural(
+            collation_lookup_structural_bytes,
+            "while retaining the collation lookup")) {
+      return refuse_memory();
+    }
+  }
   std::vector<const CanonicalSetOperationCollationBinding*> collation_by_column(
       request.result_columns.size(), nullptr);
 
@@ -4847,6 +5153,25 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   }
 
   using RowKey = std::vector<std::string>;
+  const auto measure_row_key = [&](const RowKey& key,
+                                   std::size_t* payload_bytes,
+                                   std::size_t* inner_structural_bytes) {
+    if (payload_bytes == nullptr || inner_structural_bytes == nullptr ||
+        key.size() > std::numeric_limits<std::size_t>::max() /
+                         sizeof(std::string)) {
+      return false;
+    }
+    *payload_bytes = 0;
+    *inner_structural_bytes = key.size() * sizeof(std::string);
+    for (const auto& field : key) {
+      if (field.size() > std::numeric_limits<std::size_t>::max() -
+                             *payload_bytes) {
+        return false;
+      }
+      *payload_bytes += field.size();
+    }
+    return true;
+  };
   const auto append_key_field = [](std::string* encoded,
                                    const std::string_view field) {
     encoded->append(std::to_string(field.size()));
@@ -4927,17 +5252,36 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     }
     return true;
   };
-  const auto retag_row = [&](const DescriptorTuple& source) {
-    DescriptorTuple output;
-    output.values = source.values;
-    for (std::size_t column = 0; column < output.values.size(); ++column) {
-      output.values[column].descriptor = request.result_columns[column].descriptor;
-    }
-    return output;
-  };
-
   std::vector<RowKey> left_keys;
   std::vector<RowKey> right_keys;
+  std::size_t left_key_outer_structural_bytes = 0;
+  std::size_t right_key_outer_structural_bytes = 0;
+  std::size_t left_key_inner_structural_bytes = 0;
+  std::size_t right_key_inner_structural_bytes = 0;
+  std::size_t left_key_payload_bytes = 0;
+  std::size_t right_key_payload_bytes = 0;
+  if (memory_ledger.enforced) {
+    if (reconciled_left.rows.size() >
+            std::numeric_limits<std::size_t>::max() / sizeof(RowKey) ||
+        reconciled_right.rows.size() >
+            std::numeric_limits<std::size_t>::max() / sizeof(RowKey)) {
+      memory_ledger.refusal_detail =
+          "set-operation row-key slot size overflowed";
+      return refuse_memory();
+    }
+    left_key_outer_structural_bytes =
+        reconciled_left.rows.size() * sizeof(RowKey);
+    right_key_outer_structural_bytes =
+        reconciled_right.rows.size() * sizeof(RowKey);
+    if (!memory_ledger.RetainStructural(
+            left_key_outer_structural_bytes,
+            "before retaining the left row-key slots") ||
+        !memory_ledger.RetainStructural(
+            right_key_outer_structural_bytes,
+            "before retaining the right row-key slots")) {
+      return refuse_memory();
+    }
+  }
   left_keys.reserve(reconciled_left.rows.size());
   right_keys.reserve(reconciled_right.rows.size());
   std::string key_detail;
@@ -4946,6 +5290,32 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     if (!typed_row_key(row, &key, &key_detail)) {
       return refuse(std::move(key_detail));
     }
+    if (memory_ledger.enforced) {
+      std::size_t key_payload_bytes = 0;
+      std::size_t key_structural_bytes = 0;
+      if (!measure_row_key(key, &key_payload_bytes,
+                           &key_structural_bytes) ||
+          key_payload_bytes >
+              std::numeric_limits<std::size_t>::max() -
+                  left_key_payload_bytes ||
+          key_structural_bytes >
+              std::numeric_limits<std::size_t>::max() -
+                  left_key_inner_structural_bytes) {
+        memory_ledger.refusal_detail =
+            "set-operation left row-key size overflowed";
+        return refuse_memory();
+      }
+      if (!memory_ledger.RetainPayload(
+              key_payload_bytes,
+              "while retaining a left row key") ||
+          !memory_ledger.RetainStructural(
+              key_structural_bytes,
+              "while retaining a left row-key field slot")) {
+        return refuse_memory();
+      }
+      left_key_payload_bytes += key_payload_bytes;
+      left_key_inner_structural_bytes += key_structural_bytes;
+    }
     left_keys.push_back(std::move(key));
   }
   for (const auto& row : reconciled_right.rows) {
@@ -4953,10 +5323,63 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     if (!typed_row_key(row, &key, &key_detail)) {
       return refuse(std::move(key_detail));
     }
+    if (memory_ledger.enforced) {
+      std::size_t key_payload_bytes = 0;
+      std::size_t key_structural_bytes = 0;
+      if (!measure_row_key(key, &key_payload_bytes,
+                           &key_structural_bytes) ||
+          key_payload_bytes >
+              std::numeric_limits<std::size_t>::max() -
+                  right_key_payload_bytes ||
+          key_structural_bytes >
+              std::numeric_limits<std::size_t>::max() -
+                  right_key_inner_structural_bytes) {
+        memory_ledger.refusal_detail =
+            "set-operation right row-key size overflowed";
+        return refuse_memory();
+      }
+      if (!memory_ledger.RetainPayload(
+              key_payload_bytes,
+              "while retaining a right row key") ||
+          !memory_ledger.RetainStructural(
+              key_structural_bytes,
+              "while retaining a right row-key field slot")) {
+        return refuse_memory();
+      }
+      right_key_payload_bytes += key_payload_bytes;
+      right_key_inner_structural_bytes += key_structural_bytes;
+    }
     right_keys.push_back(std::move(key));
   }
 
   std::size_t equality_comparison_count = 0;
+  const auto replace_key_payload =
+      [&](std::string* field, std::string replacement,
+          std::size_t* component_payload_bytes) {
+        if (field == nullptr || component_payload_bytes == nullptr) {
+          return false;
+        }
+        if (memory_ledger.enforced) {
+          const auto old_bytes = field->size();
+          const auto new_bytes = replacement.size();
+          if (old_bytes > *component_payload_bytes ||
+              new_bytes > std::numeric_limits<std::size_t>::max() -
+                              (*component_payload_bytes - old_bytes) ||
+              !memory_ledger.ReplacePayload(
+                  old_bytes, new_bytes,
+                  "while replacing a bound-collation row key")) {
+            if (memory_ledger.refusal_detail.empty()) {
+              memory_ledger.refusal_detail =
+                  "set-operation collation key payload receipt drifted";
+            }
+            return false;
+          }
+          *component_payload_bytes =
+              *component_payload_bytes - old_bytes + new_bytes;
+        }
+        *field = std::move(replacement);
+        return true;
+      };
   if (bound_collation) {
     namespace dt = scratchbird::core::datatypes;
     for (std::size_t column = 0; column < request.result_columns.size();
@@ -4965,6 +5388,7 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       if (binding == nullptr) continue;
       std::vector<const scratchbird::engine::internal_api::EngineTypedValue*>
           representatives;
+      std::size_t representative_structural_bytes = 0;
       const auto classify = [&](const auto& value,
                                 std::string* equality_key) {
         if (equality_key == nullptr) return false;
@@ -5000,37 +5424,158 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
             return true;
           }
         }
+        if (memory_ledger.enforced) {
+          constexpr std::size_t kRepresentativeBytes =
+              sizeof(const scratchbird::engine::internal_api::
+                         EngineTypedValue*);
+          if (kRepresentativeBytes >
+                  std::numeric_limits<std::size_t>::max() -
+                      representative_structural_bytes ||
+              !memory_ledger.RetainStructural(
+                  sizeof(const scratchbird::engine::internal_api::
+                             EngineTypedValue*),
+                  "while retaining a collation representative")) {
+            return false;
+          }
+          representative_structural_bytes += kRepresentativeBytes;
+        }
         representatives.push_back(&value);
         *equality_key =
             "collation:" + std::to_string(representatives.size() - 1);
         return true;
       };
       for (std::size_t row = 0; row < reconciled_left.rows.size(); ++row) {
+        std::string equality_key;
         if (!classify(reconciled_left.rows[row].values[column],
-                      &left_keys[row][column])) {
+                      &equality_key) ||
+            !replace_key_payload(&left_keys[row][column],
+                                 std::move(equality_key),
+                                 &left_key_payload_bytes)) {
+          if (!memory_ledger.refusal_detail.empty()) return refuse_memory();
           return refuse(std::move(key_detail),
                         "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1");
         }
       }
       for (std::size_t row = 0; row < reconciled_right.rows.size(); ++row) {
+        std::string equality_key;
         if (!classify(reconciled_right.rows[row].values[column],
-                      &right_keys[row][column])) {
+                      &equality_key) ||
+            !replace_key_payload(&right_keys[row][column],
+                                 std::move(equality_key),
+                                 &right_key_payload_bytes)) {
+          if (!memory_ledger.refusal_detail.empty()) return refuse_memory();
           return refuse(std::move(key_detail),
                         "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1");
         }
       }
+      if (!memory_ledger.ReleaseStructural(
+              representative_structural_bytes,
+              "after releasing collation representatives")) {
+        return refuse_memory();
+      }
     }
   }
 
+  enum class SetEmitStatus : std::uint8_t {
+    kOk = 1,
+    kOutputBound,
+    kMemoryRefusal,
+  };
   DescriptorBatch output;
   output.columns = request.result_columns;
+  std::size_t output_payload_bytes = 0;
+  if (memory_ledger.enforced) {
+    output_payload_bytes = 1;
+    if (!memory_ledger.RetainPayload(
+            output_payload_bytes,
+            "while retaining the output batch")) {
+      return refuse_memory();
+    }
+  }
   const auto emit_row = [&](const DescriptorTuple& source) {
     if (output.rows.size() >= request.maximum_output_row_count) {
-      return false;
+      return SetEmitStatus::kOutputBound;
     }
-    output.rows.push_back(retag_row(source));
-    return true;
+    if (memory_ledger.enforced) {
+      std::size_t row_payload_bytes = 0;
+      if (!FoundationTuplePayloadBytes(source, &row_payload_bytes) ||
+          row_payload_bytes >
+              std::numeric_limits<std::size_t>::max() -
+                  output_payload_bytes) {
+        memory_ledger.refusal_detail =
+            "set-operation output payload size overflowed";
+        return SetEmitStatus::kMemoryRefusal;
+      }
+      if (!memory_ledger.RetainPayload(
+              row_payload_bytes,
+              "while retaining an output row")) {
+        return SetEmitStatus::kMemoryRefusal;
+      }
+      output_payload_bytes += row_payload_bytes;
+    }
+    output.rows.push_back(source);
+    auto& output_row = output.rows.back();
+    for (std::size_t column = 0; column < output_row.values.size(); ++column) {
+      output_row.values[column].descriptor =
+          request.result_columns[column].descriptor;
+    }
+    return SetEmitStatus::kOk;
   };
+  const auto retain_branch_key =
+      [&](const RowKey& key, const std::size_t mapped_structural_bytes,
+          std::size_t* branch_payload_bytes,
+          std::size_t* branch_structural_bytes) {
+        if (!memory_ledger.enforced) return true;
+        std::size_t key_payload_bytes = 0;
+        std::size_t key_inner_structural_bytes = 0;
+        if (branch_payload_bytes == nullptr ||
+            branch_structural_bytes == nullptr ||
+            !measure_row_key(key, &key_payload_bytes,
+                             &key_inner_structural_bytes) ||
+            key_inner_structural_bytes >
+                std::numeric_limits<std::size_t>::max() - sizeof(RowKey) ||
+            mapped_structural_bytes >
+                std::numeric_limits<std::size_t>::max() -
+                    sizeof(RowKey) - key_inner_structural_bytes) {
+          memory_ledger.refusal_detail =
+              "set-operation branch key size overflowed";
+          return false;
+        }
+        const auto key_structural_bytes =
+            sizeof(RowKey) + key_inner_structural_bytes +
+            mapped_structural_bytes;
+        if (key_payload_bytes >
+                std::numeric_limits<std::size_t>::max() -
+                    *branch_payload_bytes ||
+            key_structural_bytes >
+                std::numeric_limits<std::size_t>::max() -
+                    *branch_structural_bytes) {
+          memory_ledger.refusal_detail =
+              "set-operation branch state size overflowed";
+          return false;
+        }
+        if (!memory_ledger.RetainPayload(
+                key_payload_bytes,
+                "while retaining a branch membership key") ||
+            !memory_ledger.RetainStructural(
+                key_structural_bytes,
+                "while retaining a branch membership slot")) {
+          return false;
+        }
+        *branch_payload_bytes += key_payload_bytes;
+        *branch_structural_bytes += key_structural_bytes;
+        return true;
+      };
+  const auto release_branch_state =
+      [&](const std::size_t branch_payload_bytes,
+          const std::size_t branch_structural_bytes) {
+        return memory_ledger.ReleasePayload(
+                   branch_payload_bytes,
+                   "after releasing branch membership keys") &&
+               memory_ledger.ReleaseStructural(
+                   branch_structural_bytes,
+                   "after releasing branch membership slots");
+      };
   std::size_t consumed_right_multiplicity_count = 0;
   std::size_t eliminated_duplicate_row_count = 0;
 
@@ -5040,9 +5585,21 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   // cannot hide malformed transport or value state.
   if (distinct && request.operation == CanonicalSetOperationKind::kUnion) {
     std::set<RowKey> emitted;
+    std::size_t branch_payload_bytes = 0;
+    std::size_t branch_structural_bytes = 0;
     for (std::size_t index = 0; index < left_keys.size(); ++index) {
-      if (emitted.insert(left_keys[index]).second) {
-        if (!emit_row(reconciled_left.rows[index])) {
+      if (!emitted.contains(left_keys[index])) {
+        if (!retain_branch_key(left_keys[index], 0,
+                               &branch_payload_bytes,
+                               &branch_structural_bytes)) {
+          return refuse_memory();
+        }
+        emitted.insert(left_keys[index]);
+        const auto emitted_row = emit_row(reconciled_left.rows[index]);
+        if (emitted_row == SetEmitStatus::kMemoryRefusal) {
+          return refuse_memory();
+        }
+        if (emitted_row == SetEmitStatus::kOutputBound) {
           return refuse("set-operation output resource bound was exceeded");
         }
       } else {
@@ -5050,17 +5607,42 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       }
     }
     for (std::size_t index = 0; index < right_keys.size(); ++index) {
-      if (emitted.insert(right_keys[index]).second) {
-        if (!emit_row(reconciled_right.rows[index])) {
+      if (!emitted.contains(right_keys[index])) {
+        if (!retain_branch_key(right_keys[index], 0,
+                               &branch_payload_bytes,
+                               &branch_structural_bytes)) {
+          return refuse_memory();
+        }
+        emitted.insert(right_keys[index]);
+        const auto emitted_row = emit_row(reconciled_right.rows[index]);
+        if (emitted_row == SetEmitStatus::kMemoryRefusal) {
+          return refuse_memory();
+        }
+        if (emitted_row == SetEmitStatus::kOutputBound) {
           return refuse("set-operation output resource bound was exceeded");
         }
       } else {
         ++eliminated_duplicate_row_count;
       }
     }
+    emitted.clear();
+    if (!release_branch_state(branch_payload_bytes,
+                              branch_structural_bytes)) {
+      return refuse_memory();
+    }
   } else if (distinct) {
-    std::set<RowKey> right_membership(right_keys.begin(), right_keys.end());
+    std::set<RowKey> right_membership;
     std::set<RowKey> emitted;
+    std::size_t branch_payload_bytes = 0;
+    std::size_t branch_structural_bytes = 0;
+    for (const auto& key : right_keys) {
+      if (right_membership.contains(key)) continue;
+      if (!retain_branch_key(key, 0, &branch_payload_bytes,
+                             &branch_structural_bytes)) {
+        return refuse_memory();
+      }
+      right_membership.insert(key);
+    }
     for (std::size_t index = 0; index < left_keys.size(); ++index) {
       const bool present_on_right =
           right_membership.contains(left_keys[index]);
@@ -5069,29 +5651,67 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
               ? present_on_right
               : !present_on_right;
       if (!candidate) continue;
-      if (emitted.insert(left_keys[index]).second) {
-        if (!emit_row(reconciled_left.rows[index])) {
+      if (!emitted.contains(left_keys[index])) {
+        if (!retain_branch_key(left_keys[index], 0,
+                               &branch_payload_bytes,
+                               &branch_structural_bytes)) {
+          return refuse_memory();
+        }
+        emitted.insert(left_keys[index]);
+        const auto emitted_row = emit_row(reconciled_left.rows[index]);
+        if (emitted_row == SetEmitStatus::kMemoryRefusal) {
+          return refuse_memory();
+        }
+        if (emitted_row == SetEmitStatus::kOutputBound) {
           return refuse("set-operation output resource bound was exceeded");
         }
       } else {
         ++eliminated_duplicate_row_count;
       }
     }
+    right_membership.clear();
+    emitted.clear();
+    if (!release_branch_state(branch_payload_bytes,
+                              branch_structural_bytes)) {
+      return refuse_memory();
+    }
   } else if (request.operation == CanonicalSetOperationKind::kUnion) {
     output.rows.reserve(left_keys.size() + right_keys.size());
     for (const auto& row : reconciled_left.rows) {
-      if (!emit_row(row)) {
+      const auto emitted_row = emit_row(row);
+      if (emitted_row == SetEmitStatus::kMemoryRefusal) {
+        return refuse_memory();
+      }
+      if (emitted_row == SetEmitStatus::kOutputBound) {
         return refuse("set-operation output resource bound was exceeded");
       }
     }
     for (const auto& row : reconciled_right.rows) {
-      if (!emit_row(row)) {
+      const auto emitted_row = emit_row(row);
+      if (emitted_row == SetEmitStatus::kMemoryRefusal) {
+        return refuse_memory();
+      }
+      if (emitted_row == SetEmitStatus::kOutputBound) {
         return refuse("set-operation output resource bound was exceeded");
       }
     }
   } else {
     std::map<RowKey, std::size_t> right_multiplicity;
-    for (const auto& key : right_keys) ++right_multiplicity[key];
+    std::size_t branch_payload_bytes = 0;
+    std::size_t branch_structural_bytes = 0;
+    for (const auto& key : right_keys) {
+      auto found = right_multiplicity.find(key);
+      if (found == right_multiplicity.end()) {
+        if (!retain_branch_key(key, sizeof(std::size_t),
+                               &branch_payload_bytes,
+                               &branch_structural_bytes)) {
+          return refuse_memory();
+        }
+        right_multiplicity.emplace(key, 1);
+      } else {
+        ++found->second;
+      }
+    }
     for (std::size_t index = 0; index < left_keys.size(); ++index) {
       auto found = right_multiplicity.find(left_keys[index]);
       const bool consumes =
@@ -5104,10 +5724,82 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
           request.operation == CanonicalSetOperationKind::kIntersect
               ? consumes
               : !consumes;
-      if (emit && !emit_row(reconciled_left.rows[index])) {
-        return refuse("set-operation output resource bound was exceeded");
+      if (emit) {
+        const auto emitted_row = emit_row(reconciled_left.rows[index]);
+        if (emitted_row == SetEmitStatus::kMemoryRefusal) {
+          return refuse_memory();
+        }
+        if (emitted_row == SetEmitStatus::kOutputBound) {
+          return refuse("set-operation output resource bound was exceeded");
+        }
       }
     }
+    right_multiplicity.clear();
+    if (!release_branch_state(branch_payload_bytes,
+                              branch_structural_bytes)) {
+      return refuse_memory();
+    }
+  }
+
+  std::vector<RowKey>().swap(left_keys);
+  std::vector<RowKey>().swap(right_keys);
+  if (!memory_ledger.ReleasePayload(
+          left_key_payload_bytes,
+          "after releasing left row-key payload") ||
+      !memory_ledger.ReleasePayload(
+          right_key_payload_bytes,
+          "after releasing right row-key payload") ||
+      !memory_ledger.ReleaseStructural(
+          left_key_inner_structural_bytes,
+          "after releasing left row-key field slots") ||
+      !memory_ledger.ReleaseStructural(
+          right_key_inner_structural_bytes,
+          "after releasing right row-key field slots") ||
+      !memory_ledger.ReleaseStructural(
+          left_key_outer_structural_bytes,
+          "after releasing left row-key outer slots") ||
+      !memory_ledger.ReleaseStructural(
+          right_key_outer_structural_bytes,
+          "after releasing right row-key outer slots")) {
+    return refuse_memory();
+  }
+  std::vector<const CanonicalSetOperationCollationBinding*>().swap(
+      collation_by_column);
+  if (!memory_ledger.ReleaseStructural(
+          collation_lookup_structural_bytes,
+          "after releasing the collation lookup")) {
+    return refuse_memory();
+  }
+  reconciled_left_storage.reset();
+  if (!memory_ledger.ReleasePayload(
+          reconciled_left_payload_bytes,
+          "after releasing the reconciled left operand")) {
+    return refuse_memory();
+  }
+  reconciled_ordinal_right_storage.reset();
+  if (!memory_ledger.ReleasePayload(
+          reconciled_ordinal_right_payload_bytes,
+          "after releasing the reconciled right operand")) {
+    return refuse_memory();
+  }
+  aligned_right_storage.reset();
+  if (!memory_ledger.ReleasePayload(
+          aligned_right_payload_bytes,
+          "after releasing the BY NAME aligned right operand") ||
+      !memory_ledger.ReleasePayload(
+          left_input_payload_bytes,
+          "after consuming the left operand") ||
+      !memory_ledger.ReleasePayload(
+          right_input_payload_bytes,
+          "after consuming the right operand")) {
+    return refuse_memory();
+  }
+  if (memory_ledger.enforced &&
+      (memory_ledger.live_structural_bytes != 0 ||
+       memory_ledger.live_payload_bytes != output_payload_bytes)) {
+    memory_ledger.refusal_detail =
+        "set-operation final logical memory receipt drifted";
+    return refuse_memory();
   }
   if (output.rows.size() > request.maximum_output_row_count) {
     return refuse("set-operation output resource bound was exceeded");
@@ -5116,6 +5808,20 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       output, selected_node->output_descriptor_ids);
   if (!validation.ok) {
     return refuse(validation.diagnostic_code + ":" + validation.detail);
+  }
+  if (memory_ledger.enforced) {
+    std::size_t measured_output_payload_bytes = 0;
+    if (!FoundationBatchPayloadBytes(
+            output, &measured_output_payload_bytes) ||
+        measured_output_payload_bytes != output_payload_bytes ||
+        memory_ledger.peak_payload_bytes < output_payload_bytes ||
+        memory_ledger.peak_memory_bytes <
+            memory_ledger.live_payload_bytes ||
+        memory_ledger.peak_memory_bytes > memory_grant_bytes) {
+      memory_ledger.refusal_detail =
+          "set-operation final logical memory observation is invalid";
+      return refuse_memory();
+    }
   }
 
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
@@ -5142,6 +5848,21 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
   result.mga_statement_context = request.mga_authority.statement_context;
+  if (memory_ledger.enforced) {
+    result.output_payload_bytes = output_payload_bytes;
+    result.peak_live_payload_bytes =
+        memory_ledger.peak_payload_bytes;
+    result.resident_structural_bytes =
+        memory_ledger.live_structural_bytes;
+    result.current_live_memory_bytes =
+        memory_ledger.live_payload_bytes +
+        memory_ledger.live_structural_bytes;
+    result.peak_live_memory_bytes =
+        memory_ledger.peak_memory_bytes;
+    result.memory_grant_bytes = memory_grant_bytes;
+    result.memory_grant_evidence_uuid =
+        std::move(memory_grant_evidence_uuid);
+  }
   return result;
 }
 
