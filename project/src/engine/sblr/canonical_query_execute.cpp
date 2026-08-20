@@ -3121,14 +3121,14 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         boolean_type == core_manifest.manifest.descriptor_rows.end() ||
         !boolean_type->descriptor_uuid.valid()) {
       result.detail =
-          "global boolean aggregate core datatype cohort is incomplete";
+          "global aggregate boolean-input core datatype cohort is incomplete";
       return result;
     }
     core_boolean_type_uuid = scratchbird::core::uuid::UuidToString(
         boolean_type->descriptor_uuid.value);
     if (core_boolean_type_uuid.empty()) {
       result.detail =
-          "global boolean aggregate core datatype identity is unavailable";
+          "global aggregate boolean-input core datatype identity is unavailable";
       return result;
     }
   }
