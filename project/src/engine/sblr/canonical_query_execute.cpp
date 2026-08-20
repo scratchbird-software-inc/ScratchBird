@@ -14282,7 +14282,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
              plan::CanonicalLogicalRelationalNodeKind::kSetOperation,
              exec::PhysicalNodeKind::kSetOperation,
              profile.physical_semantic_id,
-             static_cast<std::size_t>(materialized.output_bound), set_memory,
+             static_cast<std::size_t>(materialized.output_bound),
+             request.optimizer_request.resource.memory_budget_bytes,
              2, 2});
         profiles.back().runtime_accounted_auxiliary_memory_bytes =
             materialized.work_bound;
@@ -17134,7 +17135,8 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
          values ? "canonical.values.materialize.v1"
                 : set_profile.physical_semantic_id,
          node_rows,
-         node_memory,
+         values ? node_memory
+                : request.optimizer_request.resource.memory_budget_bytes,
          values ? 0U : 2U,
          values ? 0U : 2U});
   }
@@ -17550,7 +17552,8 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
          set_capability_uuids.at(prepared.profile.implementation_id),
          node.node_kind, exec::PhysicalNodeKind::kSetOperation,
          prepared.profile.physical_semantic_id,
-         prepared.maximum_output_row_count, memory_bytes, 2, 2});
+         prepared.maximum_output_row_count,
+         request.optimizer_request.resource.memory_budget_bytes, 2, 2});
     profiles.back().runtime_accounted_auxiliary_memory_bytes =
         prepared.profile.operation ==
                     exec::CanonicalSetOperationKind::kUnion &&
@@ -27970,7 +27973,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       set_profile.transformation_rule_id =
           "canonical.time-series.set.union-all.ordinal.v1";
       set_profile.estimated_rows = kTimeSeriesCompositionRowBound;
-      set_profile.memory_bytes_required = 1;
+      set_profile.memory_bytes_required = planning.memory_budget_bytes;
       set_profile.minimum_input_count = 2;
       set_profile.maximum_input_count = 2;
       set_profile.runtime_peak_from_callback_batches = true;
@@ -32511,7 +32514,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     set_profile.transformation_rule_id =
         "canonical.search.set.union-all.ordinal.v1";
     set_profile.estimated_rows = kSearchCompositionRowBound;
-    set_profile.memory_bytes_required = 1;
+    set_profile.memory_bytes_required = planning.memory_budget_bytes;
     set_profile.minimum_input_count = 2;
     set_profile.maximum_input_count = 2;
     set_profile.runtime_peak_from_callback_batches = true;
@@ -34668,7 +34671,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
     set_profile.transformation_rule_id =
         "canonical.key-value.set.union-all.ordinal.v1";
     set_profile.estimated_rows = kKeyValueCompositionRowBound;
-    set_profile.memory_bytes_required = 1;
+    set_profile.memory_bytes_required = planning.memory_budget_bytes;
     set_profile.minimum_input_count = 2;
     set_profile.maximum_input_count = 2;
     set_profile.runtime_peak_from_callback_batches = true;
@@ -37075,7 +37078,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
     set_profile.transformation_rule_id =
         "canonical.graph.set.union-all.ordinal.v1";
     set_profile.estimated_rows = kGraphCompositionRowBound;
-    set_profile.memory_bytes_required = 1;
+    set_profile.memory_bytes_required = planning.memory_budget_bytes;
     set_profile.minimum_input_count = 2;
     set_profile.maximum_input_count = 2;
     set_profile.runtime_peak_from_callback_batches = true;
@@ -39778,7 +39781,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
       set_profile.transformation_rule_id =
           "canonical.document-unnest.set.union-all.ordinal.v1";
       set_profile.estimated_rows = bounded_rows;
-      set_profile.memory_bytes_required = 1;
+      set_profile.memory_bytes_required = planning.memory_budget_bytes;
       set_profile.minimum_input_count = 2;
       set_profile.maximum_input_count = 2;
       set_profile.runtime_peak_from_callback_batches = true;
