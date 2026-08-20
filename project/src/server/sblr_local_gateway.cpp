@@ -60,6 +60,7 @@
 #include "engine/sblr/sblr_ddl_set_index_optimizer_eligibility_runtime.hpp"
 #include "engine/sblr/sblr_ddl_set_table_type_enforcement_runtime.hpp"
 #include "engine/sblr/sblr_database_serialize_logical_snapshot_runtime.hpp"
+#include "engine/sblr/sblr_database_deserialize_logical_snapshot_runtime.hpp"
 #include "engine/sblr/sblr_ddl_alter_view_runtime.hpp"
 #include "engine/sblr/sblr_result_set_pass_runtime.hpp"
 #include "engine/sblr/sblr_access_cursor_open_runtime.hpp"
