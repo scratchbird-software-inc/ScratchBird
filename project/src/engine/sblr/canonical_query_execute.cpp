@@ -51,6 +51,7 @@
 #include <ranges>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -2748,14 +2749,12 @@ LiveApproximateExpressionProfile MatchLiveApproximateExpressionProfile(
   return result;
 }
 
-bool MaterializeAggregateFilterTruthValues(
+bool AggregateFilterInputDescriptorExact(
     const exec::DescriptorBatch& input,
     const std::size_t filter_column,
     const std::uint32_t filter_descriptor_id,
-    std::vector<api::EngineSqlTruthValue>* filter_truth_values,
     std::string* detail) {
-  if (filter_truth_values == nullptr || detail == nullptr) return false;
-  filter_truth_values->clear();
+  if (detail == nullptr) return false;
   if (filter_column >= input.columns.size() ||
       input.columns[filter_column].descriptor_id != filter_descriptor_id ||
       input.columns[filter_column].descriptor.canonical_type_name !=
@@ -2765,33 +2764,133 @@ bool MaterializeAggregateFilterTruthValues(
         "boolean";
     return false;
   }
-  filter_truth_values->reserve(input.rows.size());
-  for (const auto& row : input.rows) {
-    if (filter_column >= row.values.size()) {
-      *detail = "global aggregate FILTER input cardinality is unresolved";
+  return true;
+}
+
+bool DecodeAggregateFilterTruthValue(
+    const api::EngineTypedValue& value,
+    api::EngineSqlTruthValue* truth,
+    std::string* detail) {
+  if (truth == nullptr || detail == nullptr) return false;
+  api::EngineCanonicalExpressionEvaluationRequest expression_request;
+  expression_request.consumer =
+      api::EngineCanonicalExpressionConsumer::aggregate;
+  expression_request.operation =
+      api::EngineCanonicalExpressionOperation::identity;
+  expression_request.left_value = value;
+  expression_request.result_descriptor = value.descriptor;
+  api::EngineCanonicalExpressionEvaluationResult expression_result;
+  if (!api::QowEvaluateCanonicalTypedExpressionV1(
+          expression_request, &expression_result, detail) ||
+      !api::QowCanonicalTruthFromTypedValueV1(
+          expression_result.value, truth, detail)) {
+    const std::string expression_detail = *detail;
+    *detail =
+        "global aggregate FILTER input is not exact SQL boolean "
+        "three-valued state: " + expression_detail;
+    return false;
+  }
+  return true;
+}
+
+bool ValidateAggregateFilterTruthValues(
+    const exec::DescriptorBatch& input,
+    const std::size_t filter_column,
+    const std::uint32_t filter_descriptor_id,
+    std::string* detail) noexcept {
+  if (detail == nullptr) return false;
+  try {
+    detail->clear();
+    if (!AggregateFilterInputDescriptorExact(
+            input, filter_column, filter_descriptor_id, detail)) {
       return false;
     }
-    const auto& value = row.values[filter_column];
-    api::EngineCanonicalExpressionEvaluationRequest expression_request;
-    expression_request.consumer =
-        api::EngineCanonicalExpressionConsumer::aggregate;
-    expression_request.operation =
-        api::EngineCanonicalExpressionOperation::identity;
-    expression_request.left_value = value;
-    expression_request.result_descriptor = value.descriptor;
-    api::EngineCanonicalExpressionEvaluationResult expression_result;
-    api::EngineSqlTruthValue truth = api::EngineSqlTruthValue::unspecified;
-    if (!api::QowEvaluateCanonicalTypedExpressionV1(
-            expression_request, &expression_result, detail) ||
-        !api::QowCanonicalTruthFromTypedValueV1(
-            expression_result.value, &truth, detail)) {
-      const std::string expression_detail = *detail;
+    for (const auto& row : input.rows) {
+      if (filter_column >= row.values.size()) {
+        *detail = "global aggregate FILTER input cardinality is unresolved";
+        return false;
+      }
+      api::EngineSqlTruthValue truth = api::EngineSqlTruthValue::unspecified;
+      if (!DecodeAggregateFilterTruthValue(
+              row.values[filter_column], &truth, detail)) {
+        return false;
+      }
+    }
+  } catch (const std::length_error&) {
+    detail->clear();
+    return false;
+  } catch (const std::bad_alloc&) {
+    detail->clear();
+    return false;
+  }
+  return true;
+}
+
+bool MaterializeAggregateFilterTruthValues(
+    const exec::DescriptorBatch& input,
+    const std::size_t filter_column,
+    const std::uint32_t filter_descriptor_id,
+    const std::uint64_t maximum_retained_bytes,
+    std::vector<api::EngineSqlTruthValue>* filter_truth_values,
+    std::uint64_t* retained_bytes,
+    std::string* detail) noexcept {
+  if (filter_truth_values == nullptr || retained_bytes == nullptr ||
+      detail == nullptr) {
+    return false;
+  }
+  try {
+    detail->clear();
+    if (!AggregateFilterInputDescriptorExact(
+            input, filter_column, filter_descriptor_id, detail)) {
+      return false;
+    }
+    std::uint64_t logical_bytes = 0;
+    if (!CheckedMultiply(input.rows.size(),
+                         sizeof(api::EngineSqlTruthValue),
+                         &logical_bytes)) {
+      *detail = "global aggregate FILTER truth carrier size overflowed";
+      return false;
+    }
+    if (logical_bytes > maximum_retained_bytes) {
       *detail =
-          "global aggregate FILTER input is not exact SQL boolean "
-          "three-valued state: " + expression_detail;
+          "global aggregate FILTER truth carrier exceeds its admitted memory "
+          "bound";
       return false;
     }
-    filter_truth_values->push_back(truth);
+
+    std::vector<api::EngineSqlTruthValue> candidate;
+    if (!input.rows.empty()) candidate.reserve(input.rows.size());
+    std::uint64_t capacity_bytes = 0;
+    if (!CheckedMultiply(candidate.capacity(),
+                         sizeof(api::EngineSqlTruthValue),
+                         &capacity_bytes) ||
+        capacity_bytes > maximum_retained_bytes) {
+      *detail =
+          "global aggregate FILTER retained truth carrier exceeds its "
+          "admitted memory bound";
+      return false;
+    }
+    for (const auto& row : input.rows) {
+      if (filter_column >= row.values.size()) {
+        *detail = "global aggregate FILTER input cardinality is unresolved";
+        return false;
+      }
+      api::EngineSqlTruthValue truth =
+          api::EngineSqlTruthValue::unspecified;
+      if (!DecodeAggregateFilterTruthValue(
+              row.values[filter_column], &truth, detail)) {
+        return false;
+      }
+      candidate.push_back(truth);
+    }
+    *filter_truth_values = std::move(candidate);
+    *retained_bytes = capacity_bytes;
+  } catch (const std::length_error&) {
+    detail->clear();
+    return false;
+  } catch (const std::bad_alloc&) {
+    detail->clear();
+    return false;
   }
   return true;
 }
@@ -3317,10 +3416,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
               "column";
           return result;
         }
-        std::vector<api::EngineSqlTruthValue> filter_truth_values;
-        if (!MaterializeAggregateFilterTruthValues(
+        if (!ValidateAggregateFilterTruthValues(
                 input.batch, value_column, argument->result_descriptor_id,
-                &filter_truth_values, &result.detail)) {
+                &result.detail)) {
           return result;
         }
         result.filter_column = value_column;
@@ -11231,6 +11329,7 @@ MakeLiveAggregateRegistryRegistration(
     PreparedGlobalAggregateRoot prepared,
     std::string capability_uuid,
     const std::size_t maximum_input_row_count,
+    const std::uint64_t maximum_filter_truth_memory_bytes,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kAggregate;
@@ -11241,6 +11340,7 @@ MakeLiveAggregateRegistryRegistration(
   registration.accepts_optimizer_publication_v2 = true;
   registration.execute =
       [prepared = std::move(prepared), maximum_input_row_count,
+       maximum_filter_truth_memory_bytes,
        mga_context = std::move(mga_context)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
@@ -11285,14 +11385,42 @@ MakeLiveAggregateRegistryRegistration(
           }
           execution_dag = &*scoped_execution_dag;
         }
+        const auto aggregate_memory_bound =
+            SelectedNodeAggregateMemoryBound(dag, node);
+        std::uint64_t input_memory_bytes = 1;
+        if (!aggregate_memory_bound.has_value() ||
+            !AddBatchMemoryBytes(input_batch, &input_memory_bytes) ||
+            input_memory_bytes > *aggregate_memory_bound ||
+            maximum_filter_truth_memory_bytes >
+                *aggregate_memory_bound - input_memory_bytes) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "aggregate FILTER carrier or input exceeds its selected-node "
+              "memory grant";
+          return step;
+        }
+        if (!prepared.filter_column.has_value() &&
+            maximum_filter_truth_memory_bytes != 0) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "aggregate without FILTER received a truth-carrier receipt";
+          return step;
+        }
         std::optional<std::vector<api::EngineSqlTruthValue>>
             filter_truth_values;
+        std::uint64_t retained_filter_truth_bytes = 0;
         if (prepared.filter_column.has_value()) {
           std::vector<api::EngineSqlTruthValue> materialized_filter;
           std::string filter_detail;
           if (!MaterializeAggregateFilterTruthValues(
                   input_batch, *prepared.filter_column,
-                  prepared.filter_descriptor_id, &materialized_filter,
+                  prepared.filter_descriptor_id,
+                  maximum_filter_truth_memory_bytes,
+                  &materialized_filter, &retained_filter_truth_bytes,
                   &filter_detail)) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
@@ -11301,16 +11429,6 @@ MakeLiveAggregateRegistryRegistration(
             return step;
           }
           filter_truth_values = std::move(materialized_filter);
-        }
-        const auto aggregate_memory_bound =
-            SelectedNodeAggregateMemoryBound(dag, node);
-        if (!aggregate_memory_bound.has_value()) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
-          step.diagnostic.detail =
-              "aggregate finalization memory grant is unresolved";
-          return step;
         }
         exec::CanonicalAggregateRuntimeRequest aggregate_request;
         aggregate_request.selected_physical_node_id = node.physical_node_id;
@@ -11322,6 +11440,22 @@ MakeLiveAggregateRegistryRegistration(
         aggregate_request.result_column = prepared.result_column;
         aggregate_request.filter_truth_values =
             std::move(filter_truth_values);
+        std::uint64_t logical_filter_truth_bytes = 0;
+        if ((prepared.filter_column.has_value() &&
+             !CheckedMultiply(input_batch.rows.size(),
+                              sizeof(api::EngineSqlTruthValue),
+                              &logical_filter_truth_bytes)) ||
+            logical_filter_truth_bytes > retained_filter_truth_bytes) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "aggregate FILTER truth-carrier receipt is inconsistent";
+          return step;
+        }
+        aggregate_request.retained_memory_bytes =
+            static_cast<std::size_t>(retained_filter_truth_bytes -
+                                     logical_filter_truth_bytes);
         aggregate_request.distinct = prepared.distinct;
         aggregate_request.aggregate_order_terms =
             prepared.aggregate_order_terms;
@@ -13797,6 +13931,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::size_t count_star_input_row_count = 0;
   std::optional<PreparedGlobalAggregateRoot> prepared_registry_aggregate;
   std::size_t registry_aggregate_input_row_count = 0;
+  std::uint64_t registry_aggregate_filter_truth_memory_bytes = 0;
   std::optional<PreparedGroupedCountSumRoot> prepared_grouped_aggregate;
   std::size_t grouped_aggregate_input_row_count = 0;
   std::size_t grouped_aggregate_output_row_bound = 0;
@@ -15302,6 +15437,38 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         break;
       }
       case plan::CanonicalLogicalRelationalNodeKind::kAggregate: {
+        const auto materialize_filter_truth_values =
+            [&](const PreparedGlobalAggregateRoot& prepared,
+                std::optional<std::vector<api::EngineSqlTruthValue>>*
+                    filter_truth_values,
+                std::uint64_t* filter_truth_memory_bytes,
+                std::string* detail) {
+              if (filter_truth_values == nullptr ||
+                  filter_truth_memory_bytes == nullptr || detail == nullptr) {
+                return false;
+              }
+              filter_truth_values->reset();
+              *filter_truth_memory_bytes = 0;
+              if (!prepared.filter_column.has_value()) return true;
+              const auto memory_budget =
+                  request.optimizer_request.resource.memory_budget_bytes;
+              if (input_memory > memory_budget) {
+                *detail =
+                    "composition aggregate FILTER input exceeds its "
+                    "admitted memory bound";
+                return false;
+              }
+              std::vector<api::EngineSqlTruthValue> materialized_filter;
+              if (!MaterializeAggregateFilterTruthValues(
+                      input_batch, *prepared.filter_column,
+                      prepared.filter_descriptor_id,
+                      memory_budget - input_memory, &materialized_filter,
+                      filter_truth_memory_bytes, detail)) {
+                return false;
+              }
+              *filter_truth_values = std::move(materialized_filter);
+              return true;
+            };
         if (node.semantic_variant_id ==
             "aggregate.global-count-star.v1") {
           auto prepared = PrepareGlobalAggregateRoot(
@@ -15363,17 +15530,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           std::optional<std::vector<api::EngineSqlTruthValue>>
               filter_truth_values;
-          if (prepared.filter_column.has_value()) {
-            std::vector<api::EngineSqlTruthValue> materialized_filter;
-            std::string filter_detail;
-            if (!MaterializeAggregateFilterTruthValues(
-                    input_batch, *prepared.filter_column,
-                    prepared.filter_descriptor_id, &materialized_filter,
-                    &filter_detail)) {
-              return refuse(std::string(kPayloadDiagnostic),
-                            std::move(filter_detail));
-            }
-            filter_truth_values = std::move(materialized_filter);
+          std::uint64_t filter_truth_memory_bytes = 0;
+          std::string filter_detail;
+          if (!materialize_filter_truth_values(
+                  prepared, &filter_truth_values,
+                  &filter_truth_memory_bytes, &filter_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          std::move(filter_detail));
           }
           std::uint64_t aggregate_work = input_row_count;
           if (prepared.distinct &&
@@ -15397,7 +15560,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           const auto distinct_memory_bound =
               request.optimizer_request.resource.memory_budget_bytes -
-              input_memory;
+              input_memory - filter_truth_memory_bytes;
           PlanningAggregateDistinctState distinct_state;
           std::string distinct_detail;
           if (!InitializePlanningAggregateDistinctState(
@@ -15469,10 +15632,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               "canonical.aggregate.composed-global-count-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory =
-              prepared_registry_aggregate->distinct
-                  ? distinct_state.peak_memory_bytes
-                  : 0;
+          auxiliary_memory = filter_truth_memory_bytes;
+          if (prepared_registry_aggregate->distinct &&
+              !CheckedAdd(auxiliary_memory,
+                          distinct_state.peak_memory_bytes,
+                          &auxiliary_memory)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition COUNT FILTER/DISTINCT memory overflowed");
+          }
+          registry_aggregate_filter_truth_memory_bytes =
+              filter_truth_memory_bytes;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -15498,17 +15668,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           std::optional<std::vector<api::EngineSqlTruthValue>>
               filter_truth_values;
-          if (prepared.filter_column.has_value()) {
-            std::vector<api::EngineSqlTruthValue> materialized_filter;
-            std::string filter_detail;
-            if (!MaterializeAggregateFilterTruthValues(
-                    input_batch, *prepared.filter_column,
-                    prepared.filter_descriptor_id, &materialized_filter,
-                    &filter_detail)) {
-              return refuse(std::string(kPayloadDiagnostic),
-                            std::move(filter_detail));
-            }
-            filter_truth_values = std::move(materialized_filter);
+          std::uint64_t filter_truth_memory_bytes = 0;
+          std::string filter_detail;
+          if (!materialize_filter_truth_values(
+                  prepared, &filter_truth_values,
+                  &filter_truth_memory_bytes, &filter_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          std::move(filter_detail));
           }
           std::uint64_t aggregate_work = input_row_count;
           if (prepared.distinct &&
@@ -15529,7 +15695,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!InitializePlanningAggregateDistinctState(
                   request.context, input_batch, prepared,
                   request.optimizer_request.resource.memory_budget_bytes -
-                      input_memory,
+                      input_memory - filter_truth_memory_bytes,
                   &distinct_state, &distinct_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
                           "composition statistical DISTINCT: " +
@@ -15555,7 +15721,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                       input_row_count,
                       aggregate_work,
                       request.optimizer_request.resource.memory_budget_bytes -
-                          input_memory,
+                          input_memory - filter_truth_memory_bytes,
                       &distinct_state, &distinct_admitted, &distinct_detail)) {
                 return refuse(std::string(kPayloadDiagnostic),
                               "composition statistical DISTINCT: " +
@@ -15657,9 +15823,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               global_aggregate_profile.transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = prepared_registry_aggregate->distinct
-                                 ? distinct_state.peak_memory_bytes
-                                 : 0;
+          auxiliary_memory = filter_truth_memory_bytes;
+          if (prepared_registry_aggregate->distinct &&
+              !CheckedAdd(auxiliary_memory,
+                          distinct_state.peak_memory_bytes,
+                          &auxiliary_memory)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition statistical FILTER/DISTINCT memory overflowed");
+          }
+          registry_aggregate_filter_truth_memory_bytes =
+              filter_truth_memory_bytes;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -15675,17 +15849,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           std::optional<std::vector<api::EngineSqlTruthValue>>
               filter_truth_values;
-          if (prepared.filter_column.has_value()) {
-            std::vector<api::EngineSqlTruthValue> materialized_filter;
-            std::string filter_detail;
-            if (!MaterializeAggregateFilterTruthValues(
-                    input_batch, *prepared.filter_column,
-                    prepared.filter_descriptor_id, &materialized_filter,
-                    &filter_detail)) {
-              return refuse(std::string(kPayloadDiagnostic),
-                            std::move(filter_detail));
-            }
-            filter_truth_values = std::move(materialized_filter);
+          std::uint64_t filter_truth_memory_bytes = 0;
+          std::string filter_detail;
+          if (!materialize_filter_truth_values(
+                  prepared, &filter_truth_values,
+                  &filter_truth_memory_bytes, &filter_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          std::move(filter_detail));
           }
           std::uint64_t aggregate_work = input_row_count;
           if (prepared.distinct &&
@@ -15705,7 +15875,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!InitializePlanningAggregateDistinctState(
                   request.context, input_batch, prepared,
                   request.optimizer_request.resource.memory_budget_bytes -
-                      input_memory,
+                      input_memory - filter_truth_memory_bytes,
                   &distinct_state, &distinct_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
                           "composition AVG(DISTINCT): " + distinct_detail);
@@ -15729,7 +15899,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                       input_row_count,
                       aggregate_work,
                       request.optimizer_request.resource.memory_budget_bytes -
-                          input_memory,
+                          input_memory - filter_truth_memory_bytes,
                       &distinct_state, &distinct_admitted, &distinct_detail)) {
                 return refuse(std::string(kPayloadDiagnostic),
                               "composition AVG(DISTINCT): " +
@@ -15811,9 +15981,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               "canonical.aggregate.composed-global-avg-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = prepared_registry_aggregate->distinct
-                                 ? distinct_state.peak_memory_bytes
-                                 : 0;
+          auxiliary_memory = filter_truth_memory_bytes;
+          if (prepared_registry_aggregate->distinct &&
+              !CheckedAdd(auxiliary_memory,
+                          distinct_state.peak_memory_bytes,
+                          &auxiliary_memory)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition AVG FILTER/DISTINCT memory overflowed");
+          }
+          registry_aggregate_filter_truth_memory_bytes =
+              filter_truth_memory_bytes;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -15829,17 +16007,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           std::optional<std::vector<api::EngineSqlTruthValue>>
               filter_truth_values;
-          if (prepared.filter_column.has_value()) {
-            std::vector<api::EngineSqlTruthValue> materialized_filter;
-            std::string filter_detail;
-            if (!MaterializeAggregateFilterTruthValues(
-                    input_batch, *prepared.filter_column,
-                    prepared.filter_descriptor_id, &materialized_filter,
-                    &filter_detail)) {
-              return refuse(std::string(kPayloadDiagnostic),
-                            std::move(filter_detail));
-            }
-            filter_truth_values = std::move(materialized_filter);
+          std::uint64_t filter_truth_memory_bytes = 0;
+          std::string filter_detail;
+          if (!materialize_filter_truth_values(
+                  prepared, &filter_truth_values,
+                  &filter_truth_memory_bytes, &filter_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          std::move(filter_detail));
           }
           std::uint64_t aggregate_work = input_row_count;
           if (prepared.distinct &&
@@ -15859,7 +16033,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!InitializePlanningAggregateDistinctState(
                   request.context, input_batch, prepared,
                   request.optimizer_request.resource.memory_budget_bytes -
-                      input_memory,
+                      input_memory - filter_truth_memory_bytes,
                   &distinct_state, &distinct_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
                           "composition SUM(DISTINCT): " + distinct_detail);
@@ -15883,7 +16057,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                       input_row_count,
                       aggregate_work,
                       request.optimizer_request.resource.memory_budget_bytes -
-                          input_memory,
+                          input_memory - filter_truth_memory_bytes,
                       &distinct_state, &distinct_admitted, &distinct_detail)) {
                 return refuse(std::string(kPayloadDiagnostic),
                               "composition SUM(DISTINCT): " +
@@ -15955,9 +16129,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               "canonical.aggregate.composed-global-sum-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = prepared_registry_aggregate->distinct
-                                 ? distinct_state.peak_memory_bytes
-                                 : 0;
+          auxiliary_memory = filter_truth_memory_bytes;
+          if (prepared_registry_aggregate->distinct &&
+              !CheckedAdd(auxiliary_memory,
+                          distinct_state.peak_memory_bytes,
+                          &auxiliary_memory)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition SUM FILTER/DISTINCT memory overflowed");
+          }
+          registry_aggregate_filter_truth_memory_bytes =
+              filter_truth_memory_bytes;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -15978,17 +16160,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           std::optional<std::vector<api::EngineSqlTruthValue>>
               filter_truth_values;
-          if (prepared.filter_column.has_value()) {
-            std::vector<api::EngineSqlTruthValue> materialized_filter;
-            std::string filter_detail;
-            if (!MaterializeAggregateFilterTruthValues(
-                    input_batch, *prepared.filter_column,
-                    prepared.filter_descriptor_id, &materialized_filter,
-                    &filter_detail)) {
-              return refuse(std::string(kPayloadDiagnostic),
-                            std::move(filter_detail));
-            }
-            filter_truth_values = std::move(materialized_filter);
+          std::uint64_t filter_truth_memory_bytes = 0;
+          std::string filter_detail;
+          if (!materialize_filter_truth_values(
+                  prepared, &filter_truth_values,
+                  &filter_truth_memory_bytes, &filter_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          std::move(filter_detail));
           }
           const auto value_column = prepared.value_columns.front();
           exec::CanonicalDescriptorOrderTerm comparison_term;
@@ -16022,7 +16200,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!InitializePlanningAggregateDistinctState(
                   request.context, input_batch, prepared,
                   request.optimizer_request.resource.memory_budget_bytes -
-                      input_memory,
+                      input_memory - filter_truth_memory_bytes,
                   &distinct_state, &distinct_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
                           "composition extremum DISTINCT: " +
@@ -16045,7 +16223,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                       input_row_count,
                       aggregate_work,
                       request.optimizer_request.resource.memory_budget_bytes -
-                          input_memory,
+                          input_memory - filter_truth_memory_bytes,
                       &distinct_state, &distinct_admitted, &distinct_detail)) {
                 return refuse(std::string(kPayloadDiagnostic),
                               "composition extremum DISTINCT: " +
@@ -16120,9 +16298,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   ? "canonical.aggregate.composed-global-min-expression.v1"
                   : "canonical.aggregate.composed-global-max-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = prepared_registry_aggregate->distinct
-                                 ? distinct_state.peak_memory_bytes
-                                 : 0;
+          auxiliary_memory = filter_truth_memory_bytes;
+          if (prepared_registry_aggregate->distinct &&
+              !CheckedAdd(auxiliary_memory,
+                          distinct_state.peak_memory_bytes,
+                          &auxiliary_memory)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition extremum FILTER/DISTINCT memory overflowed");
+          }
+          registry_aggregate_filter_truth_memory_bytes =
+              filter_truth_memory_bytes;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -16142,17 +16328,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           std::optional<std::vector<api::EngineSqlTruthValue>>
               filter_truth_values;
-          if (prepared.filter_column.has_value()) {
-            std::vector<api::EngineSqlTruthValue> materialized_filter;
-            std::string filter_detail;
-            if (!MaterializeAggregateFilterTruthValues(
-                    input_batch, *prepared.filter_column,
-                    prepared.filter_descriptor_id, &materialized_filter,
-                    &filter_detail)) {
-              return refuse(std::string(kPayloadDiagnostic),
-                            std::move(filter_detail));
-            }
-            filter_truth_values = std::move(materialized_filter);
+          std::uint64_t filter_truth_memory_bytes = 0;
+          std::string filter_detail;
+          if (!materialize_filter_truth_values(
+                  prepared, &filter_truth_values,
+                  &filter_truth_memory_bytes, &filter_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          std::move(filter_detail));
           }
           std::uint64_t aggregate_work = input_row_count;
           if (prepared.distinct &&
@@ -16173,7 +16355,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!InitializePlanningAggregateDistinctState(
                   request.context, input_batch, prepared,
                   request.optimizer_request.resource.memory_budget_bytes -
-                      input_memory,
+                      input_memory - filter_truth_memory_bytes,
                   &distinct_state, &distinct_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
                           "composition boolean aggregate DISTINCT: " +
@@ -16199,7 +16381,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                       input_row_count,
                       aggregate_work,
                       request.optimizer_request.resource.memory_budget_bytes -
-                          input_memory,
+                          input_memory - filter_truth_memory_bytes,
                       &distinct_state, &distinct_admitted, &distinct_detail)) {
                 return refuse(std::string(kPayloadDiagnostic),
                               "composition boolean aggregate DISTINCT: " +
@@ -16285,9 +16467,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 "canonical.aggregate.composed-global-every-expression.v1";
           }
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = prepared_registry_aggregate->distinct
-                                 ? distinct_state.peak_memory_bytes
-                                 : 0;
+          auxiliary_memory = filter_truth_memory_bytes;
+          if (prepared_registry_aggregate->distinct &&
+              !CheckedAdd(auxiliary_memory,
+                          distinct_state.peak_memory_bytes,
+                          &auxiliary_memory)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition boolean FILTER/DISTINCT memory overflowed");
+          }
+          registry_aggregate_filter_truth_memory_bytes =
+              filter_truth_memory_bytes;
           break;
         }
         if (pair_aggregate_profile.matched) {
@@ -16301,17 +16491,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           std::optional<std::vector<api::EngineSqlTruthValue>>
               filter_truth_values;
-          if (prepared.filter_column.has_value()) {
-            std::vector<api::EngineSqlTruthValue> materialized_filter;
-            std::string filter_detail;
-            if (!MaterializeAggregateFilterTruthValues(
-                    input_batch, *prepared.filter_column,
-                    prepared.filter_descriptor_id, &materialized_filter,
-                    &filter_detail)) {
-              return refuse(std::string(kPayloadDiagnostic),
-                            std::move(filter_detail));
-            }
-            filter_truth_values = std::move(materialized_filter);
+          std::uint64_t filter_truth_memory_bytes = 0;
+          std::string filter_detail;
+          if (!materialize_filter_truth_values(
+                  prepared, &filter_truth_values,
+                  &filter_truth_memory_bytes, &filter_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          std::move(filter_detail));
           }
           std::uint64_t aggregate_work = input_row_count;
           std::uint64_t distinct_generation_bound = input_row_count;
@@ -16336,7 +16522,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!InitializePlanningAggregateDistinctState(
                   request.context, input_batch, prepared,
                   request.optimizer_request.resource.memory_budget_bytes -
-                      input_memory,
+                      input_memory - filter_truth_memory_bytes,
                   &distinct_state, &distinct_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
                           "composition pair statistical DISTINCT: " +
@@ -16365,7 +16551,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               if (!AdmitPlanningAggregateDistinctTuple(
                       values, 2, distinct_generation_bound, aggregate_work,
                       request.optimizer_request.resource.memory_budget_bytes -
-                          input_memory,
+                          input_memory - filter_truth_memory_bytes,
                       &distinct_state, &distinct_admitted, &distinct_detail)) {
                 return refuse(std::string(kPayloadDiagnostic),
                               "composition pair statistical DISTINCT: " +
@@ -16553,9 +16739,18 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               pair_aggregate_profile.transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = prepared_registry_aggregate->distinct
-                                 ? distinct_state.peak_memory_bytes
-                                 : 0;
+          auxiliary_memory = filter_truth_memory_bytes;
+          if (prepared_registry_aggregate->distinct &&
+              !CheckedAdd(auxiliary_memory,
+                          distinct_state.peak_memory_bytes,
+                          &auxiliary_memory)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition pair statistical FILTER/DISTINCT memory "
+                "overflowed");
+          }
+          registry_aggregate_filter_truth_memory_bytes =
+              filter_truth_memory_bytes;
           break;
         }
         if (string_aggregate_profile.matched ||
@@ -16612,6 +16807,16 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               function, false, distinct, has_filter);
           if (!prepared.ok) {
             return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+          }
+          std::optional<std::vector<api::EngineSqlTruthValue>>
+              filter_truth_values;
+          std::uint64_t filter_truth_memory_bytes = 0;
+          std::string filter_detail;
+          if (!materialize_filter_truth_values(
+                  prepared, &filter_truth_values,
+                  &filter_truth_memory_bytes, &filter_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          std::move(filter_detail));
           }
           std::uint64_t aggregate_work = input_row_count;
           if (comparison_sensitive || prepared.distinct ||
@@ -16687,7 +16892,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           capability_uuid = registry_aggregate_capability_uuid;
           transformation_rule = transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = aggregate_work;
+          if (!CheckedAdd(aggregate_work, filter_truth_memory_bytes,
+                          &auxiliary_memory)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition complex aggregate FILTER memory overflowed");
+          }
+          registry_aggregate_filter_truth_memory_bytes =
+              filter_truth_memory_bytes;
           planning_values_exact = false;
           break;
         }
@@ -17852,7 +18064,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         MakeLiveAggregateRegistryRegistration(
             *prepared_registry_aggregate,
             registry_aggregate_capability_uuid,
-            registry_aggregate_input_row_count, request.context));
+            registry_aggregate_input_row_count,
+            registry_aggregate_filter_truth_memory_bytes,
+            request.context));
   }
   if (prepared_grouped_aggregate.has_value()) {
     execution_request.available_executors.push_back(
@@ -24599,14 +24813,25 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       }
     }
   }
+  std::uint64_t filter_truth_memory_bytes = 0;
   if (prepared_root.filter_column.has_value()) {
-    std::uint64_t filter_memory = 0;
-    if (!CheckedMultiply(static_cast<std::uint64_t>(input_row_count),
-                         sizeof(api::EngineSqlTruthValue), &filter_memory) ||
-        !CheckedAdd(aggregate_result_memory, filter_memory,
-                    &aggregate_result_memory)) {
-      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                    "live aggregate FILTER state size overflowed");
+    if (input_memory >
+        request.optimizer_request.resource.memory_budget_bytes) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                    "live aggregate FILTER input exceeds its memory bound");
+    }
+    std::vector<api::EngineSqlTruthValue> planning_filter_truth_values;
+    std::string filter_detail;
+    if (!MaterializeAggregateFilterTruthValues(
+            input.batch, *prepared_root.filter_column,
+            prepared_root.filter_descriptor_id,
+            request.optimizer_request.resource.memory_budget_bytes -
+                input_memory,
+            &planning_filter_truth_values, &filter_truth_memory_bytes,
+            &filter_detail)) {
+      return refuse(
+          "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
+          std::move(filter_detail));
     }
   }
   if (prepared_root.distinct) {
@@ -24676,6 +24901,11 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                     "live approximate aggregate result size overflowed");
     }
+  }
+  if (!CheckedAdd(aggregate_result_memory, filter_truth_memory_bytes,
+                  &aggregate_result_memory)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live aggregate FILTER state size overflowed");
   }
   std::uint64_t aggregate_workspace_memory = 0;
   if (!CheckedMultiply(input_row_count, sizeof(std::size_t),
@@ -24755,6 +24985,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
        total_memory,
        1,
        1}};
+  profiles.back().runtime_accounted_auxiliary_memory_bytes =
+      filter_truth_memory_bytes;
   if (!CompleteLiveRuntimeMemoryReceipts(
           &profiles,
           {{root->logical_node_id, input_memory}})) {
@@ -24802,6 +25034,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
        listagg_truncation_indicator =
            prepared_root.listagg_truncation_indicator,
        listagg_with_count = prepared_root.listagg_with_count,
+       maximum_filter_truth_memory_bytes = filter_truth_memory_bytes,
        input_row_count, mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
@@ -24834,14 +25067,43 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
               "global aggregate input cardinality differs from its selected cost";
           return step;
         }
+        const auto aggregate_memory_bound =
+            SelectedNodeAggregateMemoryBound(dag, node);
+        std::uint64_t input_memory_bytes = 1;
+        if (!aggregate_memory_bound.has_value() ||
+            !AddBatchMemoryBytes(input_batch, &input_memory_bytes) ||
+            input_memory_bytes > *aggregate_memory_bound ||
+            maximum_filter_truth_memory_bytes >
+                *aggregate_memory_bound - input_memory_bytes) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "global aggregate FILTER carrier or input exceeds its "
+              "selected-node memory grant";
+          return step;
+        }
+        if (!filter_column.has_value() &&
+            maximum_filter_truth_memory_bytes != 0) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "global aggregate without FILTER received a truth-carrier "
+              "receipt";
+          return step;
+        }
         std::optional<std::vector<api::EngineSqlTruthValue>>
             filter_truth_values;
+        std::uint64_t retained_filter_truth_bytes = 0;
         if (filter_column.has_value()) {
           std::vector<api::EngineSqlTruthValue> materialized_filter;
           std::string filter_detail;
           if (!MaterializeAggregateFilterTruthValues(
                   input_batch, *filter_column, filter_descriptor_id,
-                  &materialized_filter, &filter_detail)) {
+                  maximum_filter_truth_memory_bytes,
+                  &materialized_filter, &retained_filter_truth_bytes,
+                  &filter_detail)) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
                 "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
@@ -24865,16 +25127,6 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           }
           output_batch = std::move(aggregate_result.output_batch);
         } else {
-          const auto aggregate_memory_bound =
-              SelectedNodeAggregateMemoryBound(dag, node);
-          if (!aggregate_memory_bound.has_value()) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
-            step.diagnostic.detail =
-                "aggregate finalization memory grant is unresolved";
-            return step;
-          }
           exec::CanonicalAggregateRuntimeRequest aggregate_request;
           aggregate_request.selected_physical_node_id = node.physical_node_id;
           aggregate_request.descriptor = aggregate_descriptor;
@@ -24885,6 +25137,23 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           aggregate_request.result_column = result_column;
           aggregate_request.filter_truth_values =
               std::move(filter_truth_values);
+          std::uint64_t logical_filter_truth_bytes = 0;
+          if ((filter_column.has_value() &&
+               !CheckedMultiply(input_batch.rows.size(),
+                                sizeof(api::EngineSqlTruthValue),
+                                &logical_filter_truth_bytes)) ||
+              logical_filter_truth_bytes > retained_filter_truth_bytes) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+            step.diagnostic.detail =
+                "global aggregate FILTER truth-carrier receipt is "
+                "inconsistent";
+            return step;
+          }
+          aggregate_request.retained_memory_bytes =
+              static_cast<std::size_t>(retained_filter_truth_bytes -
+                                       logical_filter_truth_bytes);
           aggregate_request.distinct = distinct;
           aggregate_request.aggregate_order_terms = aggregate_order_terms;
           aggregate_request.aggregate_separator = aggregate_separator;
@@ -49703,7 +49972,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         selected.available_executors.push_back(
             MakeLiveAggregateRegistryRegistration(
                 prepared_heap_aggregate, aggregate_capability_uuid,
-                maximum_output_rows, input.context));
+                maximum_output_rows, 0, input.context));
       }
     }
     if (sort_composition) {
