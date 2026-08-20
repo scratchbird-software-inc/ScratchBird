@@ -3639,11 +3639,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             "global APPROX_MEDIAN input must be a canonical int64 column";
         return result;
       }
-      if ((is_approx_count_distinct || is_approx_top_k) &&
-          input_type != "text") {
+      if (is_approx_top_k && input_type != "text") {
         result.detail =
-            "global APPROX_COUNT_DISTINCT/APPROX_TOP_K input must be a "
-            "canonical text column";
+            "global APPROX_TOP_K input must be a canonical text column";
         return result;
       }
     }
