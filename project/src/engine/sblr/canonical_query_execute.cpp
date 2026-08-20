@@ -15927,6 +15927,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         if (node.semantic_variant_id == "subquery.table.v1") {
           prepared_table_subquery = true;
           table_subquery_input_row_count = input_row_count;
+          auxiliary_memory = 0;
           implementation_id = "subquery.table.materialize.typed.v1";
           transformation_rule =
               "canonical.subquery.composed-table-materialize.v1";
@@ -16138,14 +16139,19 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                     "composition node exceeds the admitted memory budget");
     }
+    const bool dynamic_table_subquery =
+        physical_kind == exec::PhysicalNodeKind::kSubquery &&
+        implementation_id == "subquery.table.materialize.typed.v1";
     if ((physical_kind == exec::PhysicalNodeKind::kFilter ||
          physical_kind == exec::PhysicalNodeKind::kSort ||
-         physical_kind == exec::PhysicalNodeKind::kLimit) &&
+         physical_kind == exec::PhysicalNodeKind::kLimit ||
+         dynamic_table_subquery) &&
         !planning_values_exact) {
       // The preceding complex aggregate owns its live result values.  The
       // planning batch is only a schema/cardinality placeholder, so bind the
-      // dynamic FILTER, SORT, or LIMIT to the full selected budget and let its
-      // issuer/executor charge exact callback payloads and auxiliary state.
+      // dynamic FILTER, SORT, LIMIT, or TABLE-subquery to the full selected
+      // budget and let its issuer/executor charge exact callback payloads and
+      // auxiliary state.
       operator_memory =
           request.optimizer_request.resource.memory_budget_bytes;
     }

@@ -39,6 +39,27 @@ bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
          batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
 }
 
+bool CanonicalSubqueryBatchMemoryBytes(const DescriptorBatch& batch,
+                                       std::uint64_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = 1;
+  for (const auto& row : batch.rows) {
+    for (const auto& value : row.values) {
+      if (value.encoded_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.encoded_value.size();
+      if (value.binary_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+        return false;
+      }
+      *bytes += value.binary_value.size();
+    }
+  }
+  return true;
+}
+
 struct CorrelatedCancellationPoll {
   DescriptorRuntimeDiagnostic diagnostic;
   bool cancelled = false;
@@ -233,6 +254,37 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
       execution_input_batch.rows.size() >
           request.maximum_materialized_row_count) {
     return refuse("table-subquery materialization row bound was exceeded");
+  }
+
+  if (execution_route == TableSubqueryExecutionRoute::table) {
+    std::uint64_t input_memory_bytes = 0;
+    if (!CanonicalSubqueryBatchMemoryBytes(execution_input_batch,
+                                           &input_memory_bytes) ||
+        selected_node->memory_bytes_required == 0 ||
+        selected_node->memory_bytes_required >
+            execution_dag.memory_budget_bytes ||
+        selected_node->memory_bytes_required >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::size_t>::max())) {
+      auto refusal = refuse(
+          "table-subquery memory grant or runtime payload accounting is "
+          "invalid");
+      refusal.diagnostic.diagnostic_code = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+      return refusal;
+    }
+    auto remaining_memory_bytes = selected_node->memory_bytes_required;
+    const auto charge = [&](const std::uint64_t bytes) {
+      if (bytes > remaining_memory_bytes) return false;
+      remaining_memory_bytes -= bytes;
+      return true;
+    };
+    if (!charge(input_memory_bytes) || !charge(input_memory_bytes)) {
+      auto refusal = refuse(
+          "table-subquery materialization exceeds the selected node memory "
+          "grant");
+      refusal.diagnostic.diagnostic_code = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+      return refusal;
+    }
   }
 
   DescriptorBatch materialized = execution_input_batch;
