@@ -42,6 +42,12 @@ struct SblrPreparedCoordinationResult {
 SblrPreparedCoordinationResult BeginSblrPreparedCoordination(
     const EngineRequestContext& context, const std::string& operation_uuid);
 
+// Begins an execution-scoped coordination by resolving an already sealed
+// public prepared identity under the authenticated database/session owner.
+SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
+    const EngineRequestContext& context, const std::string& operation_uuid,
+    const std::string& public_prepared_uuid);
+
 SblrPreparedCoordinationResult AcquireSblrPreparedCoordination(
     const EngineRequestContext& context, const std::string& coordination_uuid,
     const std::string& operation_uuid,

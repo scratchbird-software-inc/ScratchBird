@@ -32,6 +32,7 @@
 #include "diagnostic_fields.hpp"
 #include "prepared_metadata_binding.hpp"
 #include "../engine/sblr/sblr_opcode_registry.hpp"
+#include "../engine/sblr/sblr_transaction_begin_runtime.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -866,6 +867,7 @@ struct ExecutePayload {
   std::vector<std::uint8_t> literal_execution_binding;
   std::vector<std::uint8_t> parameter_execution_binding;
   std::vector<std::uint8_t> parameter_value_set;
+  std::vector<std::uint8_t> variable_execution_binding;
   bool parameter_transport_budget_exceeded = false;
 };
 
@@ -925,7 +927,8 @@ std::optional<ExecutePayload> DecodeExecutePayload(
   out.prepared_statement_uuid = GetUuid(payload, offset); offset += 16;
   out.cursor_requested = payload[offset++] != 0;
   if (schema_id == kSchemaExecuteCanonicalSblrTestV1 || schema_id == 4016 ||
-      schema_id == sbps::kSchemaExecuteCanonicalSblrParameterV1) {
+      schema_id == sbps::kSchemaExecuteCanonicalSblrParameterV1 ||
+      schema_id == sbps::kSchemaExecuteCanonicalSblrVariableV1) {
     if (offset + 1 + 8 + 16 + 16 > payload.size() ||
         !sbps::IsZeroUuid(out.prepared_statement_uuid)) {
       return std::nullopt;
@@ -1004,6 +1007,19 @@ std::optional<ExecutePayload> DecodeExecutePayload(
       out.parameter_value_set.assign(
           payload.begin() + static_cast<std::ptrdiff_t>(offset), payload.end());
       offset += sbpv_bytes;
+    } else if (schema_id == sbps::kSchemaExecuteCanonicalSblrVariableV1) {
+      constexpr std::uint32_t kSbveBytes = 192;
+      if (offset > payload.size() || payload.size() - offset < 4 ||
+          GetU32(payload, offset) != kSbveBytes) {
+        return std::nullopt;
+      }
+      offset += 4;
+      if (payload.size() - offset != kSbveBytes) {
+        return std::nullopt;
+      }
+      out.variable_execution_binding.assign(
+          payload.begin() + static_cast<std::ptrdiff_t>(offset), payload.end());
+      offset += kSbveBytes;
     }
   } else if (schema_id == kSchemaExecuteSblrTestV2) {
     if (offset + 1 + 8 > payload.size()) return std::nullopt;
@@ -1031,6 +1047,8 @@ std::optional<ExecutePayload> DecodeExecutePayload(
     return std::nullopt;
   }
   if (schema_id != kSchemaExecuteCanonicalSblrTestV1 && schema_id != 4016 &&
+      schema_id != sbps::kSchemaExecuteCanonicalSblrParameterV1 &&
+      schema_id != sbps::kSchemaExecuteCanonicalSblrVariableV1 &&
       !ReadString(payload, &offset, &out.encoded_sblr_envelope)) {
     return std::nullopt;
   }
@@ -3930,6 +3948,11 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "filespace.salvage") return "SBLR_FILESPACE_SALVAGE";
   if (operation_id == "storage.manage_operation") return "SBLR_STORAGE_MANAGEMENT_OPERATION";
   if (operation_id == "ddl.create_table") return "SBLR_DDL_CREATE_TABLE";
+  if (operation_id == "ddl.create_index") return "SBLR_DDL_CREATE_INDEX";
+  if (operation_id == "ddl.drop_index") return "SBLR_DDL_DROP_INDEX";
+  if (operation_id == "ddl.alter_domain") return "SBLR_DDL_ALTER_DOMAIN";
+  if (operation_id == "ddl.create_view") return "SBLR_DDL_CREATE_VIEW";
+  if (operation_id == "ddl.drop_view") return "SBLR_DDL_DROP_VIEW";
   if (operation_id == "query.cast_value") return "SBLR_QUERY_CAST_VALUE";
   if (operation_id == "query.evaluate_projection") return "SBLR_QUERY_EVALUATE_PROJECTION";
   if (operation_id == "query.plan_operation") return "SBLR_QUERY_PLAN_OPERATION";
@@ -4111,7 +4134,11 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "extensibility.inspect_udr_packages") return "SBLR_EXTENSIBILITY_INSPECT_UDR_PACKAGES";
   if (operation_id == "extensibility.invoke_udr_package") return "SBLR_UDR_INVOKE";
   if (operation_id == "ddl.create_schema") return "SBLR_DDL_CREATE_SCHEMA";
+  if (operation_id == "ddl.create_table") return "SBLR_DDL_CREATE_TABLE";
   if (operation_id == "ddl.create_index") return "SBLR_DDL_CREATE_INDEX";
+  if (operation_id == "ddl.drop_index") return "SBLR_DDL_DROP_INDEX";
+  if (operation_id == "ddl.alter_domain") return "SBLR_DDL_ALTER_DOMAIN";
+  if (operation_id == "ddl.create_view") return "SBLR_DDL_CREATE_VIEW";
   if (operation_id == "ddl.create_index_template") return "SBLR_DDL_CREATE_INDEX_TEMPLATE";
   if (operation_id == "ddl.create_domain") return "SBLR_DDL_CREATE_DOMAIN";
   if (operation_id == "ddl.create_sequence") return "SBLR_DDL_CREATE_SEQUENCE";
@@ -8270,7 +8297,8 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
     bool retain_result_handle,
     const std::vector<std::uint8_t>& literal_execution_binding = {},
     const std::vector<std::uint8_t>& parameter_execution_binding = {},
-    const std::vector<std::uint8_t>& parameter_value_set = {}) {
+    const std::vector<std::uint8_t>& parameter_value_set = {},
+    const std::vector<std::uint8_t>& variable_execution_binding = {}) {
   PublicAbiDispatchResult dispatch_result;
   dispatch_result.attempted = true;
   if (!statement_context.receipt || admission_token == nullptr) {
@@ -8306,6 +8334,7 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
   request.literal_execution_binding = literal_execution_binding;
   request.parameter_execution_binding = parameter_execution_binding;
   request.parameter_value_set = parameter_value_set;
+  request.variable_execution_binding = variable_execution_binding;
   request.package_admission_reservation.opaque_id =
       admission_token->package_reservation_handle;
   request.admitted_payload_kind = admission_token->reserved_payload_kind ==
@@ -9093,7 +9122,9 @@ SessionOperationResult HandleExecuteSblrImpl(
       request.header.payload_schema_id == kSchemaExecuteCanonicalSblrTestV1 ||
       request.header.payload_schema_id == 4016 ||
       request.header.payload_schema_id ==
-          sbps::kSchemaExecuteCanonicalSblrParameterV1;
+          sbps::kSchemaExecuteCanonicalSblrParameterV1 ||
+      request.header.payload_schema_id ==
+          sbps::kSchemaExecuteCanonicalSblrVariableV1;
   if (cursor_stream_descriptor_trailer_required != nullptr) {
     *cursor_stream_descriptor_trailer_required = canonical_ingress;
   }
@@ -9220,6 +9251,17 @@ SessionOperationResult HandleExecuteSblrImpl(
         *registry->statement_context_mutex);
     const auto found = registry->statement_contexts_by_statement_uuid.find(
         decoded->statement_uuid);
+    std::string receipt_mismatch_detail = "statement_context_receipt_mismatch";
+    if (found != registry->statement_contexts_by_statement_uuid.end()) {
+      if (found->second.released) receipt_mismatch_detail += ":released";
+      if (found->second.session_uuid != decoded->session_uuid) receipt_mismatch_detail += ":session";
+      if (found->second.statement_uuid != decoded->statement_uuid) receipt_mismatch_detail += ":statement";
+      if (found->second.owning_local_transaction_id != selected_transaction->local_transaction_id) receipt_mismatch_detail += ":local_transaction";
+      if (found->second.owning_transaction_uuid != selected_transaction->transaction_uuid) receipt_mismatch_detail += ":transaction_uuid";
+      if (found->second.view.statement_uuid != decoded->statement_uuid) receipt_mismatch_detail += ":view_statement";
+      if (found->second.view.owning_local_transaction_id != selected_transaction->local_transaction_id) receipt_mismatch_detail += ":view_local_transaction";
+      if (found->second.view.owning_transaction_uuid != selected_transaction->transaction_uuid) receipt_mismatch_detail += ":view_transaction_uuid";
+    } else receipt_mismatch_detail += ":missing";
     if (found == registry->statement_contexts_by_statement_uuid.end() ||
         found->second.released ||
         found->second.session_uuid != decoded->session_uuid ||
@@ -9239,7 +9281,7 @@ SessionOperationResult HandleExecuteSblrImpl(
           decoded->session_uuid,
           "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RECEIPT_MISMATCH",
           "Canonical native execution requires the exact live statement receipt owned by this session and transaction.",
-          "statement_context_receipt_mismatch");
+          receipt_mismatch_detail);
     }
     live_statement_context = found->second;
     statement_context_release.Arm(decoded->statement_uuid);
@@ -11588,7 +11630,8 @@ SessionOperationResult HandleExecuteSblrImpl(
                                   retain_engine_result,
                                   decoded->literal_execution_binding,
                                   decoded->parameter_execution_binding,
-                                  decoded->parameter_value_set)
+                                  decoded->parameter_value_set,
+                                  decoded->variable_execution_binding)
                         : use_server_live_catalog_projection
                             ? DispatchServerLiveIparCatalogProjection(dispatch_session,
                                                                       encoded,
@@ -11704,6 +11747,62 @@ SessionOperationResult HandleExecuteSblrImpl(
             detail);
       }
       row_packet = public_abi.payload;
+      // Canonical SBLR TXN_BEGIN publishes a private engine TXBH rather than
+      // the legacy EngineBeginTransactionResult shape.  Adopt that exact
+      // engine-issued composite identity into the owning server session
+      // before a subsequent statement-context acquisition can select it.
+      // The parser supplies no identity or generation to this publication.
+      if (v2 && row_packet.size() == 152 &&
+          row_packet.compare(0, 4, "TXBH") == 0) {
+        scratchbird::engine::sblr::SblrTransactionHandleV1 handle;
+        std::string handle_detail;
+        if (!scratchbird::engine::sblr::DecodeSblrTransactionHandleV1(
+                reinterpret_cast<const std::uint8_t*>(row_packet.data()),
+                row_packet.size(), &handle, &handle_detail)) {
+          return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                         response_schema, decoded->session_uuid,
+                         "MGA.TRANSACTION.START_FAILED",
+                         "The engine-issued transaction handle could not be published.",
+                         "txn_begin_handle_projection_invalid:" + handle_detail);
+        }
+        ServerTransactionState published;
+        published.local_transaction_id = handle.local_transaction_id;
+        published.transaction_uuid = UuidBytesToText(handle.transaction_uuid);
+        published.snapshot_visible_through_local_transaction_id =
+            selected_transaction.has_value()
+                ? selected_transaction->snapshot_visible_through_local_transaction_id
+                : session->snapshot_visible_through_local_transaction_id;
+        published.transaction_timestamp = CurrentUtcTimestampText();
+        published.isolation_level = session->default_transaction_isolation_level;
+        published.read_only = handle.read_mode == 2;
+        // HandleExecuteSblrImpl already owns session->transaction_mutex from
+        // transaction selection through response publication. Re-entering it
+        // here deadlocks the BEGIN success path; mutate the registry under
+        // that existing lock.
+        const auto existing=session->transactions_by_local_id.find(
+            published.local_transaction_id);
+        if (existing!=session->transactions_by_local_id.end() &&
+            existing->second.transaction_uuid!=published.transaction_uuid) {
+          return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                         response_schema, decoded->session_uuid,
+                         "MGA.TRANSACTION.STALE",
+                         "The engine-issued transaction identity collided with session state.",
+                         "txn_begin_handle_projection_collision");
+        }
+        if(existing==session->transactions_by_local_id.end()){
+          published.begin_ordinal=session->next_transaction_begin_ordinal++;
+          session->transactions_by_local_id.emplace(
+              published.local_transaction_id,published);
+        }
+        session->default_local_transaction_id=published.local_transaction_id;
+        ProjectDefaultTransactionToLegacyFields(session);
+        // The V2 response is the parser's only authority for the next
+        // statement selector. Replace the pre-dispatch selected snapshot with
+        // the same TXBH identity just published above; otherwise the server
+        // registry and response would disagree immediately after BEGIN.
+        transaction_response.selected_present=true;
+        transaction_response.selected=published;
+      }
       if (!v2) {
         ClearStablePublicRelationNameCacheForMutation(registry,
                                                       admission.operation_id);
@@ -11965,8 +12064,17 @@ SessionOperationResult HandleExecuteSblr(
       &cursor_stream_descriptor_trailer_required);
   result.cursor_stream_descriptor_trailer_required =
       cursor_stream_descriptor_trailer_required;
-  if (request.header.payload_schema_id != kSchemaExecuteSblrTestV2 ||
-      result.transaction_state.has_value()) {
+  const bool canonical_request =
+      request.header.payload_schema_id == kSchemaExecuteCanonicalSblrTestV1 ||
+      request.header.payload_schema_id == 4016 ||
+      request.header.payload_schema_id ==
+          sbps::kSchemaExecuteCanonicalSblrParameterV1 ||
+      request.header.payload_schema_id ==
+          sbps::kSchemaExecuteCanonicalSblrVariableV1;
+  if ((!canonical_request &&
+       request.header.payload_schema_id != kSchemaExecuteSblrTestV2) ||
+      (canonical_request && result.accepted) ||
+      (!canonical_request && result.transaction_state.has_value())) {
     // Canonical ingress success appends the negotiated descriptor in the
     // implementation. A canonical refusal still owes the exact one-byte
     // absent-descriptor trailer before returning through this early path.

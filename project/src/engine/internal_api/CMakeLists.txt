@@ -375,9 +375,94 @@ add_library(sb_engine_internal_api
   transaction/transaction_api.cpp
   ../sblr/sblr_runtime.cpp
   ../sblr/sblr_sequence_runtime.cpp
+  ../sblr/sblr_autonomous_frame_runtime.cpp
   sblr_executor_availability_registry.cpp
   sblr_parameter_set_registry.cpp
   sblr_prepared_coordination_registry.cpp
+  sblr_variable_descriptor_registry.cpp
+  sblr_variable_frame_coordinator.cpp
+  sblr_source_map_descriptor_registry.cpp
+    sblr_error_vector_descriptor_registry.cpp
+    sblr_diagnostic_identity_registry.cpp
+    sblr_transaction_begin_authority.cpp
+  sblr_savepoint_coordinator.cpp
+  sblr_autonomous_frame_coordinator.cpp
+  sblr_reservation_release_coordinator.cpp
+  sblr_temporary_instance_cleanup_coordinator.cpp
+    sblr_cursor_open_coordinator.cpp
+    sblr_read_by_key_coordinator.cpp
+    sblr_read_range_coordinator.cpp
+    sblr_read_stream_coordinator.cpp
+    sblr_result_set_pass_coordinator.cpp
+    sblr_access_cursor_open_coordinator.cpp
+    sblr_insert_coordinator.cpp
+    sblr_update_coordinator.cpp
+    sblr_delete_coordinator.cpp
+    sblr_merge_coordinator.cpp
+    sblr_table_truncate_coordinator.cpp
+  sblr_table_analyze_coordinator.cpp
+  sblr_bulk_import_stream_coordinator.cpp
+  sblr_bulk_export_stream_coordinator.cpp
+  sblr_statement_batch_coordinator.cpp
+  sblr_atomic_cas_coordinator.cpp
+  sblr_atomic_rmw_coordinator.cpp
+  sblr_advisory_lock_coordinator.cpp
+  sblr_advisory_lock_release_coordinator.cpp
+  sblr_function_call_coordinator.cpp
+  sblr_operator_call_coordinator.cpp
+  sblr_cast_coordinator.cpp
+  sblr_compare_coordinator.cpp
+  sblr_domain_operation_coordinator.cpp
+  sblr_udr_invoke_coordinator.cpp
+  sblr_procedure_invoke_coordinator.cpp
+  sblr_function_invoke_coordinator.cpp
+  sblr_aggregate_invoke_coordinator.cpp
+  sblr_sequence_nextval_coordinator.cpp
+  sblr_sequence_setval_coordinator.cpp
+  sblr_query_numeric_coordinator.cpp
+  sblr_advanced_datatype_family_coordinator.cpp
+  sblr_project_coordinator.cpp
+  sblr_kv_structured_read_coordinator.cpp
+  sblr_kv_structured_mutate_coordinator.cpp
+  sblr_kv_structured_scan_coordinator.cpp
+  sblr_kv_structured_stream_read_coordinator.cpp
+  sblr_kv_structured_stream_append_coordinator.cpp
+  sblr_kv_structured_timeseries_coordinator.cpp
+  sblr_system_config_set_coordinator.cpp
+  sblr_ddl_create_domain_coordinator.cpp
+  sblr_ddl_create_schema_coordinator.cpp
+  sblr_ddl_create_table_coordinator.cpp
+  sblr_ddl_create_index_coordinator.cpp
+  sblr_ddl_drop_index_coordinator.cpp
+  sblr_ddl_alter_domain_coordinator.cpp
+  sblr_ddl_create_view_coordinator.cpp
+  sblr_ddl_alter_view_coordinator.cpp
+  sblr_ddl_drop_view_coordinator.cpp
+  sblr_ddl_create_trigger_coordinator.cpp
+  sblr_ddl_alter_trigger_coordinator.cpp
+  sblr_ddl_create_procedure_coordinator.cpp
+  sblr_ddl_alter_procedure_coordinator.cpp
+  sblr_ddl_drop_procedure_coordinator.cpp
+  sblr_ddl_create_function_coordinator.cpp
+  sblr_ddl_alter_function_coordinator.cpp
+  sblr_ddl_drop_function_coordinator.cpp
+  sblr_ddl_create_package_coordinator.cpp
+  sblr_ddl_create_temporary_table_coordinator.cpp
+  sblr_ddl_drop_temporary_table_coordinator.cpp
+  sblr_ddl_rename_object_vector_coordinator.cpp
+  sblr_ddl_create_or_replace_srs_coordinator.cpp
+  sblr_ddl_drop_srs_coordinator.cpp
+  sblr_ddl_create_rewrite_rule_coordinator.cpp
+  sblr_ddl_drop_rewrite_rule_coordinator.cpp
+  sblr_ddl_alter_rewrite_rule_coordinator.cpp
+  sblr_ddl_drop_trigger_coordinator.cpp
+  sblr_aggregate_coordinator.cpp
+  sblr_group_coordinator.cpp
+  sblr_sort_coordinator.cpp
+  sblr_limit_coordinator.cpp
+  sblr_window_coordinator.cpp
+  sblr_return_result_set_coordinator.cpp
+  sblr_sequence_currval_coordinator.cpp
 )
 
 if(NOT TARGET sb_cluster_provider)

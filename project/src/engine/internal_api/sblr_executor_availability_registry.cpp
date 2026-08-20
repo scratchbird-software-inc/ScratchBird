@@ -34,11 +34,93 @@ std::recursive_mutex& RegistryMutex() {
 
 std::string StorePath(const EngineRequestContext& context,
                       const SblrExecutorAvailabilityRowIdentity& identity) {
-  const auto suffix = identity.executor_id == kSblrParameterExecutorId
-                          ? ".parameter"
-                          : "";
+  const auto suffix = identity.executor_id == kSblrParameterExecutorId ? ".parameter" :
+      identity.executor_id == kSblrVariableExecutorId ? ".variable" :
+      identity.executor_id == kSblrSourceMapExecutorId ? ".source_map" :
+      identity.executor_id == kSblrErrorVectorExecutorId ? ".error_vector" :
+      identity.executor_id == kSblrTxnBeginExecutorId ? ".txn_begin" :
+      identity.executor_id == kSblrTxnCommitExecutorId ? ".txn_commit" : "";
+  const auto final_suffix = identity.executor_id == kSblrTxnRollbackExecutorId
+      ? ".txn_rollback" : identity.executor_id == kSblrTxnSavepointExecutorId
+      ? ".txn_savepoint" : identity.executor_id == kSblrTxnReleaseSavepointExecutorId
+      ? ".txn_release_savepoint" : suffix;
+  const auto routed_suffix = identity.executor_id == kSblrTxnRollbackToSavepointExecutorId
+      ? ".txn_rollback_to_savepoint" : final_suffix;
+  const auto autonomous_suffix = identity.executor_id == kSblrPsqlAutonomousFrameExecutorId
+      ? ".psql_autonomous_frame" : routed_suffix;
+  const auto reservation_release_suffix = identity.executor_id == kSblrReservationReleaseExecutorId
+      ? ".transaction_reservation_release" : autonomous_suffix;
+  const auto temporary_cleanup_suffix = identity.executor_id == kSblrTemporaryInstanceCleanupExecutorId
+      ? ".temporary_instance_cleanup" : reservation_release_suffix;
+  const auto cursor_open_suffix = identity.executor_id == kSblrCursorOpenExecutorId
+      ? ".cursor_open" : temporary_cleanup_suffix;
+  const auto cursor_fetch_suffix = identity.executor_id == kSblrCursorFetchExecutorId
+      ? ".cursor_fetch" : cursor_open_suffix;
+  const auto cursor_close_suffix = identity.executor_id == kSblrCursorCloseExecutorId
+      ? ".cursor_close" : cursor_fetch_suffix;
+  const auto read_by_key_suffix = identity.executor_id == kSblrReadByKeyExecutorId
+      ? ".read_by_key" : cursor_close_suffix;
+  const auto read_range_suffix = identity.executor_id == kSblrReadRangeExecutorId
+      ? ".read_range" : read_by_key_suffix;
+  const auto read_stream_suffix = identity.executor_id == kSblrReadStreamExecutorId
+      ? ".read_stream" : read_range_suffix;
+  const auto result_set_pass_suffix = identity.executor_id == kSblrResultSetPassExecutorId
+      ? ".result_set_pass" : read_stream_suffix;
+  const auto access_cursor_open_suffix = identity.executor_id == kSblrAccessCursorOpenExecutorId
+      ? ".access_cursor_open" : result_set_pass_suffix;
+  const auto access_cursor_fetch_suffix = identity.executor_id == kSblrAccessCursorFetchExecutorId
+      ? ".access_cursor_fetch" : access_cursor_open_suffix;
+  const auto access_cursor_close_suffix = identity.executor_id == kSblrAccessCursorCloseExecutorId
+      ? ".access_cursor_close" : access_cursor_fetch_suffix;
+  const auto insert_suffix = identity.executor_id == kSblrInsertExecutorId
+      ? ".insert" : access_cursor_close_suffix;
+  const auto update_suffix = identity.executor_id == kSblrUpdateExecutorId ? ".update" : insert_suffix;
+  const auto delete_suffix = identity.executor_id == kSblrDeleteExecutorId ? ".delete" : update_suffix;
+  const auto merge_suffix = identity.executor_id == kSblrMergeExecutorId ? ".merge" : delete_suffix;
+  const auto table_truncate_suffix = identity.executor_id == kSblrTableTruncateExecutorId ? ".table_truncate" : merge_suffix;
+  const auto table_analyze_suffix = identity.executor_id == kSblrTableAnalyzeExecutorId ? ".table_analyze" : table_truncate_suffix;
+  const auto bulk_import_stream_suffix = identity.executor_id == kSblrBulkImportStreamExecutorId ? ".bulk_import_stream" : table_analyze_suffix;
+  const auto bulk_export_stream_suffix = identity.executor_id == kSblrBulkExportStreamExecutorId ? ".bulk_export_stream" : bulk_import_stream_suffix;
+  const auto statement_batch_suffix = identity.executor_id == kSblrStatementBatchExecutorId ? ".statement_batch" : bulk_export_stream_suffix;
+  const auto atomic_cas_suffix = identity.executor_id == kSblrAtomicCasExecutorId ? ".atomic_cas" : statement_batch_suffix;
+  const auto atomic_rmw_suffix = identity.executor_id == kSblrAtomicRmwExecutorId ? ".atomic_rmw" : atomic_cas_suffix;
+  const auto advisory_lock_suffix = identity.executor_id == kSblrAdvisoryLockAcquireExecutorId ? ".advisory_lock_acquire" : atomic_rmw_suffix;
+  const auto advisory_lock_release_suffix = identity.executor_id == kSblrAdvisoryLockReleaseExecutorId ? ".advisory_lock_release" : advisory_lock_suffix;
+  const auto function_call_suffix = identity.executor_id == kSblrFunctionCallExecutorId ? ".function_call" : advisory_lock_release_suffix;
+  const auto operator_call_suffix = identity.executor_id == kSblrOperatorCallExecutorId ? ".operator_call" : function_call_suffix;
+  const auto cast_suffix = identity.executor_id == kSblrCastExecutorId ? ".cast" : operator_call_suffix;
+  const auto compare_suffix = identity.executor_id == kSblrCompareExecutorId ? ".compare" : cast_suffix;
+  const auto domain_operation_suffix = identity.executor_id == kSblrDomainOperationExecutorId ? ".domain_operation" : compare_suffix;
+  const auto udr_invoke_suffix = identity.executor_id == kSblrUdrInvokeExecutorId ? ".udr_invoke" : domain_operation_suffix;
+  const auto procedure_invoke_suffix = identity.executor_id == kSblrProcedureInvokeExecutorId ? ".procedure_invoke" : udr_invoke_suffix;
+  const auto function_invoke_suffix = identity.executor_id == kSblrFunctionInvokeExecutorId ? ".function_invoke" : procedure_invoke_suffix;
+  const auto aggregate_invoke_suffix = identity.executor_id == kSblrAggregateInvokeExecutorId ? ".aggregate_invoke" : function_invoke_suffix;
+  const auto sequence_nextval_suffix = identity.executor_id == kSblrSequenceNextvalExecutorId ? ".sequence_nextval" : aggregate_invoke_suffix;
+  const auto sequence_currval_suffix = identity.executor_id == kSblrSequenceCurrvalExecutorId ? ".sequence_currval" : sequence_nextval_suffix;
+  const auto sequence_setval_suffix = identity.executor_id == kSblrSequenceSetvalExecutorId ? ".sequence_setval" : sequence_currval_suffix;
+  const auto query_numeric_suffix = identity.executor_id == kSblrQueryNumericExecutorId ? ".query_numeric" : sequence_setval_suffix;
+  const auto advanced_datatype_family_suffix = identity.executor_id == kSblrAdvancedDatatypeFamilyExecutorId ? ".advanced_datatype_family" : query_numeric_suffix;
+  const auto project_suffix = identity.executor_id == kSblrProjectExecutorId ? ".project" : advanced_datatype_family_suffix;
+  const auto aggregate_suffix = identity.executor_id == kSblrAggregateExecutorId ? ".aggregate" : project_suffix;
+  const auto group_suffix = identity.executor_id == kSblrGroupExecutorId ? ".group" : aggregate_suffix;
+  const auto sort_suffix = identity.executor_id == kSblrSortExecutorId ? ".sort" : group_suffix;
+  const auto limit_suffix = identity.executor_id == kSblrLimitExecutorId ? ".limit" : sort_suffix;
+  const auto window_suffix = identity.executor_id == kSblrWindowExecutorId ? ".window" : limit_suffix;
+  const auto return_result_set_suffix = identity.executor_id == kSblrReturnResultSetExecutorId ? ".return_result_set" : window_suffix;
+  const auto kv_structured_read_suffix = identity.executor_id == kSblrKvStructuredReadExecutorId ? ".kv_structured_read" : return_result_set_suffix;
+  const auto kv_structured_mutate_suffix = identity.executor_id == kSblrKvStructuredMutateExecutorId ? ".kv_structured_mutate" : kv_structured_read_suffix;
+  const auto kv_structured_scan_suffix = identity.executor_id == kSblrKvStructuredScanExecutorId ? ".kv_structured_scan" : kv_structured_mutate_suffix;
+  const auto kv_structured_stream_read_suffix = identity.executor_id == kSblrKvStructuredStreamReadExecutorId ? ".kv_structured_stream_read" : kv_structured_scan_suffix;
+  const auto kv_structured_stream_append_suffix = identity.executor_id == kSblrKvStructuredStreamAppendExecutorId ? ".kv_structured_stream_append" : kv_structured_stream_read_suffix;
+  const auto kv_structured_timeseries_suffix = identity.executor_id == kSblrKvStructuredTimeseriesExecutorId ? ".kv_structured_timeseries" : kv_structured_stream_append_suffix;
+  const auto system_config_set_suffix = identity.executor_id == kSblrSystemConfigSetExecutorId ? ".system_config_set" : kv_structured_timeseries_suffix;
+  const auto ddl_create_domain_suffix = identity.executor_id == kSblrDdlCreateDomainExecutorId ? ".ddl_create_domain" : system_config_set_suffix;
+  const auto ddl_create_schema_suffix = identity.executor_id == kSblrDdlCreateSchemaExecutorId ? ".ddl_create_schema" : ddl_create_domain_suffix;
+  const auto ddl_create_table_suffix = identity.executor_id == kSblrDdlCreateTableExecutorId ? ".ddl_create_table" : ddl_create_schema_suffix;
+  const auto ddl_create_index_suffix = identity.executor_id == kSblrDdlCreateIndexExecutorId ? ".ddl_create_index" : ddl_create_table_suffix;
+  const auto ddl_drop_index_suffix = identity.executor_id == kSblrDdlDropIndexExecutorId ? ".ddl_drop_index" : ddl_create_index_suffix;
   return context.database_path + ".sb.sblr_executor_availability_registry.v1" +
-         suffix;
+         ddl_drop_index_suffix;
 }
 
 void AddField(std::string* out, std::string_view key, std::string_view value) {
@@ -78,8 +160,147 @@ bool ExactParameterIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
          row.result_descriptor_id == kSblrParameterResultDescriptorId &&
          row.result_descriptor_version == kSblrParameterResultDescriptorVersion;
 }
+bool ExactVariableIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrVariableExecutorId &&
+         row.opcode_code == kSblrVariableOpcodeCode &&
+         row.opcode_version == kSblrVariableOpcodeVersion &&
+         row.operand_descriptor_id == kSblrVariableOperandDescriptorId &&
+         row.result_descriptor_id == kSblrVariableResultDescriptorId &&
+         row.result_descriptor_version == kSblrVariableResultDescriptorVersion;
+}
+bool ExactSourceMapIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrSourceMapExecutorId &&
+         row.opcode_code == kSblrSourceMapOpcodeCode &&
+         row.opcode_version == kSblrSourceMapOpcodeVersion &&
+         row.operand_descriptor_id == kSblrSourceMapOperandDescriptorId &&
+         row.result_descriptor_id == kSblrSourceMapResultDescriptorId &&
+         row.result_descriptor_version == kSblrSourceMapResultDescriptorVersion;
+}
+bool ExactErrorVectorIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrErrorVectorExecutorId &&
+         row.opcode_code == kSblrErrorVectorOpcodeCode &&
+         row.opcode_version == kSblrErrorVectorOpcodeVersion &&
+         row.operand_descriptor_id == kSblrErrorVectorOperandDescriptorId &&
+         row.result_descriptor_id == kSblrErrorVectorResultDescriptorId &&
+         row.result_descriptor_version == kSblrErrorVectorResultDescriptorVersion;
+}
+bool ExactTxnBeginIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrTxnBeginExecutorId &&
+         row.opcode_code == kSblrTxnBeginOpcodeCode &&
+         row.opcode_version == kSblrTxnBeginOpcodeVersion &&
+         row.operand_descriptor_id == kSblrTxnBeginOperandDescriptorId &&
+         row.result_descriptor_id == kSblrTxnBeginResultDescriptorId &&
+         row.result_descriptor_version == kSblrTxnBeginResultDescriptorVersion;
+}
+bool ExactTxnCommitIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id == kSblrTxnCommitExecutorId &&
+         row.opcode_code == kSblrTxnCommitOpcodeCode &&
+         row.opcode_version == kSblrTxnCommitOpcodeVersion &&
+         row.operand_descriptor_id == kSblrTxnCommitOperandDescriptorId &&
+         row.result_descriptor_id == kSblrTxnCommitResultDescriptorId &&
+         row.result_descriptor_version == kSblrTxnCommitResultDescriptorVersion;
+}
+bool ExactTxnRollbackIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id==kSblrTxnRollbackExecutorId&&row.opcode_code==kSblrTxnRollbackOpcodeCode&&row.opcode_version==kSblrTxnRollbackOpcodeVersion&&row.operand_descriptor_id==kSblrTxnRollbackOperandDescriptorId&&row.result_descriptor_id==kSblrTxnRollbackResultDescriptorId&&row.result_descriptor_version==kSblrTxnRollbackResultDescriptorVersion;
+}
+bool ExactTxnSavepointIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id==kSblrTxnSavepointExecutorId&&row.opcode_code==kSblrTxnSavepointOpcodeCode&&row.opcode_version==kSblrTxnSavepointOpcodeVersion&&row.operand_descriptor_id==kSblrTxnSavepointOperandDescriptorId&&row.result_descriptor_id==kSblrTxnSavepointResultDescriptorId&&row.result_descriptor_version==kSblrTxnSavepointResultDescriptorVersion;
+}
+bool ExactTxnReleaseSavepointIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id==kSblrTxnReleaseSavepointExecutorId&&row.opcode_code==kSblrTxnReleaseSavepointOpcodeCode&&row.opcode_version==kSblrTxnReleaseSavepointOpcodeVersion&&row.operand_descriptor_id==kSblrTxnReleaseSavepointOperandDescriptorId&&row.result_descriptor_id==kSblrTxnReleaseSavepointResultDescriptorId&&row.result_descriptor_version==kSblrTxnReleaseSavepointResultDescriptorVersion;
+}
+bool ExactTxnRollbackToSavepointIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id==kSblrTxnRollbackToSavepointExecutorId&&row.opcode_code==kSblrTxnRollbackToSavepointOpcodeCode&&row.opcode_version==kSblrTxnRollbackToSavepointOpcodeVersion&&row.operand_descriptor_id==kSblrTxnRollbackToSavepointOperandDescriptorId&&row.result_descriptor_id==kSblrTxnRollbackToSavepointResultDescriptorId&&row.result_descriptor_version==kSblrTxnRollbackToSavepointResultDescriptorVersion;
+}
+bool ExactPsqlAutonomousFrameIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
+  return row.executor_id==kSblrPsqlAutonomousFrameExecutorId&&row.opcode_code==kSblrPsqlAutonomousFrameOpcodeCode&&row.opcode_version==kSblrPsqlAutonomousFrameOpcodeVersion&&row.operand_descriptor_id==kSblrPsqlAutonomousFrameOperandDescriptorId&&row.result_descriptor_id==kSblrPsqlAutonomousFrameResultDescriptorId&&row.result_descriptor_version==kSblrPsqlAutonomousFrameResultDescriptorVersion;
+}
+bool ExactReservationReleaseIdentity(const SblrExecutorAvailabilityRowIdentity& row) {return row.executor_id==kSblrReservationReleaseExecutorId&&row.opcode_code==kSblrReservationReleaseOpcodeCode&&row.opcode_version==kSblrReservationReleaseOpcodeVersion&&row.operand_descriptor_id==kSblrReservationReleaseOperandDescriptorId&&row.result_descriptor_id==kSblrReservationReleaseResultDescriptorId&&row.result_descriptor_version==kSblrReservationReleaseResultDescriptorVersion;}
+bool ExactTemporaryInstanceCleanupIdentity(const SblrExecutorAvailabilityRowIdentity& row) {return row.executor_id==kSblrTemporaryInstanceCleanupExecutorId&&row.opcode_code==kSblrTemporaryInstanceCleanupOpcodeCode&&row.opcode_version==kSblrTemporaryInstanceCleanupOpcodeVersion&&row.operand_descriptor_id==kSblrTemporaryInstanceCleanupOperandDescriptorId&&row.result_descriptor_id==kSblrTemporaryInstanceCleanupResultDescriptorId&&row.result_descriptor_version==kSblrTemporaryInstanceCleanupResultDescriptorVersion;}
+bool ExactCursorOpenIdentity(const SblrExecutorAvailabilityRowIdentity& row) {return row.executor_id==kSblrCursorOpenExecutorId&&row.opcode_code==kSblrCursorOpenOpcodeCode&&row.opcode_version==kSblrCursorOpenOpcodeVersion&&row.operand_descriptor_id==kSblrCursorOpenOperandDescriptorId&&row.result_descriptor_id==kSblrCursorOpenResultDescriptorId&&row.result_descriptor_version==kSblrCursorOpenResultDescriptorVersion;}
+bool ExactCursorFetchIdentity(const SblrExecutorAvailabilityRowIdentity& row) {return row.executor_id==kSblrCursorFetchExecutorId&&row.opcode_code==kSblrCursorFetchOpcodeCode&&row.opcode_version==kSblrCursorFetchOpcodeVersion&&row.operand_descriptor_id==kSblrCursorFetchOperandDescriptorId&&row.result_descriptor_id==kSblrCursorFetchResultDescriptorId&&row.result_descriptor_version==kSblrCursorFetchResultDescriptorVersion;}
+bool ExactCursorCloseIdentity(const SblrExecutorAvailabilityRowIdentity& row) {return row.executor_id==kSblrCursorCloseExecutorId&&row.opcode_code==kSblrCursorCloseOpcodeCode&&row.opcode_version==kSblrCursorCloseOpcodeVersion&&row.operand_descriptor_id==kSblrCursorCloseOperandDescriptorId&&row.result_descriptor_id==kSblrCursorCloseResultDescriptorId&&row.result_descriptor_version==kSblrCursorCloseResultDescriptorVersion;}
+bool ExactReadByKeyIdentity(const SblrExecutorAvailabilityRowIdentity& row) {return row.executor_id==kSblrReadByKeyExecutorId&&row.opcode_code==kSblrReadByKeyOpcodeCode&&row.opcode_version==kSblrReadByKeyOpcodeVersion&&row.operand_descriptor_id==kSblrReadByKeyOperandDescriptorId&&row.result_descriptor_id==kSblrReadByKeyResultDescriptorId&&row.result_descriptor_version==kSblrReadByKeyResultDescriptorVersion;}
+bool ExactReadRangeIdentity(const SblrExecutorAvailabilityRowIdentity& row) {return row.executor_id==kSblrReadRangeExecutorId&&row.opcode_code==kSblrReadRangeOpcodeCode&&row.opcode_version==kSblrReadRangeOpcodeVersion&&row.operand_descriptor_id==kSblrReadRangeOperandDescriptorId&&row.result_descriptor_id==kSblrReadRangeResultDescriptorId&&row.result_descriptor_version==kSblrReadRangeResultDescriptorVersion;}
+bool ExactReadStreamIdentity(const SblrExecutorAvailabilityRowIdentity& row) {return row.executor_id==kSblrReadStreamExecutorId&&row.opcode_code==kSblrReadStreamOpcodeCode&&row.opcode_version==kSblrReadStreamOpcodeVersion&&row.operand_descriptor_id==kSblrReadStreamOperandDescriptorId&&row.result_descriptor_id==kSblrReadStreamResultDescriptorId&&row.result_descriptor_version==kSblrReadStreamResultDescriptorVersion;}
+bool ExactResultSetPassIdentity(const SblrExecutorAvailabilityRowIdentity& row) {return row.executor_id==kSblrResultSetPassExecutorId&&row.opcode_code==kSblrResultSetPassOpcodeCode&&row.opcode_version==kSblrResultSetPassOpcodeVersion&&row.operand_descriptor_id==kSblrResultSetPassOperandDescriptorId&&row.result_descriptor_id==kSblrResultSetPassResultDescriptorId&&row.result_descriptor_version==kSblrResultSetPassResultDescriptorVersion;}
+bool ExactAccessCursorOpenIdentity(const SblrExecutorAvailabilityRowIdentity& row) {return row.executor_id==kSblrAccessCursorOpenExecutorId&&row.opcode_code==kSblrAccessCursorOpenOpcodeCode&&row.opcode_version==kSblrAccessCursorOpenOpcodeVersion&&row.operand_descriptor_id==kSblrAccessCursorOpenOperandDescriptorId&&row.result_descriptor_id==kSblrAccessCursorOpenResultDescriptorId&&row.result_descriptor_version==kSblrAccessCursorOpenResultDescriptorVersion;}
+bool ExactAccessCursorFetchIdentity(const SblrExecutorAvailabilityRowIdentity& row) {return row.executor_id==kSblrAccessCursorFetchExecutorId&&row.opcode_code==kSblrAccessCursorFetchOpcodeCode&&row.opcode_version==kSblrAccessCursorFetchOpcodeVersion&&row.operand_descriptor_id==kSblrAccessCursorFetchOperandDescriptorId&&row.result_descriptor_id==kSblrAccessCursorFetchResultDescriptorId&&row.result_descriptor_version==kSblrAccessCursorFetchResultDescriptorVersion;}
+bool ExactAccessCursorCloseIdentity(const SblrExecutorAvailabilityRowIdentity& row) {return row.executor_id==kSblrAccessCursorCloseExecutorId&&row.opcode_code==kSblrAccessCursorCloseOpcodeCode&&row.opcode_version==kSblrAccessCursorCloseOpcodeVersion&&row.operand_descriptor_id==kSblrAccessCursorCloseOperandDescriptorId&&row.result_descriptor_id==kSblrAccessCursorCloseResultDescriptorId&&row.result_descriptor_version==kSblrAccessCursorCloseResultDescriptorVersion;}
+bool ExactInsertIdentity(const SblrExecutorAvailabilityRowIdentity& row) {return row.executor_id==kSblrInsertExecutorId&&row.opcode_code==kSblrInsertOpcodeCode&&row.opcode_version==kSblrInsertOpcodeVersion&&row.operand_descriptor_id==kSblrInsertOperandDescriptorId&&row.result_descriptor_id==kSblrInsertResultDescriptorId&&row.result_descriptor_version==kSblrInsertResultDescriptorVersion;}
+bool ExactUpdateIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrUpdateExecutorId&&r.opcode_code==769&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrUpdateOperandDescriptorId&&r.result_descriptor_id==kSblrUpdateResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDeleteIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDeleteExecutorId&&r.opcode_code==770&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDeleteOperandDescriptorId&&r.result_descriptor_id==kSblrDeleteResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactMergeIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrMergeExecutorId&&r.opcode_code==771&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrMergeOperandDescriptorId&&r.result_descriptor_id==kSblrMergeResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactTableTruncateIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrTableTruncateExecutorId&&r.opcode_code==773&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrTableTruncateOperandDescriptorId&&r.result_descriptor_id==kSblrTableTruncateResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactTableAnalyzeIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrTableAnalyzeExecutorId&&r.opcode_code==774&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrTableAnalyzeOperandDescriptorId&&r.result_descriptor_id==kSblrTableAnalyzeResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactBulkImportStreamIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrBulkImportStreamExecutorId&&r.opcode_code==775&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrBulkImportStreamOperandDescriptorId&&r.result_descriptor_id==kSblrBulkImportStreamResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactBulkExportStreamIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrBulkExportStreamExecutorId&&r.opcode_code==776&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrBulkExportStreamOperandDescriptorId&&r.result_descriptor_id==kSblrBulkExportStreamResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactStatementBatchIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrStatementBatchExecutorId&&r.opcode_code==777&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrStatementBatchOperandDescriptorId&&r.result_descriptor_id==kSblrStatementBatchResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactAtomicCasIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrAtomicCasExecutorId&&r.opcode_code==778&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrAtomicCasOperandDescriptorId&&r.result_descriptor_id==kSblrAtomicCasResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactAtomicRmwIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrAtomicRmwExecutorId&&r.opcode_code==779&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrAtomicRmwOperandDescriptorId&&r.result_descriptor_id==kSblrAtomicRmwResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactAdvisoryLockIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrAdvisoryLockAcquireExecutorId&&r.opcode_code==780&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrAdvisoryLockAcquireOperandDescriptorId&&r.result_descriptor_id==kSblrAdvisoryLockResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactAdvisoryLockReleaseIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrAdvisoryLockReleaseExecutorId&&r.opcode_code==781&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrAdvisoryLockReleaseOperandDescriptorId&&r.result_descriptor_id==kSblrAdvisoryLockResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactFunctionCallIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrFunctionCallExecutorId&&r.opcode_code==1024&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrFunctionCallOperandDescriptorId&&r.result_descriptor_id==kSblrFunctionCallResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactOperatorCallIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrOperatorCallExecutorId&&r.opcode_code==1025&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrOperatorCallOperandDescriptorId&&r.result_descriptor_id==kSblrOperatorCallResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactCastIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrCastExecutorId&&r.opcode_code==1026&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrCastOperandDescriptorId&&r.result_descriptor_id==kSblrCastResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactCompareIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrCompareExecutorId&&r.opcode_code==1027&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrCompareOperandDescriptorId&&r.result_descriptor_id==kSblrCompareResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDomainOperationIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDomainOperationExecutorId&&r.opcode_code==1028&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDomainOperationOperandDescriptorId&&r.result_descriptor_id==kSblrDomainOperationResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactUdrInvokeIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrUdrInvokeExecutorId&&r.opcode_code==1029&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrUdrInvokeOperandDescriptorId&&r.result_descriptor_id==kSblrUdrInvokeResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactProcedureInvokeIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrProcedureInvokeExecutorId&&r.opcode_code==1030&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrProcedureInvokeOperandDescriptorId&&r.result_descriptor_id==kSblrProcedureInvokeResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactFunctionInvokeIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrFunctionInvokeExecutorId&&r.opcode_code==1031&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrFunctionInvokeOperandDescriptorId&&r.result_descriptor_id==kSblrFunctionInvokeResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactAggregateInvokeIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrAggregateInvokeExecutorId&&r.opcode_code==1032&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrAggregateInvokeOperandDescriptorId&&r.result_descriptor_id==kSblrAggregateInvokeResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactSequenceNextvalIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrSequenceNextvalExecutorId&&r.opcode_code==1033&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrSequenceNextvalOperandDescriptorId&&r.result_descriptor_id==kSblrSequenceNextvalResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactSequenceCurrvalIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrSequenceCurrvalExecutorId&&r.opcode_code==1034&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrSequenceCurrvalOperandDescriptorId&&r.result_descriptor_id==kSblrSequenceCurrvalResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactSequenceSetvalIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrSequenceSetvalExecutorId&&r.opcode_code==1035&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrSequenceSetvalOperandDescriptorId&&r.result_descriptor_id==kSblrSequenceSetvalResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactQueryNumericIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrQueryNumericExecutorId&&r.opcode_code==1036&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrQueryNumericOperandDescriptorId&&r.result_descriptor_id==kSblrQueryNumericResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactAdvancedDatatypeFamilyIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrAdvancedDatatypeFamilyExecutorId&&r.opcode_code==1037&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrAdvancedDatatypeFamilyOperandDescriptorId&&r.result_descriptor_id==kSblrAdvancedDatatypeFamilyResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactProjectIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrProjectExecutorId&&r.opcode_code==1280&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrProjectOperandDescriptorId&&r.result_descriptor_id==kSblrProjectResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactAggregateIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrAggregateExecutorId&&r.opcode_code==1281&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrAggregateOperandDescriptorId&&r.result_descriptor_id==kSblrAggregateResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactGroupIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrGroupExecutorId&&r.opcode_code==1282&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrGroupOperandDescriptorId&&r.result_descriptor_id==kSblrGroupResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactSortIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrSortExecutorId&&r.opcode_code==1283&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrSortOperandDescriptorId&&r.result_descriptor_id==kSblrSortResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactLimitIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrLimitExecutorId&&r.opcode_code==1284&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrLimitOperandDescriptorId&&r.result_descriptor_id==kSblrLimitResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactWindowIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrWindowExecutorId&&r.opcode_code==1285&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrWindowOperandDescriptorId&&r.result_descriptor_id==kSblrWindowResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactReturnResultSetIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrReturnResultSetExecutorId&&r.opcode_code==1286&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrReturnResultSetOperandDescriptorId&&r.result_descriptor_id==kSblrReturnResultSetResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactKvStructuredReadIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrKvStructuredReadExecutorId&&r.opcode_code==8192&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrKvStructuredReadOperandDescriptorId&&r.result_descriptor_id==kSblrKvStructuredReadResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactKvStructuredMutateIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrKvStructuredMutateExecutorId&&r.opcode_code==8193&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrKvStructuredMutateOperandDescriptorId&&r.result_descriptor_id==kSblrKvStructuredMutateResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactKvStructuredScanIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrKvStructuredScanExecutorId&&r.opcode_code==8194&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrKvStructuredScanOperandDescriptorId&&r.result_descriptor_id==kSblrKvStructuredScanResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactKvStructuredStreamReadIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrKvStructuredStreamReadExecutorId&&r.opcode_code==8195&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrKvStructuredStreamReadOperandDescriptorId&&r.result_descriptor_id==kSblrKvStructuredStreamReadResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactKvStructuredStreamAppendIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrKvStructuredStreamAppendExecutorId&&r.opcode_code==8196&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrKvStructuredStreamAppendOperandDescriptorId&&r.result_descriptor_id==kSblrKvStructuredStreamAppendResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactKvStructuredTimeseriesIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrKvStructuredTimeseriesExecutorId&&r.opcode_code==8197&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrKvStructuredTimeseriesOperandDescriptorId&&r.result_descriptor_id==kSblrKvStructuredTimeseriesResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactSystemConfigSetIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrSystemConfigSetExecutorId&&r.opcode_code==5125&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrSystemConfigSetOperandDescriptorId&&r.result_descriptor_id==kSblrSystemConfigSetResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreateDomainIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateDomainExecutorId&&r.opcode_code==1542&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateDomainOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateDomainResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreateSchemaIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateSchemaExecutorId&&r.opcode_code==1536&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateSchemaOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateSchemaResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreateTableIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateTableExecutorId&&r.opcode_code==1537&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateTableOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateTableResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreateIndexIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateIndexExecutorId&&r.opcode_code==1540&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateIndexOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateIndexResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlDropIndexIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropIndexExecutorId&&r.opcode_code==1541&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropIndexOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropIndexResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlAlterDomainIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlAlterDomainExecutorId&&r.opcode_code==1547&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterDomainOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterDomainResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreateViewIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateViewExecutorId&&r.opcode_code==1548&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateViewOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateViewResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlAlterViewIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlAlterViewExecutorId&&r.opcode_code==1549&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterViewOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterViewResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreateTriggerIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateTriggerExecutorId&&r.opcode_code==1551&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateTriggerOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateTriggerResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlAlterTriggerIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlAlterTriggerExecutorId&&r.opcode_code==1552&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterTriggerOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterTriggerResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlDropTriggerIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropTriggerExecutorId&&r.opcode_code==1553&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropTriggerOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropTriggerResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreateProcedureIdentity(const SblrExecutorAvailabilityRowIdentity&r){return (r.executor_id==kSblrDdlCreateProcedureExecutorId&&r.opcode_code==1554&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateProcedureOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateProcedureResultDescriptorId||r.executor_id==kSblrDdlAlterProcedureExecutorId&&r.opcode_code==1555&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterProcedureOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterProcedureResultDescriptorId)&&r.result_descriptor_version==1;}
+bool ExactDdlAlterProcedureIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlAlterProcedureExecutorId&&r.opcode_code==1555&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterProcedureOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterProcedureResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlDropProcedureIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropProcedureExecutorId&&r.opcode_code==1556&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropProcedureOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropProcedureResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreateFunctionIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateFunctionExecutorId&&r.opcode_code==1557&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateFunctionOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateFunctionResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlAlterFunctionIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlAlterFunctionExecutorId&&r.opcode_code==1558&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterFunctionOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterFunctionResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlDropFunctionIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropFunctionExecutorId&&r.opcode_code==1559&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropFunctionOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropFunctionResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreatePackageIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreatePackageExecutorId&&r.opcode_code==1560&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreatePackageOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreatePackageResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlDropTemporaryTableIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropTemporaryTableExecutorId&&r.opcode_code==1562&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropTemporaryTableOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropTemporaryTableResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreateTemporaryTableIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateTemporaryTableExecutorId&&r.opcode_code==1561&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateTemporaryTableOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateTemporaryTableResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlRenameObjectVectorIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlRenameObjectVectorExecutorId&&r.opcode_code==1563&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlRenameObjectVectorOperandDescriptorId&&r.result_descriptor_id==kSblrDdlRenameObjectVectorResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreateOrReplaceSrsIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateOrReplaceSrsExecutorId&&r.opcode_code==1615&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateOrReplaceSrsOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateOrReplaceSrsResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlDropSrsIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropSrsExecutorId&&r.opcode_code==1616&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropSrsOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropSrsResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlCreateRewriteRuleIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlCreateRewriteRuleExecutorId&&r.opcode_code==1617&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlCreateRewriteRuleOperandDescriptorId&&r.result_descriptor_id==kSblrDdlCreateRewriteRuleResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlAlterRewriteRuleIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlAlterRewriteRuleExecutorId&&r.opcode_code==1618&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlAlterRewriteRuleOperandDescriptorId&&r.result_descriptor_id==kSblrDdlAlterRewriteRuleResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlDropRewriteRuleIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropRewriteRuleExecutorId&&r.opcode_code==1619&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropRewriteRuleOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropRewriteRuleResultDescriptorId&&r.result_descriptor_version==1;}
+bool ExactDdlDropViewIdentity(const SblrExecutorAvailabilityRowIdentity&r){return r.executor_id==kSblrDdlDropViewExecutorId&&r.opcode_code==1550&&r.opcode_version=="1.0"&&r.operand_descriptor_id==kSblrDdlDropViewOperandDescriptorId&&r.result_descriptor_id==kSblrDdlDropViewResultDescriptorId&&r.result_descriptor_version==1;}
 bool ExactAdmittedIdentity(const SblrExecutorAvailabilityRowIdentity& row) {
-  return ExactLiteralIdentity(row) || ExactParameterIdentity(row);
+  return ExactLiteralIdentity(row) || ExactParameterIdentity(row) ||
+         ExactVariableIdentity(row) || ExactSourceMapIdentity(row) ||
+         ExactErrorVectorIdentity(row) || ExactDdlCreateProcedureIdentity(row) || ExactDdlDropProcedureIdentity(row) || ExactSequenceSetvalIdentity(row) || ExactQueryNumericIdentity(row) || ExactAdvancedDatatypeFamilyIdentity(row) || ExactProjectIdentity(row) || ExactAggregateIdentity(row) || ExactGroupIdentity(row) || ExactSortIdentity(row) || ExactLimitIdentity(row) || ExactWindowIdentity(row) || ExactReturnResultSetIdentity(row) || ExactKvStructuredReadIdentity(row) || ExactKvStructuredMutateIdentity(row) || ExactKvStructuredScanIdentity(row) || ExactKvStructuredStreamReadIdentity(row) || ExactKvStructuredStreamAppendIdentity(row) || ExactKvStructuredTimeseriesIdentity(row) || ExactSystemConfigSetIdentity(row) || ExactDdlCreateDomainIdentity(row) || ExactDdlCreateSchemaIdentity(row) || ExactDdlCreateTableIdentity(row) || ExactDdlCreateIndexIdentity(row) || ExactDdlAlterDomainIdentity(row) || ExactDdlCreateViewIdentity(row) || ExactDdlAlterViewIdentity(row) || ExactDdlDropViewIdentity(row) || ExactDdlCreateTriggerIdentity(row) || ExactDdlAlterTriggerIdentity(row) || ExactDdlDropTriggerIdentity(row) || ExactDdlDropIndexIdentity(row) || ExactTxnBeginIdentity(row) ||
+         ExactDdlCreateFunctionIdentity(row) || ExactDdlAlterFunctionIdentity(row) || ExactDdlDropFunctionIdentity(row) || ExactDdlCreatePackageIdentity(row) || ExactDdlCreateTemporaryTableIdentity(row) || ExactDdlDropTemporaryTableIdentity(row) || ExactDdlRenameObjectVectorIdentity(row) || ExactDdlCreateOrReplaceSrsIdentity(row) || ExactDdlDropSrsIdentity(row) || ExactDdlCreateRewriteRuleIdentity(row) || ExactDdlAlterRewriteRuleIdentity(row) || ExactDdlDropRewriteRuleIdentity(row) || ExactTxnCommitIdentity(row) || ExactTxnRollbackIdentity(row) ||
+         ExactTxnSavepointIdentity(row) || ExactTxnReleaseSavepointIdentity(row) || ExactTxnRollbackToSavepointIdentity(row) || ExactPsqlAutonomousFrameIdentity(row) || ExactReservationReleaseIdentity(row) || ExactTemporaryInstanceCleanupIdentity(row) || ExactCursorOpenIdentity(row) || ExactCursorFetchIdentity(row) || ExactCursorCloseIdentity(row) || ExactReadByKeyIdentity(row) || ExactReadRangeIdentity(row) || ExactReadStreamIdentity(row) || ExactResultSetPassIdentity(row) || ExactAccessCursorOpenIdentity(row) || ExactAccessCursorFetchIdentity(row) || ExactAccessCursorCloseIdentity(row) || ExactInsertIdentity(row) || ExactUpdateIdentity(row) || ExactDeleteIdentity(row) || ExactMergeIdentity(row) || ExactTableTruncateIdentity(row) || ExactTableAnalyzeIdentity(row) || ExactBulkImportStreamIdentity(row) || ExactBulkExportStreamIdentity(row) || ExactStatementBatchIdentity(row) || ExactAtomicCasIdentity(row) || ExactAtomicRmwIdentity(row) || ExactAdvisoryLockIdentity(row) || ExactAdvisoryLockReleaseIdentity(row) || ExactFunctionCallIdentity(row) || ExactOperatorCallIdentity(row) || ExactCastIdentity(row) || ExactCompareIdentity(row) || ExactDomainOperationIdentity(row) || ExactUdrInvokeIdentity(row) || ExactProcedureInvokeIdentity(row) || ExactFunctionInvokeIdentity(row) || ExactAggregateInvokeIdentity(row) || ExactSequenceNextvalIdentity(row) || ExactSequenceCurrvalIdentity(row);
 }
 
 std::string StateName(SblrExecutorAvailabilityState state) {
@@ -294,9 +515,31 @@ SblrExecutorAvailabilityLoadResult BootstrapLocked(
       ComputeSblrExecutorAvailabilityRowIdentitySha256(identity);
   pair.snapshot.installed = true;
   pair.snapshot.availability_state = SblrExecutorAvailabilityState::installed;
-  pair.reason_code = ExactParameterIdentity(identity)
+  pair.reason_code = ExactCastIdentity(identity)
+                         ? "bootstrap.admitted_cast.v1"
+                     : ExactOperatorCallIdentity(identity)
+                         ? "bootstrap.admitted_operator_call.v1"
+                     : ExactFunctionCallIdentity(identity)
+                         ? "bootstrap.admitted_function_call.v1"
+                     : ExactAdvisoryLockReleaseIdentity(identity)
+                         ? "bootstrap.admitted_advisory_lock_release.v1"
+                     : ExactAdvisoryLockIdentity(identity)
+                         ? "bootstrap.admitted_advisory_lock_acquire.v1"
+                     : ExactAtomicRmwIdentity(identity)
+                         ? "bootstrap.admitted_atomic_rmw.v1"
+                     : ExactAtomicCasIdentity(identity)
+                         ? "bootstrap.admitted_atomic_cas.v1"
+                     : ExactStatementBatchIdentity(identity)
+                         ? "bootstrap.admitted_statement_batch.v1"
+                     : ExactBulkImportStreamIdentity(identity)
+                         ? "bootstrap.admitted_bulk_import_stream.v1"
+                         : ExactTableAnalyzeIdentity(identity)
+                         ? "bootstrap.admitted_table_analyze.v1"
+                         : ExactParameterIdentity(identity)
                          ? "bootstrap.admitted_parameter.v1"
-                         : "bootstrap.admitted_literal.v1";
+                         : ExactVariableIdentity(identity)
+                               ? "bootstrap.admitted_variable.v1"
+                               : "bootstrap.admitted_literal.v1";
   pair.snapshot.decision_evidence_sha256 = Sha256(DecisionPayload(
       pair.snapshot.database_uuid, {}, 0, pair.snapshot, pair.reason_code));
   if (pair.snapshot.snapshot_uuid.empty() ||

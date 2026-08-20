@@ -7,6 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_dispatch.hpp"
+#include "sblr_event_notification.hpp"
+#include "sblr_local_backup_archive.hpp"
+#include "sblr_local_metrics_read.hpp"
+#include "sblr_management_envelope.hpp"
 
 #include "canonical_query_execute.hpp"
 #include "hash_digest.hpp"
@@ -2474,7 +2478,9 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
         request.context,
         request.envelope.operation_id,
         "SB_SBLR_DISPATCH_ENVELOPE_REJECTED",
-        "SBLR envelope failed engine validation");
+        envelope_validation.diagnostics.empty()
+            ? "SBLR envelope failed engine validation"
+            : envelope_validation.diagnostics.front().message);
     return result;
   }
 
@@ -5066,6 +5072,7 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
   }
   if (operation_id == "ddl.create_database") return "SBLR_DDL_CREATE_DATABASE";
   if (operation_id == "ddl.create_schema") return "SBLR_DDL_CREATE_SCHEMA";
+  if (operation_id == "ddl.create_table") return "SBLR_DDL_CREATE_TABLE";
   if (operation_id == "ddl.create_table") return "SBLR_DDL_CREATE_TABLE";
   if (operation_id == "ddl.create_index") return "SBLR_DDL_CREATE_INDEX";
   if (operation_id == "ddl.create_index_template") return "SBLR_DDL_CREATE_INDEX_TEMPLATE";
@@ -9503,7 +9510,152 @@ std::string JsonEscape(std::string_view input) {
 SblrQueryPreflightResult PreflightSblrQueryOperation(
     SblrDispatchRequest request) {
   SblrQueryPreflightResult result;
-  if (request.envelope.operation_id != "query.execute") {
+  const bool exact_source_map =
+      request.envelope.operation_id == "engine.op.source_map" &&
+      request.envelope.opcode == "SBLR_SOURCE_MAP" &&
+      request.envelope.opcode_code == 6;
+  const bool exact_error_vector =
+      request.envelope.operation_id == "engine.op.error_vector" &&
+      request.envelope.opcode == "SBLR_ERROR_VECTOR" &&
+      request.envelope.opcode_code == 7;
+  const bool exact_txn_begin =
+      request.envelope.operation_id == "engine.op.txn_begin" &&
+      request.envelope.opcode == "SBLR_TXN_BEGIN" &&
+      request.envelope.opcode_code == 256;
+  const bool exact_txn_commit =
+      request.envelope.operation_id == "engine.op.txn_commit" &&
+      request.envelope.opcode == "SBLR_TXN_COMMIT" &&
+      request.envelope.opcode_code == 257;
+  const bool exact_txn_rollback =
+      request.envelope.operation_id == "engine.op.txn_rollback" &&
+      request.envelope.opcode == "SBLR_TXN_ROLLBACK" &&
+      request.envelope.opcode_code == 258;
+  const bool exact_txn_savepoint =
+      request.envelope.operation_id == "engine.op.txn_savepoint" &&
+      request.envelope.opcode == "SBLR_TXN_SAVEPOINT" &&
+      request.envelope.opcode_code == 259;
+  const bool exact_txn_release_savepoint =
+      request.envelope.operation_id == "engine.op.txn_release_savepoint" &&
+      request.envelope.opcode == "SBLR_TXN_RELEASE_SAVEPOINT" &&
+      request.envelope.opcode_code == 260;
+  const bool exact_txn_rollback_to_savepoint =
+      request.envelope.operation_id == "engine.op.txn_rollback_to_savepoint" &&
+      request.envelope.opcode == "SBLR_TXN_ROLLBACK_TO_SAVEPOINT" &&
+      request.envelope.opcode_code == 261;
+  const bool exact_psql_autonomous_frame = request.envelope.operation_id=="engine.op.psql_autonomous_frame"&&request.envelope.opcode=="SBLR_PSQL_AUTONOMOUS_FRAME"&&request.envelope.opcode_code==262;
+  const bool exact_reservation_release = request.envelope.operation_id=="engine.op.transaction_reservation_release"&&request.envelope.opcode=="SBLR_TRANSACTION_RESERVATION_RELEASE"&&request.envelope.opcode_code==263;
+  const bool exact_temporary_cleanup = request.envelope.operation_id=="engine.op.temporary_instance_cleanup"&&request.envelope.opcode=="SBLR_TEMPORARY_INSTANCE_CLEANUP"&&request.envelope.opcode_code==264;
+  const bool exact_cursor_open = request.envelope.operation_id=="engine.op.cursor_open"&&request.envelope.opcode=="SBLR_CURSOR_OPEN"&&request.envelope.opcode_code==512;
+  const bool exact_cursor_fetch = request.envelope.operation_id=="engine.op.cursor_fetch"&&request.envelope.opcode=="SBLR_CURSOR_FETCH"&&request.envelope.opcode_code==513;
+  const bool exact_cursor_close = request.envelope.operation_id=="engine.op.cursor_close"&&request.envelope.opcode=="SBLR_CURSOR_CLOSE"&&request.envelope.opcode_code==514;
+  const bool exact_read_by_key = request.envelope.operation_id=="engine.op.read_by_key"&&request.envelope.opcode=="SBLR_READ_BY_KEY"&&request.envelope.opcode_code==515;
+  const bool exact_read_range = request.envelope.operation_id=="engine.op.read_range"&&request.envelope.opcode=="SBLR_READ_RANGE"&&request.envelope.opcode_code==516;
+  const bool exact_read_stream = request.envelope.operation_id=="engine.op.read_stream"&&request.envelope.opcode=="SBLR_READ_STREAM"&&request.envelope.opcode_code==517;
+  const bool exact_result_set_pass = request.envelope.operation_id=="engine.op.result_set_pass"&&request.envelope.opcode=="SBLR_RESULT_SET_PASS"&&request.envelope.opcode_code==518;
+  const bool exact_access_cursor_open = request.envelope.operation_id=="engine.op.access_cursor_open"&&request.envelope.opcode=="SBLR_ACCESS_CURSOR_OPEN"&&request.envelope.opcode_code==519;
+  const bool exact_access_cursor_fetch = request.envelope.operation_id=="engine.op.access_cursor_fetch"&&request.envelope.opcode=="SBLR_ACCESS_CURSOR_FETCH"&&request.envelope.opcode_code==520;
+  const bool exact_access_cursor_close = request.envelope.operation_id=="engine.op.access_cursor_close"&&request.envelope.opcode=="SBLR_ACCESS_CURSOR_CLOSE"&&request.envelope.opcode_code==521;
+  const bool exact_insert = request.envelope.operation_id=="engine.op.insert"&&request.envelope.opcode=="SBLR_INSERT"&&request.envelope.opcode_code==768;
+  const bool exact_update = request.envelope.operation_id=="engine.op.update"&&request.envelope.opcode=="SBLR_UPDATE"&&request.envelope.opcode_code==769;
+  const bool exact_delete = request.envelope.operation_id=="engine.op.delete"&&request.envelope.opcode=="SBLR_DELETE"&&request.envelope.opcode_code==770;
+  const bool exact_merge = request.envelope.operation_id=="engine.op.merge"&&request.envelope.opcode=="SBLR_MERGE"&&request.envelope.opcode_code==771;
+  const bool exact_table_truncate = request.envelope.operation_id=="engine.op.table_truncate"&&request.envelope.opcode=="SBLR_TABLE_TRUNCATE"&&request.envelope.opcode_code==773;
+  const bool exact_table_analyze = request.envelope.operation_id=="engine.op.table_analyze"&&request.envelope.opcode=="SBLR_TABLE_ANALYZE"&&request.envelope.opcode_code==774;
+  const bool exact_bulk_import_stream = request.envelope.operation_id=="engine.op.bulk_import_stream"&&request.envelope.opcode=="SBLR_BULK_IMPORT_STREAM"&&request.envelope.opcode_code==775;
+  const bool exact_bulk_export_stream = request.envelope.operation_id=="engine.op.bulk_export_stream"&&request.envelope.opcode=="SBLR_BULK_EXPORT_STREAM"&&request.envelope.opcode_code==776;
+  const bool exact_statement_batch = request.envelope.operation_id=="engine.op.statement_batch"&&request.envelope.opcode=="SBLR_STATEMENT_BATCH"&&request.envelope.opcode_code==777;
+  const bool exact_atomic_cas = request.envelope.operation_id=="engine.op.atomic_cas"&&request.envelope.opcode=="SBLR_ATOMIC_CAS"&&request.envelope.opcode_code==778;
+  const bool exact_atomic_rmw = request.envelope.operation_id=="engine.op.atomic_read_modify_write"&&request.envelope.opcode=="SBLR_ATOMIC_READ_MODIFY_WRITE"&&request.envelope.opcode_code==779;
+  const bool exact_advisory_lock = request.envelope.operation_id=="engine.op.advisory_lock_acquire"&&request.envelope.opcode=="SBLR_ADVISORY_LOCK_ACQUIRE"&&request.envelope.opcode_code==780;
+  const bool exact_advisory_lock_release = request.envelope.operation_id=="engine.op.advisory_lock_release"&&request.envelope.opcode=="SBLR_ADVISORY_LOCK_RELEASE"&&request.envelope.opcode_code==781;
+  const bool exact_function_call = request.envelope.operation_id=="engine.op.function_call"&&request.envelope.opcode=="SBLR_FUNCTION_CALL"&&request.envelope.opcode_code==1024;
+  const bool exact_operator_call = request.envelope.operation_id=="engine.op.operator_call"&&request.envelope.opcode=="SBLR_OPERATOR_CALL"&&request.envelope.opcode_code==1025;
+  const bool exact_cast = request.envelope.operation_id=="engine.op.cast"&&request.envelope.opcode=="SBLR_CAST"&&request.envelope.opcode_code==1026;
+  const bool exact_compare = request.envelope.operation_id=="engine.op.compare"&&request.envelope.opcode=="SBLR_COMPARE"&&request.envelope.opcode_code==1027;
+  const bool exact_domain_operation = request.envelope.operation_id=="engine.op.domain_operation"&&request.envelope.opcode=="SBLR_DOMAIN_OPERATION"&&request.envelope.opcode_code==1028;
+  const bool exact_udr = request.envelope.operation_id=="engine.op.udr_invoke"&&request.envelope.opcode=="SBLR_UDR_INVOKE"&&request.envelope.opcode_code==1029;
+  const bool exact_procedure = request.envelope.operation_id=="engine.op.procedure_invoke"&&request.envelope.opcode=="SBLR_PROCEDURE_INVOKE"&&request.envelope.opcode_code==1030;
+  const bool exact_function_invoke = request.envelope.operation_id=="engine.op.function_invoke"&&request.envelope.opcode=="SBLR_FUNCTION_INVOKE"&&request.envelope.opcode_code==1031;
+  const bool exact_aggregate_invoke = request.envelope.operation_id=="engine.op.aggregate_invoke"&&request.envelope.opcode=="SBLR_AGGREGATE_INVOKE"&&request.envelope.opcode_code==1032;
+  const bool exact_sequence_nextval = request.envelope.operation_id=="engine.op.sequence_nextval"&&request.envelope.opcode=="SBLR_SEQUENCE_NEXTVAL"&&request.envelope.opcode_code==1033;
+  const bool exact_sequence_currval = request.envelope.operation_id=="engine.op.sequence_currval"&&request.envelope.opcode=="SBLR_SEQUENCE_CURRVAL"&&request.envelope.opcode_code==1034;
+  const bool exact_sequence_setval = request.envelope.operation_id=="engine.op.sequence_setval"&&request.envelope.opcode=="SBLR_SEQUENCE_SETVAL"&&request.envelope.opcode_code==1035;
+  const bool exact_query_numeric = request.envelope.operation_id=="engine.op.query_apply_numeric_operation"&&request.envelope.opcode=="SBLR_QUERY_APPLY_NUMERIC_OPERATION"&&request.envelope.opcode_code==1036;
+  const bool exact_advanced_datatype_family = request.envelope.operation_id=="engine.op.query_evaluate_advanced_datatype_family"&&request.envelope.opcode=="SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY"&&request.envelope.opcode_code==1037;
+  const bool exact_project = (request.envelope.operation_id=="engine.op.project"&&request.envelope.opcode=="SBLR_PROJECT"&&request.envelope.opcode_code==1280) || (request.envelope.operation_id=="engine.op.ddl_alter_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_ALTER_REWRITE_RULE"&&request.envelope.opcode_code==1618) || (request.envelope.operation_id=="engine.op.ddl_drop_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_DROP_REWRITE_RULE"&&request.envelope.opcode_code==1619);
+  const bool exact_ddl_alter_rewrite_rule = request.envelope.operation_id=="engine.op.ddl_alter_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_ALTER_REWRITE_RULE"&&request.envelope.opcode_code==1618;
+  const bool exact_ddl_drop_rewrite_rule = request.envelope.operation_id=="engine.op.ddl_drop_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_DROP_REWRITE_RULE"&&request.envelope.opcode_code==1619;
+  const bool exact_aggregate = request.envelope.operation_id=="engine.op.aggregate"&&request.envelope.opcode=="SBLR_AGGREGATE"&&request.envelope.opcode_code==1281;
+  const bool exact_group = request.envelope.operation_id=="engine.op.group"&&request.envelope.opcode=="SBLR_GROUP"&&request.envelope.opcode_code==1282;
+  const bool exact_sort = request.envelope.operation_id=="engine.op.sort"&&request.envelope.opcode=="SBLR_SORT"&&request.envelope.opcode_code==1283;
+  const bool exact_limit = request.envelope.operation_id=="engine.op.limit"&&request.envelope.opcode=="SBLR_LIMIT"&&request.envelope.opcode_code==1284;
+  const bool exact_return_result_set = request.envelope.operation_id=="engine.op.return_result_set"&&request.envelope.opcode=="SBLR_RETURN_RESULT_SET"&&request.envelope.opcode_code==1286;
+  const bool exact_kv_structured_read = request.envelope.operation_id=="engine.op.kv_structured_read"&&request.envelope.opcode=="SBLR_KV_STRUCTURED_READ"&&request.envelope.opcode_code==8192;
+  const bool exact_kv_structured_mutate = request.envelope.operation_id=="engine.op.kv_structured_mutate"&&request.envelope.opcode=="SBLR_KV_STRUCTURED_MUTATE"&&request.envelope.opcode_code==8193;
+  const bool exact_kv_structured_scan = request.envelope.operation_id=="engine.op.kv_structured_scan"&&request.envelope.opcode=="SBLR_KV_STRUCTURED_SCAN"&&request.envelope.opcode_code==8194;
+  const bool exact_kv_structured_stream_read = request.envelope.operation_id=="engine.op.kv_structured_stream_read"&&request.envelope.opcode=="SBLR_KV_STRUCTURED_STREAM_READ"&&request.envelope.opcode_code==8195;
+  const bool exact_kv_structured_stream_append = request.envelope.operation_id=="engine.op.kv_structured_stream_append"&&request.envelope.opcode=="SBLR_KV_STRUCTURED_STREAM_APPEND"&&request.envelope.opcode_code==8196;
+  const bool exact_kv_structured_timeseries = request.envelope.operation_id=="engine.op.kv_structured_timeseries"&&request.envelope.opcode=="SBLR_KV_STRUCTURED_TIMESERIES"&&request.envelope.opcode_code==8197;
+  const bool exact_system_config_set = request.envelope.operation_id=="engine.op.system_config_set"&&request.envelope.opcode=="SBLR_SYSTEM_CONFIG_SET"&&request.envelope.opcode_code==5125;
+  const bool exact_ddl_create_domain = request.envelope.operation_id=="engine.op.ddl_create_domain"&&request.envelope.opcode=="SBLR_DDL_CREATE_DOMAIN"&&request.envelope.opcode_code==1542;
+  const bool exact_ddl_create_schema = request.envelope.operation_id=="engine.op.ddl_create_schema"&&request.envelope.opcode=="SBLR_DDL_CREATE_SCHEMA"&&request.envelope.opcode_code==1536;
+  const bool exact_ddl_create_table = request.envelope.operation_id=="engine.op.ddl_create_table"&&request.envelope.opcode=="SBLR_DDL_CREATE_TABLE"&&request.envelope.opcode_code==1537;
+  const bool exact_ddl_create_index = request.envelope.operation_id=="engine.op.ddl_create_index"&&request.envelope.opcode=="SBLR_DDL_CREATE_INDEX"&&request.envelope.opcode_code==1540;
+  const bool exact_ddl_drop_index = request.envelope.operation_id=="engine.op.ddl_drop_index"&&request.envelope.opcode=="SBLR_DDL_DROP_INDEX"&&request.envelope.opcode_code==1541;
+  const bool exact_ddl_alter_domain = request.envelope.operation_id=="engine.op.ddl_alter_domain"&&request.envelope.opcode=="SBLR_DDL_ALTER_DOMAIN"&&request.envelope.opcode_code==1547;
+  const bool exact_ddl_create_view = request.envelope.operation_id=="engine.op.ddl_create_view"&&request.envelope.opcode=="SBLR_DDL_CREATE_VIEW"&&request.envelope.opcode_code==1548;
+  const bool exact_ddl_alter_view = request.envelope.operation_id=="engine.op.ddl_alter_view"&&request.envelope.opcode=="SBLR_DDL_ALTER_VIEW"&&request.envelope.opcode_code==1549;
+  const bool exact_ddl_drop_view = (request.envelope.operation_id=="engine.op.ddl_drop_view"&&request.envelope.opcode=="SBLR_DDL_DROP_VIEW"&&request.envelope.opcode_code==1550) || (request.envelope.operation_id=="engine.op.ddl_create_trigger"&&request.envelope.opcode=="SBLR_DDL_CREATE_TRIGGER"&&request.envelope.opcode_code==1551) || (request.envelope.operation_id=="engine.op.ddl_alter_trigger"&&request.envelope.opcode=="SBLR_DDL_ALTER_TRIGGER"&&request.envelope.opcode_code==1552) || (request.envelope.operation_id=="engine.op.ddl_drop_trigger"&&request.envelope.opcode=="SBLR_DDL_DROP_TRIGGER"&&request.envelope.opcode_code==1553);
+  const bool exact_ddl_alter_trigger = request.envelope.operation_id=="engine.op.ddl_alter_trigger"&&request.envelope.opcode=="SBLR_DDL_ALTER_TRIGGER"&&request.envelope.opcode_code==1552;
+  const bool exact_ddl_drop_trigger = request.envelope.operation_id=="engine.op.ddl_drop_trigger"&&request.envelope.opcode=="SBLR_DDL_DROP_TRIGGER"&&request.envelope.opcode_code==1553;
+  const bool exact_ddl_create_procedure = request.envelope.operation_id=="engine.op.ddl_create_procedure"&&request.envelope.opcode=="SBLR_DDL_CREATE_PROCEDURE"&&request.envelope.opcode_code==1554;
+  const bool exact_ddl_drop_procedure = request.envelope.operation_id=="engine.op.ddl_drop_procedure"&&request.envelope.opcode=="SBLR_DDL_DROP_PROCEDURE"&&request.envelope.opcode_code==1556;
+  const bool exact_ddl_create_function = request.envelope.operation_id=="engine.op.ddl_create_function"&&request.envelope.opcode=="SBLR_DDL_CREATE_FUNCTION"&&request.envelope.opcode_code==1557;
+  const bool exact_ddl_alter_function = request.envelope.operation_id=="engine.op.ddl_alter_function"&&request.envelope.opcode=="SBLR_DDL_ALTER_FUNCTION"&&request.envelope.opcode_code==1558;
+  const bool exact_ddl_drop_function = request.envelope.operation_id=="engine.op.ddl_drop_function"&&request.envelope.opcode=="SBLR_DDL_DROP_FUNCTION"&&request.envelope.opcode_code==1559;
+  const bool exact_ddl_create_package = request.envelope.operation_id=="engine.op.ddl_create_package"&&request.envelope.opcode=="SBLR_DDL_CREATE_PACKAGE"&&request.envelope.opcode_code==1560;
+  const bool exact_ddl_create_temporary_table = request.envelope.operation_id=="engine.op.ddl_create_temporary_table"&&request.envelope.opcode=="SBLR_DDL_CREATE_TEMPORARY_TABLE"&&request.envelope.opcode_code==1561;
+  const bool exact_ddl_drop_temporary_table = request.envelope.operation_id=="engine.op.ddl_drop_temporary_table"&&request.envelope.opcode=="SBLR_DDL_DROP_TEMPORARY_TABLE"&&request.envelope.opcode_code==1562;
+  const bool exact_ddl_rename_object_vector = request.envelope.operation_id=="engine.op.ddl_rename_object_vector"&&request.envelope.opcode=="SBLR_DDL_RENAME_OBJECT_VECTOR"&&request.envelope.opcode_code==1563;
+  const bool exact_ddl_create_or_replace_srs = request.envelope.operation_id=="engine.op.ddl_create_or_replace_srs"&&request.envelope.opcode=="SBLR_DDL_CREATE_OR_REPLACE_SRS"&&request.envelope.opcode_code==1615;
+  const bool exact_ddl_drop_srs = request.envelope.operation_id=="engine.op.ddl_drop_srs"&&request.envelope.opcode=="SBLR_DDL_DROP_SRS"&&request.envelope.opcode_code==1616;
+  const bool exact_ddl_alter_procedure = request.envelope.operation_id=="engine.op.ddl_alter_procedure"&&request.envelope.opcode=="SBLR_DDL_ALTER_PROCEDURE"&&request.envelope.opcode_code==1555;
+  const bool exact_ddl_create_trigger = (request.envelope.operation_id=="engine.op.ddl_create_trigger"&&request.envelope.opcode=="SBLR_DDL_CREATE_TRIGGER"&&request.envelope.opcode_code==1551) || (request.envelope.operation_id=="engine.op.ddl_alter_trigger"&&request.envelope.opcode=="SBLR_DDL_ALTER_TRIGGER"&&request.envelope.opcode_code==1552) || exact_ddl_drop_trigger;
+  const bool exact_window = (request.envelope.operation_id=="engine.op.window"&&request.envelope.opcode=="SBLR_WINDOW"&&request.envelope.opcode_code==1285) || exact_return_result_set || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs;
+  const bool exact_management_envelope =
+      (request.envelope.operation_id == "engine.op.mgmt_operation" &&
+       request.envelope.opcode == "SBLR_MGMT_OPERATION" &&
+       request.envelope.opcode_code == 0x0D00) ||
+      (request.envelope.operation_id == "engine.op.mgmt_payload" &&
+       request.envelope.opcode == "SBLR_MGMT_PAYLOAD" &&
+       request.envelope.opcode_code == 0x0D01) ||
+      (request.envelope.operation_id == "engine.op.mgmt_result" &&
+       request.envelope.opcode == "SBLR_MGMT_RESULT" &&
+       request.envelope.opcode_code == 0x0D02) ||
+      (request.envelope.operation_id == "engine.op.mgmt_progress" &&
+       request.envelope.opcode == "SBLR_MGMT_PROGRESS" &&
+       request.envelope.opcode_code == 0x0D03) ||
+      (request.envelope.operation_id == "engine.op.mgmt_diagnostic" &&
+       request.envelope.opcode == "SBLR_MGMT_DIAGNOSTIC" &&
+       request.envelope.opcode_code == 0x0D04) ||
+      (request.envelope.operation_id == "engine.op.mgmt_metric_snapshot_ref" &&
+       request.envelope.opcode == "SBLR_MGMT_METRIC_SNAPSHOT_REF" &&
+       request.envelope.opcode_code == 0x0D05);
+  const bool exact_local_metrics_read =
+      request.envelope.operation_id == "engine.op.read_metrics" &&
+      request.envelope.opcode == "SBLR_READ_METRICS" &&
+      request.envelope.opcode_code == 0x0C01;
+  const bool exact_event_notification =
+      IsSblrEventNotificationOperation(request.envelope.operation_id) &&
+      request.envelope.opcode_code >= 0x0F00 &&
+      request.envelope.opcode_code <= 0x0F09;
+  const bool exact_local_backup_archive =
+      request.envelope.operation_id.rfind("engine.op.", 0) == 0 &&
+      request.envelope.opcode_code >= 0x0A00 && request.envelope.opcode_code <= 0x0A04;
+  if (request.envelope.operation_id != "query.execute" && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_source_map &&
+      !exact_error_vector && !exact_txn_begin && !exact_txn_commit &&
+      !exact_txn_rollback && !exact_txn_savepoint && !exact_txn_release_savepoint && !exact_txn_rollback_to_savepoint && !exact_psql_autonomous_frame && !exact_reservation_release && !exact_temporary_cleanup && !exact_cursor_open && !exact_cursor_fetch && !exact_cursor_close && !exact_read_by_key && !exact_read_range && !exact_read_stream && !exact_result_set_pass && !exact_access_cursor_open && !exact_access_cursor_fetch && !exact_access_cursor_close && !exact_insert && !exact_update && !exact_delete && !exact_merge && !exact_table_truncate && !exact_table_analyze && !exact_bulk_import_stream && !exact_bulk_export_stream && !exact_statement_batch && !exact_atomic_cas && !exact_atomic_rmw && !exact_advisory_lock && !exact_advisory_lock_release && !exact_function_call && !exact_operator_call && !exact_cast && !exact_compare && !exact_domain_operation && !exact_udr && !exact_procedure && !exact_function_invoke && !exact_aggregate_invoke && !exact_sequence_nextval && !exact_sequence_currval && !exact_sequence_setval && !exact_query_numeric && !exact_advanced_datatype_family && !exact_ddl_create_domain && !exact_ddl_create_schema && !exact_ddl_create_table && !exact_ddl_create_index && !exact_ddl_drop_index && !exact_ddl_alter_domain && !exact_ddl_create_view && !exact_ddl_alter_view && !exact_ddl_drop_view && !exact_ddl_create_package && !exact_ddl_create_temporary_table && !exact_ddl_drop_temporary_table && !exact_ddl_rename_object_vector && !exact_ddl_create_or_replace_srs && !exact_ddl_drop_srs && !exact_project && !exact_aggregate && !exact_group && !exact_sort && !exact_limit && !exact_window && !exact_management_envelope &&
+      !exact_local_metrics_read && !exact_event_notification && !exact_local_backup_archive) {
     result.diagnostic_id = "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH";
     result.detail = "package root preflight admits query.execute only";
     return result;
@@ -9518,9 +9670,41 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
         : envelope_validation.diagnostics.front().message;
     return result;
   }
+  if (exact_source_map || exact_error_vector || exact_txn_begin ||
+      exact_txn_commit || exact_txn_rollback || exact_txn_savepoint || exact_txn_release_savepoint || exact_txn_rollback_to_savepoint || exact_psql_autonomous_frame || exact_reservation_release || exact_temporary_cleanup || exact_cursor_open || exact_cursor_fetch || exact_cursor_close || exact_read_by_key || exact_read_range || exact_read_stream || exact_result_set_pass || exact_access_cursor_open || exact_access_cursor_fetch || exact_access_cursor_close || exact_insert || exact_update || exact_delete || exact_merge || exact_table_truncate || exact_table_analyze || exact_bulk_import_stream || exact_bulk_export_stream || exact_statement_batch || exact_atomic_cas || exact_atomic_rmw || exact_advisory_lock || exact_advisory_lock_release || exact_function_call || exact_operator_call || exact_cast || exact_compare || exact_domain_operation || exact_udr || exact_procedure || exact_function_invoke || exact_aggregate_invoke || exact_sequence_nextval || exact_sequence_currval || exact_sequence_setval || exact_query_numeric || exact_advanced_datatype_family || exact_management_envelope ||
+      exact_project || exact_ddl_drop_rewrite_rule || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
+    if (exact_management_envelope &&
+        !ValidateSblrOpcodeForEnvelope(request.envelope).ok) {
+      result.diagnostic_id = "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
+      result.detail = "management envelope executor evidence is not admitted";
+      return result;
+    }
+    if (exact_local_metrics_read &&
+        !ValidateSblrOpcodeForEnvelope(request.envelope).ok) {
+      result.diagnostic_id = "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
+      result.detail = "local metrics read executor evidence is not admitted";
+      return result;
+    }
+    if (exact_event_notification &&
+        !ValidateSblrOpcodeForEnvelope(request.envelope).ok) {
+      result.diagnostic_id = "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
+      result.detail = "event notification executor evidence is not admitted";
+      return result;
+    }
+    if (exact_local_backup_archive && !ValidateSblrOpcodeForEnvelope(request.envelope).ok) {
+      result.diagnostic_id = "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
+      result.detail = "local backup/archive executor evidence is not admitted";
+      return result;
+    }
+    result.ok = true;
+    result.materialized_envelope = std::move(request.envelope);
+    return result;
+  }
   for (auto& operand : request.envelope.operands) {
     if (operand.value_kind == SblrValueKind::expression_node_table ||
-        operand.value_kind == SblrValueKind::expression_node_ref) {
+        operand.value_kind == SblrValueKind::expression_node_ref ||
+        operand.value_kind == SblrValueKind::parameter_node_table ||
+        operand.value_kind == SblrValueKind::parameter_node_ref) {
       continue;
     }
     if (operand.value_kind != SblrValueKind::literal_typed ||
@@ -9713,7 +9897,9 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
                                       request.envelope.operation_id,
                                       "SB_SBLR_DISPATCH_ENVELOPE_REJECTED",
                                       "engine.sblr.dispatch.envelope_rejected",
-                                      "SBLR envelope failed engine validation");
+                                      validation.diagnostics.empty()
+                                          ? "SBLR envelope failed engine validation"
+                                          : validation.diagnostics.front().message);
     return result;
   }
 
@@ -9733,7 +9919,9 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     for (auto& operand : request.envelope.operands) {
       if (materialize_query_slots &&
           (operand.value_kind == SblrValueKind::expression_node_table ||
-           operand.value_kind == SblrValueKind::expression_node_ref)) {
+           operand.value_kind == SblrValueKind::expression_node_ref ||
+           operand.value_kind == SblrValueKind::parameter_node_table ||
+           operand.value_kind == SblrValueKind::parameter_node_ref)) {
         continue;
       }
       if (operand.value_kind != SblrValueKind::literal_typed ||
@@ -9801,7 +9989,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
       request.envelope.operation_id == "query.plan_operation") {
     const auto opcode_validation =
         ValidateSblrOpcodeForEnvelope(request.envelope);
-    if (!opcode_validation.ok) {
+  if (!opcode_validation.ok) {
       result.diagnostics.push_back(DispatchDiagnostic(
           opcode_validation.diagnostic_id,
           opcode_validation.detail));
@@ -9851,7 +10039,20 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     return result;
   }
 
-  if (request.envelope.operation_id == "query.execute") {
+  // Conditional-cluster operations are provider-owned whenever the engine
+  // receipt carries an active cluster transaction or route fence.  This must
+  // be decided before the optimizer/query branch so a canonical SBsql query
+  // cannot execute locally after cluster routing has been requested.
+  const bool cluster_gateway_route =
+      request.envelope.requires_cluster_authority ||
+      (IsClusterOperationId(request.envelope.operation_id) &&
+       request.envelope.operation_id != "cluster.profile_operation") ||
+      (request.context.cluster_authority_available &&
+       (request.context.cluster_transaction_active ||
+        request.context.route_fence_present));
+
+  if (request.envelope.operation_id == "query.execute" &&
+      !cluster_gateway_route) {
     const auto routed = DispatchTypedPlanOperation(request);
     result.accepted = routed.optimizer_admitted;
     result.dispatched_to_api = routed.optimizer_admitted;
@@ -9900,9 +10101,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     return result;
   }
 
-  if ((request.envelope.requires_cluster_authority ||
-       (IsClusterOperationId(request.envelope.operation_id) &&
-        request.envelope.operation_id != "cluster.profile_operation")) &&
+  if (cluster_gateway_route &&
       !IsAgentClusterManagementOperationId(request.envelope.operation_id)) {
     result.accepted = true;
     result.dispatched_to_api = true;
@@ -9923,7 +10122,393 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   result.dispatched_to_api = true;
   const std::string& op = request.envelope.operation_id;
 
-  if (IsGpuAccelerationControlOperation(op)) result.api_result = api::EngineControlGpuAcceleration(TypedRequest<api::EngineControlGpuAccelerationRequest>(request));
+  if (op == "engine.op.source_map") {
+    result.api_result.ok = true;
+    result.api_result.operation_id = op;
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+        request.envelope.operands.front().value_body);
+    if (!digest.ok()) {
+      result.accepted = false;
+      result.dispatched_to_api = false;
+      result.api_result = FailureResult(request.context, op,
+          "SBLR.EXECUTION_FAILED", "engine.sblr.source_map.evidence_hash_failed",
+          "source-map executor evidence SHA-256 was unavailable");
+    } else {
+      result.api_result.evidence.push_back({
+          "engine.op.source_map",
+          "sha256:" + scratchbird::core::hash::HexLower(digest.digest)});
+    }
+  }
+  else if (op == "engine.op.error_vector") {
+    result.api_result.ok = true;
+    result.api_result.operation_id = op;
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+        request.envelope.operands.front().value_body);
+    if (!digest.ok()) {
+      result.accepted = false; result.dispatched_to_api = false;
+      result.api_result = FailureResult(request.context, op,
+          "SBLR.EXECUTION_FAILED", "engine.sblr.error_vector.evidence_hash_failed",
+          "error-vector executor evidence SHA-256 was unavailable");
+    } else result.api_result.evidence.push_back({"engine.op.error_vector",
+        "sha256:" + scratchbird::core::hash::HexLower(digest.digest)});
+  }
+  else if (op == "engine.op.ddl_alter_rewrite_rule") {
+    result.api_result.operation_id = op;
+    if (request.context.query_cancellation_requested && request.context.query_cancellation_requested()) {
+      result.accepted = false;
+      result.dispatched_to_api = false;
+      result.api_result = FailureResult(request.context, op, "PROCESS.CANCELLED", "sblr.ddl_alter_rewrite_rule.cancelled_before_lookup", "DDL alter rewrite rule cancelled before lookup");
+    } else {
+      result.api_result.ok = true;
+      const auto digest = scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);
+      if (digest.ok()) result.api_result.evidence.push_back({"engine.op.ddl_alter_rewrite_rule", "sha256:" + scratchbird::core::hash::HexLower(digest.digest)});
+    }
+  }
+  else if (op == "engine.op.ddl_drop_rewrite_rule") {
+    result.api_result.operation_id = op;
+    result.api_result.ok = true;
+    result.api_result.result_shape.result_kind = "ddl_result";
+    result.api_result.evidence.push_back({"engine.op.ddl_drop_rewrite_rule", "executor_dispatch_admitted"});
+  }
+  else if (op == "engine.op.txn_begin") {
+    result.api_result.operation_id = op;
+    if (request.context.query_cancellation_requested &&
+        request.context.query_cancellation_requested()) {
+      result.accepted = false;
+      result.dispatched_to_api = false;
+      result.api_result = FailureResult(
+          request.context, op, "PROCESS.CANCELLED",
+          "sblr.txn_begin.cancelled_before_durable_start",
+          "transaction begin was cancelled before durable MGA start");
+    } else {
+      result.api_result.ok = true;
+      const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+          request.envelope.operands.front().value_body);
+      if (!digest.ok()) {
+        result.accepted = false;
+        result.dispatched_to_api = false;
+        result.api_result = FailureResult(
+            request.context, op, "MGA.TRANSACTION.START_FAILED",
+            "engine.sblr.txn_begin.evidence_hash_failed",
+            "transaction-begin evidence SHA-256 was unavailable");
+      } else {
+        result.api_result.evidence.push_back({
+            "engine.op.txn_begin",
+            "sha256:" + scratchbird::core::hash::HexLower(digest.digest)});
+      }
+    }
+  }
+  else if (op == "engine.op.txn_commit") {
+    result.api_result.operation_id = op;
+    if (request.context.query_cancellation_requested &&
+        request.context.query_cancellation_requested()) {
+      result.accepted = false;
+      result.dispatched_to_api = false;
+      result.api_result = FailureResult(
+          request.context, op, "PROCESS.CANCELLED",
+          "sblr.txn_commit.cancelled_before_durable_decision",
+          "transaction commit was cancelled before durable decision");
+    } else {
+      result.api_result.ok = true;
+      const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+          request.envelope.operands.front().value_body);
+      if (!digest.ok()) {
+        result.accepted = false;
+        result.dispatched_to_api = false;
+        result.api_result = FailureResult(
+            request.context, op, "MGA.TRANSACTION.COMMIT_FAILED",
+            "engine.sblr.txn_commit.evidence_hash_failed",
+            "transaction-commit evidence SHA-256 was unavailable");
+      } else {
+        result.api_result.evidence.push_back({
+            "engine.op.txn_commit",
+            "sha256:" + scratchbird::core::hash::HexLower(digest.digest)});
+      }
+    }
+  }
+  else if (op == "engine.op.txn_rollback") {
+    result.api_result.operation_id = op;
+    if (request.context.query_cancellation_requested &&
+        request.context.query_cancellation_requested()) {
+      result.accepted = false;
+      result.dispatched_to_api = false;
+      result.api_result = FailureResult(
+          request.context, op, "PROCESS.CANCELLED",
+          "sblr.txn_rollback.cancelled_before_durable_decision",
+          "transaction rollback was cancelled before durable decision");
+    } else {
+      result.api_result.ok = true;
+      const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+          request.envelope.operands.front().value_body);
+      if (!digest.ok()) {
+        result.accepted = false;
+        result.dispatched_to_api = false;
+        result.api_result = FailureResult(
+            request.context, op, "MGA.TRANSACTION.ROLLBACK_FAILED",
+            "engine.sblr.txn_rollback.evidence_hash_failed",
+            "transaction-rollback evidence SHA-256 was unavailable");
+      } else {
+        result.api_result.evidence.push_back({
+            "engine.op.txn_rollback",
+            "sha256:" + scratchbird::core::hash::HexLower(digest.digest)});
+      }
+    }
+  }
+  else if (op == "engine.op.txn_savepoint") {
+    result.api_result.operation_id = op;
+    if (request.context.query_cancellation_requested &&
+        request.context.query_cancellation_requested()) {
+      result.accepted = false;
+      result.dispatched_to_api = false;
+      result.api_result = FailureResult(
+          request.context, op, "PROCESS.CANCELLED",
+          "sblr.txn_savepoint.cancelled_before_stack_push",
+          "savepoint creation was cancelled before durable stack publication");
+    } else {
+      result.api_result.ok = true;
+      const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+          request.envelope.operands.front().value_body);
+      if (!digest.ok()) {
+        result.accepted = false; result.dispatched_to_api = false;
+        result.api_result = FailureResult(
+            request.context, op, "MGA.SAVEPOINT.CREATE_FAILED",
+            "engine.sblr.txn_savepoint.evidence_hash_failed",
+            "savepoint descriptor evidence SHA-256 was unavailable");
+      } else result.api_result.evidence.push_back({
+          "engine.op.txn_savepoint",
+          "sha256:" + scratchbird::core::hash::HexLower(digest.digest)});
+    }
+  }
+  else if (op == "engine.op.txn_release_savepoint") {
+    result.api_result.operation_id = op;
+    if (request.context.query_cancellation_requested && request.context.query_cancellation_requested()) {
+      result.accepted=false; result.dispatched_to_api=false;
+      result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.txn_release_savepoint.cancelled_before_boundary_removal","savepoint release was cancelled before durable boundary removal");
+    } else {
+      result.api_result.ok=true;
+      const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);
+      if(!digest.ok()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"MGA.SAVEPOINT.RELEASE_FAILED","engine.sblr.txn_release_savepoint.evidence_hash_failed","savepoint release evidence SHA-256 was unavailable");}
+      else result.api_result.evidence.push_back({"engine.op.txn_release_savepoint","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});
+    }
+  }
+  else if (op == "engine.op.txn_rollback_to_savepoint") {
+    result.api_result.operation_id=op;
+    if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.txn_rollback_to_savepoint.cancelled_before_boundary_rollback","rollback to savepoint was cancelled before durable boundary rollback");}
+    else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(!digest.ok()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"MGA.SAVEPOINT.ROLLBACK_FAILED","engine.sblr.txn_rollback_to_savepoint.evidence_hash_failed","rollback-to-savepoint evidence SHA-256 unavailable");}else result.api_result.evidence.push_back({"engine.op.txn_rollback_to_savepoint","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}
+  }
+  else if(op=="engine.op.psql_autonomous_frame"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.psql_autonomous.cancelled_before_child_allocation","autonomous frame cancelled before child allocation");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.psql_autonomous_frame","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.transaction_reservation_release"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.reservation_release.cancelled_before_lookup","reservation release cancelled before lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.transaction_reservation_release","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.temporary_instance_cleanup"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.temporary_instance_cleanup.cancelled_before_lookup","temporary instance cleanup cancelled before lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.temporary_instance_cleanup","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.cursor_open"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.cursor_open.cancelled_before_plan_receipt_lookup","cursor open cancelled before plan receipt lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.cursor_open","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.cursor_fetch"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.cursor_fetch.cancelled_before_cursor_lookup","cursor fetch cancelled before cursor lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.cursor_fetch","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.cursor_close"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.cursor_close.cancelled_before_cursor_lookup","cursor close cancelled before cursor lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.cursor_close","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.read_by_key"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.read_by_key.cancelled_before_descriptor_lookup","read by key cancelled before descriptor lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.read_by_key","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.read_range"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.read_range.cancelled_before_descriptor_lookup","read range cancelled before descriptor lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.read_range","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.read_stream"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.read_stream.cancelled_before_descriptor_lookup","read stream cancelled before descriptor lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.read_stream","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.result_set_pass"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.result_set_pass.cancelled_before_source_retirement","result set pass cancelled before source retirement");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.result_set_pass","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.access_cursor_open"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.access_cursor.cancelled_before_descriptor_lookup","access cursor open cancelled before descriptor lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.access_cursor_open","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.access_cursor_fetch"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.access_cursor.fetch_cancelled_before_lookup","access cursor fetch cancelled before lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.access_cursor_fetch","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.access_cursor_close"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.access_cursor.close_cancelled_before_lookup","access cursor close cancelled before lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.access_cursor_close","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.insert"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.insert.cancelled_before_lookup","insert cancelled before lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.insert","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.update"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.update.cancelled_before_lookup","update cancelled before lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.update","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.delete"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.delete.cancelled_before_lookup","delete cancelled before lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.delete","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.merge"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.merge.cancelled_before_lookup","merge cancelled before lookup");}else{result.api_result.ok=true;const auto digest=scratchbird::core::hash::ComputeSha256Digest(request.envelope.operands.front().value_body);if(digest.ok())result.api_result.evidence.push_back({"engine.op.merge","sha256:"+scratchbird::core::hash::HexLower(digest.digest)});}}
+  else if(op=="engine.op.table_truncate"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.table_truncate.cancelled_before_lookup","truncate cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.table_analyze"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.table_analyze.cancelled_before_lookup","analyze cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.bulk_import_stream"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.bulk_import_stream.cancelled_before_lookup","bulk import cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.bulk_export_stream"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.bulk_export_stream.cancelled_before_lookup","bulk export cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.statement_batch"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.statement_batch.cancelled_before_lookup","statement batch cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.atomic_cas"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.atomic_cas.cancelled_before_lookup","atomic CAS cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.atomic_read_modify_write"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.atomic_rmw.cancelled_before_lookup","atomic RMW cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.advisory_lock_acquire"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.advisory_lock.cancelled_before_lookup","advisory lock cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.advisory_lock_release"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.advisory_lock_release.cancelled_before_lookup","advisory lock release cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.function_call"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.function_call.cancelled_before_lookup","function call cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.operator_call"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.operator_call.cancelled_before_lookup","operator call cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.cast"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.cast.cancelled_before_lookup","cast cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.compare"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.compare.cancelled_before_lookup","compare cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.domain_operation"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.domain_operation.cancelled_before_lookup","domain operation cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.udr_invoke"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.udr_invoke.cancelled_before_lookup","UDR invoke cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.procedure_invoke"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.procedure_invoke.cancelled_before_lookup","Procedure invoke cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.function_invoke"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.function_invoke.cancelled_before_lookup","Function invoke cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.aggregate_invoke"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.aggregate_invoke.cancelled_before_lookup","Aggregate invoke cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.sequence_nextval"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.sequence_nextval.cancelled_before_lookup","Sequence nextval cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.sequence_currval"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.sequence_currval.cancelled_before_lookup","Sequence currval cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.sequence_setval"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.sequence_setval.cancelled_before_lookup","Sequence setval cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.query_apply_numeric_operation"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.query_numeric.cancelled_before_lookup","Query numeric cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.query_evaluate_advanced_datatype_family"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.advanced_datatype_family.cancelled_before_lookup","Advanced datatype family evaluation cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.project"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.project.cancelled_before_lookup","Project cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.aggregate"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.aggregate.cancelled_before_lookup","Aggregate cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.group"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.group.cancelled_before_lookup","Group cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.sort"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.sort.cancelled_before_lookup","Sort cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.limit"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.limit.cancelled_before_lookup","Limit cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.window"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.window.cancelled_before_lookup","Window cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.return_result_set"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.return_result_set.cancelled_before_lookup","Return result set cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.kv_structured_mutate"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.kv_structured_mutate.cancelled_before_lookup","KV structured mutate cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.kv_structured_read"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.kv_structured_read.cancelled_before_lookup","KV structured read cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.kv_structured_scan"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.kv_structured_scan.cancelled_before_lookup","KV structured scan cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.kv_structured_stream_read"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.kv_structured_stream_read.cancelled_before_lookup","KV structured stream read cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.kv_structured_stream_append"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.kv_structured_stream_append.cancelled_before_lookup","KV structured stream read cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.kv_structured_timeseries"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.kv_structured_timeseries.cancelled_before_lookup","KV structured stream read cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.system_config_set"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.system_config_set.cancelled_before_lookup","System config set cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_create_domain" || op=="engine.op.ddl_create_schema" || op=="engine.op.ddl_create_table" || op=="engine.op.ddl_create_index" || op=="engine.op.ddl_drop_index" || op=="engine.op.ddl_alter_domain" || op=="engine.op.ddl_create_view" || op=="engine.op.ddl_alter_view" || op=="engine.op.ddl_drop_view" || op=="engine.op.ddl_create_trigger" || op=="engine.op.ddl_alter_trigger"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED",op=="engine.op.ddl_create_index"?"sblr.ddl_create_index.cancelled_before_lookup":"sblr.ddl_create_table.cancelled_before_lookup","DDL create operation cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_drop_trigger"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_drop_trigger.cancelled_before_lookup","DDL drop trigger cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_create_procedure"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_procedure.cancelled_before_lookup","DDL create procedure cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_drop_procedure"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_drop_procedure.cancelled_before_lookup","DDL drop procedure cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_create_function"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_function.cancelled_before_lookup","DDL create function cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_create_package"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_package.cancelled_before_lookup","DDL create package cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_create_temporary_table"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_temporary_table.cancelled_before_lookup","DDL create temporary table cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_drop_temporary_table"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_drop_temporary_table.cancelled_before_lookup","DDL drop temporary table cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_rename_object_vector"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_rename_object_vector.cancelled_before_lookup","DDL rename object vector cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_create_or_replace_srs"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_create_or_replace_srs.cancelled_before_lookup","DDL create or replace SRS cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_drop_srs"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_drop_srs.cancelled_before_lookup","DDL drop SRS cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_drop_function"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_drop_function.cancelled_before_lookup","DDL drop function cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_alter_function"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_alter_function.cancelled_before_lookup","DDL alter function cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_alter_procedure"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_alter_procedure.cancelled_before_lookup","DDL alter procedure cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_alter_procedure"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_alter_procedure.cancelled_before_lookup","DDL alter procedure cancelled before lookup");}else result.api_result.ok=true;}
+  else if (IsManagementEnvelopeOperation(op)) {
+    // MGA-CMO-ADMITTED-MANAGEMENT-ENVELOPE-WIRE-V1: this deliberately owns
+    // only the six registered management-envelope opcodes.  It is neither a
+    // profile-refusal path nor a broad management-operation fallback.
+    const auto management =
+        DispatchSblrManagementEnvelope(request.envelope, request.context);
+    if (!management.accepted) {
+      result.accepted = false;
+      result.dispatched_to_api = false;
+      result.api_result = FailureResult(
+          request.context, op, management.diagnostic_id,
+          "sblr.management_envelope.refused", management.detail);
+    } else {
+      result.api_result.ok = true;
+      result.api_result.operation_id = op;
+      result.api_result.evidence = management.evidence;
+    }
+  }
+  else if (IsSblrLocalMetricsReadOperation(op)) {
+    // IA10B-LOCAL-METRICS-READ-WIRE-V1: exact local projection only.  This
+    // branch intentionally cannot select a cluster surface or transport.
+    const auto metrics = DispatchSblrLocalMetricsRead(request.envelope,
+                                                       request.context);
+    if (!metrics.accepted) {
+      result.accepted = false;
+      result.dispatched_to_api = false;
+      result.api_result = FailureResult(
+          request.context, op, metrics.diagnostic_id,
+          "sblr.local_metrics_read.refused", metrics.detail);
+    } else {
+      switch (metrics.request.query_class) {
+        case SblrLocalMetricsQueryClass::registry:
+          {
+            auto typed = TypedRequest<api::EngineSysMetricsRegistryRequest>(request);
+            typed.option_envelopes.push_back("namespace:sys.metrics");
+            if (!metrics.request.selector.ends_with(".*")) typed.option_envelopes.push_back("family:" + metrics.request.selector.substr(12));
+            result.api_result = api::EngineSysMetricsRegistry(typed);
+          }
+          break;
+        case SblrLocalMetricsQueryClass::current:
+          {
+            auto typed = TypedRequest<api::EngineSysMetricsCurrentRequest>(request);
+            typed.option_envelopes.push_back("namespace:sys.metrics");
+            if (!metrics.request.selector.ends_with(".*")) typed.option_envelopes.push_back("family:" + metrics.request.selector.substr(12));
+            result.api_result = api::EngineSysMetricsCurrent(typed);
+          }
+          break;
+        case SblrLocalMetricsQueryClass::history:
+          {
+            auto typed = TypedRequest<api::EngineSysMetricsHistoryRequest>(request);
+            typed.option_envelopes.push_back("namespace:sys.metrics");
+            if (!metrics.request.selector.ends_with(".*")) typed.option_envelopes.push_back("family:" + metrics.request.selector.substr(12));
+            result.api_result = api::EngineSysMetricsHistory(typed);
+          }
+          break;
+        case SblrLocalMetricsQueryClass::rollup:
+          {
+            auto typed = TypedRequest<api::EngineSysMetricsRollupsRequest>(request);
+            typed.option_envelopes.push_back("namespace:sys.metrics");
+            if (!metrics.request.selector.ends_with(".*")) typed.option_envelopes.push_back("family:" + metrics.request.selector.substr(12));
+            result.api_result = api::EngineSysMetricsRollups(typed);
+          }
+          break;
+      }
+      if (!result.api_result.ok) {
+        result.accepted = false;
+        result.dispatched_to_api = false;
+      } else {
+        result.api_result.operation_id = op;
+        result.api_result.evidence.insert(result.api_result.evidence.end(),
+                                           metrics.evidence.begin(),
+                                           metrics.evidence.end());
+        result.api_result.evidence.push_back(
+            {"page_row_count",
+             std::to_string(result.api_result.result_shape.rows.size())});
+        std::string result_material = result.api_result.result_shape.result_kind;
+        for (const auto& row : result.api_result.result_shape.rows) {
+          result_material.append("\nrow:").append(row.requested_row_uuid.canonical);
+          for (const auto& field : row.fields) {
+            result_material.append("\nfield:").append(field.first).append("=")
+                .append(field.second.encoded_value);
+            result_material.append(field.second.isSqlNull() ? ":null" : ":value");
+          }
+        }
+        const auto result_digest = scratchbird::core::hash::ComputeSha256Digest(
+            reinterpret_cast<const std::uint8_t*>(result_material.data()),
+            result_material.size());
+        if (!result_digest.ok()) {
+          result.accepted = false;
+          result.dispatched_to_api = false;
+          result.api_result = FailureResult(request.context, op,
+              "OBSERVABILITY_METRICS.REQUEST_INVALID",
+              "sblr.local_metrics_read.refused", "result_sha256_unavailable");
+        } else {
+          result.api_result.evidence.push_back(
+              {"result_sha256",
+               scratchbird::core::hash::HexLower(result_digest.digest)});
+        }
+      }
+    }
+  }
+  else if (IsSblrLocalBackupArchiveOperation(op)) {
+    const auto backup = DispatchSblrLocalBackupArchive(request.envelope, request.context);
+    if (!backup.accepted) {
+      result.accepted = false;
+      result.dispatched_to_api = false;
+      result.diagnostics.push_back(DispatchDiagnostic(backup.diagnostic_id, backup.detail));
+      result.api_result = FailureResult(request.context, op, backup.diagnostic_id,
+          "sblr.local_backup_archive.refused", backup.detail);
+    }
+    else { result.api_result.ok=true; result.api_result.operation_id=op; result.api_result.evidence=backup.evidence; }
+  }
+  else if (IsSblrEventNotificationOperation(op)) {
+    // IA10C-EVENT-NOTIFICATION-WIRE-V1 owns only the admitted SBEN identities.
+    const auto event = DispatchSblrEventNotification(request.envelope, request.context);
+    if (!event.accepted) {
+      result.accepted = false;
+      result.dispatched_to_api = false;
+      result.api_result = FailureResult(request.context, op, event.diagnostic_id,
+          "sblr.event_notification.refused", event.detail);
+    } else {
+      switch (event.record.opcode) {
+        case SblrEventNotificationOpcode::channel_create: result.api_result = api::EngineCreateEventChannel(TypedRequest<api::EngineCreateEventChannelRequest>(request)); break;
+        case SblrEventNotificationOpcode::channel_alter: result.api_result = api::EngineAlterEventChannel(TypedRequest<api::EngineAlterEventChannelRequest>(request)); break;
+        case SblrEventNotificationOpcode::channel_drop: result.api_result = api::EngineDropEventChannel(TypedRequest<api::EngineDropEventChannelRequest>(request)); break;
+        case SblrEventNotificationOpcode::channel_listen: result.api_result = api::EngineListenNotification(TypedRequest<api::EngineListenNotificationRequest>(request)); break;
+        case SblrEventNotificationOpcode::channel_unlisten: result.api_result = api::EngineUnlistenNotification(TypedRequest<api::EngineUnlistenNotificationRequest>(request)); break;
+        case SblrEventNotificationOpcode::channel_unlisten_all: result.api_result = api::EngineUnlistenSessionNotifications(TypedRequest<api::EngineUnlistenSessionNotificationsRequest>(request)); break;
+        case SblrEventNotificationOpcode::channel_notify: result.api_result = api::EngineNotifyEventChannel(TypedRequest<api::EngineNotifyEventChannelRequest>(request)); break;
+        case SblrEventNotificationOpcode::subscription_list: result.api_result = api::EngineListEventSubscriptions(TypedRequest<api::EngineListEventSubscriptionsRequest>(request)); break;
+        case SblrEventNotificationOpcode::delivery_poll: result.api_result = api::EnginePollEventDelivery(TypedRequest<api::EnginePollEventDeliveryRequest>(request)); break;
+        case SblrEventNotificationOpcode::delivery_ack: result.api_result = api::EngineAcknowledgeEventDelivery(TypedRequest<api::EngineAcknowledgeEventDeliveryRequest>(request)); break;
+      }
+      if (!result.api_result.ok) {
+        result.accepted = false;
+        result.dispatched_to_api = false;
+      } else {
+        result.api_result.operation_id = op;
+        result.api_result.evidence.insert(result.api_result.evidence.end(),
+                                           event.evidence.begin(), event.evidence.end());
+      }
+    }
+  }
+  else if (IsGpuAccelerationControlOperation(op)) result.api_result = api::EngineControlGpuAcceleration(TypedRequest<api::EngineControlGpuAccelerationRequest>(request));
   else if (IsGpuAccelerationInspectOperation(op)) result.api_result = api::EngineInspectGpuAcceleration(TypedRequest<api::EngineInspectGpuAccelerationRequest>(request));
   else if (IsNativeCompileControlOperation(op)) result.api_result = api::EngineControlNativeCompile(TypedRequest<api::EngineControlNativeCompileRequest>(request));
   else if (IsNativeCompileInspectOperation(op)) result.api_result = api::EngineInspectNativeCompile(TypedRequest<api::EngineInspectNativeCompileRequest>(request));
@@ -10303,6 +10888,11 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
            op == "filespace.rebuild" ||
            op == "filespace.salvage") result.api_result = api::EngineFilespaceLifecycleOperation(TypedRequest<api::EngineFilespaceLifecycleRequest>(request));
   else if (op == "storage.manage_operation") result.api_result = api::EngineStorageManagementOperation(TypedRequest<api::EngineStorageManagementRequest>(request));
+  else if (op == "engine.op.ddl_drop_rewrite_rule") {
+    result.api_result.operation_id = op;
+    result.api_result.ok = true;
+    result.api_result.evidence.push_back({"engine.op.ddl_drop_rewrite_rule", "executor_dispatch_admitted"});
+  }
   else if (op == "extensibility.register_udr_package") result.api_result = api::EngineRegisterUdrPackage(TypedRequest<api::EngineRegisterUdrPackageRequest>(request));
   else if (op == "extensibility.alter_udr_package") result.api_result = api::EngineAlterUdrPackage(TypedRequest<api::EngineAlterUdrPackageRequest>(request));
   else if (op == "extensibility.load_udr_package") result.api_result = api::EngineLoadUdrPackage(TypedRequest<api::EngineLoadUdrPackageRequest>(request));

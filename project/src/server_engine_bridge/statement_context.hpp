@@ -178,8 +178,106 @@ struct StatementContextReceiptView {
   std::string parameter_dynamic_package_uuid;
   std::uint64_t parameter_dynamic_generation = 0;
   std::uint64_t parameter_executor_availability_generation = 0;
+  struct DiagnosticIdentityProjectionV1 {
+    std::string diagnostic_uuid;
+    std::uint64_t diagnostic_generation = 0;
+    std::uint32_t precedence_ordinal = 0;
+    std::uint8_t severity_code = 0;
+    std::uint8_t redaction_class = 0;
+    std::uint32_t maximum_safe_field_count = 0;
+    std::string row_identity_sha256;
+  };
+  std::string diagnostic_registry_snapshot_uuid;
+  std::uint64_t diagnostic_registry_generation = 0;
+  std::vector<DiagnosticIdentityProjectionV1> diagnostic_identity_rows;
+  std::string txn_begin_isolation_profile_uuid;
+  std::uint64_t txn_begin_isolation_profile_generation = 0;
+  std::string txn_begin_policy_snapshot_uuid;
+  std::uint64_t txn_begin_policy_generation = 0;
+  std::uint64_t txn_begin_executor_availability_generation = 0;
+  std::uint8_t txn_begin_read_mode = 0;
+  std::uint8_t txn_begin_authority_scope = 0;
+  std::uint8_t txn_begin_wait_policy = 0;
+  std::uint64_t txn_begin_deadline_monotonic_ns = 0;
+  std::uint64_t txn_commit_executor_availability_generation = 0;
+  std::uint8_t txn_commit_mode = 1;
+  std::uint8_t txn_commit_authority_scope = 1;
+  std::uint8_t txn_commit_wait_policy = 1;
+  std::uint64_t txn_commit_deadline_monotonic_ns = 0;
+  std::uint64_t txn_rollback_executor_availability_generation = 0;
+  std::uint8_t txn_rollback_mode = 1, txn_rollback_authority_scope = 1,
+      txn_rollback_wait_policy = 1;
+  std::uint64_t txn_rollback_deadline_monotonic_ns = 0;
+  std::uint64_t txn_release_savepoint_executor_availability_generation = 0;
+  std::uint64_t txn_rollback_to_savepoint_executor_availability_generation = 0;
+  std::uint64_t psql_autonomous_frame_executor_availability_generation = 0;
+  std::uint64_t transaction_reservation_release_executor_availability_generation = 0;
+  std::uint64_t temporary_instance_cleanup_executor_availability_generation = 0;
+  std::uint64_t cursor_open_executor_availability_generation = 0;
+  std::uint64_t cursor_fetch_executor_availability_generation = 0;
+  std::uint64_t cursor_close_executor_availability_generation = 0;
+  std::uint64_t read_by_key_executor_availability_generation = 0;
+  std::uint64_t read_range_executor_availability_generation = 0;
+  std::uint64_t read_stream_executor_availability_generation = 0;
+  std::uint64_t result_set_pass_executor_availability_generation = 0;
+  std::uint64_t access_cursor_open_executor_availability_generation = 0;
+  std::uint64_t access_cursor_fetch_executor_availability_generation = 0;
+  std::uint64_t access_cursor_close_executor_availability_generation = 0;
+  std::uint64_t insert_executor_availability_generation = 0;
+  std::uint64_t update_executor_availability_generation = 0;
+  std::uint64_t delete_executor_availability_generation = 0;
+  std::uint64_t merge_executor_availability_generation = 0;
+  std::uint64_t table_truncate_executor_availability_generation = 0;
+  std::uint64_t table_analyze_executor_availability_generation = 0;
+  std::uint64_t bulk_import_stream_executor_availability_generation = 0;
+  std::uint64_t bulk_export_stream_executor_availability_generation = 0;
+  std::uint64_t statement_batch_executor_availability_generation = 0;
+  std::uint64_t atomic_cas_executor_availability_generation = 0;
+  std::uint64_t atomic_rmw_executor_availability_generation = 0;
+  std::uint64_t advisory_lock_acquire_executor_availability_generation = 0;
+  std::uint64_t advisory_lock_release_executor_availability_generation = 0;
+  std::uint64_t function_call_executor_availability_generation = 0;
+  std::uint64_t operator_call_executor_availability_generation = 0;
+  std::uint64_t cast_executor_availability_generation = 0;
+  std::uint64_t compare_executor_availability_generation = 0;
+  std::uint64_t domain_operation_executor_availability_generation = 0;
+  std::uint64_t udr_invoke_executor_availability_generation = 0;
+  std::uint64_t procedure_invoke_executor_availability_generation = 0;
+  std::uint64_t function_invoke_executor_availability_generation = 0;
+  std::uint64_t aggregate_invoke_executor_availability_generation = 0;
+  std::uint64_t sequence_nextval_executor_availability_generation = 0;
+  std::uint64_t sequence_currval_executor_availability_generation = 0;
+  std::uint64_t sequence_setval_executor_availability_generation = 0;
+  std::uint64_t query_numeric_executor_availability_generation = 0;
+  std::uint64_t advanced_datatype_family_executor_availability_generation = 0;
+  std::uint64_t project_executor_availability_generation = 0;
+  std::uint64_t aggregate_executor_availability_generation = 0;
+  std::uint64_t group_executor_availability_generation = 0;
+  std::uint64_t sort_executor_availability_generation = 0;
+  std::uint64_t limit_executor_availability_generation = 0;
+  std::uint64_t window_executor_availability_generation = 0;
+  std::uint64_t return_result_set_executor_availability_generation = 0;
+  std::uint64_t kv_structured_read_executor_availability_generation = 0;
+  std::uint64_t kv_structured_mutate_executor_availability_generation = 0;
+  std::uint64_t kv_structured_scan_executor_availability_generation = 0;
+  std::uint64_t kv_structured_stream_read_executor_availability_generation = 0;
+  std::uint64_t kv_structured_stream_append_executor_availability_generation = 0;
+  std::uint64_t kv_structured_timeseries_executor_availability_generation = 0;
+  std::uint64_t system_config_set_executor_availability_generation = 0;
+  std::uint64_t ddl_create_domain_executor_availability_generation = 0;
+  std::uint64_t ddl_create_schema_executor_availability_generation = 0;
+  std::uint64_t ddl_create_table_executor_availability_generation = 0;
+  std::uint64_t ddl_create_index_executor_availability_generation = 0;
+  std::uint64_t ddl_drop_index_executor_availability_generation = 0;
   std::array<std::uint8_t, 32>
       parameter_preliminary_execution_mode_binding_sha256{};
+  std::string variable_scope_uuid;
+  std::uint64_t variable_scope_generation = 0;
+  std::string variable_frame_uuid;
+  std::uint64_t variable_frame_generation = 0;
+  std::string variable_registry_snapshot_uuid;
+  std::uint64_t variable_registry_generation = 0;
+  std::uint64_t variable_executor_availability_generation = 0;
 
   std::uint64_t owning_local_transaction_id = 0;
   std::uint64_t visible_committed_high_watermark = 0;
@@ -217,6 +315,12 @@ struct StatementContextAcquireRequest {
       engine_context = nullptr;
   std::string_view exact_transaction_uuid;
   StatementParameterExecutionSelectorV1 parameter_execution_selector;
+  struct VariableFrameSelectorV1 {
+    std::uint16_t version = 0;
+    std::string public_coordination_uuid;
+    std::string operation_uuid;
+    std::uint64_t expected_coordinator_generation = 0;
+  } variable_frame_selector;
 };
 
 enum class StatementGatewayEvidenceSource : std::uint8_t {
@@ -354,6 +458,7 @@ struct StatementContextDispatchRequest {
   std::vector<std::uint8_t> literal_execution_binding;
   std::vector<std::uint8_t> parameter_execution_binding;
   std::vector<std::uint8_t> parameter_value_set;
+  std::vector<std::uint8_t> variable_execution_binding;
 };
 
 sb_engine_status_t AcquireStatementPackageAdmissionReservation(
@@ -400,6 +505,26 @@ sb_engine_status_t FinalizeStatementParameterBindingV1(
     StatementContextReceiptHandle receipt,
     const std::vector<std::uint8_t>& canonical_sbpf,
     std::vector<std::uint8_t>* out_canonical_sbpa,
+    sb_engine_result_t* out_result);
+sb_engine_status_t FinalizeStatementVariableBindingV1(
+    StatementContextReceiptHandle receipt,
+    const std::vector<std::uint8_t>& canonical_sbvf,
+    std::vector<std::uint8_t>* out_canonical_sbva,
+    sb_engine_result_t* out_result);
+sb_engine_status_t AssignStatementVariableValuesV1(
+    StatementContextReceiptHandle receipt,
+    const std::vector<std::uint8_t>& canonical_sbvy,
+    std::vector<std::uint8_t>* out_canonical_sbvw,
+    sb_engine_result_t* out_result);
+sb_engine_status_t IssueStatementSourceMapDescriptorV1(
+    StatementContextReceiptHandle receipt,
+    const std::vector<std::uint8_t>& canonical_smrq,
+    std::vector<std::uint8_t>* out_canonical_smrs,
+    sb_engine_result_t* out_result);
+sb_engine_status_t IssueStatementErrorVectorDescriptorV1(
+    StatementContextReceiptHandle receipt,
+    const std::vector<std::uint8_t>& canonical_evrq,
+    std::vector<std::uint8_t>* out_canonical_evrs,
     sb_engine_result_t* out_result);
 
 // Revalidates a server admission token against current MGA receipt authority,

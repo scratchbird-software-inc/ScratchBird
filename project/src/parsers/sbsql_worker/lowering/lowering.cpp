@@ -4309,13 +4309,13 @@ bool IsDmlRowOperation(std::string_view operation_id) {
 }
 
 bool IsTransactionControlOperation(std::string_view operation_id) {
-  return operation_id == "transaction.begin" ||
+  return operation_id == "engine.op.txn_begin" ||
          operation_id == "transaction.set_characteristics" ||
-         operation_id == "transaction.commit" ||
-         operation_id == "transaction.rollback" ||
-         operation_id == "transaction.create_savepoint" ||
-         operation_id == "transaction.release_savepoint" ||
-         operation_id == "transaction.rollback_to_savepoint" ||
+         operation_id == "engine.op.txn_commit" ||
+         operation_id == "engine.op.txn_rollback" ||
+         operation_id == "engine.op.txn_savepoint" ||
+         operation_id == "engine.op.txn_release_savepoint" ||
+         operation_id == "engine.op.txn_rollback_to_savepoint" ||
          operation_id == "transaction.execute_block" ||
          operation_id == "transaction.lock_table" ||
          operation_id == "transaction.unlock_table" ||
@@ -4324,13 +4324,13 @@ bool IsTransactionControlOperation(std::string_view operation_id) {
 }
 
 std::string TransactionOpcodeForOperation(std::string_view operation_id) {
-  if (operation_id == "transaction.begin") return "SBLR_TRANSACTION_BEGIN";
+  if (operation_id == "engine.op.txn_begin") return "SBLR_TXN_BEGIN";
   if (operation_id == "transaction.set_characteristics") return "SBLR_TRANSACTION_SET_CHARACTERISTICS";
-  if (operation_id == "transaction.commit") return "SBLR_TRANSACTION_COMMIT";
-  if (operation_id == "transaction.rollback") return "SBLR_TRANSACTION_ROLLBACK";
-  if (operation_id == "transaction.create_savepoint") return "SBLR_TRANSACTION_CREATE_SAVEPOINT";
-  if (operation_id == "transaction.release_savepoint") return "SBLR_TRANSACTION_RELEASE_SAVEPOINT";
-  if (operation_id == "transaction.rollback_to_savepoint") return "SBLR_TRANSACTION_ROLLBACK_TO_SAVEPOINT";
+  if (operation_id == "engine.op.txn_commit") return "SBLR_TXN_COMMIT";
+  if (operation_id == "engine.op.txn_rollback") return "SBLR_TXN_ROLLBACK";
+  if (operation_id == "engine.op.txn_savepoint") return "SBLR_TXN_SAVEPOINT";
+  if (operation_id == "engine.op.txn_release_savepoint") return "SBLR_TXN_RELEASE_SAVEPOINT";
+  if (operation_id == "engine.op.txn_rollback_to_savepoint") return "SBLR_TXN_ROLLBACK_TO_SAVEPOINT";
   if (operation_id == "transaction.execute_block") return "SBLR_TRANSACTION_EXECUTE_BLOCK";
   if (operation_id == "transaction.lock_table") return "SBLR_TXN_LOCK_TABLE";
   if (operation_id == "transaction.unlock_table") return "SBLR_TXN_UNLOCK_TABLE";
@@ -5872,8 +5872,8 @@ Sbsfc077NonGeneralResidualRouteInfo AnalyzeSbsfc077NonGeneralResidualRoute(
     return MakeSbsfc077Route("SBSQL-35979EDB4632",
                              "commit_options",
                              "sblr.transaction.control.v3",
-                             "transaction.commit",
-                             TransactionOpcodeForOperation("transaction.commit"),
+                             "engine.op.txn_commit",
+                             "SBLR_TXN_COMMIT",
                              "EngineCommitTransaction",
                              "commit_options",
                              "authority.engine.mga_transaction_control_required",
@@ -36263,6 +36263,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         expression.expression_kind == NativeExpressionAstKind::kLiteral;
     const bool parameter =
         expression.expression_kind == NativeExpressionAstKind::kParameter;
+    const bool variable =
+        expression.expression_kind == NativeExpressionAstKind::kVariable;
     const bool identifier =
         expression.expression_kind == NativeExpressionAstKind::kIdentifier;
     const bool function_call =
@@ -36281,7 +36283,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         (operator_expression || functionless_model_operation) !=
             expression.canonical_operator_name.has_value() ||
         literal != expression.literal_or_parameter_ref.has_value() ||
-        (parameter && expression.literal_or_parameter_ref.has_value())) {
+        ((parameter || variable) &&
+         expression.literal_or_parameter_ref.has_value())) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed scalar expression fields are incomplete or contradictory");
@@ -36580,8 +36583,17 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                        predicate->second->result_descriptor_id;
               });
     std::uint64_t parsed = 0;
+    const bool literal_leaf =
+        literal != nullptr &&
+        literal->expression_kind == NativeExpressionAstKind::kLiteral;
+    const bool parameter_leaf =
+        literal != nullptr &&
+        literal->expression_kind == NativeExpressionAstKind::kParameter;
+    const bool variable_leaf =
+        literal != nullptr &&
+        literal->expression_kind == NativeExpressionAstKind::kVariable;
     const std::string_view encoded =
-        literal != nullptr && literal->literal_or_parameter_ref.has_value()
+        literal_leaf && literal->literal_or_parameter_ref.has_value()
             ? *literal->literal_or_parameter_ref
             : std::string_view{};
     const char* end = encoded.data();
@@ -36596,16 +36608,26 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         identifier->expression_kind != NativeExpressionAstKind::kIdentifier ||
         !identifier->child_expression_ids.empty() ||
         !identifier->bound_name_uuid.has_value() ||
-        literal->expression_kind != NativeExpressionAstKind::kLiteral ||
-        literal->literal_kind != NativeLiteralAstKind::kNumeric ||
+        (!literal_leaf && !parameter_leaf && !variable_leaf) ||
+        (literal_leaf &&
+         literal->literal_kind != NativeLiteralAstKind::kNumeric) ||
+        (parameter_leaf && literal->literal_kind.has_value()) ||
+        (variable_leaf && literal->literal_kind.has_value()) ||
         !literal->child_expression_ids.empty() ||
-        encoded.empty() || (encoded.size() > 1 && encoded.front() == '0') ||
-        error != std::errc{} || end != encoded.data() + encoded.size() ||
+        (literal_leaf &&
+         (encoded.empty() || (encoded.size() > 1 && encoded.front() == '0') ||
+          error != std::errc{} || end != encoded.data() + encoded.size())) ||
+        (parameter_leaf &&
+         (literal->literal_or_parameter_ref.has_value() ||
+          literal->structural_parameter_occurrence_id == 0)) ||
+        (variable_leaf &&
+         (literal->literal_or_parameter_ref.has_value() ||
+          literal->structural_variable_occurrence_id == 0)) ||
         identifier_descriptor == native.descriptors.end() ||
         literal_descriptor == native.descriptors.end() ||
         predicate_descriptor == native.descriptors.end() ||
         identifier_descriptor->type_uuid != literal_descriptor->type_uuid ||
-        literal->structural_literal_occurrence_id == 0 ||
+        (literal_leaf && literal->structural_literal_occurrence_id == 0) ||
         predicate_descriptor->nullability != BoundNullability::kNullable ||
         identifier_descriptor->collation_uuid.has_value() ||
         literal_descriptor->collation_uuid.has_value() ||
@@ -39905,19 +39927,19 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
   if (AnalyzeSimpleCreateDomain(cst).active) return "ddl.create_domain";
   if (AnalyzeSimpleCreateSchema(cst).active) return "ddl.create_schema";
   if (bound.statement_surface_name == "begin_transaction" ||
-      bound.statement_surface_name == "begin_stmt") return "transaction.begin";
+      bound.statement_surface_name == "begin_stmt") return "engine.op.txn_begin";
   if (bound.statement_surface_name == "set_transaction_stmt" ||
       AnalyzeTransactionCharacteristicsRoute(cst).active) {
     return "transaction.set_characteristics";
   }
   if (bound.statement_surface_name == "commit" ||
-      bound.statement_surface_name == "commit_stmt") return "transaction.commit";
+      bound.statement_surface_name == "commit_stmt") return "engine.op.txn_commit";
   if (bound.statement_surface_name == "rollback" ||
-      bound.statement_surface_name == "rollback_stmt") return "transaction.rollback";
+      bound.statement_surface_name == "rollback_stmt") return "engine.op.txn_rollback";
   if (bound.statement_surface_name == "savepoint" ||
-      bound.statement_surface_name == "savepoint_stmt") return "transaction.create_savepoint";
-  if (bound.statement_surface_name == "release_savepoint_stmt") return "transaction.release_savepoint";
-  if (bound.statement_surface_name == "rollback_to_savepoint_stmt") return "transaction.rollback_to_savepoint";
+      bound.statement_surface_name == "savepoint_stmt") return "engine.op.txn_savepoint";
+  if (bound.statement_surface_name == "release_savepoint_stmt") return "engine.op.txn_release_savepoint";
+  if (bound.statement_surface_name == "rollback_to_savepoint_stmt") return "engine.op.txn_rollback_to_savepoint";
   return {};
 }
 

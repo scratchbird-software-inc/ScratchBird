@@ -1,0 +1,7 @@
+#pragma once
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+namespace scratchbird::engine::sblr{using AdvancedDatatypeFamilyUuid=std::array<std::uint8_t,16>;using AdvancedDatatypeFamilySha=std::array<std::uint8_t,32>;struct SblrAdvancedDatatypeFamilyRequestV1{AdvancedDatatypeFamilyUuid receipt{};std::uint64_t occurrence=0;std::uint32_t family_occurrence=0;};struct SblrAdvancedDatatypeFamilyDescriptorV1{std::array<std::uint8_t,416>body{};AdvancedDatatypeFamilySha evidence{};std::uint64_t availability=0;};struct SblrAdvancedDatatypeFamilyResultV1{std::array<std::uint8_t,240>body{};AdvancedDatatypeFamilySha evidence{};std::uint64_t availability=0;AdvancedDatatypeFamilyUuid publication_barrier{};};std::vector<std::uint8_t>EncodeSblrAdvancedDatatypeFamilyRequestV1(const SblrAdvancedDatatypeFamilyRequestV1&);bool DecodeSblrAdvancedDatatypeFamilyRequestV1(const std::uint8_t*,std::size_t,SblrAdvancedDatatypeFamilyRequestV1*,std::string*);std::vector<std::uint8_t>EncodeSblrAdvancedDatatypeFamilyDescriptorV1(const SblrAdvancedDatatypeFamilyDescriptorV1&,bool);bool DecodeSblrAdvancedDatatypeFamilyDescriptorV1(const std::uint8_t*,std::size_t,SblrAdvancedDatatypeFamilyDescriptorV1*,std::string*,bool);std::vector<std::uint8_t>EncodeSblrAdvancedDatatypeFamilyResultV1(const SblrAdvancedDatatypeFamilyResultV1&);bool DecodeSblrAdvancedDatatypeFamilyResultV1(const std::uint8_t*,std::size_t,SblrAdvancedDatatypeFamilyResultV1*,std::string*);}

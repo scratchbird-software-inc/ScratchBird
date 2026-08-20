@@ -73,6 +73,7 @@ function(sbsql_configure_parser_worker_core target_name)
     sb_core_datatypes
     sb_core_uuid
     sb_sblr_parameter_wire_codec
+    sb_sblr_operation_wire_codec
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads

@@ -272,6 +272,55 @@ SblrPreparedCoordinationResult BeginSblrPreparedCoordination(
   r.evidence.push_back({"sblr.prepared_coordination.begin",s.decision_evidence_sha256}); return r;
 }
 
+SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
+    const EngineRequestContext& c, const std::string& operation,
+    const std::string& prepared) {
+  std::lock_guard lock(g_mutex); SblrPreparedCoordinationResult r;
+  if(!HasAuthority(c)) return Denied();
+  if(c.database_path.empty() ||
+     !ValidUuid(c.database_uuid.canonical,scratchbird::core::platform::UuidKind::database) ||
+     !ValidUuid(c.session_uuid.canonical,scratchbird::core::platform::UuidKind::session) ||
+     !ValidUuid(operation,scratchbird::core::platform::UuidKind::object) ||
+     !ValidUuid(prepared,scratchbird::core::platform::UuidKind::object)) {
+    r.diagnostic=Diag("SBLR.OPERAND_INVALID","sblr.prepared_coordination.execution_begin_invalid","exact prepared execution identity required"); return r;
+  }
+  std::unordered_map<std::string,SblrPreparedCoordinationSnapshot> states;
+  std::uint64_t durable_high=0;
+  if(!Replay(c,&states,&durable_high)) {
+    r.diagnostic=Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.execution_replay_stale","prepared registry replay failed"); return r;
+  }
+  g_high_water[c.database_uuid.canonical]=std::max(g_high_water[c.database_uuid.canonical],durable_high);
+  const SblrPreparedCoordinationSnapshot* sealed=nullptr;
+  for(const auto& [id,state]:states) {
+    if(state.provisional_prepared_uuid==prepared &&
+       state.state==SblrPreparedCoordinationState::sealed &&
+       state.database_uuid==c.database_uuid.canonical &&
+       state.session_uuid==c.session_uuid.canonical) {
+      if(sealed!=nullptr) return Denied();
+      sealed=&state;
+    }
+  }
+  if(sealed==nullptr) return Denied();
+  SblrPreparedCoordinationSnapshot s;
+  s.coordinator_generation=NextGeneration(c.database_uuid.canonical);
+  s.coordination_uuid=NewUuid(s.coordinator_generation*2);
+  s.operation_uuid=operation; s.database_uuid=c.database_uuid.canonical;
+  s.session_uuid=c.session_uuid.canonical;
+  s.provisional_prepared_uuid=sealed->provisional_prepared_uuid;
+  s.provisional_prepared_generation=sealed->provisional_prepared_generation;
+  s.private_handle=g_handle.fetch_add(1,std::memory_order_relaxed);
+  if(s.private_handle==0) s.private_handle=g_handle.fetch_add(1,std::memory_order_relaxed);
+  s.state=SblrPreparedCoordinationState::begun;
+  s.seal_evidence_sha256=sealed->seal_evidence_sha256;
+  s.decision_evidence_sha256=Hash(Material(s,0,"prepared.execution.begin"));
+  if(s.coordinator_generation==0||s.coordination_uuid.empty()||s.private_handle==0||
+     !Publish(c,s,0,"prepared.execution.begin")) {
+    r.diagnostic=Diag("SBLR.EXECUTION_FAILED","sblr.prepared_coordination.execution_begin_publish_failed","durable execution begin failed"); return r;
+  }
+  g_live[s.coordination_uuid]=s; r.ok=true; r.snapshot=s; r.diagnostic=Ok();
+  r.evidence.push_back({"sblr.prepared_coordination.execution_begin",s.decision_evidence_sha256}); return r;
+}
+
 SblrPreparedCoordinationResult AcquireSblrPreparedCoordination(
     const EngineRequestContext& c,const std::string& coordination,const std::string& operation,std::uint64_t expected) {
   std::lock_guard lock(g_mutex); return Mutate(c,coordination,operation,expected,SblrPreparedCoordinationState::begun,SblrPreparedCoordinationState::acquired,{},"prepared.acquire");

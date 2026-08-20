@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_executor_availability_registry.hpp"
+#include <cassert>
+int main(){namespace a=scratchbird::engine::internal_api;a::EngineRequestContext c;c.database_path="/tmp/sb_sequence_nextval_2515";c.database_uuid.canonical="019d0000-0000-7000-8000-000000002515";c.security_context_present=true;c.trace_tags={"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};a::SblrExecutorAvailabilityRowIdentity r{a::kSblrSequenceNextvalExecutorId,1033,"1.0",a::kSblrSequenceNextvalOperandDescriptorId,a::kSblrSequenceNextvalResultDescriptorId,1};auto s=a::LoadSblrExecutorAvailabilitySnapshot(c,r);assert(s.ok&&s.snapshot.installed);}

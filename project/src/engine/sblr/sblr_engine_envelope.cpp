@@ -9,6 +9,95 @@
 #include "sblr_engine_envelope.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "sblr_parameter_runtime.hpp"
+#include "sblr_variable_runtime.hpp"
+#include "sblr_transaction_begin_runtime.hpp"
+#include "sblr_transaction_commit_runtime.hpp"
+#include "sblr_transaction_rollback_runtime.hpp"
+#include "sblr_savepoint_runtime.hpp"
+#include "sblr_autonomous_frame_runtime.hpp"
+#include "sblr_reservation_release_runtime.hpp"
+#include "sblr_temporary_instance_cleanup_runtime.hpp"
+#include "sblr_cursor_open_runtime.hpp"
+#include "sblr_cursor_fetch_runtime.hpp"
+#include "sblr_cursor_close_runtime.hpp"
+#include "sblr_read_by_key_runtime.hpp"
+#include "sblr_read_range_runtime.hpp"
+#include "sblr_read_stream_runtime.hpp"
+#include "sblr_result_set_pass_runtime.hpp"
+#include "sblr_access_cursor_open_runtime.hpp"
+#include "sblr_access_cursor_fetch_runtime.hpp"
+#include "sblr_access_cursor_close_runtime.hpp"
+#include "sblr_insert_runtime.hpp"
+#include "sblr_update_runtime.hpp"
+#include "sblr_delete_runtime.hpp"
+#include "sblr_merge_runtime.hpp"
+#include "sblr_table_truncate_runtime.hpp"
+#include "sblr_table_analyze_runtime.hpp"
+#include "sblr_ddl_drop_procedure_runtime.hpp"
+#include "sblr_ddl_create_temporary_table_runtime.hpp"
+#include "sblr_ddl_drop_temporary_table_runtime.hpp"
+#include "sblr_ddl_rename_object_vector_runtime.hpp"
+#include "sblr_ddl_create_or_replace_srs_runtime.hpp"
+#include "sblr_ddl_drop_srs_runtime.hpp"
+#include "sblr_ddl_create_rewrite_rule_runtime.hpp"
+#include "sblr_ddl_alter_rewrite_rule_runtime.hpp"
+#include "sblr_ddl_drop_rewrite_rule_runtime.hpp"
+#include "sblr_ddl_create_function_runtime.hpp"
+#include "sblr_ddl_alter_function_runtime.hpp"
+#include "sblr_ddl_drop_function_runtime.hpp"
+#include "sblr_ddl_create_package_runtime.hpp"
+#include "sblr_bulk_import_stream_runtime.hpp"
+#include "sblr_bulk_export_stream_runtime.hpp"
+#include "sblr_statement_batch_runtime.hpp"
+#include "sblr_atomic_cas_runtime.hpp"
+#include "sblr_atomic_read_modify_write_runtime.hpp"
+#include "sblr_advisory_lock_runtime.hpp"
+#include "sblr_advisory_lock_release_runtime.hpp"
+#include "sblr_function_call_runtime.hpp"
+#include "sblr_operator_call_runtime.hpp"
+#include "sblr_cast_runtime.hpp"
+#include "sblr_compare_runtime.hpp"
+#include "sblr_domain_operation_runtime.hpp"
+#include "sblr_udr_invoke_runtime.hpp"
+#include "sblr_procedure_invoke_runtime.hpp"
+#include "sblr_function_invoke_runtime.hpp"
+#include "sblr_aggregate_invoke_runtime.hpp"
+#include "sblr_sequence_nextval_runtime.hpp"
+#include "sblr_sequence_currval_runtime.hpp"
+#include "sblr_sequence_setval_runtime.hpp"
+#include "sblr_query_numeric_runtime.hpp"
+#include "sblr_advanced_datatype_family_runtime.hpp"
+#include "sblr_project_runtime.hpp"
+#include "sblr_aggregate_runtime.hpp"
+#include "sblr_group_runtime.hpp"
+#include "sblr_sort_runtime.hpp"
+#include "sblr_limit_runtime.hpp"
+#include "sblr_window_runtime.hpp"
+#include "sblr_return_result_set_runtime.hpp"
+#include "sblr_kv_structured_read_runtime.hpp"
+#include "sblr_kv_structured_mutate_runtime.hpp"
+#include "sblr_kv_structured_scan_runtime.hpp"
+#include "sblr_kv_structured_stream_read_runtime.hpp"
+#include "sblr_kv_structured_stream_append_runtime.hpp"
+#include "sblr_kv_structured_timeseries_runtime.hpp"
+#include "sblr_system_config_set_runtime.hpp"
+#include "sblr_ddl_create_domain_runtime.hpp"
+#include "sblr_ddl_alter_domain_runtime.hpp"
+#include "sblr_ddl_create_view_runtime.hpp"
+#include "sblr_ddl_drop_view_runtime.hpp"
+#include "sblr_ddl_create_trigger_runtime.hpp"
+#include "sblr_ddl_alter_trigger_runtime.hpp"
+#include "sblr_ddl_drop_trigger_runtime.hpp"
+#include "sblr_ddl_create_procedure_runtime.hpp"
+#include "sblr_ddl_alter_procedure_runtime.hpp"
+#include "sblr_ddl_alter_view_runtime.hpp"
+#include "sblr_ddl_drop_view_runtime.hpp"
+#include "sblr_ddl_create_trigger_runtime.hpp"
+#include "sblr_ddl_alter_view_runtime.hpp"
+#include "sblr_ddl_create_schema_runtime.hpp"
+#include "sblr_ddl_create_table_runtime.hpp"
+#include "sblr_ddl_create_index_runtime.hpp"
+#include "sblr_ddl_drop_index_runtime.hpp"
 
 #include "hash_digest.hpp"
 #include "sblr_opcode_registry.hpp"
@@ -209,7 +298,8 @@ bool IsOperationKey(std::string_view value, std::size_t maximum) {
 
 bool IsCanonicalOperandName(const SblrOperand& operand) {
   if (operand.value_kind != SblrValueKind::expression_node_ref &&
-      operand.value_kind != SblrValueKind::parameter_node_ref) {
+      operand.value_kind != SblrValueKind::parameter_node_ref &&
+      operand.value_kind != SblrValueKind::variable_node_ref) {
     return IsOperationKey(operand.name, 256);
   }
   // SBLR-RELATIONAL-EXPRESSION-LITERAL-REFERENCE-V1 binds the reference to
@@ -440,6 +530,109 @@ bool ValidateValueBody(SblrValueKind kind,
       SblrParameterNodeReferenceV1 reference;
       return DecodeSblrParameterNodeReferenceV1(data, size, &reference);
     }
+    case SblrValueKind::variable_node_table:
+      return DecodeSblrVariableNodeTableV1(data, size).ok;
+    case SblrValueKind::variable_node_ref: {
+      SblrVariableNodeReferenceV1 reference;
+      return DecodeSblrVariableNodeReferenceV1(data, size, &reference);
+    }
+    case SblrValueKind::transaction_begin_options: {
+      SblrTransactionBeginOptionsV1 options;
+      std::string detail;
+      return DecodeSblrTransactionBeginOptionsV1(data, size, &options,
+                                                 &detail);
+    }
+    case SblrValueKind::transaction_commit_options: {
+      SblrTransactionCommitOptionsV1 options;
+      std::string detail;
+      return DecodeSblrTransactionCommitOptionsV1(data, size, &options,
+                                                  &detail);
+    }
+    case SblrValueKind::transaction_rollback_options: { SblrTransactionRollbackOptionsV1 options; std::string detail; return DecodeSblrTransactionRollbackOptionsV1(data,size,&options,&detail); }
+    case SblrValueKind::savepoint_descriptor: { SblrSavepointDescriptorV1 descriptor; std::string detail; return DecodeSblrSavepointDescriptorV1(data,size,&descriptor,&detail); }
+    case SblrValueKind::savepoint_release_handle: { SblrSavepointReleaseOperandV1 operand; std::string detail; return DecodeSblrSavepointReleaseOperandV1(data,size,&operand,&detail); }
+    case SblrValueKind::savepoint_rollback_handle: { SblrSavepointRollbackOperandV1 operand; std::string detail; return DecodeSblrSavepointRollbackOperandV1(data,size,&operand,&detail); }
+    case SblrValueKind::psql_autonomous_frame_descriptor: { SblrAutonomousFrameDescriptorV1 descriptor; std::string detail; return DecodeSblrAutonomousFrameDescriptorV1(data,size,&descriptor,&detail,true); }
+    case SblrValueKind::relation_reservation_release_descriptor: { SblrReservationReleaseDescriptorV1 descriptor; std::string detail; return DecodeSblrReservationReleaseDescriptorV1(data,size,&descriptor,&detail,true); }
+    case SblrValueKind::temporary_instance_cleanup_descriptor: { SblrTemporaryInstanceCleanupDescriptorV1 descriptor; std::string detail; return DecodeSblrTemporaryInstanceCleanupDescriptorV1(data,size,&descriptor,&detail,true); }
+    case SblrValueKind::cursor_open_plan_ref: { SblrCursorOpenDescriptorV1 descriptor; std::string detail; return DecodeSblrCursorOpenDescriptorV1(data,size,&descriptor,&detail,true); }
+    case SblrValueKind::cursor_fetch_handle: { SblrCursorFetchOperandV1 operand; std::string detail; return DecodeSblrCursorFetchOperandV1(data,size,&operand,&detail); }
+    case SblrValueKind::cursor_close_handle: { SblrCursorCloseOperandV1 operand; std::string detail; return DecodeSblrCursorCloseOperandV1(data,size,&operand,&detail); }
+    case SblrValueKind::read_by_key_descriptor: { SblrReadByKeyDescriptorV1 operand; std::string detail; return DecodeSblrReadByKeyDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::read_range_descriptor: { SblrReadRangeDescriptorV1 operand; std::string detail; return DecodeSblrReadRangeDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::read_stream_descriptor: { SblrReadStreamDescriptorV1 operand; std::string detail; return DecodeSblrReadStreamDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::result_set_pass_descriptor: { SblrResultSetPassDescriptorV1 operand; std::string detail; return DecodeSblrResultSetPassDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::access_cursor_open_descriptor: { SblrAccessCursorOpenDescriptorV1 operand; std::string detail; return DecodeSblrAccessCursorOpenDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::access_cursor_fetch_descriptor: { SblrAccessCursorFetchDescriptorV1 operand; std::string detail; return DecodeSblrAccessCursorFetchDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::access_cursor_close_descriptor: { SblrAccessCursorCloseDescriptorV1 operand; std::string detail; return DecodeSblrAccessCursorCloseDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::insert_descriptor: { SblrInsertDescriptorV1 operand; std::string detail; return DecodeSblrInsertDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::update_descriptor: { SblrUpdateDescriptorV1 operand; std::string detail; return DecodeSblrUpdateDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::delete_descriptor: { SblrDeleteDescriptorV1 operand; std::string detail; return DecodeSblrDeleteDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::merge_descriptor: { SblrMergeDescriptorV1 operand; std::string detail; return DecodeSblrMergeDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::truncate_table_descriptor: { SblrTableTruncateDescriptorV1 operand; std::string detail; return DecodeSblrTableTruncateDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::analyze_table_descriptor: { SblrTableAnalyzeDescriptorV1 operand; std::string detail; return DecodeSblrTableAnalyzeDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::bulk_import_stream_descriptor: { SblrBulkImportStreamDescriptorV1 operand; std::string detail; return DecodeSblrBulkImportStreamDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::bulk_export_stream_descriptor: { SblrBulkExportStreamDescriptorV1 operand; std::string detail; return DecodeSblrBulkExportStreamDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::statement_batch_descriptor: { SblrStatementBatchDescriptorV1 operand; std::string detail; return DecodeSblrStatementBatchDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::atomic_cas_descriptor: { SblrAtomicCasDescriptorV1 operand; std::string detail; return DecodeSblrAtomicCasDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::atomic_rmw_descriptor: { SblrAtomicRmwDescriptorV1 operand; std::string detail; return DecodeSblrAtomicRmwDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::advisory_lock_descriptor: { SblrAdvisoryLockDescriptorV1 operand; std::string detail; return DecodeSblrAdvisoryLockDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::advisory_lock_release_descriptor: { SblrAdvisoryLockReleaseDescriptorV1 operand; std::string detail; return DecodeSblrAdvisoryLockReleaseDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::function_call_descriptor: { SblrFunctionCallDescriptorV1 operand; std::string detail; return DecodeSblrFunctionCallDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::operator_call_descriptor: { SblrOperatorCallDescriptorV1 operand; std::string detail; return DecodeSblrOperatorCallDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::cast_descriptor: { SblrCastDescriptorV1 operand; std::string detail; return DecodeSblrCastDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::comparison_descriptor: { SblrCompareDescriptorV1 operand; std::string detail; return DecodeSblrCompareDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::domain_operation_descriptor: { SblrDomainOperationDescriptorV1 operand; std::string detail; return DecodeSblrDomainOperationDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::registered_cpp_udr_invocation: { SblrUdrInvokeDescriptorV1 operand; std::string detail; return DecodeSblrUdrInvokeDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::procedure_invoke_descriptor: { SblrProcedureInvokeDescriptorV1 operand; std::string detail; return DecodeSblrProcedureInvokeDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::function_invoke_descriptor: { SblrFunctionInvokeDescriptorV1 operand; std::string detail; return DecodeSblrFunctionInvokeDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::aggregate_invoke_descriptor: { SblrAggregateInvokeDescriptorV1 operand; std::string detail; return DecodeSblrAggregateInvokeDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::sequence_nextval_descriptor: { SblrSequenceNextvalDescriptorV1 operand; std::string detail; return DecodeSblrSequenceNextvalDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::sequence_currval_descriptor: { SblrSequenceCurrvalDescriptorV1 operand; std::string detail; return DecodeSblrSequenceCurrvalDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::sequence_setval_descriptor: { SblrSequenceSetvalDescriptorV1 operand; std::string detail; return DecodeSblrSequenceSetvalDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::numeric_operation_descriptor: { SblrQueryNumericDescriptorV1 operand; std::string detail; return DecodeSblrQueryNumericDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::advanced_datatype_family_descriptor: { SblrAdvancedDatatypeFamilyDescriptorV1 operand; std::string detail; return DecodeSblrAdvancedDatatypeFamilyDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::projection_descriptor: { SblrProjectDescriptorV1 operand; std::string detail; return DecodeSblrProjectDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::aggregate_descriptor: { SblrAggregateDescriptorV1 operand; std::string detail; return DecodeSblrAggregateDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::group_descriptor: { SblrGroupDescriptorV1 operand; std::string detail; return DecodeSblrGroupDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::sort_descriptor: { SblrSortDescriptorV1 operand; std::string detail; return DecodeSblrSortDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::limit_descriptor: { SblrLimitDescriptorV1 operand; std::string detail; return DecodeSblrLimitDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::window_descriptor: { SblrWindowDescriptorV1 operand; std::string detail; return DecodeSblrWindowDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::result_set_return_descriptor: { SblrReturnResultSetDescriptorV1 operand; std::string detail; return DecodeSblrReturnResultSetDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::kv_structured_read_descriptor: { SblrKvStructuredReadDescriptorV1 operand; std::string detail; return DecodeSblrKvStructuredReadDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::kv_structured_mutate_descriptor: { SblrKvStructuredMutateDescriptorV1 operand; std::string detail; return DecodeSblrKvStructuredMutateDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::kv_structured_scan_descriptor: { SblrKvStructuredScanDescriptorV1 operand; std::string detail; return DecodeSblrKvStructuredScanDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::kv_structured_stream_read_descriptor: { SblrKvStructuredStreamReadDescriptorV1 operand; std::string detail; return DecodeSblrKvStructuredStreamReadDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::kv_structured_stream_append_descriptor: { SblrKvStructuredStreamAppendDescriptorV1 operand; std::string detail; return DecodeSblrKvStructuredStreamAppendDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::kv_structured_timeseries_descriptor: { SblrKvStructuredTimeseriesDescriptorV1 operand; std::string detail; return DecodeSblrKvStructuredTimeseriesDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::system_config_set_descriptor: { SblrSystemConfigSetDescriptorV1 operand; std::string detail; return DecodeSblrSystemConfigSetDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_domain_descriptor: { SblrDdlCreateDomainDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateDomainDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_schema_descriptor: { SblrDdlCreateSchemaDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateSchemaDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_table_descriptor: { SblrDdlCreateTableDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateTableDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_index_descriptor: { SblrDdlCreateIndexDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateIndexDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::drop_index_descriptor: { SblrDdlDropIndexDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropIndexDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::alter_domain_descriptor: { SblrDdlAlterDomainDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterDomainDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_view_descriptor: { SblrDdlCreateViewDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateViewDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::alter_view_descriptor: { SblrDdlAlterViewDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterViewDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_trigger_descriptor: { SblrDdlCreateTriggerDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateTriggerDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::alter_trigger_descriptor: { SblrDdlAlterTriggerDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterTriggerDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::drop_trigger_descriptor: { SblrDdlDropTriggerDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropTriggerDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_procedure_descriptor: { SblrDdlCreateProcedureDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateProcedureDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::alter_procedure_descriptor: { SblrDdlAlterProcedureDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterProcedureDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::drop_procedure_descriptor: { SblrDdlDropProcedureDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropProcedureDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_function_descriptor: { SblrDdlCreateFunctionDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateFunctionDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::drop_function_descriptor: { SblrDdlDropFunctionDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropFunctionDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_package_descriptor: { SblrDdlCreatePackageDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreatePackageDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::create_temporary_table_descriptor: { SblrDdlCreateTemporaryTableDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateTemporaryTableDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::drop_temporary_table_descriptor: { SblrDdlDropTemporaryTableDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropTemporaryTableDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::object_rename_vector_descriptor: { SblrDdlRenameObjectVectorDescriptorV1 operand; std::string detail; return DecodeSblrDdlRenameObjectVectorDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::spatial_reference_system_descriptor: { SblrDdlCreateOrReplaceSrsDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateOrReplaceSrsDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::spatial_reference_system_drop_descriptor: { SblrDdlDropSrsDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropSrsDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::rewrite_rule_descriptor: { SblrDdlCreateRewriteRuleDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateRewriteRuleDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::rewrite_rule_alter_descriptor: { SblrDdlAlterRewriteRuleDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterRewriteRuleDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::rewrite_rule_drop_descriptor: { SblrDdlDropRewriteRuleDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropRewriteRuleDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::alter_function_descriptor: { SblrDdlAlterFunctionDescriptorV1 operand; std::string detail; return DecodeSblrDdlAlterFunctionDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::drop_view_descriptor: { SblrDdlDropViewDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropViewDescriptorV1(data,size,&operand,&detail,true); }
   }
   return false;
 }
@@ -502,12 +695,16 @@ bool DecodeOperandVector(const std::uint8_t* data,
     operand.value_kind = static_cast<SblrValueKind>(raw_kind);
     if (!IsCanonicalOperandName(operand)) return false;
     const std::uint8_t* value_data = nullptr;
-    if (!reader.Take(static_cast<std::size_t>(value_size), &value_data) ||
-        !ValidateValueBody(operand.value_kind, value_data,
-                           static_cast<std::size_t>(value_size), 1,
-                           &value_count, limit_exceeded)) {
+    if (!reader.Take(static_cast<std::size_t>(value_size), &value_data)) {
       return false;
     }
+    const bool deferred_source_map_descriptor =
+        operand.value_kind == SblrValueKind::descriptor_ref && value_size == 24 &&
+        IsNonzeroUuidBytes(value_data) && Load64(value_data + 16) != 0;
+    if (!deferred_source_map_descriptor &&
+        !ValidateValueBody(operand.value_kind, value_data,
+                           static_cast<std::size_t>(value_size), 1,
+                           &value_count, limit_exceeded)) return false;
     operand.value_body.assign(value_data, value_data + value_size);
     operands->push_back(std::move(operand));
   }
@@ -595,6 +792,10 @@ SblrOperationEnvelope MakeSblrEnvelope(std::string operation_id,
   envelope.operation_id = std::move(operation_id);
   envelope.opcode = std::move(opcode);
   envelope.trace_key = std::move(trace_key);
+  if (envelope.operation_id == "engine.op.ddl_alter_rewrite_rule") {
+    envelope.requires_transaction_context = false;
+    envelope.requires_security_context = false;
+  }
   envelope.result_shape = "engine.api.result.v1";
   envelope.diagnostic_shape = "engine.diagnostic.v1";
   envelope.parser_resolved_names_to_uuids = true;
@@ -650,18 +851,48 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
   std::size_t parameter_node_table_count = 0;
   std::optional<SblrParameterNodeTableCodecResultV1> parameter_node_table;
   std::vector<SblrParameterNodeReferenceV1> parameter_node_references;
+  std::size_t variable_node_table_count = 0;
+  std::optional<SblrVariableNodeTableCodecResultV1> variable_node_table;
+  std::vector<SblrVariableNodeReferenceV1> variable_node_references;
   for (std::size_t i = 0; i < envelope.operands.size(); ++i) {
     const auto& operand = envelope.operands[i];
     bool limit_exceeded = false;
+    const bool source_map_descriptor =
+        envelope.operation_id == "engine.op.source_map" &&
+        envelope.opcode == "SBLR_SOURCE_MAP" && envelope.opcode_code == 6 &&
+        envelope.operands.size() == 1 && operand.ordinal == 1 &&
+        operand.type == "source_map.vector" && operand.name == "source_map" &&
+        operand.value_kind == SblrValueKind::descriptor_ref &&
+        operand.value_body.size() == 24 &&
+        IsNonzeroUuidBytes(operand.value_body.data()) &&
+        Load64(operand.value_body.data() + 16) != 0;
+    const bool error_vector_descriptor =
+        envelope.operation_id == "engine.op.error_vector" &&
+        envelope.opcode == "SBLR_ERROR_VECTOR" && envelope.opcode_code == 7 &&
+        envelope.operands.size() == 1 && operand.ordinal == 1 &&
+        operand.type == "diagnostic.vector" && operand.name == "diagnostics" &&
+        operand.value_kind == SblrValueKind::descriptor_ref &&
+        operand.value_body.size() == 24 &&
+        IsNonzeroUuidBytes(operand.value_body.data()) &&
+        Load64(operand.value_body.data() + 16) != 0;
+    const bool canonical_value_body = source_map_descriptor || error_vector_descriptor ||
+        ValidateValueBody(operand.value_kind, operand.value_body.data(),
+                          operand.value_body.size(), 1, &value_count,
+                          &limit_exceeded);
     if (operand.ordinal != i + 1 || !operand.value.empty() ||
         operand.value_flags != 0 || !IsOperationKey(operand.type, 256) ||
         !IsCanonicalOperandName(operand) ||
-        !ValidateValueBody(operand.value_kind, operand.value_body.data(),
-                           operand.value_body.size(), 1, &value_count,
-                           &limit_exceeded)) {
+        !canonical_value_body) {
       fail(limit_exceeded ? "SBLR.OPERATION.LIMIT_EXCEEDED"
                           : "SBLR.OPERATION.OPERAND_INVALID",
            "operand vector is not canonical typed SBOP data");
+      break;
+    }
+    if (operand.value_kind == SblrValueKind::descriptor_ref &&
+        operand.value_body.size() == 24 && !source_map_descriptor &&
+        !error_vector_descriptor) {
+      fail("SBLR.OPERAND_INVALID",
+           "24-byte descriptor references require an exact registered metadata opcode");
       break;
     }
     if (operand.value_kind == SblrValueKind::expression_node_table) {
@@ -720,6 +951,33 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
       }
       parameter_node_references.push_back(reference);
     }
+    if (operand.value_kind == SblrValueKind::variable_node_table) {
+      ++variable_node_table_count;
+      if (envelope.operation_id != "query.execute" ||
+          envelope.opcode != "SBLR_QUERY_EXECUTE" ||
+          operand.type != "expression.variable_node_table.v1" ||
+          operand.name != "variable_nodes" || variable_node_table_count != 1) {
+        fail("SBLR.OPERAND_INVALID",
+             "SBVN v1 is admitted only as the unique query.execute variable_nodes carrier");
+        break;
+      }
+      variable_node_table = DecodeSblrVariableNodeTableV1(
+          operand.value_body.data(), operand.value_body.size());
+    }
+    if (operand.value_kind == SblrValueKind::variable_node_ref) {
+      SblrVariableNodeReferenceV1 reference;
+      if (envelope.operation_id != "query.execute" ||
+          envelope.opcode != "SBLR_QUERY_EXECUTE" ||
+          operand.type != "relational_expression_v1" ||
+          !DecodeSblrVariableNodeReferenceV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &reference)) {
+        fail("SBLR.OPERAND_INVALID",
+             "variable_node_ref is not an exact query relational variable reference");
+        break;
+      }
+      variable_node_references.push_back(reference);
+    }
   }
   if (expression_node_table.has_value()) {
     if (!ValidateSblrLiteralReferenceBijectionV1(
@@ -741,6 +999,16 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
     fail("SBLR.OPERAND_INVALID",
          "relational parameter reference requires the exact SBPN table");
   }
+  if (variable_node_table.has_value()) {
+    if (!ValidateSblrVariableReferenceBijectionV1(
+            *variable_node_table, variable_node_references)) {
+      fail("SBLR.OPERAND_INVALID",
+           "SBVN nodes and relational variable references are not bijective");
+    }
+  } else if (!variable_node_references.empty()) {
+    fail("SBLR.OPERAND_INVALID",
+         "relational variable reference requires the exact SBVN table");
+  }
   if (envelope.opcode_code == 3 || envelope.opcode == "SBLR_LITERAL" ||
       envelope.operation_id == "engine.op.literal") {
     fail("SBLR.OPERAND_INVALID",
@@ -750,6 +1018,11 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
       envelope.operation_id == "engine.op.parameter") {
     fail("SBLR.OPERAND_INVALID",
          "SBLR_PARAMETER is forbidden as a top-level operation root");
+  }
+  if (envelope.opcode_code == 5 || envelope.opcode == "SBLR_VARIABLE" ||
+      envelope.operation_id == "engine.op.variable") {
+    fail("SBLR.OPERAND_INVALID",
+         "SBLR_VARIABLE is forbidden as a top-level operation root");
   }
   return result;
 }

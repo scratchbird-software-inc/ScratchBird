@@ -4885,13 +4885,15 @@ class NativeRelationalParser final {
           predicate.operator_name == ">=";
       if (left == nullptr || right == nullptr || !accepted_operator ||
           left->expression_kind != NativeExpressionAstKind::kIdentifier ||
-          right->expression_kind != NativeExpressionAstKind::kLiteral ||
-          right->literal_kind != NativeLiteralAstKind::kNumeric ||
+          !((right->expression_kind == NativeExpressionAstKind::kLiteral &&
+            right->literal_kind == NativeLiteralAstKind::kNumeric) ||
+            right->expression_kind == NativeExpressionAstKind::kParameter ||
+            right->expression_kind == NativeExpressionAstKind::kVariable) ||
           !left->child_expression_ids.empty() ||
           !right->child_expression_ids.empty()) {
         Refuse("catalog_select_where_profile_unsupported",
                "bounded catalog WHERE requires an identifier comparison to "
-               "an unsigned numeric literal");
+               "an unsigned numeric literal, structural parameter occurrence, or structural variable occurrence");
         return FinishRefusal();
       }
       const bool wildcard_projection =
@@ -6518,6 +6520,19 @@ class NativeRelationalParser final {
       return document_.expressions.back().expression_id;
     }
 
+    if (first.kind == TokenKind::kVariable) {
+      Consume();
+      NativeExpressionAstNode variable;
+      variable.expression_id = NextExpressionId();
+      variable.expression_kind = NativeExpressionAstKind::kVariable;
+      // Spelling is retained only as source presentation. It is excluded from
+      // binding/lowering authority; the engine maps the structural occurrence.
+      variable.spelling = first.text;
+      variable.range = TokenSourceRange(first);
+      document_.expressions.push_back(std::move(variable));
+      return document_.expressions.back().expression_id;
+    }
+
     if (AtSymbol("(")) {
       const Token& open = Consume();
       const auto child_id = ParseExpression(0, depth + 1);
@@ -6680,11 +6695,14 @@ NativeRelationalAstDocument ParseNativeRelationalAst(const CstDocument& cst) {
   auto document = NativeRelationalParser(cst).Parse();
   std::vector<NativeExpressionAstNode*> literals;
   std::vector<NativeExpressionAstNode*> parameters;
+  std::vector<NativeExpressionAstNode*> variables;
   for (auto& expression : document.expressions) {
     if (expression.expression_kind == NativeExpressionAstKind::kLiteral) {
       literals.push_back(&expression);
     } else if (expression.expression_kind == NativeExpressionAstKind::kParameter) {
       parameters.push_back(&expression);
+    } else if (expression.expression_kind == NativeExpressionAstKind::kVariable) {
+      variables.push_back(&expression);
     }
   }
   std::ranges::sort(literals, {}, [](const auto* expression) {
@@ -6700,6 +6718,13 @@ NativeRelationalAstDocument ParseNativeRelationalAst(const CstDocument& cst) {
   occurrence_id = 1;
   for (auto* expression : parameters) {
     expression->structural_parameter_occurrence_id = occurrence_id++;
+  }
+  std::ranges::sort(variables, {}, [](const auto* expression) {
+    return expression->range.offset;
+  });
+  occurrence_id = 1;
+  for (auto* expression : variables) {
+    expression->structural_variable_occurrence_id = occurrence_id++;
   }
   return document;
 }

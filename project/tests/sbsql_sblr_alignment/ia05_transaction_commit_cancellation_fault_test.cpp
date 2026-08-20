@@ -1,0 +1,7 @@
+#include "engine/sblr/sblr_dispatch.hpp"
+#include "engine/sblr/sblr_engine_envelope.hpp"
+#include "engine/sblr/sblr_transaction_commit_runtime.hpp"
+#include <atomic>
+#include <cstdlib>
+namespace s=scratchbird::engine::sblr;
+int main(){s::SblrTransactionCommitOptionsV1 o;o.transaction_uuid[0]=1;o.local_transaction_id=9;o.admitted_handle_evidence_sha256[0]=2;o.commit_mode=1;o.authority_scope=1;o.wait_policy=1;auto b=s::EncodeSblrTransactionCommitOptionsV1(&o);auto e=s::MakeSblrEnvelope("engine.op.txn_commit","SBLR_TXN_COMMIT","ia05.txn_commit.cancel");e.opcode_code=257;e.result_shape="commit_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid="019d0000-0000-7000-8000-000000000352";e.registry_snapshot_uuid="019d0000-0000-7000-8000-000000000353";e.parser_resolved_names_to_uuids=true;s::SblrOperand p;p.ordinal=1;p.type="transaction.commit.options";p.name="options";p.value_kind=s::SblrValueKind::transaction_commit_options;p.value_body=std::move(b);e.operands.push_back(std::move(p));if(!s::ValidateSblrEnvelope(e).ok)return 1;std::atomic<unsigned> n{0};scratchbird::engine::internal_api::EngineRequestContext c;c.security_context_present=true;c.query_cancellation_requested=[&]{++n;return true;};auto r=s::DispatchSblrOperation({c,std::move(e),{},std::nullopt});if(r.accepted||r.api_result.ok||!r.api_result.evidence.empty()||n!=1||r.api_result.diagnostics.empty()||r.api_result.diagnostics[0].code!="PROCESS.CANCELLED"||r.api_result.diagnostics[0].message_key!="sblr.txn_commit.cancelled_before_durable_decision")return 1;return 0;}

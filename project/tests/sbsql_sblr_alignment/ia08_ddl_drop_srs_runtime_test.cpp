@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_ddl_drop_srs_runtime.hpp"
+#include <cassert>
+int main(){using namespace scratchbird::engine::sblr; SblrDdlDropSrsRequestV1 q; q.receipt[0]=1;q.occurrence=1;q.srs_occurrence=1;auto qb=EncodeSblrDdlDropSrsRequestV1(q);assert(qb.size()==64);SblrDdlDropSrsRequestV1 q2;std::string d;assert(DecodeSblrDdlDropSrsRequestV1(qb.data(),qb.size(),&q2,&d));SblrDdlDropSrsDescriptorV1 x;x.body[0]=1;x.availability=1;auto b=EncodeSblrDdlDropSrsDescriptorV1(x,false);assert(b.size()==488);SblrDdlDropSrsDescriptorV1 y;assert(DecodeSblrDdlDropSrsDescriptorV1(b.data(),b.size(),&y,&d,false));b[416]^=1;assert(!DecodeSblrDdlDropSrsDescriptorV1(b.data(),b.size(),&y,&d,false));return 0;}

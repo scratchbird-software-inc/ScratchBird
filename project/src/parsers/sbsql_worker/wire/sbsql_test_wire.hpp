@@ -12,6 +12,7 @@
 #include "cache/sblr_template_cache.hpp"
 #include "ipc/sbps_client.hpp"
 #include "metrics/parser_metrics.hpp"
+#include "engine/sblr/sblr_variable_runtime.hpp"
 
 #include <cstdint>
 #include <deque>
@@ -51,6 +52,32 @@ struct WireResponse {
   std::string text;
 };
 
+enum class PreparedParameterPayloadEncoding : std::uint8_t {
+  utf8_text = 0,
+  binary = 1,
+};
+
+struct PreparedParameterWireValue {
+  bool is_null{false};
+  PreparedParameterPayloadEncoding encoding{
+      PreparedParameterPayloadEncoding::binary};
+  std::vector<std::uint8_t> raw_bytes;
+  std::uint32_t public_type_metadata{0};
+};
+
+struct PreparedParameterCanonicalValue {
+  bool accepted{false};
+  bool is_null{false};
+  std::vector<std::uint8_t> canonical_bytes;
+  std::string diagnostic_code;
+};
+
+PreparedParameterCanonicalValue CanonicalizePreparedParameterWireValue(
+    const PreparedParameterWireValue& value,
+    std::string_view authenticated_descriptor_uuid,
+    std::string_view authenticated_type_uuid,
+    bool nullable);
+
 class SbsqlTestWireSession {
  public:
   SbsqlTestWireSession(ParserConfig config, ParserMetrics* metrics, SblrTemplateCache* cache);
@@ -62,7 +89,7 @@ class SbsqlTestWireSession {
                              bool cursor_requested = false,
                              std::uint64_t stream_row_count = 0,
                              bool autocommit_emulation = false,
-                             const std::vector<std::optional<std::string>>&
+                             const std::vector<PreparedParameterWireValue>&
                                  parameter_values = {},
                              const ipc::ParameterExecutionCoordination*
                                  parameter_coordination = nullptr,
@@ -70,14 +97,111 @@ class SbsqlTestWireSession {
                              ipc::PreparedParameterReference*
                                  prepared_parameter_output = nullptr,
                              std::string_view expected_prepared_uuid = {},
-                             std::uint64_t expected_prepared_generation = 0);
+                             std::uint64_t expected_prepared_generation = 0,
+                             const ipc::VariableFrameCoordination*
+                                 variable_coordination = nullptr,
+                             const scratchbird::engine::sblr::SblrVariableFrameBeginResultV1*
+                                 variable_frame = nullptr);
+  PipelineResult RunVariableForWire(std::string_view sql,
+                                    bool cursor_requested = false);
+  PipelineResult RunSourceMapForWire();
+  PipelineResult RunErrorVectorForWire();
+  PipelineResult RunAutonomousFrameForWire();
+  PipelineResult RunReservationReleaseForWire();
+  PipelineResult RunTemporaryInstanceCleanupForWire();
+  PipelineResult RunCursorOpenForWire();
+  PipelineResult RunCursorFetchForWire();
+  PipelineResult RunCursorCloseForWire();
+  PipelineResult RunReadByKeyForWire();
+  PipelineResult RunReadRangeForWire();
+  PipelineResult RunReadStreamForWire();
+  PipelineResult RunResultSetPassForWire();
+  PipelineResult RunAccessCursorOpenForWire();
+  PipelineResult RunAccessCursorFetchForWire();
+  PipelineResult RunAccessCursorCloseForWire();
+  PipelineResult RunInsertForWire();
+  PipelineResult RunUpdateForWire();
+  PipelineResult RunDeleteForWire();
+  PipelineResult RunMergeForWire();
+  PipelineResult RunTableTruncateForWire();
+  PipelineResult RunTableAnalyzeForWire();
+  PipelineResult RunBulkImportStreamForWire();
+  PipelineResult RunBulkExportStreamForWire();
+  PipelineResult RunStatementBatchForWire();
+  PipelineResult RunAtomicCasForWire();
+  PipelineResult RunAtomicRmwForWire();
+  PipelineResult RunAdvisoryLockForWire();
+  PipelineResult RunAdvisoryLockReleaseForWire();
+  PipelineResult RunFunctionCallForWire();
+  PipelineResult RunOperatorCallForWire();
+  PipelineResult RunCastForWire();
+  PipelineResult RunCompareForWire();
+  PipelineResult RunDomainOperationForWire();
+  PipelineResult RunUdrInvokeForWire();
+  PipelineResult RunProcedureInvokeForWire();
+  PipelineResult RunFunctionInvokeForWire();
+  PipelineResult RunAggregateInvokeForWire();
+  PipelineResult RunSequenceNextvalForWire();
+  PipelineResult RunSequenceCurrvalForWire();
+  PipelineResult RunSequenceSetvalForWire();
+  PipelineResult RunQueryNumericForWire();
+  PipelineResult RunQueryEvaluateAdvancedDatatypeFamilyForWire();
+  PipelineResult RunProjectForWire();
+  PipelineResult RunAggregateForWire();
+  PipelineResult RunGroupForWire();
+  PipelineResult RunSortForWire();
+  PipelineResult RunLimitForWire();
+  PipelineResult RunWindowForWire();
+  PipelineResult RunReturnResultSetForWire();
+  PipelineResult RunKvStructuredReadForWire();
+  PipelineResult RunKvStructuredMutateForWire();
+  PipelineResult RunKvStructuredScanForWire();
+  PipelineResult RunKvStructuredStreamReadForWire();
+  PipelineResult RunKvStructuredStreamAppendForWire();
+  PipelineResult RunKvStructuredTimeseriesForWire();
+  PipelineResult RunSystemConfigSetForWire();
+  PipelineResult RunDdlCreateDomainForWire();
+  PipelineResult RunDdlAlterDomainForWire();
+  PipelineResult RunDdlCreateViewForWire();
+  PipelineResult RunDdlAlterViewForWire();
+  PipelineResult RunDdlDropViewForWire();
+  PipelineResult RunDdlCreateTriggerForWire();
+  PipelineResult RunDdlAlterTriggerForWire();
+  PipelineResult RunDdlDropTriggerForWire();
+  PipelineResult RunDdlCreateProcedureForWire();
+  PipelineResult RunDdlAlterProcedureForWire();
+  PipelineResult RunDdlDropProcedureForWire();
+  PipelineResult RunDdlCreateFunctionForWire();
+  PipelineResult RunDdlAlterFunctionForWire();
+  PipelineResult RunDdlDropFunctionForWire();
+  PipelineResult RunDdlCreatePackageForWire();
+  PipelineResult RunDdlCreateTemporaryTableForWire();
+  PipelineResult RunDdlDropTemporaryTableForWire();
+  PipelineResult RunDdlRenameObjectVectorForWire();
+  PipelineResult RunDdlCreateOrReplaceSrsForWire();
+  PipelineResult RunDdlDropSrsForWire();
+  PipelineResult RunDdlCreateRewriteRuleForWire();
+  PipelineResult RunDdlAlterRewriteRuleForWire();
+  PipelineResult RunDdlDropRewriteRuleForWire();
+  PipelineResult RunDdlCreateSchemaForWire();
+  PipelineResult RunDdlCreateTableForWire();
+  PipelineResult RunDdlCreateIndexForWire();
+  PipelineResult RunDdlDropIndexForWire();
+  PipelineResult RunRetiredTransactionCommitReplayForWire();
+  PipelineResult RunRetiredTransactionRollbackReplayForWire();
+  PipelineResult RunRetiredSavepointReplayForWire();
+  PipelineResult RunReleasedSavepointReplayForWire();
+  PipelineResult RunReleaseParentSavepointForWire();
+  PipelineResult RunRollbackParentSavepointForWire();
+  PipelineResult RunRolledBackSavepointReplayForWire();
+  PipelineResult RunRolledBackDescendantForWire();
   ipc::ServerPreparedParameterFinalizeResult PrepareParameterizedForWire(
       std::string_view sql);
   PipelineResult RunPreparedParameterizedForWire(
       std::string_view sql,
       std::string_view prepared_statement_uuid,
       std::uint64_t prepared_generation,
-      const std::vector<std::optional<std::string>>& parameter_values,
+      const std::vector<PreparedParameterWireValue>& parameter_values,
       bool cursor_requested = false);
   PipelineResult RunSblrEnvelope(std::string_view encoded_sblr_envelope,
                                  bool cursor_requested = false);
@@ -112,6 +236,19 @@ class SbsqlTestWireSession {
   std::unique_ptr<EmbeddedEngineClient> embedded_client_;
   std::unique_ptr<SbpsClient> server_client_;
   std::map<std::string, CachedPublicNameResolution> name_resolution_cache_;
+  std::vector<std::uint8_t> admitted_transaction_handle_;
+  std::vector<std::uint8_t> retired_transaction_handle_;
+  std::vector<std::uint8_t> admitted_savepoint_descriptor_;
+  std::vector<std::uint8_t> retired_savepoint_descriptor_;
+  std::vector<std::uint8_t> admitted_savepoint_handle_;
+  std::vector<std::uint8_t> admitted_cursor_handle_;
+  std::vector<std::uint8_t> parent_savepoint_handle_;
+  std::vector<std::uint8_t> descendant_savepoint_handle_;
+  std::vector<std::uint8_t> retired_savepoint_release_operand_;
+  bool replaying_savepoint_release_{false};
+  std::vector<std::uint8_t> retired_savepoint_rollback_operand_;
+  bool replaying_savepoint_rollback_{false};
+  bool replaying_savepoint_descriptor_{false};
   std::deque<std::string> name_resolution_lru_;
   std::map<std::string, StableCachedPublicNameResolution>
       stable_relation_name_resolution_cache_;

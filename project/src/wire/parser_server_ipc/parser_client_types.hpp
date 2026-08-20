@@ -78,6 +78,16 @@ struct ParserTransactionRouting {
 // Bounded parser projection of one engine-issued statement context. The
 // private receipt, complete visibility vector, resource policy, and optimizer
 // state remain server/engine-owned and are intentionally absent.
+struct PreliminaryDiagnosticIdentityV1 {
+  std::string diagnostic_uuid;
+  std::uint64_t generation{0};
+  std::uint32_t precedence_ordinal{0};
+  std::uint8_t severity_code{0};
+  std::uint8_t redaction_class{0};
+  std::uint32_t max_safe_fields{0};
+  std::array<std::uint8_t, 32> identity_sha256{};
+};
+
 struct ParserStatementContext {
   struct AggregateFunctionProfile {
     std::uint16_t abi_version{0};
@@ -163,6 +173,97 @@ struct ParserStatementContext {
   // Schema 7032 v3 is the sole parser-visible source; callers copy it into
   // SBPT and never derive it from registry order or another executor family.
   std::uint64_t preliminary_parameter_executor_availability_generation{0};
+  // Schema 7032 v4 copy-only variable frame projection.
+  std::string preliminary_variable_scope_uuid;
+  std::uint64_t preliminary_variable_scope_generation{0};
+  std::string preliminary_variable_frame_uuid;
+  std::uint64_t preliminary_variable_frame_generation{0};
+  std::string preliminary_variable_registry_snapshot_uuid;
+  std::uint64_t preliminary_variable_executor_availability_generation{0};
+  // Schema 7032 v5 copy-only diagnostic cohort projection.
+  std::string preliminary_diagnostic_registry_snapshot_uuid;
+  std::uint64_t preliminary_diagnostic_registry_generation{0};
+  std::vector<PreliminaryDiagnosticIdentityV1> preliminary_diagnostic_identities;
+  std::string preliminary_transaction_isolation_profile_uuid;
+  std::uint64_t preliminary_transaction_isolation_profile_generation{0};
+  std::string preliminary_transaction_policy_snapshot_uuid;
+  std::uint64_t preliminary_transaction_policy_generation{0};
+  std::uint64_t preliminary_transaction_executor_availability_generation{0};
+  std::uint8_t preliminary_transaction_read_mode{0};
+  std::uint8_t preliminary_transaction_authority_scope{0};
+  std::uint8_t preliminary_transaction_wait_policy{0};
+  std::uint64_t preliminary_transaction_deadline_monotonic_ns{0};
+  std::uint64_t preliminary_transaction_commit_executor_availability_generation{0};
+  std::uint8_t preliminary_transaction_commit_mode{0};
+  std::uint8_t preliminary_transaction_commit_authority_scope{0};
+  std::uint8_t preliminary_transaction_commit_wait_policy{0};
+  std::uint64_t preliminary_transaction_commit_deadline_monotonic_ns{0};
+  std::uint64_t preliminary_transaction_rollback_executor_availability_generation{0};
+  std::uint8_t preliminary_transaction_rollback_mode{0};
+  std::uint8_t preliminary_transaction_rollback_authority_scope{0};
+  std::uint8_t preliminary_transaction_rollback_wait_policy{0};
+  std::uint64_t preliminary_transaction_rollback_deadline_monotonic_ns{0};
+  std::uint64_t preliminary_transaction_release_savepoint_executor_availability_generation{0};
+  std::uint64_t preliminary_transaction_rollback_to_savepoint_executor_availability_generation{0};
+  std::uint64_t preliminary_psql_autonomous_frame_executor_availability_generation{0};
+  std::uint64_t preliminary_transaction_reservation_release_executor_availability_generation{0};
+  std::uint64_t preliminary_temporary_instance_cleanup_executor_availability_generation{0};
+  std::uint64_t preliminary_cursor_open_executor_availability_generation{0};
+  std::uint64_t preliminary_cursor_fetch_executor_availability_generation{0};
+  std::uint64_t preliminary_cursor_close_executor_availability_generation{0};
+  std::uint64_t preliminary_read_by_key_executor_availability_generation{0};
+  std::uint64_t preliminary_read_range_executor_availability_generation{0};
+  std::uint64_t preliminary_read_stream_executor_availability_generation{0};
+  std::uint64_t preliminary_result_set_pass_executor_availability_generation{0};
+  std::uint64_t preliminary_access_cursor_open_executor_availability_generation{0};
+  std::uint64_t preliminary_access_cursor_fetch_executor_availability_generation{0};
+  std::uint64_t preliminary_access_cursor_close_executor_availability_generation{0};
+  std::uint64_t preliminary_insert_executor_availability_generation{0};
+  std::uint64_t preliminary_update_executor_availability_generation{0};
+  std::uint64_t preliminary_delete_executor_availability_generation{0};
+  std::uint64_t preliminary_merge_executor_availability_generation{0};
+  std::uint64_t preliminary_table_truncate_executor_availability_generation{0};
+  std::uint64_t preliminary_table_analyze_executor_availability_generation{0};
+  std::uint64_t preliminary_bulk_import_stream_executor_availability_generation{0};
+  std::uint64_t preliminary_bulk_export_stream_executor_availability_generation{0};
+  std::uint64_t preliminary_statement_batch_executor_availability_generation{0};
+  std::uint64_t preliminary_atomic_cas_executor_availability_generation{0};
+  std::uint64_t preliminary_atomic_rmw_executor_availability_generation{0};
+  std::uint64_t preliminary_advisory_lock_acquire_executor_availability_generation{0};
+  std::uint64_t preliminary_advisory_lock_release_executor_availability_generation{0};
+  std::uint64_t preliminary_function_call_executor_availability_generation{0};
+  std::uint64_t preliminary_operator_call_executor_availability_generation{0};
+  std::uint64_t preliminary_cast_executor_availability_generation{0};
+  std::uint64_t preliminary_compare_executor_availability_generation{0};
+  std::uint64_t preliminary_domain_operation_executor_availability_generation{0};
+  std::uint64_t preliminary_udr_invoke_executor_availability_generation{0};
+  std::uint64_t preliminary_procedure_invoke_executor_availability_generation{0};
+  std::uint64_t preliminary_function_invoke_executor_availability_generation{0};
+  std::uint64_t preliminary_aggregate_invoke_executor_availability_generation{0};
+  std::uint64_t preliminary_sequence_nextval_executor_availability_generation{0};
+  std::uint64_t preliminary_sequence_currval_executor_availability_generation{0};
+  std::uint64_t preliminary_sequence_setval_executor_availability_generation{0};
+  std::uint64_t preliminary_query_numeric_executor_availability_generation{0};
+  std::uint64_t preliminary_advanced_datatype_family_executor_availability_generation{0};
+  std::uint64_t preliminary_project_executor_availability_generation{0};
+  std::uint64_t preliminary_aggregate_executor_availability_generation{0};
+  std::uint64_t preliminary_group_executor_availability_generation{0};
+  std::uint64_t preliminary_sort_executor_availability_generation{0};
+  std::uint64_t preliminary_limit_executor_availability_generation{0};
+  std::uint64_t preliminary_window_executor_availability_generation{0};
+  std::uint64_t preliminary_return_result_set_executor_availability_generation{0};
+  std::uint64_t preliminary_kv_structured_read_executor_availability_generation{0};
+  std::uint64_t preliminary_kv_structured_mutate_executor_availability_generation{0};
+  std::uint64_t preliminary_kv_structured_scan_executor_availability_generation{0};
+  std::uint64_t preliminary_kv_structured_stream_read_executor_availability_generation{0};
+  std::uint64_t preliminary_kv_structured_stream_append_executor_availability_generation{0};
+  std::uint64_t preliminary_kv_structured_timeseries_executor_availability_generation{0};
+  std::uint64_t preliminary_system_config_set_executor_availability_generation{0};
+  std::uint64_t preliminary_ddl_create_domain_executor_availability_generation{0};
+  std::uint64_t preliminary_ddl_create_schema_executor_availability_generation{0};
+  std::uint64_t preliminary_ddl_create_table_executor_availability_generation{0};
+  std::uint64_t preliminary_ddl_create_index_executor_availability_generation{0};
+  std::uint64_t preliminary_ddl_drop_index_executor_availability_generation{0};
   std::string literal_preliminary_receipt_uuid;
   std::string literal_catalog_snapshot_uuid;
   std::uint64_t literal_catalog_generation{0};
@@ -235,6 +336,7 @@ struct ParserCanonicalSblrSubmission {
   // interpret either as identity authority; the server revalidates both.
   std::vector<std::uint8_t> parameter_execution_extension_bytes;
   std::vector<std::uint8_t> parameter_value_set_bytes;
+  std::vector<std::uint8_t> variable_execution_extension_bytes;
 
   [[nodiscard]] bool literal_finalized() const {
     return !literal_final_receipt_uuid.empty() &&
@@ -245,6 +347,9 @@ struct ParserCanonicalSblrSubmission {
     return parameter_execution_extension_bytes.size() == 176 &&
            !parameter_value_set_bytes.empty() &&
            parameter_value_set_bytes.size() <= 33554432;
+  }
+  [[nodiscard]] bool variable_finalized() const {
+    return variable_execution_extension_bytes.size() == 192;
   }
 
   [[nodiscard]] bool complete() const {

@@ -502,6 +502,7 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
 
 bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
   return IsClusterOperationId(operation_id) ||
+         operation_id == "engine.op.ddl_drop_rewrite_rule" ||
          IsPublicExactOperationId(operation_id) ||
          StartsWith(operation_id, "bridge.") ||
          StartsWith(operation_id, "index.") ||
@@ -1126,6 +1127,9 @@ std::optional<std::string> FamilyForLegacyEnvelope(std::string_view encoded) {
 }
 
 std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
+  if (operation_id == "engine.op.ddl_drop_rewrite_rule") {
+    return "sblr.catalog.mutation.v3";
+  }
   if (operation_id.starts_with("bridge.")) {
     return "sblr.bridge.operation.v3";
   }
@@ -1856,11 +1860,11 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
                   "Engine-owned catalog, security, resource, and MGA context is required.",
                   "engine_owned_context_missing");
   }
-  if (opcode->requires_cluster_authority && !request.cluster_authority_active) {
-    return Reject("SBLR.PRIVATE_CLUSTER_REFUSED",
-                  "The registered operation requires active cluster authority.",
-                  operation.envelope.operation_id);
-  }
+  // Cluster-required roots are deliberately admitted to the engine gateway
+  // even when cluster authority is unavailable.  The configured no-cluster or
+  // compile-link stub must produce the canonical refusal diagnostic; rejecting
+  // here would prevent SBsql->SBLR->stub verification and would bypass the
+  // provider boundary entirely.
 
   const auto hash_bytes = [](const std::uint8_t* data, std::size_t size,
                              std::array<std::uint8_t, 32>* output) {

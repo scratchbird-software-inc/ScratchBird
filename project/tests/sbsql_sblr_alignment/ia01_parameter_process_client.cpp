@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
     std::cerr << "prepared descriptor did not expose one parameter\n";
     return 5;
   }
-  statement.setInt64(0, 1);
+  statement.setInt64(1, 1);
   scratchbird::client::ResultSet rows;
   if (statement.executeQuery(&rows, &error) != scratchbird::core::Status::OK) {
     std::cerr << "execute: " << error.message << '\n';

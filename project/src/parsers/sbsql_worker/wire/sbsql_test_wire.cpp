@@ -16,9 +16,100 @@
 #include "lowering/lowering.hpp"
 #include "rendering/rendering.hpp"
 
+
 #include "scratchbird/engine/sblr/lowering.hpp"
 #include "scratchbird/engine/sblr_envelope.hpp"
 #include "engine/sblr/sblr_parameter_runtime.hpp"
+#include "engine/sblr/sblr_variable_runtime.hpp"
+#include "engine/sblr/sblr_source_map_runtime.hpp"
+#include "engine/sblr/sblr_error_vector_runtime.hpp"
+#include "engine/sblr/sblr_transaction_begin_runtime.hpp"
+#include "engine/sblr/sblr_transaction_commit_runtime.hpp"
+#include "engine/sblr/sblr_transaction_rollback_runtime.hpp"
+#include "engine/sblr/sblr_savepoint_runtime.hpp"
+#include "engine/sblr/sblr_autonomous_frame_runtime.hpp"
+#include "engine/sblr/sblr_reservation_release_runtime.hpp"
+#include "engine/sblr/sblr_temporary_instance_cleanup_runtime.hpp"
+#include "engine/sblr/sblr_cursor_open_runtime.hpp"
+#include "engine/sblr/sblr_cursor_fetch_runtime.hpp"
+#include "engine/sblr/sblr_cursor_close_runtime.hpp"
+#include "engine/sblr/sblr_read_by_key_runtime.hpp"
+#include "engine/sblr/sblr_read_range_runtime.hpp"
+#include "engine/sblr/sblr_read_stream_runtime.hpp"
+#include "engine/sblr/sblr_result_set_pass_runtime.hpp"
+#include "engine/sblr/sblr_access_cursor_open_runtime.hpp"
+#include "engine/sblr/sblr_access_cursor_fetch_runtime.hpp"
+#include "engine/sblr/sblr_access_cursor_close_runtime.hpp"
+#include "engine/sblr/sblr_insert_runtime.hpp"
+#include "engine/sblr/sblr_update_runtime.hpp"
+#include "engine/sblr/sblr_delete_runtime.hpp"
+#include "engine/sblr/sblr_merge_runtime.hpp"
+#include "engine/sblr/sblr_table_truncate_runtime.hpp"
+#include "engine/sblr/sblr_table_analyze_runtime.hpp"
+#include "engine/sblr/sblr_bulk_import_stream_runtime.hpp"
+#include "engine/sblr/sblr_bulk_export_stream_runtime.hpp"
+#include "engine/sblr/sblr_statement_batch_runtime.hpp"
+#include "engine/sblr/sblr_atomic_cas_runtime.hpp"
+#include "engine/sblr/sblr_atomic_read_modify_write_runtime.hpp"
+#include "engine/sblr/sblr_advisory_lock_runtime.hpp"
+#include "engine/sblr/sblr_advisory_lock_release_runtime.hpp"
+#include "engine/sblr/sblr_function_call_runtime.hpp"
+#include "engine/sblr/sblr_operator_call_runtime.hpp"
+#include "engine/sblr/sblr_cast_runtime.hpp"
+#include "engine/sblr/sblr_compare_runtime.hpp"
+#include "engine/sblr/sblr_domain_operation_runtime.hpp"
+#include "engine/sblr/sblr_udr_invoke_runtime.hpp"
+#include "engine/sblr/sblr_procedure_invoke_runtime.hpp"
+#include "engine/sblr/sblr_function_invoke_runtime.hpp"
+#include "engine/sblr/sblr_aggregate_invoke_runtime.hpp"
+#include "engine/sblr/sblr_sequence_nextval_runtime.hpp"
+#include "engine/sblr/sblr_sequence_currval_runtime.hpp"
+#include "engine/sblr/sblr_sequence_setval_runtime.hpp"
+#include "engine/sblr/sblr_query_numeric_runtime.hpp"
+#include "engine/sblr/sblr_advanced_datatype_family_runtime.hpp"
+#include "engine/sblr/sblr_project_runtime.hpp"
+#include "engine/sblr/sblr_aggregate_runtime.hpp"
+#include "engine/sblr/sblr_group_runtime.hpp"
+#include "engine/sblr/sblr_sort_runtime.hpp"
+#include "engine/sblr/sblr_limit_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_rewrite_rule_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_rewrite_rule_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_rewrite_rule_runtime.hpp"
+#include "engine/sblr/sblr_window_runtime.hpp"
+#include "engine/sblr/sblr_return_result_set_runtime.hpp"
+#include "engine/sblr/sblr_kv_structured_read_runtime.hpp"
+#include "engine/sblr/sblr_kv_structured_mutate_runtime.hpp"
+#include "engine/sblr/sblr_kv_structured_scan_runtime.hpp"
+#include "engine/sblr/sblr_kv_structured_stream_read_runtime.hpp"
+#include "engine/sblr/sblr_kv_structured_stream_append_runtime.hpp"
+#include "engine/sblr/sblr_kv_structured_timeseries_runtime.hpp"
+#include "engine/sblr/sblr_system_config_set_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_domain_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_domain_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_view_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_view_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_trigger_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_trigger_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_trigger_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_procedure_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_procedure_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_procedure_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_function_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_function_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_function_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_package_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_temporary_table_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_temporary_table_runtime.hpp"
+#include "engine/sblr/sblr_ddl_rename_object_vector_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_or_replace_srs_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_srs_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_view_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_schema_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_table_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_index_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_index_runtime.hpp"
+#include "engine/sblr/sblr_engine_envelope.hpp"
+#include "engine/sblr/sblr_opcode_stream.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
 #include "uuid.hpp"
@@ -58,6 +149,7 @@
 #include <cerrno>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <iostream>
 #include <unistd.h>
 #endif
 
@@ -260,7 +352,29 @@ class ScopedParserState {
 
 bool ApplyExecutedTransactionState(const ServerExecutionResult& executed,
                                    SessionContext* session) {
-  if (session == nullptr || !executed.transaction_state_present) return false;
+  if (session == nullptr) return false;
+  // Canonical TXN_BEGIN is returned as a TXBH payload plus the validated V2
+  // selected selector. V2 deliberately carries no visibility watermark, so
+  // transport only the exact UUID/local-id needed for the next authenticated
+  // statement-context acquisition and retain the prior watermark until that
+  // acquisition replaces it with an engine-owned projection.
+  if (!executed.transaction_state_present &&
+      executed.selected_transaction_present &&
+      executed.row_packet.size() == 152 &&
+      executed.row_packet.compare(0,4,"TXBH") == 0) {
+    const bool changed =
+        session->local_transaction_id !=
+            executed.selected_transaction.local_transaction_id ||
+        session->transaction_uuid !=
+            executed.selected_transaction.transaction_uuid;
+    session->local_transaction_id =
+        executed.selected_transaction.local_transaction_id;
+    session->transaction_uuid =
+        executed.selected_transaction.transaction_uuid;
+    session->transaction_context = "always_active";
+    return changed;
+  }
+  if (!executed.transaction_state_present) return false;
   const bool changed =
       session->local_transaction_id != executed.local_transaction_id ||
       session->transaction_uuid != executed.transaction_uuid;
@@ -6176,6 +6290,15 @@ std::optional<std::array<std::uint8_t, 32>> CanonicalSha256(
   return digest;
 }
 
+std::optional<std::array<std::uint8_t, 32>> ParameterNodeTableSha256(
+    const CanonicalBytes& bytes) {
+  static constexpr std::string_view kDomain =
+      "ScratchBird.SblrParameterNodeTable.V1";
+  CanonicalBytes material(kDomain.begin(), kDomain.end());
+  material.insert(material.end(), bytes.begin(), bytes.end());
+  return CanonicalSha256(material);
+}
+
 struct LiteralPrebindState {
   std::uint64_t occurrence_id{0};
   std::array<std::uint8_t, 32> lexical_sha256{};
@@ -6187,6 +6310,89 @@ struct ParameterPrebindState {
   scratchbird::engine::sblr::SblrParameterNegotiateRequestV1 demand;
   scratchbird::engine::sblr::SblrParameterNegotiateResultV1 mapping;
 };
+
+struct VariablePrebindState {
+  scratchbird::engine::sblr::SblrVariableNegotiateRequestV1 demand;
+  scratchbird::engine::sblr::SblrVariableNegotiateResultV1 mapping;
+};
+
+std::optional<std::pair<CanonicalBytes, VariablePrebindState>>
+EncodeVariablePrebindRequest(
+    const NativeRelationalAstDocument& ast,
+    const ParserStatementContext& context,
+    const scratchbird::engine::sblr::SblrVariableFrameBeginResultV1& frame) {
+  const auto receipt = CanonicalUuidBytes(context.preliminary_receipt_uuid);
+  const auto scope = CanonicalUuidBytes(context.preliminary_variable_scope_uuid);
+  const auto frame_uuid = CanonicalUuidBytes(context.preliminary_variable_frame_uuid);
+  const auto snapshot =
+      CanonicalUuidBytes(context.preliminary_variable_registry_snapshot_uuid);
+  if (!receipt || !scope || !frame_uuid || !snapshot ||
+      context.preliminary_extension_version != 4 ||
+      context.preliminary_variable_scope_generation == 0 ||
+      context.preliminary_variable_frame_generation == 0 ||
+      context.preliminary_variable_executor_availability_generation == 0 ||
+      *scope != frame.scope_uuid || *frame_uuid != frame.frame_uuid ||
+      context.preliminary_variable_scope_generation != frame.scope_generation ||
+      context.preliminary_variable_frame_generation != frame.frame_generation) {
+    return std::nullopt;
+  }
+  VariablePrebindState state;
+  state.demand.preliminary_receipt_uuid = *receipt;
+  state.demand.scope_uuid = *scope;
+  state.demand.scope_generation = context.preliminary_variable_scope_generation;
+  state.demand.frame_uuid = *frame_uuid;
+  state.demand.frame_generation = context.preliminary_variable_frame_generation;
+  for (const auto& expression : ast.expressions) {
+    if (expression.expression_kind != NativeExpressionAstKind::kVariable)
+      continue;
+    const auto mapped = std::ranges::find_if(frame.mappings, [&](const auto& item) {
+      return item.declaration_occurrence_id ==
+             expression.structural_variable_occurrence_id;
+    });
+    if (mapped == frame.mappings.end()) return std::nullopt;
+    scratchbird::engine::sblr::SblrVariableDemandV1 demand;
+    demand.occurrence_id = expression.structural_variable_occurrence_id;
+    demand.parent_operand_ordinal =
+        static_cast<std::uint32_t>(state.demand.demands.size() + 1);
+    demand.variable_ordinal = mapped->variable_ordinal;
+    demand.scope_uuid = *scope;
+    state.demand.demands.push_back(demand);
+  }
+  if (state.demand.demands.empty()) return std::nullopt;
+  state.demand.demand_sha256 =
+      scratchbird::engine::sblr::ComputeSblrVariableDemandSha256V1(
+          state.demand.demands);
+  auto bytes = scratchbird::engine::sblr::EncodeSblrVariableNegotiateRequestV1(
+      &state.demand);
+  if (bytes.empty()) return std::nullopt;
+  return std::pair{std::move(bytes), std::move(state)};
+}
+
+bool ConsumeVariablePrebindResult(const CanonicalBytes& response,
+                                  VariablePrebindState* state,
+                                  const ParserStatementContext& context) {
+  if (state == nullptr) return false;
+  scratchbird::engine::sblr::SblrVariableNegotiateResultV1 mapping;
+  std::string detail;
+  if (!scratchbird::engine::sblr::DecodeSblrVariableNegotiateResultV1(
+          response.data(), response.size(), &mapping, &detail) ||
+      mapping.preliminary_receipt_uuid != state->demand.preliminary_receipt_uuid ||
+      mapping.scope_uuid != state->demand.scope_uuid ||
+      mapping.frame_uuid != state->demand.frame_uuid ||
+      mapping.mappings.size() != state->demand.demands.size()) return false;
+  const auto snapshot =
+      CanonicalUuidBytes(context.preliminary_variable_registry_snapshot_uuid);
+  if (!snapshot || mapping.registry_snapshot_uuid != *snapshot) return false;
+  for (std::size_t i = 0; i < mapping.mappings.size(); ++i) {
+    if (mapping.mappings[i].occurrence_id != state->demand.demands[i].occurrence_id ||
+        mapping.mappings[i].variable_ordinal != state->demand.demands[i].variable_ordinal ||
+        mapping.mappings[i].variable_descriptor_generation == 0 ||
+        mapping.mappings[i].datatype_descriptor_generation == 0 ||
+        mapping.mappings[i].value_generation == 0) return false;
+  }
+  state->mapping = std::move(mapping);
+  return true;
+}
 
 std::optional<std::pair<CanonicalBytes, ParameterPrebindState>>
 EncodeParameterPrebindRequest(const NativeRelationalAstDocument& ast,
@@ -6257,6 +6463,8 @@ bool ConsumeParameterPrebindResult(const CanonicalBytes& response,
     const auto& mapped = mapping.mappings[index];
     if (mapped.occurrence_id != demand.occurrence_id ||
         mapped.slot_ordinal != index || mapped.datatype_descriptor_generation == 0 ||
+        std::ranges::none_of(mapped.datatype_type_uuid,
+                             [](std::uint8_t byte) { return byte != 0; }) ||
         mapped.direction != demand.requested_direction ||
         mapped.nullable != demand.nullable_demand) {
       return false;
@@ -6555,6 +6763,85 @@ struct EncodedParameterExpressionNodeTable {
   std::map<std::string, Reference> references;
 };
 
+struct EncodedVariableExpressionNodeTable {
+  struct Reference {
+    scratchbird::engine::sblr::SblrVariableNodeReferenceV1 value;
+  };
+  CanonicalBytes bytes;
+  std::map<std::string, Reference> references;
+};
+
+std::optional<EncodedVariableExpressionNodeTable>
+EncodeVariableExpressionNodeTable(const BoundStatement& bound,
+                                  const VariablePrebindState& prebind) {
+  std::map<std::uint64_t,
+           const scratchbird::engine::sblr::SblrVariableMappingV1*> mappings;
+  for (const auto& mapping : prebind.mapping.mappings)
+    if (!mappings.emplace(mapping.occurrence_id, &mapping).second)
+      return std::nullopt;
+  std::vector<std::pair<const BoundExpressionAstRecord*,
+                        const scratchbird::engine::sblr::SblrVariableMappingV1*>> pending;
+  for (const auto& expression : bound.native_relational.expressions) {
+    if (expression.expression_kind != NativeExpressionAstKind::kVariable)
+      continue;
+    const auto mapped = mappings.find(expression.structural_variable_occurrence_id);
+    if (mapped == mappings.end() || expression.expression_id == 0 ||
+        expression.literal_or_parameter_ref.has_value() ||
+        !expression.child_expression_ids.empty()) return std::nullopt;
+    pending.push_back({&expression, mapped->second});
+  }
+  if (pending.empty() || pending.size() != mappings.size()) return std::nullopt;
+  std::ranges::sort(pending, {}, [](const auto& item) {
+    return item.first->expression_id;
+  });
+  scratchbird::engine::sblr::SblrVariableNodeTableV1 table;
+  std::uint32_t ordinal = 1;
+  for (const auto& [expression, mapping] : pending) {
+    scratchbird::engine::sblr::SblrVariableNodeV1 node;
+    node.node_id = expression->expression_id;
+    node.parent_operand_ordinal = ordinal++;
+    node.scope_uuid = prebind.mapping.scope_uuid;
+    node.scope_generation = prebind.mapping.scope_generation;
+    node.frame_uuid = prebind.mapping.frame_uuid;
+    node.frame_generation = prebind.mapping.frame_generation;
+    node.variable_descriptor_uuid = mapping->variable_descriptor_uuid;
+    node.variable_descriptor_generation = mapping->variable_descriptor_generation;
+    node.datatype_descriptor_uuid = mapping->datatype_descriptor_uuid;
+    node.datatype_descriptor_generation = mapping->datatype_descriptor_generation;
+    node.value_generation = mapping->value_generation;
+    node.value_state_policy = mapping->value_state;
+    table.nodes.push_back(node);
+  }
+  EncodedVariableExpressionNodeTable encoded;
+  encoded.bytes =
+      scratchbird::engine::sblr::EncodeSblrVariableNodeTableV1(table);
+  if (encoded.bytes.empty()) return std::nullopt;
+  CanonicalBytes hash_input;
+  constexpr std::string_view domain = "ScratchBird.SblrVariableNodeTable.V1";
+  hash_input.insert(hash_input.end(), domain.begin(), domain.end());
+  hash_input.insert(hash_input.end(), encoded.bytes.begin(), encoded.bytes.end());
+  const auto table_sha = CanonicalSha256(hash_input);
+  if (!table_sha) return std::nullopt;
+  for (std::size_t index = 0; index < pending.size(); ++index) {
+    const auto* expression = pending[index].first;
+    const auto* mapping = pending[index].second;
+    scratchbird::engine::sblr::SblrVariableNodeReferenceV1 reference;
+    reference.occurrence_ordinal = static_cast<std::uint32_t>(index + 1);
+    reference.node_id = expression->expression_id;
+    reference.table_sha256 = *table_sha;
+    reference.scope_uuid = prebind.mapping.scope_uuid;
+    reference.scope_generation = prebind.mapping.scope_generation;
+    reference.frame_uuid = prebind.mapping.frame_uuid;
+    reference.frame_generation = prebind.mapping.frame_generation;
+    reference.variable_descriptor_uuid = mapping->variable_descriptor_uuid;
+    reference.variable_descriptor_generation = mapping->variable_descriptor_generation;
+    reference.value_generation = mapping->value_generation;
+    encoded.references.emplace(std::to_string(expression->expression_id),
+                               EncodedVariableExpressionNodeTable::Reference{reference});
+  }
+  return encoded;
+}
+
 std::optional<EncodedParameterExpressionNodeTable>
 EncodeParameterExpressionNodeTable(
     const BoundStatement& bound, const ParameterPrebindState& prebind) {
@@ -6611,7 +6898,7 @@ EncodeParameterExpressionNodeTable(
       scratchbird::engine::sblr::EncodeSblrParameterNodeTableV1(table);
   if (encoded.bytes.empty() || encoded.bytes.size() > 426016)
     return std::nullopt;
-  const auto table_sha = CanonicalSha256(encoded.bytes);
+  const auto table_sha = ParameterNodeTableSha256(encoded.bytes);
   if (!table_sha) return std::nullopt;
   for (std::size_t index = 0; index < pending.size(); ++index) {
     scratchbird::engine::sblr::SblrParameterNodeReferenceV1 reference;
@@ -6838,7 +7125,7 @@ std::optional<CanonicalBytes> EncodePreparedParameterTemplate(
 
 bool FinalizeParameterSubmission(
     const BoundStatement& bound, const ParameterPrebindState& prebind,
-    const std::vector<std::optional<std::string>>& parameter_values,
+    const std::vector<PreparedParameterWireValue>& parameter_values,
     const ParserStatementContext& statement_context,
     const SessionContext& session, SbpsClient* client,
     ParserCanonicalSblrSubmission* submission,
@@ -6851,10 +7138,20 @@ bool FinalizeParameterSubmission(
            ? (coordination == nullptr || prepared_output == nullptr ||
               !parameter_values.empty())
            : parameter_values.size() != prebind.mapping.mappings.size())) {
+    if (messages != nullptr) messages->diagnostics.push_back(MakeDiagnostic(
+        "SBLR.PARAMETER.UNBOUND", "ERROR",
+        "Parameter finalization input cardinality or coordination is invalid.",
+        "sbp_sbsql.wire"));
     return false;
   }
   const auto sbpn = EncodeParameterExpressionNodeTable(bound, prebind);
-  if (!sbpn) return false;
+  if (!sbpn) {
+    if (messages != nullptr) messages->diagnostics.push_back(MakeDiagnostic(
+        "SBLR.PARAMETER.UNBOUND", "ERROR",
+        "The UUID-bound parameter occurrences do not form the negotiated SBPN bijection.",
+        "sbp_sbsql.wire"));
+    return false;
+  }
   scratchbird::engine::sblr::SblrParameterFinalizeRequestV1 request;
   request.preliminary_receipt_uuid = prebind.demand.preliminary_receipt_uuid;
   request.parameter_set_descriptor_uuid =
@@ -6863,13 +7160,19 @@ bool FinalizeParameterSubmission(
   request.execution_uuid = prebind.mapping.execution_uuid;
   request.demand_sha256 = prebind.demand.demand_sha256;
   request.mapping_sha256 = prebind.mapping.mapping_sha256;
-  const auto sbpn_sha = CanonicalSha256(sbpn->bytes);
+  const auto sbpn_sha = ParameterNodeTableSha256(sbpn->bytes);
   if (!sbpn_sha) return false;
   request.sbpn_sha256 = *sbpn_sha;
   request.canonical_sbpn = sbpn->bytes;
   const auto sbpf =
       scratchbird::engine::sblr::EncodeSblrParameterFinalizeRequestV1(request);
-  if (sbpf.size() < 280 || sbpf.size() > 426192) return false;
+  if (sbpf.size() < 280 || sbpf.size() > 426192) {
+    if (messages != nullptr) messages->diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR",
+        "The canonical SBPF extent is outside its admitted boundary.",
+        "sbp_sbsql.wire"));
+    return false;
+  }
   auto finalized = client->FinalizeParameterBinding(session, sbpf);
   if (!finalized.accepted) {
     if (messages) *messages = std::move(finalized.messages);
@@ -6888,34 +7191,75 @@ bool FinalizeParameterSubmission(
       statement_context.preliminary_batch_uuid);
   const auto dynamic_uuid = projected_uuid(
       statement_context.preliminary_dynamic_package_uuid);
-  if (!prepared_uuid || !batch_uuid || !dynamic_uuid ||
-      !scratchbird::engine::sblr::DecodeSblrParameterAdmissionV1(
+  const auto decoded = prepared_uuid && batch_uuid && dynamic_uuid &&
+      scratchbird::engine::sblr::DecodeSblrParameterAdmissionV1(
           finalized.canonical_payload.data(), finalized.canonical_payload.size(),
-          &admission, &detail) ||
-      admission.parameter_set_descriptor_uuid !=
-          prebind.mapping.parameter_set_descriptor_uuid ||
-      admission.descriptor_generation != prebind.mapping.descriptor_generation ||
-      admission.execution_uuid != prebind.mapping.execution_uuid ||
-      admission.prepared_uuid != *prepared_uuid ||
-      admission.prepared_generation !=
-          statement_context.preliminary_prepared_generation ||
-      admission.batch_uuid != *batch_uuid ||
-      admission.batch_generation !=
-          statement_context.preliminary_batch_generation ||
-      admission.dynamic_uuid != *dynamic_uuid ||
-      admission.dynamic_generation !=
-          statement_context.preliminary_dynamic_generation) {
+          &admission, &detail);
+  const char* mismatch = nullptr;
+  if (!prepared_uuid || !batch_uuid || !dynamic_uuid) mismatch = "projected_uuid";
+  else if (!decoded) mismatch = "decode";
+  else if (admission.parameter_set_descriptor_uuid !=
+           prebind.mapping.parameter_set_descriptor_uuid) mismatch = "descriptor_uuid";
+  else if (admission.descriptor_generation != prebind.mapping.descriptor_generation)
+    mismatch = "descriptor_generation";
+  else if (admission.execution_uuid != prebind.mapping.execution_uuid)
+    mismatch = "execution_uuid";
+  else if (admission.prepared_uuid != *prepared_uuid) mismatch = "prepared_uuid";
+  else if (admission.prepared_generation !=
+           statement_context.preliminary_prepared_generation)
+    mismatch = "prepared_generation";
+  else if (admission.batch_uuid != *batch_uuid) mismatch = "batch_uuid";
+  else if (admission.batch_generation !=
+           statement_context.preliminary_batch_generation)
+    mismatch = "batch_generation";
+  else if (admission.dynamic_uuid != *dynamic_uuid) mismatch = "dynamic_uuid";
+  else if (admission.dynamic_generation !=
+           statement_context.preliminary_dynamic_generation)
+    mismatch = "dynamic_generation";
+  if (mismatch != nullptr) {
+    if (messages != nullptr) {
+      messages->diagnostics.push_back(MakeDiagnostic(
+          "SBLR.PARAMETER.STALE", "ERROR",
+          std::string("The authenticated parameter admission projection differs at ") +
+              mismatch + " (payload_bytes=" +
+              std::to_string(finalized.canonical_payload.size()) +
+              (detail.empty() ? ")." : ", decode_detail=" + detail + ")."),
+          "sbp_sbsql.wire"));
+    }
     return false;
   }
   if (prepare_only) {
     const auto sbpt = EncodePreparedParameterTemplate(
         session, statement_context, *coordination, *submission, admission,
         finalized.canonical_payload, *sbpn_sha);
-    if (!sbpt) return false;
+    if (!sbpt) {
+      if (messages != nullptr) {
+        messages->diagnostics.push_back(MakeDiagnostic(
+            "SBLR.OPERAND_INVALID", "ERROR",
+            "The value-free prepared parameter template could not be encoded from the authenticated admission "
+            "(sbpa_bytes=" + std::to_string(finalized.canonical_payload.size()) +
+                ", extension_version=" +
+                std::to_string(statement_context.preliminary_extension_version) +
+                ", executor_generation=" +
+                std::to_string(statement_context.preliminary_parameter_executor_availability_generation) +
+                ", parameter_finalized=" +
+                std::to_string(submission->parameter_finalized()) +
+                ", literal_finalized=" +
+                std::to_string(submission->literal_finalized()) + ").",
+            "sbp_sbsql.wire"));
+      }
+      return false;
+    }
     auto sealed = client->FinalizePreparedParameterSubmission(
         session, *coordination, *sbpt, statement_context);
     if (!sealed.accepted) {
       if (messages) *messages = std::move(sealed.messages);
+      if (messages != nullptr && !messages->has_errors()) {
+        messages->diagnostics.push_back(MakeDiagnostic(
+            "SBLR.PREPARED.STALE", "ERROR",
+            "The authenticated value-free prepared parameter template seal was refused without a typed diagnostic.",
+            "sbp_sbsql.wire"));
+      }
       return false;
     }
     *prepared_output = std::move(sealed.prepared);
@@ -6937,28 +7281,36 @@ bool FinalizeParameterSubmission(
         mapping.datatype_descriptor_generation;
     record.direction = static_cast<
         scratchbird::engine::sblr::SblrParameterDirectionV1>(mapping.direction);
-    if (!parameter_values[index].has_value()) {
-      if (mapping.nullable == 0) return false;
-      record.state =
-          scratchbird::engine::sblr::SblrParameterValueStateV1::null_value;
-    } else {
-      std::int64_t numeric = 0;
-      const auto& text = *parameter_values[index];
-      const auto [end, error] =
-          std::from_chars(text.data(), text.data() + text.size(), numeric);
-      if (error != std::errc{} || end != text.data() + text.size()) return false;
-      record.state =
-          scratchbird::engine::sblr::SblrParameterValueStateV1::value;
-      for (unsigned shift = 0; shift != 64; shift += 8) {
-        record.canonical_value_bytes.push_back(static_cast<std::uint8_t>(
-            static_cast<std::uint64_t>(numeric) >> shift));
-      }
+    const auto& wire_value = parameter_values[index];
+    const auto canonical = CanonicalizePreparedParameterWireValue(
+        wire_value,
+        LiteralReadUuid(CanonicalBytes(mapping.datatype_descriptor_uuid.begin(),
+                                       mapping.datatype_descriptor_uuid.end()), 0),
+        LiteralReadUuid(CanonicalBytes(mapping.datatype_type_uuid.begin(),
+                                       mapping.datatype_type_uuid.end()), 0),
+        mapping.nullable != 0);
+    if (!canonical.accepted) {
+      if (messages != nullptr) messages->diagnostics.push_back(MakeDiagnostic(
+          canonical.diagnostic_code, "ERROR",
+          "The public parameter value does not match its authenticated negotiated datatype codec.",
+          "sbp_sbsql.wire"));
+      return false;
     }
+    record.state = canonical.is_null
+        ? scratchbird::engine::sblr::SblrParameterValueStateV1::null_value
+        : scratchbird::engine::sblr::SblrParameterValueStateV1::value;
+    record.canonical_value_bytes = canonical.canonical_bytes;
     value_set.records.push_back(std::move(record));
   }
   auto sbpv = scratchbird::engine::sblr::EncodeSblrParameterValueSetV1(value_set);
   const auto sbpv_sha = CanonicalSha256(sbpv);
-  if (sbpv.empty() || sbpv.size() > 33554432 || !sbpv_sha) return false;
+  if (sbpv.empty() || sbpv.size() > 33554432 || !sbpv_sha) {
+    if (messages != nullptr) messages->diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR",
+        "The bound parameter values do not encode as canonical SBPV.",
+        "sbp_sbsql.wire"));
+    return false;
+  }
   CanonicalBytes sbpe(176, 0);
   sbpe[0]='S'; sbpe[1]='B'; sbpe[2]='P'; sbpe[3]='E';
   CanonicalStoreU16(&sbpe,4,1); CanonicalStoreU16(&sbpe,6,176);
@@ -6983,6 +7335,77 @@ bool FinalizeParameterSubmission(
   submission->parameter_execution_extension_bytes = std::move(sbpe);
   submission->parameter_value_set_bytes = std::move(sbpv);
   return true;
+}
+
+bool FinalizeVariableSubmission(
+    const BoundStatement& bound, const VariablePrebindState& prebind,
+    const ParserStatementContext& context, const SessionContext& session,
+    SbpsClient* client, ParserCanonicalSblrSubmission* submission,
+    MessageVectorSet* messages) {
+  if (client == nullptr || submission == nullptr) return false;
+  const auto sbvn = EncodeVariableExpressionNodeTable(bound, prebind);
+  if (!sbvn) return false;
+  CanonicalBytes hash_input;
+  constexpr std::string_view domain = "ScratchBird.SblrVariableNodeTable.V1";
+  hash_input.insert(hash_input.end(), domain.begin(), domain.end());
+  hash_input.insert(hash_input.end(), sbvn->bytes.begin(), sbvn->bytes.end());
+  const auto sbvn_sha = CanonicalSha256(hash_input);
+  if (!sbvn_sha) return false;
+  scratchbird::engine::sblr::SblrVariableFinalizeRequestV1 request;
+  request.preliminary_receipt_uuid = prebind.demand.preliminary_receipt_uuid;
+  request.scope_uuid = prebind.mapping.scope_uuid;
+  request.scope_generation = prebind.mapping.scope_generation;
+  request.frame_uuid = prebind.mapping.frame_uuid;
+  request.frame_generation = prebind.mapping.frame_generation;
+  request.registry_generation = prebind.mapping.registry_generation;
+  request.demand_sha256 = prebind.demand.demand_sha256;
+  request.mapping_sha256 = prebind.mapping.mapping_sha256;
+  request.sbvn_sha256 = *sbvn_sha;
+  request.canonical_sbvn = sbvn->bytes;
+  const auto sbvf =
+      scratchbird::engine::sblr::EncodeSblrVariableFinalizeRequestV1(request);
+  auto finalized = client->FinalizeVariableBinding(session, sbvf);
+  if (!finalized.accepted) {
+    if (messages) *messages = std::move(finalized.messages);
+    return false;
+  }
+  scratchbird::engine::sblr::SblrVariableAdmissionV1 admission;
+  std::string detail;
+  const auto snapshot =
+      CanonicalUuidBytes(context.preliminary_variable_registry_snapshot_uuid);
+  if (!snapshot ||
+      !scratchbird::engine::sblr::DecodeSblrVariableAdmissionV1(
+          finalized.canonical_payload.data(), finalized.canonical_payload.size(),
+          &admission, &detail) ||
+      admission.scope_uuid != prebind.mapping.scope_uuid ||
+      admission.scope_generation != prebind.mapping.scope_generation ||
+      admission.frame_uuid != prebind.mapping.frame_uuid ||
+      admission.frame_generation != prebind.mapping.frame_generation ||
+      admission.registry_snapshot_uuid != *snapshot ||
+      admission.registry_generation != prebind.mapping.registry_generation ||
+      admission.executor_availability_generation !=
+          context.preliminary_variable_executor_availability_generation) {
+    return false;
+  }
+  const auto execution = CanonicalUuidBytes(context.statement_uuid);
+  if (!execution) return false;
+  scratchbird::engine::sblr::SblrVariableExecutionBindingV1 binding;
+  binding.execution_uuid = *execution;
+  binding.statement_receipt_uuid = prebind.demand.preliminary_receipt_uuid;
+  binding.variable_final_receipt_uuid = admission.final_receipt_uuid;
+  binding.admission_token_uuid = admission.admission_token_uuid;
+  binding.scope_uuid = admission.scope_uuid;
+  binding.scope_generation = admission.scope_generation;
+  binding.frame_uuid = admission.frame_uuid;
+  binding.frame_generation = admission.frame_generation;
+  binding.registry_snapshot_uuid = admission.registry_snapshot_uuid;
+  binding.registry_generation = admission.registry_generation;
+  binding.executor_availability_generation =
+      admission.executor_availability_generation;
+  binding.binding_sha256 = admission.binding_sha256;
+  submission->variable_execution_extension_bytes =
+      scratchbird::engine::sblr::EncodeSblrVariableExecutionBindingV1(binding);
+  return submission->variable_finalized();
 }
 
 std::optional<CanonicalBytes> EncodePreparedParameterTemplate(
@@ -7052,7 +7475,8 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
     const BoundStatement& bound, const SblrEnvelope& lowered,
     const ParserStatementContext& statement_context,
     const SessionContext& session,
-    const ParameterPrebindState* parameter_prebind) {
+    const ParameterPrebindState* parameter_prebind,
+    const VariablePrebindState* variable_prebind) {
   constexpr std::uint16_t kSectionCount = 9;
   constexpr std::uint16_t kHeaderSize = 64;
   constexpr std::uint32_t kSectionTableSize = 216;
@@ -7077,9 +7501,14 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
   const auto parameter_nodes = parameter_prebind == nullptr
       ? std::optional<EncodedParameterExpressionNodeTable>{}
       : EncodeParameterExpressionNodeTable(bound, *parameter_prebind);
+  const auto variable_nodes = variable_prebind == nullptr
+      ? std::optional<EncodedVariableExpressionNodeTable>{}
+      : EncodeVariableExpressionNodeTable(bound, *variable_prebind);
   if (!value_type_uuid.has_value() ||
       (parameter_prebind != nullptr && !parameter_nodes.has_value()) ||
-      (!expression_nodes.has_value() && !parameter_nodes.has_value())) {
+      (variable_prebind != nullptr && !variable_nodes.has_value()) ||
+      (!expression_nodes.has_value() && !parameter_nodes.has_value() &&
+       !variable_nodes.has_value())) {
     return std::nullopt;
   }
 
@@ -7100,7 +7529,8 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
                      static_cast<std::uint32_t>(
                          lowered.operands.size() +
                          (expression_nodes.has_value() ? 1 : 0) +
-                         (parameter_nodes.has_value() ? 1 : 0)));
+                         (parameter_nodes.has_value() ? 1 : 0) +
+                         (variable_nodes.has_value() ? 1 : 0)));
   std::uint32_t ordinal = 1;
   const auto node_table_sha256 = expression_nodes.has_value()
       ? CanonicalSha256(expression_nodes->bytes)
@@ -7132,8 +7562,17 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
     const bool is_parameter_reference =
         parameter_nodes.has_value() &&
         parameter_reference != parameter_nodes->references.end();
+    const auto variable_reference =
+        operand.type == "relational_expression_v1" && variable_nodes.has_value()
+            ? variable_nodes->references.find(operand.name)
+            : (variable_nodes.has_value() ? variable_nodes->references.end()
+                                          : decltype(variable_nodes->references.end()){});
+    const bool is_variable_reference =
+        variable_nodes.has_value() &&
+        variable_reference != variable_nodes->references.end();
     std::string encoded_name;
-    if (numeric_name && !is_literal_reference) {
+    if (numeric_name && !is_literal_reference && !is_parameter_reference &&
+        !is_variable_reference) {
       encoded_name = "slot_" + operand.name;
     } else if (property_uuid.has_value()) {
       static constexpr char kHex[] = "0123456789abcdef";
@@ -7149,7 +7588,8 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
     CanonicalAppendText(&sections[4], encoded_name);
     CanonicalAppendU16(&sections[4], is_literal_reference
                                         ? 17
-                                        : (is_parameter_reference ? 19 : 5));
+                                        : (is_parameter_reference ? 19
+                                           : (is_variable_reference ? 21 : 5)));
     CanonicalAppendU16(&sections[4], 0);
     if (is_literal_reference) {
       CanonicalAppendU64(&sections[4], 72);
@@ -7170,6 +7610,14 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
           scratchbird::engine::sblr::EncodeSblrParameterNodeReferenceV1(
               parameter_reference->second.value);
       if (encoded_reference.size() != 80) return std::nullopt;
+      CanonicalAppendU64(&sections[4], encoded_reference.size());
+      sections[4].insert(sections[4].end(), encoded_reference.begin(),
+                         encoded_reference.end());
+    } else if (is_variable_reference) {
+      const auto encoded_reference =
+          scratchbird::engine::sblr::EncodeSblrVariableNodeReferenceV1(
+              variable_reference->second.value);
+      if (encoded_reference.size() != 136) return std::nullopt;
       CanonicalAppendU64(&sections[4], encoded_reference.size());
       sections[4].insert(sections[4].end(), encoded_reference.begin(),
                          encoded_reference.end());
@@ -7201,6 +7649,16 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
     CanonicalAppendU64(&sections[4], parameter_nodes->bytes.size());
     sections[4].insert(sections[4].end(), parameter_nodes->bytes.begin(),
                        parameter_nodes->bytes.end());
+  }
+  if (variable_nodes.has_value()) {
+    CanonicalAppendU32(&sections[4], ordinal++);
+    CanonicalAppendText(&sections[4], "expression.variable_node_table.v1");
+    CanonicalAppendText(&sections[4], "variable_nodes");
+    CanonicalAppendU16(&sections[4], 20);
+    CanonicalAppendU16(&sections[4], 0);
+    CanonicalAppendU64(&sections[4], variable_nodes->bytes.size());
+    sections[4].insert(sections[4].end(), variable_nodes->bytes.begin(),
+                       variable_nodes->bytes.end());
   }
   CanonicalAppendText(&sections[5], lowered.result_shape_key);
   CanonicalAppendText(&sections[6], lowered.diagnostic_shape_key);
@@ -7265,6 +7723,254 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
   return encoded;
 }
 
+std::optional<CanonicalBytes> EncodeNativeTxnBeginOperationBinary(
+    const ParserStatementContext& context, const SessionContext& session) {
+  const auto isolation = CanonicalUuidBytes(
+      context.preliminary_transaction_isolation_profile_uuid);
+  const auto policy = CanonicalUuidBytes(
+      context.preliminary_transaction_policy_snapshot_uuid);
+  if (!isolation || !policy ||
+      context.preliminary_transaction_isolation_profile_generation == 0 ||
+      context.preliminary_transaction_policy_generation == 0 ||
+      context.preliminary_transaction_executor_availability_generation == 0)
+    return std::nullopt;
+  namespace tx = scratchbird::engine::sblr;
+  tx::SblrTransactionBeginOptionsV1 options;
+  options.isolation_profile_uuid = *isolation;
+  options.isolation_profile_generation =
+      context.preliminary_transaction_isolation_profile_generation;
+  options.transaction_policy_snapshot_uuid = *policy;
+  options.transaction_policy_generation =
+      context.preliminary_transaction_policy_generation;
+  options.read_mode = context.preliminary_transaction_read_mode;
+  options.authority_scope = context.preliminary_transaction_authority_scope;
+  options.wait_policy = context.preliminary_transaction_wait_policy;
+  options.deadline_monotonic_ns =
+      context.preliminary_transaction_deadline_monotonic_ns;
+  auto txbo = tx::EncodeSblrTransactionBeginOptionsV1(&options);
+  if (txbo.size() != 112) return std::nullopt;
+  auto envelope = tx::MakeSblrEnvelope(
+      "engine.op.txn_begin", "SBLR_TXN_BEGIN", "txn.begin.native");
+  envelope.opcode_code = 256;
+  envelope.result_shape = "transaction_handle";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.parser_package_uuid = session.admitted_parser_package_uuid;
+  envelope.parser_package_version_major = session.admitted_parser_package_version_major;
+  envelope.parser_package_version_minor = session.admitted_parser_package_version_minor;
+  envelope.parser_package_version_patch = session.admitted_parser_package_version_patch;
+  envelope.registry_snapshot_uuid = context.catalog_epoch_uuid;
+  tx::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.begin_options";
+  operand.name = "options";
+  operand.value_kind = tx::SblrValueKind::transaction_begin_options;
+  operand.value_body = std::move(txbo);
+  envelope.operands.push_back(std::move(operand));
+  const auto encoded = tx::EncodeSblrEnvelope(envelope);
+  if (encoded.empty()) return std::nullopt;
+  return CanonicalBytes(encoded.begin(), encoded.end());
+}
+
+std::optional<CanonicalBytes> EncodeNativeTxnCommitOperationBinary(
+    const ParserStatementContext& context, const SessionContext& session,
+    const std::vector<std::uint8_t>& admitted_handle) {
+  namespace tx = scratchbird::engine::sblr;
+  tx::SblrTransactionHandleV1 handle;
+  std::string detail;
+  if (!tx::DecodeSblrTransactionHandleV1(admitted_handle.data(),
+                                         admitted_handle.size(), &handle,
+                                         &detail) ||
+      context.preliminary_transaction_commit_executor_availability_generation == 0)
+    return std::nullopt;
+  tx::SblrTransactionCommitOptionsV1 options;
+  options.transaction_uuid = handle.transaction_uuid;
+  options.local_transaction_id = handle.local_transaction_id;
+  options.admitted_handle_evidence_sha256 = handle.handle_evidence_sha256;
+  options.commit_mode = context.preliminary_transaction_commit_mode;
+  options.authority_scope = context.preliminary_transaction_commit_authority_scope;
+  options.wait_policy = context.preliminary_transaction_commit_wait_policy;
+  options.deadline_monotonic_ns =
+      context.preliminary_transaction_commit_deadline_monotonic_ns;
+  auto txco = tx::EncodeSblrTransactionCommitOptionsV1(&options);
+  if (txco.size() != 120) return std::nullopt;
+  auto envelope = tx::MakeSblrEnvelope(
+      "engine.op.txn_commit", "SBLR_TXN_COMMIT", "txn.commit.native");
+  envelope.opcode_code = 257;
+  envelope.result_shape = "commit_result";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.parser_package_uuid = session.admitted_parser_package_uuid;
+  envelope.parser_package_version_major = session.admitted_parser_package_version_major;
+  envelope.parser_package_version_minor = session.admitted_parser_package_version_minor;
+  envelope.parser_package_version_patch = session.admitted_parser_package_version_patch;
+  envelope.registry_snapshot_uuid = context.catalog_epoch_uuid;
+  tx::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.commit.options";
+  operand.name = "options";
+  operand.value_kind = tx::SblrValueKind::transaction_commit_options;
+  operand.value_body = std::move(txco);
+  envelope.operands.push_back(std::move(operand));
+  const auto encoded = tx::EncodeSblrEnvelope(envelope);
+  if (encoded.empty()) return std::nullopt;
+  return CanonicalBytes(encoded.begin(), encoded.end());
+}
+
+std::optional<CanonicalBytes> EncodeNativeTxnRollbackOperationBinary(
+    const ParserStatementContext& context, const SessionContext& session,
+    const std::vector<std::uint8_t>& admitted_handle) {
+  namespace tx = scratchbird::engine::sblr;
+  tx::SblrTransactionHandleV1 handle;
+  std::string detail;
+  if (!tx::DecodeSblrTransactionHandleV1(admitted_handle.data(),
+                                         admitted_handle.size(), &handle,
+                                         &detail) ||
+      context.preliminary_transaction_rollback_executor_availability_generation == 0)
+    return std::nullopt;
+  tx::SblrTransactionRollbackOptionsV1 options;
+  options.transaction_uuid = handle.transaction_uuid;
+  options.local_transaction_id = handle.local_transaction_id;
+  options.admitted_handle_evidence_sha256 = handle.handle_evidence_sha256;
+  options.rollback_mode = context.preliminary_transaction_rollback_mode;
+  options.authority_scope =
+      context.preliminary_transaction_rollback_authority_scope;
+  options.wait_policy = context.preliminary_transaction_rollback_wait_policy;
+  options.deadline_monotonic_ns =
+      context.preliminary_transaction_rollback_deadline_monotonic_ns;
+  auto txro = tx::EncodeSblrTransactionRollbackOptionsV1(&options);
+  if (txro.size() != 120) return std::nullopt;
+  auto envelope = tx::MakeSblrEnvelope(
+      "engine.op.txn_rollback", "SBLR_TXN_ROLLBACK", "txn.rollback.native");
+  envelope.opcode_code = 258;
+  envelope.result_shape = "rollback_result";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.parser_package_uuid = session.admitted_parser_package_uuid;
+  envelope.parser_package_version_major = session.admitted_parser_package_version_major;
+  envelope.parser_package_version_minor = session.admitted_parser_package_version_minor;
+  envelope.parser_package_version_patch = session.admitted_parser_package_version_patch;
+  envelope.registry_snapshot_uuid = context.catalog_epoch_uuid;
+  tx::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "transaction.rollback.options";
+  operand.name = "options";
+  operand.value_kind = tx::SblrValueKind::transaction_rollback_options;
+  operand.value_body = std::move(txro);
+  envelope.operands.push_back(std::move(operand));
+  const auto encoded = tx::EncodeSblrEnvelope(envelope);
+  if (encoded.empty()) return std::nullopt;
+  return CanonicalBytes(encoded.begin(), encoded.end());
+}
+
+std::optional<CanonicalBytes> EncodeNativeTxnSavepointOperationBinary(
+    const ParserStatementContext& context, const SessionContext& session,
+    const std::vector<std::uint8_t>& admitted_descriptor) {
+  namespace sp = scratchbird::engine::sblr;
+  sp::SblrSavepointDescriptorV1 descriptor;
+  std::string detail;
+  if (!sp::DecodeSblrSavepointDescriptorV1(
+          admitted_descriptor.data(), admitted_descriptor.size(), &descriptor,
+          &detail)) return std::nullopt;
+  auto envelope = sp::MakeSblrEnvelope(
+      "engine.op.txn_savepoint", "SBLR_TXN_SAVEPOINT", "txn.savepoint.native");
+  envelope.opcode_code = 259;
+  envelope.result_shape = "savepoint_handle";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.parser_package_uuid = session.admitted_parser_package_uuid;
+  envelope.parser_package_version_major = session.admitted_parser_package_version_major;
+  envelope.parser_package_version_minor = session.admitted_parser_package_version_minor;
+  envelope.parser_package_version_patch = session.admitted_parser_package_version_patch;
+  envelope.registry_snapshot_uuid = context.catalog_epoch_uuid;
+  sp::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "savepoint.descriptor";
+  operand.name = "savepoint";
+  operand.value_kind = sp::SblrValueKind::savepoint_descriptor;
+  operand.value_body = admitted_descriptor;
+  envelope.operands.push_back(std::move(operand));
+  const auto encoded = sp::EncodeSblrEnvelope(envelope);
+  if (encoded.empty()) return std::nullopt;
+  return CanonicalBytes(encoded.begin(), encoded.end());
+}
+
+std::optional<CanonicalBytes> EncodeNativeTxnReleaseSavepointOperationBinary(
+    const ParserStatementContext& context, const SessionContext& session,
+    const std::vector<std::uint8_t>& admitted_handle,
+    const std::vector<std::uint8_t>* replay_operand) {
+  namespace sp = scratchbird::engine::sblr;
+  std::vector<std::uint8_t> body;
+  if (replay_operand != nullptr) {
+    body = *replay_operand;
+  } else {
+    sp::SblrSavepointHandleV1 handle;
+    std::string detail;
+    if (!sp::DecodeSblrSavepointHandleV1(admitted_handle.data(), admitted_handle.size(),
+                                         &handle, &detail) ||
+        context.preliminary_transaction_release_savepoint_executor_availability_generation == 0)
+      return std::nullopt;
+    sp::SblrSavepointReleaseOperandV1 operand;
+    operand.savepoint_uuid = handle.savepoint_uuid;
+    operand.savepoint_generation = handle.savepoint_generation;
+    operand.transaction_uuid = handle.transaction_uuid;
+    operand.local_transaction_id = handle.local_transaction_id;
+    operand.transaction_ordinal = handle.transaction_ordinal;
+    operand.admitted_stack_generation = handle.stack_generation;
+    operand.admitted_savepoint_evidence_sha256 = handle.savepoint_evidence_sha256;
+    operand.executor_availability_generation =
+        context.preliminary_transaction_release_savepoint_executor_availability_generation;
+    body = sp::EncodeSblrSavepointReleaseOperandV1(operand);
+  }
+  if (body.size() != 128) return std::nullopt;
+  auto envelope = sp::MakeSblrEnvelope("engine.op.txn_release_savepoint",
+      "SBLR_TXN_RELEASE_SAVEPOINT", "txn.release_savepoint.native");
+  envelope.opcode_code = 260;
+  envelope.result_shape = "void";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.parser_package_uuid = session.admitted_parser_package_uuid;
+  envelope.parser_package_version_major = session.admitted_parser_package_version_major;
+  envelope.parser_package_version_minor = session.admitted_parser_package_version_minor;
+  envelope.parser_package_version_patch = session.admitted_parser_package_version_patch;
+  envelope.registry_snapshot_uuid = context.catalog_epoch_uuid;
+  sp::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "savepoint.release_handle";
+  operand.name = "savepoint";
+  operand.value_kind = sp::SblrValueKind::savepoint_release_handle;
+  operand.value_body = std::move(body);
+  envelope.operands.push_back(std::move(operand));
+  const auto encoded = sp::EncodeSblrEnvelope(envelope);
+  if (encoded.empty()) return std::nullopt;
+  return CanonicalBytes(encoded.begin(), encoded.end());
+}
+
+std::optional<CanonicalBytes> EncodeNativeTxnRollbackToSavepointOperationBinary(
+    const ParserStatementContext& context, const SessionContext& session,
+    const std::vector<std::uint8_t>& admitted_handle,
+    const std::vector<std::uint8_t>* replay_operand) {
+  namespace sp = scratchbird::engine::sblr;
+  std::vector<std::uint8_t> body;
+  if (replay_operand) body = *replay_operand;
+  else {
+    sp::SblrSavepointHandleV1 handle; std::string detail;
+    if (!sp::DecodeSblrSavepointHandleV1(admitted_handle.data(), admitted_handle.size(), &handle, &detail) ||
+        context.preliminary_transaction_rollback_to_savepoint_executor_availability_generation == 0) return std::nullopt;
+    sp::SblrSavepointRollbackOperandV1 operand;
+    operand.savepoint_uuid=handle.savepoint_uuid; operand.savepoint_generation=handle.savepoint_generation;
+    operand.transaction_uuid=handle.transaction_uuid; operand.local_transaction_id=handle.local_transaction_id;
+    operand.transaction_ordinal=handle.transaction_ordinal; operand.admitted_stack_generation=handle.stack_generation;
+    operand.admitted_savepoint_evidence_sha256=handle.savepoint_evidence_sha256;
+    operand.executor_availability_generation=context.preliminary_transaction_rollback_to_savepoint_executor_availability_generation;
+    body=sp::EncodeSblrSavepointRollbackOperandV1(operand);
+  }
+  if(body.size()!=128)return std::nullopt;
+  auto envelope=sp::MakeSblrEnvelope("engine.op.txn_rollback_to_savepoint","SBLR_TXN_ROLLBACK_TO_SAVEPOINT","txn.rollback_to_savepoint.native");
+  envelope.opcode_code=261; envelope.result_shape="savepoint_rollback_result"; envelope.diagnostic_shape="diagnostic_vector";
+  envelope.parser_package_uuid=session.admitted_parser_package_uuid; envelope.parser_package_version_major=session.admitted_parser_package_version_major;
+  envelope.parser_package_version_minor=session.admitted_parser_package_version_minor; envelope.parser_package_version_patch=session.admitted_parser_package_version_patch;
+  envelope.registry_snapshot_uuid=context.catalog_epoch_uuid;
+  sp::SblrOperand operand; operand.ordinal=1; operand.type="savepoint.rollback_handle"; operand.name="savepoint";
+  operand.value_kind=sp::SblrValueKind::savepoint_rollback_handle; operand.value_body=std::move(body); envelope.operands.push_back(std::move(operand));
+  const auto encoded=sp::EncodeSblrEnvelope(envelope); if(encoded.empty())return std::nullopt; return CanonicalBytes(encoded.begin(),encoded.end());
+}
+
 CanonicalBytes CanonicalU16(std::uint16_t value) {
   CanonicalBytes out;
   CanonicalAppendU16(&out, value);
@@ -7301,13 +8007,471 @@ CanonicalBytes CanonicalStruct(std::uint32_t format,
   return out;
 }
 
+std::optional<CanonicalBytes> EncodeNativeCursorFetchOperationBinary(
+    const ParserStatementContext& statement_context,
+    const SessionContext& session, const std::vector<std::uint8_t>& body) {
+  namespace cf = scratchbird::engine::sblr;
+  cf::SblrCursorFetchOperandV1 decoded;
+  std::string detail;
+  if (!cf::DecodeSblrCursorFetchOperandV1(body.data(), body.size(), &decoded,
+                                         &detail)) {
+    return std::nullopt;
+  }
+  auto envelope = cf::MakeSblrEnvelope("engine.op.cursor_fetch",
+                                       "SBLR_CURSOR_FETCH",
+                                       "cursor.fetch.native");
+  envelope.opcode_code = 513;
+  envelope.result_shape = "cursor_fetch_result";
+  envelope.diagnostic_shape = "diagnostic_vector";
+  envelope.parser_package_uuid = session.admitted_parser_package_uuid;
+  envelope.parser_package_version_major =
+      session.admitted_parser_package_version_major;
+  envelope.parser_package_version_minor =
+      session.admitted_parser_package_version_minor;
+  envelope.parser_package_version_patch =
+      session.admitted_parser_package_version_patch;
+  envelope.registry_snapshot_uuid = statement_context.catalog_epoch_uuid;
+  envelope.parser_resolved_names_to_uuids = true;
+  cf::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "cursor_fetch_handle";
+  operand.name = "cursor";
+  operand.value_kind = cf::SblrValueKind::cursor_fetch_handle;
+  operand.value_body = body;
+  envelope.operands.push_back(std::move(operand));
+  const auto validation = cf::ValidateSblrEnvelope(envelope);
+  if (!validation.ok) {
+    return std::nullopt;
+  }
+  const auto encoded = cf::EncodeSblrEnvelope(envelope);
+  if (encoded.empty()) {
+    return std::nullopt;
+  }
+  return CanonicalBytes(encoded.begin(), encoded.end());
+}
+
+std::optional<CanonicalBytes> EncodeNativeCursorCloseOperationBinary(const ParserStatementContext&c,const SessionContext&s,const std::vector<std::uint8_t>&body){namespace cc=scratchbird::engine::sblr;cc::SblrCursorCloseOperandV1 decoded;std::string detail;if(!cc::DecodeSblrCursorCloseOperandV1(body.data(),body.size(),&decoded,&detail))return std::nullopt;auto e=cc::MakeSblrEnvelope("engine.op.cursor_close","SBLR_CURSOR_CLOSE","cursor.close.native");e.opcode_code=514;e.result_shape="cursor_close_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=s.admitted_parser_package_uuid;e.parser_package_version_major=s.admitted_parser_package_version_major;e.parser_package_version_minor=s.admitted_parser_package_version_minor;e.parser_package_version_patch=s.admitted_parser_package_version_patch;e.registry_snapshot_uuid=c.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;cc::SblrOperand o;o.ordinal=1;o.type="cursor_close_handle";o.name="cursor";o.value_kind=cc::SblrValueKind::cursor_close_handle;o.value_body=body;e.operands.push_back(std::move(o));auto bytes=cc::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}
+
+thread_local const std::vector<std::uint8_t>* g_window_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_return_result_set_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_kv_structured_read_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_kv_structured_mutate_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_kv_structured_scan_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_kv_structured_stream_read_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_kv_structured_stream_append_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_kv_structured_timeseries_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_system_config_set_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_create_trigger_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_alter_trigger_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_drop_trigger_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_create_procedure_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_alter_procedure_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_drop_procedure_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_create_function_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_alter_function_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_drop_function_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_create_package_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_create_temporary_table_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_drop_temporary_table_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_rename_object_vector_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_create_or_replace_srs_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_drop_srs_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_create_rewrite_rule_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_alter_rewrite_rule_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_ddl_drop_rewrite_rule_operand = nullptr;
+
 std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
     const BoundStatement& bound, const SblrEnvelope& lowered,
     const ParserStatementContext& statement_context,
     const SessionContext& session,
-    const ParameterPrebindState* parameter_prebind) {
-  const auto operation = EncodeNativeQueryOperationBinary(
-      bound, lowered, statement_context, session, parameter_prebind);
+    const ParameterPrebindState* parameter_prebind,
+    const VariablePrebindState* variable_prebind,
+    const std::vector<std::uint8_t>* admitted_transaction_handle,
+    const std::vector<std::uint8_t>* admitted_savepoint_descriptor,
+    const std::vector<std::uint8_t>* admitted_savepoint_handle,
+    const std::vector<std::uint8_t>* replay_savepoint_release_operand,
+    const std::vector<std::uint8_t>* admitted_autonomous_descriptor = nullptr,
+    const std::vector<std::uint8_t>* admitted_reservation_release_descriptor = nullptr,
+    const std::vector<std::uint8_t>* admitted_temporary_cleanup_descriptor = nullptr,
+    const std::vector<std::uint8_t>* admitted_cursor_open_descriptor = nullptr,
+    const std::vector<std::uint8_t>* admitted_cursor_fetch_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_read_by_key_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_read_range_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_read_stream_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_result_set_pass_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_access_cursor_open_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_access_cursor_fetch_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_access_cursor_close_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_insert_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_update_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_delete_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_merge_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_table_truncate_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_table_analyze_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_bulk_import_stream_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_bulk_export_stream_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_statement_batch_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_atomic_cas_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_atomic_rmw_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_advisory_lock_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_advisory_lock_release_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_function_call_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_operator_call_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_cast_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_compare_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_domain_operation_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_udr_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_procedure_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_function_invoke_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_aggregate_invoke_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_sequence_nextval_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_sequence_currval_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_sequence_setval_reserved = nullptr,
+    const std::vector<std::uint8_t>* admitted_sequence_setval_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_query_numeric_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_advanced_datatype_family_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_project_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_aggregate_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_group_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_sort_reserved_1 = nullptr,
+    const std::vector<std::uint8_t>* admitted_sort_reserved_2 = nullptr,
+    const std::vector<std::uint8_t>* admitted_sort_reserved_3 = nullptr,
+    const std::vector<std::uint8_t>* admitted_sort_reserved_4 = nullptr,
+    const std::vector<std::uint8_t>* admitted_sort_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_return_result_set_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_kv_structured_read_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_kv_structured_mutate_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_kv_structured_scan_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_kv_structured_stream_read_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_kv_structured_stream_append_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_kv_structured_timeseries_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_system_config_set_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_create_trigger_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_alter_trigger_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_drop_trigger_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_create_procedure_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_alter_procedure_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_drop_procedure_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_create_function_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_alter_function_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_drop_function_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_create_package_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_create_temporary_table_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_drop_temporary_table_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_rename_object_vector_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_create_or_replace_srs_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_drop_srs_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_create_rewrite_rule_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_alter_rewrite_rule_operand = nullptr,
+    const std::vector<std::uint8_t>* admitted_ddl_drop_rewrite_rule_operand = nullptr) {
+  if (lowered.operation_id == "engine.op.window" && g_window_operand != nullptr) admitted_sort_operand = g_window_operand;
+  if (lowered.operation_id == "engine.op.return_result_set" && g_return_result_set_operand != nullptr) admitted_return_result_set_operand = g_return_result_set_operand;
+  if (lowered.operation_id == "engine.op.kv_structured_read" && g_kv_structured_read_operand != nullptr) admitted_kv_structured_read_operand = g_kv_structured_read_operand;
+  if (lowered.operation_id == "engine.op.kv_structured_mutate" && g_kv_structured_mutate_operand != nullptr) admitted_kv_structured_mutate_operand = g_kv_structured_mutate_operand;
+  if (lowered.operation_id == "engine.op.kv_structured_scan" && g_kv_structured_scan_operand != nullptr) admitted_kv_structured_scan_operand = g_kv_structured_scan_operand;
+  if (lowered.operation_id == "engine.op.kv_structured_stream_read" && g_kv_structured_stream_read_operand != nullptr) admitted_kv_structured_stream_read_operand = g_kv_structured_stream_read_operand;
+  if (lowered.operation_id == "engine.op.kv_structured_stream_append" && g_kv_structured_stream_append_operand != nullptr) admitted_kv_structured_stream_append_operand = g_kv_structured_stream_append_operand;
+  if (lowered.operation_id == "engine.op.kv_structured_timeseries" && g_kv_structured_timeseries_operand != nullptr) admitted_kv_structured_timeseries_operand = g_kv_structured_timeseries_operand;
+  if (lowered.operation_id == "engine.op.system_config_set" && g_system_config_set_operand != nullptr) admitted_system_config_set_operand = g_system_config_set_operand;
+  if (lowered.operation_id == "engine.op.ddl_create_domain" && g_system_config_set_operand != nullptr) admitted_system_config_set_operand = g_system_config_set_operand;
+  if (lowered.operation_id == "engine.op.ddl_alter_domain" && g_system_config_set_operand != nullptr) admitted_system_config_set_operand = g_system_config_set_operand;
+  if (lowered.operation_id == "engine.op.ddl_create_view" && g_system_config_set_operand != nullptr) admitted_system_config_set_operand = g_system_config_set_operand;
+  if (lowered.operation_id == "engine.op.ddl_alter_view" && g_system_config_set_operand != nullptr) admitted_system_config_set_operand = g_system_config_set_operand;
+  if (lowered.operation_id == "engine.op.ddl_drop_view" && g_system_config_set_operand != nullptr) admitted_system_config_set_operand = g_system_config_set_operand;
+  if (lowered.operation_id == "engine.op.ddl_create_trigger" && g_ddl_create_trigger_operand != nullptr) admitted_ddl_create_trigger_operand = g_ddl_create_trigger_operand;
+  if (lowered.operation_id == "engine.op.ddl_alter_trigger" && g_ddl_alter_trigger_operand != nullptr) admitted_ddl_alter_trigger_operand = g_ddl_alter_trigger_operand;
+  if (lowered.operation_id == "engine.op.ddl_drop_trigger" && g_ddl_drop_trigger_operand != nullptr) admitted_ddl_drop_trigger_operand = g_ddl_drop_trigger_operand;
+  if (lowered.operation_id == "engine.op.ddl_create_procedure" && g_ddl_create_procedure_operand != nullptr) admitted_ddl_create_procedure_operand = g_ddl_create_procedure_operand;
+  if (lowered.operation_id == "engine.op.ddl_alter_procedure" && g_ddl_alter_procedure_operand != nullptr) admitted_ddl_alter_procedure_operand = g_ddl_alter_procedure_operand;
+  if (lowered.operation_id == "engine.op.ddl_drop_procedure" && g_ddl_drop_procedure_operand != nullptr) admitted_ddl_drop_procedure_operand = g_ddl_drop_procedure_operand;
+  if (lowered.operation_id == "engine.op.ddl_create_function" && g_ddl_create_function_operand != nullptr) admitted_ddl_create_function_operand = g_ddl_create_function_operand;
+  if (lowered.operation_id == "engine.op.ddl_alter_function" && g_ddl_alter_function_operand != nullptr) admitted_ddl_alter_function_operand = g_ddl_alter_function_operand;
+  if (lowered.operation_id == "engine.op.ddl_drop_function" && g_ddl_drop_function_operand != nullptr) admitted_ddl_drop_function_operand = g_ddl_drop_function_operand;
+  if (lowered.operation_id == "engine.op.ddl_create_package" && g_ddl_create_package_operand != nullptr) admitted_ddl_create_package_operand = g_ddl_create_package_operand;
+  if (lowered.operation_id == "engine.op.ddl_create_temporary_table" && g_ddl_create_temporary_table_operand != nullptr) admitted_ddl_create_temporary_table_operand = g_ddl_create_temporary_table_operand;
+  if (lowered.operation_id == "engine.op.ddl_drop_temporary_table" && g_ddl_drop_temporary_table_operand != nullptr) admitted_ddl_drop_temporary_table_operand = g_ddl_drop_temporary_table_operand;
+  if (lowered.operation_id == "engine.op.ddl_rename_object_vector" && g_ddl_rename_object_vector_operand != nullptr) admitted_ddl_rename_object_vector_operand = g_ddl_rename_object_vector_operand;
+  if (lowered.operation_id == "engine.op.ddl_create_or_replace_srs" && g_ddl_create_or_replace_srs_operand != nullptr) admitted_ddl_create_or_replace_srs_operand = g_ddl_create_or_replace_srs_operand;
+  if (lowered.operation_id == "engine.op.ddl_drop_srs" && g_ddl_drop_srs_operand != nullptr) admitted_ddl_drop_srs_operand = g_ddl_drop_srs_operand;
+  if (lowered.operation_id == "engine.op.ddl_create_rewrite_rule" && g_ddl_create_rewrite_rule_operand != nullptr) admitted_ddl_create_rewrite_rule_operand = g_ddl_create_rewrite_rule_operand;
+  if (lowered.operation_id == "engine.op.ddl_alter_rewrite_rule" && g_ddl_alter_rewrite_rule_operand != nullptr) admitted_ddl_alter_rewrite_rule_operand = g_ddl_alter_rewrite_rule_operand;
+  if (lowered.operation_id == "engine.op.ddl_drop_rewrite_rule" && g_ddl_drop_rewrite_rule_operand != nullptr) admitted_ddl_drop_rewrite_rule_operand = g_ddl_drop_rewrite_rule_operand;
+  if ((lowered.operation_id == "engine.op.ddl_create_schema" || lowered.operation_id == "engine.op.ddl_create_table" || lowered.operation_id == "engine.op.ddl_create_index" || lowered.operation_id == "engine.op.ddl_drop_index") && g_system_config_set_operand != nullptr) admitted_system_config_set_operand = g_system_config_set_operand;
+  (void)admitted_sequence_setval_reserved;
+  (void)admitted_sort_reserved_1;(void)admitted_sort_reserved_2;(void)admitted_sort_reserved_3;(void)admitted_sort_reserved_4;
+  auto operation = lowered.operation_id == "engine.op.ddl_drop_rewrite_rule" && g_ddl_drop_rewrite_rule_operand != nullptr
+      ? [&]() -> std::optional<CanonicalBytes> {
+          namespace c = scratchbird::engine::sblr;
+          auto e = c::MakeSblrEnvelope("engine.op.ddl_drop_rewrite_rule", "SBLR_DDL_DROP_REWRITE_RULE", "ddl.drop.rewrite.rule.native");
+          e.opcode_code = 1619; e.requires_transaction_context = true; e.requires_security_context = true;
+          e.result_shape = "management_result"; e.diagnostic_shape = "diagnostic_vector";
+          e.parser_package_uuid = session.admitted_parser_package_uuid;
+          e.parser_package_version_major = session.admitted_parser_package_version_major;
+          e.parser_package_version_minor = session.admitted_parser_package_version_minor;
+          e.parser_package_version_patch = session.admitted_parser_package_version_patch;
+          e.registry_snapshot_uuid = statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids = true;
+          c::SblrOperand o; o.ordinal = 1; o.type = "rewrite_rule_drop_descriptor"; o.name = "rewrite_rule";
+          o.value_kind = c::SblrValueKind::rewrite_rule_drop_descriptor;
+          o.value_body = *g_ddl_drop_rewrite_rule_operand; e.operands.push_back(std::move(o));
+          auto bytes = c::EncodeSblrEnvelope(e); if (bytes.empty()) return std::nullopt;
+          return CanonicalBytes(bytes.begin(), bytes.end());
+        }()
+      : lowered.operation_id == "engine.op.txn_begin"
+      ? EncodeNativeTxnBeginOperationBinary(statement_context, session)
+      : lowered.operation_id == "engine.op.txn_commit" &&
+                admitted_transaction_handle != nullptr
+            ? EncodeNativeTxnCommitOperationBinary(
+                  statement_context, session, *admitted_transaction_handle)
+      : lowered.operation_id == "engine.op.txn_rollback" &&
+                admitted_transaction_handle != nullptr
+            ? EncodeNativeTxnRollbackOperationBinary(
+                  statement_context, session, *admitted_transaction_handle)
+      : lowered.operation_id == "engine.op.txn_savepoint" &&
+                admitted_savepoint_descriptor != nullptr
+            ? EncodeNativeTxnSavepointOperationBinary(
+                  statement_context, session, *admitted_savepoint_descriptor)
+      : lowered.operation_id == "engine.op.txn_release_savepoint" &&
+                admitted_savepoint_handle != nullptr
+            ? EncodeNativeTxnReleaseSavepointOperationBinary(
+                  statement_context, session, *admitted_savepoint_handle,
+                  replay_savepoint_release_operand)
+      : lowered.operation_id == "engine.op.txn_rollback_to_savepoint" && admitted_savepoint_handle != nullptr
+            ? EncodeNativeTxnRollbackToSavepointOperationBinary(statement_context, session, *admitted_savepoint_handle,
+                  replay_savepoint_release_operand)
+      : lowered.operation_id == "engine.op.psql_autonomous_frame" && admitted_autonomous_descriptor != nullptr
+            ? [&]() -> std::optional<CanonicalBytes> {
+                namespace af=scratchbird::engine::sblr;
+                auto e=af::MakeSblrEnvelope("engine.op.psql_autonomous_frame","SBLR_PSQL_AUTONOMOUS_FRAME","psql.autonomous.native");
+                e.opcode_code=262;e.result_shape="autonomous_frame_result";e.diagnostic_shape="diagnostic_vector";
+                e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;
+                e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;
+                e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;
+                af::SblrOperand o;o.ordinal=1;o.type="autonomous_frame_descriptor";o.name="autonomous_frame";
+                o.value_kind=af::SblrValueKind::psql_autonomous_frame_descriptor;o.value_body=*admitted_autonomous_descriptor;e.operands.push_back(std::move(o));
+                auto bytes=af::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());
+              }()
+      : lowered.operation_id == "engine.op.transaction_reservation_release" && admitted_reservation_release_descriptor != nullptr
+            ? [&]() -> std::optional<CanonicalBytes> {
+                namespace rr=scratchbird::engine::sblr;
+                auto e=rr::MakeSblrEnvelope("engine.op.transaction_reservation_release","SBLR_TRANSACTION_RESERVATION_RELEASE","transaction.reservation.release.native");
+                e.opcode_code=263;e.result_shape="transaction_reservation_result";e.diagnostic_shape="diagnostic_vector";
+                e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;
+                e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;
+                e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;
+                rr::SblrOperand o;o.ordinal=1;o.type="relation_reservation_release_descriptor";o.name="reservation";
+                o.value_kind=rr::SblrValueKind::relation_reservation_release_descriptor;o.value_body=*admitted_reservation_release_descriptor;e.operands.push_back(std::move(o));
+                auto bytes=rr::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());
+              }()
+      : lowered.operation_id == "engine.op.temporary_instance_cleanup" && admitted_temporary_cleanup_descriptor != nullptr
+            ? [&]() -> std::optional<CanonicalBytes> {namespace ti=scratchbird::engine::sblr;auto e=ti::MakeSblrEnvelope("engine.op.temporary_instance_cleanup","SBLR_TEMPORARY_INSTANCE_CLEANUP","temporary.instance.cleanup.native");e.opcode_code=264;e.result_shape="temporary_cleanup_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;ti::SblrOperand o;o.ordinal=1;o.type="temporary_instance_cleanup_descriptor";o.name="temporary_instance";o.value_kind=ti::SblrValueKind::temporary_instance_cleanup_descriptor;o.value_body=*admitted_temporary_cleanup_descriptor;e.operands.push_back(std::move(o));auto bytes=ti::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.cursor_open" && admitted_cursor_open_descriptor != nullptr
+            ? [&]() -> std::optional<CanonicalBytes> {namespace co=scratchbird::engine::sblr;auto e=co::MakeSblrEnvelope("engine.op.cursor_open","SBLR_CURSOR_OPEN","cursor.open.native");e.opcode_code=512;e.result_shape="cursor_handle";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;co::SblrOperand o;o.ordinal=1;o.type="cursor_open_plan_ref";o.name="plan";o.value_kind=co::SblrValueKind::cursor_open_plan_ref;o.value_body=*admitted_cursor_open_descriptor;e.operands.push_back(std::move(o));auto bytes=co::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.cursor_fetch" && admitted_cursor_fetch_operand != nullptr
+            ? EncodeNativeCursorFetchOperationBinary(statement_context, session, *admitted_cursor_fetch_operand)
+      : lowered.operation_id == "engine.op.cursor_close" && admitted_cursor_fetch_operand != nullptr
+            ? EncodeNativeCursorCloseOperationBinary(statement_context, session, *admitted_cursor_fetch_operand)
+      : lowered.operation_id == "engine.op.read_by_key" && admitted_read_by_key_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace rb=scratchbird::engine::sblr;auto e=rb::MakeSblrEnvelope("engine.op.read_by_key","SBLR_READ_BY_KEY","read.by_key.native");e.opcode_code=515;e.result_shape="row_descriptor";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;rb::SblrOperand o;o.ordinal=1;o.type="uuid_object_key_descriptor";o.name="key";o.value_kind=rb::SblrValueKind::read_by_key_descriptor;o.value_body=*admitted_read_by_key_operand;e.operands.push_back(std::move(o));auto bytes=rb::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.read_range" && admitted_read_range_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace rr=scratchbird::engine::sblr;auto e=rr::MakeSblrEnvelope("engine.op.read_range","SBLR_READ_RANGE","read.range.native");e.opcode_code=516;e.result_shape="rowset_descriptor";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;rr::SblrOperand o;o.ordinal=1;o.type="range_scan_descriptor";o.name="range";o.value_kind=rr::SblrValueKind::read_range_descriptor;o.value_body=*admitted_read_range_operand;e.operands.push_back(std::move(o));auto bytes=rr::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.read_stream" && admitted_read_stream_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace rs=scratchbird::engine::sblr;auto e=rs::MakeSblrEnvelope("engine.op.read_stream","SBLR_READ_STREAM","read.stream.native");e.opcode_code=517;e.result_shape="stream_handle";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;rs::SblrOperand o;o.ordinal=1;o.type="stream_descriptor";o.name="stream";o.value_kind=rs::SblrValueKind::read_stream_descriptor;o.value_body=*admitted_read_stream_operand;e.operands.push_back(std::move(o));auto bytes=rs::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.result_set_pass" && admitted_result_set_pass_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace rp=scratchbird::engine::sblr;auto e=rp::MakeSblrEnvelope("engine.op.result_set_pass","SBLR_RESULT_SET_PASS","result.set.pass.native");e.opcode_code=518;e.result_shape="result_set_handle";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;rp::SblrOperand o;o.ordinal=1;o.type="result_set_handle_and_lifetime";o.name="result_set";o.value_kind=rp::SblrValueKind::result_set_pass_descriptor;o.value_body=*admitted_result_set_pass_operand;e.operands.push_back(std::move(o));auto bytes=rp::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.access_cursor_open" && admitted_access_cursor_open_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace ac=scratchbird::engine::sblr;auto e=ac::MakeSblrEnvelope("engine.op.access_cursor_open","SBLR_ACCESS_CURSOR_OPEN","access.cursor.open.native");e.opcode_code=519;e.result_shape="access_cursor_handle";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;ac::SblrOperand o;o.ordinal=1;o.type="access_cursor_open_descriptor";o.name="access_cursor";o.value_kind=ac::SblrValueKind::access_cursor_open_descriptor;o.value_body=*admitted_access_cursor_open_operand;e.operands.push_back(std::move(o));auto bytes=ac::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.access_cursor_fetch" && admitted_access_cursor_fetch_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace ac=scratchbird::engine::sblr;auto e=ac::MakeSblrEnvelope("engine.op.access_cursor_fetch","SBLR_ACCESS_CURSOR_FETCH","access.cursor.fetch.native");e.opcode_code=520;e.result_shape="access_cursor_rowset_or_eof";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;ac::SblrOperand o;o.ordinal=1;o.type="access_cursor_fetch_descriptor";o.name="access_cursor";o.value_kind=ac::SblrValueKind::access_cursor_fetch_descriptor;o.value_body=*admitted_access_cursor_fetch_operand;e.operands.push_back(std::move(o));auto bytes=ac::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.access_cursor_close" && admitted_access_cursor_close_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace ac=scratchbird::engine::sblr;auto e=ac::MakeSblrEnvelope("engine.op.access_cursor_close","SBLR_ACCESS_CURSOR_CLOSE","access.cursor.close.native");e.opcode_code=521;e.result_shape="void";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;ac::SblrOperand o;o.ordinal=1;o.type="access_cursor_close_descriptor";o.name="access_cursor";o.value_kind=ac::SblrValueKind::access_cursor_close_descriptor;o.value_body=*admitted_access_cursor_close_operand;e.operands.push_back(std::move(o));auto bytes=ac::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.insert" && admitted_insert_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace in=scratchbird::engine::sblr;auto e=in::MakeSblrEnvelope("engine.op.insert","SBLR_INSERT","insert.native");e.opcode_code=768;e.result_shape="mutation_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;in::SblrOperand o;o.ordinal=1;o.type="insert_descriptor";o.name="insert";o.value_kind=in::SblrValueKind::insert_descriptor;o.value_body=*admitted_insert_operand;e.operands.push_back(std::move(o));auto bytes=in::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.update" && admitted_update_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace up=scratchbird::engine::sblr;auto e=up::MakeSblrEnvelope("engine.op.update","SBLR_UPDATE","update.native");e.opcode_code=769;e.result_shape="mutation_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;up::SblrOperand o;o.ordinal=1;o.type="update_descriptor";o.name="update";o.value_kind=up::SblrValueKind::update_descriptor;o.value_body=*admitted_update_operand;e.operands.push_back(std::move(o));auto bytes=up::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.delete" && admitted_delete_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace del=scratchbird::engine::sblr;auto e=del::MakeSblrEnvelope("engine.op.delete","SBLR_DELETE","delete.native");e.opcode_code=770;e.result_shape="mutation_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;del::SblrOperand o;o.ordinal=1;o.type="delete_descriptor";o.name="delete";o.value_kind=del::SblrValueKind::delete_descriptor;o.value_body=*admitted_delete_operand;e.operands.push_back(std::move(o));auto bytes=del::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.merge" && admitted_merge_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace mer=scratchbird::engine::sblr;auto e=mer::MakeSblrEnvelope("engine.op.merge","SBLR_MERGE","merge.native");e.opcode_code=771;e.result_shape="mutation_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;mer::SblrOperand o;o.ordinal=1;o.type="merge_descriptor";o.name="merge";o.value_kind=mer::SblrValueKind::merge_descriptor;o.value_body=*admitted_merge_operand;e.operands.push_back(std::move(o));auto bytes=mer::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.table_truncate" && admitted_table_truncate_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace tt=scratchbird::engine::sblr;auto e=tt::MakeSblrEnvelope("engine.op.table_truncate","SBLR_TABLE_TRUNCATE","table.truncate.native");e.opcode_code=773;e.result_shape="mutation_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;tt::SblrOperand o;o.ordinal=1;o.type="truncate_table_descriptor";o.name="truncate";o.value_kind=tt::SblrValueKind::truncate_table_descriptor;o.value_body=*admitted_table_truncate_operand;e.operands.push_back(std::move(o));auto bytes=tt::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.table_analyze" && admitted_table_analyze_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace ta=scratchbird::engine::sblr;auto e=ta::MakeSblrEnvelope("engine.op.table_analyze","SBLR_TABLE_ANALYZE","table.analyze.native");e.opcode_code=774;e.result_shape="mutation_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;ta::SblrOperand o;o.ordinal=1;o.type="analyze_table_descriptor";o.name="analyze";o.value_kind=ta::SblrValueKind::analyze_table_descriptor;o.value_body=*admitted_table_analyze_operand;e.operands.push_back(std::move(o));auto bytes=ta::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.bulk_import_stream" && admitted_bulk_import_stream_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace bi=scratchbird::engine::sblr;auto e=bi::MakeSblrEnvelope("engine.op.bulk_import_stream","SBLR_BULK_IMPORT_STREAM","bulk.import.stream.native");e.opcode_code=775;e.result_shape="bulk_mutation_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;bi::SblrOperand o;o.ordinal=1;o.type="bulk_import_stream_descriptor";o.name="bulk_import";o.value_kind=bi::SblrValueKind::bulk_import_stream_descriptor;o.value_body=*admitted_bulk_import_stream_operand;e.operands.push_back(std::move(o));auto bytes=bi::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.bulk_export_stream" && admitted_bulk_export_stream_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace be=scratchbird::engine::sblr;auto e=be::MakeSblrEnvelope("engine.op.bulk_export_stream","SBLR_BULK_EXPORT_STREAM","bulk.export.stream.native");e.opcode_code=776;e.result_shape="bulk_read_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;be::SblrOperand o;o.ordinal=1;o.type="bulk_export_stream_descriptor";o.name="bulk_export";o.value_kind=be::SblrValueKind::bulk_export_stream_descriptor;o.value_body=*admitted_bulk_export_stream_operand;e.operands.push_back(std::move(o));auto bytes=be::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.statement_batch" && admitted_statement_batch_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace sb=scratchbird::engine::sblr;auto e=sb::MakeSblrEnvelope("engine.op.statement_batch","SBLR_STATEMENT_BATCH","statement.batch.native");e.opcode_code=777;e.result_shape="batch_result_vector";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;sb::SblrOperand o;o.ordinal=1;o.type="statement_batch_descriptor";o.name="batch";o.value_kind=sb::SblrValueKind::statement_batch_descriptor;o.value_body=*admitted_statement_batch_operand;e.operands.push_back(std::move(o));auto bytes=sb::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.atomic_cas" && admitted_atomic_cas_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace ac=scratchbird::engine::sblr;auto e=ac::MakeSblrEnvelope("engine.op.atomic_cas","SBLR_ATOMIC_CAS","atomic.cas.native");e.opcode_code=778;e.result_shape="atomic_cas_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;ac::SblrOperand o;o.ordinal=1;o.type="atomic_cas_descriptor";o.name="cas";o.value_kind=ac::SblrValueKind::atomic_cas_descriptor;o.value_body=*admitted_atomic_cas_operand;e.operands.push_back(std::move(o));auto bytes=ac::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.atomic_read_modify_write" && admitted_atomic_rmw_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace ar=scratchbird::engine::sblr;auto e=ar::MakeSblrEnvelope("engine.op.atomic_read_modify_write","SBLR_ATOMIC_READ_MODIFY_WRITE","atomic.rmw.native");e.opcode_code=779;e.result_shape="atomic_rmw_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;ar::SblrOperand o;o.ordinal=1;o.type="atomic_rmw_descriptor";o.name="rmw";o.value_kind=ar::SblrValueKind::atomic_rmw_descriptor;o.value_body=*admitted_atomic_rmw_operand;e.operands.push_back(std::move(o));auto bytes=ar::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.advisory_lock_acquire" && admitted_advisory_lock_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace al=scratchbird::engine::sblr;auto e=al::MakeSblrEnvelope("engine.op.advisory_lock_acquire","SBLR_ADVISORY_LOCK_ACQUIRE","advisory.lock.native");e.opcode_code=780;e.result_shape="advisory_lock_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;al::SblrOperand o;o.ordinal=1;o.type="advisory_lock_descriptor";o.name="lock";o.value_kind=al::SblrValueKind::advisory_lock_descriptor;o.value_body=*admitted_advisory_lock_operand;e.operands.push_back(std::move(o));auto bytes=al::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.advisory_lock_release" && admitted_advisory_lock_release_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace al=scratchbird::engine::sblr;auto e=al::MakeSblrEnvelope("engine.op.advisory_lock_release","SBLR_ADVISORY_LOCK_RELEASE","advisory.lock.release.native");e.opcode_code=781;e.result_shape="advisory_lock_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;al::SblrOperand o;o.ordinal=1;o.type="advisory_lock_release_descriptor";o.name="release";o.value_kind=al::SblrValueKind::advisory_lock_release_descriptor;o.value_body=*admitted_advisory_lock_release_operand;e.operands.push_back(std::move(o));auto bytes=al::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.function_call" && admitted_function_call_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace fc=scratchbird::engine::sblr;auto e=fc::MakeSblrEnvelope("engine.op.function_call","SBLR_FUNCTION_CALL","function.call.native");e.opcode_code=1024;e.result_shape="typed_value";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;fc::SblrOperand o;o.ordinal=1;o.type="function_call_descriptor";o.name="call";o.value_kind=fc::SblrValueKind::function_call_descriptor;o.value_body=*admitted_function_call_operand;e.operands.push_back(std::move(o));auto bytes=fc::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.operator_call" && admitted_operator_call_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace oc=scratchbird::engine::sblr;auto e=oc::MakeSblrEnvelope("engine.op.operator_call","SBLR_OPERATOR_CALL","operator.call.native");e.opcode_code=1025;e.result_shape="typed_value";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;oc::SblrOperand o;o.ordinal=1;o.type="operator_call_descriptor";o.name="call";o.value_kind=oc::SblrValueKind::operator_call_descriptor;o.value_body=*admitted_operator_call_operand;e.operands.push_back(std::move(o));auto bytes=oc::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.cast" && admitted_cast_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace cs=scratchbird::engine::sblr;auto e=cs::MakeSblrEnvelope("engine.op.cast","SBLR_CAST","cast.native");e.opcode_code=1026;e.result_shape="typed_value";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;cs::SblrOperand o;o.ordinal=1;o.type="cast_descriptor";o.name="cast";o.value_kind=cs::SblrValueKind::cast_descriptor;o.value_body=*admitted_cast_operand;e.operands.push_back(std::move(o));auto bytes=cs::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.compare" && admitted_compare_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace cp=scratchbird::engine::sblr;auto e=cp::MakeSblrEnvelope("engine.op.compare","SBLR_COMPARE","compare.native");e.opcode_code=1027;e.result_shape="boolean_value";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;cp::SblrOperand o;o.ordinal=1;o.type="comparison_descriptor";o.name="compare";o.value_kind=cp::SblrValueKind::comparison_descriptor;o.value_body=*admitted_compare_operand;e.operands.push_back(std::move(o));auto bytes=cp::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.domain_operation" && admitted_domain_operation_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace dom=scratchbird::engine::sblr;auto e=dom::MakeSblrEnvelope("engine.op.domain_operation","SBLR_DOMAIN_OPERATION","domain.operation.native");e.opcode_code=1028;e.result_shape="typed_value";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;dom::SblrOperand o;o.ordinal=1;o.type="domain_operation_descriptor";o.name="domain_operation";o.value_kind=dom::SblrValueKind::domain_operation_descriptor;o.value_body=*admitted_domain_operation_operand;e.operands.push_back(std::move(o));auto bytes=dom::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.udr_invoke" && admitted_udr_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace u=scratchbird::engine::sblr;auto e=u::MakeSblrEnvelope("engine.op.udr_invoke","SBLR_UDR_INVOKE","udr.invoke.native");e.opcode_code=1029;e.result_shape="typed_value_or_result_set";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;u::SblrOperand o;o.ordinal=1;o.type="registered_cpp_udr_invocation";o.name="udr";o.value_kind=u::SblrValueKind::registered_cpp_udr_invocation;o.value_body=*admitted_udr_operand;e.operands.push_back(std::move(o));auto bytes=u::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.procedure_invoke" && admitted_procedure_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace p=scratchbird::engine::sblr;auto e=p::MakeSblrEnvelope("engine.op.procedure_invoke","SBLR_PROCEDURE_INVOKE","procedure.invoke.native");e.opcode_code=1030;e.result_shape="procedure_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;p::SblrOperand o;o.ordinal=1;o.type="procedure_invoke_descriptor";o.name="procedure";o.value_kind=p::SblrValueKind::procedure_invoke_descriptor;o.value_body=*admitted_procedure_operand;e.operands.push_back(std::move(o));auto bytes=p::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.function_invoke" && admitted_function_invoke_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace f=scratchbird::engine::sblr;auto e=f::MakeSblrEnvelope("engine.op.function_invoke","SBLR_FUNCTION_INVOKE","function.invoke.native");e.opcode_code=1031;e.result_shape="typed_value";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;f::SblrOperand o;o.ordinal=1;o.type="function_invoke_descriptor";o.name="package";o.value_kind=f::SblrValueKind::function_invoke_descriptor;o.value_body=*admitted_function_invoke_operand;e.operands.push_back(std::move(o));auto bytes=f::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.aggregate_invoke" && admitted_aggregate_invoke_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace a=scratchbird::engine::sblr;auto e=a::MakeSblrEnvelope("engine.op.aggregate_invoke","SBLR_AGGREGATE_INVOKE","aggregate.invoke.native");e.opcode_code=1032;e.result_shape="typed_value";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;a::SblrOperand o;o.ordinal=1;o.type="aggregate_invoke_descriptor";o.name="aggregate";o.value_kind=a::SblrValueKind::aggregate_invoke_descriptor;o.value_body=*admitted_aggregate_invoke_operand;e.operands.push_back(std::move(o));auto bytes=a::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.sequence_nextval" && admitted_sequence_nextval_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace n=scratchbird::engine::sblr;auto e=n::MakeSblrEnvelope("engine.op.sequence_nextval","SBLR_SEQUENCE_NEXTVAL","sequence.nextval.native");e.opcode_code=1033;e.result_shape="typed_value";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;n::SblrOperand o;o.ordinal=1;o.type="sequence_nextval_descriptor";o.name="sequence";o.value_kind=n::SblrValueKind::sequence_nextval_descriptor;o.value_body=*admitted_sequence_nextval_operand;e.operands.push_back(std::move(o));auto bytes=n::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.sequence_currval" && admitted_sequence_currval_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.sequence_currval","SBLR_SEQUENCE_CURRVAL","sequence.currval.native");e.opcode_code=1034;e.result_shape="typed_value";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="sequence_currval_descriptor";o.name="sequence";o.value_kind=c::SblrValueKind::sequence_currval_descriptor;o.value_body=*admitted_sequence_currval_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.sequence_setval" && admitted_sequence_setval_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.sequence_setval","SBLR_SEQUENCE_SETVAL","sequence.setval.native");e.opcode_code=1035;e.result_shape="typed_value";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="sequence_setval_descriptor";o.name="sequence";o.value_kind=c::SblrValueKind::sequence_setval_descriptor;o.value_body=*admitted_sequence_setval_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.query_apply_numeric_operation" && admitted_query_numeric_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.query_apply_numeric_operation","SBLR_QUERY_APPLY_NUMERIC_OPERATION","query.numeric.native");e.opcode_code=1036;e.result_shape="typed_value";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="numeric_descriptor_and_operand_values";o.name="numeric_operation";o.value_kind=c::SblrValueKind::numeric_operation_descriptor;o.value_body=*admitted_query_numeric_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.query_evaluate_advanced_datatype_family" && admitted_advanced_datatype_family_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.query_evaluate_advanced_datatype_family","SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY","query.advanced_datatype_family.native");e.opcode_code=1037;e.result_shape="datatype_family_evaluation";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="advanced_family_descriptor_operation_index_profile";o.name="datatype_family";o.value_kind=c::SblrValueKind::advanced_datatype_family_descriptor;o.value_body=*admitted_advanced_datatype_family_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.project" && admitted_project_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.project","SBLR_PROJECT","project.native");e.opcode_code=1280;e.result_shape="rowset_descriptor";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="projection_descriptor";o.name="projection";o.value_kind=c::SblrValueKind::projection_descriptor;o.value_body=*admitted_project_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.aggregate" && admitted_aggregate_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.aggregate","SBLR_AGGREGATE","aggregate.native");e.opcode_code=1281;e.result_shape="rowset_descriptor";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="aggregate_descriptor";o.name="aggregate";o.value_kind=c::SblrValueKind::aggregate_descriptor;o.value_body=*admitted_aggregate_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.group" && admitted_group_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.group","SBLR_GROUP","group.native");e.opcode_code=1282;e.result_shape="rowset_descriptor";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="group_descriptor";o.name="group";o.value_kind=c::SblrValueKind::group_descriptor;o.value_body=*admitted_group_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.sort" && admitted_sort_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.sort","SBLR_SORT","sort.native");e.opcode_code=1283;e.result_shape="rowset_descriptor";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="sort_descriptor";o.name="sort";o.value_kind=c::SblrValueKind::sort_descriptor;o.value_body=*admitted_sort_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.limit" && admitted_sort_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.limit","SBLR_LIMIT","limit.native");e.opcode_code=1284;e.result_shape="rowset_descriptor";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="limit_descriptor";o.name="limit";o.value_kind=c::SblrValueKind::limit_descriptor;o.value_body=*admitted_sort_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.window" && admitted_sort_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.window","SBLR_WINDOW","window.native");e.opcode_code=1285;e.result_shape="rowset_descriptor";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="window_descriptor";o.name="window";o.value_kind=c::SblrValueKind::window_descriptor;o.value_body=*admitted_sort_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.return_result_set" && admitted_return_result_set_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.return_result_set","SBLR_RETURN_RESULT_SET","return.result_set.native");e.opcode_code=1286;e.result_shape="result_set_handle";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="result_set_return_descriptor";o.name="result_set";o.value_kind=c::SblrValueKind::result_set_return_descriptor;o.value_body=*admitted_return_result_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.kv_structured_mutate" && admitted_kv_structured_mutate_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.kv_structured_mutate","SBLR_KV_STRUCTURED_MUTATE","kv.structured_mutate.native");e.opcode_code=8193;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="kv_structured_mutate_descriptor";o.name="kv_mutate";o.value_kind=c::SblrValueKind::kv_structured_mutate_descriptor;o.value_body=*admitted_kv_structured_mutate_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.kv_structured_scan" && admitted_kv_structured_scan_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.kv_structured_scan","SBLR_KV_STRUCTURED_SCAN","kv.structured.scan.native");e.opcode_code=8194;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="kv_structured_scan_descriptor";o.name="kv_scan";o.value_kind=c::SblrValueKind::kv_structured_scan_descriptor;o.value_body=*admitted_kv_structured_scan_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.kv_structured_stream_read" && admitted_kv_structured_stream_read_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.kv_structured_stream_read","SBLR_KV_STRUCTURED_STREAM_READ","kv.structured.stream_read.native");e.opcode_code=8195;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="kv_structured_stream_read_descriptor";o.name="kv_stream_read";o.value_kind=c::SblrValueKind::kv_structured_stream_read_descriptor;o.value_body=*admitted_kv_structured_stream_read_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.kv_structured_stream_append" && admitted_kv_structured_stream_append_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.kv_structured_stream_append","SBLR_KV_STRUCTURED_STREAM_APPEND","kv.structured.stream_append.native");e.opcode_code=8196;e.result_shape="kv_structured_mutation_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="kv_structured_stream_append_descriptor";o.name="kv_stream_append";o.value_kind=c::SblrValueKind::kv_structured_stream_append_descriptor;o.value_body=*admitted_kv_structured_stream_append_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.kv_structured_timeseries" && admitted_kv_structured_timeseries_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.kv_structured_timeseries","SBLR_KV_STRUCTURED_TIMESERIES","system.config.set.native");e.opcode_code=8197;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="kv_timeseries_descriptor";o.name="system_config";o.value_kind=c::SblrValueKind::kv_structured_timeseries_descriptor;o.value_body=*admitted_kv_structured_timeseries_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.system_config_set" && admitted_system_config_set_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.system_config_set","SBLR_SYSTEM_CONFIG_SET","system.config.set.native");e.opcode_code=5125;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="system_config_set_descriptor";o.name="system_config";o.value_kind=c::SblrValueKind::system_config_set_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.ddl_create_view" && admitted_system_config_set_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_view","SBLR_DDL_CREATE_VIEW","ddl.create.domain.native");e.opcode_code=1548;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_view_descriptor";o.name="domain";o.value_kind=c::SblrValueKind::create_view_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.ddl_alter_view" && admitted_system_config_set_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_alter_view","SBLR_DDL_ALTER_VIEW","ddl.alter.view.native");e.opcode_code=1549;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="alter_view_descriptor";o.name="domain";o.value_kind=c::SblrValueKind::alter_view_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.ddl_drop_view" && admitted_system_config_set_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_drop_view","SBLR_DDL_DROP_VIEW","ddl.drop.view.native");e.opcode_code=1550;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="drop_view_descriptor";o.name="domain";o.value_kind=c::SblrValueKind::drop_view_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.ddl_create_trigger" && admitted_ddl_create_trigger_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_trigger","SBLR_DDL_CREATE_TRIGGER","ddl.create.trigger.native");e.opcode_code=1551;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_trigger_descriptor";o.name="domain";o.value_kind=c::SblrValueKind::create_trigger_descriptor;o.value_body=*admitted_ddl_create_trigger_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.ddl_alter_domain" && admitted_system_config_set_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_alter_domain","SBLR_DDL_ALTER_DOMAIN","ddl.create.domain.native");e.opcode_code=1547;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="alter_domain_descriptor";o.name="domain";o.value_kind=c::SblrValueKind::alter_domain_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.ddl_create_domain" && admitted_system_config_set_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_domain","SBLR_DDL_CREATE_DOMAIN","ddl.create.domain.native");e.opcode_code=1542;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_domain_descriptor";o.name="domain";o.value_kind=c::SblrValueKind::create_domain_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.ddl_create_schema" && admitted_system_config_set_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_schema","SBLR_DDL_CREATE_SCHEMA","ddl.create.schema.native");e.opcode_code=1536;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_schema_descriptor";o.name="schema";o.value_kind=c::SblrValueKind::create_schema_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.ddl_create_table" && admitted_system_config_set_operand != nullptr
+                        ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_table","SBLR_DDL_CREATE_TABLE","ddl.create.table.native");e.opcode_code=1537;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_table_descriptor";o.name="table";o.value_kind=c::SblrValueKind::create_table_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.ddl_create_index" && admitted_system_config_set_operand != nullptr
+                        ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_index","SBLR_DDL_CREATE_INDEX","ddl.drop.index.native");e.opcode_code=1540;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_index_descriptor";o.name="index";o.value_kind=c::SblrValueKind::create_index_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.ddl_drop_index" && admitted_system_config_set_operand != nullptr
+                        ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_drop_index","SBLR_DDL_DROP_INDEX","ddl.drop.index.native");e.opcode_code=1541;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="drop_index_descriptor";o.name="index";o.value_kind=c::SblrValueKind::drop_index_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : lowered.operation_id == "engine.op.kv_structured_read" && admitted_kv_structured_read_operand != nullptr
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.kv_structured_read","SBLR_KV_STRUCTURED_READ","kv.structured_read.native");e.opcode_code=8192;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="kv_structured_read_descriptor";o.name="kv_read";o.value_kind=c::SblrValueKind::kv_structured_read_descriptor;o.value_body=*admitted_kv_structured_read_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+      : EncodeNativeQueryOperationBinary(bound, lowered, statement_context,
+                                               session, parameter_prebind,
+                                               variable_prebind);
+  if (lowered.operation_id == "engine.op.ddl_alter_trigger" && admitted_ddl_alter_trigger_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr;
+    auto e = c::MakeSblrEnvelope("engine.op.ddl_alter_trigger", "SBLR_DDL_ALTER_TRIGGER", "ddl.alter.trigger.native");
+    e.opcode_code = 1552; e.requires_transaction_context = true; e.requires_security_context = true;
+    e.result_shape = "management_result"; e.diagnostic_shape = "diagnostic_vector";
+    e.parser_package_uuid = session.admitted_parser_package_uuid;
+    e.parser_package_version_major = session.admitted_parser_package_version_major;
+    e.parser_package_version_minor = session.admitted_parser_package_version_minor;
+    e.parser_package_version_patch = session.admitted_parser_package_version_patch;
+    e.registry_snapshot_uuid = statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids = true;
+    c::SblrOperand o; o.ordinal = 1; o.type = "alter_trigger_descriptor"; o.name = "domain";
+    o.value_kind = c::SblrValueKind::alter_trigger_descriptor; o.value_body = *admitted_ddl_alter_trigger_operand;
+    e.operands.push_back(std::move(o));
+    auto bytes = c::EncodeSblrEnvelope(e);
+    if (bytes.empty()) operation.reset(); else operation = CanonicalBytes(bytes.begin(), bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_drop_trigger" && admitted_ddl_drop_trigger_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr;
+    auto e = c::MakeSblrEnvelope("engine.op.ddl_drop_trigger", "SBLR_DDL_DROP_TRIGGER", "ddl.drop.trigger.native");
+    e.opcode_code = 1553; e.requires_transaction_context = true; e.requires_security_context = true;
+    e.result_shape = "management_result"; e.diagnostic_shape = "diagnostic_vector";
+    e.parser_package_uuid = session.admitted_parser_package_uuid;
+    e.parser_package_version_major = session.admitted_parser_package_version_major;
+    e.parser_package_version_minor = session.admitted_parser_package_version_minor;
+    e.parser_package_version_patch = session.admitted_parser_package_version_patch;
+    e.registry_snapshot_uuid = statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids = true;
+    c::SblrOperand o; o.ordinal = 1; o.type = "drop_trigger_descriptor"; o.name = "domain";
+    o.value_kind = c::SblrValueKind::drop_trigger_descriptor; o.value_body = *admitted_ddl_drop_trigger_operand;
+    e.operands.push_back(std::move(o));
+    auto bytes = c::EncodeSblrEnvelope(e);
+    if (bytes.empty()) operation.reset(); else operation = CanonicalBytes(bytes.begin(), bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_create_procedure" && admitted_ddl_create_procedure_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr;
+    auto e = c::MakeSblrEnvelope("engine.op.ddl_create_procedure", "SBLR_DDL_CREATE_PROCEDURE", "ddl.create.procedure.native");
+    e.opcode_code = 1554; e.requires_transaction_context = true; e.requires_security_context = true;
+    e.result_shape = "management_result"; e.diagnostic_shape = "diagnostic_vector";
+    e.parser_package_uuid = session.admitted_parser_package_uuid;
+    e.parser_package_version_major = session.admitted_parser_package_version_major;
+    e.parser_package_version_minor = session.admitted_parser_package_version_minor;
+    e.parser_package_version_patch = session.admitted_parser_package_version_patch;
+    e.registry_snapshot_uuid = statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids = true;
+    c::SblrOperand o; o.ordinal = 1; o.type = "create_procedure_descriptor"; o.name = "procedure";
+    o.value_kind = c::SblrValueKind::create_procedure_descriptor; o.value_body = *admitted_ddl_create_procedure_operand;
+    e.operands.push_back(std::move(o)); auto bytes = c::EncodeSblrEnvelope(e);
+    if (bytes.empty()) operation.reset(); else operation = CanonicalBytes(bytes.begin(), bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_alter_procedure" && admitted_ddl_alter_procedure_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_alter_procedure","SBLR_DDL_ALTER_PROCEDURE","ddl.alter.procedure.native"); e.opcode_code=1555;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="alter_procedure_descriptor";o.name="procedure";o.value_kind=c::SblrValueKind::alter_procedure_descriptor;o.value_body=*admitted_ddl_alter_procedure_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_drop_procedure" && admitted_ddl_drop_procedure_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_drop_procedure","SBLR_DDL_DROP_PROCEDURE","ddl.drop.procedure.native"); e.opcode_code=1556;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="drop_procedure_descriptor";o.name="procedure";o.value_kind=c::SblrValueKind::drop_procedure_descriptor;o.value_body=*admitted_ddl_drop_procedure_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_create_function" && admitted_ddl_create_function_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_create_function","SBLR_DDL_CREATE_FUNCTION","ddl.create.function.native"); e.opcode_code=1557;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_function_descriptor";o.name="function";o.value_kind=c::SblrValueKind::create_function_descriptor;o.value_body=*admitted_ddl_create_function_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_alter_function" && admitted_ddl_alter_function_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_alter_function","SBLR_DDL_ALTER_FUNCTION","ddl.create.package.native"); e.opcode_code=1558;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="alter_function_descriptor";o.name="function";o.value_kind=c::SblrValueKind::alter_function_descriptor;o.value_body=*admitted_ddl_alter_function_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_drop_function" && admitted_ddl_drop_function_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_drop_function","SBLR_DDL_DROP_FUNCTION","ddl.create.package.native"); e.opcode_code=1559;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="drop_function_descriptor";o.name="function";o.value_kind=c::SblrValueKind::drop_function_descriptor;o.value_body=*admitted_ddl_drop_function_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_create_package" && admitted_ddl_create_package_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_create_package","SBLR_DDL_CREATE_PACKAGE","ddl.create.package.native"); e.opcode_code=1560;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_package_descriptor";o.name="package";o.value_kind=c::SblrValueKind::create_package_descriptor;o.value_body=*admitted_ddl_create_package_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_create_temporary_table" && admitted_ddl_create_temporary_table_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_create_temporary_table","SBLR_DDL_CREATE_TEMPORARY_TABLE","ddl.create.temporary.table.native"); e.opcode_code=1561;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_temporary_table_descriptor";o.name="temporary_table";o.value_kind=c::SblrValueKind::create_temporary_table_descriptor;o.value_body=*admitted_ddl_create_temporary_table_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_drop_temporary_table" && admitted_ddl_drop_temporary_table_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_drop_temporary_table","SBLR_DDL_DROP_TEMPORARY_TABLE","ddl.drop.temporary.table.native"); e.opcode_code=1562;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="drop_temporary_table_descriptor";o.name="temporary_table";o.value_kind=c::SblrValueKind::drop_temporary_table_descriptor;o.value_body=*admitted_ddl_drop_temporary_table_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_rename_object_vector" && admitted_ddl_rename_object_vector_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_rename_object_vector","SBLR_DDL_RENAME_OBJECT_VECTOR","ddl.rename.object.vector.native"); e.opcode_code=1563;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="object_rename_vector_descriptor";o.name="rename_vector";o.value_kind=c::SblrValueKind::object_rename_vector_descriptor;o.value_body=*admitted_ddl_rename_object_vector_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_create_or_replace_srs" && admitted_ddl_create_or_replace_srs_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_create_or_replace_srs","SBLR_DDL_CREATE_OR_REPLACE_SRS","ddl.create.or.replace.srs.native"); e.opcode_code=1615;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="spatial_reference_system_descriptor";o.name="srs";o.value_kind=c::SblrValueKind::spatial_reference_system_descriptor;o.value_body=*admitted_ddl_create_or_replace_srs_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_drop_srs" && admitted_ddl_drop_srs_operand != nullptr) {
+    namespace c = scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_drop_srs","SBLR_DDL_DROP_SRS","ddl.drop.srs.native"); e.opcode_code=1616;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="spatial_reference_system_drop_descriptor";o.name="srs";o.value_kind=c::SblrValueKind::spatial_reference_system_drop_descriptor;o.value_body=*admitted_ddl_drop_srs_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())operation.reset();else operation=CanonicalBytes(bytes.begin(),bytes.end());
+  }
+  if (lowered.operation_id == "engine.op.ddl_create_rewrite_rule" && admitted_ddl_create_rewrite_rule_operand != nullptr) { namespace c=scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_create_rewrite_rule","SBLR_DDL_CREATE_REWRITE_RULE","ddl.create.rewrite.rule.native"); e.opcode_code=1617; e.requires_transaction_context=true; e.requires_security_context=true; e.result_shape="management_result"; e.diagnostic_shape="diagnostic_vector"; e.parser_package_uuid=session.admitted_parser_package_uuid; e.parser_package_version_major=session.admitted_parser_package_version_major; e.parser_package_version_minor=session.admitted_parser_package_version_minor; e.parser_package_version_patch=session.admitted_parser_package_version_patch; e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids=true; c::SblrOperand o; o.ordinal=1; o.type="rewrite_rule_descriptor"; o.name="rewrite_rule"; o.value_kind=c::SblrValueKind::rewrite_rule_descriptor; o.value_body=*admitted_ddl_create_rewrite_rule_operand; e.operands.push_back(std::move(o)); auto bytes=c::EncodeSblrEnvelope(e); if(bytes.empty()) operation.reset(); else operation=CanonicalBytes(bytes.begin(),bytes.end()); }
+  if (lowered.operation_id == "engine.op.ddl_alter_rewrite_rule" && admitted_ddl_alter_rewrite_rule_operand != nullptr) { namespace c=scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_alter_rewrite_rule","SBLR_DDL_ALTER_REWRITE_RULE","ddl.alter.rewrite.rule.native"); e.opcode_code=1618; e.requires_transaction_context=true; e.requires_security_context=true; e.result_shape="management_result"; e.diagnostic_shape="diagnostic_vector"; e.parser_package_uuid=session.admitted_parser_package_uuid; e.parser_package_version_major=session.admitted_parser_package_version_major; e.parser_package_version_minor=session.admitted_parser_package_version_minor; e.parser_package_version_patch=session.admitted_parser_package_version_patch; e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids=true; c::SblrOperand o; o.ordinal=1; o.type="rewrite_rule_alter_descriptor"; o.name="rewrite_rule"; o.value_kind=c::SblrValueKind::rewrite_rule_alter_descriptor; o.value_body=*admitted_ddl_alter_rewrite_rule_operand; e.operands.push_back(std::move(o)); auto bytes=c::EncodeSblrEnvelope(e); if(bytes.empty()) operation.reset(); else operation=CanonicalBytes(bytes.begin(),bytes.end()); }
+if (lowered.operation_id == "engine.op.ddl_drop_rewrite_rule" && admitted_ddl_drop_rewrite_rule_operand != nullptr) { namespace c=scratchbird::engine::sblr; auto e=c::MakeSblrEnvelope("engine.op.ddl_drop_rewrite_rule","SBLR_DDL_DROP_REWRITE_RULE","ddl.alter.rewrite.rule.native"); e.opcode_code=1619; e.requires_transaction_context=true; e.requires_security_context=true; e.result_shape="management_result"; e.diagnostic_shape="diagnostic_vector"; e.parser_package_uuid=session.admitted_parser_package_uuid; e.parser_package_version_major=session.admitted_parser_package_version_major; e.parser_package_version_minor=session.admitted_parser_package_version_minor; e.parser_package_version_patch=session.admitted_parser_package_version_patch; e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid; e.parser_resolved_names_to_uuids=true; c::SblrOperand o; o.ordinal=1; o.type="rewrite_rule_drop_descriptor"; o.name="rewrite_rule"; o.value_kind=c::SblrValueKind::rewrite_rule_drop_descriptor; o.value_body=*admitted_ddl_drop_rewrite_rule_operand; e.operands.push_back(std::move(o)); auto bytes=c::EncodeSblrEnvelope(e); if(bytes.empty()) operation.reset(); else operation=CanonicalBytes(bytes.begin(),bytes.end()); }
   const auto opcode_stream = operation.has_value()
       ? EncodeNativeOpcodeStreamBinary(
             *operation, statement_context, session)
@@ -7406,7 +8570,9 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
   fields[27] = {0};
   auto ingress_bytes =
       scratchbird::engine::EncodeSblrExecutionEnvelopeV1(ingress);
-  if (container_bytes.empty() || ingress_bytes.empty()) return std::nullopt;
+  if (container_bytes.empty() || ingress_bytes.empty()) {
+    return std::nullopt;
+  }
 
   ParserCanonicalSblrSubmission submission;
   submission.statement_uuid = statement_context.statement_uuid;
@@ -7414,6 +8580,291 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
   submission.canonical_operation_bytes = *opcode_stream;
   submission.canonical_execution_envelope_bytes = std::move(ingress_bytes);
   return submission;
+}
+
+bool ExecuteIssuedDescriptorRoot(
+    const ParserStatementContext& issue_context, const SessionContext& session,
+    SbpsClient* client, std::string_view operation_key,
+    std::string_view mnemonic, std::uint16_t opcode_code,
+    std::string_view operand_type, std::string_view operand_name,
+    const std::array<std::uint8_t, 16>& descriptor_uuid,
+    std::uint64_t descriptor_generation, MessageVectorSet* messages) {
+  namespace sm = scratchbird::engine::sblr;
+  auto canonical = sm::MakeSblrEnvelope(std::string(operation_key),
+                                         std::string(mnemonic),
+                                         std::string(operation_key) + ".execute");
+  canonical.opcode_code = opcode_code;
+  canonical.result_shape = "void";
+  canonical.diagnostic_shape = "diagnostic_vector";
+  canonical.parser_package_uuid = session.admitted_parser_package_uuid;
+  canonical.parser_package_version_major = session.admitted_parser_package_version_major;
+  canonical.parser_package_version_minor = session.admitted_parser_package_version_minor;
+  canonical.parser_package_version_patch = session.admitted_parser_package_version_patch;
+  canonical.registry_snapshot_uuid = issue_context.catalog_epoch_uuid;
+  sm::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = std::string(operand_type);
+  operand.name = std::string(operand_name);
+  operand.value_kind = sm::SblrValueKind::descriptor_ref;
+  operand.value_body.assign(descriptor_uuid.begin(), descriptor_uuid.end());
+  CanonicalAppendU64(&operand.value_body, descriptor_generation);
+  canonical.operands.push_back(std::move(operand));
+  const auto operation = sm::EncodeSblrEnvelope(canonical);
+  if (operation.empty()) return false;
+  const CanonicalBytes member(operation.begin(), operation.end());
+  const auto encoded = EncodeNativeOpcodeStreamBinary(member, issue_context, session);
+  if (!encoded) return false;
+  const auto& stream = *encoded;
+  const auto database_uuid = CanonicalUuidBytes(session.database_uuid);
+  const auto dialect_uuid = CanonicalUuidBytes(session.admitted_dialect_profile_uuid);
+  const auto parser_uuid = CanonicalUuidBytes(session.admitted_parser_package_uuid);
+  const auto user_uuid = CanonicalUuidBytes(session.authenticated_user_uuid);
+  const auto statement_uuid = CanonicalUuidBytes(issue_context.statement_uuid);
+  const auto registry_uuid = CanonicalUuidBytes(issue_context.catalog_epoch_uuid);
+  if (!database_uuid || !dialect_uuid || !parser_uuid || !user_uuid ||
+      !statement_uuid || !registry_uuid) return false;
+  scratchbird::engine::SblrCanonicalContainer container;
+  std::copy(database_uuid->begin(), database_uuid->end(), container.canonical_anchor.begin());
+  std::copy(dialect_uuid->begin(), dialect_uuid->end(), container.canonical_anchor.begin()+16);
+  std::copy(parser_uuid->begin(), parser_uuid->end(), container.canonical_anchor.begin()+32);
+  auto u16=[&](std::size_t at,std::uint16_t v){container.canonical_anchor[at]=v;container.canonical_anchor[at+1]=v>>8;};
+  auto u32=[&](std::size_t at,std::uint32_t v){for(unsigned s=0;s<32;s+=8)container.canonical_anchor[at+s/8]=v>>s;};
+  auto u64=[&](std::size_t at,std::uint64_t v){for(unsigned s=0;s<64;s+=8)container.canonical_anchor[at+s/8]=v>>s;};
+  u32(48,1);u64(52,1);u64(60,1);u64(68,1);
+  std::copy(registry_uuid->begin(),registry_uuid->end(),container.canonical_anchor.begin()+76);
+  u64(92,1);u16(100,1);
+  std::copy(statement_uuid->begin(),statement_uuid->end(),container.canonical_anchor.begin()+116);
+  container.operation_payload=stream;
+  scratchbird::engine::SblrExecutionEnvelopeV1 ingress;
+  auto& f=ingress.fields;
+  f[0].assign(statement_uuid->begin(),statement_uuid->end());f[1]=CanonicalU16(1);f[2]=CanonicalU16(0);
+  f[3]=CanonicalU32(0x00010001);f[4]=CanonicalU16(1);f[5]={1};CanonicalAppendU64(&f[5],stream.size());f[5].insert(f[5].end(),stream.begin(),stream.end());
+  f[6]={0};f[7]={1};CanonicalAppendU32(&f[7],scratchbird::engine::SblrCrc32c(stream.data(),stream.size()));f[8]=CanonicalU64(stream.size());f[9]=CanonicalU16(1);
+  f[10]=CanonicalOptionalUuid(*dialect_uuid);f[11]=CanonicalOptionalUuid(*user_uuid);f[12]=CanonicalStruct(0x1001,1);f[13]=CanonicalStruct(0x1002,2);f[14]={0};f[15]=CanonicalU64(1);
+  f[16]=CanonicalU32(0);f[17]=CanonicalU32(0);f[18]=CanonicalU32(0);f[19]={0};f[20]=CanonicalU32(0);f[21]=CanonicalStruct(0x1005,5);f[22]={0};f[23]={0};f[24]={0};f[25]=CanonicalU16(0);f[26]={0};f[27]={0};
+  ParserCanonicalSblrSubmission submission;
+  submission.statement_uuid=issue_context.statement_uuid;
+  submission.canonical_operation_bytes=stream;
+  submission.canonical_container_bytes=scratchbird::engine::EncodeSblrContainer(container);
+  submission.canonical_execution_envelope_bytes=scratchbird::engine::EncodeSblrExecutionEnvelopeV1(ingress);
+  if(submission.canonical_container_bytes.empty()||submission.canonical_execution_envelope_bytes.empty())return false;
+  auto executed=client->ExecuteCanonicalSblrWithDataPacket(session,issue_context,submission,{},false);
+  if(!executed.accepted){if(messages)*messages=std::move(executed.messages);return false;}
+  return true;
+}
+
+bool AttachIssuedSourceMap(const ParserStatementContext& context,
+                           const SessionContext& session,
+                           SbpsClient* client,
+                           ParserCanonicalSblrSubmission* submission,
+                           MessageVectorSet* messages) {
+  if (!client || !submission) return false;
+  ParserTransactionSelector selector;
+  selector.local_transaction_id = session.local_transaction_id;
+  selector.transaction_uuid = session.transaction_uuid;
+  auto acquired = client->AcquireNativeStatementContext(session, selector);
+  if (!acquired.accepted) {
+    if (messages) *messages = std::move(acquired.messages);
+    return false;
+  }
+  const auto& issue_context = acquired.context;
+  const auto receipt = CanonicalUuidBytes(issue_context.preliminary_receipt_uuid);
+  const auto snapshot = CanonicalUuidBytes(issue_context.catalog_epoch_uuid);
+  const auto artifact = CanonicalUuidBytes(session.admitted_parser_package_uuid);
+  if (!receipt || !snapshot || !artifact ||
+      issue_context.literal_catalog_generation == 0) {
+    if (messages) messages->diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "SOURCE_MAP context identity was incomplete.", "sbp_sbsql.wire", {{"receipt", issue_context.preliminary_receipt_uuid}, {"catalog_epoch", issue_context.catalog_epoch_uuid}, {"artifact", session.admitted_parser_package_uuid}, {"catalog_generation", std::to_string(issue_context.literal_catalog_generation)}}));
+    return false;
+  }
+  namespace sm = scratchbird::engine::sblr;
+  sm::SblrSourceMapBoundAstV1 ast;
+  ast.statement_receipt_uuid = *receipt;
+  ast.nodes.push_back({1, 0, 1});
+  auto smba = sm::EncodeSblrSourceMapBoundAstV1(&ast);
+  sm::SblrSourceMapEntryV1 entry;
+  entry.node_id = 1;
+  entry.source_artifact_uuid = *artifact;
+  entry.source_artifact_generation = 1;
+  entry.byte_length = 1;
+  entry.line = 1;
+  entry.column = 1;
+  sm::SblrSourceMapIssueRequestV1 issue;
+  issue.statement_receipt_uuid = *receipt;
+  issue.registry_snapshot_uuid = *snapshot;
+  issue.registry_generation = issue_context.literal_catalog_generation;
+  issue.canonical_bound_ast = std::move(smba);
+  issue.entries.push_back(entry);
+  const auto smrq = sm::EncodeSblrSourceMapIssueRequestV1(&issue);
+  auto issued = client->IssueSourceMapDescriptor(session, smrq);
+  sm::SblrSourceMapIssueResultV1 result;
+  std::string detail;
+  if (!issued.accepted ||
+      !sm::DecodeSblrSourceMapIssueResultV1(
+          issued.canonical_payload.data(), issued.canonical_payload.size(),
+          &result, &detail)) {
+    if (messages) *messages = std::move(issued.messages);
+    return false;
+  }
+  constexpr std::array<std::uint16_t, 9> tags{1,2,3,4,5,6,7,8,9};
+  std::array<CanonicalBytes, 9> sections;
+  CanonicalAppendText(&sections[0], "engine.op.source_map");
+  CanonicalAppendText(&sections[1], "SBLR_SOURCE_MAP");
+  sections[2].insert(sections[2].end(), artifact->begin(), artifact->end());
+  CanonicalAppendU32(&sections[2], session.admitted_parser_package_version_major);
+  CanonicalAppendU32(&sections[2], session.admitted_parser_package_version_minor);
+  CanonicalAppendU32(&sections[2], session.admitted_parser_package_version_patch);
+  sections[3].insert(sections[3].end(), snapshot->begin(), snapshot->end());
+  CanonicalAppendU32(&sections[4], 1);
+  CanonicalAppendU32(&sections[4], 1);
+  CanonicalAppendText(&sections[4], "source_map.vector");
+  CanonicalAppendText(&sections[4], "source_map");
+  CanonicalAppendU16(&sections[4], 2);
+  CanonicalAppendU16(&sections[4], 0);
+  CanonicalAppendU64(&sections[4], 24);
+  sections[4].insert(sections[4].end(), result.descriptor_uuid.begin(),
+                     result.descriptor_uuid.end());
+  CanonicalAppendU64(&sections[4], result.descriptor_generation);
+  CanonicalAppendText(&sections[5], "void");
+  CanonicalAppendText(&sections[6], "diagnostic_vector");
+  CanonicalAppendText(&sections[7], "source_map.execute");
+  CanonicalBytes provenance;
+  constexpr std::string_view domain = "ScratchBird.SBOP.ProducerProvenance.V1";
+  provenance.insert(provenance.end(), domain.begin(), domain.end());
+  provenance.push_back(0);
+  provenance.insert(provenance.end(), sections[2].begin(), sections[2].end());
+  provenance.insert(provenance.end(), sections[3].begin(), sections[3].end());
+  CanonicalAppendU16(&provenance, 6);
+  CanonicalAppendU16(&provenance, 1);
+  CanonicalAppendU16(&provenance, 0);
+  provenance.insert(provenance.end(), sections[0].begin(), sections[0].end());
+  provenance.insert(provenance.end(), sections[1].begin(), sections[1].end());
+  const auto digest = CanonicalSha256(provenance);
+  if (!digest) return false;
+  sections[8].assign(digest->begin(), digest->end());
+  std::uint64_t payload_size = 0;
+  for (const auto& section : sections) payload_size += section.size();
+  CanonicalBytes operation(static_cast<std::size_t>(280 + payload_size + 16), 0);
+  CanonicalStoreU32(&operation, 0, 0x504f4253u);
+  CanonicalStoreU16(&operation, 4, 1); CanonicalStoreU16(&operation, 8, 64);
+  CanonicalStoreU16(&operation, 10, 9); CanonicalStoreU16(&operation, 16, 6);
+  CanonicalStoreU16(&operation, 18, 1); CanonicalStoreU32(&operation, 24, 64);
+  CanonicalStoreU32(&operation, 28, 216); CanonicalStoreU32(&operation, 32, 280);
+  CanonicalStoreU64(&operation, 40, payload_size);
+  CanonicalStoreU64(&operation, 48, operation.size());
+  std::uint64_t offset = 280;
+  for (std::size_t i = 0; i < sections.size(); ++i) {
+    const auto table = 64 + i * 24;
+    CanonicalStoreU16(&operation, table, tags[i]);
+    CanonicalStoreU16(&operation, table + 2, 1);
+    CanonicalStoreU32(&operation, table + 4, 1);
+    CanonicalStoreU64(&operation, table + 8, offset);
+    CanonicalStoreU64(&operation, table + 16, sections[i].size());
+    std::copy(sections[i].begin(), sections[i].end(), operation.begin() + offset);
+    offset += sections[i].size();
+  }
+  const auto operation_trailer = operation.size() - 16;
+  CanonicalStoreU32(&operation, operation_trailer, 0x544f4253u);
+  CanonicalStoreU32(&operation, operation_trailer + 4,
+                    scratchbird::engine::SblrCrc32c(operation.data(), operation_trailer));
+  CanonicalStoreU64(&operation, operation_trailer + 8, operation.size());
+  auto canonical = sm::MakeSblrEnvelope(
+      "engine.op.source_map", "SBLR_SOURCE_MAP", "source_map.execute");
+  canonical.opcode_code = 6;
+  canonical.result_shape = "void";
+  canonical.diagnostic_shape = "diagnostic_vector";
+  canonical.parser_package_uuid = session.admitted_parser_package_uuid;
+  canonical.parser_package_version_major =
+      session.admitted_parser_package_version_major;
+  canonical.parser_package_version_minor =
+      session.admitted_parser_package_version_minor;
+  canonical.parser_package_version_patch =
+      session.admitted_parser_package_version_patch;
+  canonical.registry_snapshot_uuid = issue_context.catalog_epoch_uuid;
+  sm::SblrOperand canonical_operand;
+  canonical_operand.ordinal = 1;
+  canonical_operand.type = "source_map.vector";
+  canonical_operand.name = "source_map";
+  canonical_operand.value_kind = sm::SblrValueKind::descriptor_ref;
+  canonical_operand.value_body.assign(result.descriptor_uuid.begin(),
+                                      result.descriptor_uuid.end());
+  CanonicalAppendU64(&canonical_operand.value_body,
+                     result.descriptor_generation);
+  canonical.operands.push_back(std::move(canonical_operand));
+  const auto canonical_operation = sm::EncodeSblrEnvelope(canonical);
+  if (canonical_operation.empty()) return false;
+  operation.assign(canonical_operation.begin(), canonical_operation.end());
+  const CanonicalBytes canonical_member(canonical_operation.begin(),
+                                        canonical_operation.end());
+  auto encoded_stream = EncodeNativeOpcodeStreamBinary(
+      canonical_member, issue_context, session);
+  if (!encoded_stream) return false;
+  auto stream = std::move(*encoded_stream);
+  scratchbird::engine::SblrCanonicalContainer container;
+  const auto database_uuid = CanonicalUuidBytes(session.database_uuid);
+  const auto dialect_uuid = CanonicalUuidBytes(session.admitted_dialect_profile_uuid);
+  const auto parser_uuid = CanonicalUuidBytes(session.admitted_parser_package_uuid);
+  const auto user_uuid = CanonicalUuidBytes(session.authenticated_user_uuid);
+  const auto statement_uuid = CanonicalUuidBytes(issue_context.statement_uuid);
+  const auto registry_uuid = CanonicalUuidBytes(issue_context.catalog_epoch_uuid);
+  if (!database_uuid || !dialect_uuid || !parser_uuid || !user_uuid ||
+      !statement_uuid || !registry_uuid) return false;
+  std::copy(database_uuid->begin(), database_uuid->end(), container.canonical_anchor.begin());
+  std::copy(dialect_uuid->begin(), dialect_uuid->end(), container.canonical_anchor.begin() + 16);
+  std::copy(parser_uuid->begin(), parser_uuid->end(), container.canonical_anchor.begin() + 32);
+  const auto anchor_u16 = [&](std::size_t at, std::uint16_t value) {
+    container.canonical_anchor[at] = static_cast<std::uint8_t>(value);
+    container.canonical_anchor[at + 1] = static_cast<std::uint8_t>(value >> 8);
+  };
+  const auto anchor_u32 = [&](std::size_t at, std::uint32_t value) {
+    for (unsigned shift = 0; shift != 32; shift += 8)
+      container.canonical_anchor[at + shift / 8] = static_cast<std::uint8_t>(value >> shift);
+  };
+  const auto anchor_u64 = [&](std::size_t at, std::uint64_t value) {
+    for (unsigned shift = 0; shift != 64; shift += 8)
+      container.canonical_anchor[at + shift / 8] = static_cast<std::uint8_t>(value >> shift);
+  };
+  anchor_u32(48, 1); anchor_u64(52, 1); anchor_u64(60, 1); anchor_u64(68, 1);
+  std::copy(registry_uuid->begin(), registry_uuid->end(),
+            container.canonical_anchor.begin() + 76);
+  anchor_u64(92, 1); anchor_u16(100, 1);
+  std::copy(statement_uuid->begin(), statement_uuid->end(),
+            container.canonical_anchor.begin() + 116);
+  container.operation_payload = stream;
+  scratchbird::engine::SblrExecutionEnvelopeV1 ingress;
+  auto& fields = ingress.fields;
+  fields[0].assign(statement_uuid->begin(), statement_uuid->end());
+  fields[1] = CanonicalU16(1); fields[2] = CanonicalU16(0);
+  fields[3] = CanonicalU32(0x00010001); fields[4] = CanonicalU16(1);
+  fields[5] = {1}; CanonicalAppendU64(&fields[5], stream.size());
+  fields[5].insert(fields[5].end(), stream.begin(), stream.end());
+  fields[6] = {0}; fields[7] = {1};
+  CanonicalAppendU32(&fields[7],
+                     scratchbird::engine::SblrCrc32c(stream.data(), stream.size()));
+  fields[8] = CanonicalU64(stream.size()); fields[9] = CanonicalU16(1);
+  fields[10] = CanonicalOptionalUuid(*dialect_uuid);
+  fields[11] = CanonicalOptionalUuid(*user_uuid);
+  fields[12] = CanonicalStruct(0x1001, 1); fields[13] = CanonicalStruct(0x1002, 2);
+  fields[14] = {0}; fields[15] = CanonicalU64(1);
+  fields[16] = CanonicalU32(0); fields[17] = CanonicalU32(0); fields[18] = CanonicalU32(0);
+  fields[19] = {0}; fields[20] = CanonicalU32(0); fields[21] = CanonicalStruct(0x1005, 5);
+  fields[22] = {0}; fields[23] = {0}; fields[24] = {0}; fields[25] = CanonicalU16(0);
+  fields[26] = {0}; fields[27] = {0};
+  ParserCanonicalSblrSubmission source_submission;
+  source_submission.statement_uuid = issue_context.statement_uuid;
+  source_submission.canonical_operation_bytes = stream;
+  source_submission.canonical_container_bytes =
+      scratchbird::engine::EncodeSblrContainer(container);
+  source_submission.canonical_execution_envelope_bytes =
+      scratchbird::engine::EncodeSblrExecutionEnvelopeV1(ingress);
+  if (source_submission.canonical_container_bytes.empty() ||
+      source_submission.canonical_execution_envelope_bytes.empty()) return false;
+  auto executed = client->ExecuteCanonicalSblrWithDataPacket(
+      session, issue_context, source_submission, {}, false);
+  if (!executed.accepted) {
+    if (messages) *messages = std::move(executed.messages);
+    return false;
+  }
+  return true;
 }
 
 bool IsWord(const Token& token, std::string_view word) {
@@ -12511,6 +13962,54 @@ std::uint64_t Rcp079SpatialColumnarFrontdoorProofMaskImpl() {
 
 } // namespace
 
+PreparedParameterCanonicalValue CanonicalizePreparedParameterWireValue(
+    const PreparedParameterWireValue& value,
+    std::string_view authenticated_descriptor_uuid,
+    std::string_view authenticated_type_uuid,
+    bool nullable) {
+  PreparedParameterCanonicalValue result;
+  if (value.is_null) {
+    result.accepted = nullable && value.raw_bytes.empty();
+    result.is_null = result.accepted;
+    result.diagnostic_code = result.accepted ? "" : "SBLR.PARAMETER.UNBOUND";
+    return result;
+  }
+  if (authenticated_descriptor_uuid !=
+          "019d0000-0000-7000-8000-00000000d711" ||
+      authenticated_type_uuid !=
+          "019d0000-0000-7000-8000-00000000d712") {
+    result.diagnostic_code = "DATATYPE.DESCRIPTOR_INVALID";
+    return result;
+  }
+  if (value.encoding == PreparedParameterPayloadEncoding::binary) {
+    if (value.raw_bytes.size() != 8) {
+      result.diagnostic_code = "DATATYPE.CONVERSION_FAILED";
+      return result;
+    }
+    result.canonical_bytes = value.raw_bytes;
+    result.accepted = true;
+    return result;
+  }
+  const std::string_view text(
+      reinterpret_cast<const char*>(value.raw_bytes.data()),
+      value.raw_bytes.size());
+  std::int64_t numeric = 0;
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), numeric);
+  if (text.empty() || (text.size() > 1 && text.front() == '0') ||
+      (text.size() > 2 && text.front() == '-' && text[1] == '0') ||
+      error != std::errc{} || end != text.data() + text.size()) {
+    result.diagnostic_code = "DATATYPE.CONVERSION_FAILED";
+    return result;
+  }
+  for (unsigned shift = 0; shift != 64; shift += 8) {
+    result.canonical_bytes.push_back(static_cast<std::uint8_t>(
+        static_cast<std::uint64_t>(numeric) >> shift));
+  }
+  result.accepted = true;
+  return result;
+}
+
 std::uint64_t Rcp073DocumentFrontdoorProofMaskForTest() {
   return Rcp073DocumentFrontdoorProofMaskImpl();
 }
@@ -12971,7 +14470,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                                  bool cursor_requested,
                                                  std::uint64_t stream_row_count,
                                                  bool autocommit_emulation,
-                                                 const std::vector<std::optional<std::string>>&
+                                                 const std::vector<PreparedParameterWireValue>&
                                                      parameter_values,
                                                  const ipc::ParameterExecutionCoordination*
                                                      parameter_coordination,
@@ -12979,7 +14478,11 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                                  ipc::PreparedParameterReference*
                                                      prepared_parameter_output,
                                                  std::string_view expected_prepared_uuid,
-                                                 std::uint64_t expected_prepared_generation) {
+                                                 std::uint64_t expected_prepared_generation,
+                                                 const ipc::VariableFrameCoordination*
+                                                     variable_coordination,
+                                                 const scratchbird::engine::sblr::SblrVariableFrameBeginResultV1*
+                                                     variable_frame) {
   const bool phase_trace =
       std::getenv("SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE") != nullptr;
   std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
@@ -13366,7 +14869,100 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   std::optional<NativeRelationalBindingContext> native_binding_context;
   std::optional<LiteralPrebindState> literal_prebind_state;
   std::optional<ParameterPrebindState> parameter_prebind_state;
-  if (submit && ast.native_relational.recognized()) {
+  std::optional<VariablePrebindState> variable_prebind_state;
+  std::optional<scratchbird::engine::sblr::SblrVariableFrameBeginResultV1>
+      automatic_variable_frame;
+  std::optional<ipc::VariableFrameCoordination>
+      automatic_variable_coordination;
+  const auto variable_count = std::ranges::count_if(
+      ast.native_relational.expressions, [](const auto& expression) {
+        return expression.expression_kind == NativeExpressionAstKind::kVariable;
+      });
+  if (submit && variable_count != 0 && variable_coordination == nullptr) {
+    scratchbird::engine::sblr::SblrVariableFrameBeginRequestV1 request;
+    const auto operation = CanonicalUuidBytes(NewCreatedObjectUuid("OBJECT"));
+    const auto transaction = CanonicalUuidBytes(session_.transaction_uuid);
+    if (!operation || !transaction || variable_count > 4096) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          variable_count > 4096 ? "RESOURCE.BUDGET_EXCEEDED"
+                                : "SBLR.OPERAND_INVALID",
+          "ERROR", "The structural variable frame request was invalid.",
+          "sbp_sbsql.wire"));
+    } else {
+      request.operation_uuid = *operation;
+      request.transaction_uuid = *transaction;
+      request.expires_after_ns = 300000000000ULL;
+      for (const auto& expression : ast.native_relational.expressions) {
+        if (expression.expression_kind != NativeExpressionAstKind::kVariable)
+          continue;
+        scratchbird::engine::sblr::SblrVariableFrameDemandV1 demand;
+        demand.declaration_occurrence_id =
+            expression.structural_variable_occurrence_id;
+        demand.datatype_context_code = 1;
+        demand.mutability = 1;
+        demand.initial_value_state = 3;
+        CanonicalBytes token(expression.spelling.begin(), expression.spelling.end());
+        const auto token_hash = CanonicalSha256(token);
+        if (!token_hash) break;
+        demand.declaration_token_sha256 = *token_hash;
+        request.demands.push_back(demand);
+      }
+      request.demand_sha256 =
+          scratchbird::engine::sblr::ComputeSblrVariableFrameDemandSha256V1(
+              request.demands);
+      const auto sbvb =
+          scratchbird::engine::sblr::EncodeSblrVariableFrameBeginRequestV1(
+              &request);
+      auto begun = server_client_->BeginVariableFrame(session_, sbvb);
+      std::string detail;
+      automatic_variable_frame.emplace();
+      if (!begun.accepted ||
+          !scratchbird::engine::sblr::DecodeSblrVariableFrameBeginResultV1(
+              begun.canonical_payload.data(), begun.canonical_payload.size(),
+              &*automatic_variable_frame, &detail)) {
+        result.messages = std::move(begun.messages);
+        automatic_variable_frame.reset();
+      } else {
+        CanonicalBytes public_id(
+            automatic_variable_frame->public_coordination_uuid.begin(),
+            automatic_variable_frame->public_coordination_uuid.end());
+        CanonicalBytes operation_id(
+            automatic_variable_frame->operation_uuid.begin(),
+            automatic_variable_frame->operation_uuid.end());
+        automatic_variable_coordination.emplace();
+        automatic_variable_coordination->public_coordination_uuid =
+            LiteralReadUuid(public_id, 0);
+        automatic_variable_coordination->operation_uuid =
+            LiteralReadUuid(operation_id, 0);
+        automatic_variable_coordination->coordinator_generation =
+            automatic_variable_frame->coordinator_generation;
+        automatic_variable_coordination->frame_generation =
+            automatic_variable_frame->frame_generation;
+        variable_coordination = &*automatic_variable_coordination;
+        variable_frame = &*automatic_variable_frame;
+      }
+    }
+  }
+  const bool canonical_txn_begin =
+      ast.statement_surface_name == "begin_transaction" ||
+      ast.statement_surface_name == "begin_stmt";
+  const bool canonical_txn_commit =
+      ast.statement_surface_name == "commit" ||
+      ast.statement_surface_name == "commit_stmt";
+  const bool canonical_txn_rollback =
+      ast.statement_surface_name == "rollback" ||
+      ast.statement_surface_name == "rollback_stmt";
+  const bool canonical_txn_savepoint =
+      ast.statement_surface_name == "savepoint" ||
+      ast.statement_surface_name == "savepoint_stmt";
+  const bool canonical_txn_release_savepoint =
+      ast.statement_surface_name == "release_savepoint_stmt";
+  const bool canonical_txn_rollback_to_savepoint =
+      ast.statement_surface_name == "rollback_to_savepoint_stmt";
+  if (submit && (ast.native_relational.recognized() || canonical_txn_begin ||
+                 canonical_txn_commit || canonical_txn_rollback ||
+                 canonical_txn_savepoint || canonical_txn_release_savepoint ||
+                 canonical_txn_rollback_to_savepoint)) {
     if (config_.embedded_engine_direct || server_client_ == nullptr) {
       result.messages.diagnostics.push_back(MakeDiagnostic(
           "SBSQL.NATIVE_BINDING.SERVER_ROUTE_REQUIRED", "ERROR",
@@ -13376,15 +14972,134 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       ParserTransactionSelector selector;
       selector.local_transaction_id = session_.local_transaction_id;
       selector.transaction_uuid = session_.transaction_uuid;
-      auto acquired = parameter_coordination == nullptr
-          ? server_client_->AcquireNativeStatementContext(session_, selector)
-          : server_client_->AcquireParameterStatementContext(
-                session_, selector, *parameter_coordination);
+      auto acquired = variable_coordination != nullptr
+          ? server_client_->AcquireVariableStatementContext(
+                session_, selector, *variable_coordination)
+          : parameter_coordination == nullptr
+                ? server_client_->AcquireNativeStatementContext(session_, selector)
+                : server_client_->AcquireParameterStatementContext(
+                      session_, selector, *parameter_coordination);
       mark_phase("acquire_native_statement_context");
       if (!acquired.accepted) {
         result.messages = std::move(acquired.messages);
       } else {
         native_statement_context = std::move(acquired.context);
+        if (canonical_txn_savepoint && !replaying_savepoint_descriptor_) {
+          namespace sp = scratchbird::engine::sblr;
+          const auto receipt_uuid = CanonicalUuidBytes(
+              native_statement_context->preliminary_receipt_uuid);
+          sp::SblrTransactionHandleV1 transaction_handle;
+          std::string detail;
+          const Token* symbol_token = nullptr;
+          bool saw_savepoint = false;
+          for (const auto& token : cst.tokens) {
+            if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+            if (!saw_savepoint) {
+              saw_savepoint = token.canonical_text == "SAVEPOINT" ||
+                              CanonicalUnquotedIdentifier(token.text) ==
+                                  "savepoint";
+              continue;
+            }
+            if (token.kind == TokenKind::kIdentifier || token.quoted) {
+              symbol_token = &token;
+              break;
+            }
+          }
+          if (!receipt_uuid || symbol_token == nullptr ||
+              !sp::DecodeSblrTransactionHandleV1(
+                  admitted_transaction_handle_.data(),
+                  admitted_transaction_handle_.size(), &transaction_handle,
+                  &detail)) {
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                "SBLR.OPERAND_INVALID", "ERROR",
+                "The savepoint structural symbol or transaction handle was unavailable.",
+                "sbp_sbsql.wire"));
+          } else {
+            const std::string normalized_symbol = symbol_token->quoted
+                ? symbol_token->text
+                : CanonicalUnquotedIdentifier(symbol_token->text);
+            CanonicalBytes symbol_material;
+            constexpr std::string_view domain =
+                "ScratchBird.SblrSavepointSymbol.V1";
+            symbol_material.insert(symbol_material.end(), domain.begin(),
+                                   domain.end());
+            CanonicalAppendText(&symbol_material, normalized_symbol);
+            const auto symbol_sha = CanonicalSha256(symbol_material);
+            sp::SblrSavepointCoordinationRequestV1 request;
+            request.preliminary_receipt_uuid = *receipt_uuid;
+            request.transaction_uuid = transaction_handle.transaction_uuid;
+            request.local_transaction_id = transaction_handle.local_transaction_id;
+            request.transaction_handle_evidence_sha256 =
+                transaction_handle.handle_evidence_sha256;
+            request.symbol_occurrence_id = 1;
+            if (symbol_sha) request.canonical_symbol_sha256 = *symbol_sha;
+            const auto encoded_request =
+                sp::EncodeSblrSavepointCoordinationRequestV1(request);
+            auto coordinated = server_client_->CoordinateSavepoint(
+                session_, encoded_request);
+            sp::SblrSavepointCoordinationResultV1 issued;
+            if (!coordinated.accepted ||
+                !sp::DecodeSblrSavepointCoordinationResultV1(
+                    coordinated.canonical_payload.data(),
+                    coordinated.canonical_payload.size(), &issued, &detail) ||
+                issued.preliminary_receipt_uuid != request.preliminary_receipt_uuid ||
+                issued.symbol_occurrence_id != request.symbol_occurrence_id ||
+                issued.canonical_symbol_sha256 != request.canonical_symbol_sha256) {
+              result.messages = std::move(coordinated.messages);
+              if (!result.messages.has_errors()) {
+                result.messages.diagnostics.push_back(MakeDiagnostic(
+                    "MGA.SAVEPOINT.STALE", "ERROR",
+                    "The engine savepoint coordination result did not match the structural symbol binding.",
+                    "sbp_sbsql.wire"));
+              }
+            } else {
+              sp::SblrSavepointDescriptorV1 descriptor;
+              descriptor.descriptor_uuid = issued.descriptor_uuid;
+              descriptor.descriptor_generation = issued.descriptor_generation;
+              descriptor.savepoint_uuid = issued.savepoint_uuid;
+              descriptor.savepoint_generation = issued.savepoint_generation;
+              descriptor.transaction_uuid = transaction_handle.transaction_uuid;
+              descriptor.local_transaction_id = transaction_handle.local_transaction_id;
+              descriptor.transaction_ordinal = issued.transaction_ordinal;
+              descriptor.descriptor_evidence_sha256 =
+                  issued.descriptor_evidence_sha256;
+              admitted_savepoint_descriptor_ =
+                  sp::EncodeSblrSavepointDescriptorV1(descriptor);
+              if (admitted_savepoint_descriptor_.size() != 128) {
+                result.messages.diagnostics.push_back(MakeDiagnostic(
+                    "SBLR.OPERAND_INVALID", "ERROR",
+                    "The engine-issued savepoint descriptor could not be encoded canonically.",
+                    "sbp_sbsql.wire"));
+              }
+            }
+          }
+        }
+        if (variable_coordination != nullptr && variable_frame != nullptr) {
+          const auto prebind = EncodeVariablePrebindRequest(
+              ast.native_relational, *native_statement_context, *variable_frame);
+          if (!prebind) {
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                "SBLR.OPERAND_INVALID", "ERROR",
+                "The structural variable demand sequence was malformed.",
+                "sbp_sbsql.wire"));
+          } else {
+            auto negotiated = server_client_->NegotiateVariableDescriptors(
+                session_, prebind->first);
+            if (!negotiated.accepted) {
+              result.messages = std::move(negotiated.messages);
+            } else {
+              variable_prebind_state = prebind->second;
+              if (!ConsumeVariablePrebindResult(
+                      negotiated.canonical_payload, &*variable_prebind_state,
+                      *native_statement_context)) {
+                result.messages.diagnostics.push_back(MakeDiagnostic(
+                    "SBLR.OPERAND_INVALID", "ERROR",
+                    "The engine variable descriptor mapping was malformed.",
+                    "sbp_sbsql.wire"));
+              }
+            }
+          }
+        }
         if (!expected_prepared_uuid.empty() &&
             (native_statement_context->preliminary_prepared_statement_uuid !=
                  expected_prepared_uuid ||
@@ -13469,10 +15184,15 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           WriteParserPipelinePhaseTrace(sql, result, phase_micros);
           return result;
         }
-        native_binding_context = BuildEngineProjectedNativeBindingContext(
-            ast.native_relational, *native_statement_context,
-            resolved_object_reference_seeds,
-            &result.messages);
+        if (!canonical_txn_begin && !canonical_txn_commit &&
+            !canonical_txn_rollback && !canonical_txn_savepoint &&
+            !canonical_txn_release_savepoint &&
+            !canonical_txn_rollback_to_savepoint) {
+          native_binding_context = BuildEngineProjectedNativeBindingContext(
+              ast.native_relational, *native_statement_context,
+              resolved_object_reference_seeds,
+              &result.messages);
+        }
         if (native_binding_context.has_value() &&
             literal_prebind_state.has_value() &&
             native_statement_context->literal_statement_descriptor_profiles.size()==1) {
@@ -13542,7 +15262,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                          item.structural_parameter_occurrence_id ==
                              mapping.occurrence_id;
                 });
-            const auto bound_input =
+            auto bound_input =
                 ast_parameter == ast.native_relational.expressions.end()
                     ? native_binding_context->expressions.end()
                     : std::ranges::find_if(
@@ -13551,18 +15271,35 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                             return item.expression_id ==
                                        ast_parameter->expression_id &&
                                    item.structural_parameter_occurrence_id ==
-                                       mapping.occurrence_id;
+                                   mapping.occurrence_id;
                           });
             CanonicalBytes descriptor_uuid_bytes(
                 mapping.datatype_descriptor_uuid.begin(),
                 mapping.datatype_descriptor_uuid.end());
+            CanonicalBytes type_uuid_bytes(mapping.datatype_type_uuid.begin(),
+                                           mapping.datatype_type_uuid.end());
             const auto descriptor_uuid =
                 LiteralReadUuid(descriptor_uuid_bytes, 0);
-            const auto profile = std::ranges::find_if(
-                native_statement_context->descriptor_profiles,
-                [&](const auto& item) {
-                  return item.descriptor_uuid == descriptor_uuid;
-                });
+            const auto type_uuid = LiteralReadUuid(type_uuid_bytes, 0);
+            if (ast_parameter != ast.native_relational.expressions.end() &&
+                bound_input == native_binding_context->expressions.end()) {
+              NativeDescriptorBindingInput parameter_descriptor;
+              parameter_descriptor.descriptor_id = static_cast<std::uint32_t>(
+                  native_binding_context->descriptors.size() + 1);
+              parameter_descriptor.descriptor_uuid = descriptor_uuid;
+              parameter_descriptor.type_uuid = type_uuid;
+              parameter_descriptor.nullability = mapping.nullable != 0
+                                                     ? BoundNullability::kNullable
+                                                     : BoundNullability::kNonNull;
+              const auto descriptor_id = parameter_descriptor.descriptor_id;
+              native_binding_context->descriptors.push_back(
+                  std::move(parameter_descriptor));
+              native_binding_context->expressions.push_back(
+                  {ast_parameter->expression_id, descriptor_id, std::nullopt,
+                   std::nullopt, ast_parameter->structural_literal_occurrence_id,
+                   ast_parameter->structural_parameter_occurrence_id});
+              bound_input = std::prev(native_binding_context->expressions.end());
+            }
             const auto descriptor =
                 bound_input == native_binding_context->expressions.end()
                     ? native_binding_context->descriptors.end()
@@ -13572,22 +15309,65 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                             return item.descriptor_id ==
                                    bound_input->descriptor_id;
                           });
-            if (ast_parameter == ast.native_relational.expressions.end() ||
-                bound_input == native_binding_context->expressions.end() ||
-                profile == native_statement_context->descriptor_profiles.end() ||
-                descriptor == native_binding_context->descriptors.end() ||
-                mapping.datatype_descriptor_generation == 0) {
+            const char* missing_projection = nullptr;
+            if (ast_parameter == ast.native_relational.expressions.end()) {
+              missing_projection = "structural parameter occurrence";
+            } else if (bound_input == native_binding_context->expressions.end()) {
+              missing_projection = "bound parameter occurrence";
+            } else if (descriptor == native_binding_context->descriptors.end()) {
+              missing_projection = "bound parameter descriptor";
+            } else if (mapping.datatype_descriptor_generation == 0) {
+              missing_projection = "authenticated descriptor generation";
+            }
+            if (missing_projection != nullptr) {
               result.messages.diagnostics.push_back(MakeDiagnostic(
                   "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
-                  "The engine parameter occurrence mapping lacked its exact descriptor projection.",
+                  std::string("The engine parameter occurrence mapping lacked its exact ") +
+                      missing_projection + ".",
                   "sbp_sbsql.wire"));
               break;
             }
             descriptor->descriptor_uuid = descriptor_uuid;
-            descriptor->type_uuid = profile->type_uuid;
+            descriptor->type_uuid = type_uuid;
             descriptor->nullability = mapping.nullable != 0
                                           ? BoundNullability::kNullable
                                           : BoundNullability::kNonNull;
+          }
+        }
+        if (native_binding_context.has_value() &&
+            variable_prebind_state.has_value()) {
+          for (const auto& mapping : variable_prebind_state->mapping.mappings) {
+            const auto ast_variable = std::ranges::find_if(
+                ast.native_relational.expressions, [&](const auto& item) {
+                  return item.expression_kind == NativeExpressionAstKind::kVariable &&
+                         item.structural_variable_occurrence_id == mapping.occurrence_id;
+                });
+            if (ast_variable == ast.native_relational.expressions.end()) {
+              result.messages.diagnostics.push_back(MakeDiagnostic(
+                  "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                  "The authenticated variable occurrence was absent from the AST.",
+                  "sbp_sbsql.wire"));
+              break;
+            }
+            CanonicalBytes descriptor_bytes(mapping.datatype_descriptor_uuid.begin(),
+                                            mapping.datatype_descriptor_uuid.end());
+            CanonicalBytes type_bytes(mapping.datatype_type_uuid.begin(),
+                                      mapping.datatype_type_uuid.end());
+            NativeDescriptorBindingInput descriptor;
+            descriptor.descriptor_id = static_cast<std::uint32_t>(
+                native_binding_context->descriptors.size() + 1);
+            descriptor.descriptor_uuid = LiteralReadUuid(descriptor_bytes, 0);
+            descriptor.type_uuid = LiteralReadUuid(type_bytes, 0);
+            descriptor.nullability = mapping.nullable != 0
+                ? BoundNullability::kNullable : BoundNullability::kNonNull;
+            const auto descriptor_id = descriptor.descriptor_id;
+            native_binding_context->descriptors.push_back(std::move(descriptor));
+            NativeExpressionBindingInput expression;
+            expression.expression_id = ast_variable->expression_id;
+            expression.descriptor_id = descriptor_id;
+            expression.structural_variable_occurrence_id =
+                ast_variable->structural_variable_occurrence_id;
+            native_binding_context->expressions.push_back(std::move(expression));
           }
         }
         mark_phase("build_native_binding_context");
@@ -13635,7 +15415,19 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     native_submission = BuildCanonicalNativeSubmission(
         bound, lowered, *native_statement_context, session_,
         parameter_prebind_state.has_value() ? &*parameter_prebind_state
-                                            : nullptr);
+                                            : nullptr,
+        variable_prebind_state.has_value() ? &*variable_prebind_state
+                                           : nullptr,
+        admitted_transaction_handle_.empty() ? nullptr
+                                             : &admitted_transaction_handle_,
+        admitted_savepoint_descriptor_.empty() ? nullptr
+                                               : &admitted_savepoint_descriptor_,
+        admitted_savepoint_handle_.empty() ? nullptr
+                                           : &admitted_savepoint_handle_,
+        replaying_savepoint_release_ ? &retired_savepoint_release_operand_
+        : replaying_savepoint_rollback_ ? &retired_savepoint_rollback_operand_
+                                        : nullptr,
+        nullptr);
     if (!native_submission.has_value()) {
       result.accepted = false;
       result.messages.diagnostics.push_back(MakeDiagnostic(
@@ -13652,6 +15444,18 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         result.messages.diagnostics.push_back(MakeDiagnostic(
             "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
             "The engine refused or malformed literal binding finalization.",
+            "sbp_sbsql.wire"));
+      }
+    } else if (variable_prebind_state.has_value() &&
+               !FinalizeVariableSubmission(
+                   bound, *variable_prebind_state,
+                   *native_statement_context, session_, server_client_.get(),
+                   &*native_submission, &result.messages)) {
+      result.accepted = false;
+      if (!result.messages.has_errors()) {
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            "SBLR.VARIABLE.STALE", "ERROR",
+            "The engine refused or malformed variable binding finalization.",
             "sbp_sbsql.wire"));
       }
     } else if (parameter_prebind_state.has_value() &&
@@ -13767,6 +15571,123 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         result.server_affected_rows = executed.affected_rows;
         result.server_affected_rows_present = executed.affected_rows_present;
         result.server_result_payload = executed.row_packet;
+        const auto* canonical_result_bytes =
+            reinterpret_cast<const std::uint8_t*>(executed.row_packet.data());
+        if (lowered.operation_id == "engine.op.txn_begin") {
+          scratchbird::engine::sblr::SblrTransactionHandleV1 handle;
+          std::string detail;
+          if (!scratchbird::engine::sblr::DecodeSblrTransactionHandleV1(
+                  canonical_result_bytes, executed.row_packet.size(), &handle,
+                  &detail)) {
+            result.accepted = false;
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                "MGA.TRANSACTION.HANDLE_INVALID", "ERROR",
+                "The engine returned a malformed transaction handle projection.",
+                "sbp_sbsql.wire"));
+            return result;
+          }
+          admitted_transaction_handle_.assign(
+              canonical_result_bytes,
+              canonical_result_bytes + executed.row_packet.size());
+        } else if (lowered.operation_id == "engine.op.txn_commit") {
+          scratchbird::engine::sblr::SblrTransactionCommitResultV1 committed;
+          std::string detail;
+          if (!scratchbird::engine::sblr::DecodeSblrTransactionCommitResultV1(
+                  canonical_result_bytes, executed.row_packet.size(),
+                  &committed, &detail)) {
+            result.accepted = false;
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                "MGA.TRANSACTION.COMMIT_RESULT_INVALID", "ERROR",
+                "The engine returned a malformed commit result projection.",
+                "sbp_sbsql.wire"));
+            return result;
+          }
+          retired_transaction_handle_ = admitted_transaction_handle_;
+          admitted_transaction_handle_.clear();
+        } else if (lowered.operation_id == "engine.op.txn_rollback") {
+          scratchbird::engine::sblr::SblrTransactionRollbackResultV1 rolled_back;
+          std::string detail;
+          if (!scratchbird::engine::sblr::DecodeSblrTransactionRollbackResultV1(
+                  canonical_result_bytes, executed.row_packet.size(),
+                  &rolled_back, &detail)) {
+            result.accepted = false;
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                "MGA.TRANSACTION.ROLLBACK_RESULT_INVALID", "ERROR",
+                "The engine returned a malformed rollback result projection.",
+                "sbp_sbsql.wire"));
+            return result;
+          }
+          retired_transaction_handle_ = admitted_transaction_handle_;
+          admitted_transaction_handle_.clear();
+        } else if (lowered.operation_id == "engine.op.txn_savepoint") {
+          scratchbird::engine::sblr::SblrSavepointHandleV1 savepoint;
+          std::string detail;
+          if (!scratchbird::engine::sblr::DecodeSblrSavepointHandleV1(
+                  canonical_result_bytes, executed.row_packet.size(),
+                  &savepoint, &detail)) {
+            result.accepted = false;
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                "MGA.SAVEPOINT.HANDLE_INVALID", "ERROR",
+                "The engine returned a malformed savepoint handle projection.",
+                "sbp_sbsql.wire"));
+            return result;
+          }
+          retired_savepoint_descriptor_ = admitted_savepoint_descriptor_;
+          admitted_savepoint_descriptor_.clear();
+          if (!admitted_savepoint_handle_.empty())
+            parent_savepoint_handle_ = admitted_savepoint_handle_;
+          admitted_savepoint_handle_.assign(
+              canonical_result_bytes,
+              canonical_result_bytes + executed.row_packet.size());
+        } else if (lowered.operation_id ==
+                   "engine.op.txn_release_savepoint") {
+          scratchbird::engine::sblr::SblrSavepointReleaseResultV1 released;
+          scratchbird::engine::sblr::SblrSavepointHandleV1 handle;
+          std::string detail;
+          if (!scratchbird::engine::sblr::DecodeSblrSavepointReleaseResultV1(
+                  canonical_result_bytes, executed.row_packet.size(),
+                  &released, &detail) ||
+              !scratchbird::engine::sblr::DecodeSblrSavepointHandleV1(
+                  admitted_savepoint_handle_.data(),
+                  admitted_savepoint_handle_.size(), &handle, &detail) ||
+              !native_statement_context.has_value()) {
+            result.accepted = false;
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                "MGA.SAVEPOINT.RELEASE_RESULT_INVALID", "ERROR",
+                "The engine returned a malformed savepoint release result projection.",
+                "sbp_sbsql.wire"));
+            return result;
+          }
+          scratchbird::engine::sblr::SblrSavepointReleaseOperandV1 operand;
+          operand.savepoint_uuid = handle.savepoint_uuid;
+          operand.savepoint_generation = handle.savepoint_generation;
+          operand.transaction_uuid = handle.transaction_uuid;
+          operand.local_transaction_id = handle.local_transaction_id;
+          operand.transaction_ordinal = handle.transaction_ordinal;
+          operand.admitted_stack_generation = handle.stack_generation;
+          operand.admitted_savepoint_evidence_sha256 =
+              handle.savepoint_evidence_sha256;
+          operand.executor_availability_generation =
+              native_statement_context->preliminary_transaction_release_savepoint_executor_availability_generation;
+          retired_savepoint_release_operand_ =
+              scratchbird::engine::sblr::EncodeSblrSavepointReleaseOperandV1(
+                  operand);
+          admitted_savepoint_handle_.clear();
+        } else if (lowered.operation_id ==
+                   "engine.op.txn_rollback_to_savepoint") {
+          namespace sp = scratchbird::engine::sblr;
+          sp::SblrSavepointRollbackResultV1 rolled; sp::SblrSavepointHandleV1 handle; std::string detail;
+          if(!sp::DecodeSblrSavepointRollbackResultV1(canonical_result_bytes,executed.row_packet.size(),&rolled,&detail)||
+             !sp::DecodeSblrSavepointHandleV1(admitted_savepoint_handle_.data(),admitted_savepoint_handle_.size(),&handle,&detail)||
+             !native_statement_context){result.accepted=false;result.messages.diagnostics.push_back(MakeDiagnostic("MGA.SAVEPOINT.ROLLBACK_RESULT_INVALID","ERROR","The engine returned a malformed savepoint rollback result projection.","sbp_sbsql.wire"));return result;}
+          sp::SblrSavepointRollbackOperandV1 operand; operand.savepoint_uuid=handle.savepoint_uuid;operand.savepoint_generation=handle.savepoint_generation;
+          operand.transaction_uuid=handle.transaction_uuid;operand.local_transaction_id=handle.local_transaction_id;operand.transaction_ordinal=handle.transaction_ordinal;
+          operand.admitted_stack_generation=handle.stack_generation;operand.admitted_savepoint_evidence_sha256=handle.savepoint_evidence_sha256;
+          operand.executor_availability_generation=native_statement_context->preliminary_transaction_rollback_to_savepoint_executor_availability_generation;
+          retired_savepoint_rollback_operand_=sp::EncodeSblrSavepointRollbackOperandV1(operand);
+          handle.stack_generation=rolled.resulting_stack_generation;handle.savepoint_evidence_sha256=rolled.refreshed_savepoint_evidence_sha256;
+          admitted_savepoint_handle_=sp::EncodeSblrSavepointHandleV1(handle);
+        }
         ApplyExecutedTransactionState(executed, &session_);
         if (ExecutionInvalidatesNameResolution(executed.operation_id)) {
           const bool preserve_stable_relations =
@@ -13783,6 +15704,111 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   }
   WriteParserPipelinePhaseTrace(sql, result, phase_micros);
   return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunRetiredTransactionCommitReplayForWire() {
+  if (retired_transaction_handle_.empty()) {
+    PipelineResult result;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "MGA.TRANSACTION.HANDLE_REQUIRED", "ERROR",
+        "No engine-issued retired transaction handle is available for replay.",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  admitted_transaction_handle_ = retired_transaction_handle_;
+  auto result = RunPipeline("COMMIT TRANSACTION", true);
+  admitted_transaction_handle_.clear();
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunRetiredTransactionRollbackReplayForWire() {
+  if (retired_transaction_handle_.empty()) {
+    PipelineResult result;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "MGA.TRANSACTION.HANDLE_REQUIRED", "ERROR",
+        "No engine-issued retired transaction handle is available for replay.",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  admitted_transaction_handle_ = retired_transaction_handle_;
+  auto result = RunPipeline("ROLLBACK TRANSACTION", true);
+  admitted_transaction_handle_.clear();
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunRetiredSavepointReplayForWire() {
+  if (retired_savepoint_descriptor_.empty()) {
+    PipelineResult result;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "MGA.SAVEPOINT.HANDLE_REQUIRED", "ERROR",
+        "No engine-issued consumed savepoint descriptor is available for replay.",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  admitted_savepoint_descriptor_ = retired_savepoint_descriptor_;
+  replaying_savepoint_descriptor_ = true;
+  auto result = RunPipeline("SAVEPOINT replay", true);
+  replaying_savepoint_descriptor_ = false;
+  admitted_savepoint_descriptor_.clear();
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunReleasedSavepointReplayForWire() {
+  if (retired_savepoint_release_operand_.empty()) {
+    PipelineResult result;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "MGA.SAVEPOINT.HANDLE_REQUIRED", "ERROR",
+        "No engine-issued released savepoint handle is available for replay.",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  replaying_savepoint_release_ = true;
+  // The admitted handle is used only to select the canonical release encoder;
+  // replay bytes remain the exact previously consumed SPRL operand.
+  admitted_savepoint_handle_.assign(144, 0);
+  auto result = RunPipeline("RELEASE SAVEPOINT alignment_point", true);
+  admitted_savepoint_handle_.clear();
+  replaying_savepoint_release_ = false;
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunReleaseParentSavepointForWire() {
+  if (parent_savepoint_handle_.empty()) {
+    PipelineResult result;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "MGA.SAVEPOINT.HANDLE_REQUIRED", "ERROR",
+        "No authenticated parent savepoint handle is available for release.",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  admitted_savepoint_handle_ = parent_savepoint_handle_;
+  auto result = RunPipeline("RELEASE SAVEPOINT alignment_point", true);
+  parent_savepoint_handle_.clear();
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunRollbackParentSavepointForWire() {
+  if(parent_savepoint_handle_.empty()){PipelineResult r;r.messages.diagnostics.push_back(MakeDiagnostic("MGA.SAVEPOINT.HANDLE_REQUIRED","ERROR","No authenticated parent savepoint handle is available for rollback.","sbp_sbsql.wire"));return r;}
+  descendant_savepoint_handle_=admitted_savepoint_handle_;
+  admitted_savepoint_handle_=parent_savepoint_handle_;
+  auto result=RunPipeline("ROLLBACK TO SAVEPOINT alignment_point",true);
+  parent_savepoint_handle_.clear(); return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunRolledBackSavepointReplayForWire() {
+  if(retired_savepoint_rollback_operand_.empty()){PipelineResult r;r.messages.diagnostics.push_back(MakeDiagnostic("MGA.SAVEPOINT.HANDLE_REQUIRED","ERROR","No consumed savepoint rollback operand is available.","sbp_sbsql.wire"));return r;}
+  replaying_savepoint_rollback_=true; admitted_savepoint_handle_.assign(144,0);
+  auto result=RunPipeline("ROLLBACK TO SAVEPOINT alignment_point",true);
+  admitted_savepoint_handle_.clear(); replaying_savepoint_rollback_=false; return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunRolledBackDescendantForWire() {
+  if(descendant_savepoint_handle_.empty()){PipelineResult r;r.messages.diagnostics.push_back(MakeDiagnostic("MGA.SAVEPOINT.HANDLE_REQUIRED","ERROR","No rolled-back descendant handle is available.","sbp_sbsql.wire"));return r;}
+  auto refreshed_target=admitted_savepoint_handle_;
+  admitted_savepoint_handle_=descendant_savepoint_handle_;
+  auto result=RunPipeline("ROLLBACK TO SAVEPOINT descendant_point",true);
+  admitted_savepoint_handle_=std::move(refreshed_target);
+  descendant_savepoint_handle_.clear(); return result;
 }
 
 ipc::ServerPreparedParameterFinalizeResult
@@ -13821,10 +15847,1082 @@ SbsqlTestWireSession::PrepareParameterizedForWire(std::string_view sql) {
   return result;
 }
 
+PipelineResult SbsqlTestWireSession::RunVariableForWire(
+    std::string_view sql, bool cursor_requested) {
+  PipelineResult result;
+  if (server_client_ == nullptr || !session_.authenticated) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "PARSER_SERVER_IPC.AUTH.REQUIRED", "ERROR",
+        "Variable frame coordination requires an authenticated server route.",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  const auto parsed = BuildAst(BuildCst(sql));
+  std::vector<const NativeExpressionAstNode*> variables;
+  for (const auto& expression : parsed.native_relational.expressions) {
+    if (expression.expression_kind == NativeExpressionAstKind::kVariable)
+      variables.push_back(&expression);
+  }
+  std::ranges::sort(variables, {}, [](const auto* expression) {
+    return expression->structural_variable_occurrence_id;
+  });
+  if (variables.empty() || variables.size() > 4096) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        variables.empty() ? "SBLR.OPERAND_INVALID" : "RESOURCE.BUDGET_EXCEEDED",
+        "ERROR", "Variable execution requires one bounded structural occurrence.",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  scratchbird::engine::sblr::SblrVariableFrameBeginRequestV1 request;
+  const auto operation = CanonicalUuidBytes(NewCreatedObjectUuid("OBJECT"));
+  const auto transaction = CanonicalUuidBytes(session_.transaction_uuid);
+  if (!operation || !transaction) return result;
+  request.operation_uuid = *operation;
+  request.transaction_uuid = *transaction;
+  request.expires_after_ns = 300000000000ULL;
+  for (const auto* variable : variables) {
+    if (variable->structural_variable_occurrence_id == 0 ||
+        !variable->child_expression_ids.empty()) return result;
+    scratchbird::engine::sblr::SblrVariableFrameDemandV1 demand;
+    demand.declaration_occurrence_id =
+        variable->structural_variable_occurrence_id;
+    demand.datatype_context_code = 1;
+    demand.nullable = 0;
+    demand.mutability = 1;
+    demand.initial_value_state = 3;
+    CanonicalBytes token(variable->spelling.begin(), variable->spelling.end());
+    const auto token_hash = CanonicalSha256(token);
+    if (!token_hash) return result;
+    demand.declaration_token_sha256 = *token_hash;
+    request.demands.push_back(demand);
+  }
+  request.demand_sha256 =
+      scratchbird::engine::sblr::ComputeSblrVariableFrameDemandSha256V1(
+          request.demands);
+  const auto sbvb =
+      scratchbird::engine::sblr::EncodeSblrVariableFrameBeginRequestV1(
+          &request);
+  auto begun = server_client_->BeginVariableFrame(session_, sbvb);
+  scratchbird::engine::sblr::SblrVariableFrameBeginResultV1 frame;
+  std::string detail;
+  if (!begun.accepted ||
+      !scratchbird::engine::sblr::DecodeSblrVariableFrameBeginResultV1(
+          begun.canonical_payload.data(), begun.canonical_payload.size(),
+          &frame, &detail) ||
+      frame.operation_uuid != request.operation_uuid ||
+      frame.mappings.size() != variables.size()) {
+    result.messages = std::move(begun.messages);
+    if (!result.messages.has_errors())
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBLR.OPERAND_INVALID", "ERROR",
+          "The engine variable frame mapping was malformed or mismatched.",
+          "sbp_sbsql.wire"));
+    return result;
+  }
+  ipc::VariableFrameCoordination coordination;
+  CanonicalBytes public_id(frame.public_coordination_uuid.begin(),
+                           frame.public_coordination_uuid.end());
+  CanonicalBytes operation_id(frame.operation_uuid.begin(),
+                              frame.operation_uuid.end());
+  coordination.public_coordination_uuid = LiteralReadUuid(public_id, 0);
+  coordination.operation_uuid = LiteralReadUuid(operation_id, 0);
+  coordination.coordinator_generation = frame.coordinator_generation;
+  coordination.frame_generation = frame.frame_generation;
+  return RunPipeline(sql, true, cursor_requested, 0, false, {}, nullptr,
+                     false, nullptr, {}, 0, &coordination, &frame);
+}
+
+PipelineResult SbsqlTestWireSession::RunSourceMapForWire() {
+  PipelineResult result;
+  if (server_client_ == nullptr || !session_.authenticated) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "PARSER_SERVER_IPC.AUTH.REQUIRED", "ERROR",
+        "SOURCE_MAP requires an authenticated server route.",
+        "sbp_sbsql.wire"));
+    return result;
+  }
+  ParserStatementContext unused_context;
+  ParserCanonicalSblrSubmission unused_submission;
+  result.accepted = AttachIssuedSourceMap(
+      unused_context, session_, server_client_.get(), &unused_submission,
+      &result.messages);
+  if (!result.accepted && !result.messages.has_errors()) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR",
+        "The authenticated SOURCE_MAP operation was refused.",
+        "sbp_sbsql.wire"));
+  }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunErrorVectorForWire() {
+  PipelineResult result;
+  if (server_client_ == nullptr || !session_.authenticated) return result;
+  ParserTransactionSelector selector;
+  selector.local_transaction_id = session_.local_transaction_id;
+  selector.transaction_uuid = session_.transaction_uuid;
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  const auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  const auto registry = CanonicalUuidBytes(acquired.context.catalog_epoch_uuid);
+  const auto diagnostic_snapshot = CanonicalUuidBytes(
+      acquired.context.preliminary_diagnostic_registry_snapshot_uuid);
+  if (!receipt || !registry || !diagnostic_snapshot ||
+      acquired.context.preliminary_diagnostic_identities.empty()) return result;
+  const auto& identity = acquired.context.preliminary_diagnostic_identities.front();
+  const auto diagnostic_uuid = CanonicalUuidBytes(identity.diagnostic_uuid);
+  if (!diagnostic_uuid) return result;
+  namespace ev = scratchbird::engine::sblr;
+  ev::SblrErrorVectorIssueRequestV1 request;
+  request.statement_receipt_uuid = *receipt;
+  request.registry_snapshot_uuid = *registry;
+  request.registry_generation = acquired.context.literal_catalog_generation;
+  request.diagnostic_registry_snapshot_uuid = *diagnostic_snapshot;
+  request.diagnostic_registry_generation =
+      acquired.context.preliminary_diagnostic_registry_generation;
+  ev::SblrErrorVectorEntryV1 entry;
+  entry.occurrence_ordinal = 1;
+  entry.diagnostic_uuid = *diagnostic_uuid;
+  entry.diagnostic_generation = identity.generation;
+  entry.precedence_ordinal = 1;
+  entry.severity_code = identity.severity_code;
+  entry.redaction_class = identity.redaction_class;
+  entry.safe_field_count = 0;
+  entry.safe_fields_sha256 = identity.identity_sha256;
+  request.entries.push_back(entry);
+  auto evrq = ev::EncodeSblrErrorVectorIssueRequestV1(&request);
+  auto issued = server_client_->IssueErrorVectorDescriptor(session_, evrq);
+  ev::SblrErrorVectorIssueResultV1 decoded;
+  std::string detail;
+  if (!issued.accepted || !ev::DecodeSblrErrorVectorIssueResultV1(
+          issued.canonical_payload.data(), issued.canonical_payload.size(),
+          &decoded, &detail)) {
+    result.messages = std::move(issued.messages);
+    return result;
+  }
+  result.accepted = ExecuteIssuedDescriptorRoot(
+      acquired.context, session_, server_client_.get(),
+      "engine.op.error_vector", "SBLR_ERROR_VECTOR", 7,
+      "diagnostic.vector", "diagnostics", decoded.descriptor_uuid,
+      decoded.descriptor_generation, &result.messages);
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunAutonomousFrameForWire() {
+  PipelineResult result;
+  if(server_client_==nullptr||!session_.authenticated)return result;
+  ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};
+  auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);
+  if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}
+  const auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if(!receipt)return result;
+  namespace af=scratchbird::engine::sblr;
+  af::SblrAutonomousFrameRequestV1 demand;
+  demand.receipt=*receipt;
+  // AFCR fields other than receipt+occurrence are structurally required but
+  // explicitly non-authoritative; msg68 ignores them and the in-server
+  // compiler supplies the immutable projection.
+  demand.parent_transaction=*receipt; demand.parent_frame=*receipt;
+  demand.database=*receipt; demand.attachment=*receipt; demand.session=*receipt;
+  demand.body=*receipt; demand.occurrence=1; demand.intent=1; demand.depth=1;
+  demand.effect_count=0; demand.effect_sha[0]=1; demand.body_sha[0]=1;
+  auto coordinated=server_client_->CoordinateAutonomousFrame(
+      session_,af::EncodeSblrAutonomousFrameRequestV1(demand));
+  af::SblrAutonomousFrameDescriptorV1 descriptor;std::string detail;
+  if(!coordinated.accepted||!af::DecodeSblrAutonomousFrameDescriptorV1(
+      coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&descriptor,&detail)){
+    result.messages=std::move(coordinated.messages);return result;}
+  const auto afdo=af::EncodeSblrAutonomousFrameDescriptorV1(descriptor,true);if(afdo.empty())return result;
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id="engine.op.psql_autonomous_frame";
+  const auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&afdo);
+  if(!submission)return result;
+  const auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);
+  result.accepted=executed.accepted;result.messages=executed.messages;
+  if(result.accepted){af::SblrAutonomousFrameResultV1 frame;if(!af::DecodeSblrAutonomousFrameResultV1(
+      reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&frame,&detail))result.accepted=false;}
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunReservationReleaseForWire() {
+  PipelineResult result;
+  if (server_client_ == nullptr || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  const auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  const auto transaction = CanonicalUuidBytes(session_.transaction_uuid);
+  if (!receipt || !transaction ||
+      acquired.context.preliminary_transaction_reservation_release_executor_availability_generation == 0)
+    return result;
+
+  namespace rr = scratchbird::engine::sblr;
+  rr::SblrReservationReleaseRequestV1 request;
+  request.receipt = *receipt;
+  request.transaction = *transaction;
+  // Relation identity is deliberately non-authoritative in RRCR. The trusted
+  // in-server compiler allocates and publishes the exact relation reservation
+  // for this authenticated receipt and structural occurrence.
+  request.relation = *receipt;
+  request.occurrence = 1;
+  auto coordinated = server_client_->CoordinateReservationRelease(
+      session_, rr::EncodeSblrReservationReleaseRequestV1(request));
+  rr::SblrReservationReleaseDescriptorV1 descriptor;
+  std::string detail;
+  if (!coordinated.accepted ||
+      !rr::DecodeSblrReservationReleaseDescriptorV1(
+          coordinated.canonical_payload.data(), coordinated.canonical_payload.size(),
+          &descriptor, &detail, false)) {
+    result.messages = std::move(coordinated.messages);
+    return result;
+  }
+  const auto rrdo = rr::EncodeSblrReservationReleaseDescriptorV1(descriptor, true);
+  if (rrdo.empty()) return result;
+
+  BoundStatement bound;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.transaction_reservation_release";
+  const auto submission = BuildCanonicalNativeSubmission(
+      bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, &rrdo);
+  if (!submission) return result;
+  const auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(
+      session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted;
+  result.messages = executed.messages;
+  if (result.accepted) {
+    rr::SblrReservationReleaseResultV1 released;
+    if (!rr::DecodeSblrReservationReleaseResultV1(
+            reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+            executed.row_packet.size(), &released, &detail))
+      result.accepted = false;
+  }
+  return result;
+}
+PipelineResult SbsqlTestWireSession::RunTemporaryInstanceCleanupForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}const auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid),transaction=CanonicalUuidBytes(session_.transaction_uuid),session_uuid=CanonicalUuidBytes(session_.session_uuid);if(!receipt||!transaction||!session_uuid||!acquired.context.preliminary_temporary_instance_cleanup_executor_availability_generation)return result;namespace ti=scratchbird::engine::sblr;ti::SblrTemporaryInstanceCleanupRequestV1 q;q.receipt=*receipt;q.transaction=*transaction;q.session=*session_uuid;q.occurrence=1;q.trigger=1;auto coordinated=server_client_->CoordinateTemporaryInstanceCleanup(session_,ti::EncodeSblrTemporaryInstanceCleanupRequestV1(q));ti::SblrTemporaryInstanceCleanupDescriptorV1 d;std::string detail;if(!coordinated.accepted||!ti::DecodeSblrTemporaryInstanceCleanupDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail)){result.messages=std::move(coordinated.messages);return result;}auto tido=ti::EncodeSblrTemporaryInstanceCleanupDescriptorV1(d,true);if(tido.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.temporary_instance_cleanup";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&tido);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){ti::SblrTemporaryInstanceCleanupResultV1 r;if(!ti::DecodeSblrTemporaryInstanceCleanupResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&r,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunCursorOpenForWire() {
+  PipelineResult result;
+  if (server_client_ == nullptr || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  const auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt ||
+      !acquired.context.preliminary_cursor_open_executor_availability_generation)
+    return result;
+  namespace co = scratchbird::engine::sblr;
+  co::SblrCursorOpenRequestV1 request;
+  request.receipt = *receipt;
+  request.occurrence = 1;
+  request.mode = 1;
+  request.hold = 1;
+  request.fetch_size = 64;
+  auto coordinated = server_client_->CoordinateCursorOpen(
+      session_, co::EncodeSblrCursorOpenRequestV1(request));
+  co::SblrCursorOpenDescriptorV1 descriptor;
+  std::string detail;
+  if (!coordinated.accepted ||
+      !co::DecodeSblrCursorOpenDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail)) {
+    result.messages = std::move(coordinated.messages);
+    return result;
+  }
+  auto operand = co::EncodeSblrCursorOpenDescriptorV1(descriptor, true);
+  if (operand.empty()) return result;
+  BoundStatement bound;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.cursor_open";
+  auto submission = BuildCanonicalNativeSubmission(
+      bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &operand);
+  if (!submission) return result;
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(
+      session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted;
+  result.messages = executed.messages;
+  if (result.accepted) {
+    co::SblrCursorHandleV1 handle;
+    if (!co::DecodeSblrCursorHandleV1(
+            reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+            executed.row_packet.size(), &handle, &detail))
+      result.accepted = false;
+    else admitted_cursor_handle_.assign(executed.row_packet.begin(), executed.row_packet.end());
+  }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunCursorFetchForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated||admitted_cursor_handle_.empty())return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace cf=scratchbird::engine::sblr;cf::SblrCursorHandleV1 h;std::string detail;if(!cf::DecodeSblrCursorHandleV1(admitted_cursor_handle_.data(),admitted_cursor_handle_.size(),&h,&detail)||!acquired.context.preliminary_cursor_fetch_executor_availability_generation)return result;cf::SblrCursorFetchOperandV1 o;o.cursor=h.cursor;o.cursor_generation=h.cursor_generation;o.plan=h.plan;o.plan_generation=h.plan_generation;o.row_shape=h.row_shape;o.row_shape_generation=h.row_shape_generation;o.transaction=h.transaction;o.session=h.session;o.position_generation=h.position_generation;o.maximum_rows=h.fetch_size;o.cursor_evidence=h.cursor_evidence;o.availability_generation=acquired.context.preliminary_cursor_fetch_executor_availability_generation;auto body=cf::EncodeSblrCursorFetchOperandV1(o);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.cursor_fetch";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){cf::SblrCursorFetchResultV1 r;if(!cf::DecodeSblrCursorFetchResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&r,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunCursorCloseForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated||admitted_cursor_handle_.empty())return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace cc=scratchbird::engine::sblr;cc::SblrCursorHandleV1 h;std::string detail;if(!cc::DecodeSblrCursorHandleV1(admitted_cursor_handle_.data(),admitted_cursor_handle_.size(),&h,&detail)||!acquired.context.preliminary_cursor_close_executor_availability_generation)return result;cc::SblrCursorCloseOperandV1 o;o.cursor=h.cursor;o.cursor_generation=h.cursor_generation;o.plan=h.plan;o.plan_generation=h.plan_generation;o.row_shape=h.row_shape;o.row_shape_generation=h.row_shape_generation;o.transaction=h.transaction;o.session=h.session;o.position_generation=h.position_generation;o.close_reason=1;o.cursor_evidence=h.cursor_evidence;o.availability_generation=acquired.context.preliminary_cursor_close_executor_availability_generation;auto body=cc::EncodeSblrCursorCloseOperandV1(o);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.cursor_close";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){cc::SblrCursorCloseResultV1 r;if(!cc::DecodeSblrCursorCloseResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&r,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunReadByKeyForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace rb=scratchbird::engine::sblr;rb::SblrReadByKeyRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.literal_preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_read_by_key_executor_availability_generation)return result;std::copy(receipt->begin(),receipt->end(),q.receipt.begin());q.occurrence=1;q.key_occurrence=1;auto coordinated=server_client_->CoordinateReadByKey(session_,rb::EncodeSblrReadByKeyRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;rb::SblrReadByKeyDescriptorV1 d;std::string detail;if(!rb::DecodeSblrReadByKeyDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto body=rb::EncodeSblrReadByKeyDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.read_by_key";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){rb::SblrReadByKeyResultV1 r;if(!rb::DecodeSblrReadByKeyResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&r,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunReadRangeForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace rr=scratchbird::engine::sblr;rr::SblrReadRangeRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.literal_preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_read_range_executor_availability_generation)return result;std::copy(receipt->begin(),receipt->end(),q.receipt.begin());q.occurrence=1;q.range_occurrence=1;auto coordinated=server_client_->CoordinateReadRange(session_,rr::EncodeSblrReadRangeRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;rr::SblrReadRangeDescriptorV1 d;std::string detail;if(!rr::DecodeSblrReadRangeDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto body=rr::EncodeSblrReadRangeDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.read_range";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){rr::SblrReadRangeResultV1 r;if(!rr::DecodeSblrReadRangeResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&r,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunReadStreamForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace rs=scratchbird::engine::sblr;rs::SblrReadStreamRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.literal_preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_read_stream_executor_availability_generation)return result;std::copy(receipt->begin(),receipt->end(),q.receipt.begin());q.occurrence=1;q.stream_occurrence=1;auto coordinated=server_client_->CoordinateReadStream(session_,rs::EncodeSblrReadStreamRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;rs::SblrReadStreamDescriptorV1 d;std::string detail;if(!rs::DecodeSblrReadStreamDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto body=rs::EncodeSblrReadStreamDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.read_stream";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){rs::SblrReadStreamHandleV1 h;if(!rs::DecodeSblrReadStreamHandleV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&h,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunResultSetPassForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace rp=scratchbird::engine::sblr;rp::SblrResultSetPassRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.literal_preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_result_set_pass_executor_availability_generation)return result;std::copy(receipt->begin(),receipt->end(),q.receipt.begin());q.occurrence=1;q.pass_occurrence=1;auto coordinated=server_client_->CoordinateResultSetPass(session_,rp::EncodeSblrResultSetPassRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;rp::SblrResultSetPassDescriptorV1 d;std::string detail;if(!rp::DecodeSblrResultSetPassDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto body=rp::EncodeSblrResultSetPassDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.result_set_pass";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){rp::SblrResultSetPassHandleV1 h;if(!rp::DecodeSblrResultSetPassHandleV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&h,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunAccessCursorOpenForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace ac=scratchbird::engine::sblr;ac::SblrAccessCursorOpenRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.literal_preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_access_cursor_open_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.cursor_occurrence=1;auto coordinated=server_client_->CoordinateAccessCursorOpen(session_,ac::EncodeSblrAccessCursorOpenRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;ac::SblrAccessCursorOpenDescriptorV1 d;std::string detail;if(!ac::DecodeSblrAccessCursorOpenDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto body=ac::EncodeSblrAccessCursorOpenDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.access_cursor_open";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){ac::SblrAccessCursorHandleV1 h;if(!ac::DecodeSblrAccessCursorHandleV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&h,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunAccessCursorFetchForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace ac=scratchbird::engine::sblr;ac::SblrAccessCursorFetchRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.literal_preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_access_cursor_fetch_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=2;q.fetch_occurrence=1;auto coordinated=server_client_->CoordinateAccessCursorFetch(session_,ac::EncodeSblrAccessCursorFetchRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;ac::SblrAccessCursorFetchDescriptorV1 d;std::string detail;if(!ac::DecodeSblrAccessCursorFetchDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto body=ac::EncodeSblrAccessCursorFetchDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.access_cursor_fetch";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){ac::SblrAccessCursorFetchResultV1 r;if(!ac::DecodeSblrAccessCursorFetchResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&r,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunAccessCursorCloseForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace ac=scratchbird::engine::sblr;ac::SblrAccessCursorCloseRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.literal_preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_access_cursor_close_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=3;q.close_occurrence=1;auto coordinated=server_client_->CoordinateAccessCursorClose(session_,ac::EncodeSblrAccessCursorCloseRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;ac::SblrAccessCursorCloseDescriptorV1 d;std::string detail;if(!ac::DecodeSblrAccessCursorCloseDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto body=ac::EncodeSblrAccessCursorCloseDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.access_cursor_close";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;return result;}
+PipelineResult SbsqlTestWireSession::RunInsertForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace in=scratchbird::engine::sblr;in::SblrInsertRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.literal_preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_insert_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.insert_occurrence=1;auto coordinated=server_client_->CoordinateInsert(session_,in::EncodeSblrInsertRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;in::SblrInsertDescriptorV1 d;std::string detail;if(!in::DecodeSblrInsertDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto body=in::EncodeSblrInsertDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.insert";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){in::SblrInsertResultV1 r;if(!in::DecodeSblrInsertResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&r,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunUpdateForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace up=scratchbird::engine::sblr;up::SblrUpdateRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.literal_preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_update_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.update_occurrence=1;auto coordinated=server_client_->CoordinateUpdate(session_,up::EncodeSblrUpdateRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;up::SblrUpdateDescriptorV1 d;std::string detail;if(!up::DecodeSblrUpdateDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto body=up::EncodeSblrUpdateDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.update";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){up::SblrUpdateResultV1 r;if(!up::DecodeSblrUpdateResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&r,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunDeleteForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace del=scratchbird::engine::sblr;del::SblrDeleteRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.literal_preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_delete_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.delete_occurrence=1;auto coordinated=server_client_->CoordinateDelete(session_,del::EncodeSblrDeleteRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;del::SblrDeleteDescriptorV1 d;std::string detail;if(!del::DecodeSblrDeleteDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto body=del::EncodeSblrDeleteDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.delete";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){del::SblrDeleteResultV1 r;if(!del::DecodeSblrDeleteResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&r,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunMergeForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace mer=scratchbird::engine::sblr;mer::SblrMergeRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.literal_preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_merge_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.merge_occurrence=1;auto coordinated=server_client_->CoordinateMerge(session_,mer::EncodeSblrMergeRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;mer::SblrMergeDescriptorV1 d;std::string detail;if(!mer::DecodeSblrMergeDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto body=mer::EncodeSblrMergeDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.merge";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){mer::SblrMergeResultV1 r;if(!mer::DecodeSblrMergeResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&r,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunTableTruncateForWire() {
+  PipelineResult result;
+  if (server_client_ == nullptr || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  namespace tt = scratchbird::engine::sblr;
+  tt::SblrTableTruncateRequestV1 request;
+  const auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt ||
+      !acquired.context.preliminary_table_truncate_executor_availability_generation)
+    return result;
+  request.receipt = *receipt;
+  request.occurrence = 1;
+  request.truncate_occurrence = 1;
+  auto coordinated = server_client_->CoordinateTableTruncate(
+      session_, tt::EncodeSblrTableTruncateRequestV1(request));
+  result.messages = coordinated.messages;
+  if (!coordinated.accepted) return result;
+  tt::SblrTableTruncateDescriptorV1 descriptor;
+  std::string detail;
+  if (!tt::DecodeSblrTableTruncateDescriptorV1(
+          coordinated.canonical_payload.data(), coordinated.canonical_payload.size(),
+          &descriptor, &detail, false)) return result;
+  const auto operand = tt::EncodeSblrTableTruncateDescriptorV1(descriptor, true);
+  if (operand.empty()) return result;
+  BoundStatement bound;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.table_truncate";
+  const auto submission = BuildCanonicalNativeSubmission(
+      bound, lowered, acquired.context, session_,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, &operand);
+  if (!submission) return result;
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(
+      session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted;
+  result.messages = std::move(executed.messages);
+  if (result.accepted) {
+    tt::SblrTableTruncateResultV1 truncate_result;
+    if (!tt::DecodeSblrTableTruncateResultV1(
+            reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+            executed.row_packet.size(), &truncate_result, &detail))
+      result.accepted = false;
+  }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunTableAnalyzeForWire() {
+  PipelineResult result;
+  if (server_client_ == nullptr || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace ta = scratchbird::engine::sblr;
+  ta::SblrTableAnalyzeRequestV1 request;
+  const auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_table_analyze_executor_availability_generation) return result;
+  request.receipt = *receipt;
+  request.occurrence = 1;
+  request.analyze_occurrence = 1;
+  auto coordinated = server_client_->CoordinateTableAnalyze(session_, ta::EncodeSblrTableAnalyzeRequestV1(request));
+  result.messages = coordinated.messages;
+  if (!coordinated.accepted) return result;
+  ta::SblrTableAnalyzeDescriptorV1 descriptor;
+  std::string detail;
+  if (!ta::DecodeSblrTableAnalyzeDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &descriptor, &detail, false)) return result;
+  const auto operand = ta::EncodeSblrTableAnalyzeDescriptorV1(descriptor, true);
+  if (operand.empty()) return result;
+  BoundStatement bound;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.table_analyze";
+  const auto submission = BuildCanonicalNativeSubmission(
+      bound, lowered, acquired.context, session_,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &operand);
+  if (!submission) return result;
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted;
+  result.messages = std::move(executed.messages);
+  if (result.accepted) {
+    ta::SblrTableAnalyzeResultV1 analyze_result;
+    if (!ta::DecodeSblrTableAnalyzeResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &analyze_result, &detail)) result.accepted = false;
+  }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunBulkImportStreamForWire() {
+  PipelineResult result;
+  if (server_client_ == nullptr || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); if (result.messages.diagnostics.empty()) result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.ACQUIRE_FAILED","ERROR","bulk import acquire failed","sbsql_sblr_alignment")); return result; }
+  namespace bi = scratchbird::engine::sblr;
+  bi::SblrBulkImportStreamRequestV1 request;
+  const auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_bulk_import_stream_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.PROJECTION_MISSING","ERROR","bulk import availability projection missing","sbsql_sblr_alignment")); return result; }
+  request.receipt = *receipt; request.occurrence = 1; request.import_occurrence = 1;
+  auto coordinated = server_client_->CoordinateBulkImportStream(session_, bi::EncodeSblrBulkImportStreamRequestV1(request));
+  result.messages = coordinated.messages;
+  if (!coordinated.accepted) { if (result.messages.diagnostics.empty()) result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.COORDINATION_FAILED","ERROR","bulk import coordination failed","sbsql_sblr_alignment")); return result; }
+  bi::SblrBulkImportStreamDescriptorV1 descriptor; std::string detail;
+  if (!bi::DecodeSblrBulkImportStreamDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &descriptor, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.DESCRIPTOR_INVALID","ERROR",detail,"sbsql_sblr_alignment")); return result; }
+  const auto operand = bi::EncodeSblrBulkImportStreamDescriptorV1(descriptor, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.ENCODE_FAILED","ERROR","bulk import operand encoding failed","sbsql_sblr_alignment")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.bulk_import_stream";
+  const auto submission = BuildCanonicalNativeSubmission(
+      bound, lowered, acquired.context, session_,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &operand);
+  if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.SUBMISSION_FAILED","ERROR","bulk import canonical submission failed","sbsql_sblr_alignment")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (!result.accepted && result.messages.diagnostics.empty()) result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.EXECUTION_FAILED","ERROR","bulk import execution failed","sbsql_sblr_alignment"));
+  if (result.accepted) { bi::SblrBulkImportStreamResultV1 rr; if (!bi::DecodeSblrBulkImportStreamResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) { result.accepted = false; result.messages.diagnostics.push_back(MakeDiagnostic("BULK.IMPORT.RESULT_INVALID","ERROR",detail,"sbsql_sblr_alignment")); } }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunBulkExportStreamForWire() {
+  PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;
+  ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}
+  namespace be=scratchbird::engine::sblr;be::SblrBulkExportStreamRequestV1 request;const auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_bulk_export_stream_executor_availability_generation)return result;request.receipt=*receipt;request.occurrence=1;request.export_occurrence=1;
+  auto coordinated=server_client_->CoordinateBulkExportStream(session_,be::EncodeSblrBulkExportStreamRequestV1(request));result.messages=coordinated.messages;if(!coordinated.accepted)return result;be::SblrBulkExportStreamDescriptorV1 descriptor;std::string detail;if(!be::DecodeSblrBulkExportStreamDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&descriptor,&detail,false))return result;const auto operand=be::EncodeSblrBulkExportStreamDescriptorV1(descriptor,true);if(operand.empty())return result;
+  BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.bulk_export_stream";const auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){be::SblrBulkExportStreamResultV1 rr;if(!be::DecodeSblrBulkExportStreamResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;
+}
+PipelineResult SbsqlTestWireSession::RunStatementBatchForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace sb=scratchbird::engine::sblr;sb::SblrStatementBatchRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_statement_batch_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.batch_occurrence=1;auto coordinated=server_client_->CoordinateStatementBatch(session_,sb::EncodeSblrStatementBatchRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;sb::SblrStatementBatchDescriptorV1 d;std::string detail;if(!sb::DecodeSblrStatementBatchDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=sb::EncodeSblrStatementBatchDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.statement_batch";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){sb::SblrStatementBatchResultV1 rr;if(!sb::DecodeSblrStatementBatchResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunAtomicCasForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace ac=scratchbird::engine::sblr;ac::SblrAtomicCasRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_atomic_cas_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.cas_occurrence=1;auto coordinated=server_client_->CoordinateAtomicCas(session_,ac::EncodeSblrAtomicCasRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;ac::SblrAtomicCasDescriptorV1 d;std::string detail;if(!ac::DecodeSblrAtomicCasDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=ac::EncodeSblrAtomicCasDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.atomic_cas";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){ac::SblrAtomicCasResultV1 rr;if(!ac::DecodeSblrAtomicCasResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunAtomicRmwForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace ar=scratchbird::engine::sblr;ar::SblrAtomicRmwRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_atomic_rmw_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.rmw_occurrence=1;auto coordinated=server_client_->CoordinateAtomicRmw(session_,ar::EncodeSblrAtomicRmwRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;ar::SblrAtomicRmwDescriptorV1 d;std::string detail;if(!ar::DecodeSblrAtomicRmwDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=ar::EncodeSblrAtomicRmwDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.atomic_read_modify_write";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){ar::SblrAtomicRmwResultV1 rr;if(!ar::DecodeSblrAtomicRmwResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunAdvisoryLockForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace al=scratchbird::engine::sblr;al::SblrAdvisoryLockRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_advisory_lock_acquire_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.lock_occurrence=1;auto coordinated=server_client_->CoordinateAdvisoryLock(session_,al::EncodeSblrAdvisoryLockRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;al::SblrAdvisoryLockDescriptorV1 d;std::string detail;if(!al::DecodeSblrAdvisoryLockDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=al::EncodeSblrAdvisoryLockDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.advisory_lock_acquire";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){al::SblrAdvisoryLockResultV1 rr;if(!al::DecodeSblrAdvisoryLockResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunAdvisoryLockReleaseForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace al=scratchbird::engine::sblr;al::SblrAdvisoryLockReleaseRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_advisory_lock_release_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.release_occurrence=1;auto coordinated=server_client_->CoordinateAdvisoryLockRelease(session_,al::EncodeSblrAdvisoryLockReleaseRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;al::SblrAdvisoryLockReleaseDescriptorV1 d;std::string detail;if(!al::DecodeSblrAdvisoryLockReleaseDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=al::EncodeSblrAdvisoryLockReleaseDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.advisory_lock_release";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){al::SblrAdvisoryLockResultV1 rr;if(!al::DecodeSblrAdvisoryLockResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunFunctionCallForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace fc=scratchbird::engine::sblr;fc::SblrFunctionCallRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_function_call_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.function_occurrence=1;auto coordinated=server_client_->CoordinateFunctionCall(session_,fc::EncodeSblrFunctionCallRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;fc::SblrFunctionCallDescriptorV1 d;std::string detail;if(!fc::DecodeSblrFunctionCallDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=fc::EncodeSblrFunctionCallDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.function_call";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){fc::SblrFunctionCallResultV1 rr;if(!fc::DecodeSblrFunctionCallResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunOperatorCallForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace oc=scratchbird::engine::sblr;oc::SblrOperatorCallRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_operator_call_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.operator_occurrence=1;auto coordinated=server_client_->CoordinateOperatorCall(session_,oc::EncodeSblrOperatorCallRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;oc::SblrOperatorCallDescriptorV1 d;std::string detail;if(!oc::DecodeSblrOperatorCallDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=oc::EncodeSblrOperatorCallDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.operator_call";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){oc::SblrOperatorCallResultV1 rr;if(!oc::DecodeSblrOperatorCallResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunCastForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace cs=scratchbird::engine::sblr;cs::SblrCastRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_cast_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.cast_occurrence=1;auto coordinated=server_client_->CoordinateCast(session_,cs::EncodeSblrCastRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;cs::SblrCastDescriptorV1 d;std::string detail;if(!cs::DecodeSblrCastDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=cs::EncodeSblrCastDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.cast";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){cs::SblrCastResultV1 rr;if(!cs::DecodeSblrCastResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunCompareForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace cp=scratchbird::engine::sblr;cp::SblrCompareRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_compare_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.comparison_occurrence=1;auto coordinated=server_client_->CoordinateCompare(session_,cp::EncodeSblrCompareRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;cp::SblrCompareDescriptorV1 d;std::string detail;if(!cp::DecodeSblrCompareDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=cp::EncodeSblrCompareDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.compare";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){cp::SblrCompareResultV1 rr;if(!cp::DecodeSblrCompareResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunDomainOperationForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace dom=scratchbird::engine::sblr;dom::SblrDomainOperationRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_domain_operation_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.domain_operation_occurrence=1;auto coordinated=server_client_->CoordinateDomainOperation(session_,dom::EncodeSblrDomainOperationRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;dom::SblrDomainOperationDescriptorV1 d;std::string detail;if(!dom::DecodeSblrDomainOperationDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=dom::EncodeSblrDomainOperationDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.domain_operation";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){dom::SblrDomainOperationResultV1 rr;if(!dom::DecodeSblrDomainOperationResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunUdrInvokeForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) {
+    return result;
+  }
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  namespace u = scratchbird::engine::sblr;
+  u::SblrUdrInvokeRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt ||
+      !acquired.context.preliminary_udr_invoke_executor_availability_generation) {
+    return result;
+  }
+  q.receipt = *receipt;
+  q.occurrence = q.invocation_occurrence = 1;
+  auto request = u::EncodeSblrUdrInvokeRequestV1(q);
+  auto coordinated = server_client_->CoordinateUdrInvoke(session_, request);
+  result.messages = coordinated.messages;
+  if (!coordinated.accepted) {
+    return result;
+  }
+  u::SblrUdrInvokeDescriptorV1 d;
+  std::string detail;
+  if (!u::DecodeSblrUdrInvokeDescriptorV1(coordinated.canonical_payload.data(),
+                                          coordinated.canonical_payload.size(),
+                                          &d, &detail, false)) {
+    return result;
+  }
+  auto operand = u::EncodeSblrUdrInvokeDescriptorV1(d, true);
+  BoundStatement bound;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.udr_invoke";
+  auto submission = BuildCanonicalNativeSubmission(
+      bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+      nullptr, &operand);
+  if (!submission) {
+    return result;
+  }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(
+      session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted;
+  result.messages = std::move(executed.messages);
+  if (result.accepted) {
+    u::SblrUdrInvokeResultV1 rr;
+    if (!u::DecodeSblrUdrInvokeResultV1(
+            reinterpret_cast<const uint8_t*>(executed.row_packet.data()),
+            executed.row_packet.size(), &rr, &detail)) {
+      result.accepted = false;
+    }
+  }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunProcedureInvokeForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace p=scratchbird::engine::sblr;p::SblrProcedureInvokeRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_procedure_invoke_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.invocation_occurrence=1;auto coordinated=server_client_->CoordinateProcedureInvoke(session_,p::EncodeSblrProcedureInvokeRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;p::SblrProcedureInvokeDescriptorV1 d;std::string detail;if(!p::DecodeSblrProcedureInvokeDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=p::EncodeSblrProcedureInvokeDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.procedure_invoke";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){p::SblrProcedureInvokeResultV1 rr;if(!p::DecodeSblrProcedureInvokeResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunFunctionInvokeForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace f=scratchbird::engine::sblr;f::SblrFunctionInvokeRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_function_invoke_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.invocation_occurrence=1;auto coordinated=server_client_->CoordinateFunctionInvoke(session_,f::EncodeSblrFunctionInvokeRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;f::SblrFunctionInvokeDescriptorV1 d;std::string detail;if(!f::DecodeSblrFunctionInvokeDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=f::EncodeSblrFunctionInvokeDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.function_invoke";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){f::SblrFunctionInvokeResultV1 rr;if(!f::DecodeSblrFunctionInvokeResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunAggregateInvokeForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace a=scratchbird::engine::sblr;a::SblrAggregateInvokeRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_aggregate_invoke_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.invocation_occurrence=1;auto coordinated=server_client_->CoordinateAggregateInvoke(session_,a::EncodeSblrAggregateInvokeRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;a::SblrAggregateInvokeDescriptorV1 d;std::string detail;if(!a::DecodeSblrAggregateInvokeDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=a::EncodeSblrAggregateInvokeDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.aggregate_invoke";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){a::SblrAggregateInvokeResultV1 rr;if(!a::DecodeSblrAggregateInvokeResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunSequenceNextvalForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace n=scratchbird::engine::sblr;n::SblrSequenceNextvalRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_sequence_nextval_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.nextval_occurrence=1;auto coordinated=server_client_->CoordinateSequenceNextval(session_,n::EncodeSblrSequenceNextvalRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;n::SblrSequenceNextvalDescriptorV1 d;std::string detail;if(!n::DecodeSblrSequenceNextvalDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=n::EncodeSblrSequenceNextvalDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.sequence_nextval";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){n::SblrSequenceNextvalResultV1 rr;if(!n::DecodeSblrSequenceNextvalResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunSequenceCurrvalForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrSequenceCurrvalRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_sequence_currval_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.currval_occurrence=1;auto coordinated=server_client_->CoordinateSequenceCurrval(session_,c::EncodeSblrSequenceCurrvalRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrSequenceCurrvalDescriptorV1 d;std::string detail;if(!c::DecodeSblrSequenceCurrvalDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrSequenceCurrvalDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.sequence_currval";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrSequenceCurrvalResultV1 rr;if(!c::DecodeSblrSequenceCurrvalResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunSequenceSetvalForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrSequenceSetvalRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_sequence_setval_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.setval_occurrence=1;auto coordinated=server_client_->CoordinateSequenceSetval(session_,c::EncodeSblrSequenceSetvalRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrSequenceSetvalDescriptorV1 d;std::string detail;if(!c::DecodeSblrSequenceSetvalDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrSequenceSetvalDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.sequence_setval";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrSequenceSetvalResultV1 rr;if(!c::DecodeSblrSequenceSetvalResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunQueryNumericForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrQueryNumericRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_query_numeric_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.numeric_occurrence=1;auto coordinated=server_client_->CoordinateQueryNumeric(session_,c::EncodeSblrQueryNumericRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrQueryNumericDescriptorV1 d;std::string detail;if(!c::DecodeSblrQueryNumericDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrQueryNumericDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.query_apply_numeric_operation";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrQueryNumericResultV1 rr;if(!c::DecodeSblrQueryNumericResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunQueryEvaluateAdvancedDatatypeFamilyForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrAdvancedDatatypeFamilyRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_advanced_datatype_family_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.family_occurrence=1;auto coordinated=server_client_->CoordinateAdvancedDatatypeFamily(session_,c::EncodeSblrAdvancedDatatypeFamilyRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrAdvancedDatatypeFamilyDescriptorV1 d;std::string detail;if(!c::DecodeSblrAdvancedDatatypeFamilyDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrAdvancedDatatypeFamilyDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.query_evaluate_advanced_datatype_family";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrAdvancedDatatypeFamilyResultV1 rr;if(!c::DecodeSblrAdvancedDatatypeFamilyResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunProjectForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrProjectRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_project_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.projection_occurrence=1;auto coordinated=server_client_->CoordinateProject(session_,c::EncodeSblrProjectRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrProjectDescriptorV1 d;std::string detail;if(!c::DecodeSblrProjectDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrProjectDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.project";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrProjectResultV1 rr;if(!c::DecodeSblrProjectResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunAggregateForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrAggregateRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_aggregate_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.aggregate_occurrence=1;auto coordinated=server_client_->CoordinateAggregate(session_,c::EncodeSblrAggregateRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrAggregateDescriptorV1 d;std::string detail;if(!c::DecodeSblrAggregateDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrAggregateDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.aggregate";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrAggregateResultV1 rr;if(!c::DecodeSblrAggregateResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+
+PipelineResult SbsqlTestWireSession::RunGroupForWire() {
+  PipelineResult result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrGroupRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_group_executor_availability_generation) return result;
+  q.receipt = *receipt; q.occurrence = q.group_occurrence = 1;
+  auto coordinated = server_client_->CoordinateGroup(session_, c::EncodeSblrGroupRequestV1(q));
+  result.messages = coordinated.messages;
+  if (!coordinated.accepted) return result;
+  c::SblrGroupDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrGroupDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) return result;
+  auto operand = c::EncodeSblrGroupDescriptorV1(d, true);
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.group";
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &operand);
+  if (!submission) return result;
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrGroupResultV1 rr; if (!c::DecodeSblrGroupResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+
+
+PipelineResult SbsqlTestWireSession::RunSortForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);
+  if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}
+  namespace c=scratchbird::engine::sblr;c::SblrSortRequestV1 q;
+  auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if(!receipt||!acquired.context.preliminary_sort_executor_availability_generation)return result;
+  q.receipt=*receipt;q.occurrence=q.sort_occurrence=1;
+  auto coordinated=server_client_->CoordinateSort(session_,c::EncodeSblrSortRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;
+  c::SblrSortDescriptorV1 d;std::string detail;if(!c::DecodeSblrSortDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;
+  auto operand=c::EncodeSblrSortDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.sort";
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &operand);
+  if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrSortResultV1 rr;if(!c::DecodeSblrSortResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunLimitForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);
+  if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}
+  namespace c=scratchbird::engine::sblr;c::SblrLimitRequestV1 q;
+  auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if(!receipt||!acquired.context.preliminary_limit_executor_availability_generation)return result;
+  q.receipt=*receipt;q.occurrence=q.limit_occurrence=1;
+  auto coordinated=server_client_->CoordinateLimit(session_,c::EncodeSblrLimitRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;
+  c::SblrLimitDescriptorV1 d;std::string detail;if(!c::DecodeSblrLimitDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;
+  auto operand=c::EncodeSblrLimitDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.limit";
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &operand);
+  if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrLimitResultV1 rr;if(!c::DecodeSblrLimitResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunWindowForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); if(result.messages.diagnostics.empty()) return result; return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrWindowRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt) return result; if (!acquired.context.preliminary_window_executor_availability_generation) return result;
+  q.receipt = *receipt; q.occurrence = q.window_occurrence = 1;
+  auto coordinated = server_client_->CoordinateWindow(session_, c::EncodeSblrWindowRequestV1(q));
+  result.messages = coordinated.messages;
+  if (!coordinated.accepted) { if(result.messages.diagnostics.empty()) return result; return result; }
+  c::SblrWindowDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrWindowDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) return result;
+  auto operand = c::EncodeSblrWindowDescriptorV1(d, true);
+  if (operand.empty()) return result;
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.window"; g_window_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &operand);
+  if (!submission) return result;
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrWindowResultV1 rr; if (!c::DecodeSblrWindowResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) return result; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunReturnResultSetForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrReturnResultSetRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_return_result_set_executor_availability_generation) return result;
+  q.receipt = *receipt; q.occurrence = q.return_occurrence = 1;
+  auto coordinated = server_client_->CoordinateReturnResultSet(session_, c::EncodeSblrReturnResultSetRequestV1(q));
+  result.messages = coordinated.messages;
+  if (!coordinated.accepted) return result;
+  c::SblrReturnResultSetDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrReturnResultSetDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) return result;
+  auto operand = c::EncodeSblrReturnResultSetDescriptorV1(d, true);
+  if (operand.empty()) return result;
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.return_result_set"; g_return_result_set_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_return_result_set_operand = nullptr;
+  if (!submission) return result;
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrReturnResultSetResultV1 rr; if (!c::DecodeSblrReturnResultSetResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunKvStructuredReadForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrKvStructuredReadRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_kv_structured_read_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "KV structured read preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.read_occurrence = 1;
+  auto coordinated = server_client_->CoordinateKvStructuredRead(session_, c::EncodeSblrKvStructuredReadRequestV1(q));
+  c::SblrKvStructuredReadDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrKvStructuredReadDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrKvStructuredReadDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured read descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.kv_structured_read"; g_kv_structured_read_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_kv_structured_read_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured read canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrKvStructuredReadResultV1 rr; if (!c::DecodeSblrKvStructuredReadResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+PipelineResult SbsqlTestWireSession::RunKvStructuredMutateForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrKvStructuredMutateRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_kv_structured_mutate_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "KV structured mutate preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.mutate_occurrence = 1;
+  auto coordinated = server_client_->CoordinateKvStructuredMutate(session_, c::EncodeSblrKvStructuredMutateRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrKvStructuredMutateDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrKvStructuredMutateDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrKvStructuredMutateDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured mutate descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.kv_structured_mutate"; g_kv_structured_mutate_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_kv_structured_mutate_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured mutate canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrKvStructuredMutateResultV1 rr; if (!c::DecodeSblrKvStructuredMutateResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+PipelineResult SbsqlTestWireSession::RunKvStructuredScanForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrKvStructuredScanRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_kv_structured_scan_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "KV structured scan preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.scan_occurrence = 1;
+  auto coordinated = server_client_->CoordinateKvStructuredScan(session_, c::EncodeSblrKvStructuredScanRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrKvStructuredScanDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrKvStructuredScanDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrKvStructuredScanDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured scan descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.kv_structured_scan"; g_kv_structured_scan_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_kv_structured_scan_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured scan canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrKvStructuredScanResultV1 rr; if (!c::DecodeSblrKvStructuredScanResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+PipelineResult SbsqlTestWireSession::RunKvStructuredStreamReadForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrKvStructuredStreamReadRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_kv_structured_stream_read_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "KV structured stream read preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.stream_read_occurrence = 1;
+  auto coordinated = server_client_->CoordinateKvStructuredStreamRead(session_, c::EncodeSblrKvStructuredStreamReadRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrKvStructuredStreamReadDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrKvStructuredStreamReadDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrKvStructuredStreamReadDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream read descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.kv_structured_stream_read"; g_kv_structured_stream_read_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_kv_structured_stream_read_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream read canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrKvStructuredStreamReadResultV1 rr; if (!c::DecodeSblrKvStructuredStreamReadResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunKvStructuredStreamAppendForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrKvStructuredStreamAppendRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_kv_structured_stream_append_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "KV structured stream append preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.stream_append_occurrence = 1;
+  auto coordinated = server_client_->CoordinateKvStructuredStreamAppend(session_, c::EncodeSblrKvStructuredStreamAppendRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrKvStructuredStreamAppendDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrKvStructuredStreamAppendDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrKvStructuredStreamAppendDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.kv_structured_stream_append"; g_kv_structured_stream_append_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_kv_structured_stream_append_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrKvStructuredStreamAppendResultV1 rr; if (!c::DecodeSblrKvStructuredStreamAppendResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunKvStructuredTimeseriesForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrKvStructuredTimeseriesRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_kv_structured_timeseries_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "KV structured stream append preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.timeseries_occurrence = 1;
+  auto coordinated = server_client_->CoordinateKvStructuredTimeseries(session_, c::EncodeSblrKvStructuredTimeseriesRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrKvStructuredTimeseriesDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrKvStructuredTimeseriesDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrKvStructuredTimeseriesDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.kv_structured_timeseries"; g_kv_structured_timeseries_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_kv_structured_timeseries_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrKvStructuredTimeseriesResultV1 rr; if (!c::DecodeSblrKvStructuredTimeseriesResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunSystemConfigSetForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrSystemConfigSetRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_system_config_set_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "KV structured stream append preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.config_occurrence = 1;
+  auto coordinated = server_client_->CoordinateSystemConfigSet(session_, c::EncodeSblrSystemConfigSetRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrSystemConfigSetDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrSystemConfigSetDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrSystemConfigSetDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.system_config_set"; g_system_config_set_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_system_config_set_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrSystemConfigSetResultV1 rr; if (!c::DecodeSblrSystemConfigSetResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+PipelineResult SbsqlTestWireSession::RunDdlCreateDomainForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrDdlCreateDomainRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_ddl_create_domain_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "KV structured stream append preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.domain_occurrence = 1;
+  auto coordinated = server_client_->CoordinateDdlCreateDomain(session_, c::EncodeSblrDdlCreateDomainRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrDdlCreateDomainDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrDdlCreateDomainDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrDdlCreateDomainDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_create_domain"; g_system_config_set_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_system_config_set_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrDdlCreateDomainResultV1 rr; if (!c::DecodeSblrDdlCreateDomainResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+PipelineResult SbsqlTestWireSession::RunDdlAlterDomainForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrDdlAlterDomainRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_ddl_create_domain_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "KV structured stream append preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.domain_occurrence = 1;
+  auto coordinated = server_client_->CoordinateDdlAlterDomain(session_, c::EncodeSblrDdlAlterDomainRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrDdlAlterDomainDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrDdlAlterDomainDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrDdlAlterDomainDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_alter_domain"; g_system_config_set_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_system_config_set_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrDdlAlterDomainResultV1 rr; if (!c::DecodeSblrDdlAlterDomainResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+PipelineResult SbsqlTestWireSession::RunDdlCreateViewForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrDdlCreateViewRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_ddl_create_domain_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "KV structured stream append preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.domain_occurrence = 1;
+  auto coordinated = server_client_->CoordinateDdlCreateView(session_, c::EncodeSblrDdlCreateViewRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrDdlCreateViewDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrDdlCreateViewDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrDdlCreateViewDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_create_view"; g_system_config_set_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_system_config_set_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrDdlCreateViewResultV1 rr; if (!c::DecodeSblrDdlCreateViewResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}PipelineResult SbsqlTestWireSession::RunDdlAlterViewForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrDdlAlterViewRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_ddl_create_domain_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "KV structured stream append preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.domain_occurrence = 1;
+  auto coordinated = server_client_->CoordinateDdlAlterView(session_, c::EncodeSblrDdlAlterViewRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrDdlAlterViewDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrDdlAlterViewDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrDdlAlterViewDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_alter_view"; g_system_config_set_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_system_config_set_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrDdlAlterViewResultV1 rr; if (!c::DecodeSblrDdlAlterViewResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}PipelineResult SbsqlTestWireSession::RunDdlDropViewForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrDdlDropViewRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_ddl_create_domain_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "KV structured stream append preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.domain_occurrence = 1;
+  auto coordinated = server_client_->CoordinateDdlDropView(session_, c::EncodeSblrDdlDropViewRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrDdlDropViewDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrDdlDropViewDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrDdlDropViewDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_drop_view"; g_system_config_set_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_system_config_set_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrDdlDropViewResultV1 rr; if (!c::DecodeSblrDdlDropViewResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDdlCreateTriggerForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrDdlCreateTriggerRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_ddl_create_domain_executor_availability_generation) {
+    result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "CREATE TRIGGER preliminary authority was missing.", "sbp_sbsql.wire")); return result;
+  }
+  q.receipt = *receipt; q.occurrence = 1; q.domain_occurrence = 1;
+  auto coordinated = server_client_->CoordinateDdlCreateTrigger(session_, c::EncodeSblrDdlCreateTriggerRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrDdlCreateTriggerDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrDdlCreateTriggerDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) {
+    result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result;
+  }
+  auto operand = c::EncodeSblrDdlCreateTriggerDescriptorV1(d, true);
+  if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "CREATE TRIGGER descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_create_trigger"; g_ddl_create_trigger_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_ddl_create_trigger_operand = nullptr;
+  if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "CREATE TRIGGER canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrDdlCreateTriggerResultV1 rr; if (!c::DecodeSblrDdlCreateTriggerResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDdlAlterTriggerForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrDdlAlterTriggerRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_ddl_create_domain_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "ALTER TRIGGER preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.trigger_occurrence = 1;
+  auto coordinated = server_client_->CoordinateDdlAlterTrigger(session_, c::EncodeSblrDdlAlterTriggerRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrDdlAlterTriggerDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrDdlAlterTriggerDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrDdlAlterTriggerDescriptorV1(d, true);
+  if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "ALTER TRIGGER descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_alter_trigger"; g_ddl_alter_trigger_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_ddl_alter_trigger_operand = nullptr;
+  if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "ALTER TRIGGER canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrDdlAlterTriggerResultV1 rr; if (!c::DecodeSblrDdlAlterTriggerResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDdlDropTriggerForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrDdlDropTriggerRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_ddl_create_domain_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "DROP TRIGGER preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.trigger_occurrence = 1;
+  auto coordinated = server_client_->CoordinateDdlDropTrigger(session_, c::EncodeSblrDdlDropTriggerRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrDdlDropTriggerDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrDdlDropTriggerDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrDdlDropTriggerDescriptorV1(d, true);
+  if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "DROP TRIGGER descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_drop_trigger"; g_ddl_drop_trigger_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_ddl_drop_trigger_operand = nullptr;
+  if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "DROP TRIGGER canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrDdlDropTriggerResultV1 rr; if (!c::DecodeSblrDdlDropTriggerResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDdlCreateProcedureForWire() {
+  PipelineResult result; if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid}; auto acquired=server_client_->AcquireNativeStatementContext(session_,selector); if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}
+  namespace c=scratchbird::engine::sblr; c::SblrDdlCreateProcedureRequestV1 q; auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid); if(!receipt||!acquired.context.preliminary_ddl_create_domain_executor_availability_generation){result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID","ERROR","CREATE PROCEDURE preliminary authority was missing.","sbp_sbsql.wire"));return result;} q.receipt=*receipt;q.occurrence=1;q.procedure_occurrence=1; auto coordinated=server_client_->CoordinateDdlCreateProcedure(session_,c::EncodeSblrDdlCreateProcedureRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result; c::SblrDdlCreateProcedureDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlCreateProcedureDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false)){result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID","ERROR",detail,"sbp_sbsql.wire"));return result;}auto operand=c::EncodeSblrDdlCreateProcedureDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_create_procedure";g_ddl_create_procedure_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_create_procedure_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlCreateProcedureResultV1 rr;if(!c::DecodeSblrDdlCreateProcedureResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDdlAlterProcedureForWire() {
+  PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlAlterProcedureRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_ddl_create_domain_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.procedure_occurrence=1;auto coordinated=server_client_->CoordinateDdlAlterProcedure(session_,c::EncodeSblrDdlAlterProcedureRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlAlterProcedureDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlAlterProcedureDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlAlterProcedureDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_alter_procedure";g_ddl_alter_procedure_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_alter_procedure_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlAlterProcedureResultV1 rr;if(!c::DecodeSblrDdlAlterProcedureResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDdlDropProcedureForWire() {
+  PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlDropProcedureRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_ddl_create_domain_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.procedure_occurrence=1;auto coordinated=server_client_->CoordinateDdlDropProcedure(session_,c::EncodeSblrDdlDropProcedureRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlDropProcedureDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlDropProcedureDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlDropProcedureDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_drop_procedure";g_ddl_drop_procedure_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_drop_procedure_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlDropProcedureResultV1 rr;if(!c::DecodeSblrDdlDropProcedureResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDdlCreateFunctionForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlCreateFunctionRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_ddl_create_domain_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.procedure_occurrence=1;auto coordinated=server_client_->CoordinateDdlCreateFunction(session_,c::EncodeSblrDdlCreateFunctionRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlCreateFunctionDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlCreateFunctionDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlCreateFunctionDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_create_function";g_ddl_create_function_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_create_function_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlCreateFunctionResultV1 rr;if(!c::DecodeSblrDdlCreateFunctionResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
+
+PipelineResult SbsqlTestWireSession::RunDdlAlterFunctionForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlAlterFunctionRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_ddl_create_domain_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.procedure_occurrence=1;auto coordinated=server_client_->CoordinateDdlAlterFunction(session_,c::EncodeSblrDdlAlterFunctionRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlAlterFunctionDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlAlterFunctionDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlAlterFunctionDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_alter_function";g_ddl_alter_function_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_alter_function_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlAlterFunctionResultV1 rr;if(!c::DecodeSblrDdlAlterFunctionResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
+
+PipelineResult SbsqlTestWireSession::RunDdlDropFunctionForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlDropFunctionRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_ddl_create_domain_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.procedure_occurrence=1;auto coordinated=server_client_->CoordinateDdlDropFunction(session_,c::EncodeSblrDdlDropFunctionRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlDropFunctionDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlDropFunctionDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlDropFunctionDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_drop_function";g_ddl_drop_function_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_drop_function_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlDropFunctionResultV1 rr;if(!c::DecodeSblrDdlDropFunctionResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
+
+PipelineResult SbsqlTestWireSession::RunDdlCreatePackageForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlCreatePackageRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_ddl_create_domain_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=1;q.procedure_occurrence=1;auto coordinated=server_client_->CoordinateDdlCreatePackage(session_,c::EncodeSblrDdlCreatePackageRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlCreatePackageDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlCreatePackageDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlCreatePackageDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_create_package";g_ddl_create_package_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_create_package_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlCreatePackageResultV1 rr;if(!c::DecodeSblrDdlCreatePackageResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
+
 PipelineResult SbsqlTestWireSession::RunPreparedParameterizedForWire(
     std::string_view sql, std::string_view prepared_statement_uuid,
     std::uint64_t prepared_generation,
-    const std::vector<std::optional<std::string>>& parameter_values,
+    const std::vector<PreparedParameterWireValue>& parameter_values,
     bool cursor_requested) {
   PipelineResult result;
   if (server_client_ == nullptr || !session_.authenticated ||
@@ -13848,6 +16946,9 @@ PipelineResult SbsqlTestWireSession::RunPreparedParameterizedForWire(
                      parameter_values, &begun.coordination, false, nullptr,
                      prepared_statement_uuid, prepared_generation);
 }
+PipelineResult SbsqlTestWireSession::RunDdlCreateTemporaryTableForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlCreateTemporaryTableRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt){return result;}q.receipt=*receipt;q.occurrence=1;q.temporary_table_occurrence=1;auto coordinated=server_client_->CoordinateDdlCreateTemporaryTable(session_,c::EncodeSblrDdlCreateTemporaryTableRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlCreateTemporaryTableDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlCreateTemporaryTableDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlCreateTemporaryTableDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_create_temporary_table";g_ddl_create_temporary_table_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_create_temporary_table_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result; }
+
+
 
 PipelineResult SbsqlTestWireSession::RunSblrEnvelope(std::string_view encoded_sblr_envelope,
                                                      bool cursor_requested) {
@@ -14437,4 +17538,111 @@ int SbsqlTestWireSession::ServeFd(std::intptr_t fd) {
   return rc;
 }
 
+PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrDdlCreateSchemaRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_ddl_create_domain_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "DDL create schema preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.schema_occurrence = 1;
+  auto coordinated = server_client_->CoordinateDdlCreateSchema(session_, c::EncodeSblrDdlCreateSchemaRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrDdlCreateSchemaDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrDdlCreateSchemaDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrDdlCreateSchemaDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_create_schema"; g_system_config_set_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_system_config_set_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrDdlCreateSchemaResultV1 rr; if (!c::DecodeSblrDdlCreateSchemaResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDdlCreateTableForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrDdlCreateTableRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_ddl_create_table_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "DDL create table preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.table_occurrence = 1;
+  auto coordinated = server_client_->CoordinateDdlCreateTable(session_, c::EncodeSblrDdlCreateTableRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrDdlCreateTableDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrDdlCreateTableDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrDdlCreateTableDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_create_table"; g_system_config_set_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_system_config_set_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrDdlCreateTableResultV1 rr; if (!c::DecodeSblrDdlCreateTableResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDdlCreateIndexForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrDdlCreateIndexRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_ddl_create_index_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "DDL create index preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.index_occurrence = 1;
+  auto coordinated = server_client_->CoordinateDdlCreateIndex(session_, c::EncodeSblrDdlCreateIndexRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrDdlCreateIndexDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrDdlCreateIndexDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrDdlCreateIndexDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_create_index"; g_system_config_set_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_system_config_set_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrDdlCreateIndexResultV1 rr; if (!c::DecodeSblrDdlCreateIndexResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDdlDropIndexForWire() {
+  PipelineResult result;
+  if (!server_client_ || !session_.authenticated) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  namespace c = scratchbird::engine::sblr;
+  c::SblrDdlDropIndexRequestV1 q;
+  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  if (!receipt || !acquired.context.preliminary_ddl_drop_index_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "DDL create index preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
+  q.receipt = *receipt; q.occurrence = 1; q.index_occurrence = 1;
+  auto coordinated = server_client_->CoordinateDdlDropIndex(session_, c::EncodeSblrDdlDropIndexRequestV1(q));
+  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
+  c::SblrDdlDropIndexDescriptorV1 d; std::string detail;
+  if (!c::DecodeSblrDdlDropIndexDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
+  auto operand = c::EncodeSblrDdlDropIndexDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
+  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_drop_index"; g_system_config_set_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_system_config_set_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
+  if (result.accepted) { c::SblrDdlDropIndexResultV1 rr; if (!c::DecodeSblrDdlDropIndexResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunDdlDropTemporaryTableForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlDropTemporaryTableRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt){return result;}q.receipt=*receipt;q.occurrence=1;q.temporary_table_occurrence=1;auto coordinated=server_client_->CoordinateDdlDropTemporaryTable(session_,c::EncodeSblrDdlDropTemporaryTableRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlDropTemporaryTableDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlDropTemporaryTableDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlDropTemporaryTableDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_drop_temporary_table";g_ddl_drop_temporary_table_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_drop_temporary_table_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result; }
+PipelineResult SbsqlTestWireSession::RunDdlRenameObjectVectorForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlRenameObjectVectorRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;q.receipt=*receipt;q.occurrence=1;q.object_vector_occurrence=1;auto coordinated=server_client_->CoordinateDdlRenameObjectVector(session_,c::EncodeSblrDdlRenameObjectVectorRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlRenameObjectVectorDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlRenameObjectVectorDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlRenameObjectVectorDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_rename_object_vector";g_ddl_rename_object_vector_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_rename_object_vector_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlRenameObjectVectorResultV1 rr;if(!c::DecodeSblrDdlRenameObjectVectorResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
+PipelineResult SbsqlTestWireSession::RunDdlCreateOrReplaceSrsForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlCreateOrReplaceSrsRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;q.receipt=*receipt;q.occurrence=1;q.srs_occurrence=1;auto coordinated=server_client_->CoordinateDdlCreateOrReplaceSrs(session_,c::EncodeSblrDdlCreateOrReplaceSrsRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlCreateOrReplaceSrsDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlCreateOrReplaceSrsDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlCreateOrReplaceSrsDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_create_or_replace_srs";g_ddl_create_or_replace_srs_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_create_or_replace_srs_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlCreateOrReplaceSrsResultV1 rr;if(!c::DecodeSblrDdlCreateOrReplaceSrsResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
+PipelineResult SbsqlTestWireSession::RunDdlDropSrsForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlDropSrsRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;q.receipt=*receipt;q.occurrence=1;q.srs_occurrence=1;auto coordinated=server_client_->CoordinateDdlDropSrs(session_,c::EncodeSblrDdlDropSrsRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlDropSrsDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlDropSrsDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlDropSrsDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_drop_srs";g_ddl_drop_srs_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_drop_srs_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlDropSrsResultV1 rr;if(!c::DecodeSblrDdlDropSrsResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
+PipelineResult SbsqlTestWireSession::RunDdlCreateRewriteRuleForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlCreateRewriteRuleRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;q.receipt=*receipt;q.occurrence=1;q.rule_occurrence=1;auto coordinated=server_client_->CoordinateDdlCreateRewriteRule(session_,c::EncodeSblrDdlCreateRewriteRuleRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlCreateRewriteRuleDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlCreateRewriteRuleDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlCreateRewriteRuleDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_create_rewrite_rule";g_ddl_create_rewrite_rule_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_create_rewrite_rule_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlCreateRewriteRuleResultV1 rr;if(!c::DecodeSblrDdlCreateRewriteRuleResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
+PipelineResult SbsqlTestWireSession::RunDdlAlterRewriteRuleForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlAlterRewriteRuleRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;q.receipt=*receipt;q.occurrence=1;q.rule_occurrence=1;auto coordinated=server_client_->CoordinateDdlAlterRewriteRule(session_,c::EncodeSblrDdlAlterRewriteRuleRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlAlterRewriteRuleDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlAlterRewriteRuleDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlAlterRewriteRuleDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_alter_rewrite_rule";g_ddl_alter_rewrite_rule_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_alter_rewrite_rule_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlAlterRewriteRuleResultV1 rr;if(!c::DecodeSblrDdlAlterRewriteRuleResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
+PipelineResult SbsqlTestWireSession::RunDdlDropRewriteRuleForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlDropRewriteRuleRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;q.receipt=*receipt;q.occurrence=1;q.rule_occurrence=1;auto coordinated=server_client_->CoordinateDdlDropRewriteRule(session_,c::EncodeSblrDdlDropRewriteRuleRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlDropRewriteRuleDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlDropRewriteRuleDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlDropRewriteRuleDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_drop_rewrite_rule";g_ddl_drop_rewrite_rule_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);g_ddl_drop_rewrite_rule_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlDropRewriteRuleResultV1 rr;if(!c::DecodeSblrDdlDropRewriteRuleResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
 } // namespace scratchbird::parser::sbsql

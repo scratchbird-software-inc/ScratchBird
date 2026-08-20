@@ -1,0 +1,2 @@
+#include "sblr_ddl_create_function_coordinator.hpp"
+namespace scratchbird::engine::internal_api { SblrDdlCreateFunctionCoordinationResult CompileSblrDdlCreateFunctionDescriptor(const EngineRequestContext&c,const std::string&s,std::uint64_t o,std::uint32_t f,std::uint64_t a){return CompileSblrDdlCreateProcedureDescriptor(c,s,o,f,a);} SblrDdlCreateFunctionCoordinationResult ConsumeSblrDdlCreateFunctionDescriptor(const EngineRequestContext&c,const scratchbird::engine::sblr::SblrDdlCreateFunctionDescriptorV1&d){return ConsumeSblrDdlCreateProcedureDescriptor(c,d);} }

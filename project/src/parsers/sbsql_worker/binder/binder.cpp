@@ -6204,12 +6204,17 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           (filter_literal->expression_kind !=
                NativeExpressionAstKind::kLiteral &&
            filter_literal->expression_kind !=
-               NativeExpressionAstKind::kParameter) ||
+               NativeExpressionAstKind::kParameter &&
+           filter_literal->expression_kind !=
+               NativeExpressionAstKind::kVariable) ||
           (filter_literal->expression_kind ==
                NativeExpressionAstKind::kLiteral &&
            filter_literal->literal_kind != NativeLiteralAstKind::kNumeric) ||
           (filter_literal->expression_kind ==
                NativeExpressionAstKind::kParameter &&
+           filter_literal->literal_kind.has_value()) ||
+          (filter_literal->expression_kind ==
+               NativeExpressionAstKind::kVariable &&
            filter_literal->literal_kind.has_value()) ||
           !filter_literal->child_expression_ids.empty() ||
           !filter_literal->operator_name.empty()) {
@@ -6810,18 +6815,25 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       used_descriptor_ids.insert(expected_boolean_descriptor_id);
       const bool parameter_leaf =
           filter_literal->expression_kind == NativeExpressionAstKind::kParameter;
+      const bool variable_leaf =
+          filter_literal->expression_kind == NativeExpressionAstKind::kVariable;
       const auto literal_binding = std::ranges::find_if(
           context.expressions, [&](const auto& candidate) {
             return candidate.expression_id == filter_literal->expression_id &&
                    (parameter_leaf
                         ? candidate.structural_parameter_occurrence_id ==
                               filter_literal->structural_parameter_occurrence_id
+                        : variable_leaf
+                        ? candidate.structural_variable_occurrence_id ==
+                              filter_literal->structural_variable_occurrence_id
                         : candidate.structural_literal_occurrence_id ==
                               filter_literal->structural_literal_occurrence_id);
           });
       if (literal_binding == context.expressions.end() ||
           (parameter_leaf
                ? filter_literal->structural_parameter_occurrence_id == 0
+               : variable_leaf
+               ? filter_literal->structural_variable_occurrence_id == 0
                : filter_literal->structural_literal_occurrence_id == 0) ||
           !descriptor_by_id.contains(literal_binding->descriptor_id)) {
         AddBoundAstDiagnostic(
@@ -7100,6 +7112,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           filter_literal->structural_literal_occurrence_id;
       literal.structural_parameter_occurrence_id =
           filter_literal->structural_parameter_occurrence_id;
+      literal.structural_variable_occurrence_id =
+          filter_literal->structural_variable_occurrence_id;
       const auto literal_id = literal.expression_id;
       bound.expressions.push_back(std::move(literal));
 
@@ -7407,6 +7421,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     record.structural_parameter_occurrence_id =
         expression.structural_parameter_occurrence_id;
+    if (expression.structural_variable_occurrence_id !=
+        expression_binding.structural_variable_occurrence_id) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                            "variable structural occurrence identity changed during binding");
+      return RefusedBoundAst(std::move(bound));
+    }
+    record.structural_variable_occurrence_id =
+        expression.structural_variable_occurrence_id;
     if (operator_expression) {
       record.canonical_operator_name = expression.operator_name;
     }

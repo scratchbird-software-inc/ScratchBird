@@ -283,6 +283,7 @@ struct BoundPortal {
   std::string sql;
   std::vector<std::uint32_t> param_types;
   std::vector<std::optional<std::string>> param_values;
+  std::vector<PreparedParameterWireValue> parameter_wire_values;
   std::vector<std::vector<std::optional<std::string>>> param_rows;
   std::string parameter_prepared_statement_uuid;
   std::uint64_t parameter_prepared_generation{0};
@@ -5125,7 +5126,9 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
   const std::uint16_t value_count = ReadU16(payload, off);
   off += 4;
   std::vector<std::optional<std::string>> values;
+  std::vector<PreparedParameterWireValue> wire_values;
   values.reserve(value_count);
+  wire_values.reserve(value_count);
   for (std::uint16_t i = 0; i < value_count && off + 4 <= payload.size(); ++i) {
     const std::int32_t length = ReadI32(payload, off);
     off += 4;
@@ -5142,6 +5145,14 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
                                      : formats[std::min<std::size_t>(i, formats.size() - 1)];
     const std::uint32_t oid = i < statement.param_types.size() ? statement.param_types[i] : 0;
     values.push_back(DecodeParamValue(oid, format, data));
+    PreparedParameterWireValue wire_value;
+    wire_value.is_null = !data.has_value();
+    wire_value.encoding = format == 0
+                              ? PreparedParameterPayloadEncoding::utf8_text
+                              : PreparedParameterPayloadEncoding::binary;
+    if (data.has_value()) wire_value.raw_bytes = *data;
+    wire_value.public_type_metadata = oid;
+    wire_values.push_back(std::move(wire_value));
   }
   BoundPortal bound;
   // Preserve parameter markers through parse/bind/lower. Values travel in
@@ -5149,6 +5160,7 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
   bound.sql = statement.sql;
   bound.param_types = statement.param_types;
   bound.param_values = std::move(values);
+  bound.parameter_wire_values = std::move(wire_values);
   bound.param_rows.push_back(bound.param_values);
   bound.parameter_prepared_statement_uuid =
       statement.parameter_prepared_statement_uuid;
@@ -5429,7 +5441,7 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                 bool* command_accepted = nullptr,
                 bool suppress_success_result = false,
                 PipelineResult* success_result = nullptr,
-                const std::vector<std::optional<std::string>>*
+                const std::vector<PreparedParameterWireValue>*
                     parameter_values = nullptr,
                 std::string_view parameter_prepared_statement_uuid = {},
                 std::uint64_t parameter_prepared_generation = 0) {
@@ -5494,13 +5506,13 @@ bool ExecuteSql(SbsqlTestWireSession* session,
             sql, true, auto_cursor, 0,
             autocommit_emulation && !auto_cursor,
             parameter_values == nullptr
-                ? std::vector<std::optional<std::string>>{}
+                ? std::vector<PreparedParameterWireValue>{}
                 : *parameter_values)
       : session->RunPreparedParameterizedForWire(
             sql, parameter_prepared_statement_uuid,
             parameter_prepared_generation,
             parameter_values == nullptr
-                ? std::vector<std::optional<std::string>>{}
+                ? std::vector<PreparedParameterWireValue>{}
                 : *parameter_values,
             auto_cursor);
   WriteParserPhaseTraceIfEnabled(phase_trace,
@@ -7062,7 +7074,7 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
             if (!*rowset_executed) rc = 1;
           } else if (!ExecuteSql(this, &io, &state, sql, false,
                                  autocommit_emulation, nullptr, nullptr, false,
-                                 nullptr, &found->second.param_values,
+                                 nullptr, &found->second.parameter_wire_values,
                                  found->second.parameter_prepared_statement_uuid,
                                  found->second.parameter_prepared_generation)) {
             rc = 1;

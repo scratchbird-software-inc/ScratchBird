@@ -165,6 +165,7 @@ enum class NativeExpressionAstKind {
   kBinary,
   kParenthesized,
   kWildcard,
+  kVariable,
 };
 
 enum class NativeLiteralAstKind {
@@ -334,6 +335,9 @@ struct NativeExpressionAstNode {
   // Parser-assigned, source-order identity for parameter-set negotiation.
   // This is structural only; it does not choose a slot or descriptor.
   std::uint64_t structural_parameter_occurrence_id{0};
+  // Parser-only source-order occurrence. Engine coordination maps it to the
+  // authoritative scope/frame descriptor and dense variable ordinal.
+  std::uint64_t structural_variable_occurrence_id{0};
 };
 
 struct NativeValuesRowAstNode {

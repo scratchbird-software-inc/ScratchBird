@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_executor_availability_registry.hpp"
+#include <cassert>
+int main(){namespace a=scratchbird::engine::internal_api;a::EngineRequestContext c;c.database_path="/tmp/sb_function_call_2479";c.database_uuid.canonical="019d0000-0000-7000-8000-000000002479";c.security_context_present=true;c.trace_tags={"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};a::SblrExecutorAvailabilityRowIdentity r{a::kSblrFunctionCallExecutorId,1024,"1.0",a::kSblrFunctionCallOperandDescriptorId,a::kSblrFunctionCallResultDescriptorId,1};auto s=a::LoadSblrExecutorAvailabilitySnapshot(c,r);assert(s.ok&&s.snapshot.installed);}

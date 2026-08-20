@@ -1,0 +1,3 @@
+#include "engine/internal_api/sblr_executor_availability_registry.hpp"
+#include <cassert>
+int main(){namespace a=scratchbird::engine::internal_api;a::EngineRequestContext c;c.database_path="/tmp/sb_create_procedure_2635";c.database_uuid.canonical="019d0000-0000-7000-8000-000000002635";c.security_context_present=true;c.trace_tags={"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};a::SblrExecutorAvailabilityRowIdentity r{a::kSblrDdlCreateProcedureExecutorId,1554,"1.0",a::kSblrDdlCreateProcedureOperandDescriptorId,a::kSblrDdlCreateProcedureResultDescriptorId,1};auto s=a::LoadSblrExecutorAvailabilitySnapshot(c,r);return s.ok&&s.snapshot.installed?0:1;}
