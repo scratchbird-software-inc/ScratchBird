@@ -4338,7 +4338,10 @@ BuildEngineProjectedNativeBindingContext(
         function_expression != ast.expressions.end() &&
         (function_expression->operator_name == "SUM" ||
          function_expression->operator_name == "MIN" ||
-         function_expression->operator_name == "MAX");
+         function_expression->operator_name == "MAX" ||
+         function_expression->operator_name == "COUNT");
+    const bool aggregate_count_window =
+        aggregate_window && function_expression->operator_name == "COUNT";
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
@@ -4379,7 +4382,9 @@ BuildEngineProjectedNativeBindingContext(
                    ? "sb.aggregate.sum"
                    : (function_expression->operator_name == "MIN"
                           ? "sb.aggregate.min"
-                          : "sb.aggregate.max"))
+                          : (function_expression->operator_name == "MAX"
+                                 ? "sb.aggregate.max"
+                                 : "sb.aggregate.count")))
             : (value_window
             ? (first_value_window
                    ? "sb.window.first_value"
@@ -4405,7 +4410,11 @@ BuildEngineProjectedNativeBindingContext(
                    ? std::string_view(statement_context.sum_function_uuid)
                    : (function_expression->operator_name == "MIN"
                           ? std::string_view(statement_context.min_function_uuid)
-                          : std::string_view(statement_context.max_function_uuid)))
+                          : (function_expression->operator_name == "MAX"
+                                 ? std::string_view(
+                                       statement_context.max_function_uuid)
+                                 : std::string_view(
+                                       statement_context.count_function_uuid))))
             : (value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
@@ -4438,7 +4447,9 @@ BuildEngineProjectedNativeBindingContext(
     const auto result_profile = std::ranges::find_if(
         statement_context.descriptor_profiles, [&](const auto& candidate) {
           return candidate.profile_kind ==
-                     (value_window
+                     (aggregate_count_window
+                          ? 1
+                          : value_window
                           ? 2
                           : ((percent_rank_window || cume_dist_window) ? 11
                                                                        : 1)) &&
@@ -4538,7 +4549,8 @@ BuildEngineProjectedNativeBindingContext(
             expected_function_children ||
         function_profile_invalid ||
         result_profile == statement_context.descriptor_profiles.end() ||
-        result_profile->nullable != value_window ||
+        result_profile->nullable !=
+            (value_window && !aggregate_count_window) ||
         !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
         !CanonicalUuidBytes(result_profile->type_uuid).has_value() ||
         result_profile->descriptor_uuid == expected_function_uuid ||
@@ -4594,7 +4606,18 @@ BuildEngineProjectedNativeBindingContext(
           context.descriptors[*lag_operand_source_ordinal].descriptor_uuid ==
               expected_function_uuid ||
           context.descriptors[*lag_operand_source_ordinal].type_uuid !=
-              result_profile->type_uuid))) {
+              result_profile->type_uuid ||
+          (aggregate_count_window &&
+           (context.descriptors[*lag_operand_source_ordinal]
+                .collation_uuid.has_value() ||
+            context.descriptors[*lag_operand_source_ordinal]
+                .timezone_profile_id.has_value() ||
+            context.descriptors[*lag_operand_source_ordinal]
+                .width_precision_scale.width.has_value() ||
+            context.descriptors[*lag_operand_source_ordinal]
+                .width_precision_scale.precision.has_value() ||
+            context.descriptors[*lag_operand_source_ordinal]
+                .width_precision_scale.scale.has_value()))))) {
       return fail("catalog_window_ranking_profile_unavailable");
     }
     if (strict_ordered_window) {
@@ -4690,9 +4713,10 @@ BuildEngineProjectedNativeBindingContext(
     function_descriptor.descriptor_uuid = result_profile->descriptor_uuid;
     function_descriptor.type_uuid = result_profile->type_uuid;
     function_descriptor.nullability =
-        value_window ? BoundNullability::kNullable
-                     : BoundNullability::kNonNull;
-    if (value_window) {
+        value_window && !aggregate_count_window
+            ? BoundNullability::kNullable
+            : BoundNullability::kNonNull;
+    if (value_window && !aggregate_count_window) {
       const auto& source_descriptor =
           context.descriptors[*lag_operand_source_ordinal];
       function_descriptor.type_uuid = source_descriptor.type_uuid;
@@ -4732,7 +4756,10 @@ BuildEngineProjectedNativeBindingContext(
                                      : (function_expression->operator_name ==
                                                 "MIN"
                                             ? "min"
-                                            : "max"))
+                                            : (function_expression->operator_name ==
+                                                       "MAX"
+                                                   ? "max"
+                                                   : "count")))
                    : (value_window
                    ? std::string(first_value_window
                                      ? "first_value"

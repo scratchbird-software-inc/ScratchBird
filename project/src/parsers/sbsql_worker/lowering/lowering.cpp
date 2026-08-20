@@ -36370,7 +36370,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const bool exact_int64_aggregate_builtin =
         invocation.builtin_id == "sb.aggregate.sum" ||
         invocation.builtin_id == "sb.aggregate.min" ||
-        invocation.builtin_id == "sb.aggregate.max";
+        invocation.builtin_id == "sb.aggregate.max" ||
+        invocation.builtin_id == "sb.aggregate.count";
+    const bool aggregate_count_window =
+        aggregate_window &&
+        invocation.builtin_id == "sb.aggregate.count";
     const std::string_view expected_window_builtin =
         aggregate_window
             ? (exact_int64_aggregate_builtin
@@ -36684,9 +36688,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             expected_window_function_uuid ||
         result_descriptor->type_uuid == expected_window_function_uuid ||
         result_descriptor->nullability !=
-            (value_window ? BoundNullability::kNullable
-                          : BoundNullability::kNonNull) ||
-        (!value_window &&
+            (value_window && !aggregate_count_window
+                 ? BoundNullability::kNullable
+                 : BoundNullability::kNonNull) ||
+        ((!value_window || aggregate_count_window) &&
          (result_descriptor->collation_uuid.has_value() ||
           result_descriptor->timezone_profile_id.has_value())) ||
         ((ntile_window || nth_value_window) &&
@@ -39634,7 +39639,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   // input and a passthrough Window schema. Preserve the validated BoundAST
   // and synthesize only an emission view with a root Project for the exact
   // executable ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK/CUME_DIST/NTILE/LAG/
-  // LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE and exact aggregate SUM/MIN/MAX
+  // LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE and exact aggregate
+  // SUM/MIN/MAX/COUNT(identifier)
   // cohort.
   constexpr std::string_view kCatalogOrderingPropertyUuid =
       "019f0000-0000-7200-8000-00000000c701";
@@ -39716,7 +39722,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       normalized_aggregate_invocation != nullptr &&
       (normalized_aggregate_invocation->builtin_id == "sb.aggregate.sum" ||
        normalized_aggregate_invocation->builtin_id == "sb.aggregate.min" ||
-       normalized_aggregate_invocation->builtin_id == "sb.aggregate.max");
+       normalized_aggregate_invocation->builtin_id == "sb.aggregate.max" ||
+       normalized_aggregate_invocation->builtin_id == "sb.aggregate.count");
   const std::string_view normalized_ranking_builtin =
       normalize_aggregate_window_semantic
           ? (normalized_int64_aggregate_builtin
@@ -39846,7 +39853,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                : (normalized_ranking_builtin ==
                                           "sb.aggregate.min"
                                       ? "MIN"
-                                      : "MAX"))
+                                      : (normalized_ranking_builtin ==
+                                                 "sb.aggregate.max"
+                                             ? "MAX"
+                                             : "COUNT")))
                         : (normalize_first_value_semantic
                         ? "FIRST_VALUE"
                         : (normalize_last_value_semantic

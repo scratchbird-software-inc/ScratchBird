@@ -234,6 +234,7 @@ enum class CanonicalWindowAggregateFunction : std::uint8_t {
   int64_sum = 1,
   int64_min,
   int64_max,
+  int64_count,
 };
 
 struct CanonicalWindowAggregateRequest {

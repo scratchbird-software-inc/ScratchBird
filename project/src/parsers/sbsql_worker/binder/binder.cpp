@@ -4730,9 +4730,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         aggregate_function_ast != ast.expressions.end() &&
                 (aggregate_function_ast->operator_name == "SUM" ||
                  aggregate_function_ast->operator_name == "MIN" ||
-                 aggregate_function_ast->operator_name == "MAX")
+                 aggregate_function_ast->operator_name == "MAX" ||
+                 aggregate_function_ast->operator_name == "COUNT")
             ? aggregate_function_ast->operator_name
             : std::string_view{};
+    const bool aggregate_count_window =
+        aggregate_window && aggregate_operator == "COUNT";
     const std::string_view expected_operator =
         aggregate_window
             ? aggregate_operator
@@ -4758,7 +4761,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             ? (aggregate_operator == "SUM"
                    ? "sb.aggregate.sum"
                    : (aggregate_operator == "MIN" ? "sb.aggregate.min"
-                                                   : "sb.aggregate.max"))
+                      : (aggregate_operator == "MAX" ? "sb.aggregate.max"
+                                                     : "sb.aggregate.count")))
             : (value_window
             ? (first_value_window
                    ? "sb.window.first_value"
@@ -5314,9 +5318,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             expected_function_uuid ||
         function_descriptor->second->type_uuid == expected_function_uuid ||
         function_descriptor->second->nullability !=
-            (value_window ? BoundNullability::kNullable
-                          : BoundNullability::kNonNull) ||
-        (!value_window &&
+            (value_window && !aggregate_count_window
+                 ? BoundNullability::kNullable
+                 : BoundNullability::kNonNull) ||
+        ((!value_window || aggregate_count_window) &&
          (function_descriptor->second->collation_uuid.has_value() ||
           function_descriptor->second->timezone_profile_id.has_value())) ||
         (ntile_window &&

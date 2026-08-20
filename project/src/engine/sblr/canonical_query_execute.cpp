@@ -6347,6 +6347,9 @@ GlobalRankingWindowProfile GlobalAggregateInt64WindowProfileV1(
     case exec::CanonicalAggregateFunction::max:
       display_name = "MAX";
       break;
+    case exec::CanonicalAggregateFunction::count:
+      display_name = "COUNT";
+      break;
     default:
       return {};
   }
@@ -6437,6 +6440,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       profile.builtin_id == "sb.window.nth_value";
   const bool aggregate_window =
       profile.semantic_variant_id == "window.aggregate-bridge.v1";
+  const bool aggregate_count_window =
+      aggregate_window && profile.builtin_id == "sb.aggregate.count";
   const bool value_window =
       navigation_window || first_value_window || last_value_window ||
       nth_value_window || aggregate_window;
@@ -6592,8 +6597,9 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       result_descriptor == dag.descriptors.end() || result_type_uuid.empty() ||
       result_descriptor->type_uuid != result_type_uuid ||
       result_descriptor->nullability !=
-          (value_window ? api::RelationalNullability::kNullable
-                        : api::RelationalNullability::kNonNull) ||
+          (value_window && !aggregate_count_window
+               ? api::RelationalNullability::kNullable
+               : api::RelationalNullability::kNonNull) ||
       consumer.output_descriptor_ids.size() !=
           previous_logical.output_descriptor_ids.size() + 1 ||
       !std::equal(previous_logical.output_descriptor_ids.begin(),
@@ -6738,15 +6744,23 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         argument_descriptor->descriptor_uuid ==
             result_descriptor->descriptor_uuid ||
         argument_descriptor->descriptor_uuid == profile.function_uuid ||
-        argument_descriptor->type_uuid != result_type_uuid ||
-        result_descriptor->type_uuid != argument_descriptor->type_uuid ||
-        result_descriptor->collation_uuid !=
-            argument_descriptor->collation_uuid ||
-        result_descriptor->timezone_profile_id !=
-            argument_descriptor->timezone_profile_id ||
-        result_descriptor->width != argument_descriptor->width ||
-        result_descriptor->precision != argument_descriptor->precision ||
-        result_descriptor->scale != argument_descriptor->scale) {
+        (aggregate_count_window &&
+         (argument_descriptor->type_uuid != result_type_uuid ||
+          argument_descriptor->collation_uuid.has_value() ||
+          argument_descriptor->timezone_profile_id.has_value() ||
+          argument_descriptor->width.has_value() ||
+          argument_descriptor->precision.has_value() ||
+          argument_descriptor->scale.has_value())) ||
+        (!aggregate_count_window &&
+         (argument_descriptor->type_uuid != result_type_uuid ||
+          result_descriptor->type_uuid != argument_descriptor->type_uuid ||
+          result_descriptor->collation_uuid !=
+              argument_descriptor->collation_uuid ||
+          result_descriptor->timezone_profile_id !=
+              argument_descriptor->timezone_profile_id ||
+          result_descriptor->width != argument_descriptor->width ||
+          result_descriptor->precision != argument_descriptor->precision ||
+          result_descriptor->scale != argument_descriptor->scale))) {
       result.detail = std::string(family_label) +
                       " " + std::string(profile.display_name) +
                       " value is not one direct canonical int64 column "
@@ -18531,6 +18545,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                               ? kGlobalDenseRankProfile
                               : (rank_window ? kGlobalRankProfile
                                              : kGlobalRowNumberProfile)))));
+        const bool aggregate_count_window =
+            aggregate_window &&
+            ranking_profile.builtin_id == "sb.aggregate.count";
         const std::string_view ranking_name = ranking_profile.display_name;
         const auto typed_consumer = std::ranges::find_if(
             request.relational_dag.nodes, [&](const auto& candidate) {
@@ -18672,21 +18689,32 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 "composition " + std::string(ranking_name) +
                     " result materialization exceeds its memory budget");
           }
-          descriptor =
-              input_batch.columns[*ranking.navigation_value_column].descriptor;
-          descriptor.descriptor_uuid.canonical =
-              output_descriptor->descriptor_uuid;
-          if (!exec::DeriveCanonicalNullableDescriptorEncoding(&descriptor) ||
-              !exec::CanonicalDerivedDescriptorTypeMatches(
-                  input_batch.columns[*ranking.navigation_value_column]
-                      .descriptor,
-                  input_batch.columns[*ranking.navigation_value_column]
-                      .nullable,
-                  descriptor, true)) {
-            return refuse(std::string(kPayloadDiagnostic),
-                          "composition " + std::string(ranking_name) +
-                              " nullable result descriptor does not "
-                          "preserve its exact source shape");
+          if (!aggregate_count_window) {
+            descriptor = input_batch
+                             .columns[*ranking.navigation_value_column]
+                             .descriptor;
+            descriptor.descriptor_uuid.canonical =
+                output_descriptor->descriptor_uuid;
+            if (!exec::DeriveCanonicalNullableDescriptorEncoding(&descriptor) ||
+                !exec::CanonicalDerivedDescriptorTypeMatches(
+                    input_batch.columns[*ranking.navigation_value_column]
+                        .descriptor,
+                    input_batch.columns[*ranking.navigation_value_column]
+                        .nullable,
+                    descriptor, true)) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition " + std::string(ranking_name) +
+                                " nullable result descriptor does not "
+                            "preserve its exact source shape");
+            }
+          } else {
+            descriptor.descriptor_uuid.canonical =
+                output_descriptor->descriptor_uuid;
+            descriptor.descriptor_kind = "scalar";
+            descriptor.canonical_type_name = "int64";
+            descriptor.encoded_descriptor =
+                "type_uuid=" + output_descriptor->type_uuid +
+                ";nullability=non_null";
           }
         } else {
           descriptor.descriptor_uuid.canonical =
@@ -18700,7 +18728,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         }
         exec::ExecutorColumnDescriptor ranking_column{
             ranking.outputs.back()->output_name_utf8, descriptor,
-            value_window,
+            value_window && !aggregate_count_window,
             output_descriptor->descriptor_id};
         if (!api::QowCanonicalDescriptorIdentityV1(descriptor)) {
           return refuse(std::string(kPayloadDiagnostic),
@@ -18717,7 +18745,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 ranking_column.stable_name,
                 output_descriptor->descriptor_uuid,
                 output_descriptor->type_uuid,
-                value_window
+                value_window && !aggregate_count_window
                     ? exec::CanonicalResultNullability::kNullable
                     : exec::CanonicalResultNullability::kNonNull,
                 std::nullopt,
@@ -18911,8 +18939,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             // aggregate-window executor publishes the canonical registry
             // result after the physical DAG is immutable.
             value.descriptor = descriptor;
-            value.is_null = true;
-            value.state = api::EngineValueState::sql_null;
+            value.is_null = !aggregate_count_window;
+            value.state = aggregate_count_window
+                              ? api::EngineValueState::value
+                              : api::EngineValueState::sql_null;
+            if (aggregate_count_window) value.encoded_value = "0";
           } else if (value_window) {
             value.descriptor = descriptor;
             std::optional<std::size_t> target_row;
@@ -52011,8 +52042,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                    ? kGlobalPercentRankProfile
                    : (dense_rank_window
                           ? kGlobalDenseRankProfile
-                          : (rank_window ? kGlobalRankProfile
-                                         : kGlobalRowNumberProfile)))));
+                           : (rank_window ? kGlobalRankProfile
+                                          : kGlobalRowNumberProfile)))));
+    const bool aggregate_count_window =
+        aggregate_window &&
+        ranking_profile.builtin_id == "sb.aggregate.count";
     const std::string_view ranking_name = ranking_profile.display_name;
     const auto logical_window = std::ranges::find_if(
         graph.nodes, [&](const auto& candidate) {
@@ -52081,21 +52115,31 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                    sort_node->output_descriptor_ids
                        [*ranking.navigation_value_column];
           });
-      descriptor = source_descriptor;
-      descriptor.descriptor_uuid.canonical =
-          output_descriptor->descriptor_uuid;
-      if (source_relational_descriptor == dag.descriptors.end() ||
-          !exec::DeriveCanonicalNullableDescriptorEncoding(&descriptor) ||
-          !exec::CanonicalDerivedDescriptorTypeMatches(
-              source_descriptor,
-              source_relational_descriptor->nullability ==
-                  api::RelationalNullability::kNullable,
-              descriptor, true)) {
-        return refuse(
-            "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
-            "object-backed " + std::string(ranking_name) +
-                " nullable result descriptor does not preserve "
-            "its exact source shape");
+      if (!aggregate_count_window) {
+        descriptor = source_descriptor;
+        descriptor.descriptor_uuid.canonical =
+            output_descriptor->descriptor_uuid;
+        if (source_relational_descriptor == dag.descriptors.end() ||
+            !exec::DeriveCanonicalNullableDescriptorEncoding(&descriptor) ||
+            !exec::CanonicalDerivedDescriptorTypeMatches(
+                source_descriptor,
+                source_relational_descriptor->nullability ==
+                    api::RelationalNullability::kNullable,
+                descriptor, true)) {
+          return refuse(
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+              "object-backed " + std::string(ranking_name) +
+                  " nullable result descriptor does not preserve "
+              "its exact source shape");
+        }
+      } else {
+        descriptor.descriptor_uuid.canonical =
+            output_descriptor->descriptor_uuid;
+        descriptor.descriptor_kind = "scalar";
+        descriptor.canonical_type_name = "int64";
+        descriptor.encoded_descriptor =
+            "type_uuid=" + output_descriptor->type_uuid +
+            ";nullability=non_null";
       }
     } else {
       descriptor.descriptor_uuid.canonical =
@@ -52109,7 +52153,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     }
     exec::ExecutorColumnDescriptor ranking_column{
         ranking.outputs.back()->output_name_utf8, descriptor,
-        value_window,
+        value_window && !aggregate_count_window,
         output_descriptor->descriptor_id};
     if (!api::QowCanonicalDescriptorIdentityV1(descriptor)) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",

@@ -1081,7 +1081,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          aggregate_window_row->function ==
              executor::CanonicalAggregateFunction::min ||
          aggregate_window_row->function ==
-             executor::CanonicalAggregateFunction::max);
+             executor::CanonicalAggregateFunction::max ||
+         aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::count);
+    const bool aggregate_count_window =
+        aggregate_window_row != nullptr &&
+        aggregate_window_row->function ==
+            executor::CanonicalAggregateFunction::count;
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
@@ -1329,8 +1335,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             relational.window_invocations.front().result_descriptor_id ||
         result_descriptor == relational.descriptors.end() ||
         result_descriptor->nullability !=
-            (value_window ? RelationalNullability::kNullable
-                          : RelationalNullability::kNonNull) ||
+            (value_window && !aggregate_count_window
+                 ? RelationalNullability::kNullable
+                 : RelationalNullability::kNonNull) ||
         window_node->bound_expression_ids !=
             expected_window_bound_expression_ids ||
         (ntile_window &&

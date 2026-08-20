@@ -1707,7 +1707,11 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       aggregate_registry_row != nullptr &&
       (aggregate_registry_row->function == CanonicalAggregateFunction::sum ||
        aggregate_registry_row->function == CanonicalAggregateFunction::min ||
-       aggregate_registry_row->function == CanonicalAggregateFunction::max);
+       aggregate_registry_row->function == CanonicalAggregateFunction::max ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::count);
+  const bool count_window =
+      aggregate_registry_row != nullptr &&
+      aggregate_registry_row->function == CanonicalAggregateFunction::count;
   if (request.aggregate_descriptor.count_star ||
       !exact_int64_unary_window ||
       !aggregate_registry_row->executable ||
@@ -1800,35 +1804,47 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
                     .descriptor,
                 "type_uuid")
           : std::optional<std::string_view>{};
+  const bool value_column_in_range =
+      request.value_column < execution_ordered_input_batch.columns.size();
+  const bool exact_value_result_contract =
+      !value_column_in_range || !source_type_uuid.has_value()
+          ? false
+          : count_window
+          ? !request.result_column.nullable &&
+                execution_ordered_input_batch.columns[request.value_column]
+                        .descriptor.canonical_type_name == "int64" &&
+                *source_type_uuid == canonical_int64_type_uuid
+          : request.result_column.nullable &&
+                execution_ordered_input_batch.columns[request.value_column]
+                        .descriptor.canonical_type_name == "int64" &&
+                *source_type_uuid == canonical_int64_type_uuid &&
+                CanonicalDerivedDescriptorTypeMatches(
+                    execution_ordered_input_batch.columns[request.value_column]
+                        .descriptor,
+                    execution_ordered_input_batch.columns[request.value_column]
+                        .nullable,
+                    request.result_column.descriptor, true);
   if (selected_node->output_descriptor_ids !=
           expected_output_descriptor_ids ||
       request.value_column >= execution_ordered_input_batch.columns.size() ||
       request.order_term.column >=
           execution_ordered_input_batch.columns.size() ||
       request.result_column.descriptor_id == 0 ||
-      !request.result_column.nullable ||
       request.result_column.descriptor.descriptor_kind != "scalar" ||
       request.result_column.descriptor.canonical_type_name != "int64" ||
-      execution_ordered_input_batch.columns[request.value_column]
-              .descriptor.canonical_type_name != "int64" ||
       execution_ordered_input_batch.columns[request.order_term.column]
               .descriptor.canonical_type_name != "int64" ||
       !source_type_uuid.has_value() || !result_type_uuid.has_value() ||
       !order_type_uuid.has_value() ||
       canonical_int64_type_uuid.empty() ||
-      *source_type_uuid != canonical_int64_type_uuid ||
       *result_type_uuid != canonical_int64_type_uuid ||
       *order_type_uuid != canonical_int64_type_uuid ||
       !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
           request.result_column.descriptor) ||
-      !CanonicalDerivedDescriptorTypeMatches(
-          execution_ordered_input_batch.columns[request.value_column]
-              .descriptor,
-          execution_ordered_input_batch.columns[request.value_column].nullable,
-          request.result_column.descriptor, true)) {
+      !exact_value_result_contract) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-DESCRIPTOR",
-        "int64 aggregate window source and nullable result descriptors are not exact"));
+        "int64 aggregate window source/result descriptors are not exact"));
   }
   const auto input_validation = ValidateCanonicalDescriptorBatch(
       execution_ordered_input_batch, input_node->output_descriptor_ids);
@@ -2102,6 +2118,10 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
     case CanonicalAggregateFunction::max:
       aggregate_request.function =
           CanonicalWindowAggregateFunction::int64_max;
+      break;
+    case CanonicalAggregateFunction::count:
+      aggregate_request.function =
+          CanonicalWindowAggregateFunction::int64_count;
       break;
     default:
       return refuse(Refusal(
