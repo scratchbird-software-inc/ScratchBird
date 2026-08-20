@@ -195,6 +195,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlSetIndexOptimizerEligibilityForWire();
   PipelineResult RunDdlSetTableTypeEnforcementForWire();
   PipelineResult RunDatabaseSerializeLogicalSnapshotForWire();
+  PipelineResult RunDatabaseDeserializeLogicalSnapshotForWire();
   PipelineResult RunDdlCreateSchemaForWire();
   PipelineResult RunDdlCreateTableForWire();
   PipelineResult RunDdlCreateIndexForWire();
