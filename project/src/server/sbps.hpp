@@ -246,6 +246,8 @@ constexpr std::uint32_t kSchemaCoordinateDdlAlterRewriteRuleRequestV1 = 7221;
 constexpr std::uint32_t kSchemaCoordinateDdlAlterRewriteRuleResultV1 = 7222;
 constexpr std::uint32_t kSchemaCoordinateDdlDropRewriteRuleRequestV1 = 7223;
 constexpr std::uint32_t kSchemaCoordinateDdlDropRewriteRuleResultV1 = 7224;
+constexpr std::uint32_t kSchemaCoordinateDdlValidateConstraintRequestV1 = 7225;
+constexpr std::uint32_t kSchemaCoordinateDdlValidateConstraintResultV1 = 7226;
 constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectVectorRequestV1 = 7213;
 constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectVectorResultV1 = 7214;
 constexpr std::uint32_t kSchemaCoordinateAggregateRequestV1 = 7145;
@@ -471,6 +473,8 @@ enum class MessageType : std::uint16_t {
   kCoordinateDdlAlterRewriteRuleResult = 227,
   kCoordinateDdlDropRewriteRuleRequest = 228,
   kCoordinateDdlDropRewriteRuleResult = 229,
+  kCoordinateDdlValidateConstraintRequest = 230,
+  kCoordinateDdlValidateConstraintResult = 231,
   kCoordinateDdlRenameObjectVectorRequest = 218,
   kCoordinateDdlRenameObjectVectorResult = 219,
   kCoordinateAggregateRequest = 150,

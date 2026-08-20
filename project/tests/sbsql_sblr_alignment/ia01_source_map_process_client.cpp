@@ -293,6 +293,8 @@ int main(int argc, char** argv) {
                           ? session.RunDdlAlterRewriteRuleForWire()
                     : operation == "ddl-drop-rewrite-rule"
                           ? session.RunDdlDropRewriteRuleForWire()
+                    : operation == "ddl-validate-constraint"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlValidateConstraintForWire():begun; }()
                     : operation == "ddl-drop-function"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropFunctionForWire():begun; }()
                     : operation == "ddl-alter-view"

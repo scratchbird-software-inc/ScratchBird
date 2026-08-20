@@ -3422,6 +3422,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateRewriteRuleRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterRewriteRuleRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropRewriteRuleRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlValidateConstraintRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kManagementRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kEventSubscribeRequest) ||
@@ -3996,6 +3997,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==224&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateRewriteRuleRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateRewriteRule(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==226&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlAlterRewriteRuleRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlAlterRewriteRule(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==228&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropRewriteRuleRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropRewriteRule(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==230&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlValidateConstraintRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlValidateConstraint(session_registry,engine_state,frame)));return true;}
   if (frame.header.message_type == 44 &&
       frame.header.payload_schema_id ==
           sbps::kSchemaFinalizeParameterBindingRequestV1) {

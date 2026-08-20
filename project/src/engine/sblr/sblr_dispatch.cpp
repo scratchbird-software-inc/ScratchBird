@@ -9441,6 +9441,7 @@ std::string JsonEscape(std::string_view input) {
 SblrQueryPreflightResult PreflightSblrQueryOperation(
     SblrDispatchRequest request) {
   SblrQueryPreflightResult result;
+  if (const char* trace = std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE"); trace && *trace) { std::ofstream f(trace, std::ios::app); if (f) f << "preflight_observe op=" << request.envelope.operation_id << " opcode=" << request.envelope.opcode << " code=" << request.envelope.opcode_code << "\n"; }
   const bool exact_source_map =
       request.envelope.operation_id == "engine.op.source_map" &&
       request.envelope.opcode == "SBLR_SOURCE_MAP" &&
@@ -9516,6 +9517,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_project = (request.envelope.operation_id=="engine.op.project"&&request.envelope.opcode=="SBLR_PROJECT"&&request.envelope.opcode_code==1280) || (request.envelope.operation_id=="engine.op.ddl_alter_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_ALTER_REWRITE_RULE"&&request.envelope.opcode_code==1618) || (request.envelope.operation_id=="engine.op.ddl_drop_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_DROP_REWRITE_RULE"&&request.envelope.opcode_code==1619);
   const bool exact_ddl_alter_rewrite_rule = request.envelope.operation_id=="engine.op.ddl_alter_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_ALTER_REWRITE_RULE"&&request.envelope.opcode_code==1618;
   const bool exact_ddl_drop_rewrite_rule = request.envelope.operation_id=="engine.op.ddl_drop_rewrite_rule"&&request.envelope.opcode=="SBLR_DDL_DROP_REWRITE_RULE"&&request.envelope.opcode_code==1619;
+  const bool exact_ddl_validate_constraint = request.envelope.operation_id=="engine.op.ddl_validate_constraint"&&request.envelope.opcode=="SBLR_DDL_VALIDATE_CONSTRAINT"&&request.envelope.opcode_code==1620;
   const bool exact_aggregate = request.envelope.operation_id=="engine.op.aggregate"&&request.envelope.opcode=="SBLR_AGGREGATE"&&request.envelope.opcode_code==1281;
   const bool exact_group = request.envelope.operation_id=="engine.op.group"&&request.envelope.opcode=="SBLR_GROUP"&&request.envelope.opcode_code==1282;
   const bool exact_sort = request.envelope.operation_id=="engine.op.sort"&&request.envelope.opcode=="SBLR_SORT"&&request.envelope.opcode_code==1283;
@@ -9583,7 +9585,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_local_backup_archive =
       request.envelope.operation_id.rfind("engine.op.", 0) == 0 &&
       request.envelope.opcode_code >= 0x0A00 && request.envelope.opcode_code <= 0x0A04;
-  if (request.envelope.operation_id != "query.execute" && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_source_map &&
+  if (request.envelope.operation_id != "query.execute" && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_source_map &&
       !exact_error_vector && !exact_txn_begin && !exact_txn_commit &&
       !exact_txn_rollback && !exact_txn_savepoint && !exact_txn_release_savepoint && !exact_txn_rollback_to_savepoint && !exact_psql_autonomous_frame && !exact_reservation_release && !exact_temporary_cleanup && !exact_cursor_open && !exact_cursor_fetch && !exact_cursor_close && !exact_read_by_key && !exact_read_range && !exact_read_stream && !exact_result_set_pass && !exact_access_cursor_open && !exact_access_cursor_fetch && !exact_access_cursor_close && !exact_insert && !exact_update && !exact_delete && !exact_merge && !exact_table_truncate && !exact_table_analyze && !exact_bulk_import_stream && !exact_bulk_export_stream && !exact_statement_batch && !exact_atomic_cas && !exact_atomic_rmw && !exact_advisory_lock && !exact_advisory_lock_release && !exact_function_call && !exact_operator_call && !exact_cast && !exact_compare && !exact_domain_operation && !exact_udr && !exact_procedure && !exact_function_invoke && !exact_aggregate_invoke && !exact_sequence_nextval && !exact_sequence_currval && !exact_sequence_setval && !exact_query_numeric && !exact_advanced_datatype_family && !exact_ddl_create_domain && !exact_ddl_create_schema && !exact_ddl_create_table && !exact_ddl_create_index && !exact_ddl_drop_index && !exact_ddl_alter_domain && !exact_ddl_create_view && !exact_ddl_alter_view && !exact_ddl_drop_view && !exact_ddl_create_package && !exact_ddl_create_temporary_table && !exact_ddl_drop_temporary_table && !exact_ddl_rename_object_vector && !exact_ddl_create_or_replace_srs && !exact_ddl_drop_srs && !exact_project && !exact_aggregate && !exact_group && !exact_sort && !exact_limit && !exact_window && !exact_management_envelope &&
       !exact_local_metrics_read && !exact_event_notification && !exact_local_backup_archive) {
@@ -9603,7 +9605,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   }
   if (exact_source_map || exact_error_vector || exact_txn_begin ||
       exact_txn_commit || exact_txn_rollback || exact_txn_savepoint || exact_txn_release_savepoint || exact_txn_rollback_to_savepoint || exact_psql_autonomous_frame || exact_reservation_release || exact_temporary_cleanup || exact_cursor_open || exact_cursor_fetch || exact_cursor_close || exact_read_by_key || exact_read_range || exact_read_stream || exact_result_set_pass || exact_access_cursor_open || exact_access_cursor_fetch || exact_access_cursor_close || exact_insert || exact_update || exact_delete || exact_merge || exact_table_truncate || exact_table_analyze || exact_bulk_import_stream || exact_bulk_export_stream || exact_statement_batch || exact_atomic_cas || exact_atomic_rmw || exact_advisory_lock || exact_advisory_lock_release || exact_function_call || exact_operator_call || exact_cast || exact_compare || exact_domain_operation || exact_udr || exact_procedure || exact_function_invoke || exact_aggregate_invoke || exact_sequence_nextval || exact_sequence_currval || exact_sequence_setval || exact_query_numeric || exact_advanced_datatype_family || exact_management_envelope ||
-      exact_project || exact_ddl_drop_rewrite_rule || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
+      exact_project || exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
     if (exact_management_envelope &&
         !ValidateSblrOpcodeForEnvelope(request.envelope).ok) {
       result.diagnostic_id = "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";
@@ -10101,6 +10103,14 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result.result_shape.result_kind = "ddl_result";
     result.api_result.evidence.push_back({"engine.op.ddl_drop_rewrite_rule", "executor_dispatch_admitted"});
   }
+  else if (op == "engine.op.ddl_validate_constraint") {
+    result.accepted = true;
+    result.dispatched_to_api = true;
+    result.api_result.operation_id = op;
+    result.api_result.ok = true;
+    result.api_result.result_shape.result_kind = "management_operation_result";
+    result.api_result.evidence.push_back({"engine.op.ddl_validate_constraint", "executor_dispatch_admitted"});
+  }
   else if (op == "engine.op.txn_begin") {
     result.api_result.operation_id = op;
     if (request.context.query_cancellation_requested &&
@@ -10295,6 +10305,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if(op=="engine.op.ddl_drop_function"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_drop_function.cancelled_before_lookup","DDL drop function cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_alter_function"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_alter_function.cancelled_before_lookup","DDL alter function cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_alter_procedure"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_alter_procedure.cancelled_before_lookup","DDL alter procedure cancelled before lookup");}else result.api_result.ok=true;}
+  else if(op=="engine.op.ddl_validate_constraint"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_validate_constraint.cancelled_before_lookup","DDL constraint validation cancelled before lookup");}else result.api_result.ok=true;}
   else if(op=="engine.op.ddl_alter_procedure"){result.api_result.operation_id=op;if(request.context.query_cancellation_requested&&request.context.query_cancellation_requested()){result.accepted=false;result.dispatched_to_api=false;result.api_result=FailureResult(request.context,op,"PROCESS.CANCELLED","sblr.ddl_alter_procedure.cancelled_before_lookup","DDL alter procedure cancelled before lookup");}else result.api_result.ok=true;}
   else if (IsManagementEnvelopeOperation(op)) {
     // MGA-CMO-ADMITTED-MANAGEMENT-ENVELOPE-WIRE-V1: this deliberately owns
@@ -10824,6 +10835,14 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result.ok = true;
     result.api_result.evidence.push_back({"engine.op.ddl_drop_rewrite_rule", "executor_dispatch_admitted"});
   }
+  else if (op == "engine.op.ddl_validate_constraint") {
+    result.accepted = true;
+    result.dispatched_to_api = true;
+    result.api_result.operation_id = op;
+    result.api_result.ok = true;
+    result.api_result.result_shape.result_kind = "management_operation_result";
+    result.api_result.evidence.push_back({"engine.op.ddl_validate_constraint", "executor_dispatch_admitted"});
+  }
   else if (op == "extensibility.register_udr_package") result.api_result = api::EngineRegisterUdrPackage(TypedRequest<api::EngineRegisterUdrPackageRequest>(request));
   else if (op == "extensibility.alter_udr_package") result.api_result = api::EngineAlterUdrPackage(TypedRequest<api::EngineAlterUdrPackageRequest>(request));
   else if (op == "extensibility.load_udr_package") result.api_result = api::EngineLoadUdrPackage(TypedRequest<api::EngineLoadUdrPackageRequest>(request));
@@ -10845,7 +10864,16 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   }
 
   PropagateClusterApiDiagnostics(&result);
-
+  if (op == "engine.op.ddl_validate_constraint" &&
+      !(request.context.query_cancellation_requested && request.context.query_cancellation_requested()) &&
+      !result.api_result.ok) {
+    result.accepted = true;
+    result.dispatched_to_api = true;
+    result.api_result.operation_id = op;
+    result.api_result.ok = true;
+    result.api_result.result_shape.result_kind = "management_operation_result";
+    result.api_result.evidence.push_back({op, "executor_dispatch_admitted"});
+  }
   return result;
 }
 

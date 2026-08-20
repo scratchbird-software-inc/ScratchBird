@@ -24,7 +24,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-trigger"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-drop-trigger"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-procedure"))
-    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule", "ddl-alter-rewrite-rule", "ddl-drop-rewrite-rule"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule", "ddl-alter-rewrite-rule", "ddl-drop-rewrite-rule", "ddl-validate-constraint"))
     parser.add_argument("--work-dir", required=True)
     args = parser.parse_args()
     work = allocate_work(Path(args.work_dir))
@@ -186,6 +186,8 @@ def main() -> int:
             expected = ("executor_id=engine.op.ddl_alter_rewrite_rule", "opcode=SBLR_DDL_ALTER_REWRITE_RULE", "opcode_code=1618", "operand_descriptor_id=rewrite_rule_alter_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "ddl_alter_rewrite_rule_result_sha256=", "executor_availability_generation=")
         elif args.operation == "ddl-drop-rewrite-rule":
             expected = ("executor_id=engine.op.ddl_drop_rewrite_rule", "opcode=SBLR_DDL_DROP_REWRITE_RULE", "opcode_code=1619", "operand_descriptor_id=rewrite_rule_drop_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "executor_availability_generation=")
+        elif args.operation == "ddl-validate-constraint":
+            expected = ()
         elif args.operation in ("ddl-create-trigger", "ddl-alter-trigger", "ddl-drop-trigger", "ddl-create-procedure", "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule"):
             expected = ()
         elif args.operation == "ddl-create-schema":

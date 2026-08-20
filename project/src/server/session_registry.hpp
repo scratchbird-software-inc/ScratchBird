@@ -1067,6 +1067,7 @@ SessionOperationResult HandleCoordinateDdlDropSrs(ServerSessionRegistry*,const H
 SessionOperationResult HandleCoordinateDdlCreateRewriteRule(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlAlterRewriteRule(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlDropRewriteRule(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateDdlValidateConstraint(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateTable(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateIndex(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlDropIndex(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

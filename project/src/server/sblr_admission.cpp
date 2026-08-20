@@ -503,6 +503,7 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
 bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
   return IsClusterOperationId(operation_id) ||
          operation_id == "engine.op.ddl_drop_rewrite_rule" ||
+         operation_id == "engine.op.ddl_validate_constraint" ||
          IsPublicExactOperationId(operation_id) ||
          StartsWith(operation_id, "bridge.") ||
          StartsWith(operation_id, "index.") ||
@@ -1127,7 +1128,7 @@ std::optional<std::string> FamilyForLegacyEnvelope(std::string_view encoded) {
 }
 
 std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
-  if (operation_id == "engine.op.ddl_drop_rewrite_rule") {
+  if (operation_id == "engine.op.ddl_drop_rewrite_rule" || operation_id == "engine.op.ddl_validate_constraint") {
     return "sblr.catalog.mutation.v3";
   }
   if (operation_id.starts_with("bridge.")) {

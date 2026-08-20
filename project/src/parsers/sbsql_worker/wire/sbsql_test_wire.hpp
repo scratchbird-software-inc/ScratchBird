@@ -183,6 +183,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlCreateRewriteRuleForWire();
   PipelineResult RunDdlAlterRewriteRuleForWire();
   PipelineResult RunDdlDropRewriteRuleForWire();
+  PipelineResult RunDdlValidateConstraintForWire();
   PipelineResult RunDdlCreateSchemaForWire();
   PipelineResult RunDdlCreateTableForWire();
   PipelineResult RunDdlCreateIndexForWire();
