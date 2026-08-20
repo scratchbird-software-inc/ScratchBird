@@ -11154,6 +11154,9 @@ MakeLiveTableSubqueryRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         if (inputs.size() != 1 ||
+            node.input_physical_node_ids.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
             !inputs.front().materialized_output_batch.has_value() ||
             inputs.front().materialized_output_batch->rows.size() >
                 maximum_input_row_count) {
@@ -11219,6 +11222,9 @@ MakeLiveCardinalitySubqueryRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         if (inputs.size() != 1 ||
+            node.input_physical_node_ids.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
             !inputs.front().materialized_output_batch.has_value() ||
             inputs.front().materialized_output_batch->rows.size() >
                 maximum_input_row_count) {
@@ -11309,6 +11315,9 @@ MakeLivePredicateSubqueryRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         if (inputs.size() != 1 ||
+            node.input_physical_node_ids.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
             !inputs.front().materialized_output_batch.has_value() ||
             inputs.front().materialized_output_batch->rows.size() >
                 maximum_input_row_count) {
