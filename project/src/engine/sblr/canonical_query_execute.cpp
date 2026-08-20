@@ -3018,6 +3018,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       is_hypothetical_rank || is_hypothetical_dense_rank ||
       is_hypothetical_percent_rank || is_hypothetical_cume_dist;
   const bool is_mode = function == exec::CanonicalAggregateFunction::mode;
+  const bool uses_bounded_signed_value =
+      is_bounded_signed_integer_aggregate || is_mode;
   const bool is_percentile_cont =
       function == exec::CanonicalAggregateFunction::percentile_cont;
   const bool is_percentile_disc =
@@ -3054,7 +3056,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   std::array<std::string, kBoundedSignedTypeNames.size()>
       bounded_signed_source_type_uuids;
   std::string bounded_signed_result_type_uuid;
-  if (is_bounded_signed_integer_aggregate ||
+  if (uses_bounded_signed_value ||
       has_widened_independent_order_argument) {
     const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
     if (!core_manifest.ok()) {
@@ -3091,7 +3093,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         return result;
       }
     }
-    if (is_bounded_signed_integer_aggregate) {
+    if (uses_bounded_signed_value) {
       bounded_signed_result_type_uuid =
           bounded_signed_source_type_uuids.back();
     }
@@ -3190,7 +3192,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         "global aggregate function identity or argument binding is invalid";
     return result;
   }
-  if (is_bounded_signed_integer_aggregate &&
+  if (uses_bounded_signed_value &&
       (descriptor->type_uuid != bounded_signed_result_type_uuid ||
        descriptor->descriptor_uuid == descriptor->type_uuid ||
        descriptor->descriptor_uuid == aggregate->function_uuid)) {
@@ -3554,7 +3556,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       const bool exact_bounded_signed_argument =
           exact_bounded_signed_input(argument->result_descriptor_id,
                                      value_column, input_type);
-      if (is_bounded_signed_integer_aggregate &&
+      if (uses_bounded_signed_value &&
           !exact_bounded_signed_argument) {
         result.detail =
             "global bounded-signed aggregate input is not one exact core "
@@ -3572,11 +3574,14 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
            argument_ordinal == 1);
       if (is_order_argument) {
         const bool int64_coupled_order =
-            is_ordered_set || is_ordered_string_agg;
+            (is_ordered_set && !is_mode) || is_ordered_string_agg;
         if ((int64_coupled_order && input_type != "int64") ||
             (!int64_coupled_order && !exact_bounded_signed_argument)) {
           result.detail =
-              is_ordered_set
+              is_mode
+                  ? "global mode value/order input must be one exact core "
+                    "bounded-signed column"
+                  : is_ordered_set
                   ? "global ordered-set value/order input must be a canonical "
                     "int64 column"
                   : (is_ordered_string_agg
