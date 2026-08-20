@@ -31658,6 +31658,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                         "time-series aggregate is not exact global COUNT(*)");
         }
+        const auto count_descriptor = descriptor_for(
+            consumer->output_descriptor_ids.empty()
+                ? 0
+                : consumer->output_descriptor_ids.front());
+        const auto int64_type_uuid = type_uuid_for("int64");
+        if (consumer->output_descriptor_ids.size() != 1 ||
+            count_descriptor == dag.descriptors.end() ||
+            int64_type_uuid.empty() ||
+            count_descriptor->type_uuid != int64_type_uuid ||
+            count_descriptor->nullability !=
+                api::RelationalNullability::kNonNull ||
+            count_descriptor->collation_uuid.has_value() ||
+            count_descriptor->timezone_profile_id.has_value() ||
+            count_descriptor->width.has_value() ||
+            count_descriptor->precision.has_value() ||
+            count_descriptor->scale.has_value()) {
+          return refuse(
+              "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+              "time-series COUNT(*) result descriptor is not canonical int64");
+        }
         auto prepared = PrepareGlobalAggregateRoot(
             dag, *logical_consumer, *previous_logical, composition_state,
             aggregate_profile.function, true, false, false);
@@ -36222,6 +36242,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                       "search aggregate is not exact global COUNT(*)");
       }
+      const auto count_descriptor = descriptor_for(
+          consumer->output_descriptor_ids.empty()
+              ? 0
+              : consumer->output_descriptor_ids.front());
+      const auto int64_type_uuid = type_uuid_for("int64");
+      if (consumer->output_descriptor_ids.size() != 1 ||
+          count_descriptor == dag.descriptors.end() ||
+          int64_type_uuid.empty() ||
+          count_descriptor->type_uuid != int64_type_uuid ||
+          count_descriptor->nullability !=
+              api::RelationalNullability::kNonNull ||
+          count_descriptor->collation_uuid.has_value() ||
+          count_descriptor->timezone_profile_id.has_value() ||
+          count_descriptor->width.has_value() ||
+          count_descriptor->precision.has_value() ||
+          count_descriptor->scale.has_value()) {
+        return refuse(
+            "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+            "search COUNT(*) result descriptor is not canonical int64");
+      }
       auto prepared = PrepareGlobalAggregateRoot(
           dag, *logical_consumer, *previous_logical, composition_state,
           aggregate_profile.function, true, false, false);
@@ -38393,6 +38433,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
           aggregate_profile.distinct || aggregate_profile.has_filter) {
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                       "key/value aggregate is not exact global COUNT(*)");
+      }
+      const auto count_descriptor = descriptor_for(
+          consumer->output_descriptor_ids.empty()
+              ? 0
+              : consumer->output_descriptor_ids.front());
+      const auto int64_type_uuid = type_uuid_for("int64");
+      if (consumer->output_descriptor_ids.size() != 1 ||
+          count_descriptor == dag.descriptors.end() ||
+          int64_type_uuid.empty() ||
+          count_descriptor->type_uuid != int64_type_uuid ||
+          count_descriptor->nullability !=
+              api::RelationalNullability::kNonNull ||
+          count_descriptor->collation_uuid.has_value() ||
+          count_descriptor->timezone_profile_id.has_value() ||
+          count_descriptor->width.has_value() ||
+          count_descriptor->precision.has_value() ||
+          count_descriptor->scale.has_value()) {
+        return refuse(
+            "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+            "key/value COUNT(*) result descriptor is not canonical int64");
       }
       auto prepared = PrepareGlobalAggregateRoot(
           dag, *logical_consumer, *previous_logical, composition_state,
