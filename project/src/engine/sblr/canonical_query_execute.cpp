@@ -12141,8 +12141,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
 }
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
-    std::vector<plan::CanonicalLogicalPropertyOrderingTerm> logical_terms,
-    std::vector<std::size_t> source_columns,
+    std::vector<exec::CanonicalDescriptorOrderTerm> order_terms,
     std::string deterministic_tie_evidence_uuid,
     std::string capability_uuid,
     const std::size_t maximum_input_row_count,
@@ -12156,8 +12155,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
   registration.execute =
-      [logical_terms = std::move(logical_terms),
-       source_columns = std::move(source_columns),
+      [order_terms = std::move(order_terms),
        deterministic_tie_evidence_uuid =
            std::move(deterministic_tie_evidence_uuid),
        maximum_input_row_count, maximum_pair_comparisons,
@@ -12179,8 +12177,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
             !inputs.front().materialized_output_batch.has_value() ||
             inputs.front().materialized_output_batch->rows.size() >
                 maximum_input_row_count ||
-            logical_terms.empty() ||
-            logical_terms.size() != source_columns.size()) {
+            order_terms.empty()) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-INPUT-V1";
@@ -12205,31 +12202,6 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
             return step;
           }
           execution_dag = &*scoped_execution_dag;
-        }
-        std::vector<exec::CanonicalDescriptorOrderTerm> order_terms;
-        order_terms.reserve(logical_terms.size());
-        for (std::size_t ordinal = 0; ordinal < logical_terms.size(); ++ordinal) {
-          if (source_columns[ordinal] >= input_batch.columns.size()) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-BINDING-V1";
-            step.diagnostic.detail =
-                "object-backed SORT source column is outside the input width";
-            return step;
-          }
-          exec::CanonicalDescriptorOrderTerm term;
-          std::string detail;
-          if (!PrepareCanonicalSortOrderTerm(
-                  mga_context, logical_terms[ordinal],
-                  input_batch.columns[source_columns[ordinal]],
-                  source_columns[ordinal], &term, &detail)) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-BINDING-V1";
-            step.diagnostic.detail = std::move(detail);
-            return step;
-          }
-          order_terms.push_back(std::move(term));
         }
         exec::CanonicalDescriptorSortRequest sort_request;
         sort_request.selected_physical_node_id = node.physical_node_id;
@@ -50247,7 +50219,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          1, 1});
   }
   std::vector<plan::CanonicalLogicalPropertyOrderingTerm> heap_order_terms;
-  std::vector<std::size_t> heap_order_columns;
+  std::vector<exec::CanonicalDescriptorOrderTerm> heap_descriptor_order_terms;
   std::string sort_capability_uuid;
   std::string ordering_property_uuid;
   PreparedSortRoot heap_sort_binding;
@@ -50267,7 +50239,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             plan::CanonicalLogicalPropertyKind::kOrdering ||
         property->origin_logical_node_id != sort_node->node_id ||
         property->ordering_terms.size() !=
-            sort_node->bound_expression_ids.size()) {
+            sort_node->bound_expression_ids.size() ||
+        admission.current_relation_projection_descriptors.size() !=
+            scan_node->output_descriptor_ids.size()) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-V1",
                     "object-backed ORDER BY property is not exact");
     }
@@ -50290,13 +50264,48 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-V1",
                       "object-backed ORDER BY descriptor is not in the source width");
       }
-      heap_order_columns.push_back(static_cast<std::size_t>(std::distance(
-          scan_node->output_descriptor_ids.begin(), descriptor)));
+      const auto source_column = static_cast<std::size_t>(std::distance(
+          scan_node->output_descriptor_ids.begin(), descriptor));
+      const auto source_output = std::ranges::find_if(
+          dag.outputs, [&](const auto& candidate) {
+            return candidate.relation_node_id == scan_node->node_id &&
+                   candidate.ordinal == source_column &&
+                   candidate.descriptor_id == expression->result_descriptor_id;
+          });
+      const auto relational_descriptor = std::ranges::find_if(
+          dag.descriptors, [&](const auto& candidate) {
+            return candidate.descriptor_id == expression->result_descriptor_id;
+          });
+      if (source_output == dag.outputs.end() ||
+          relational_descriptor == dag.descriptors.end()) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-V1",
+                      "object-backed ORDER BY source descriptor is unresolved");
+      }
+      const auto& persisted_descriptor =
+          admission.current_relation_projection_descriptors[source_column];
+      exec::ExecutorColumnDescriptor executor_column{
+          source_output->output_name_utf8, persisted_descriptor,
+          relational_descriptor->nullability ==
+              api::RelationalNullability::kNullable,
+          relational_descriptor->descriptor_id};
+      exec::CanonicalDescriptorOrderTerm descriptor_term;
+      std::string binding_detail;
+      if (!PrepareCanonicalSortOrderTerm(
+              input.context, term, executor_column, source_column,
+              &descriptor_term, &binding_detail)) {
+        return refuse(
+            "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-BINDING-V1",
+            binding_detail.empty()
+                ? "object-backed ORDER BY descriptor binding is unresolved"
+                : binding_detail);
+      }
       heap_order_terms.push_back(term);
+      heap_descriptor_order_terms.push_back(std::move(descriptor_term));
     }
     ordering_property_uuid = property->property_uuid;
     heap_sort_binding.ok = true;
     heap_sort_binding.ordering_property_uuid = ordering_property_uuid;
+    heap_sort_binding.order_terms = heap_descriptor_order_terms;
     sort_capability_uuid =
         DerivedCanonicalUuid(identity_scope, "heap-sort.capability");
     profiles.push_back(
@@ -50310,9 +50319,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          {plan::CanonicalLogicalPropertyKind::kOrdering}});
   }
   std::optional<exec::ExecutorColumnDescriptor> prepared_heap_row_number;
+  std::optional<exec::ExecutorColumnDescriptor> prepared_heap_rank;
+  std::optional<exec::CanonicalDescriptorOrderTerm> prepared_heap_rank_order_term;
   std::string window_capability_uuid;
+  std::string heap_rank_order_term_binding_evidence_uuid;
   std::string window_order_evidence_uuid;
   if (window_composition) {
+    const bool rank_window =
+        window_node->semantic_variant_id == "window.rank.v1";
+    const std::string_view ranking_name =
+        rank_window ? "RANK" : "ROW_NUMBER";
     const auto logical_window = std::ranges::find_if(
         graph.nodes, [&](const auto& candidate) {
           return candidate.logical_node_id == window_node->node_id;
@@ -50326,7 +50342,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     if (logical_window == graph.nodes.end() ||
         logical_sort == graph.nodes.end() || !core_manifest.ok()) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
-                    "object-backed ROW_NUMBER authority is unavailable");
+                    "object-backed " + std::string(ranking_name) +
+                        " authority is unavailable");
     }
     const auto int64_type = std::ranges::find_if(
         core_manifest.manifest.descriptor_rows, [&](const auto& row) {
@@ -50337,16 +50354,24 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             ? std::string{}
             : scratchbird::core::uuid::UuidToString(
                   int64_type->descriptor_uuid.value);
-    const auto row_number = PrepareGlobalRowNumberWindowBinding(
-        dag, admission.request.logical_properties, *window_node,
-        *logical_window, *logical_sort, heap_sort_binding,
-        sort_node->output_descriptor_ids.size(),
-        sort_node->output_descriptor_ids.size(), int64_type_uuid, "heap",
-        project_composition);
-    if (!row_number.ok) {
-      return refuse(row_number.diagnostic_id, row_number.detail);
+    const auto ranking =
+        rank_window
+            ? PrepareGlobalRankWindowBinding(
+                  dag, admission.request.logical_properties, *window_node,
+                  *logical_window, *logical_sort, heap_sort_binding,
+                  sort_node->output_descriptor_ids.size(),
+                  sort_node->output_descriptor_ids.size(), int64_type_uuid,
+                  "heap", project_composition)
+            : PrepareGlobalRowNumberWindowBinding(
+                  dag, admission.request.logical_properties, *window_node,
+                  *logical_window, *logical_sort, heap_sort_binding,
+                  sort_node->output_descriptor_ids.size(),
+                  sort_node->output_descriptor_ids.size(), int64_type_uuid,
+                  "heap", project_composition);
+    if (!ranking.ok) {
+      return refuse(ranking.diagnostic_id, ranking.detail);
     }
-    const auto* output_descriptor = row_number.result_descriptor;
+    const auto* output_descriptor = ranking.result_descriptor;
     api::EngineDescriptor descriptor;
     descriptor.descriptor_uuid.canonical =
         output_descriptor->descriptor_uuid;
@@ -50355,25 +50380,62 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     descriptor.encoded_descriptor =
         "type_uuid=" + output_descriptor->type_uuid +
         ";nullability=non_null";
-    exec::ExecutorColumnDescriptor row_number_column{
-        row_number.outputs.back()->output_name_utf8, descriptor, false,
+    exec::ExecutorColumnDescriptor ranking_column{
+        ranking.outputs.back()->output_name_utf8, descriptor, false,
         output_descriptor->descriptor_id};
     if (!api::QowCanonicalDescriptorIdentityV1(descriptor)) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
-                    "object-backed ROW_NUMBER descriptor is invalid");
+                    "object-backed " + std::string(ranking_name) +
+                        " descriptor is invalid");
     }
-    prepared_heap_row_number = std::move(row_number_column);
-    window_capability_uuid =
-        DerivedCanonicalUuid(identity_scope, "heap-window.capability");
+    if (rank_window) {
+      if (heap_order_terms.size() != 1) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+                      "object-backed RANK requires one direct order term");
+      }
+      std::uint64_t planned_receipt_workspace_bytes = 0;
+      std::uint64_t actual_receipt_workspace_bytes = 0;
+      if (!exec::PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+              heap_descriptor_order_terms.front(), ordering_property_uuid,
+              &planned_receipt_workspace_bytes) ||
+          planned_receipt_workspace_bytes >
+              planning_request.optimizer_request.resource.memory_budget_bytes) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+                      "object-backed RANK order-term receipt exceeds its "
+                      "memory budget");
+      }
+      heap_rank_order_term_binding_evidence_uuid =
+          exec::ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
+              heap_descriptor_order_terms.front(), ordering_property_uuid,
+              planned_receipt_workspace_bytes,
+              &actual_receipt_workspace_bytes);
+      if (heap_rank_order_term_binding_evidence_uuid.empty() ||
+          actual_receipt_workspace_bytes !=
+              planned_receipt_workspace_bytes) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+                      "object-backed RANK order-term receipt is unresolved");
+      }
+      prepared_heap_rank = std::move(ranking_column);
+      prepared_heap_rank_order_term = heap_descriptor_order_terms.front();
+      window_capability_uuid =
+          heap_rank_order_term_binding_evidence_uuid;
+    } else {
+      prepared_heap_row_number = std::move(ranking_column);
+      window_capability_uuid =
+          DerivedCanonicalUuid(identity_scope, "heap-window.capability");
+    }
     window_order_evidence_uuid = DerivedCanonicalUuid(
         identity_scope + ":" + ordering_property_uuid,
         "heap-window.deterministic-order");
     profiles.push_back(
-        {window_node->node_id, "window.row-number.v1",
+        {window_node->node_id,
+         rank_window ? "window.rank.v1" : "window.row-number.v1",
          window_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kWindow,
          exec::PhysicalNodeKind::kWindow,
-         "canonical.heap.window.row-number.v1", 1,
+         rank_window ? "canonical.heap.window.rank.v1"
+                     : "canonical.heap.window.row-number.v1",
+         1,
          planning_request.optimizer_request.resource.memory_budget_bytes,
          1, 1, window_node->required_property_uuids,
          window_node->delivered_property_uuids,
@@ -50554,7 +50616,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                  : (project_composition
                  ? "object-backed heap hidden-column PROJECT composition"
                  : (window_composition
-                        ? "object-backed heap ROW_NUMBER composition"
+                        ? (prepared_heap_rank.has_value()
+                               ? "object-backed heap RANK composition"
+                               : "object-backed heap ROW_NUMBER composition")
                         : (sort_composition
                                ? "object-backed heap ORDER BY composition"
                                : (filter_composition
@@ -50689,7 +50753,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     if (sort_composition) {
       selected.available_executors.push_back(
           MakeLiveHeapSortRegistration(
-              heap_order_terms, heap_order_columns,
+              heap_descriptor_order_terms,
               DerivedCanonicalUuid(identity_scope + ":" + ordering_property_uuid,
                                    "heap-sort.deterministic-tie"),
               sort_capability_uuid, maximum_output_rows,
@@ -50698,10 +50762,22 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
               input.context));
     }
     if (window_composition) {
-      selected.available_executors.push_back(
-          MakeLiveRowNumberRegistration(
-              *prepared_heap_row_number, window_order_evidence_uuid,
-              window_capability_uuid, maximum_output_rows, input.context));
+      if (prepared_heap_rank.has_value() &&
+          prepared_heap_rank_order_term.has_value()) {
+        selected.available_executors.push_back(
+            MakeLiveRankRegistration(
+                *prepared_heap_rank, *prepared_heap_rank_order_term,
+                heap_rank_order_term_binding_evidence_uuid,
+                window_order_evidence_uuid, window_capability_uuid,
+                maximum_output_rows,
+                std::max<std::size_t>(1, maximum_output_rows - 1),
+                input.context));
+      } else {
+        selected.available_executors.push_back(
+            MakeLiveRowNumberRegistration(
+                *prepared_heap_row_number, window_order_evidence_uuid,
+                window_capability_uuid, maximum_output_rows, input.context));
+      }
     }
     if (project_composition) {
       selected.available_executors.push_back(
@@ -50809,7 +50885,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                             : (project_composition
                             ? "object-backed heap PROJECT selected DAG was not completed"
                             : (window_composition
-                                   ? "object-backed heap ROW_NUMBER selected DAG was not completed"
+                                   ? (prepared_heap_rank.has_value()
+                                          ? "object-backed heap RANK selected DAG was not completed"
+                                          : "object-backed heap ROW_NUMBER selected DAG was not completed")
                                    : (sort_composition
                                           ? "object-backed heap ORDER BY selected DAG was not completed"
                                           : "object-backed heap WHERE selected DAG was not completed")))))

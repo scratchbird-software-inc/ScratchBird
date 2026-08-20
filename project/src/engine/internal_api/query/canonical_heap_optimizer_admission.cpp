@@ -316,6 +316,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
 
   std::vector<std::string> relation_uuids;
   std::vector<std::string> projection_type_names;
+  std::vector<EngineDescriptor> projection_descriptors;
   for (const auto* scan : scans) {
     const auto& relation_uuid = scan->required_object_uuids.front();
     relation_uuids.push_back(relation_uuid);
@@ -427,6 +428,9 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
       }
       projection_type_names.push_back(
           column.value_descriptor.canonical_type_name);
+      auto projection_descriptor = column.value_descriptor;
+      projection_descriptor.descriptor_kind = "scalar";
+      projection_descriptors.push_back(std::move(projection_descriptor));
     }
     const auto authorization = EvaluateMaterializedAuthorization(
         context, context.authorization_context, "SELECT", relation_uuid);
@@ -503,6 +507,8 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   result.admission = std::move(built.admission);
   result.current_relation_projection_type_names =
       std::move(projection_type_names);
+  result.current_relation_projection_descriptors =
+      std::move(projection_descriptors);
   return result;
 }
 
@@ -808,7 +814,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       (window_node != nullptr &&
        (window_node->input_node_ids !=
             std::vector<std::uint32_t>{sort_node->node_id} ||
-        window_node->semantic_variant_id != "window.row-number.v1" ||
+        (window_node->semantic_variant_id != "window.row-number.v1" &&
+         window_node->semantic_variant_id != "window.rank.v1") ||
         window_node->bound_expression_ids.size() != 2 ||
         window_node->output_descriptor_ids.size() !=
             sort_node->output_descriptor_ids.size() + 1 ||
@@ -981,6 +988,14 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   if (window_node != nullptr) {
     constexpr std::string_view kRowNumberFunctionUuid =
         "019de5fc-2400-7539-bcce-00eef3ae7220";
+    constexpr std::string_view kRankFunctionUuid =
+        "019de5fc-2400-7b94-870d-0dd789ca70ab";
+    const bool rank_window =
+        window_node->semantic_variant_id == "window.rank.v1";
+    const std::string_view expected_builtin_id =
+        rank_window ? "sb.window.rank" : "sb.window.row_number";
+    const std::string_view expected_function_uuid =
+        rank_window ? kRankFunctionUuid : kRowNumberFunctionUuid;
     const auto ordering_property_uuid =
         sort_node->delivered_property_uuids.front();
     const auto window_property_uuid = std::ranges::find_if(
@@ -1079,15 +1094,15 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             relational.window_definitions.front().window_id ||
         relational.window_invocations.front().function_abi_version != 1 ||
         relational.window_invocations.front().builtin_id !=
-            "sb.window.row_number" ||
+            expected_builtin_id ||
         relational.window_invocations.front().function_uuid !=
-            kRowNumberFunctionUuid ||
+            expected_function_uuid ||
         !relational.window_invocations.front()
              .argument_expression_ids.empty() ||
         function == relational.expressions.end() ||
         function->expression_kind != RelationalExpressionKind::kFunctionCall ||
         function->function_uuid !=
-            std::optional<std::string>(kRowNumberFunctionUuid) ||
+            std::optional<std::string>(expected_function_uuid) ||
         function->bound_name_uuid.has_value() ||
         function->operator_name.has_value() ||
         function->literal_kind.has_value() ||
@@ -1111,7 +1126,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         window_outputs.back()->output_name_utf8 !=
             relational.window_invocations.front().output_name_utf8) {
       return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
-                    "heap_row_number_window_binding");
+                    rank_window ? "heap_rank_window_binding"
+                                : "heap_row_number_window_binding");
     }
   }
   const auto& node = *scan_node;
@@ -1220,6 +1236,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   std::unordered_set<std::string> column_names;
   std::vector<const RelationalOutputRecord*> scan_outputs;
   std::vector<std::string> projection_type_names;
+  std::vector<EngineDescriptor> projection_descriptors;
   std::unordered_map<std::uint32_t, const RelationalExpressionRecord*>
       expressions_by_id;
   std::unordered_map<std::uint32_t, const RelationalTypeDescriptor*>
@@ -1231,6 +1248,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   }
   std::ranges::sort(scan_outputs, {}, &RelationalOutputRecord::ordinal);
   projection_type_names.reserve(scan_outputs.size());
+  projection_descriptors.reserve(scan_outputs.size());
   for (const auto& expression : relational.expressions) {
     expressions_by_id.emplace(expression.expression_id, &expression);
   }
@@ -1321,6 +1339,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     }
     projection_type_names.push_back(
         column.value_descriptor.canonical_type_name);
+    auto projection_descriptor = column.value_descriptor;
+    projection_descriptor.descriptor_kind = "scalar";
+    projection_descriptors.push_back(std::move(projection_descriptor));
   }
 
   const auto authorization = EvaluateMaterializedAuthorization(
@@ -1407,6 +1428,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       persisted.descriptor_generation;
   result.current_relation_projection_type_names =
       std::move(projection_type_names);
+  result.current_relation_projection_descriptors =
+      std::move(projection_descriptors);
   return result;
 }
 
