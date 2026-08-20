@@ -6388,6 +6388,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
     const std::string& result_type_uuid,
     const std::string& order_type_uuid,
     const std::string& boolean_type_uuid,
+    const std::array<std::string, 4>& bounded_signed_type_uuids,
     const std::string_view family_label,
     const GlobalRankingWindowProfile& profile,
     const bool allow_project_root = false) {
@@ -6458,6 +6459,14 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       profile.semantic_variant_id == "window.aggregate-bridge.v1";
   const bool aggregate_count_window =
       aggregate_window && profile.builtin_id == "sb.aggregate.count";
+  const bool aggregate_boolean_window =
+      aggregate_window &&
+      (profile.builtin_id == "sb.aggregate.bool_and" ||
+       profile.builtin_id == "sb.aggregate.bool_or" ||
+       profile.builtin_id == "sb.aggregate.every");
+  const bool aggregate_bounded_signed_window =
+      aggregate_window && !aggregate_count_window &&
+      !aggregate_boolean_window;
   const bool aggregate_count_star_window =
       aggregate_count_window && invocations.size() == 1 &&
       invocations.front()->argument_expression_ids.empty();
@@ -6760,8 +6769,11 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
     const bool exact_aggregate_argument_type =
         argument_descriptor != dag.descriptors.end() &&
         (!aggregate_window || aggregate_count_window ||
-         argument_descriptor->type_uuid == result_type_uuid ||
-         (!boolean_type_uuid.empty() &&
+         (aggregate_bounded_signed_window &&
+          std::ranges::find(bounded_signed_type_uuids,
+                            argument_descriptor->type_uuid) !=
+              bounded_signed_type_uuids.end()) ||
+         (aggregate_boolean_window && !boolean_type_uuid.empty() &&
           argument_descriptor->type_uuid == boolean_type_uuid));
     if (argument == dag.expressions.end() ||
         argument->expression_kind !=
@@ -6956,8 +6968,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
   return PrepareGlobalRankingWindowBinding(
       dag, logical_properties, consumer, logical_consumer, previous_logical,
       prepared_sort, materialized_column_count, result_binding_count,
-      int64_type_uuid, int64_type_uuid, int64_type_uuid, family_label,
-      kGlobalRowNumberProfile,
+      int64_type_uuid, int64_type_uuid, int64_type_uuid,
+      std::array<std::string, 4>{}, family_label, kGlobalRowNumberProfile,
       allow_project_root);
 }
 
@@ -18624,6 +18636,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         const bool aggregate_count_window =
             aggregate_window &&
             ranking_profile.builtin_id == "sb.aggregate.count";
+        const bool aggregate_boolean_window =
+            aggregate_window &&
+            (ranking_profile.builtin_id == "sb.aggregate.bool_and" ||
+             ranking_profile.builtin_id == "sb.aggregate.bool_or" ||
+             ranking_profile.builtin_id == "sb.aggregate.every");
+        const bool aggregate_bounded_signed_window =
+            aggregate_window && !aggregate_count_window &&
+            !aggregate_boolean_window;
         const std::string_view ranking_name = ranking_profile.display_name;
         const auto typed_consumer = std::ranges::find_if(
             request.relational_dag.nodes, [&](const auto& candidate) {
@@ -18656,6 +18676,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         const auto boolean_type = std::ranges::find_if(
             core_manifest.manifest.descriptor_rows,
             [](const auto& row) { return row.stable_name == "boolean"; });
+        const auto int8_type = std::ranges::find_if(
+            core_manifest.manifest.descriptor_rows,
+            [](const auto& row) { return row.stable_name == "int8"; });
+        const auto int16_type = std::ranges::find_if(
+            core_manifest.manifest.descriptor_rows,
+            [](const auto& row) { return row.stable_name == "int16"; });
+        const auto int32_type = std::ranges::find_if(
+            core_manifest.manifest.descriptor_rows,
+            [](const auto& row) { return row.stable_name == "int32"; });
         const auto result_type_uuid =
             result_type == core_manifest.manifest.descriptor_rows.end()
                 ? std::string{}
@@ -18671,12 +18700,27 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 ? std::string{}
                 : scratchbird::core::uuid::UuidToString(
                       boolean_type->descriptor_uuid.value);
+        const std::array<std::string, 4> bounded_signed_type_uuids = {
+            int8_type == core_manifest.manifest.descriptor_rows.end()
+                ? std::string{}
+                : scratchbird::core::uuid::UuidToString(
+                      int8_type->descriptor_uuid.value),
+            int16_type == core_manifest.manifest.descriptor_rows.end()
+                ? std::string{}
+                : scratchbird::core::uuid::UuidToString(
+                      int16_type->descriptor_uuid.value),
+            int32_type == core_manifest.manifest.descriptor_rows.end()
+                ? std::string{}
+                : scratchbird::core::uuid::UuidToString(
+                      int32_type->descriptor_uuid.value),
+            order_type_uuid};
         const auto ranking = PrepareGlobalRankingWindowBinding(
             request.relational_dag,
             request.optimizer_request.logical_properties, *typed_consumer,
             node, input_node, *prepared_sort, input_batch.columns.size(),
             input_bindings.size(), result_type_uuid, order_type_uuid,
-            boolean_type_uuid, "composition", ranking_profile);
+            boolean_type_uuid, bounded_signed_type_uuids, "composition",
+            ranking_profile);
         if (!ranking.ok) {
           return refuse(ranking.diagnostic_id, ranking.detail);
         }
@@ -18809,7 +18853,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 "composition " + std::string(ranking_name) +
                     " result materialization exceeds its memory budget");
           }
-          if (!aggregate_count_window) {
+          if (aggregate_bounded_signed_window) {
+            descriptor.descriptor_uuid.canonical =
+                output_descriptor->descriptor_uuid;
+            descriptor.descriptor_kind = "scalar";
+            descriptor.canonical_type_name = "int64";
+            descriptor.encoded_descriptor =
+                "type_uuid=" + output_descriptor->type_uuid +
+                ";nullability=nullable";
+          } else if (!aggregate_count_window) {
             descriptor = input_batch
                              .columns[*ranking.navigation_value_column]
                              .descriptor;
@@ -52166,6 +52218,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     const bool aggregate_count_window =
         aggregate_window &&
         ranking_profile.builtin_id == "sb.aggregate.count";
+    const bool aggregate_boolean_window =
+        aggregate_window &&
+        (ranking_profile.builtin_id == "sb.aggregate.bool_and" ||
+         ranking_profile.builtin_id == "sb.aggregate.bool_or" ||
+         ranking_profile.builtin_id == "sb.aggregate.every");
+    const bool aggregate_bounded_signed_window =
+        aggregate_window && !aggregate_count_window &&
+        !aggregate_boolean_window;
     const std::string_view ranking_name = ranking_profile.display_name;
     const auto logical_window = std::ranges::find_if(
         graph.nodes, [&](const auto& candidate) {
@@ -52193,6 +52253,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     const auto boolean_type = std::ranges::find_if(
         core_manifest.manifest.descriptor_rows,
         [](const auto& row) { return row.stable_name == "boolean"; });
+    const auto int8_type = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows,
+        [](const auto& row) { return row.stable_name == "int8"; });
+    const auto int16_type = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows,
+        [](const auto& row) { return row.stable_name == "int16"; });
+    const auto int32_type = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows,
+        [](const auto& row) { return row.stable_name == "int32"; });
     const auto result_type_uuid =
         result_type == core_manifest.manifest.descriptor_rows.end()
             ? std::string{}
@@ -52208,13 +52277,27 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             ? std::string{}
             : scratchbird::core::uuid::UuidToString(
                   boolean_type->descriptor_uuid.value);
+    const std::array<std::string, 4> bounded_signed_type_uuids = {
+        int8_type == core_manifest.manifest.descriptor_rows.end()
+            ? std::string{}
+            : scratchbird::core::uuid::UuidToString(
+                  int8_type->descriptor_uuid.value),
+        int16_type == core_manifest.manifest.descriptor_rows.end()
+            ? std::string{}
+            : scratchbird::core::uuid::UuidToString(
+                  int16_type->descriptor_uuid.value),
+        int32_type == core_manifest.manifest.descriptor_rows.end()
+            ? std::string{}
+            : scratchbird::core::uuid::UuidToString(
+                  int32_type->descriptor_uuid.value),
+        order_type_uuid};
     const auto ranking = PrepareGlobalRankingWindowBinding(
         dag, admission.request.logical_properties, *window_node,
         *logical_window, *logical_sort, heap_sort_binding,
         sort_node->output_descriptor_ids.size(),
         sort_node->output_descriptor_ids.size(), result_type_uuid,
-        order_type_uuid, boolean_type_uuid, "heap", ranking_profile,
-        project_composition);
+        order_type_uuid, boolean_type_uuid, bounded_signed_type_uuids, "heap",
+        ranking_profile, project_composition);
     if (!ranking.ok) {
       return refuse(ranking.diagnostic_id, ranking.detail);
     }
@@ -52251,12 +52334,24 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                    sort_node->output_descriptor_ids
                        [*ranking.navigation_value_column];
           });
-      if (!aggregate_count_window) {
+      if (source_relational_descriptor == dag.descriptors.end()) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+                      "object-backed " + std::string(ranking_name) +
+                          " source relational descriptor is unresolved");
+      }
+      if (aggregate_bounded_signed_window) {
+        descriptor.descriptor_uuid.canonical =
+            output_descriptor->descriptor_uuid;
+        descriptor.descriptor_kind = "scalar";
+        descriptor.canonical_type_name = "int64";
+        descriptor.encoded_descriptor =
+            "type_uuid=" + output_descriptor->type_uuid +
+            ";nullability=nullable";
+      } else if (!aggregate_count_window) {
         descriptor = source_descriptor;
         descriptor.descriptor_uuid.canonical =
             output_descriptor->descriptor_uuid;
-        if (source_relational_descriptor == dag.descriptors.end() ||
-            !exec::DeriveCanonicalNullableDescriptorEncoding(&descriptor) ||
+        if (!exec::DeriveCanonicalNullableDescriptorEncoding(&descriptor) ||
             !exec::CanonicalDerivedDescriptorTypeMatches(
                 source_descriptor,
                 source_relational_descriptor->nullability ==

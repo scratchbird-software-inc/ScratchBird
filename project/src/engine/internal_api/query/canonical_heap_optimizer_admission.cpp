@@ -1122,6 +1122,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
              executor::CanonicalAggregateFunction::bool_or ||
          aggregate_window_row->function ==
              executor::CanonicalAggregateFunction::every);
+    const bool aggregate_bounded_signed_window =
+        aggregate_window && !aggregate_count_window &&
+        !aggregate_boolean_window;
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
@@ -1133,6 +1136,15 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     const auto canonical_boolean_type_uuid =
         aggregate_boolean_window ? CanonicalCoreDatatypeUuid("boolean")
                                  : std::string{};
+    const std::array<std::string, 4> canonical_bounded_signed_type_uuids = {
+        aggregate_bounded_signed_window ? CanonicalCoreDatatypeUuid("int8")
+                                        : std::string{},
+        aggregate_bounded_signed_window ? CanonicalCoreDatatypeUuid("int16")
+                                        : std::string{},
+        aggregate_bounded_signed_window ? CanonicalCoreDatatypeUuid("int32")
+                                        : std::string{},
+        aggregate_bounded_signed_window ? canonical_int64_type_uuid
+                                        : std::string{}};
     const std::string_view expected_builtin_id =
         aggregate_window
             ? (aggregate_window_row == nullptr
@@ -1432,12 +1444,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
           ntile_argument_descriptor->descriptor_uuid ==
               expected_function_uuid ||
           (aggregate_window && !aggregate_count_window &&
-           !((!aggregate_boolean_window &&
-              ntile_argument_descriptor->type_uuid ==
-                  canonical_int64_type_uuid) ||
-             (aggregate_boolean_window &&
-              ntile_argument_descriptor->type_uuid ==
-                  canonical_boolean_type_uuid))) ||
+           !(aggregate_bounded_signed_window
+                 ? std::ranges::find(canonical_bounded_signed_type_uuids,
+                                     ntile_argument_descriptor->type_uuid) !=
+                       canonical_bounded_signed_type_uuids.end()
+                 : aggregate_boolean_window &&
+                       ntile_argument_descriptor->type_uuid ==
+                           canonical_boolean_type_uuid)) ||
           (!aggregate_window &&
            (canonical_int64_type_uuid.empty() ||
             ntile_argument_descriptor->type_uuid !=

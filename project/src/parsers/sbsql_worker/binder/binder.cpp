@@ -4749,6 +4749,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         aggregate_window &&
         (aggregate_operator == "BOOL_AND" || aggregate_operator == "BOOL_OR" ||
          aggregate_operator == "EVERY");
+    const bool aggregate_bounded_signed_window =
+        aggregate_window && !aggregate_count_window &&
+        !aggregate_boolean_window;
+    const auto is_bounded_signed_type = [](const std::string_view type_name) {
+      return type_name == "int8" || type_name == "int16" ||
+             type_name == "int32" || type_name == "int64";
+    };
     const std::string_view expected_operator =
         aggregate_window
             ? aggregate_operator
@@ -5390,6 +5397,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           lag_operand_descriptor->descriptor_uuid ==
               expected_function_uuid ||
           (!aggregate_count_window &&
+           !aggregate_bounded_signed_window &&
            (lag_operand_descriptor->type_uuid !=
                 function_descriptor->second->type_uuid ||
             lag_operand_descriptor->collation_uuid !=
@@ -5405,7 +5413,17 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             lag_operand_descriptor->canonical_type_name !=
                 function_descriptor->second->canonical_type_name ||
             lag_operand_descriptor->element_profile !=
-                function_descriptor->second->element_profile)))) ||
+                function_descriptor->second->element_profile)) ||
+          (aggregate_bounded_signed_window &&
+           (!is_bounded_signed_type(
+                lag_operand_descriptor->canonical_type_name) ||
+            lag_operand_descriptor->collation_uuid.has_value() ||
+            lag_operand_descriptor->timezone_profile_id.has_value() ||
+            lag_operand_descriptor->width_precision_scale.width.has_value() ||
+            lag_operand_descriptor->width_precision_scale.precision
+                .has_value() ||
+            lag_operand_descriptor->width_precision_scale.scale.has_value() ||
+            !lag_operand_descriptor->element_profile.empty())))) ||
         (nth_value_window &&
          (numeric_window_operand_descriptor == nullptr ||
           lag_operand_descriptor == nullptr ||

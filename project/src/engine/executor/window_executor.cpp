@@ -1724,6 +1724,11 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
            CanonicalAggregateFunction::bool_and ||
        aggregate_registry_row->function == CanonicalAggregateFunction::bool_or ||
        aggregate_registry_row->function == CanonicalAggregateFunction::every);
+  const bool bounded_signed_window =
+      aggregate_registry_row != nullptr &&
+      (aggregate_registry_row->function == CanonicalAggregateFunction::sum ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::min ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::max);
   if ((!count_window && request.aggregate_descriptor.count_star) ||
       !exact_unary_window ||
       !aggregate_registry_row->executable ||
@@ -1812,6 +1817,12 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
                     .descriptor,
                 "type_uuid")
           : std::optional<std::string_view>{};
+  const auto canonical_source_type_uuid =
+      value_column_in_range
+          ? CanonicalCoreDatatypeUuid(
+                execution_ordered_input_batch.columns[*request.value_column]
+                    .descriptor.canonical_type_name)
+          : std::string{};
   const auto result_type_uuid = CanonicalDescriptorField(
       request.result_column.descriptor, "type_uuid");
   const auto order_type_uuid =
@@ -1866,18 +1877,19 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
             execution_ordered_input_batch.columns[*request.value_column]
                 .descriptor) &&
         !has_auxiliary_type_fields(request.result_column.descriptor);
-  } else if (value_column_in_range && source_type_uuid.has_value()) {
+  } else if (value_column_in_range && source_type_uuid.has_value() &&
+             bounded_signed_window) {
     exact_value_result_contract =
         request.result_column.nullable &&
-        execution_ordered_input_batch.columns[*request.value_column]
-                .descriptor.canonical_type_name == "int64" &&
-        *source_type_uuid == canonical_int64_type_uuid &&
-        CanonicalDerivedDescriptorTypeMatches(
+        IsCanonicalBoundedSignedIntegerDescriptor(
             execution_ordered_input_batch.columns[*request.value_column]
-                .descriptor,
+                .descriptor) &&
+        !canonical_source_type_uuid.empty() &&
+        *source_type_uuid == canonical_source_type_uuid &&
+        !has_auxiliary_type_fields(
             execution_ordered_input_batch.columns[*request.value_column]
-                .nullable,
-            request.result_column.descriptor, true);
+                .descriptor) &&
+        !has_auxiliary_type_fields(request.result_column.descriptor);
   }
   if (selected_node->output_descriptor_ids !=
           expected_output_descriptor_ids ||

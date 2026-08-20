@@ -2962,7 +2962,7 @@ class NativeRelationalParser final {
     // frame. NTH_VALUE additionally requires one exact positive signed-int64
     // literal position and normalizes omitted origin/NULL-treatment state to
     // FROM FIRST RESPECT NULLS in the canonical execution route. Aggregate
-    // Numeric aggregates admit one direct signed-int64 value column; boolean
+    // Numeric aggregates admit one direct bounded-signed value column; boolean
     // aggregates admit one direct boolean value column. COUNT(identifier)
     // admits one direct engine-bound canonical value column of any type, while
     // COUNT(*) carries no value expression and counts every row in the
@@ -3094,7 +3094,7 @@ class NativeRelationalParser final {
                             IsWord(function_token, "BOOL_OR") ||
                             IsWord(function_token, "EVERY"))
                                ? " requires one direct boolean column operand"
-                               : " requires one direct signed-int64 column operand")));
+                               : " requires one direct bounded-signed column operand")));
         return FinishRefusal();
       }
       const Token& operand_token = Consume();

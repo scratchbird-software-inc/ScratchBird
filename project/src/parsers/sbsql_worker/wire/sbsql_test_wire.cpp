@@ -4367,6 +4367,13 @@ BuildEngineProjectedNativeBindingContext(
         (function_expression->operator_name == "BOOL_AND" ||
          function_expression->operator_name == "BOOL_OR" ||
          function_expression->operator_name == "EVERY");
+    const bool aggregate_bounded_signed_window =
+        aggregate_window && !aggregate_count_window &&
+        !aggregate_boolean_window;
+    const auto is_bounded_signed_type = [](const std::string_view type_name) {
+      return type_name == "int8" || type_name == "int16" ||
+             type_name == "int32" || type_name == "int64";
+    };
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
@@ -4666,10 +4673,16 @@ BuildEngineProjectedNativeBindingContext(
                context.descriptors[*lag_operand_source_ordinal].type_uuid)
                .has_value() ||
           (!aggregate_count_window &&
+           !aggregate_bounded_signed_window &&
            context.descriptors[*lag_operand_source_ordinal].type_uuid !=
                result_profile->type_uuid) ||
+          (aggregate_bounded_signed_window &&
+           !is_bounded_signed_type(
+               context.descriptors[*lag_operand_source_ordinal]
+                   .canonical_type_name)) ||
           (aggregate_window &&
            !aggregate_count_window &&
+           !aggregate_bounded_signed_window &&
            context.descriptors[*lag_operand_source_ordinal]
                    .canonical_type_name !=
                (aggregate_boolean_window ? "boolean" : "int64")) ||
@@ -4797,7 +4810,7 @@ BuildEngineProjectedNativeBindingContext(
         value_window && !aggregate_count_window
             ? BoundNullability::kNullable
             : BoundNullability::kNonNull;
-    if (aggregate_count_window) {
+    if (aggregate_count_window || aggregate_bounded_signed_window) {
       function_descriptor.canonical_type_name = "int64";
     } else if (value_operand_window) {
       const auto& source_descriptor =

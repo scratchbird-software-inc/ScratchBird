@@ -36387,6 +36387,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         (invocation.builtin_id == "sb.aggregate.bool_and" ||
          invocation.builtin_id == "sb.aggregate.bool_or" ||
          invocation.builtin_id == "sb.aggregate.every");
+    const bool aggregate_bounded_signed_window =
+        aggregate_window && !aggregate_count_window &&
+        !aggregate_boolean_window;
+    const auto is_bounded_signed_type = [](const std::string_view type_name) {
+      return type_name == "int8" || type_name == "int16" ||
+             type_name == "int32" || type_name == "int64";
+    };
     const std::string_view expected_window_builtin =
         aggregate_window
             ? (exact_unary_aggregate_builtin
@@ -36784,6 +36791,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           window_argument_descriptor->descriptor_uuid ==
               expected_window_function_uuid ||
           (!aggregate_count_window &&
+           !aggregate_bounded_signed_window &&
            (window_argument_descriptor->type_uuid !=
                 result_descriptor->type_uuid ||
             window_argument_descriptor->collation_uuid !=
@@ -36799,7 +36807,19 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             window_argument_descriptor->canonical_type_name !=
                 result_descriptor->canonical_type_name ||
             window_argument_descriptor->element_profile !=
-                result_descriptor->element_profile))))) {
+                result_descriptor->element_profile)) ||
+          (aggregate_bounded_signed_window &&
+           (!is_bounded_signed_type(
+                window_argument_descriptor->canonical_type_name) ||
+            window_argument_descriptor->collation_uuid.has_value() ||
+            window_argument_descriptor->timezone_profile_id.has_value() ||
+            window_argument_descriptor->width_precision_scale.width
+                .has_value() ||
+            window_argument_descriptor->width_precision_scale.precision
+                .has_value() ||
+            window_argument_descriptor->width_precision_scale.scale
+                .has_value() ||
+            !window_argument_descriptor->element_profile.empty()))))) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed window definition and registry receipt are not exact");
