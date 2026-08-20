@@ -3103,7 +3103,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           bounded_signed_source_type_uuids.back();
     }
   }
-  if (is_boolean) {
+  if (is_boolean || has_filter) {
     const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
     const auto boolean_count =
         core_manifest.ok()
@@ -3620,9 +3620,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       const bool is_filter_argument =
           has_filter && argument_ordinal == filter_argument_ordinal;
       if (is_filter_argument) {
-        if (input_type != "boolean") {
+        if (!exact_boolean_input(argument->result_descriptor_id, value_column,
+                                 input_type)) {
           result.detail =
-              "global aggregate FILTER input must be a canonical boolean "
+              "global aggregate FILTER input is not one exact core boolean "
               "column";
           return result;
         }
