@@ -7090,6 +7090,11 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
                  descriptor.descriptor_id ==
                      order_expression->result_descriptor_id;
         });
+    const bool exact_bounded_signed_order =
+        order_descriptor != dag.descriptors.end() &&
+        std::ranges::find(bounded_signed_type_uuids,
+                          order_descriptor->type_uuid) !=
+            bounded_signed_type_uuids.end();
     if (prepared_sort.order_terms.size() != 1 ||
         order_expression == dag.expressions.end() ||
         order_expression->expression_kind !=
@@ -7101,7 +7106,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         order_expression->literal_or_parameter_ref.has_value() ||
         order_expression->operator_name.has_value() ||
         order_descriptor == dag.descriptors.end() ||
-        order_descriptor->type_uuid != order_type_uuid ||
+        !exact_bounded_signed_order ||
         order_descriptor->collation_uuid.has_value() ||
         order_descriptor->timezone_profile_id.has_value() ||
         order_descriptor->width.has_value() ||
@@ -7112,7 +7117,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
             previous_logical.output_descriptor_ids.end()) {
       result.detail = std::string(family_label) +
                       " " + std::string(profile.display_name) +
-                      " order key is not one direct canonical int64 column";
+                      " order key is not one direct canonical bounded-signed "
+                      "column";
       return result;
     }
   }
@@ -10522,7 +10528,7 @@ MakeLiveAggregateWindowRegistration(
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-INPUT";
           step.diagnostic.detail =
-              "int64 aggregate window did not receive its bounded sorted input batch";
+              "aggregate window did not receive its bounded sorted input batch";
           return step;
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
@@ -10538,7 +10544,7 @@ MakeLiveAggregateWindowRegistration(
             step.diagnostic.diagnostic_code =
                 "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-INPUT";
             step.diagnostic.detail =
-                "int64 aggregate window execution view is unresolved";
+                "aggregate window execution view is unresolved";
             return step;
           }
           execution_dag = &*scoped_execution_dag;
@@ -10601,7 +10607,7 @@ MakeLiveAggregateWindowRegistration(
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code = "QOW-DIAG-OPT-017-REFUSAL-V1";
           step.diagnostic.detail =
-              "int64 aggregate window runtime work or memory observation exceeded its grant";
+              "aggregate window runtime work or memory observation exceeded its grant";
           return step;
         }
         step.authority.engine_mga_snapshot_bound = true;

@@ -4789,10 +4789,12 @@ BuildEngineProjectedNativeBindingContext(
               NativeExpressionAstKind::kIdentifier ||
           (aggregate_window &&
            (order_source_ordinal >= context.descriptors.size() ||
-            context.descriptors[order_source_ordinal].type_uuid !=
-                order_profile->type_uuid ||
-            context.descriptors[order_source_ordinal].canonical_type_name !=
-                "int64" ||
+            !CanonicalUuidBytes(
+                 context.descriptors[order_source_ordinal].type_uuid)
+                 .has_value() ||
+            !is_bounded_signed_type(
+                context.descriptors[order_source_ordinal]
+                    .canonical_type_name) ||
             context.descriptors[order_source_ordinal]
                 .collation_uuid.has_value() ||
             context.descriptors[order_source_ordinal]
@@ -4802,7 +4804,9 @@ BuildEngineProjectedNativeBindingContext(
             context.descriptors[order_source_ordinal]
                 .width_precision_scale.precision.has_value() ||
             context.descriptors[order_source_ordinal]
-                .width_precision_scale.scale.has_value())) ||
+                .width_precision_scale.scale.has_value() ||
+            !context.descriptors[order_source_ordinal]
+                 .element_profile.empty())) ||
           source_relation->output_expression_ids != [&] {
             std::vector<std::uint32_t> expected;
             if (lag_operand != nullptr) {

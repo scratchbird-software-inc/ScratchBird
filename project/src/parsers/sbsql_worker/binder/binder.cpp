@@ -5360,12 +5360,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         function_descriptor->second->type_uuid == expected_function_uuid ||
         (aggregate_window &&
          (order_descriptor == nullptr ||
-          order_descriptor->canonical_type_name != "int64" ||
+          !is_bounded_signed_type(order_descriptor->canonical_type_name) ||
           order_descriptor->collation_uuid.has_value() ||
           order_descriptor->timezone_profile_id.has_value() ||
           order_descriptor->width_precision_scale.width.has_value() ||
           order_descriptor->width_precision_scale.precision.has_value() ||
-          order_descriptor->width_precision_scale.scale.has_value())) ||
+          order_descriptor->width_precision_scale.scale.has_value() ||
+          !order_descriptor->element_profile.empty())) ||
         (aggregate_window &&
          function_descriptor->second->canonical_type_name !=
              (aggregate_boolean_window ? "boolean" : "int64")) ||

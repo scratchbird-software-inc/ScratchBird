@@ -1141,14 +1141,10 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             ? CanonicalCoreDatatypeUuid("boolean")
             : std::string{};
     const std::array<std::string, 4> canonical_bounded_signed_type_uuids = {
-        aggregate_bounded_signed_window ? CanonicalCoreDatatypeUuid("int8")
-                                        : std::string{},
-        aggregate_bounded_signed_window ? CanonicalCoreDatatypeUuid("int16")
-                                        : std::string{},
-        aggregate_bounded_signed_window ? CanonicalCoreDatatypeUuid("int32")
-                                        : std::string{},
-        aggregate_bounded_signed_window ? canonical_int64_type_uuid
-                                        : std::string{}};
+        aggregate_window ? CanonicalCoreDatatypeUuid("int8") : std::string{},
+        aggregate_window ? CanonicalCoreDatatypeUuid("int16") : std::string{},
+        aggregate_window ? CanonicalCoreDatatypeUuid("int32") : std::string{},
+        aggregate_window ? canonical_int64_type_uuid : std::string{}};
     const std::string_view expected_builtin_id =
         aggregate_window
             ? (aggregate_window_row == nullptr
@@ -1526,8 +1522,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
           aggregate_order_argument->operator_name.has_value() ||
           aggregate_order_descriptor == relational.descriptors.end() ||
           canonical_int64_type_uuid.empty() ||
-          aggregate_order_descriptor->type_uuid !=
-              canonical_int64_type_uuid ||
+          std::ranges::find(canonical_bounded_signed_type_uuids,
+                            aggregate_order_descriptor->type_uuid) ==
+              canonical_bounded_signed_type_uuids.end() ||
           aggregate_order_descriptor->collation_uuid.has_value() ||
           aggregate_order_descriptor->timezone_profile_id.has_value() ||
           aggregate_order_descriptor->width.has_value() ||

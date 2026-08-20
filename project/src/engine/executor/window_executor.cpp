@@ -1272,7 +1272,8 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
     };
     return contains_field("collation_uuid") ||
            contains_field("timezone_profile_id") || contains_field("width") ||
-           contains_field("precision") || contains_field("scale");
+           contains_field("precision") || contains_field("scale") ||
+           contains_field("element_profile");
   };
   const auto* nth_operand =
       request.nth_value_position_operand.has_value()
@@ -1830,7 +1831,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       selected_node->input_physical_node_ids.size() != 1) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-PHYSICAL",
-        "int64 aggregate window requires one exact frame-recompute window node"));
+        "aggregate window requires one exact frame-recompute window node"));
   }
   for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
@@ -1874,7 +1875,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       !IsCanonicalUuid(request.frame_property_binding_evidence_uuid)) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
-        "int64 aggregate window lacks exact ordering, frame, capability, or property evidence"));
+        "aggregate window lacks exact ordering, frame, capability, or property evidence"));
   }
 
   std::vector<std::uint32_t> expected_output_descriptor_ids =
@@ -1909,6 +1910,17 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
                     .descriptor,
                 "type_uuid")
           : std::optional<std::string_view>{};
+  const auto* order_descriptor =
+      request.order_term.column < execution_ordered_input_batch.columns.size()
+          ? &execution_ordered_input_batch
+                 .columns[request.order_term.column]
+                 .descriptor
+          : nullptr;
+  const auto canonical_order_type_uuid =
+      order_descriptor == nullptr
+          ? std::string{}
+          : CanonicalCoreDatatypeUuid(
+                order_descriptor->canonical_type_name);
   const auto has_auxiliary_type_fields = [](const auto& descriptor) {
     const auto contains_field = [&](const std::string_view key) {
       const auto prefix = std::string(key) + "=";
@@ -1928,8 +1940,15 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
     };
     return contains_field("collation_uuid") ||
            contains_field("timezone_profile_id") || contains_field("width") ||
-           contains_field("precision") || contains_field("scale");
+           contains_field("precision") || contains_field("scale") ||
+           contains_field("element_profile");
   };
+  const bool exact_bounded_signed_order =
+      order_descriptor != nullptr && order_type_uuid.has_value() &&
+      IsCanonicalBoundedSignedIntegerDescriptor(*order_descriptor) &&
+      !canonical_order_type_uuid.empty() &&
+      *order_type_uuid == canonical_order_type_uuid &&
+      !has_auxiliary_type_fields(*order_descriptor);
   bool exact_value_result_contract = false;
   if (count_window) {
     exact_value_result_contract =
@@ -1978,8 +1997,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       request.result_column.descriptor.descriptor_kind != "scalar" ||
       request.result_column.descriptor.canonical_type_name !=
           (boolean_window ? "boolean" : "int64") ||
-      execution_ordered_input_batch.columns[request.order_term.column]
-              .descriptor.canonical_type_name != "int64" ||
+      !exact_bounded_signed_order ||
       (!count_star_window && !source_type_uuid.has_value()) ||
       !result_type_uuid.has_value() ||
       !order_type_uuid.has_value() ||
@@ -1988,7 +2006,6 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       *result_type_uuid !=
           (boolean_window ? canonical_boolean_type_uuid
                           : canonical_int64_type_uuid) ||
-      *order_type_uuid != canonical_int64_type_uuid ||
       !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
           request.result_column.descriptor) ||
       !exact_value_result_contract) {
@@ -2027,7 +2044,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       if (independent_identities[left] == independent_identities[right]) {
         return refuse(Refusal(
             "QOW-DIAG-WINDOW-PROPERTY-BINDING",
-            "int64 aggregate window evidence identities are not independent"));
+            "aggregate window evidence identities are not independent"));
       }
     }
   }
@@ -2044,7 +2061,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       actual_receipt_workspace_bytes != planned_receipt_workspace_bytes) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-PROPERTY-BINDING",
-        "int64 aggregate window order-term binding receipt is not exact"));
+        "aggregate window order-term binding receipt is not exact"));
   }
 
   // Refuse before QOW-401/QOW-402 or the aggregate facade can allocate pair
@@ -2104,7 +2121,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
             std::numeric_limits<std::uint64_t>::max()) {
       return refuse(Refusal(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-          "int64 aggregate window order comparison workspace is not bounded"));
+          "aggregate window order comparison workspace is not bounded"));
     }
     maximum_order_key_workspace_bytes = std::max(
         maximum_order_key_workspace_bytes,
@@ -2191,7 +2208,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       planned_peak_memory_bytes > selected_node->memory_bytes_required) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-        "int64 aggregate window runtime materialization exceeds its selected node grant"));
+        "aggregate window runtime materialization exceeds its selected node grant"));
   }
 
   CanonicalWindowPartitionOrderRequest partition_request;
@@ -2239,7 +2256,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
           CanonicalWindowFrameExclusion::no_others) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-FRAME",
-        "int64 aggregate window did not resolve the canonical peer-inclusive ordered default frame"));
+        "aggregate window did not resolve the canonical peer-inclusive ordered default frame"));
   }
   std::size_t effective_frame_row_reference_count = 0;
   for (const auto& frame : frames.effective_frames) {
@@ -2247,7 +2264,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
         std::numeric_limits<std::size_t>::max() -
             effective_frame_row_reference_count) {
       return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                            "int64 aggregate window frame reference count overflowed"));
+                            "aggregate window frame reference count overflowed"));
     }
     effective_frame_row_reference_count +=
         frame.effective_row_indices.size();
@@ -2255,7 +2272,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
   if (effective_frame_row_reference_count >
       request.maximum_effective_row_references) {
     return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                          "int64 aggregate window frame reference bound was exceeded"));
+                          "aggregate window frame reference bound was exceeded"));
   }
 
   CanonicalWindowAggregateRequest aggregate_request;
@@ -2334,7 +2351,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       aggregate.causal_counter_id != selected_node->causal_counter_id) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
-        "int64 aggregate window did not consume its exact frame-recompute payload"));
+        "aggregate window did not consume its exact frame-recompute payload"));
   }
 
   std::uint64_t observed_auxiliary_workspace_bytes =
@@ -2359,7 +2376,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       observed_peak_memory_bytes > selected_node->memory_bytes_required) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-        "int64 aggregate window observed state exceeded its selected node grant"));
+        "aggregate window observed state exceeded its selected node grant"));
   }
 
   result.output_batch =
