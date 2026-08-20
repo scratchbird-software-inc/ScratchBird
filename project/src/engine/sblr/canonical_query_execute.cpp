@@ -17895,6 +17895,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                     "composition node exceeds the admitted memory budget");
     }
+    std::uint64_t runtime_accounted_auxiliary_memory = auxiliary_memory;
+    if (implementation_id == "aggregate.registry-core.v1" &&
+        !CheckedAdd(runtime_accounted_auxiliary_memory,
+                    aggregate_workspace_memory,
+                    &runtime_accounted_auxiliary_memory)) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+          "composition aggregate runtime auxiliary receipt overflowed");
+    }
     const bool dynamic_table_subquery =
         physical_kind == exec::PhysicalNodeKind::kSubquery &&
         implementation_id == "subquery.table.materialize.typed.v1";
@@ -17922,7 +17931,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          std::move(required_property_uuids),
          std::move(delivered_property_uuids), std::move(property_kinds)});
     profiles.back().runtime_accounted_auxiliary_memory_bytes =
-        auxiliary_memory;
+        runtime_accounted_auxiliary_memory;
     profiles.back().runtime_peak_from_callback_batches =
         !planning_values_exact;
     profiles.back().runtime_auxiliary_from_first_input_batch =
@@ -24985,8 +24994,14 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
        total_memory,
        1,
        1}};
-  profiles.back().runtime_accounted_auxiliary_memory_bytes =
-      filter_truth_memory_bytes;
+  if (aggregate_implementation_id == "aggregate.registry-core.v1" &&
+      !CheckedAdd(filter_truth_memory_bytes, aggregate_workspace_memory,
+                  &profiles.back()
+                       .runtime_accounted_auxiliary_memory_bytes)) {
+    return refuse(
+        "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+        "live aggregate runtime auxiliary receipt overflowed");
+  }
   if (!CompleteLiveRuntimeMemoryReceipts(
           &profiles,
           {{root->logical_node_id, input_memory}})) {
