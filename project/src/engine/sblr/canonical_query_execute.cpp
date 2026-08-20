@@ -47587,6 +47587,8 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                 });
           };
           const auto evaluate_point = [&](const auto& operation,
+                                          const api::EngineCanonicalExpressionConsumer
+                                              consumer,
                                           std::vector<std::uint8_t>* bytes) {
             if (operation == dag.expressions.end() || bytes == nullptr) {
               return false;
@@ -47602,9 +47604,8 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             api::EngineTypedValue value;
             std::string detail;
             if (!runtime.EvaluateForConsumer(
-                    point->expression_id, "geometry",
-                    api::EngineCanonicalExpressionConsumer::projection,
-                    &value, &detail) || value.isSqlNull() ||
+                    point->expression_id, "geometry", consumer, &value,
+                    &detail) || value.isSqlNull() ||
                 value.binary_value.empty()) {
               return false;
             }
@@ -47643,7 +47644,9 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                     ? std::string{}
                     : *predicate->literal_or_parameter_ref;
             spatial_request.query_crs_uuid = source_input.spatial_crs_uuid;
-            if (!evaluate_point(match, &spatial_request.encoded_query_point)) {
+            if (!evaluate_point(
+                    match, api::EngineCanonicalExpressionConsumer::filter,
+                    &spatial_request.encoded_query_point)) {
               return fail("SB_MODEL_SPATIAL_COORDINATE_INVALID_V1",
                           "SPATIAL_MATCH POINT evaluation failed");
             }
@@ -47671,7 +47674,10 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             spatial_request.operation_id = "SPATIAL_NEAREST";
             spatial_request.predicate_id.clear();
             spatial_request.query_crs_uuid = source_input.spatial_crs_uuid;
-            if (!evaluate_point(nearest, &spatial_request.encoded_query_point) ||
+            if (!evaluate_point(
+                    nearest,
+                    api::EngineCanonicalExpressionConsumer::projection,
+                    &spatial_request.encoded_query_point) ||
                 top_k == dag.expressions.end() ||
                 !top_k->literal_or_parameter_ref.has_value()) {
               return fail("SB_MODEL_SPATIAL_COORDINATE_INVALID_V1",
