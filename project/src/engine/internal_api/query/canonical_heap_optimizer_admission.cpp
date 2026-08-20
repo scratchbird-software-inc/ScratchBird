@@ -1126,6 +1126,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         aggregate_window && !aggregate_count_window &&
         !aggregate_boolean_window;
     const bool navigation_window = lag_window || lead_window;
+    const bool direct_navigation_value_window =
+        navigation_window || first_value_window || last_value_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
         nth_value_window || aggregate_window;
@@ -1134,8 +1136,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     const auto canonical_int64_type_uuid =
         value_window ? CanonicalCoreDatatypeUuid("int64") : std::string{};
     const auto canonical_boolean_type_uuid =
-        aggregate_boolean_window ? CanonicalCoreDatatypeUuid("boolean")
-                                 : std::string{};
+        (aggregate_boolean_window || direct_navigation_value_window)
+            ? CanonicalCoreDatatypeUuid("boolean")
+            : std::string{};
     const std::array<std::string, 4> canonical_bounded_signed_type_uuids = {
         aggregate_bounded_signed_window ? CanonicalCoreDatatypeUuid("int8")
                                         : std::string{},
@@ -1453,10 +1456,24 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                            canonical_boolean_type_uuid)) ||
           (!aggregate_window &&
            (canonical_int64_type_uuid.empty() ||
-            ntile_argument_descriptor->type_uuid !=
-                canonical_int64_type_uuid ||
+            (ntile_argument_descriptor->type_uuid !=
+                 canonical_int64_type_uuid &&
+             (!direct_navigation_value_window ||
+              canonical_boolean_type_uuid.empty() ||
+              ntile_argument_descriptor->type_uuid !=
+                  canonical_boolean_type_uuid)) ||
             ntile_argument_descriptor->type_uuid !=
                 result_descriptor->type_uuid ||
+            ntile_argument_descriptor->collation_uuid.has_value() ||
+            ntile_argument_descriptor->timezone_profile_id.has_value() ||
+            ntile_argument_descriptor->width.has_value() ||
+            ntile_argument_descriptor->precision.has_value() ||
+            ntile_argument_descriptor->scale.has_value() ||
+            result_descriptor->collation_uuid.has_value() ||
+            result_descriptor->timezone_profile_id.has_value() ||
+            result_descriptor->width.has_value() ||
+            result_descriptor->precision.has_value() ||
+            result_descriptor->scale.has_value() ||
             ntile_argument_descriptor->collation_uuid !=
                 result_descriptor->collation_uuid ||
             ntile_argument_descriptor->timezone_profile_id !=

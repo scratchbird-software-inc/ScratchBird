@@ -2956,12 +2956,13 @@ class NativeRelationalParser final {
     // COUNT(*) form are admitted only for the exact global, one-direct-column
     // ordering profile executed by the canonical spine. NTILE additionally
     // requires one exact positive signed-int64 literal operand. LAG and LEAD
-    // admit one direct signed-int64 column with only their implicit offset and
-    // implicit NULL default. FIRST_VALUE and LAST_VALUE admit one direct
-    // signed-int64 value column and consume the effective implicit ordered
-    // frame. NTH_VALUE additionally requires one exact positive signed-int64
-    // literal position and normalizes omitted origin/NULL-treatment state to
-    // FROM FIRST RESPECT NULLS in the canonical execution route. Aggregate
+    // admit one direct exact signed-int64 or boolean column with only their
+    // implicit offset and implicit NULL default. FIRST_VALUE and LAST_VALUE
+    // admit the same exact value cohort and consume the effective implicit
+    // ordered frame. NTH_VALUE remains bounded to one direct signed-int64
+    // value column plus one exact positive signed-int64 literal position and
+    // normalizes omitted origin/NULL-treatment state to FROM FIRST RESPECT
+    // NULLS in the canonical execution route. Aggregate
     // Numeric aggregates admit one direct bounded-signed value column; boolean
     // aggregates admit one direct boolean value column. COUNT(identifier)
     // admits one direct engine-bound canonical value column of any type, while
@@ -3077,6 +3078,18 @@ class NativeRelationalParser final {
       document_.expressions.push_back(std::move(operand));
     } else if (value_window) {
       if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+        const std::string_view operand_requirement =
+            IsWord(function_token, "COUNT")
+                ? " requires one direct canonical column operand"
+                : ((IsWord(function_token, "BOOL_AND") ||
+                    IsWord(function_token, "BOOL_OR") ||
+                    IsWord(function_token, "EVERY"))
+                       ? " requires one direct boolean column operand"
+                       : (aggregate_window
+                              ? " requires one direct bounded-signed column operand"
+                              : (nth_value_window
+                                     ? " requires one direct signed-int64 column operand"
+                                     : " requires one direct signed-int64 or boolean column operand")));
         Refuse(aggregate_window
                    ? "aggregate_window_operand_required"
                    : (first_value_window
@@ -3087,14 +3100,7 @@ class NativeRelationalParser final {
                                  ? "nth_value_operand_required"
                                  : (lag_window ? "lag_operand_required"
                                                : "lead_operand_required")))),
-               function_name +
-                   (IsWord(function_token, "COUNT")
-                        ? " requires one direct canonical column operand"
-                        : ((IsWord(function_token, "BOOL_AND") ||
-                            IsWord(function_token, "BOOL_OR") ||
-                            IsWord(function_token, "EVERY"))
-                               ? " requires one direct boolean column operand"
-                               : " requires one direct bounded-signed column operand")));
+               function_name + std::string(operand_requirement));
         return FinishRefusal();
       }
       const Token& operand_token = Consume();

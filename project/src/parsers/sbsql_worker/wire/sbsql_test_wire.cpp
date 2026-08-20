@@ -4494,7 +4494,7 @@ BuildEngineProjectedNativeBindingContext(
         [&](const auto& candidate) {
           return candidate.builtin_id == expected_builtin;
         });
-    const auto result_profile = std::ranges::find_if(
+    auto result_profile = std::ranges::find_if(
         statement_context.descriptor_profiles, [&](const auto& candidate) {
           return candidate.profile_kind ==
                      (aggregate_count_window
@@ -4540,6 +4540,20 @@ BuildEngineProjectedNativeBindingContext(
                             source_operand));
         }
       }
+    }
+    const bool direct_navigation_value_window =
+        navigation_window || first_value_window || last_value_window;
+    const bool boolean_direct_navigation_value =
+        direct_navigation_value_window &&
+        lag_operand_source_ordinal.has_value() &&
+        *lag_operand_source_ordinal < context.descriptors.size() &&
+        context.descriptors[*lag_operand_source_ordinal]
+                .canonical_type_name == "boolean";
+    if (boolean_direct_navigation_value) {
+      result_profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [](const auto& candidate) {
+            return candidate.profile_kind == 6 && candidate.slot == 0;
+          });
     }
     const NativeExpressionAstNode* nth_position_operand = nullptr;
     if (nth_value_window &&
@@ -4608,7 +4622,7 @@ BuildEngineProjectedNativeBindingContext(
         result_profile == statement_context.descriptor_profiles.end() ||
         result_profile->nullable !=
             (value_window && !aggregate_count_window) ||
-        (aggregate_boolean_window &&
+        ((aggregate_boolean_window || boolean_direct_navigation_value) &&
          (!result_profile->collation_uuid.empty() ||
           result_profile->width != 0 || result_profile->precision != 0 ||
           result_profile->scale != 0)) ||
@@ -4676,6 +4690,23 @@ BuildEngineProjectedNativeBindingContext(
            !aggregate_bounded_signed_window &&
            context.descriptors[*lag_operand_source_ordinal].type_uuid !=
                result_profile->type_uuid) ||
+          (!aggregate_window &&
+           context.descriptors[*lag_operand_source_ordinal]
+                   .canonical_type_name !=
+               (boolean_direct_navigation_value ? "boolean" : "int64")) ||
+          (!aggregate_window &&
+           (context.descriptors[*lag_operand_source_ordinal]
+                .collation_uuid.has_value() ||
+            context.descriptors[*lag_operand_source_ordinal]
+                .timezone_profile_id.has_value() ||
+            context.descriptors[*lag_operand_source_ordinal]
+                .width_precision_scale.width.has_value() ||
+            context.descriptors[*lag_operand_source_ordinal]
+                .width_precision_scale.precision.has_value() ||
+            context.descriptors[*lag_operand_source_ordinal]
+                .width_precision_scale.scale.has_value() ||
+            !context.descriptors[*lag_operand_source_ordinal]
+                 .element_profile.empty())) ||
           (aggregate_bounded_signed_window &&
            !is_bounded_signed_type(
                context.descriptors[*lag_operand_source_ordinal]

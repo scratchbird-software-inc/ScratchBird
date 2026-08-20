@@ -1244,7 +1244,36 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
   if (!order_validation.ok) return refuse(order_validation);
   const auto result_type_uuid = CanonicalDescriptorField(
       request.result_column.descriptor, "type_uuid");
+  const auto source_type_uuid = CanonicalDescriptorField(
+      execution_ordered_input_batch.columns[request.value_column].descriptor,
+      "type_uuid");
+  const auto order_type_uuid = CanonicalDescriptorField(
+      execution_ordered_input_batch.columns[request.order_term.column]
+          .descriptor,
+      "type_uuid");
   const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
+  const auto canonical_boolean_type_uuid = CanonicalCoreDatatypeUuid("boolean");
+  const auto has_auxiliary_type_fields = [](const auto& descriptor) {
+    const auto contains_field = [&](const std::string_view key) {
+      const auto prefix = std::string(key) + "=";
+      std::size_t begin = 0;
+      while (begin <= descriptor.encoded_descriptor.size()) {
+        const auto end = descriptor.encoded_descriptor.find(';', begin);
+        const auto field =
+            std::string_view(descriptor.encoded_descriptor)
+                .substr(begin, end == std::string::npos
+                                   ? std::string::npos
+                                   : end - begin);
+        if (field.starts_with(prefix)) return true;
+        if (end == std::string::npos) break;
+        begin = end + 1;
+      }
+      return false;
+    };
+    return contains_field("collation_uuid") ||
+           contains_field("timezone_profile_id") || contains_field("width") ||
+           contains_field("precision") || contains_field("scale");
+  };
   const auto* nth_operand =
       request.nth_value_position_operand.has_value()
           ? &*request.nth_value_position_operand
@@ -1273,16 +1302,40 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       request.order_term_binding_evidence_uuid,
       request.deterministic_order_evidence_uuid,
       request.frame_property_binding_evidence_uuid};
-  if (!result_type_uuid.has_value() || !IsCanonicalUuid(*result_type_uuid) ||
-      canonical_int64_type_uuid.empty() ||
-      *result_type_uuid != canonical_int64_type_uuid ||
+  const bool exact_int64_value =
+      source_type_uuid.has_value() && result_type_uuid.has_value() &&
+      *source_type_uuid == canonical_int64_type_uuid &&
+      *result_type_uuid == canonical_int64_type_uuid &&
       execution_ordered_input_batch.columns[request.value_column]
+              .descriptor.canonical_type_name == "int64" &&
+      request.result_column.descriptor.canonical_type_name == "int64";
+  const bool exact_boolean_value =
+      !nth_value && source_type_uuid.has_value() &&
+      result_type_uuid.has_value() && !canonical_boolean_type_uuid.empty() &&
+      *source_type_uuid == canonical_boolean_type_uuid &&
+      *result_type_uuid == canonical_boolean_type_uuid &&
+      execution_ordered_input_batch.columns[request.value_column]
+              .descriptor.canonical_type_name == "boolean" &&
+      request.result_column.descriptor.canonical_type_name == "boolean";
+  if (!result_type_uuid.has_value() || !IsCanonicalUuid(*result_type_uuid) ||
+      !source_type_uuid.has_value() || !IsCanonicalUuid(*source_type_uuid) ||
+      !order_type_uuid.has_value() ||
+      *order_type_uuid != canonical_int64_type_uuid ||
+      execution_ordered_input_batch.columns[request.order_term.column]
               .descriptor.canonical_type_name != "int64" ||
-      request.result_column.descriptor.canonical_type_name != "int64") {
+      canonical_int64_type_uuid.empty() ||
+      (!exact_int64_value && !exact_boolean_value) ||
+      has_auxiliary_type_fields(
+          execution_ordered_input_batch.columns[request.value_column]
+              .descriptor) ||
+      has_auxiliary_type_fields(request.result_column.descriptor) ||
+      has_auxiliary_type_fields(
+          execution_ordered_input_batch.columns[request.order_term.column]
+              .descriptor)) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
         std::string(display_name) +
-            " source and result are not exact canonical int64"));
+            " source and result are not exact canonical int64/boolean"));
   }
   const bool exact_nth_operand =
       nth_value && nth_operand != nullptr &&
