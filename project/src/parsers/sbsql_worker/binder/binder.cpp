@@ -4732,13 +4732,19 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  aggregate_function_ast->operator_name == "MIN" ||
                  aggregate_function_ast->operator_name == "MAX" ||
                  aggregate_function_ast->operator_name == "COUNT" ||
+                 aggregate_function_ast->operator_name == "COUNT_STAR" ||
                  aggregate_function_ast->operator_name == "BOOL_AND" ||
                  aggregate_function_ast->operator_name == "BOOL_OR" ||
                  aggregate_function_ast->operator_name == "EVERY")
             ? aggregate_function_ast->operator_name
             : std::string_view{};
+    const bool aggregate_count_star_window =
+        aggregate_window && aggregate_operator == "COUNT_STAR";
     const bool aggregate_count_window =
-        aggregate_window && aggregate_operator == "COUNT";
+        aggregate_window &&
+        (aggregate_operator == "COUNT" || aggregate_count_star_window);
+    const bool value_operand_window =
+        value_window && !aggregate_count_star_window;
     const bool aggregate_boolean_window =
         aggregate_window &&
         (aggregate_operator == "BOOL_AND" || aggregate_operator == "BOOL_OR" ||
@@ -4770,7 +4776,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                    : (aggregate_operator == "MIN" ? "sb.aggregate.min"
                       : (aggregate_operator == "MAX"
                              ? "sb.aggregate.max"
-                             : (aggregate_operator == "COUNT"
+                             : (aggregate_count_window
                                     ? "sb.aggregate.count"
                                     : (aggregate_operator == "BOOL_AND"
                                            ? "sb.aggregate.bool_and"
@@ -4972,7 +4978,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           return candidate.expression_id == invocation.function_expression_id;
         });
     std::vector<std::uint32_t> expected_strict_source_expression_ids;
-    if (value_window && strict_function_ast != ast.expressions.end() &&
+    if (value_operand_window && strict_function_ast != ast.expressions.end() &&
         strict_function_ast->child_expression_ids.size() ==
             (nth_value_window ? 2U : 1U)) {
       expected_strict_source_expression_ids.push_back(
@@ -5241,7 +5247,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     std::optional<std::uint32_t> bound_lag_operand_id;
     const NativeDescriptorBindingInput* lag_operand_descriptor = nullptr;
-    if (value_window) {
+    if (value_operand_window) {
       const NativeExpressionAstNode* operand_ast = nullptr;
       if (function_ast != ast.expressions.end() &&
           function_ast->child_expression_ids.size() ==
@@ -5308,7 +5314,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (found != descriptor_by_id.end()) order_descriptor = found->second;
     }
     std::vector<std::uint32_t> expected_function_ast_children;
-    if (value_window && bound_lag_operand_id.has_value()) {
+    if (value_operand_window && bound_lag_operand_id.has_value()) {
       expected_function_ast_children.push_back(
           function_ast->child_expression_ids.front());
     } else if (ntile_window && bound_numeric_window_operand_id.has_value()) {
@@ -5375,7 +5381,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               function_descriptor->second->descriptor_uuid ||
           numeric_window_operand_descriptor->type_uuid !=
               function_descriptor->second->type_uuid)) ||
-        (value_window &&
+        (value_operand_window &&
          (lag_operand_descriptor == nullptr ||
           lag_operand_descriptor->descriptor_id ==
               function_descriptor->second->descriptor_id ||

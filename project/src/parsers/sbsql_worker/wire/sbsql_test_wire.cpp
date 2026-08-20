@@ -4352,11 +4352,16 @@ BuildEngineProjectedNativeBindingContext(
          function_expression->operator_name == "MIN" ||
          function_expression->operator_name == "MAX" ||
          function_expression->operator_name == "COUNT" ||
+         function_expression->operator_name == "COUNT_STAR" ||
          function_expression->operator_name == "BOOL_AND" ||
          function_expression->operator_name == "BOOL_OR" ||
          function_expression->operator_name == "EVERY");
+    const bool aggregate_count_star_window =
+        aggregate_window && function_expression->operator_name == "COUNT_STAR";
     const bool aggregate_count_window =
-        aggregate_window && function_expression->operator_name == "COUNT";
+        aggregate_window &&
+        (function_expression->operator_name == "COUNT" ||
+         aggregate_count_star_window);
     const bool aggregate_boolean_window =
         aggregate_window &&
         (function_expression->operator_name == "BOOL_AND" ||
@@ -4366,6 +4371,8 @@ BuildEngineProjectedNativeBindingContext(
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
         nth_value_window || aggregate_window;
+    const bool value_operand_window =
+        value_window && !aggregate_count_star_window;
     const bool recognized_ranking =
         function_expression != ast.expressions.end() &&
         (rank_window || dense_rank_window || percent_rank_window ||
@@ -4404,7 +4411,7 @@ BuildEngineProjectedNativeBindingContext(
                           ? "sb.aggregate.min"
                           : (function_expression->operator_name == "MAX"
                                  ? "sb.aggregate.max"
-                                 : (function_expression->operator_name == "COUNT"
+                                 : (aggregate_count_window
                                         ? "sb.aggregate.count"
                                         : (function_expression->operator_name ==
                                                    "BOOL_AND"
@@ -4512,8 +4519,9 @@ BuildEngineProjectedNativeBindingContext(
     }
     const NativeExpressionAstNode* lag_operand = nullptr;
     std::optional<std::size_t> lag_operand_source_ordinal;
-    if (value_window && function_expression->child_expression_ids.size() ==
-                            (nth_value_window ? 2U : 1U)) {
+    if (value_operand_window &&
+        function_expression->child_expression_ids.size() ==
+            (nth_value_window ? 2U : 1U)) {
       const auto operand = std::ranges::find_if(
           ast.expressions, [&](const auto& candidate) {
             return candidate.expression_id ==
@@ -4638,7 +4646,7 @@ BuildEngineProjectedNativeBindingContext(
            ntile_operand_profile->descriptor_uuid ==
                context.descriptors[*lag_operand_source_ordinal]
                    .descriptor_uuid))) ||
-        (value_window &&
+        (value_operand_window &&
          (lag_operand == nullptr ||
           !lag_operand_source_ordinal.has_value() ||
           *lag_operand_source_ordinal >= context.expressions.size() ||
@@ -4804,7 +4812,7 @@ BuildEngineProjectedNativeBindingContext(
             : BoundNullability::kNonNull;
     if (aggregate_count_window) {
       function_descriptor.canonical_type_name = "int64";
-    } else if (value_window) {
+    } else if (value_operand_window) {
       const auto& source_descriptor =
           context.descriptors[*lag_operand_source_ordinal];
       function_descriptor.type_uuid = source_descriptor.type_uuid;
@@ -4850,8 +4858,7 @@ BuildEngineProjectedNativeBindingContext(
                                             : (function_expression->operator_name ==
                                                        "MAX"
                                                    ? "max"
-                                                   : (function_expression->operator_name ==
-                                                              "COUNT"
+                                                   : (aggregate_count_window
                                                           ? "count"
                                                           : (function_expression->operator_name ==
                                                                      "BOOL_AND"

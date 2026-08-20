@@ -245,6 +245,7 @@ struct CanonicalWindowAggregateRequest {
   CanonicalWindowAggregateFunction function =
       CanonicalWindowAggregateFunction::int64_sum;
   std::string function_uuid;
+  bool count_star = false;
   std::uint32_t value_expression_descriptor_id = 0;
   ExecutorColumnDescriptor result_column;
   std::optional<

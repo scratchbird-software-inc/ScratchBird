@@ -2093,7 +2093,7 @@ struct CanonicalDescriptorAggregateWindowRequest {
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch ordered_input_batch;
   CanonicalDescriptorOrderTerm order_term;
-  std::size_t value_column = 0;
+  std::optional<std::size_t> value_column;
   CanonicalAggregateDescriptor aggregate_descriptor;
   ExecutorColumnDescriptor result_column;
   std::string window_frame_descriptor_uuid;

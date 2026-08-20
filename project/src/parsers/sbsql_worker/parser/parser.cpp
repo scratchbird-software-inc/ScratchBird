@@ -2952,9 +2952,8 @@ class NativeRelationalParser final {
     // The general ROW_NUMBER surface preserves the complete window
     // specification. RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, NTILE, LAG,
     // LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE, and the exact aggregate
-    // SUM/MIN/MAX/COUNT/BOOL_AND/BOOL_OR/EVERY(identifier) cohort is admitted
-    // only for the exact global,
-    // one-direct-column
+    // SUM/MIN/MAX/COUNT/BOOL_AND/BOOL_OR/EVERY(identifier) cohort and the exact
+    // COUNT(*) form are admitted only for the exact global, one-direct-column
     // ordering profile executed by the canonical spine. NTILE additionally
     // requires one exact positive signed-int64 literal operand. LAG and LEAD
     // admit one direct signed-int64 column with only their implicit offset and
@@ -2964,9 +2963,10 @@ class NativeRelationalParser final {
     // literal position and normalizes omitted origin/NULL-treatment state to
     // FROM FIRST RESPECT NULLS in the canonical execution route. Aggregate
     // Numeric aggregates admit one direct signed-int64 value column; boolean
-    // aggregates admit one direct boolean value column. Both use the same exact
-    // implicit ordered frame and bind through the engine-owned aggregate
-    // registry rather than the native window-function registry.
+    // aggregates admit one direct boolean value column. COUNT(*) carries no
+    // value expression and counts every row in the effective frame. All use the
+    // same exact implicit ordered frame and bind through the engine-owned
+    // aggregate registry rather than the native window-function registry.
     document_.status = NativeRelationalParseStatus::kRefused;
     if (cst_.messages.has_errors()) {
       document_.messages = cst_.messages;
@@ -3029,16 +3029,21 @@ class NativeRelationalParser final {
                        function_name + " requires an opening parenthesis")) {
       return FinishRefusal();
     }
+    const bool aggregate_count_star_window =
+        IsWord(function_token, "COUNT") && AtSymbol("*");
     const auto function_expression_id = NextExpressionId();
     NativeExpressionAstNode function;
     function.expression_id = function_expression_id;
     function.expression_kind = NativeExpressionAstKind::kFunctionCall;
-    function.operator_name = function_name;
+    function.operator_name =
+        aggregate_count_star_window ? "COUNT_STAR" : function_name;
     document_.expressions.push_back(std::move(function));
     std::optional<std::uint32_t> ntile_operand_expression_id;
     std::optional<std::uint32_t> navigation_operand_expression_id;
     std::optional<std::uint32_t> nth_position_expression_id;
-    if (ntile_window) {
+    if (aggregate_count_star_window) {
+      Consume();
+    } else if (ntile_window) {
       if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
         Refuse("ntile_operand_required",
                "NTILE requires one positive signed-int64 literal operand");

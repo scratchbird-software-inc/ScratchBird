@@ -695,6 +695,23 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   // Window when present, otherwise at the Scan.
   const auto* project_input_node =
       window_node != nullptr ? window_node : scan_node;
+  const auto* early_window_aggregate_row =
+      window_node != nullptr &&
+              window_node->semantic_variant_id ==
+                  "window.aggregate-bridge.v1" &&
+              relational.window_invocations.size() == 1
+          ? executor::LookupCanonicalAggregateByUuidV1(
+                relational.window_invocations.front().function_uuid)
+          : nullptr;
+  const bool exact_count_star_window_shape =
+      early_window_aggregate_row != nullptr &&
+      early_window_aggregate_row->function ==
+          executor::CanonicalAggregateFunction::count &&
+      early_window_aggregate_row->builtin_id ==
+          relational.window_invocations.front().builtin_id &&
+      early_window_aggregate_row->abi_version ==
+          relational.window_invocations.front().function_abi_version &&
+      relational.window_invocations.front().argument_expression_ids.empty();
   bool exact_project_outputs = project_node == nullptr;
   if (project_node != nullptr && project_input_node != nullptr &&
       project_node->bound_expression_ids.size() ==
@@ -854,7 +871,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                   "window.aggregate-bridge.v1")
                  ? (window_node->semantic_variant_id == "window.nth-value.v1"
                         ? 4U
-                        : 3U)
+                        : (exact_count_star_window_shape ? 2U : 3U))
                  : 2U) ||
         window_node->output_descriptor_ids.size() !=
             sort_node->output_descriptor_ids.size() + 1 ||
@@ -1094,6 +1111,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         aggregate_window_row != nullptr &&
         aggregate_window_row->function ==
             executor::CanonicalAggregateFunction::count;
+    const bool aggregate_count_star_window =
+        aggregate_count_window && relational.window_invocations.size() == 1 &&
+        relational.window_invocations.front().argument_expression_ids.empty();
     const bool aggregate_boolean_window =
         aggregate_window_row != nullptr &&
         (aggregate_window_row->function ==
@@ -1106,10 +1126,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
         nth_value_window || aggregate_window;
+    const bool value_operand_window =
+        value_window && !aggregate_count_star_window;
     const auto canonical_int64_type_uuid =
         value_window ? CanonicalCoreDatatypeUuid("int64") : std::string{};
     const auto canonical_boolean_type_uuid =
-        (aggregate_boolean_window || aggregate_count_window)
+        (aggregate_boolean_window ||
+         (aggregate_count_window && !aggregate_count_star_window))
             ? CanonicalCoreDatatypeUuid("boolean")
             : std::string{};
     const std::string_view expected_builtin_id =
@@ -1197,13 +1220,16 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         (nth_value_window
              ? relational.window_invocations.front()
                        .argument_expression_ids.size() == 2
-             : ((ntile_window || value_window)
+             : aggregate_count_star_window
+             ? relational.window_invocations.front()
+                   .argument_expression_ids.empty()
+             : ((ntile_window || value_operand_window)
                     ? relational.window_invocations.front()
                               .argument_expression_ids.size() == 1
                     : relational.window_invocations.front()
                           .argument_expression_ids.empty()));
     const auto ntile_argument =
-        (ntile_window || value_window) && exact_argument_arity
+        (ntile_window || value_operand_window) && exact_argument_arity
             ? std::ranges::find_if(
                   relational.expressions, [&](const auto& expression) {
                     return expression.expression_id ==
@@ -1390,7 +1416,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
           ntile_argument_descriptor->width.has_value() ||
           ntile_argument_descriptor->precision.has_value() ||
           ntile_argument_descriptor->scale.has_value())) ||
-        (value_window &&
+        (value_operand_window &&
          (ntile_argument == relational.expressions.end() ||
           ntile_argument->expression_kind !=
               RelationalExpressionKind::kIdentifier ||

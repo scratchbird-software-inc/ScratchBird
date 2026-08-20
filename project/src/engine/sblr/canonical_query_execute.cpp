@@ -6274,6 +6274,7 @@ struct PreparedGlobalRowNumberWindowBinding {
   std::optional<api::EngineTypedValue> ntile_bucket_count_operand;
   std::optional<std::size_t> navigation_value_column;
   std::optional<api::EngineTypedValue> nth_value_position_operand;
+  bool aggregate_count_star{false};
   std::string window_property_uuid;
   std::string window_frame_descriptor_uuid;
 };
@@ -6457,14 +6458,21 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       profile.semantic_variant_id == "window.aggregate-bridge.v1";
   const bool aggregate_count_window =
       aggregate_window && profile.builtin_id == "sb.aggregate.count";
+  const bool aggregate_count_star_window =
+      aggregate_count_window && invocations.size() == 1 &&
+      invocations.front()->argument_expression_ids.empty();
   const bool value_window =
       navigation_window || first_value_window || last_value_window ||
       nth_value_window || aggregate_window;
+  const bool value_operand_window =
+      value_window && !aggregate_count_star_window;
   const bool exact_argument_arity =
       invocations.size() == 1 &&
       (nth_value_window
            ? invocations.front()->argument_expression_ids.size() == 2
-           : ((ntile_window || value_window)
+           : aggregate_count_star_window
+           ? invocations.front()->argument_expression_ids.empty()
+           : ((ntile_window || value_operand_window)
                   ? invocations.front()->argument_expression_ids.size() == 1
                   : invocations.front()->argument_expression_ids.empty()));
   std::vector<std::uint32_t> expected_bound_expression_ids;
@@ -6732,7 +6740,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       return result;
     }
     result.ntile_bucket_count_operand = std::move(operand);
-  } else if (value_window) {
+  } else if (value_operand_window) {
     const auto argument_expression_id =
         invocations.front()->argument_expression_ids.front();
     const auto argument = std::ranges::find_if(
@@ -6925,6 +6933,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
   result.invocation = invocations.front();
   result.function = &*function;
   result.result_descriptor = &*result_descriptor;
+  result.aggregate_count_star = aggregate_count_star_window;
   result.window_property_uuid = *window_property_uuid;
   result.window_frame_descriptor_uuid =
       window_property->window_frame_descriptor_uuid;
@@ -10268,7 +10277,7 @@ exec::CanonicalPhysicalExecutorRegistration
 MakeLiveAggregateWindowRegistration(
     exec::ExecutorColumnDescriptor result_column,
     exec::CanonicalDescriptorOrderTerm order_term,
-    const std::size_t value_column,
+    std::optional<std::size_t> value_column,
     exec::CanonicalAggregateDescriptor aggregate_descriptor,
     std::string window_frame_descriptor_uuid,
     std::string order_term_binding_evidence_uuid,
@@ -14542,6 +14551,35 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       return result;
     }
     reverse_chain.push_back(&*current);
+    const auto current_window_invocation = std::ranges::find_if(
+        request.relational_dag.window_invocations, [&](const auto& invocation) {
+          return invocation.relation_node_id == current->logical_node_id;
+        });
+    const bool single_current_window_invocation =
+        current_window_invocation !=
+            request.relational_dag.window_invocations.end() &&
+        std::ranges::count_if(
+            request.relational_dag.window_invocations,
+            [&](const auto& invocation) {
+              return invocation.relation_node_id == current->logical_node_id;
+            }) == 1;
+    const auto* current_window_aggregate_row =
+        single_current_window_invocation
+            ? exec::LookupCanonicalAggregateByUuidV1(
+                  current_window_invocation->function_uuid)
+            : nullptr;
+    const bool current_count_star_window =
+        current->node_kind ==
+            plan::CanonicalLogicalRelationalNodeKind::kWindow &&
+        current->semantic_variant_id == "window.aggregate-bridge.v1" &&
+        current_window_aggregate_row != nullptr &&
+        current_window_aggregate_row->function ==
+            exec::CanonicalAggregateFunction::count &&
+        current_window_aggregate_row->builtin_id ==
+            current_window_invocation->builtin_id &&
+        current_window_aggregate_row->abi_version ==
+            current_window_invocation->function_abi_version &&
+        current_window_invocation->argument_expression_ids.empty();
     if (current->node_kind ==
         plan::CanonicalLogicalRelationalNodeKind::kValues) {
       if (current->semantic_variant_id != "values.literal-table.v1" ||
@@ -14912,7 +14950,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                       "window.aggregate-bridge.v1")
                      ? (current->semantic_variant_id == "window.nth-value.v1"
                             ? 4U
-                            : 3U)
+                            : (current_count_star_window ? 2U : 3U))
                      : 2U) ||
             current->required_property_uuids.size() != 1 ||
             current->delivered_property_uuids.size() != 2) {
@@ -18646,7 +18684,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           return refuse(std::string(kPayloadDiagnostic),
                         "composition NTILE bucket operand is unresolved");
         }
-        if (value_window &&
+        if (value_window && !ranking.aggregate_count_star &&
             !ranking.navigation_value_column.has_value()) {
           return refuse(std::string(kPayloadDiagnostic),
                         "composition " + std::string(ranking_name) +
@@ -18687,7 +18725,34 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           nth_position = static_cast<std::uint64_t>(decoded.value);
         }
-        if (value_window) {
+        if (ranking.aggregate_count_star) {
+          if (!CheckedMultiply(20, input_row_count,
+                               &result_value_payload_memory)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition COUNT(*) repeated result payload overflowed");
+          }
+          std::uint64_t retained_input_and_output_memory = 0;
+          if (!CheckedAdd(input_memory, input_memory,
+                          &retained_input_and_output_memory) ||
+              !CheckedAdd(retained_input_and_output_memory,
+                          result_value_payload_memory,
+                          &retained_input_and_output_memory) ||
+              retained_input_and_output_memory >
+                  request.optimizer_request.resource.memory_budget_bytes) {
+            return refuse(
+                "QOW-DIAG-OPT-017-REFUSAL-V1",
+                "composition COUNT(*) result materialization exceeds its "
+                "memory budget");
+          }
+          descriptor.descriptor_uuid.canonical =
+              output_descriptor->descriptor_uuid;
+          descriptor.descriptor_kind = "scalar";
+          descriptor.canonical_type_name = "int64";
+          descriptor.encoded_descriptor =
+              "type_uuid=" + output_descriptor->type_uuid +
+              ";nullability=non_null";
+        } else if (value_window) {
           for (const auto& row : input_batch.rows) {
             const auto& value =
                 row.values[*ranking.navigation_value_column];
@@ -19149,11 +19214,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           prepared_aggregate_window_order_term =
               prepared_sort->order_terms.front();
           prepared_aggregate_window_value_column =
-              *ranking.navigation_value_column;
+              ranking.navigation_value_column;
           prepared_aggregate_window_descriptor = {
               aggregate_row->abi_version, aggregate_row->function,
               aggregate_row->builtin_id, aggregate_row->function_uuid,
-              false};
+              ranking.aggregate_count_star};
           prepared_aggregate_window_frame_descriptor_uuid =
               ranking.window_frame_descriptor_uuid;
           planning_values_exact = false;
@@ -20275,13 +20340,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             request.context));
   }
   if (prepared_aggregate_window.has_value() &&
-      prepared_aggregate_window_order_term.has_value() &&
-      prepared_aggregate_window_value_column.has_value()) {
+      prepared_aggregate_window_order_term.has_value()) {
     execution_request.available_executors.push_back(
         MakeLiveAggregateWindowRegistration(
             *prepared_aggregate_window,
             *prepared_aggregate_window_order_term,
-            *prepared_aggregate_window_value_column,
+            prepared_aggregate_window_value_column,
             prepared_aggregate_window_descriptor,
             prepared_aggregate_window_frame_descriptor_uuid,
             aggregate_window_order_term_binding_evidence_uuid,
@@ -52157,7 +52221,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
                     "object-backed NTILE bucket operand is unresolved");
     }
-    if (value_window &&
+    if (value_window && !ranking.aggregate_count_star &&
         !ranking.navigation_value_column.has_value()) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
                     "object-backed " + std::string(ranking_name) +
@@ -52170,7 +52234,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     }
     const auto* output_descriptor = ranking.result_descriptor;
     api::EngineDescriptor descriptor;
-    if (value_window) {
+    if (value_window && !ranking.aggregate_count_star) {
       if (*ranking.navigation_value_column >=
           admission.current_relation_projection_descriptors.size()) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
@@ -52278,10 +52342,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         prepared_heap_aggregate_window_order_term =
             heap_descriptor_order_terms.front();
         prepared_heap_aggregate_window_value_column =
-            *ranking.navigation_value_column;
+            ranking.navigation_value_column;
         prepared_heap_aggregate_window_descriptor = {
             aggregate_row->abi_version, aggregate_row->function,
-            aggregate_row->builtin_id, aggregate_row->function_uuid, false};
+            aggregate_row->builtin_id, aggregate_row->function_uuid,
+            ranking.aggregate_count_star};
         prepared_heap_aggregate_window_frame_descriptor_uuid =
             ranking.window_frame_descriptor_uuid;
         heap_aggregate_window_order_term_binding_evidence_uuid =
@@ -52749,15 +52814,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     }
     if (window_composition) {
       if (prepared_heap_aggregate_window.has_value() &&
-          prepared_heap_aggregate_window_order_term.has_value() &&
-          prepared_heap_aggregate_window_value_column.has_value()) {
+          prepared_heap_aggregate_window_order_term.has_value()) {
         const auto maximum_quadratic_work = std::max<std::size_t>(
             1, bounded_size(maximum_pair_comparisons_u64));
         selected.available_executors.push_back(
             MakeLiveAggregateWindowRegistration(
                 *prepared_heap_aggregate_window,
                 *prepared_heap_aggregate_window_order_term,
-                *prepared_heap_aggregate_window_value_column,
+                prepared_heap_aggregate_window_value_column,
                 prepared_heap_aggregate_window_descriptor,
                 prepared_heap_aggregate_window_frame_descriptor_uuid,
                 heap_aggregate_window_order_term_binding_evidence_uuid,

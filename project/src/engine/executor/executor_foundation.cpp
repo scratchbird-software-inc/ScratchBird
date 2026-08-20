@@ -10583,6 +10583,13 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
     return refuse("QOW-DIAG-WINDOW-AGGREGATE",
                   "int64 aggregate compatibility descriptor is not one admitted canonical registry row");
   }
+  if ((request.count_star &&
+       (request.function != CanonicalWindowAggregateFunction::int64_count ||
+        request.value_expression_descriptor_id != 0 || request.distinct)) ||
+      (!request.count_star && request.value_expression_descriptor_id == 0)) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
+                  "aggregate compatibility COUNT(*) arity is not exact");
+  }
   if (request.parser_execution_authority_claimed ||
       request.transaction_finality_claimed ||
       request.recovery_authority_claimed) {
@@ -10601,21 +10608,23 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
   }
 
   std::optional<std::size_t> value_column;
-  for (std::size_t column = 0;
-       column < request.frames.ordered_batch.columns.size(); ++column) {
-    if (request.frames.ordered_batch.columns[column].descriptor_id !=
-        request.value_expression_descriptor_id) {
-      continue;
+  if (!request.count_star) {
+    for (std::size_t column = 0;
+         column < request.frames.ordered_batch.columns.size(); ++column) {
+      if (request.frames.ordered_batch.columns[column].descriptor_id !=
+          request.value_expression_descriptor_id) {
+        continue;
+      }
+      if (value_column.has_value()) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE",
+                      "aggregate compatibility value descriptor is ambiguous");
+      }
+      value_column = column;
     }
-    if (value_column.has_value()) {
+    if (!value_column.has_value()) {
       return refuse("QOW-DIAG-WINDOW-AGGREGATE",
-                    "aggregate compatibility value descriptor is ambiguous");
+                    "aggregate compatibility value descriptor is unresolved");
     }
-    value_column = column;
-  }
-  if (!value_column.has_value()) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
-                  "aggregate compatibility value descriptor is unresolved");
   }
 
   CanonicalRegistryWindowAggregateRequest canonical;
@@ -10677,10 +10686,12 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
       aggregate_registry_row->function,
       aggregate_registry_row->builtin_id,
       aggregate_registry_row->function_uuid,
-      false};
-  aggregate.value_columns = {*value_column};
-  aggregate.value_expression_descriptor_ids = {
-      request.value_expression_descriptor_id};
+      request.count_star};
+  if (!request.count_star) {
+    aggregate.value_columns = {*value_column};
+    aggregate.value_expression_descriptor_ids = {
+        request.value_expression_descriptor_id};
+  }
   aggregate.result_column = request.result_column;
   aggregate.filter_truth_values = request.filter_truth_values;
   aggregate.distinct = request.distinct;

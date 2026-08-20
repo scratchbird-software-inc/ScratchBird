@@ -36378,6 +36378,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const bool aggregate_count_window =
         aggregate_window &&
         invocation.builtin_id == "sb.aggregate.count";
+    const bool aggregate_count_star_window =
+        aggregate_count_window && invocation.argument_expression_ids.empty();
+    const bool value_operand_window =
+        value_window && !aggregate_count_star_window;
     const bool aggregate_boolean_window =
         aggregate_window &&
         (invocation.builtin_id == "sb.aggregate.bool_and" ||
@@ -36563,11 +36567,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const bool exact_argument_arity =
         nth_value_window
             ? invocation.argument_expression_ids.size() == 2
-            : ((ntile_window || value_window)
+            : aggregate_count_star_window
+            ? invocation.argument_expression_ids.empty()
+            : ((ntile_window || value_operand_window)
                    ? invocation.argument_expression_ids.size() == 1
                    : invocation.argument_expression_ids.empty());
     const auto window_argument =
-        (ntile_window || value_window) && exact_argument_arity
+        (ntile_window || value_operand_window) && exact_argument_arity
             ? expressions_by_id.find(
                   invocation.argument_expression_ids.front())
             : expressions_by_id.end();
@@ -36641,7 +36647,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           invocation.window_definition_id != definition.window_id ||
           catalog_relation->output_expression_ids != [&] {
             std::vector<std::uint32_t> expected;
-            if (value_window && exact_argument_arity) {
+            if (value_operand_window && exact_argument_arity) {
               expected.push_back(invocation.argument_expression_ids.front());
             }
             const auto order_expression_id =
@@ -36761,7 +36767,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                 window_argument_descriptor->descriptor_id ||
             numeric_window_argument_descriptor->descriptor_uuid ==
                 window_argument_descriptor->descriptor_uuid)))) ||
-        (value_window &&
+        (value_operand_window &&
          (window_argument == expressions_by_id.end() ||
           window_argument->second->expression_kind !=
               NativeExpressionAstKind::kIdentifier ||
@@ -39679,8 +39685,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   // and synthesize only an emission view with a root Project for the exact
   // executable ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK/CUME_DIST/NTILE/LAG/
   // LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE and exact aggregate
-  // SUM/MIN/MAX/COUNT(identifier)
-  // cohort.
+  // SUM/MIN/MAX/COUNT(identifier) and COUNT(*) cohort.
   constexpr std::string_view kCatalogOrderingPropertyUuid =
       "019f0000-0000-7200-8000-00000000c701";
   constexpr std::string_view kRowNumberFunctionUuid =
@@ -39766,6 +39771,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
        normalized_aggregate_invocation->builtin_id == "sb.aggregate.bool_and" ||
        normalized_aggregate_invocation->builtin_id == "sb.aggregate.bool_or" ||
        normalized_aggregate_invocation->builtin_id == "sb.aggregate.every");
+  const bool normalize_count_star_semantic =
+      normalized_aggregate_invocation != nullptr &&
+      normalized_aggregate_invocation->builtin_id == "sb.aggregate.count" &&
+      normalized_aggregate_invocation->argument_expression_ids.empty();
   const std::string_view normalized_ranking_builtin =
       normalize_aggregate_window_semantic
           ? (normalized_unary_aggregate_builtin
@@ -39847,6 +39856,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       (normalize_nth_value_semantic
            ? native.window_invocations.front().argument_expression_ids.size() ==
                  2
+           : normalize_count_star_semantic
+           ? native.window_invocations.front().argument_expression_ids.empty()
            : ((normalize_ntile_semantic || normalize_value_semantic)
                   ? native.window_invocations.front()
                             .argument_expression_ids.size() == 1
@@ -39854,7 +39865,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                         .argument_expression_ids.empty())) &&
       catalog_relation->output_expression_ids == [&] {
         std::vector<std::uint32_t> expected;
-        if (normalize_value_semantic &&
+        if (normalize_value_semantic && !normalize_count_star_semantic &&
             native.window_invocations.front().argument_expression_ids.size() ==
                 (normalize_nth_value_semantic ? 2U : 1U)) {
           expected.push_back(native.window_invocations.front()
