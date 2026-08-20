@@ -8356,6 +8356,12 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
   return registration;
 }
 
+bool BuildOperatorLocalPhysicalDag(
+    const exec::TypedPhysicalNodeDag& dag,
+    std::uint64_t root_physical_node_id,
+    exec::TypedPhysicalNodeDag* operator_dag,
+    std::string* detail);
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
     const PreparedProjectRoot& prepared_root,
     std::string implementation_id,
@@ -8393,6 +8399,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         if (inputs.size() != 1 ||
+            node.input_physical_node_ids.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
             !inputs.front().materialized_output_batch.has_value() ||
             (input_row_count_is_upper_bound
                  ? inputs.front().materialized_output_batch->rows.size() >
@@ -8407,6 +8416,22 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
           return step;
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id, &*scoped_execution_dag,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-PROJECT-INPUT-V1";
+            step.diagnostic.detail = "PROJECT execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
         if (expression_projection) {
           const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
               input_batch, inputs.front().output_descriptor_ids);
@@ -8415,10 +8440,11 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
             return step;
           }
           const auto mga_authority =
-              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+              BuildCanonicalExecutionMgaAuthority(mga_context,
+                                                   *execution_dag);
           const auto before =
               exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority,
-                                                              dag);
+                                                              *execution_dag);
           if (!before.ok) {
             step.diagnostic = before;
             return step;
@@ -8444,7 +8470,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
           }
           const auto after =
               exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority,
-                                                              dag);
+                                                              *execution_dag);
           if (!after.ok) {
             step.diagnostic = after;
             return step;
@@ -8460,9 +8486,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
         exec::CanonicalDescriptorProjectionRequest project_request;
         project_request.selected_physical_node_id = node.physical_node_id;
         project_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         auto project_result = exec::ExecuteCanonicalDescriptorProjection(
-            project_request, dag, input_batch, projected_columns);
+            project_request, *execution_dag, input_batch, projected_columns);
         if (!project_result.diagnostic.ok) {
           step.diagnostic = std::move(project_result.diagnostic);
           return step;
@@ -8479,12 +8505,6 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
       };
   return registration;
 }
-
-bool BuildOperatorLocalPhysicalDag(
-    const exec::TypedPhysicalNodeDag& dag,
-    std::uint64_t root_physical_node_id,
-    exec::TypedPhysicalNodeDag* operator_dag,
-    std::string* detail);
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
     const std::uint32_t predicate_expression_id,
@@ -8588,6 +8608,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         if (inputs.size() != 1 ||
+            node.input_physical_node_ids.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
             !inputs.front().materialized_output_batch.has_value() ||
             inputs.front().materialized_output_batch->rows.size() >
                 maximum_input_row_count) {
@@ -8606,12 +8629,29 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
           step.diagnostic = input_validation;
           return step;
         }
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id, &*scoped_execution_dag,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1";
+            step.diagnostic.detail =
+                "object-backed PROJECT execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
         exec::CanonicalDescriptorProjectionRequest project_request;
         project_request.selected_physical_node_id = node.physical_node_id;
         project_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         auto project_result = exec::ExecuteCanonicalDescriptorProjection(
-            project_request, dag, input_batch, projected_columns);
+            project_request, *execution_dag, input_batch, projected_columns);
         if (!project_result.diagnostic.ok) {
           step.diagnostic = std::move(project_result.diagnostic);
           return step;
