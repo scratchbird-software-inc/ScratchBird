@@ -2920,13 +2920,15 @@ class NativeRelationalParser final {
   }
 
   bool LooksLikeBoundedWindowSelect() const {
-    return tokens_.size() >= 9 &&
-           (IsWord(*tokens_[1], "ROW_NUMBER") ||
+    if (tokens_.size() < 9 || tokens_[2]->text != "(") return false;
+    if (IsWord(*tokens_[1], "NTILE")) {
+      return true;
+    }
+    return (IsWord(*tokens_[1], "ROW_NUMBER") ||
             IsWord(*tokens_[1], "RANK") ||
             IsWord(*tokens_[1], "DENSE_RANK") ||
             IsWord(*tokens_[1], "PERCENT_RANK") ||
             IsWord(*tokens_[1], "CUME_DIST")) &&
-           tokens_[2]->text == "(" &&
            tokens_[3]->text == ")" && IsWord(*tokens_[4], "OVER") &&
            (tokens_[5]->text == "(" ||
             tokens_[5]->kind == TokenKind::kIdentifier);
@@ -2935,9 +2937,10 @@ class NativeRelationalParser final {
   NativeRelationalAstDocument ParseWindowSelect() {
     // QOW-SOURCE-RCP-050-TYPED-WINDOW-AST-V1
     // The general ROW_NUMBER surface preserves the complete window
-    // specification. RANK, DENSE_RANK, PERCENT_RANK, and CUME_DIST are
-    // admitted only for the exact nullary, global, one-direct-column ordering
-    // profile executed by the canonical spine.
+    // specification. RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, and NTILE are
+    // admitted only for the exact global, one-direct-column ordering profile
+    // executed by the canonical spine. NTILE additionally requires one exact
+    // positive signed-int64 literal operand.
     document_.status = NativeRelationalParseStatus::kRefused;
     if (cst_.messages.has_errors()) {
       document_.messages = cst_.messages;
@@ -2954,22 +2957,69 @@ class NativeRelationalParser final {
     const bool dense_rank_window = IsWord(function_token, "DENSE_RANK");
     const bool percent_rank_window = IsWord(function_token, "PERCENT_RANK");
     const bool cume_dist_window = IsWord(function_token, "CUME_DIST");
+    const bool ntile_window = IsWord(function_token, "NTILE");
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
+    const bool strict_ordered_window = peer_ranking_window || ntile_window;
     const std::string function_name =
-        cume_dist_window
+        ntile_window
+            ? "NTILE"
+            : (cume_dist_window
             ? "CUME_DIST"
             : (percent_rank_window
                    ? "PERCENT_RANK"
                    : (dense_rank_window
                           ? "DENSE_RANK"
-                          : (rank_window ? "RANK" : "ROW_NUMBER")));
+                          : (rank_window ? "RANK" : "ROW_NUMBER"))));
     if (!RequireSymbol("(", "window_function_open_required",
-                       function_name + " requires an opening parenthesis") ||
-        !RequireSymbol(")", "window_function_close_required",
-                       function_name + " requires a closing parenthesis") ||
-        !RequireWord("OVER", "window_over_required",
+                       function_name + " requires an opening parenthesis")) {
+      return FinishRefusal();
+    }
+    const auto function_expression_id = NextExpressionId();
+    NativeExpressionAstNode function;
+    function.expression_id = function_expression_id;
+    function.expression_kind = NativeExpressionAstKind::kFunctionCall;
+    function.operator_name = function_name;
+    document_.expressions.push_back(std::move(function));
+    std::optional<std::uint32_t> ntile_operand_expression_id;
+    if (ntile_window) {
+      if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
+        Refuse("ntile_operand_required",
+               "NTILE requires one positive signed-int64 literal operand");
+        return FinishRefusal();
+      }
+      const Token& operand_token = Consume();
+      std::uint64_t bucket_count = 0;
+      const auto [end, error] = std::from_chars(
+          operand_token.text.data(),
+          operand_token.text.data() + operand_token.text.size(), bucket_count);
+      if (operand_token.text.empty() ||
+          (operand_token.text.size() > 1 && operand_token.text.front() == '0') ||
+          error != std::errc{} ||
+          end != operand_token.text.data() + operand_token.text.size() ||
+          bucket_count == 0 ||
+          bucket_count > static_cast<std::uint64_t>(
+                             std::numeric_limits<std::int64_t>::max())) {
+        Refuse("ntile_operand_invalid",
+               "NTILE operand must be a canonical positive signed-int64 literal");
+        return FinishRefusal();
+      }
+      NativeExpressionAstNode operand;
+      operand.expression_id = NextExpressionId();
+      operand.expression_kind = NativeExpressionAstKind::kLiteral;
+      operand.literal_kind = NativeLiteralAstKind::kNumeric;
+      operand.spelling = operand_token.text;
+      operand.range = TokenSourceRange(operand_token);
+      ntile_operand_expression_id = operand.expression_id;
+      document_.expressions.push_back(std::move(operand));
+    }
+    if (!RequireSymbol(")", "window_function_close_required",
+                       function_name + " requires a closing parenthesis")) {
+      return FinishRefusal();
+    }
+    const Token& function_close = Previous();
+    if (!RequireWord("OVER", "window_over_required",
                      function_name + " requires OVER")) {
       return FinishRefusal();
     }
@@ -2986,14 +3036,13 @@ class NativeRelationalParser final {
       return FinishRefusal();
     }
 
-    NativeExpressionAstNode function;
-    function.expression_id = NextExpressionId();
-    function.expression_kind = NativeExpressionAstKind::kFunctionCall;
-    function.operator_name = function_name;
-    function.spelling = SourceSpelling(function_token, *tokens_[3]);
-    function.range = Span(function_token, *tokens_[3]);
-    const auto function_expression_id = function.expression_id;
-    document_.expressions.push_back(std::move(function));
+    auto& stored_function =
+        document_.expressions[function_expression_id - 1];
+    if (ntile_operand_expression_id.has_value()) {
+      stored_function.child_expression_ids = {*ntile_operand_expression_id};
+    }
+    stored_function.spelling = SourceSpelling(function_token, function_close);
+    stored_function.range = Span(function_token, function_close);
 
     NativeWindowDefinitionAstNode definition;
     definition.window_id = 1;
@@ -3426,7 +3475,9 @@ class NativeRelationalParser final {
       const auto expected_output_name = ToLowerAscii(
           invocation.output_alias.has_value()
               ? invocation.output_alias->spelling
-              : (cume_dist_window
+              : (ntile_window
+                     ? std::string("ntile")
+                     : (cume_dist_window
                      ? std::string("cume_dist")
                      : (percent_rank_window
                             ? std::string("percent_rank")
@@ -3434,7 +3485,7 @@ class NativeRelationalParser final {
                                    ? std::string("dense_rank")
                                    : (rank_window
                                           ? std::string("rank")
-                                          : std::string("row_number"))))));
+                                          : std::string("row_number")))))));
       if (ToLowerAscii(output_reference.text) != expected_output_name) {
         Refuse("qualify_window_output_unresolved",
                "QUALIFY may reference only the selected window result in this bounded profile");
@@ -3489,15 +3540,17 @@ class NativeRelationalParser final {
              "typed window slice does not admit trailing clauses");
       return FinishRefusal();
     }
-    if (peer_ranking_window) {
+    if (strict_ordered_window) {
       if (document_.window_definitions.size() != 1) {
-        Refuse(cume_dist_window
+        Refuse(ntile_window
+                   ? "ntile_window_shape_unsupported"
+                   : (cume_dist_window
                    ? "cume_dist_window_shape_unsupported"
                    : (percent_rank_window
                           ? "percent_rank_window_shape_unsupported"
                           : (dense_rank_window
                                  ? "dense_rank_window_shape_unsupported"
-                                 : "rank_window_shape_unsupported")),
+                                 : "rank_window_shape_unsupported"))),
                "typed " + function_name +
                    " requires one inline direct-column ORDER BY key");
         return FinishRefusal();
@@ -3513,13 +3566,15 @@ class NativeRelationalParser final {
           rank_definition.frame_end.has_value() ||
           rank_definition.exclusion !=
               NativeWindowFrameExclusion::kNoOthers) {
-        Refuse(cume_dist_window
+        Refuse(ntile_window
+                   ? "ntile_window_shape_unsupported"
+                   : (cume_dist_window
                    ? "cume_dist_window_shape_unsupported"
                    : (percent_rank_window
                           ? "percent_rank_window_shape_unsupported"
                           : (dense_rank_window
                                  ? "dense_rank_window_shape_unsupported"
-                                 : "rank_window_shape_unsupported")),
+                                 : "rank_window_shape_unsupported"))),
                "typed " + function_name +
                    " requires one inline direct-column ORDER BY key");
         return FinishRefusal();

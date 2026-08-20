@@ -4663,13 +4663,17 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool cume_dist_window =
         window_binding != context.relations.end() &&
         window_binding->semantic_variant_id == "window.cume-dist.v1";
+    const bool ntile_window =
+        window_binding != context.relations.end() &&
+        window_binding->semantic_variant_id == "window.ntile.v1";
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
+    const bool strict_ordered_window = peer_ranking_window || ntile_window;
     const bool recognized_ranking =
         window_binding != context.relations.end() &&
-        (peer_ranking_window || window_binding->semantic_variant_id ==
-                                    "window.row-number.v1");
+        (strict_ordered_window || window_binding->semantic_variant_id ==
+                                      "window.row-number.v1");
     constexpr std::string_view kRowNumberFunctionUuid =
         "019de5fc-2400-7539-bcce-00eef3ae7220";
     constexpr std::string_view kRankFunctionUuid =
@@ -4680,32 +4684,40 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
     constexpr std::string_view kCumeDistFunctionUuid =
         "019de5fc-2400-721c-be64-2568b64a02b9";
+    constexpr std::string_view kNtileFunctionUuid =
+        "019de5fc-2400-7047-9474-232ca488c094";
     const std::string_view expected_operator =
-        cume_dist_window
+        ntile_window
+            ? "NTILE"
+            : (cume_dist_window
             ? "CUME_DIST"
             : (percent_rank_window
                    ? "PERCENT_RANK"
                    : (dense_rank_window
                           ? "DENSE_RANK"
-                          : (rank_window ? "RANK" : "ROW_NUMBER")));
+                          : (rank_window ? "RANK" : "ROW_NUMBER"))));
     const std::string_view expected_builtin =
-        cume_dist_window
+        ntile_window
+            ? "sb.window.ntile"
+            : (cume_dist_window
             ? "sb.window.cume_dist"
             : (percent_rank_window
                    ? "sb.window.percent_rank"
                    : (dense_rank_window
                           ? "sb.window.dense_rank"
                           : (rank_window ? "sb.window.rank"
-                                         : "sb.window.row_number")));
+                                         : "sb.window.row_number"))));
     const std::string_view expected_function_uuid =
-        cume_dist_window
+        ntile_window
+            ? kNtileFunctionUuid
+            : (cume_dist_window
             ? kCumeDistFunctionUuid
             : (percent_rank_window
                    ? kPercentRankFunctionUuid
                    : (dense_rank_window
                           ? kDenseRankFunctionUuid
                           : (rank_window ? kRankFunctionUuid
-                                         : kRowNumberFunctionUuid)));
+                                         : kRowNumberFunctionUuid))));
     if (source_relation == ast.relations.end() ||
         ast.relations.size() != 2 + static_cast<std::size_t>(has_qualify) ||
         ast.root_relation_id !=
@@ -4722,7 +4734,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         context.relations.size() !=
             1 + static_cast<std::size_t>(has_qualify) ||
         context.window_functions.size() != 1 ||
-        !recognized_ranking || (peer_ranking_window && has_qualify) ||
+        !recognized_ranking || (strict_ordered_window && has_qualify) ||
         (has_qualify &&
          (qualify_binding == context.relations.end() ||
           qualify_binding->semantic_variant_id !=
@@ -4852,7 +4864,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     const auto& selected_window_definition =
         ast.window_definitions[selected_definition->second];
-    if (peer_ranking_window &&
+    if (strict_ordered_window &&
         (ast.window_definitions.size() != 1 ||
          selected_definition->second != 0 ||
          selected_window_definition.name.has_value() ||
@@ -4888,7 +4900,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       collect_offset(candidate.frame_end);
     }
     const auto expected_expression_count =
-        source_count + offset_ast_ids.size() + 1 +
+        source_count + offset_ast_ids.size() +
+        static_cast<std::size_t>(ntile_window) + 1 +
         (has_qualify ? 2 : 0);
     if (source_count == 0 || invocation.invocation_id == 0 ||
         context.descriptors.size() != expected_expression_count ||
@@ -5024,15 +5037,100 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         ast.expressions, [&](const auto& candidate) {
           return candidate.expression_id == invocation.function_expression_id;
         });
-    const auto function_binding_index = source_count + offset_ast_ids.size();
+    std::optional<std::uint32_t> bound_ntile_operand_id;
+    const NativeDescriptorBindingInput* ntile_operand_descriptor = nullptr;
+    if (ntile_window) {
+      const NativeExpressionAstNode* operand_ast = nullptr;
+      if (function_ast != ast.expressions.end() &&
+          function_ast->child_expression_ids.size() == 1) {
+        const auto operand = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id ==
+                     function_ast->child_expression_ids.front();
+            });
+        if (operand != ast.expressions.end()) operand_ast = &*operand;
+      }
+      const auto operand_binding_index = source_count + offset_ast_ids.size();
+      const auto& operand_binding = context.expressions[operand_binding_index];
+      const auto descriptor = descriptor_by_id.find(operand_binding.descriptor_id);
+      std::uint64_t bucket_count = 0;
+      const char* parsed_end = nullptr;
+      std::errc parse_error = std::errc::invalid_argument;
+      if (operand_ast != nullptr && !operand_ast->spelling.empty()) {
+        const auto parsed = std::from_chars(
+            operand_ast->spelling.data(),
+            operand_ast->spelling.data() + operand_ast->spelling.size(),
+            bucket_count);
+        parsed_end = parsed.ptr;
+        parse_error = parsed.ec;
+      }
+      if (operand_ast == nullptr ||
+          operand_ast->expression_kind != NativeExpressionAstKind::kLiteral ||
+          operand_ast->literal_kind != NativeLiteralAstKind::kNumeric ||
+          !operand_ast->child_expression_ids.empty() ||
+          !operand_ast->operator_name.empty() || operand_ast->spelling.empty() ||
+          (operand_ast->spelling.size() > 1 &&
+           operand_ast->spelling.front() == '0') ||
+          parse_error != std::errc{} ||
+          parsed_end != operand_ast->spelling.data() +
+                            operand_ast->spelling.size() ||
+          bucket_count == 0 ||
+          bucket_count > static_cast<std::uint64_t>(
+                             std::numeric_limits<std::int64_t>::max()) ||
+          operand_ast->structural_literal_occurrence_id == 0 ||
+          operand_binding.expression_id != operand_binding_index + 1 ||
+          operand_binding.descriptor_id != operand_binding_index + 1 ||
+          operand_binding.function_uuid.has_value() ||
+          operand_binding.bound_name_uuid.has_value() ||
+          operand_binding.structural_literal_occurrence_id !=
+              operand_ast->structural_literal_occurrence_id ||
+          operand_binding.structural_parameter_occurrence_id != 0 ||
+          operand_binding.structural_variable_occurrence_id != 0 ||
+          descriptor == descriptor_by_id.end() ||
+          descriptor->second->nullability != BoundNullability::kNonNull ||
+          descriptor->second->collation_uuid.has_value() ||
+          descriptor->second->timezone_profile_id.has_value() ||
+          descriptor->second->width_precision_scale.width.has_value() ||
+          descriptor->second->width_precision_scale.precision.has_value() ||
+          descriptor->second->width_precision_scale.scale.has_value() ||
+          !ast_to_bound
+               .emplace(operand_ast->expression_id,
+                        operand_binding.expression_id)
+               .second) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                              "typed NTILE operand binding is not exact");
+        return RefusedBoundAst(std::move(bound));
+      }
+      BoundExpressionAstRecord bound_operand;
+      bound_operand.expression_id = operand_binding.expression_id;
+      bound_operand.expression_kind = NativeExpressionAstKind::kLiteral;
+      bound_operand.literal_kind = NativeLiteralAstKind::kNumeric;
+      bound_operand.result_descriptor_id = operand_binding.descriptor_id;
+      bound_operand.literal_or_parameter_ref = operand_ast->spelling;
+      bound_operand.structural_literal_occurrence_id =
+          operand_ast->structural_literal_occurrence_id;
+      bound_ntile_operand_id = operand_binding.expression_id;
+      ntile_operand_descriptor = descriptor->second;
+      bound.expressions.push_back(std::move(bound_operand));
+    }
+    const auto function_binding_index =
+        source_count + offset_ast_ids.size() +
+        static_cast<std::size_t>(ntile_window);
     const auto& function_binding = context.expressions[function_binding_index];
     const auto& window_function_binding = context.window_functions.front();
     const auto& result_output = context.outputs[source_count];
+    const auto function_descriptor =
+        descriptor_by_id.find(function_binding.descriptor_id);
+    const std::vector<std::uint32_t> expected_function_ast_children =
+        ntile_window && bound_ntile_operand_id.has_value()
+            ? std::vector<std::uint32_t>{
+                  function_ast->child_expression_ids.front()}
+            : std::vector<std::uint32_t>{};
     if (function_ast == ast.expressions.end() ||
         function_ast->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
         function_ast->operator_name != expected_operator ||
-        !function_ast->child_expression_ids.empty() ||
+        function_ast->child_expression_ids != expected_function_ast_children ||
         function_binding.expression_id != function_binding_index + 1 ||
         function_binding.descriptor_id != function_binding_index + 1 ||
         !function_binding.function_uuid.has_value() ||
@@ -5050,6 +5148,19 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         !window_function_binding.executable ||
         window_function_binding.result_descriptor_id !=
             function_binding.descriptor_id ||
+        function_descriptor == descriptor_by_id.end() ||
+        function_descriptor->second->nullability !=
+            BoundNullability::kNonNull ||
+        function_descriptor->second->collation_uuid.has_value() ||
+        function_descriptor->second->timezone_profile_id.has_value() ||
+        (ntile_window &&
+         (ntile_operand_descriptor == nullptr ||
+          ntile_operand_descriptor->descriptor_id ==
+              function_descriptor->second->descriptor_id ||
+          ntile_operand_descriptor->descriptor_uuid ==
+              function_descriptor->second->descriptor_uuid ||
+          ntile_operand_descriptor->type_uuid !=
+              function_descriptor->second->type_uuid)) ||
         result_output.output_id != source_count + 1 ||
         result_output.expression_id != function_binding.expression_id ||
         result_output.descriptor_id != function_binding.descriptor_id ||
@@ -5066,6 +5177,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     bound_function.expression_kind = NativeExpressionAstKind::kFunctionCall;
     bound_function.result_descriptor_id = function_binding.descriptor_id;
     bound_function.bound_function_uuid = function_binding.function_uuid;
+    if (bound_ntile_operand_id.has_value()) {
+      bound_function.child_expression_ids = {*bound_ntile_operand_id};
+    }
     bound.expressions.push_back(std::move(bound_function));
     bound.outputs.push_back(
         {result_output.output_id, result_output.relation_id,
@@ -5235,7 +5349,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
          window_function_binding.abi_version,
          window_function_binding.builtin_id,
          window_function_binding.function_uuid,
-         window_function_binding.result_descriptor_id, {}});
+         window_function_binding.result_descriptor_id,
+         bound_ntile_operand_id.has_value()
+             ? std::vector<std::uint32_t>{*bound_ntile_operand_id}
+             : std::vector<std::uint32_t>{}});
 
     BoundRelationAstRecord bound_window;
     bound_window.relation_id = window_relation->relation_id;
@@ -5262,6 +5379,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     for (const auto expression_id : offset_ast_ids) {
       append_bound_expression(ast_to_bound.at(expression_id));
+    }
+    if (bound_ntile_operand_id.has_value()) {
+      append_bound_expression(*bound_ntile_operand_id);
     }
     append_bound_expression(function_binding.expression_id);
     bound.relations.push_back(std::move(bound_window));

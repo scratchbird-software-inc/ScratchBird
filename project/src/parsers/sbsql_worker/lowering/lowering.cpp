@@ -36082,7 +36082,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id != "window.rank.v1" &&
            relation.semantic_variant_id != "window.dense-rank.v1" &&
            relation.semantic_variant_id != "window.percent-rank.v1" &&
-           relation.semantic_variant_id != "window.cume-dist.v1") ||
+           relation.semantic_variant_id != "window.cume-dist.v1" &&
+           relation.semantic_variant_id != "window.ntile.v1") ||
           native.window_definitions.empty() ||
           native.window_definitions.size() > 1024 ||
           native.window_invocations.size() != 1 ||
@@ -36316,6 +36317,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
     constexpr std::string_view kCumeDistFunctionUuid =
         "019de5fc-2400-721c-be64-2568b64a02b9";
+    constexpr std::string_view kNtileFunctionUuid =
+        "019de5fc-2400-7047-9474-232ca488c094";
     const bool rank_window =
         window_relation->semantic_variant_id == "window.rank.v1";
     const bool dense_rank_window =
@@ -36324,27 +36327,34 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         window_relation->semantic_variant_id == "window.percent-rank.v1";
     const bool cume_dist_window =
         window_relation->semantic_variant_id == "window.cume-dist.v1";
+    const bool ntile_window =
+        window_relation->semantic_variant_id == "window.ntile.v1";
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
+    const bool strict_ordered_window = peer_ranking_window || ntile_window;
     const std::string_view expected_window_builtin =
-        cume_dist_window
+        ntile_window
+            ? "sb.window.ntile"
+            : (cume_dist_window
             ? "sb.window.cume_dist"
             : (percent_rank_window
                    ? "sb.window.percent_rank"
                    : (dense_rank_window
                           ? "sb.window.dense_rank"
                           : (rank_window ? "sb.window.rank"
-                                         : "sb.window.row_number")));
+                                         : "sb.window.row_number"))));
     const std::string_view expected_window_function_uuid =
-        cume_dist_window
+        ntile_window
+            ? kNtileFunctionUuid
+            : (cume_dist_window
             ? kCumeDistFunctionUuid
             : (percent_rank_window
                    ? kPercentRankFunctionUuid
                    : (dense_rank_window
                           ? kDenseRankFunctionUuid
                           : (rank_window ? kRankFunctionUuid
-                                         : kRowNumberFunctionUuid)));
+                                         : kRowNumberFunctionUuid))));
     const auto& invocation = native.window_invocations.front();
     const auto function = expressions_by_id.find(
         invocation.function_expression_id);
@@ -36477,8 +36487,51 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         native.descriptors, [&](const auto& descriptor) {
           return descriptor.descriptor_id == invocation.result_descriptor_id;
         });
-    const bool peer_ranking_shape_exact = [&]() {
-      if (!peer_ranking_window) return true;
+    const bool exact_argument_arity =
+        ntile_window ? invocation.argument_expression_ids.size() == 1
+                     : invocation.argument_expression_ids.empty();
+    const auto ntile_argument =
+        ntile_window && exact_argument_arity
+            ? expressions_by_id.find(
+                  invocation.argument_expression_ids.front())
+            : expressions_by_id.end();
+    const auto ntile_argument_descriptor =
+        ntile_argument == expressions_by_id.end()
+            ? native.descriptors.end()
+            : std::ranges::find_if(native.descriptors, [&](const auto& descriptor) {
+                return descriptor.descriptor_id ==
+                       ntile_argument->second->result_descriptor_id;
+              });
+    std::uint64_t ntile_bucket_count = 0;
+    const char* ntile_argument_end = nullptr;
+    std::errc ntile_argument_error = std::errc::invalid_argument;
+    if (ntile_argument != expressions_by_id.end() &&
+        ntile_argument->second->literal_or_parameter_ref.has_value()) {
+      const auto& encoded =
+          *ntile_argument->second->literal_or_parameter_ref;
+      const auto parsed = std::from_chars(
+          encoded.data(), encoded.data() + encoded.size(), ntile_bucket_count);
+      ntile_argument_end = parsed.ptr;
+      ntile_argument_error = parsed.ec;
+    }
+    std::vector<std::uint32_t> expected_window_bound_expression_ids;
+    if (selected_definition != definition_by_id.end() &&
+        native.window_definitions[selected_definition->second]
+                .ordering_terms.size() == 1 &&
+        exact_argument_arity) {
+      expected_window_bound_expression_ids.push_back(
+          native.window_definitions[selected_definition->second]
+              .ordering_terms.front()
+              .expression_id);
+      if (ntile_window) {
+        expected_window_bound_expression_ids.push_back(
+            invocation.argument_expression_ids.front());
+      }
+      expected_window_bound_expression_ids.push_back(
+          invocation.function_expression_id);
+    }
+    const bool strict_ordered_shape_exact = [&]() {
+      if (!strict_ordered_window) return true;
       if (qualify_relation != nullptr || catalog_relation == nullptr ||
           native.window_definitions.size() != 1) {
         return false;
@@ -36497,9 +36550,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               std::vector<std::uint32_t>{
                   definition.ordering_terms.front().expression_id} ||
           window_relation->bound_expression_ids !=
-              std::vector<std::uint32_t>{
-                  definition.ordering_terms.front().expression_id,
-                  invocation.function_expression_id}) {
+              expected_window_bound_expression_ids) {
         return false;
       }
       const auto order_expression = expressions_by_id.find(
@@ -36508,11 +36559,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              order_expression->second->expression_kind ==
                  NativeExpressionAstKind::kIdentifier;
     }();
-    if (!references_exact || !peer_ranking_shape_exact ||
+    if (!references_exact || !strict_ordered_shape_exact ||
         function == expressions_by_id.end() ||
         function->second->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
-        !function->second->child_expression_ids.empty() ||
+        !exact_argument_arity ||
+        function->second->child_expression_ids !=
+            invocation.argument_expression_ids ||
         function->second->bound_function_uuid !=
             invocation.bound_function_uuid ||
         invocation.function_abi_version != 1 ||
@@ -36520,12 +36573,48 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         invocation.bound_function_uuid != expected_window_function_uuid ||
         invocation.result_descriptor_id !=
             function->second->result_descriptor_id ||
-        !invocation.argument_expression_ids.empty() ||
         invocation.output_name_utf8.value_or("").empty() ||
         result_descriptor == native.descriptors.end() ||
         result_descriptor->nullability != BoundNullability::kNonNull ||
         result_descriptor->collation_uuid.has_value() ||
-        result_descriptor->timezone_profile_id.has_value()) {
+        result_descriptor->timezone_profile_id.has_value() ||
+        (ntile_window &&
+         (ntile_argument == expressions_by_id.end() ||
+          ntile_argument->second->expression_kind !=
+              NativeExpressionAstKind::kLiteral ||
+          ntile_argument->second->literal_kind !=
+              NativeLiteralAstKind::kNumeric ||
+          !ntile_argument->second->child_expression_ids.empty() ||
+          ntile_argument->second->bound_function_uuid.has_value() ||
+          ntile_argument->second->bound_name_uuid.has_value() ||
+          ntile_argument->second->canonical_operator_name.has_value() ||
+          !ntile_argument->second->literal_or_parameter_ref.has_value() ||
+          ntile_argument->second->literal_or_parameter_ref->empty() ||
+          (ntile_argument->second->literal_or_parameter_ref->size() > 1 &&
+           ntile_argument->second->literal_or_parameter_ref->front() == '0') ||
+          ntile_argument_error != std::errc{} ||
+          ntile_argument_end !=
+              ntile_argument->second->literal_or_parameter_ref->data() +
+                  ntile_argument->second->literal_or_parameter_ref->size() ||
+          ntile_bucket_count == 0 ||
+          ntile_bucket_count > static_cast<std::uint64_t>(
+                                   std::numeric_limits<std::int64_t>::max()) ||
+          ntile_argument->second->structural_literal_occurrence_id == 0 ||
+          ntile_argument_descriptor == native.descriptors.end() ||
+          ntile_argument_descriptor->descriptor_id ==
+              result_descriptor->descriptor_id ||
+          ntile_argument_descriptor->descriptor_uuid ==
+              result_descriptor->descriptor_uuid ||
+          ntile_argument_descriptor->descriptor_uuid ==
+              expected_window_function_uuid ||
+          ntile_argument_descriptor->type_uuid != result_descriptor->type_uuid ||
+          ntile_argument_descriptor->nullability !=
+              BoundNullability::kNonNull ||
+          ntile_argument_descriptor->collation_uuid.has_value() ||
+          ntile_argument_descriptor->timezone_profile_id.has_value() ||
+          ntile_argument_descriptor->width_precision_scale.width.has_value() ||
+          ntile_argument_descriptor->width_precision_scale.precision.has_value() ||
+          ntile_argument_descriptor->width_precision_scale.scale.has_value()))) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed window definition and registry receipt are not exact");
@@ -37618,7 +37707,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       return offsets.size();
     }();
     const auto window_expression_count =
-        window_relation == nullptr ? 0 : window_offset_count + 1;
+        window_relation == nullptr
+            ? 0
+            : window_offset_count + 1 +
+                  static_cast<std::size_t>(
+                      window_relation->semantic_variant_id == "window.ntile.v1");
     const auto qualify_expression_count =
         qualify_relation == nullptr ? 0 : std::size_t{2};
     const auto visible_width = visible_outputs->size();
@@ -39387,7 +39480,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   // The canonical ranking executor requires an explicit ordered
   // input and a passthrough Window schema. Preserve the validated BoundAST
   // and synthesize only an emission view with a root Project for the exact
-  // executable ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK/CUME_DIST cohort.
+  // executable ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK/CUME_DIST/NTILE cohort.
   constexpr std::string_view kCatalogOrderingPropertyUuid =
       "019f0000-0000-7200-8000-00000000c701";
   constexpr std::string_view kRowNumberFunctionUuid =
@@ -39400,6 +39493,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
   constexpr std::string_view kCumeDistFunctionUuid =
       "019de5fc-2400-721c-be64-2568b64a02b9";
+  constexpr std::string_view kNtileFunctionUuid =
+      "019de5fc-2400-7047-9474-232ca488c094";
   const bool normalize_rank_semantic =
       window_relation != nullptr &&
       window_relation->semantic_variant_id == "window.rank.v1";
@@ -39412,31 +39507,38 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const bool normalize_cume_dist_semantic =
       window_relation != nullptr &&
       window_relation->semantic_variant_id == "window.cume-dist.v1";
+  const bool normalize_ntile_semantic =
+      window_relation != nullptr &&
+      window_relation->semantic_variant_id == "window.ntile.v1";
   const bool normalize_peer_ranking_semantic =
       normalize_rank_semantic || normalize_dense_rank_semantic ||
       normalize_percent_rank_semantic || normalize_cume_dist_semantic;
   const bool normalize_ranking_semantic =
       window_relation != nullptr &&
-      (normalize_peer_ranking_semantic ||
+      (normalize_peer_ranking_semantic || normalize_ntile_semantic ||
        window_relation->semantic_variant_id == "window.row-number.v1");
   const std::string_view normalized_ranking_builtin =
-      normalize_cume_dist_semantic
+      normalize_ntile_semantic
+          ? "sb.window.ntile"
+          : (normalize_cume_dist_semantic
           ? "sb.window.cume_dist"
           : (normalize_percent_rank_semantic
                  ? "sb.window.percent_rank"
                  : (normalize_dense_rank_semantic
                         ? "sb.window.dense_rank"
                         : (normalize_rank_semantic ? "sb.window.rank"
-                                                   : "sb.window.row_number")));
+                                                   : "sb.window.row_number"))));
   const std::string_view normalized_ranking_function_uuid =
-      normalize_cume_dist_semantic
+      normalize_ntile_semantic
+          ? kNtileFunctionUuid
+          : (normalize_cume_dist_semantic
           ? kCumeDistFunctionUuid
           : (normalize_percent_rank_semantic
                  ? kPercentRankFunctionUuid
                  : (normalize_dense_rank_semantic
                         ? kDenseRankFunctionUuid
                         : (normalize_rank_semantic ? kRankFunctionUuid
-                                                   : kRowNumberFunctionUuid)));
+                                                   : kRowNumberFunctionUuid))));
   std::vector<BoundRelationAstRecord> emitted_relations = native.relations;
   std::vector<BoundOutputAstRecord> emitted_outputs = native.outputs;
   std::uint32_t emitted_root_relation_id = native.root_relation_id;
@@ -39463,29 +39565,43 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           normalized_ranking_builtin &&
       native.window_invocations.front().bound_function_uuid ==
           normalized_ranking_function_uuid &&
-      native.window_invocations.front().argument_expression_ids.empty() &&
+      (normalize_ntile_semantic
+           ? native.window_invocations.front().argument_expression_ids.size() ==
+                 1
+           : native.window_invocations.front().argument_expression_ids.empty()) &&
       catalog_relation->output_expression_ids ==
           std::vector<std::uint32_t>{
               native.window_definitions.front()
                   .ordering_terms.front()
                   .expression_id} &&
       window_relation->bound_expression_ids ==
-          std::vector<std::uint32_t>{
-              native.window_definitions.front()
-                  .ordering_terms.front()
-                  .expression_id,
-              native.window_invocations.front().function_expression_id};
-  if (normalize_peer_ranking_semantic &&
+          (normalize_ntile_semantic
+               ? std::vector<std::uint32_t>{
+                     native.window_definitions.front()
+                         .ordering_terms.front()
+                         .expression_id,
+                     native.window_invocations.front()
+                         .argument_expression_ids.front(),
+                     native.window_invocations.front().function_expression_id}
+               : std::vector<std::uint32_t>{
+                     native.window_definitions.front()
+                         .ordering_terms.front()
+                         .expression_id,
+                     native.window_invocations.front()
+                         .function_expression_id});
+  if ((normalize_peer_ranking_semantic || normalize_ntile_semantic) &&
       !normalize_catalog_ranking) {
     AddNativeRelationalLoweringError(
         &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
         std::string("typed ") +
-            (normalize_cume_dist_semantic
+            (normalize_ntile_semantic
+                 ? "NTILE"
+                 : (normalize_cume_dist_semantic
                  ? "CUME_DIST"
                  : (normalize_percent_rank_semantic
                         ? "PERCENT_RANK"
                         : (normalize_dense_rank_semantic ? "DENSE_RANK"
-                                                         : "RANK"))) +
+                                                         : "RANK")))) +
             " requires explicit canonical ordering normalization");
     return envelope;
   }
@@ -39643,7 +39759,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             std::vector<std::uint32_t>{emitted_window->relation_id} &&
         emitted_sort->semantic_variant_id == "sort.required-order.v1" &&
         emitted_window->semantic_variant_id ==
-            (normalize_cume_dist_semantic
+            (normalize_ntile_semantic
+                 ? "window.ntile.v1"
+                 : (normalize_cume_dist_semantic
                  ? "window.cume-dist.v1"
                  : (normalize_percent_rank_semantic
                         ? "window.percent-rank.v1"
@@ -39651,7 +39769,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                ? "window.dense-rank.v1"
                                : (normalize_rank_semantic
                                       ? "window.rank.v1"
-                                      : "window.row-number.v1")))) &&
+                                      : "window.row-number.v1"))))) &&
         emitted_project->semantic_variant_id ==
             "project.catalog-visible-columns.v1" &&
         emitted_sort->output_expression_ids ==

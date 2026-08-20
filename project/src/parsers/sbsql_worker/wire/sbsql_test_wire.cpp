@@ -4292,6 +4292,8 @@ BuildEngineProjectedNativeBindingContext(
         "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
     constexpr std::string_view kCumeDistFunctionUuid =
         "019de5fc-2400-721c-be64-2568b64a02b9";
+    constexpr std::string_view kNtileFunctionUuid =
+        "019de5fc-2400-7047-9474-232ca488c094";
     const bool rank_window =
         function_expression != ast.expressions.end() &&
         function_expression->operator_name == "RANK";
@@ -4304,40 +4306,50 @@ BuildEngineProjectedNativeBindingContext(
     const bool cume_dist_window =
         function_expression != ast.expressions.end() &&
         function_expression->operator_name == "CUME_DIST";
+    const bool ntile_window =
+        function_expression != ast.expressions.end() &&
+        function_expression->operator_name == "NTILE";
     const bool recognized_ranking =
         function_expression != ast.expressions.end() &&
         (rank_window || dense_rank_window || percent_rank_window ||
-         cume_dist_window ||
+         cume_dist_window || ntile_window ||
          function_expression->operator_name == "ROW_NUMBER");
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
+    const bool strict_ordered_window = peer_ranking_window || ntile_window;
     const std::string_view expected_operator =
-        cume_dist_window
+        ntile_window
+            ? "NTILE"
+            : (cume_dist_window
             ? "CUME_DIST"
             : (percent_rank_window
                    ? "PERCENT_RANK"
                    : (dense_rank_window
                           ? "DENSE_RANK"
-                          : (rank_window ? "RANK" : "ROW_NUMBER")));
+                          : (rank_window ? "RANK" : "ROW_NUMBER"))));
     const std::string_view expected_builtin =
-        cume_dist_window
+        ntile_window
+            ? "sb.window.ntile"
+            : (cume_dist_window
             ? "sb.window.cume_dist"
             : (percent_rank_window
                    ? "sb.window.percent_rank"
                    : (dense_rank_window
                           ? "sb.window.dense_rank"
                           : (rank_window ? "sb.window.rank"
-                                         : "sb.window.row_number")));
+                                         : "sb.window.row_number"))));
     const std::string_view expected_function_uuid =
-        cume_dist_window
+        ntile_window
+            ? kNtileFunctionUuid
+            : (cume_dist_window
             ? kCumeDistFunctionUuid
             : (percent_rank_window
                    ? kPercentRankFunctionUuid
                    : (dense_rank_window
                           ? kDenseRankFunctionUuid
                           : (rank_window ? kRankFunctionUuid
-                                         : kRowNumberFunctionUuid)));
+                                         : kRowNumberFunctionUuid))));
     const auto function_profile = std::ranges::find_if(
         statement_context.window_function_profiles,
         [&](const auto& candidate) {
@@ -4349,11 +4361,40 @@ BuildEngineProjectedNativeBindingContext(
                      ((percent_rank_window || cume_dist_window) ? 11 : 1) &&
                  candidate.slot == 0;
         });
+    const NativeExpressionAstNode* ntile_operand = nullptr;
+    if (ntile_window && function_expression->child_expression_ids.size() == 1) {
+      const auto operand = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id ==
+                   function_expression->child_expression_ids.front();
+          });
+      if (operand != ast.expressions.end()) ntile_operand = &*operand;
+    }
+    const auto ntile_operand_profile = std::ranges::find_if(
+        statement_context.descriptor_profiles, [](const auto& candidate) {
+          return candidate.profile_kind == 1 && candidate.slot == 1;
+        });
+    std::uint64_t ntile_bucket_count = 0;
+    const char* ntile_operand_end = nullptr;
+    std::errc ntile_operand_error = std::errc::invalid_argument;
+    if (ntile_operand != nullptr && !ntile_operand->spelling.empty()) {
+      const auto parsed = std::from_chars(
+          ntile_operand->spelling.data(),
+          ntile_operand->spelling.data() + ntile_operand->spelling.size(),
+          ntile_bucket_count);
+      ntile_operand_end = parsed.ptr;
+      ntile_operand_error = parsed.ec;
+    }
+    const std::vector<std::uint32_t> expected_function_children =
+        ntile_operand == nullptr
+            ? std::vector<std::uint32_t>{}
+            : std::vector<std::uint32_t>{ntile_operand->expression_id};
     if (!recognized_ranking ||
         function_expression->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
         function_expression->operator_name != expected_operator ||
-        !function_expression->child_expression_ids.empty() ||
+        function_expression->child_expression_ids !=
+            expected_function_children ||
         function_profile == statement_context.window_function_profiles.end() ||
         function_profile->abi_version != 1 || !function_profile->executable ||
         function_profile->function_uuid != expected_function_uuid ||
@@ -4361,10 +4402,37 @@ BuildEngineProjectedNativeBindingContext(
         result_profile == statement_context.descriptor_profiles.end() ||
         result_profile->nullable ||
         !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
-        !CanonicalUuidBytes(result_profile->type_uuid).has_value()) {
+        !CanonicalUuidBytes(result_profile->type_uuid).has_value() ||
+        (ntile_window &&
+         (ntile_operand == nullptr ||
+          ntile_operand->expression_kind !=
+              NativeExpressionAstKind::kLiteral ||
+          ntile_operand->literal_kind != NativeLiteralAstKind::kNumeric ||
+          !ntile_operand->child_expression_ids.empty() ||
+          !ntile_operand->operator_name.empty() ||
+          ntile_operand->spelling.empty() ||
+          (ntile_operand->spelling.size() > 1 &&
+           ntile_operand->spelling.front() == '0') ||
+          ntile_operand_error != std::errc{} ||
+          ntile_operand_end != ntile_operand->spelling.data() +
+                                   ntile_operand->spelling.size() ||
+          ntile_bucket_count == 0 ||
+          ntile_bucket_count > static_cast<std::uint64_t>(
+                                   std::numeric_limits<std::int64_t>::max()) ||
+          ntile_operand->structural_literal_occurrence_id == 0 ||
+          ntile_operand_profile ==
+              statement_context.descriptor_profiles.end() ||
+          ntile_operand_profile->nullable ||
+          !CanonicalUuidBytes(ntile_operand_profile->descriptor_uuid)
+               .has_value() ||
+          !CanonicalUuidBytes(ntile_operand_profile->type_uuid).has_value() ||
+          ntile_operand_profile->descriptor_uuid ==
+              result_profile->descriptor_uuid ||
+          ntile_operand_profile->descriptor_uuid == expected_function_uuid ||
+          ntile_operand_profile->type_uuid != result_profile->type_uuid))) {
       return fail("catalog_window_ranking_profile_unavailable");
     }
-    if (peer_ranking_window) {
+    if (strict_ordered_window) {
       const auto& definition = ast.window_definitions.front();
       const auto order_expression = std::ranges::find_if(
           ast.expressions, [&](const auto& candidate) {
@@ -4386,14 +4454,29 @@ BuildEngineProjectedNativeBindingContext(
           source_relation->output_expression_ids !=
               std::vector<std::uint32_t>{order_expression->expression_id}) {
         return fail(
-            cume_dist_window
+            ntile_window
+                ? "catalog_window_ntile_shape_invalid"
+                : (cume_dist_window
                 ? "catalog_window_cume_dist_shape_invalid"
                 : (percent_rank_window
                        ? "catalog_window_percent_rank_shape_invalid"
                        : (dense_rank_window
                               ? "catalog_window_dense_rank_shape_invalid"
-                              : "catalog_window_rank_shape_invalid")));
+                              : "catalog_window_rank_shape_invalid"))));
       }
+    }
+    if (ntile_window) {
+      const auto operand_binding_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      context.descriptors.push_back(
+          {operand_binding_id, ntile_operand_profile->descriptor_uuid,
+           ntile_operand_profile->type_uuid, BoundNullability::kNonNull,
+           std::nullopt, std::nullopt, {}});
+      context.expressions.push_back(
+          {operand_binding_id, operand_binding_id, std::nullopt, std::nullopt,
+           ntile_operand->structural_literal_occurrence_id,
+           ntile_operand->structural_parameter_occurrence_id,
+           ntile_operand->structural_variable_occurrence_id});
     }
     const auto function_binding_id =
         static_cast<std::uint32_t>(context.descriptors.size() + 1);
@@ -4412,7 +4495,9 @@ BuildEngineProjectedNativeBindingContext(
     const auto window_output_name =
         invocation.output_alias.has_value()
             ? invocation.output_alias->spelling
-            : (cume_dist_window
+            : (ntile_window
+                   ? std::string("ntile")
+                   : (cume_dist_window
                    ? std::string("cume_dist")
                    : (percent_rank_window
                           ? std::string("percent_rank")
@@ -4420,7 +4505,7 @@ BuildEngineProjectedNativeBindingContext(
                                  ? std::string("dense_rank")
                                  : (rank_window
                                         ? std::string("rank")
-                                        : std::string("row_number")))));
+                                        : std::string("row_number"))))));
     context.outputs.push_back(
         {static_cast<std::uint32_t>(context.outputs.size() + 1),
          function_binding_id,
@@ -4499,14 +4584,16 @@ BuildEngineProjectedNativeBindingContext(
     context.catalog_relations.push_back(std::move(catalog_relation));
     context.relations.push_back(
         {window_relation->relation_id,
-         cume_dist_window
+         ntile_window
+             ? "window.ntile.v1"
+             : (cume_dist_window
              ? "window.cume-dist.v1"
              : (percent_rank_window
                     ? "window.percent-rank.v1"
                     : (dense_rank_window
                            ? "window.dense-rank.v1"
                            : (rank_window ? "window.rank.v1"
-                                          : "window.row-number.v1")))});
+                                          : "window.row-number.v1"))))});
     if (has_qualify) {
       context.relations.push_back(
           {qualify_relation->relation_id,
@@ -6407,6 +6494,7 @@ std::optional<std::array<std::uint8_t, 32>> ParameterNodeTableSha256(
 
 struct LiteralPrebindState {
   std::uint64_t occurrence_id{0};
+  std::uint32_t intended_numeric_profile_slot{0};
   std::array<std::uint8_t, 32> lexical_sha256{};
   std::array<std::uint8_t, 32> demand_sha256{};
   std::array<std::uint8_t, 32> ordered_profiles_sha256{};
@@ -6605,6 +6693,15 @@ EncodeLiteralPrebindRequest(const NativeRelationalAstDocument& ast,
   });
   if (literal == ast.expressions.end() || literal->expression_id == 0)
     return std::nullopt;
+  const bool ntile_operand = std::ranges::any_of(
+      ast.expressions, [&](const auto& expression) {
+        return expression.expression_kind ==
+                   NativeExpressionAstKind::kFunctionCall &&
+               expression.operator_name == "NTILE" &&
+               expression.child_expression_ids ==
+                   std::vector<std::uint32_t>{literal->expression_id};
+      });
+  const std::uint32_t intended_numeric_profile_slot = ntile_operand ? 1U : 0U;
   CanonicalBytes token(literal->spelling.begin(), literal->spelling.end());
   const auto token_hash = CanonicalSha256(token);
   const auto receipt = CanonicalUuidBytes(context.literal_preliminary_receipt_uuid);
@@ -6641,7 +6738,8 @@ EncodeLiteralPrebindRequest(const NativeRelationalAstDocument& ast,
   std::copy(demand_hash->begin(),demand_hash->end(),request.begin()+96);
   request.insert(request.end(),record.begin(),record.end());
   return std::pair{std::move(request),
-                   LiteralPrebindState{1,*token_hash,
+                   LiteralPrebindState{1, intended_numeric_profile_slot,
+                                       *token_hash,
                                        *demand_hash,{}}};
 }
 
@@ -6682,8 +6780,9 @@ bool ConsumeLiteralPrebindResult(const CanonicalBytes& response,
     return false;
   std::copy_n(response.begin()+128,32,state->ordered_profiles_sha256.begin());
   context->literal_statement_descriptor_profiles={profile};
-  const auto numeric=std::ranges::find_if(context->descriptor_profiles,[](const auto& p){
-    return p.profile_kind==1&&p.slot==0&&!p.nullable;
+  const auto numeric=std::ranges::find_if(context->descriptor_profiles,[&](const auto& p){
+    return p.profile_kind==1&&p.slot==state->intended_numeric_profile_slot&&
+           !p.nullable;
   });
   if(numeric==context->descriptor_profiles.end()) return false;
   numeric->descriptor_uuid=profile.descriptor_uuid;
@@ -14976,6 +15075,11 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   std::optional<LiteralPrebindState> literal_prebind_state;
   std::optional<ParameterPrebindState> parameter_prebind_state;
   std::optional<VariablePrebindState> variable_prebind_state;
+  const bool requires_literal_finalization = std::ranges::any_of(
+      ast.native_relational.expressions, [](const auto& expression) {
+        return expression.expression_kind == NativeExpressionAstKind::kLiteral &&
+               expression.literal_kind == NativeLiteralAstKind::kNumeric;
+      });
   std::optional<scratchbird::engine::sblr::SblrVariableFrameBeginResultV1>
       automatic_variable_frame;
   std::optional<ipc::VariableFrameCoordination>
@@ -15219,22 +15323,35 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           WriteParserPipelinePhaseTrace(sql, result, phase_micros);
           return result;
         }
-        if (const auto prebind = EncodeLiteralPrebindRequest(
-                ast.native_relational, *native_statement_context);
-            prebind.has_value()) {
-          auto negotiated = server_client_->NegotiateLiteralDescriptors(
-              session_, prebind->first);
-          if (!negotiated.accepted) {
-            result.messages = std::move(negotiated.messages);
+        if (requires_literal_finalization) {
+          const auto prebind = EncodeLiteralPrebindRequest(
+              ast.native_relational, *native_statement_context);
+          if (!prebind.has_value()) {
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                "The native numeric literal negotiation request was unavailable.",
+                "sbp_sbsql.wire"));
           } else {
-            literal_prebind_state = prebind->second;
-            if (!ConsumeLiteralPrebindResult(
-                    negotiated.canonical_payload, &*literal_prebind_state,
-                    &*native_statement_context)) {
-              result.messages.diagnostics.push_back(MakeDiagnostic(
-                  "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
-                  "The engine literal descriptor negotiation result was malformed.",
-                  "sbp_sbsql.wire"));
+            auto negotiated = server_client_->NegotiateLiteralDescriptors(
+                session_, prebind->first);
+            if (!negotiated.accepted) {
+              result.messages = std::move(negotiated.messages);
+              if (!result.messages.has_errors()) {
+                result.messages.diagnostics.push_back(MakeDiagnostic(
+                    "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                    "The engine refused native numeric literal descriptor negotiation.",
+                    "sbp_sbsql.wire"));
+              }
+            } else {
+              literal_prebind_state = prebind->second;
+              if (!ConsumeLiteralPrebindResult(
+                      negotiated.canonical_payload, &*literal_prebind_state,
+                      &*native_statement_context)) {
+                result.messages.diagnostics.push_back(MakeDiagnostic(
+                    "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                    "The engine literal descriptor negotiation result was malformed.",
+                    "sbp_sbsql.wire"));
+              }
             }
           }
         }
@@ -15540,11 +15657,12 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           "SBSQL.NATIVE_SBLR.CANONICAL_ENCODING_FAILED", "ERROR",
           "The native relational operation could not be encoded as canonical SBLR/SBEE/SBOP.",
           "sbp_sbsql.wire"));
-    } else if (literal_prebind_state.has_value() &&
-               !FinalizeLiteralSubmission(
-                   bound, lowered, *native_statement_context, session_,
-                   *literal_prebind_state, server_client_.get(),
-                   &*native_submission, &result.messages)) {
+    } else if (requires_literal_finalization &&
+               (!literal_prebind_state.has_value() ||
+                !FinalizeLiteralSubmission(
+                    bound, lowered, *native_statement_context, session_,
+                    *literal_prebind_state, server_client_.get(),
+                    &*native_submission, &result.messages))) {
       result.accepted = false;
       if (!result.messages.has_errors()) {
         result.messages.diagnostics.push_back(MakeDiagnostic(
