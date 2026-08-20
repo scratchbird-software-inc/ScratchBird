@@ -1322,6 +1322,17 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       *order_type_uuid == canonical_int64_type_uuid &&
       execution_ordered_input_batch.columns[request.order_term.column]
               .descriptor.canonical_type_name == "int64";
+  const auto& order_descriptor =
+      execution_ordered_input_batch.columns[request.order_term.column]
+          .descriptor;
+  const auto canonical_order_type_uuid =
+      CanonicalCoreDatatypeUuid(order_descriptor.canonical_type_name);
+  const bool exact_narrow_bounded_signed_order =
+      !nth_value && order_type_uuid.has_value() &&
+      order_descriptor.canonical_type_name != "int64" &&
+      IsCanonicalBoundedSignedIntegerDescriptor(order_descriptor) &&
+      !canonical_order_type_uuid.empty() &&
+      *order_type_uuid == canonical_order_type_uuid;
   const bool exact_boolean_order =
       !nth_value && order_type_uuid.has_value() &&
       !canonical_boolean_type_uuid.empty() &&
@@ -1333,7 +1344,8 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       !order_type_uuid.has_value() || !IsCanonicalUuid(*order_type_uuid) ||
       canonical_int64_type_uuid.empty() ||
       (!exact_int64_value && !exact_boolean_value) ||
-      (!exact_int64_order && !exact_boolean_order) ||
+      (!exact_int64_order && !exact_narrow_bounded_signed_order &&
+       !exact_boolean_order) ||
       has_auxiliary_type_fields(
           execution_ordered_input_batch.columns[request.value_column]
               .descriptor) ||
@@ -1344,7 +1356,8 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
     return refuse(Refusal(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
         std::string(display_name) +
-            " source, result, or order is not exact canonical int64/boolean"));
+            " source, result, or order is not exact canonical "
+            "bounded-signed/boolean"));
   }
   const bool exact_nth_operand =
       nth_value && nth_operand != nullptr &&
