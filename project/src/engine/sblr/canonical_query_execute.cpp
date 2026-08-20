@@ -697,6 +697,66 @@ void PublishRuntimeMemoryObservation(
   receipt.producer_receipt_complete = true;
 }
 
+bool ValidateLiveSetMemoryReceipt(
+    const exec::TypedPhysicalNodeDag& dag,
+    const exec::PhysicalNodeRecord& node,
+    const exec::CanonicalSetOperationAllResult& result,
+    std::uint64_t* current_memory_bytes,
+    std::uint64_t* peak_memory_bytes,
+    std::string* detail) {
+  if (current_memory_bytes == nullptr || peak_memory_bytes == nullptr ||
+      detail == nullptr) {
+    return false;
+  }
+  *current_memory_bytes = 0;
+  *peak_memory_bytes = 0;
+  detail->clear();
+  const auto resource_evidence = std::ranges::find_if(
+      dag.admission_evidence,
+      [](const exec::PhysicalAdmissionEvidence& evidence) {
+        return evidence.stage == exec::PhysicalAdmissionStage::kResource;
+      });
+  const auto resource_evidence_count = std::ranges::count_if(
+      dag.admission_evidence,
+      [](const exec::PhysicalAdmissionEvidence& evidence) {
+        return evidence.stage == exec::PhysicalAdmissionStage::kResource;
+      });
+  std::uint64_t measured_output_payload_bytes = 0;
+  if (resource_evidence_count != 1 ||
+      resource_evidence == dag.admission_evidence.end() ||
+      resource_evidence->evidence_uuid.empty() ||
+      dag.memory_budget_bytes == 0 || node.memory_bytes_required == 0 ||
+      node.memory_bytes_required > dag.memory_budget_bytes ||
+      (node.retained_cost.memory_bytes_required != 0 &&
+       node.retained_cost.memory_bytes_required !=
+           node.memory_bytes_required) ||
+      !RuntimeMaterializedBatchMemoryBytes(
+          result.output_batch, &measured_output_payload_bytes) ||
+      measured_output_payload_bytes == 0 ||
+      result.output_payload_bytes != measured_output_payload_bytes ||
+      result.resident_structural_bytes != 0 ||
+      result.current_live_memory_bytes !=
+          measured_output_payload_bytes ||
+      result.peak_live_payload_bytes < result.output_payload_bytes ||
+      result.peak_live_memory_bytes < result.peak_live_payload_bytes ||
+      result.peak_live_memory_bytes < result.current_live_memory_bytes ||
+      result.peak_live_memory_bytes > node.memory_bytes_required ||
+      result.memory_grant_bytes != node.memory_bytes_required ||
+      result.memory_grant_evidence_uuid !=
+          resource_evidence->evidence_uuid ||
+      result.implementation_id != node.implementation_id ||
+      result.selected_plan_uuid != dag.selected_plan_uuid ||
+      result.executed_physical_node_id != node.physical_node_id ||
+      result.causal_counter_id != node.causal_counter_id) {
+    *detail =
+        "set-operation runtime logical-memory receipt is inconsistent";
+    return false;
+  }
+  *current_memory_bytes = result.current_live_memory_bytes;
+  *peak_memory_bytes = result.peak_live_memory_bytes;
+  return true;
+}
+
 void PublishOrdinaryRuntimeObservations(
     std::vector<exec::CanonicalPhysicalExecutorRegistration>* registrations,
     const OrdinaryRuntimeMemoryReceipts& memory_receipts) {
@@ -10227,6 +10287,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 = true;
   registration.execute =
       [prepared_set_nodes = std::move(prepared_set_nodes),
        mga_context = std::move(mga_context)](
@@ -10318,6 +10379,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
                 1, config.maximum_equality_comparison_count);
         set_request.maximum_output_row_count =
             std::max<std::size_t>(1, config.maximum_output_row_count);
+        set_request.enforce_payload_memory_grant = true;
         set_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
             mga_context, set_request.physical_dag);
         auto set_result =
@@ -10329,6 +10391,19 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
           step.diagnostic = std::move(set_result.diagnostic);
           return step;
         }
+        std::uint64_t current_memory_bytes = 0;
+        std::uint64_t peak_memory_bytes = 0;
+        std::string memory_detail;
+        if (!ValidateLiveSetMemoryReceipt(
+                set_request.physical_dag, node, set_result,
+                &current_memory_bytes, &peak_memory_bytes,
+                &memory_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail = std::move(memory_detail);
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = set_result.left_input_row_count +
                                set_result.right_input_row_count;
@@ -10337,6 +10412,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
         step.materialized_output_batch = std::move(set_result.output_batch);
         step.mga_statement_context =
             std::move(set_result.mga_statement_context);
+        step.data_access_observation_known = true;
+        step.data_access_observed = false;
+        PublishRuntimeMemoryObservation(
+            &step, current_memory_bytes, peak_memory_bytes);
         return step;
       };
   return registration;
@@ -17173,6 +17252,7 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
   set_registration.executor_capability_abi_version = 1;
   set_registration.engine_owned = true;
   set_registration.accepts_optimizer_publication_v2 = true;
+  set_registration.publishes_runtime_observation_v1 = true;
   set_registration.execute =
       [result_columns = prepared_root.result_columns,
        collation_bindings = prepared_root.collation_bindings,
@@ -17224,6 +17304,7 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
                 1, static_cast<std::size_t>(set_comparison_bound));
         set_request.maximum_output_row_count =
             std::max<std::size_t>(1, set_output_row_bound);
+        set_request.enforce_payload_memory_grant = true;
         set_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         auto set_result =
@@ -17235,6 +17316,19 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
           step.diagnostic = std::move(set_result.diagnostic);
           return step;
         }
+        std::uint64_t current_memory_bytes = 0;
+        std::uint64_t peak_memory_bytes = 0;
+        std::string memory_detail;
+        if (!ValidateLiveSetMemoryReceipt(
+                set_request.physical_dag, node, set_result,
+                &current_memory_bytes, &peak_memory_bytes,
+                &memory_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail = std::move(memory_detail);
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = set_result.left_input_row_count +
                                set_result.right_input_row_count;
@@ -17243,6 +17337,10 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
         step.materialized_output_batch = std::move(set_result.output_batch);
         step.mga_statement_context =
             std::move(set_result.mga_statement_context);
+        step.data_access_observation_known = true;
+        step.data_access_observed = false;
+        PublishRuntimeMemoryObservation(
+            &step, current_memory_bytes, peak_memory_bytes);
         return step;
       };
 
@@ -17607,6 +17705,7 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
     registration.executor_capability_abi_version = 1;
     registration.engine_owned = true;
     registration.accepts_optimizer_publication_v2 = true;
+    registration.publishes_runtime_observation_v1 = true;
     registration.execute =
         [prepared_set_nodes, mga_context = request.context](
             const exec::TypedPhysicalNodeDag& dag,
@@ -17701,6 +17800,7 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
               config.maximum_equality_comparison_count;
           set_request.maximum_output_row_count =
               std::max<std::size_t>(1, config.maximum_output_row_count);
+          set_request.enforce_payload_memory_grant = true;
           set_request.mga_authority =
               BuildCanonicalExecutionMgaAuthority(
                   mga_context, set_request.physical_dag);
@@ -17713,6 +17813,19 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
             step.diagnostic = std::move(set_result.diagnostic);
             return step;
           }
+          std::uint64_t current_memory_bytes = 0;
+          std::uint64_t peak_memory_bytes = 0;
+          std::string memory_detail;
+          if (!ValidateLiveSetMemoryReceipt(
+                  set_request.physical_dag, node, set_result,
+                  &current_memory_bytes, &peak_memory_bytes,
+                  &memory_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-OPT-017-REFUSAL-V1";
+            step.diagnostic.detail = std::move(memory_detail);
+            return step;
+          }
           step.result_handle_id = node.physical_node_id;
           step.input_row_count = set_result.left_input_row_count +
                                  set_result.right_input_row_count;
@@ -17722,6 +17835,10 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
               std::move(set_result.output_batch);
           step.mga_statement_context =
               std::move(set_result.mga_statement_context);
+          step.data_access_observation_known = true;
+          step.data_access_observed = false;
+          PublishRuntimeMemoryObservation(
+              &step, current_memory_bytes, peak_memory_bytes);
           return step;
         };
     execution_request.available_executors.push_back(std::move(registration));
