@@ -11783,7 +11783,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
-        if (inputs.size() != 1 ||
+        if (node.input_physical_node_ids.size() != 1 ||
+            inputs.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
             !inputs.front().materialized_output_batch.has_value() ||
             inputs.front().materialized_output_batch->rows.size() >
                 maximum_input_row_count) {
@@ -11795,6 +11798,25 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
           return step;
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag,
+                  node.physical_node_id,
+                  &*scoped_execution_dag,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-LIMIT-INPUT-V1";
+            step.diagnostic.detail =
+                "LIMIT/FETCH execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
         exec::CanonicalDescriptorLimitResult limited;
         if (fetch_first_rows_only) {
           exec::CanonicalDescriptorFetchProfileRequest fetch_request;
@@ -11805,9 +11827,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
           fetch_request.offset = row_offset;
           fetch_request.row_count_is_bound = true;
           fetch_request.mga_authority =
-              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+              BuildCanonicalExecutionMgaAuthority(mga_context,
+                                                   *execution_dag);
           auto fetched = exec::ExecuteCanonicalDescriptorFetchProfile(
-              fetch_request, dag, input_batch);
+              fetch_request, *execution_dag, input_batch);
           limited.diagnostic = std::move(fetched.diagnostic);
           limited.output_batch = std::move(fetched.output_batch);
           limited.selected_plan_uuid =
@@ -11823,9 +11846,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
           limit_request.limit = row_limit;
           limit_request.offset = row_offset;
           limit_request.mga_authority =
-              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+              BuildCanonicalExecutionMgaAuthority(mga_context,
+                                                   *execution_dag);
           limited = exec::ExecuteCanonicalDescriptorLimit(
-              limit_request, dag, input_batch);
+              limit_request, *execution_dag, input_batch);
         }
         if (!limited.diagnostic.ok) {
           step.diagnostic = std::move(limited.diagnostic);
