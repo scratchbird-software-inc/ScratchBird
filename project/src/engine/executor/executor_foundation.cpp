@@ -9,6 +9,7 @@
 #include "executor_foundation.hpp"
 
 #include "descriptor_value_runtime.hpp"
+#include "aggregate_executor_internal.hpp"
 #include "temp_spill_executor.hpp"
 
 #include <algorithm>
@@ -7759,6 +7760,10 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
   CanonicalRegistryWindowAggregateStateStrategy selected_state_strategy =
       CanonicalRegistryWindowAggregateStateStrategy::unknown;
   bool aggregate_state_spill_required = false;
+  using AggregateRuntimeContext =
+      detail::CanonicalAggregateRuntimeExecutionContext;
+  auto aggregate_runtime_context =
+      AggregateRuntimeContext::window_frame_recompute;
   if (aggregate_node->implementation_id.rfind(
           "window.aggregate-registry-", 0) != 0) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-PHYSICAL",
@@ -7772,11 +7777,15 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
              "window.aggregate-registry-moving-inverse.v1") {
     selected_state_strategy =
         CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+    aggregate_runtime_context =
+        AggregateRuntimeContext::window_moving_inverse;
   } else if (aggregate_node->implementation_id ==
              "window.aggregate-registry-state-spill.v1") {
     selected_state_strategy =
         CanonicalRegistryWindowAggregateStateStrategy::state_spill;
     aggregate_state_spill_required = true;
+    aggregate_runtime_context =
+        AggregateRuntimeContext::window_state_spill;
   } else {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-STRATEGY",
                   "optimizer selected an unknown aggregate window state implementation");
@@ -7859,9 +7868,9 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
   }
   DescriptorBatch preflight_input_batch;
   preflight_input_batch.columns = request.frames.ordered_batch.columns;
-  auto preflight = ExecuteCanonicalAggregateRuntime(
+  auto preflight = detail::ExecuteCanonicalAggregateRuntimeBorrowedForContext(
       preflight_request, aggregate_template.physical_dag,
-      preflight_input_batch);
+      preflight_input_batch, aggregate_runtime_context);
   if (!preflight.diagnostic.ok) {
     return refuse(preflight.diagnostic.diagnostic_code,
                   preflight.diagnostic.detail);
@@ -8059,9 +8068,10 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
         aggregate.filter_truth_values = std::move(filter);
       }
       auto frame_result =
-          ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
+          detail::ExecuteCanonicalAggregateRuntimeBorrowedForContext(
               aggregate, aggregate_template.physical_dag,
-              frame_input_batch, remaining_finalization_bytes);
+              frame_input_batch, aggregate_runtime_context,
+              remaining_finalization_bytes);
       if (!frame_result.diagnostic.ok) {
         return refuse(frame_result.diagnostic.diagnostic_code,
                       frame_result.diagnostic.detail);

@@ -8,6 +8,7 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include "aggregate_executor_internal.hpp"
 #include "datatype_document.hpp"
 #include "datatype_operations.hpp"
 #include "temp_spill_executor.hpp"
@@ -4023,22 +4024,29 @@ struct CanonicalAggregateExecutionMemoryScope {
 
 static bool CanonicalAggregateRuntimeImplementationMatches(
     const std::string_view implementation_id,
-    const bool state_exchange_execution_context) {
-  if (state_exchange_execution_context) {
-    return implementation_id == "aggregate.registry-state-exchange.v1";
-  }
-  return implementation_id == "aggregate.registry-core.v1" ||
-         implementation_id == "aggregate.registry.serial.v1" ||
-         implementation_id == "aggregate.registry-state-spill.v1" ||
-         implementation_id == "aggregate.registry-grouping-sets.v1" ||
-         implementation_id ==
-             "aggregate.registry-grouping-sets-state-spill.v1" ||
-         implementation_id ==
-             "window.aggregate-registry-frame-recompute.v1" ||
-         implementation_id ==
-             "window.aggregate-registry-moving-inverse.v1" ||
-         implementation_id ==
+    const detail::CanonicalAggregateRuntimeExecutionContext context) {
+  using Context = detail::CanonicalAggregateRuntimeExecutionContext;
+  switch (context) {
+    case Context::ordinary_non_window:
+      return implementation_id == "aggregate.registry-core.v1" ||
+             implementation_id == "aggregate.registry.serial.v1" ||
+             implementation_id == "aggregate.registry-state-spill.v1" ||
+             implementation_id == "aggregate.registry-grouping-sets.v1" ||
+             implementation_id ==
+                 "aggregate.registry-grouping-sets-state-spill.v1";
+    case Context::state_exchange:
+      return implementation_id == "aggregate.registry-state-exchange.v1";
+    case Context::window_frame_recompute:
+      return implementation_id ==
+             "window.aggregate-registry-frame-recompute.v1";
+    case Context::window_moving_inverse:
+      return implementation_id ==
+             "window.aggregate-registry-moving-inverse.v1";
+    case Context::window_state_spill:
+      return implementation_id ==
              "window.aggregate-registry-state-spill.v1";
+  }
+  return false;
 }
 
 static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
@@ -4046,7 +4054,7 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
     const TypedPhysicalNodeDag& execution_dag,
     const DescriptorBatch& execution_input_batch,
     const bool borrowed_execution_carriers,
-    const bool state_exchange_execution_context,
+    const detail::CanonicalAggregateRuntimeExecutionContext context,
     const CanonicalAggregateExecutionMemoryScope memory_scope = {}) {
   CanonicalAggregateRuntimeResult result;
   result.descriptor = request.descriptor;
@@ -4116,6 +4124,9 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   const bool state_exchange_selected =
       aggregate_node->implementation_id ==
       "aggregate.registry-state-exchange.v1";
+  const bool state_exchange_execution_context =
+      context ==
+      detail::CanonicalAggregateRuntimeExecutionContext::state_exchange;
   if (state_exchange_selected != state_exchange_execution_context) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-STRATEGY-V1",
@@ -4124,8 +4135,7 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
             : "aggregate state exchange payload does not match the selected implementation"));
   }
   if (!CanonicalAggregateRuntimeImplementationMatches(
-          aggregate_node->implementation_id,
-          state_exchange_execution_context)) {
+          aggregate_node->implementation_id, context)) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-011-REGISTRY-PHYSICAL-V1",
         "selected aggregate implementation does not match its canonical "
@@ -4461,7 +4471,9 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request) {
   return ExecuteCanonicalAggregateRuntimeSelected(
-      request, request.physical_dag, request.input_batch, false, false, {});
+      request, request.physical_dag, request.input_batch, false,
+      detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
+      {});
 }
 
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
@@ -4469,7 +4481,9 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch) {
   return ExecuteCanonicalAggregateRuntimeSelected(
-      request, borrowed_execution_dag, borrowed_input_batch, true, false, {});
+      request, borrowed_execution_dag, borrowed_input_batch, true,
+      detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
+      {});
 }
 
 CanonicalAggregateRuntimeResult
@@ -4477,7 +4491,8 @@ ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
     const CanonicalAggregateRuntimeRequest& request,
     const std::size_t exact_final_output_ceiling) {
   return ExecuteCanonicalAggregateRuntimeSelected(
-      request, request.physical_dag, request.input_batch, false, false,
+      request, request.physical_dag, request.input_batch, false,
+      detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
       {0, exact_final_output_ceiling});
 }
 
@@ -4488,7 +4503,20 @@ ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
     const DescriptorBatch& borrowed_input_batch,
     const std::size_t exact_final_output_ceiling) {
   return ExecuteCanonicalAggregateRuntimeSelected(
-      request, borrowed_execution_dag, borrowed_input_batch, true, false,
+      request, borrowed_execution_dag, borrowed_input_batch, true,
+      detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
+      {0, exact_final_output_ceiling});
+}
+
+CanonicalAggregateRuntimeResult
+detail::ExecuteCanonicalAggregateRuntimeBorrowedForContext(
+    const CanonicalAggregateRuntimeRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const detail::CanonicalAggregateRuntimeExecutionContext context,
+    const std::optional<std::size_t> exact_final_output_ceiling) {
+  return ExecuteCanonicalAggregateRuntimeSelected(
+      request, borrowed_execution_dag, borrowed_input_batch, true, context,
       {0, exact_final_output_ceiling});
 }
 
@@ -4531,20 +4559,6 @@ ExecuteCanonicalAggregateStateSpillSelected(
     return refuse(entry_authority.diagnostic_code, entry_authority.detail);
   }
 
-  auto baseline = ExecuteCanonicalAggregateRuntimeSelected(
-      request.aggregate_request, execution_dag, execution_input_batch,
-      borrowed_execution_carriers, false,
-      {request.retained_memory_bytes, std::nullopt});
-  if (!baseline.diagnostic.ok) {
-    return refuse(baseline.diagnostic.diagnostic_code,
-                  baseline.diagnostic.detail);
-  }
-  if (!PhysicalMgaStatementContextEqual(
-          baseline.mga_statement_context,
-          request.aggregate_request.mga_authority.statement_context)) {
-    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-MGA-V1",
-                  "aggregate spill baseline returned a different MGA statement context");
-  }
   const PhysicalNodeRecord* selected_node = nullptr;
   for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
@@ -4563,6 +4577,27 @@ ExecuteCanonicalAggregateStateSpillSelected(
       !execution_dag.spill_allowed) {
     return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-STRATEGY-V1",
                   "aggregate state spill was not selected and permitted by the physical plan");
+  }
+  const auto runtime_context =
+      selected_node->implementation_id ==
+              "window.aggregate-registry-state-spill.v1"
+          ? detail::CanonicalAggregateRuntimeExecutionContext::
+                window_state_spill
+          : detail::CanonicalAggregateRuntimeExecutionContext::
+                ordinary_non_window;
+  auto baseline = ExecuteCanonicalAggregateRuntimeSelected(
+      request.aggregate_request, execution_dag, execution_input_batch,
+      borrowed_execution_carriers, runtime_context,
+      {request.retained_memory_bytes, std::nullopt});
+  if (!baseline.diagnostic.ok) {
+    return refuse(baseline.diagnostic.diagnostic_code,
+                  baseline.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          baseline.mga_statement_context,
+          request.aggregate_request.mga_authority.statement_context)) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-MGA-V1",
+                  "aggregate spill baseline returned a different MGA statement context");
   }
   const auto node_memory_grant = AggregateNodeMemoryGrant(
       execution_dag, *selected_node);
@@ -5069,7 +5104,8 @@ ExecuteCanonicalAggregateStateExchangeSelected(
 
   auto baseline = ExecuteCanonicalAggregateRuntimeSelected(
       request.aggregate_request, execution_dag, execution_input_batch,
-      borrowed_execution_carriers, true, {});
+      borrowed_execution_carriers,
+      detail::CanonicalAggregateRuntimeExecutionContext::state_exchange, {});
   if (!baseline.diagnostic.ok) {
     return refuse(baseline.diagnostic.diagnostic_code,
                   baseline.diagnostic.detail);
@@ -5625,7 +5661,8 @@ ExecuteCanonicalAggregateMovingRuntimeSelected(
   DescriptorBatch preflight_input_batch;
   preflight_input_batch.columns = execution_input_batch.columns;
   auto preflight = ExecuteCanonicalAggregateRuntimeSelected(
-      preflight_request, execution_dag, preflight_input_batch, true, false,
+      preflight_request, execution_dag, preflight_input_batch, true,
+      detail::CanonicalAggregateRuntimeExecutionContext::window_moving_inverse,
       {input_payload_bytes - 1 + filter_memory_bytes, std::nullopt});
   if (!preflight.diagnostic.ok) {
     return refuse(preflight.diagnostic);
@@ -6325,7 +6362,8 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
         std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>{};
   }
   auto preflight = ExecuteCanonicalAggregateRuntimeSelected(
-      preflight_request, kernel_dag, preflight_input_batch, true, false,
+      preflight_request, kernel_dag, preflight_input_batch, true,
+      detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
       {retained_memory_bytes + input_payload_bytes + source_filter_bytes,
        std::nullopt});
   if (!preflight.diagnostic.ok) {
@@ -6555,7 +6593,8 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
           "grouped aggregate retained output exhausted the selected-node grant"));
     }
     auto aggregate_result = ExecuteCanonicalAggregateRuntimeSelected(
-        group_request, kernel_dag, group_input_batch, true, false,
+        group_request, kernel_dag, group_input_batch, true,
+        detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
         {scope_retained_memory + retained_output_payload_bytes +
              group_key_payload_bytes,
          remaining_finalization_bytes});
