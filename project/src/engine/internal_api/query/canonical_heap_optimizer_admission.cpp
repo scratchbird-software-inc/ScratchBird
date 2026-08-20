@@ -9,6 +9,7 @@
 #include "query/canonical_heap_optimizer_admission.hpp"
 
 #include "datatype_catalog_manifest.hpp"
+#include "engine/executor/canonical_aggregate_registry.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "query/canonical_relational_bridge.hpp"
 #include "security/security_model.hpp"
@@ -840,14 +841,17 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          window_node->semantic_variant_id != "window.lead.v1" &&
          window_node->semantic_variant_id != "window.first-value.v1" &&
          window_node->semantic_variant_id != "window.last-value.v1" &&
-         window_node->semantic_variant_id != "window.nth-value.v1") ||
+         window_node->semantic_variant_id != "window.nth-value.v1" &&
+         window_node->semantic_variant_id != "window.aggregate-bridge.v1") ||
         window_node->bound_expression_ids.size() !=
             ((window_node->semantic_variant_id == "window.ntile.v1" ||
               window_node->semantic_variant_id == "window.lag.v1" ||
               window_node->semantic_variant_id == "window.lead.v1" ||
               window_node->semantic_variant_id == "window.first-value.v1" ||
               window_node->semantic_variant_id == "window.last-value.v1" ||
-              window_node->semantic_variant_id == "window.nth-value.v1")
+              window_node->semantic_variant_id == "window.nth-value.v1" ||
+              window_node->semantic_variant_id ==
+                  "window.aggregate-bridge.v1")
                  ? (window_node->semantic_variant_id == "window.nth-value.v1"
                         ? 4U
                         : 3U)
@@ -1063,14 +1067,25 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         window_node->semantic_variant_id == "window.last-value.v1";
     const bool nth_value_window =
         window_node->semantic_variant_id == "window.nth-value.v1";
+    const bool aggregate_sum_window =
+        window_node->semantic_variant_id == "window.aggregate-bridge.v1";
+    const auto* aggregate_sum_row =
+        aggregate_sum_window
+            ? executor::LookupCanonicalAggregateByFunctionV1(
+                  executor::CanonicalAggregateFunction::sum)
+            : nullptr;
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
-        nth_value_window;
+        nth_value_window || aggregate_sum_window;
     const auto canonical_int64_type_uuid =
         value_window ? CanonicalCoreDatatypeUuid("int64") : std::string{};
     const std::string_view expected_builtin_id =
-        value_window
+        aggregate_sum_window
+            ? (aggregate_sum_row == nullptr
+                   ? std::string_view{}
+                   : std::string_view{aggregate_sum_row->builtin_id})
+            : value_window
             ? (first_value_window
                    ? "sb.window.first_value"
                    : (last_value_window
@@ -1090,7 +1105,11 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                           : (rank_window ? "sb.window.rank"
                                          : "sb.window.row_number")))));
     const std::string_view expected_function_uuid =
-        value_window
+        aggregate_sum_window
+            ? (aggregate_sum_row == nullptr
+                   ? std::string_view{}
+                   : std::string_view{aggregate_sum_row->function_uuid})
+            : value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
                    : (last_value_window
@@ -1182,8 +1201,24 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             ? relational.descriptors.end()
             : std::ranges::find_if(
                   relational.descriptors, [&](const auto& descriptor) {
-                    return descriptor.descriptor_id ==
+                  return descriptor.descriptor_id ==
                            nth_position_argument->result_descriptor_id;
+                  });
+    const auto aggregate_order_argument =
+        aggregate_sum_window && sort_node->bound_expression_ids.size() == 1
+            ? std::ranges::find_if(
+                  relational.expressions, [&](const auto& expression) {
+                    return expression.expression_id ==
+                           sort_node->bound_expression_ids.front();
+                  })
+            : relational.expressions.end();
+    const auto aggregate_order_descriptor =
+        aggregate_order_argument == relational.expressions.end()
+            ? relational.descriptors.end()
+            : std::ranges::find_if(
+                  relational.descriptors, [&](const auto& descriptor) {
+                    return descriptor.descriptor_id ==
+                           aggregate_order_argument->result_descriptor_id;
                   });
     std::vector<std::uint32_t> expected_window_bound_expression_ids;
     if (sort_node->bound_expression_ids.size() == 1 &&
@@ -1261,6 +1296,10 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             window_node->node_id ||
         relational.window_invocations.front().window_definition_id !=
             relational.window_definitions.front().window_id ||
+        (aggregate_sum_window &&
+         (aggregate_sum_row == nullptr || !aggregate_sum_row->executable ||
+          !aggregate_sum_row->aggregate_as_window ||
+          aggregate_sum_row->abi_version != 1)) ||
         relational.window_invocations.front().function_abi_version != 1 ||
         relational.window_invocations.front().builtin_id !=
             expected_builtin_id ||
@@ -1344,6 +1383,28 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
           std::ranges::find(sort_node->output_descriptor_ids,
                             ntile_argument_descriptor->descriptor_id) ==
               sort_node->output_descriptor_ids.end())) ||
+        (aggregate_sum_window &&
+         (aggregate_order_argument == relational.expressions.end() ||
+          aggregate_order_argument->expression_kind !=
+              RelationalExpressionKind::kIdentifier ||
+          !aggregate_order_argument->child_expression_ids.empty() ||
+          !aggregate_order_argument->bound_name_uuid.has_value() ||
+          aggregate_order_argument->function_uuid.has_value() ||
+          aggregate_order_argument->literal_kind.has_value() ||
+          aggregate_order_argument->literal_or_parameter_ref.has_value() ||
+          aggregate_order_argument->operator_name.has_value() ||
+          aggregate_order_descriptor == relational.descriptors.end() ||
+          canonical_int64_type_uuid.empty() ||
+          aggregate_order_descriptor->type_uuid !=
+              canonical_int64_type_uuid ||
+          aggregate_order_descriptor->collation_uuid.has_value() ||
+          aggregate_order_descriptor->timezone_profile_id.has_value() ||
+          aggregate_order_descriptor->width.has_value() ||
+          aggregate_order_descriptor->precision.has_value() ||
+          aggregate_order_descriptor->scale.has_value() ||
+          std::ranges::find(sort_node->output_descriptor_ids,
+                            aggregate_order_descriptor->descriptor_id) ==
+              sort_node->output_descriptor_ids.end())) ||
         (nth_value_window &&
          (nth_position_argument == relational.expressions.end() ||
           nth_position_argument->expression_kind !=
@@ -1384,7 +1445,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         window_outputs.back()->output_name_utf8 !=
             relational.window_invocations.front().output_name_utf8) {
       return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
-                    value_window
+                    aggregate_sum_window
+                        ? "heap_aggregate_sum_window_binding"
+                        : value_window
                         ? (first_value_window
                                ? "heap_first_value_window_binding"
                                : (last_value_window

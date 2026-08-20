@@ -7630,7 +7630,9 @@ bool CanonicalWindowFrameEvidenceValid(
        frames.operator_local_parent_implementation_id ==
            "window.last-value.v1" ||
        frames.operator_local_parent_implementation_id ==
-           "window.nth-value.v1") &&
+           "window.nth-value.v1" ||
+       frames.operator_local_parent_implementation_id ==
+           "window.aggregate-registry-frame-recompute.v1") &&
       selected_node != nullptr && selected_input_node != nullptr &&
       selected_node->implementation_id ==
           frames.operator_local_parent_implementation_id &&
@@ -10668,6 +10670,7 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
       request.maximum_final_output_bytes;
   aggregate.maximum_finalization_workspace_bytes =
       request.maximum_finalization_workspace_bytes;
+  aggregate.retained_memory_bytes = request.retained_memory_bytes;
   aggregate.mga_authority = request.mga_authority;
 
   auto registry_result = ExecuteCanonicalRegistryWindowAggregate(canonical);
@@ -10736,6 +10739,7 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
   result.transition_count = transition_count;
   result.distinct_value_count = distinct_value_count;
   result.pair_comparison_count = pair_comparison_count;
+  result.combined_state_bytes = registry_result.combined_state_bytes;
   result.combined_final_output_bytes =
       registry_result.combined_final_output_bytes;
   result.peak_finalization_workspace_bytes =

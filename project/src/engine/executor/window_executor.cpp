@@ -249,7 +249,9 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
       request.operator_local_parent_implementation_id ==
           "window.last-value.v1" ||
       request.operator_local_parent_implementation_id ==
-          "window.nth-value.v1";
+          "window.nth-value.v1" ||
+      request.operator_local_parent_implementation_id ==
+          "window.aggregate-registry-frame-recompute.v1";
 
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kWindow ||
@@ -1664,6 +1666,536 @@ ExecuteCanonicalDescriptorNavigationWindow(
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch) {
   return ExecuteCanonicalDescriptorNavigationWindowBound(
+      request, borrowed_execution_dag, borrowed_ordered_input_batch, true);
+}
+
+namespace {
+CanonicalDescriptorAggregateWindowResult
+ExecuteCanonicalDescriptorAggregateWindowBound(
+    const CanonicalDescriptorAggregateWindowRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_ordered_input_batch,
+    const bool borrowed_execution_carriers) {
+  CanonicalDescriptorAggregateWindowResult result;
+  const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
+    result = {};
+    result.diagnostic = std::move(diagnostic);
+    return result;
+  };
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(request.ordered_input_batch))) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
+        "aggregate window request carries conflicting owned execution carriers"));
+  }
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, execution_dag);
+  if (!authority_validation.ok) return refuse(authority_validation);
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id != execution_dag.root_physical_node_id) {
+    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
+                          "selected aggregate window node is not the root"));
+  }
+
+  const auto* aggregate_registry_row = LookupCanonicalAggregateExactV1(
+      request.aggregate_descriptor.abi_version,
+      request.aggregate_descriptor.function,
+      request.aggregate_descriptor.builtin_id,
+      request.aggregate_descriptor.function_uuid);
+  if (request.aggregate_descriptor.count_star ||
+      request.aggregate_descriptor.function !=
+          CanonicalAggregateFunction::sum ||
+      aggregate_registry_row == nullptr ||
+      !aggregate_registry_row->executable ||
+      !aggregate_registry_row->aggregate_as_window) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
+        "aggregate window requires the exact executable SUM registry row"));
+  }
+
+  const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* input_node = nullptr;
+  for (const auto& node : execution_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      selected_node = &node;
+      break;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kWindow ||
+      selected_node->implementation_id !=
+          "window.aggregate-registry-frame-recompute.v1" ||
+      selected_node->input_physical_node_ids.size() != 1) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-PHYSICAL",
+        "SUM window requires one exact frame-recompute window node"));
+  }
+  for (const auto& node : execution_dag.nodes) {
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids.front()) {
+      input_node = &node;
+      break;
+    }
+  }
+  const bool exact_ordering_property =
+      selected_node->required_property_uuids.size() == 1 &&
+      IsCanonicalUuid(selected_node->required_property_uuids.front());
+  const std::string ordering_property_uuid =
+      exact_ordering_property
+          ? selected_node->required_property_uuids.front()
+          : std::string{};
+  const auto window_property = std::ranges::find_if(
+      selected_node->delivered_property_uuids,
+      [&](const auto& property_uuid) {
+        return property_uuid != ordering_property_uuid;
+      });
+  const bool exact_window_property =
+      exact_ordering_property &&
+      selected_node->delivered_property_uuids.size() == 2 &&
+      PropertyCount(selected_node->delivered_property_uuids,
+                    ordering_property_uuid) == 1 &&
+      window_property != selected_node->delivered_property_uuids.end() &&
+      IsCanonicalUuid(*window_property) &&
+      *window_property != ordering_property_uuid;
+  if (input_node == nullptr || input_node->node_kind != PhysicalNodeKind::kSort ||
+      input_node->delivered_property_uuids !=
+          std::vector<std::string>{ordering_property_uuid} ||
+      !exact_window_property ||
+      selected_node->executor_capability_abi_version != 1 ||
+      !selected_node->engine_capability_validated ||
+      selected_node->executor_capability_uuid !=
+          request.executor_capability_uuid ||
+      !IsCanonicalUuid(request.executor_capability_uuid) ||
+      !IsCanonicalUuid(request.window_frame_descriptor_uuid) ||
+      !IsCanonicalUuid(request.order_term_binding_evidence_uuid) ||
+      !IsCanonicalUuid(request.deterministic_order_evidence_uuid) ||
+      !IsCanonicalUuid(request.frame_property_binding_evidence_uuid)) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
+        "SUM window lacks exact ordering, frame, capability, or property evidence"));
+  }
+
+  std::vector<std::uint32_t> expected_output_descriptor_ids =
+      input_node->output_descriptor_ids;
+  expected_output_descriptor_ids.push_back(
+      request.result_column.descriptor_id);
+  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
+  const auto source_type_uuid =
+      request.value_column < execution_ordered_input_batch.columns.size()
+          ? CanonicalDescriptorField(
+                execution_ordered_input_batch.columns[request.value_column]
+                    .descriptor,
+                "type_uuid")
+          : std::optional<std::string_view>{};
+  const auto result_type_uuid = CanonicalDescriptorField(
+      request.result_column.descriptor, "type_uuid");
+  const auto order_type_uuid =
+      request.order_term.column < execution_ordered_input_batch.columns.size()
+          ? CanonicalDescriptorField(
+                execution_ordered_input_batch.columns[request.order_term.column]
+                    .descriptor,
+                "type_uuid")
+          : std::optional<std::string_view>{};
+  if (selected_node->output_descriptor_ids !=
+          expected_output_descriptor_ids ||
+      request.value_column >= execution_ordered_input_batch.columns.size() ||
+      request.order_term.column >=
+          execution_ordered_input_batch.columns.size() ||
+      request.result_column.descriptor_id == 0 ||
+      !request.result_column.nullable ||
+      request.result_column.descriptor.descriptor_kind != "scalar" ||
+      request.result_column.descriptor.canonical_type_name != "int64" ||
+      execution_ordered_input_batch.columns[request.value_column]
+              .descriptor.canonical_type_name != "int64" ||
+      execution_ordered_input_batch.columns[request.order_term.column]
+              .descriptor.canonical_type_name != "int64" ||
+      !source_type_uuid.has_value() || !result_type_uuid.has_value() ||
+      !order_type_uuid.has_value() ||
+      canonical_int64_type_uuid.empty() ||
+      *source_type_uuid != canonical_int64_type_uuid ||
+      *result_type_uuid != canonical_int64_type_uuid ||
+      *order_type_uuid != canonical_int64_type_uuid ||
+      !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          request.result_column.descriptor) ||
+      !CanonicalDerivedDescriptorTypeMatches(
+          execution_ordered_input_batch.columns[request.value_column]
+              .descriptor,
+          execution_ordered_input_batch.columns[request.value_column].nullable,
+          request.result_column.descriptor, true)) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-DESCRIPTOR",
+        "SUM window source and nullable result descriptors are not exact int64"));
+  }
+  const auto input_validation = ValidateCanonicalDescriptorBatch(
+      execution_ordered_input_batch, input_node->output_descriptor_ids);
+  if (!input_validation.ok) return refuse(input_validation);
+  const auto order_validation = ValidateCanonicalDescriptorOrderTerm(
+      request.order_term,
+      execution_ordered_input_batch.columns[request.order_term.column]);
+  if (!order_validation.ok) return refuse(order_validation);
+
+  const std::array<std::string_view, 11> independent_identities{
+      request.aggregate_descriptor.function_uuid,
+      execution_ordered_input_batch.columns[request.value_column]
+          .descriptor.descriptor_uuid.canonical,
+      request.result_column.descriptor.descriptor_uuid.canonical,
+      *result_type_uuid,
+      ordering_property_uuid,
+      *window_property,
+      request.window_frame_descriptor_uuid,
+      request.executor_capability_uuid,
+      request.order_term_binding_evidence_uuid,
+      request.deterministic_order_evidence_uuid,
+      request.frame_property_binding_evidence_uuid};
+  for (std::size_t left = 0; left < independent_identities.size(); ++left) {
+    for (std::size_t right = left + 1;
+         right < independent_identities.size(); ++right) {
+      if (independent_identities[left] == independent_identities[right]) {
+        return refuse(Refusal(
+            "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+            "SUM window evidence identities are not independent"));
+      }
+    }
+  }
+  std::uint64_t planned_receipt_workspace_bytes = 0;
+  std::uint64_t actual_receipt_workspace_bytes = 0;
+  if (!PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+          request.order_term, ordering_property_uuid,
+          &planned_receipt_workspace_bytes) ||
+      ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
+          request.order_term, ordering_property_uuid,
+          planned_receipt_workspace_bytes,
+          &actual_receipt_workspace_bytes) !=
+          request.order_term_binding_evidence_uuid ||
+      actual_receipt_workspace_bytes != planned_receipt_workspace_bytes) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        "SUM window order-term binding receipt is not exact"));
+  }
+
+  // Refuse before QOW-401/QOW-402 or the aggregate facade can allocate pair
+  // matrices, effective-frame vectors, copied frame graphs, or result state.
+  // The compatibility facade and runtime dispatcher retain two additional
+  // frame carriers, while the registry retains independent frame and
+  // transition receipts. Account all five possible reference graphs and all
+  // simultaneously retained ordered-input copies against the selected grant.
+  const auto checked_multiply = [](const std::uint64_t left,
+                                   const std::uint64_t right,
+                                   std::uint64_t* product) {
+    if (product == nullptr ||
+        (left != 0 &&
+         right > std::numeric_limits<std::uint64_t>::max() / left)) {
+      return false;
+    }
+    *product = left * right;
+    return true;
+  };
+  const auto checked_add = [](const std::uint64_t left,
+                              const std::uint64_t right,
+                              std::uint64_t* sum) {
+    if (sum == nullptr ||
+        right > std::numeric_limits<std::uint64_t>::max() - left) {
+      return false;
+    }
+    *sum = left + right;
+    return true;
+  };
+  const auto row_count = execution_ordered_input_batch.rows.size();
+  const auto row_count_u64 = static_cast<std::uint64_t>(row_count);
+  std::uint64_t pair_count_u64 = 0;
+  std::uint64_t matrix_bytes = 0;
+  std::uint64_t reference_graph_bytes = 0;
+  std::uint64_t metadata_bytes = 0;
+  std::uint64_t value_vector_bytes = 0;
+  std::uint64_t partition_index_bytes = 0;
+  std::uint64_t partition_vector_bytes = 0;
+  std::uint64_t input_payload_bytes = 0;
+  std::uint64_t result_value_payload_bytes = 0;
+  std::uint64_t output_payload_bytes = 0;
+  std::uint64_t retained_input_copy_bytes = 0;
+  std::uint64_t maximum_order_key_workspace_bytes = 0;
+  std::uint64_t order_comparison_workspace_bytes = 0;
+  std::uint64_t planned_auxiliary_workspace_bytes = 0;
+  std::uint64_t planned_peak_memory_bytes = 0;
+  std::uint64_t planned_retained_memory_bytes = 0;
+  constexpr std::uint64_t kMaximumInt64TextBytes = 20;
+  constexpr std::uint64_t kFrameGraphCopyCount = 5;
+  constexpr std::uint64_t kFrameCarrierMetadataCopyCount = 4;
+  constexpr std::uint64_t kRetainedInputCopyCount = 4;
+  for (const auto& row : execution_ordered_input_batch.rows) {
+    const auto key_plan = PlanCanonicalDescriptorEqualityKey(
+        row.values[request.order_term.column], request.order_term);
+    if (!key_plan.diagnostic.ok ||
+        key_plan.peak_workspace_bytes >
+            std::numeric_limits<std::uint64_t>::max()) {
+      return refuse(Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "SUM window order comparison workspace is not bounded"));
+    }
+    maximum_order_key_workspace_bytes = std::max(
+        maximum_order_key_workspace_bytes,
+        static_cast<std::uint64_t>(key_plan.peak_workspace_bytes));
+  }
+  if (request.maximum_pair_comparisons == 0 ||
+      request.maximum_effective_row_references == 0 ||
+      request.maximum_transition_count == 0 ||
+      !RowNumberBatchPayloadBytes(execution_ordered_input_batch,
+                                  &input_payload_bytes) ||
+      !checked_multiply(row_count_u64, row_count_u64, &pair_count_u64) ||
+      pair_count_u64 > request.maximum_pair_comparisons ||
+      pair_count_u64 > request.maximum_effective_row_references ||
+      pair_count_u64 > request.maximum_transition_count ||
+      !checked_multiply(pair_count_u64, 2, &matrix_bytes) ||
+      !checked_multiply(
+          pair_count_u64,
+          kFrameGraphCopyCount * sizeof(std::size_t),
+          &reference_graph_bytes) ||
+      !checked_multiply(
+          row_count_u64,
+          kFrameCarrierMetadataCopyCount *
+              (sizeof(CanonicalWindowRowPeerMetadata) +
+               sizeof(CanonicalWindowEffectiveFrame)),
+          &metadata_bytes) ||
+      !checked_multiply(
+          row_count_u64,
+          3 * sizeof(scratchbird::engine::internal_api::EngineTypedValue),
+          &value_vector_bytes) ||
+      !checked_multiply(row_count_u64, sizeof(std::size_t),
+                        &partition_index_bytes) ||
+      !checked_multiply(
+          row_count_u64,
+          kFrameGraphCopyCount * sizeof(std::vector<std::size_t>),
+          &partition_vector_bytes) ||
+      !checked_multiply(row_count_u64, kMaximumInt64TextBytes,
+                        &result_value_payload_bytes) ||
+      !checked_multiply(input_payload_bytes, kRetainedInputCopyCount,
+                        &retained_input_copy_bytes) ||
+      !checked_multiply(maximum_order_key_workspace_bytes, 2,
+                        &order_comparison_workspace_bytes) ||
+      !checked_add(input_payload_bytes, result_value_payload_bytes,
+                   &output_payload_bytes) ||
+      !checked_add(matrix_bytes, reference_graph_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes, metadata_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes, value_vector_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes, partition_index_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes, partition_vector_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(
+          planned_auxiliary_workspace_bytes,
+          kFrameGraphCopyCount *
+              sizeof(std::vector<std::vector<std::size_t>>),
+          &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes,
+                   planned_receipt_workspace_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes,
+                   order_comparison_workspace_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes,
+                   retained_input_copy_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(input_payload_bytes, planned_auxiliary_workspace_bytes,
+                   &planned_retained_memory_bytes) ||
+      !checked_add(input_payload_bytes, output_payload_bytes,
+                   &planned_peak_memory_bytes) ||
+      !checked_add(planned_peak_memory_bytes,
+                   planned_auxiliary_workspace_bytes,
+                   &planned_peak_memory_bytes) ||
+      pair_count_u64 > std::numeric_limits<std::size_t>::max() ||
+      planned_auxiliary_workspace_bytes >
+          std::numeric_limits<std::size_t>::max() ||
+      planned_retained_memory_bytes >
+          std::numeric_limits<std::size_t>::max() ||
+      selected_node->memory_bytes_required == 0 ||
+      selected_node->memory_bytes_required >
+          std::numeric_limits<std::size_t>::max() ||
+      selected_node->memory_bytes_required > execution_dag.memory_budget_bytes ||
+      planned_peak_memory_bytes > selected_node->memory_bytes_required) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "SUM window runtime materialization exceeds its selected node grant"));
+  }
+
+  CanonicalWindowPartitionOrderRequest partition_request;
+  partition_request.physical_dag = execution_dag;
+  partition_request.selected_physical_node_id =
+      request.selected_physical_node_id;
+  partition_request.input_batch = execution_ordered_input_batch;
+  partition_request.order_terms = {request.order_term};
+  partition_request.window_property_uuid = *window_property;
+  partition_request.ordering_property_uuid = ordering_property_uuid;
+  partition_request.term_binding_evidence_uuid =
+      request.order_term_binding_evidence_uuid;
+  partition_request.deterministic_tie_evidence_uuid =
+      request.deterministic_order_evidence_uuid;
+  partition_request.operator_local_parent_implementation_id =
+      "window.aggregate-registry-frame-recompute.v1";
+  partition_request.maximum_term_count = 1;
+  partition_request.maximum_pair_comparisons =
+      request.maximum_pair_comparisons;
+  partition_request.mga_authority = request.mga_authority;
+  auto partition = ExecuteCanonicalWindowPartitionOrder(partition_request);
+  if (!partition.diagnostic.ok) return refuse(std::move(partition.diagnostic));
+
+  CanonicalWindowFrameRequest frame_request;
+  frame_request.partition_order = std::move(partition);
+  frame_request.frame.frame_descriptor_uuid =
+      request.window_frame_descriptor_uuid;
+  frame_request.frame.frame_specified = false;
+  frame_request.frame_property_binding_evidence_uuid =
+      request.frame_property_binding_evidence_uuid;
+  frame_request.maximum_effective_row_references =
+      request.maximum_effective_row_references;
+  frame_request.mga_authority = request.mga_authority;
+  auto frames = ExecuteCanonicalWindowFrames(frame_request);
+  if (!frames.diagnostic.ok) return refuse(std::move(frames.diagnostic));
+  if (!frames.defaulted_with_order || frames.defaulted_without_order ||
+      !frames.resolved_frame.start.has_value() ||
+      !frames.resolved_frame.end.has_value() ||
+      frames.resolved_frame.unit != CanonicalWindowFrameUnit::range ||
+      frames.resolved_frame.start->kind !=
+          CanonicalWindowFrameBoundKind::unbounded_preceding ||
+      frames.resolved_frame.end->kind !=
+          CanonicalWindowFrameBoundKind::current_row ||
+      frames.resolved_frame.exclusion !=
+          CanonicalWindowFrameExclusion::no_others) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-FRAME",
+        "SUM window did not resolve the canonical peer-inclusive ordered default frame"));
+  }
+  std::size_t effective_frame_row_reference_count = 0;
+  for (const auto& frame : frames.effective_frames) {
+    if (frame.effective_row_indices.size() >
+        std::numeric_limits<std::size_t>::max() -
+            effective_frame_row_reference_count) {
+      return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                            "SUM window frame reference count overflowed"));
+    }
+    effective_frame_row_reference_count +=
+        frame.effective_row_indices.size();
+  }
+  if (effective_frame_row_reference_count >
+      request.maximum_effective_row_references) {
+    return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "SUM window frame reference bound was exceeded"));
+  }
+
+  CanonicalWindowAggregateRequest aggregate_request;
+  aggregate_request.frames = std::move(frames);
+  aggregate_request.function = CanonicalWindowAggregateFunction::int64_sum;
+  aggregate_request.function_uuid =
+      request.aggregate_descriptor.function_uuid;
+  aggregate_request.value_expression_descriptor_id =
+      execution_ordered_input_batch.columns[request.value_column]
+          .descriptor_id;
+  aggregate_request.result_column = request.result_column;
+  aggregate_request.maximum_output_rows = std::max<std::size_t>(1, row_count);
+  aggregate_request.maximum_transition_count =
+      request.maximum_transition_count;
+  aggregate_request.maximum_distinct_value_count = 1;
+  aggregate_request.maximum_pair_comparisons = 1;
+  aggregate_request.maximum_final_output_bytes =
+      static_cast<std::size_t>(selected_node->memory_bytes_required);
+  aggregate_request.maximum_finalization_workspace_bytes =
+      static_cast<std::size_t>(selected_node->memory_bytes_required);
+  aggregate_request.maximum_combined_final_output_bytes =
+      static_cast<std::size_t>(selected_node->memory_bytes_required);
+  aggregate_request.retained_memory_bytes =
+      static_cast<std::size_t>(planned_retained_memory_bytes);
+  aggregate_request.mga_authority = request.mga_authority;
+  auto aggregate = ExecuteCanonicalWindowAggregate(aggregate_request);
+  if (!aggregate.diagnostic.ok) {
+    return refuse(std::move(aggregate.diagnostic));
+  }
+  if (aggregate.values.size() != row_count ||
+      aggregate.transition_count > request.maximum_transition_count ||
+      !aggregate.effective_frame_recomputed ||
+      !aggregate.shared_aggregate_state_authority_used ||
+      !aggregate.canonical_registry_state_frame_executor_used ||
+      !aggregate.split_runtime_bypass_forbidden ||
+      aggregate.window_property_uuid != *window_property ||
+      aggregate.selected_plan_uuid != execution_dag.selected_plan_uuid ||
+      aggregate.executed_physical_node_id !=
+          selected_node->physical_node_id ||
+      aggregate.causal_counter_id != selected_node->causal_counter_id) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+        "SUM window did not consume its exact frame-recompute aggregate payload"));
+  }
+
+  std::uint64_t observed_auxiliary_workspace_bytes =
+      planned_auxiliary_workspace_bytes;
+  std::uint64_t observed_peak_memory_bytes = 0;
+  if (!checked_add(observed_auxiliary_workspace_bytes,
+                   aggregate.combined_state_bytes,
+                   &observed_auxiliary_workspace_bytes) ||
+      !checked_add(observed_auxiliary_workspace_bytes,
+                   aggregate.combined_final_output_bytes,
+                   &observed_auxiliary_workspace_bytes) ||
+      !checked_add(observed_auxiliary_workspace_bytes,
+                   aggregate.peak_finalization_workspace_bytes,
+                   &observed_auxiliary_workspace_bytes) ||
+      !checked_add(input_payload_bytes, output_payload_bytes,
+                   &observed_peak_memory_bytes) ||
+      !checked_add(observed_peak_memory_bytes,
+                   observed_auxiliary_workspace_bytes,
+                   &observed_peak_memory_bytes) ||
+      observed_auxiliary_workspace_bytes >
+          std::numeric_limits<std::size_t>::max() ||
+      observed_peak_memory_bytes > selected_node->memory_bytes_required) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "SUM window observed aggregate state exceeded its selected node grant"));
+  }
+
+  result.output_batch =
+      std::move(aggregate_request.frames.ordered_batch);
+  result.output_batch.columns.push_back(request.result_column);
+  for (std::size_t row = 0; row < row_count; ++row) {
+    result.output_batch.rows[row].values.push_back(
+        std::move(aggregate.values[row]));
+  }
+  const auto output_validation = ValidateCanonicalDescriptorBatch(
+      result.output_batch, selected_node->output_descriptor_ids);
+  if (!output_validation.ok) return refuse(output_validation);
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, execution_dag);
+  if (!result_authority.ok) return refuse(result_authority);
+
+  result.peak_auxiliary_workspace_bytes =
+      static_cast<std::size_t>(observed_auxiliary_workspace_bytes);
+  result.diagnostic = {};
+  result.partition_order_comparison_count =
+      static_cast<std::size_t>(pair_count_u64);
+  result.effective_frame_row_reference_count =
+      effective_frame_row_reference_count;
+  result.aggregate_transition_count = aggregate.transition_count;
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
+  result.executed_physical_node_id = selected_node->physical_node_id;
+  result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
+  return result;
+}
+}  // namespace
+
+CanonicalDescriptorAggregateWindowResult
+ExecuteCanonicalDescriptorAggregateWindow(
+    const CanonicalDescriptorAggregateWindowRequest& request) {
+  return ExecuteCanonicalDescriptorAggregateWindowBound(
+      request, request.physical_dag, request.ordered_input_batch, false);
+}
+
+CanonicalDescriptorAggregateWindowResult
+ExecuteCanonicalDescriptorAggregateWindow(
+    const CanonicalDescriptorAggregateWindowRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_ordered_input_batch) {
+  return ExecuteCanonicalDescriptorAggregateWindowBound(
       request, borrowed_execution_dag, borrowed_ordered_input_batch, true);
 }
 

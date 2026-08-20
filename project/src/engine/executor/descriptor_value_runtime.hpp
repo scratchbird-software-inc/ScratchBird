@@ -2085,6 +2085,41 @@ struct CanonicalAggregateRuntimeResult {
   PhysicalMgaStatementContext mga_statement_context;
 };
 
+// Exact live aggregate-as-window carrier. Aggregate identity remains owned by
+// the QRY-011 registry; this request only binds that identity to one canonical
+// ordered window frame and its optimizer-selected state implementation.
+struct CanonicalDescriptorAggregateWindowRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch ordered_input_batch;
+  CanonicalDescriptorOrderTerm order_term;
+  std::size_t value_column = 0;
+  CanonicalAggregateDescriptor aggregate_descriptor;
+  ExecutorColumnDescriptor result_column;
+  std::string window_frame_descriptor_uuid;
+  std::string order_term_binding_evidence_uuid;
+  std::string deterministic_order_evidence_uuid;
+  std::string frame_property_binding_evidence_uuid;
+  std::string executor_capability_uuid;
+  std::size_t maximum_pair_comparisons = 0;
+  std::size_t maximum_effective_row_references = 0;
+  std::size_t maximum_transition_count = 0;
+  CanonicalExecutionMgaAuthority mga_authority;
+};
+
+struct CanonicalDescriptorAggregateWindowResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::size_t partition_order_comparison_count = 0;
+  std::size_t effective_frame_row_reference_count = 0;
+  std::size_t aggregate_transition_count = 0;
+  std::uint64_t peak_auxiliary_workspace_bytes = 0;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
+};
+
 struct CanonicalAggregateStateSpillRequest {
   CanonicalAggregateRuntimeRequest aggregate_request;
   std::filesystem::path spill_root;
@@ -3167,6 +3202,14 @@ ExecuteCanonicalDescriptorNavigationWindow(
 CanonicalDescriptorNavigationWindowResult
 ExecuteCanonicalDescriptorNavigationWindow(
     const CanonicalDescriptorNavigationWindowRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_ordered_input_batch);
+CanonicalDescriptorAggregateWindowResult
+ExecuteCanonicalDescriptorAggregateWindow(
+    const CanonicalDescriptorAggregateWindowRequest& request);
+CanonicalDescriptorAggregateWindowResult
+ExecuteCanonicalDescriptorAggregateWindow(
+    const CanonicalDescriptorAggregateWindowRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch);
 CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindow(

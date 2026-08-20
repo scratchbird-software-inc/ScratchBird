@@ -254,6 +254,10 @@ struct CanonicalWindowAggregateRequest {
   std::size_t maximum_final_output_bytes = 0;
   std::size_t maximum_finalization_workspace_bytes = 0;
   std::size_t maximum_combined_final_output_bytes = 0;
+  // Bytes retained by the caller while the shared aggregate kernel executes.
+  // This prevents aggregate-as-window compatibility routes from treating
+  // their frame/order carriers as free memory beside the kernel grant.
+  std::size_t retained_memory_bytes = 0;
   bool parser_execution_authority_claimed = false;
   bool transaction_finality_claimed = false;
   bool recovery_authority_claimed = false;
@@ -269,6 +273,7 @@ struct CanonicalWindowAggregateResult {
   std::size_t transition_count = 0;
   std::size_t distinct_value_count = 0;
   std::size_t pair_comparison_count = 0;
+  std::size_t combined_state_bytes = 0;
   std::size_t combined_final_output_bytes = 0;
   std::size_t peak_finalization_workspace_bytes = 0;
   bool filter_applied_before_transition = false;

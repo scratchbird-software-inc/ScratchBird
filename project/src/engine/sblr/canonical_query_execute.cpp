@@ -6319,6 +6319,15 @@ constexpr GlobalRankingWindowProfile kGlobalLastValueProfile{
 constexpr GlobalRankingWindowProfile kGlobalNthValueProfile{
     "window.nth-value.v1", "sb.window.nth_value",
     "019de5fc-2400-7dc9-80e6-9f2ccf08076f", "NTH_VALUE", "int64"};
+GlobalRankingWindowProfile GlobalAggregateSumWindowProfileV1() {
+  const auto* row = exec::LookupCanonicalAggregateByFunctionV1(
+      exec::CanonicalAggregateFunction::sum);
+  if (row == nullptr || !row->executable || !row->aggregate_as_window) {
+    return {};
+  }
+  return {"window.aggregate-bridge.v1", row->builtin_id,
+          row->function_uuid, "SUM", "int64"};
+}
 constexpr std::uint64_t kRealRankingRatioTextMaximumBytes = 36;
 constexpr std::uint64_t kRealRankingConversionWorkspaceMaximumBytes =
     2 * kRealRankingRatioTextMaximumBytes;
@@ -6401,9 +6410,11 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       profile.builtin_id == "sb.window.last_value";
   const bool nth_value_window =
       profile.builtin_id == "sb.window.nth_value";
+  const bool aggregate_sum_window =
+      profile.semantic_variant_id == "window.aggregate-bridge.v1";
   const bool value_window =
       navigation_window || first_value_window || last_value_window ||
-      nth_value_window;
+      nth_value_window || aggregate_sum_window;
   const bool exact_argument_arity =
       invocations.size() == 1 &&
       (nth_value_window
@@ -6792,6 +6803,45 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         return result;
       }
       result.nth_value_position_operand = std::move(operand);
+    }
+  }
+
+  if (aggregate_sum_window) {
+    const auto order_expression_id =
+        definitions.front()->ordering_terms.front().expression_id;
+    const auto order_expression = std::ranges::find_if(
+        dag.expressions, [&](const auto& expression) {
+          return expression.expression_id == order_expression_id;
+        });
+    const auto order_descriptor = std::ranges::find_if(
+        dag.descriptors, [&](const auto& descriptor) {
+          return order_expression != dag.expressions.end() &&
+                 descriptor.descriptor_id ==
+                     order_expression->result_descriptor_id;
+        });
+    if (prepared_sort.order_terms.size() != 1 ||
+        order_expression == dag.expressions.end() ||
+        order_expression->expression_kind !=
+            api::RelationalExpressionKind::kIdentifier ||
+        !order_expression->child_expression_ids.empty() ||
+        !order_expression->bound_name_uuid.has_value() ||
+        order_expression->function_uuid.has_value() ||
+        order_expression->literal_kind.has_value() ||
+        order_expression->literal_or_parameter_ref.has_value() ||
+        order_expression->operator_name.has_value() ||
+        order_descriptor == dag.descriptors.end() ||
+        order_descriptor->type_uuid != result_type_uuid ||
+        order_descriptor->collation_uuid.has_value() ||
+        order_descriptor->timezone_profile_id.has_value() ||
+        order_descriptor->width.has_value() ||
+        order_descriptor->precision.has_value() ||
+        order_descriptor->scale.has_value() ||
+        std::ranges::find(previous_logical.output_descriptor_ids,
+                          order_descriptor->descriptor_id) ==
+            previous_logical.output_descriptor_ids.end()) {
+      result.detail = std::string(family_label) +
+                      " SUM order key is not one direct canonical int64 column";
+      return result;
     }
   }
 
@@ -10127,6 +10177,163 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
+        step.output_row_count = window.output_batch.rows.size();
+        step.materialized_output_batch = std::move(window.output_batch);
+        step.mga_statement_context = std::move(window.mga_statement_context);
+        PublishRuntimeMemoryObservation(
+            &step, output_memory_bytes, peak_memory_bytes);
+        return step;
+      };
+  return registration;
+}
+
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveAggregateWindowRegistration(
+    exec::ExecutorColumnDescriptor result_column,
+    exec::CanonicalDescriptorOrderTerm order_term,
+    const std::size_t value_column,
+    exec::CanonicalAggregateDescriptor aggregate_descriptor,
+    std::string window_frame_descriptor_uuid,
+    std::string order_term_binding_evidence_uuid,
+    std::string deterministic_order_evidence_uuid,
+    std::string frame_property_binding_evidence_uuid,
+    std::string capability_uuid,
+    const std::size_t maximum_input_row_count,
+    const std::size_t maximum_pair_comparisons,
+    const std::size_t maximum_effective_row_references,
+    const std::size_t maximum_transition_count,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kWindow;
+  registration.implementation_id =
+      "window.aggregate-registry-frame-recompute.v1";
+  registration.executor_capability_uuid = capability_uuid;
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 = true;
+  registration.execute =
+      [result_column = std::move(result_column),
+       order_term = std::move(order_term), value_column,
+       aggregate_descriptor = std::move(aggregate_descriptor),
+       window_frame_descriptor_uuid =
+           std::move(window_frame_descriptor_uuid),
+       order_term_binding_evidence_uuid =
+           std::move(order_term_binding_evidence_uuid),
+       deterministic_order_evidence_uuid =
+           std::move(deterministic_order_evidence_uuid),
+       frame_property_binding_evidence_uuid =
+           std::move(frame_property_binding_evidence_uuid),
+       capability_uuid = std::move(capability_uuid), maximum_input_row_count,
+       maximum_pair_comparisons, maximum_effective_row_references,
+       maximum_transition_count, mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            node.input_physical_node_ids.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-INPUT";
+          step.diagnostic.detail =
+              "SUM window did not receive its bounded sorted input batch";
+          return step;
+        }
+        const auto& input_batch = *inputs.front().materialized_output_batch;
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id, &*scoped_execution_dag,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-INPUT";
+            step.diagnostic.detail =
+                "SUM window execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
+        exec::CanonicalDescriptorAggregateWindowRequest request;
+        request.selected_physical_node_id = node.physical_node_id;
+        request.order_term = order_term;
+        request.value_column = value_column;
+        request.aggregate_descriptor = aggregate_descriptor;
+        request.result_column = result_column;
+        request.window_frame_descriptor_uuid =
+            window_frame_descriptor_uuid;
+        request.order_term_binding_evidence_uuid =
+            order_term_binding_evidence_uuid;
+        request.deterministic_order_evidence_uuid =
+            deterministic_order_evidence_uuid;
+        request.frame_property_binding_evidence_uuid =
+            frame_property_binding_evidence_uuid;
+        request.executor_capability_uuid = capability_uuid;
+        request.maximum_pair_comparisons = maximum_pair_comparisons;
+        request.maximum_effective_row_references =
+            maximum_effective_row_references;
+        request.maximum_transition_count = maximum_transition_count;
+        request.mga_authority = BuildCanonicalExecutionMgaAuthority(
+            mga_context, *execution_dag);
+        auto window = exec::ExecuteCanonicalDescriptorAggregateWindow(
+            request, *execution_dag, input_batch);
+        if (!window.diagnostic.ok) {
+          step.diagnostic = std::move(window.diagnostic);
+          return step;
+        }
+        std::uint64_t input_memory_bytes = 0;
+        std::uint64_t output_memory_bytes = 0;
+        std::uint64_t peak_memory_bytes = 0;
+        std::uint64_t rows_examined = 0;
+        if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
+                                                 &input_memory_bytes) ||
+            !RuntimeMaterializedBatchMemoryBytes(window.output_batch,
+                                                 &output_memory_bytes) ||
+            !CheckedAdd(input_memory_bytes, output_memory_bytes,
+                        &peak_memory_bytes) ||
+            !CheckedAdd(peak_memory_bytes,
+                        window.peak_auxiliary_workspace_bytes,
+                        &peak_memory_bytes) ||
+            !CheckedAdd(input_batch.rows.size(),
+                        window.partition_order_comparison_count,
+                        &rows_examined) ||
+            !CheckedAdd(rows_examined,
+                        window.effective_frame_row_reference_count,
+                        &rows_examined) ||
+            !CheckedAdd(rows_examined,
+                        window.aggregate_transition_count,
+                        &rows_examined) ||
+            peak_memory_bytes > node.memory_bytes_required ||
+            window.partition_order_comparison_count >
+                maximum_pair_comparisons ||
+            window.effective_frame_row_reference_count >
+                maximum_effective_row_references ||
+            window.aggregate_transition_count > maximum_transition_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "SUM window runtime work or memory observation exceeded its grant";
+          return step;
+        }
+        step.authority.engine_mga_snapshot_bound = true;
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = rows_examined;
         step.output_row_count = window.output_batch.rows.size();
         step.materialized_output_batch = std::move(window.output_batch);
         step.mga_statement_context = std::move(window.mga_statement_context);
@@ -14613,7 +14820,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
              current->semantic_variant_id != "window.lead.v1" &&
              current->semantic_variant_id != "window.first-value.v1" &&
              current->semantic_variant_id != "window.last-value.v1" &&
-             current->semantic_variant_id != "window.nth-value.v1") ||
+             current->semantic_variant_id != "window.nth-value.v1" &&
+             current->semantic_variant_id !=
+                 "window.aggregate-bridge.v1") ||
             current->logical_node_id != graph.root_logical_node_id ||
             current->bound_expression_ids.size() !=
                 ((current->semantic_variant_id == "window.ntile.v1" ||
@@ -14621,7 +14830,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   current->semantic_variant_id == "window.lead.v1" ||
                   current->semantic_variant_id == "window.first-value.v1" ||
                   current->semantic_variant_id == "window.last-value.v1" ||
-                  current->semantic_variant_id == "window.nth-value.v1")
+                  current->semantic_variant_id == "window.nth-value.v1" ||
+                  current->semantic_variant_id ==
+                      "window.aggregate-bridge.v1")
                      ? (current->semantic_variant_id == "window.nth-value.v1"
                             ? 4U
                             : 3U)
@@ -14781,6 +14992,18 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::string navigation_capability_uuid;
   std::size_t navigation_maximum_pair_comparisons = 0;
   std::size_t navigation_maximum_effective_row_references = 0;
+  std::optional<exec::ExecutorColumnDescriptor> prepared_aggregate_window;
+  std::optional<exec::CanonicalDescriptorOrderTerm>
+      prepared_aggregate_window_order_term;
+  std::optional<std::size_t> prepared_aggregate_window_value_column;
+  exec::CanonicalAggregateDescriptor prepared_aggregate_window_descriptor;
+  std::string prepared_aggregate_window_frame_descriptor_uuid;
+  std::string aggregate_window_order_term_binding_evidence_uuid;
+  std::string aggregate_window_frame_property_binding_evidence_uuid;
+  std::string aggregate_window_capability_uuid;
+  std::size_t aggregate_window_maximum_pair_comparisons = 0;
+  std::size_t aggregate_window_maximum_effective_row_references = 0;
+  std::size_t aggregate_window_maximum_transition_count = 0;
   std::string row_number_order_evidence_uuid;
   std::string ntile_order_term_binding_evidence_uuid;
   std::string peer_ranking_order_term_binding_evidence_uuid;
@@ -18248,17 +18471,21 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             node.semantic_variant_id == "window.last-value.v1";
         const bool nth_value_window =
             node.semantic_variant_id == "window.nth-value.v1";
+        const bool aggregate_sum_window =
+            node.semantic_variant_id == "window.aggregate-bridge.v1";
         const bool navigation_window = lag_window || lead_window;
         const bool value_window =
             navigation_window || first_value_window || last_value_window ||
-            nth_value_window;
+            nth_value_window || aggregate_sum_window;
         const bool peer_ranking_window =
             rank_window || dense_rank_window || percent_rank_window ||
             cume_dist_window;
         const bool real_ranking_window =
             percent_rank_window || cume_dist_window;
-        const auto& ranking_profile =
-            value_window
+        const auto ranking_profile =
+            aggregate_sum_window
+                ? GlobalAggregateSumWindowProfileV1()
+                : value_window
                 ? (first_value_window
                        ? kGlobalFirstValueProfile
                        : (last_value_window
@@ -18383,7 +18610,16 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 std::max(maximum_value_payload_memory,
                          value_payload_memory);
           }
-          if (first_value_window || last_value_window || nth_value_window) {
+          if (aggregate_sum_window) {
+            constexpr std::uint64_t kMaximumInt64TextBytes = 20;
+            if (!CheckedMultiply(kMaximumInt64TextBytes, input_row_count,
+                                 &result_value_payload_memory)) {
+              return refuse(
+                  "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "composition SUM repeated result payload overflowed");
+            }
+          } else if (first_value_window || last_value_window ||
+                     nth_value_window) {
             if (!CheckedMultiply(maximum_value_payload_memory,
                                  input_row_count,
                                  &result_value_payload_memory)) {
@@ -18459,39 +18695,65 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 std::nullopt,
                 std::nullopt};
         std::uint64_t frame_value_comparison_workspace_bytes = 0;
-        if (last_value_window || nth_value_window) {
+        if (last_value_window || nth_value_window || aggregate_sum_window) {
           const auto& order_term = prepared_sort->order_terms.front();
-          for (std::size_t row = 1; row < input_batch.rows.size(); ++row) {
-            const auto& left_value =
-                input_batch.rows[row - 1].values[order_term.column];
-            const auto& right_value =
-                input_batch.rows[row].values[order_term.column];
-            const auto left_plan =
-                exec::PlanCanonicalDescriptorEqualityKey(left_value,
-                                                          order_term);
-            const auto right_plan =
-                exec::PlanCanonicalDescriptorEqualityKey(right_value,
-                                                          order_term);
-            std::uint64_t pair_workspace_bytes = 0;
-            if (!left_plan.diagnostic.ok || !right_plan.diagnostic.ok ||
-                left_plan.peak_workspace_bytes >
-                    std::numeric_limits<std::uint64_t>::max() ||
-                right_plan.peak_workspace_bytes >
-                    std::numeric_limits<std::uint64_t>::max() ||
-                !CheckedAdd(
-                    static_cast<std::uint64_t>(
-                        left_plan.peak_workspace_bytes),
-                    static_cast<std::uint64_t>(
-                        right_plan.peak_workspace_bytes),
-                    &pair_workspace_bytes)) {
+          if (aggregate_sum_window) {
+            std::uint64_t maximum_key_workspace_bytes = 0;
+            for (const auto& row : input_batch.rows) {
+              const auto key_plan =
+                  exec::PlanCanonicalDescriptorEqualityKey(
+                      row.values[order_term.column], order_term);
+              if (!key_plan.diagnostic.ok ||
+                  key_plan.peak_workspace_bytes >
+                      std::numeric_limits<std::uint64_t>::max()) {
+                return refuse(
+                    "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "composition SUM comparison workspace was refused");
+              }
+              maximum_key_workspace_bytes = std::max(
+                  maximum_key_workspace_bytes,
+                  static_cast<std::uint64_t>(
+                      key_plan.peak_workspace_bytes));
+            }
+            if (!CheckedMultiply(maximum_key_workspace_bytes, 2,
+                                 &frame_value_comparison_workspace_bytes)) {
               return refuse(
                   "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "composition " + std::string(ranking_name) +
-                      " comparison workspace overflowed or was refused");
+                  "composition SUM comparison workspace overflowed");
             }
-            frame_value_comparison_workspace_bytes =
-                std::max(frame_value_comparison_workspace_bytes,
-                         pair_workspace_bytes);
+          } else {
+            for (std::size_t row = 1; row < input_batch.rows.size(); ++row) {
+              const auto& left_value =
+                  input_batch.rows[row - 1].values[order_term.column];
+              const auto& right_value =
+                  input_batch.rows[row].values[order_term.column];
+              const auto left_plan =
+                  exec::PlanCanonicalDescriptorEqualityKey(left_value,
+                                                            order_term);
+              const auto right_plan =
+                  exec::PlanCanonicalDescriptorEqualityKey(right_value,
+                                                            order_term);
+              std::uint64_t pair_workspace_bytes = 0;
+              if (!left_plan.diagnostic.ok || !right_plan.diagnostic.ok ||
+                  left_plan.peak_workspace_bytes >
+                      std::numeric_limits<std::uint64_t>::max() ||
+                  right_plan.peak_workspace_bytes >
+                      std::numeric_limits<std::uint64_t>::max() ||
+                  !CheckedAdd(
+                      static_cast<std::uint64_t>(
+                          left_plan.peak_workspace_bytes),
+                      static_cast<std::uint64_t>(
+                          right_plan.peak_workspace_bytes),
+                      &pair_workspace_bytes)) {
+                return refuse(
+                    "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "composition " + std::string(ranking_name) +
+                        " comparison workspace overflowed or was refused");
+              }
+              frame_value_comparison_workspace_bytes =
+                  std::max(frame_value_comparison_workspace_bytes,
+                           pair_workspace_bytes);
+            }
           }
           std::uint64_t last_value_materialization_memory_bytes = 0;
           if (!CheckedAdd(input_memory, input_memory,
@@ -18614,7 +18876,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           if (cume_dist_window) continue;
           api::EngineTypedValue value;
-          if (value_window) {
+          if (aggregate_sum_window) {
+            // Planning retains schema/cardinality only. The selected
+            // aggregate-window executor publishes the canonical registry
+            // result after the physical DAG is immutable.
+            value.descriptor = descriptor;
+            value.is_null = true;
+            value.state = api::EngineValueState::sql_null;
+          } else if (value_window) {
             value.descriptor = descriptor;
             std::optional<std::size_t> target_row;
             if (first_value_window && !input_batch.rows.empty()) {
@@ -18749,7 +19018,30 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         state.batch = std::move(output);
         state.result_bindings = input_bindings;
         state.result_bindings.push_back(std::move(ranking_binding));
-        if (value_window) {
+        if (aggregate_sum_window) {
+          const auto* aggregate_row =
+              exec::LookupCanonicalAggregateByFunctionV1(
+                  exec::CanonicalAggregateFunction::sum);
+          if (aggregate_row == nullptr || !aggregate_row->executable ||
+              !aggregate_row->aggregate_as_window ||
+              aggregate_row->builtin_id != ranking_profile.builtin_id ||
+              aggregate_row->function_uuid != ranking_profile.function_uuid) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          "composition SUM aggregate registry identity drifted");
+          }
+          prepared_aggregate_window = std::move(ranking_column);
+          prepared_aggregate_window_order_term =
+              prepared_sort->order_terms.front();
+          prepared_aggregate_window_value_column =
+              *ranking.navigation_value_column;
+          prepared_aggregate_window_descriptor = {
+              aggregate_row->abi_version, aggregate_row->function,
+              aggregate_row->builtin_id, aggregate_row->function_uuid,
+              false};
+          prepared_aggregate_window_frame_descriptor_uuid =
+              ranking.window_frame_descriptor_uuid;
+          planning_values_exact = false;
+        } else if (value_window) {
           prepared_navigation_window = std::move(ranking_column);
           prepared_navigation_order_term =
               prepared_sort->order_terms.front();
@@ -18810,19 +19102,31 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           auxiliary_memory =
               std::max(auxiliary_memory, actual_receipt_workspace_bytes);
           if (value_window) {
-            navigation_order_term_binding_evidence_uuid =
-                order_term_binding_evidence_uuid;
-            navigation_frame_property_binding_evidence_uuid =
-                DerivedCanonicalUuid(
-                    identity_scope + ":" + ranking.window_property_uuid + ":" +
-                        ranking.window_frame_descriptor_uuid,
-                    "node-composition.window.frame-property-binding");
-            navigation_capability_uuid = DerivedCanonicalUuid(
+            auto& bound_order_evidence =
+                aggregate_sum_window
+                    ? aggregate_window_order_term_binding_evidence_uuid
+                    : navigation_order_term_binding_evidence_uuid;
+            auto& bound_frame_evidence =
+                aggregate_sum_window
+                    ? aggregate_window_frame_property_binding_evidence_uuid
+                    : navigation_frame_property_binding_evidence_uuid;
+            auto& bound_capability =
+                aggregate_sum_window ? aggregate_window_capability_uuid
+                                     : navigation_capability_uuid;
+            bound_order_evidence = order_term_binding_evidence_uuid;
+            bound_frame_evidence = DerivedCanonicalUuid(
+                identity_scope + ":" + ranking.window_property_uuid + ":" +
+                    ranking.window_frame_descriptor_uuid,
+                aggregate_sum_window
+                    ? "node-composition.window.aggregate-sum.frame-property-binding"
+                    : "node-composition.window.frame-property-binding");
+            bound_capability = DerivedCanonicalUuid(
                 identity_scope + ":" +
                     ranking.result_descriptor->descriptor_uuid + ":" +
-                    navigation_order_term_binding_evidence_uuid + ":" +
-                    navigation_frame_property_binding_evidence_uuid,
-                first_value_window
+                    bound_order_evidence + ":" + bound_frame_evidence,
+                aggregate_sum_window
+                    ? "node-composition.window.aggregate-sum.capability"
+                    : first_value_window
                     ? "node-composition.window.first-value.capability"
                     : (last_value_window
                            ? "node-composition.window.last-value.capability"
@@ -18831,11 +19135,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                                   : (lag_window
                                          ? "node-composition.window.lag.capability"
                                          : "node-composition.window.lead.capability"))));
-            if (navigation_capability_uuid.empty() ||
-                navigation_capability_uuid ==
-                    navigation_order_term_binding_evidence_uuid ||
-                navigation_capability_uuid ==
-                    navigation_frame_property_binding_evidence_uuid) {
+            if (bound_capability.empty() ||
+                bound_capability == bound_order_evidence ||
+                bound_capability == bound_frame_evidence) {
               return refuse(
                   std::string(kPayloadDiagnostic),
                   "composition " + std::string(ranking_name) +
@@ -18924,6 +19226,57 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   "composition " + std::string(ranking_name) +
                       " navigation workspace overflowed");
             }
+            if (aggregate_sum_window) {
+              std::uint64_t aggregate_extra_reference_bytes = 0;
+              std::uint64_t aggregate_extra_metadata_bytes = 0;
+              std::uint64_t aggregate_extra_value_vector_bytes = 0;
+              std::uint64_t aggregate_extra_partition_vector_bytes = 0;
+              std::uint64_t aggregate_extra_input_bytes = 0;
+              constexpr std::uint64_t kAdditionalFrameGraphCopies = 4;
+              if (!CheckedMultiply(
+                      navigation_pair_count,
+                      kAdditionalFrameGraphCopies * sizeof(std::size_t),
+                      &aggregate_extra_reference_bytes) ||
+                  !CheckedMultiply(
+                      input_row_count,
+                      2 * sizeof(exec::CanonicalWindowRowPeerMetadata) +
+                          3 * sizeof(exec::CanonicalWindowEffectiveFrame),
+                      &aggregate_extra_metadata_bytes) ||
+                  !CheckedMultiply(input_row_count,
+                                   sizeof(api::EngineTypedValue),
+                                   &aggregate_extra_value_vector_bytes) ||
+                  !CheckedMultiply(
+                      input_row_count,
+                      kAdditionalFrameGraphCopies *
+                          sizeof(std::vector<std::size_t>),
+                      &aggregate_extra_partition_vector_bytes) ||
+                  !CheckedMultiply(input_memory, 2,
+                                   &aggregate_extra_input_bytes) ||
+                  !CheckedAdd(navigation_workspace_bytes,
+                              aggregate_extra_reference_bytes,
+                              &navigation_workspace_bytes) ||
+                  !CheckedAdd(navigation_workspace_bytes,
+                              aggregate_extra_metadata_bytes,
+                              &navigation_workspace_bytes) ||
+                  !CheckedAdd(navigation_workspace_bytes,
+                              aggregate_extra_value_vector_bytes,
+                              &navigation_workspace_bytes) ||
+                  !CheckedAdd(navigation_workspace_bytes,
+                              aggregate_extra_partition_vector_bytes,
+                              &navigation_workspace_bytes) ||
+                  !CheckedAdd(
+                      navigation_workspace_bytes,
+                      kAdditionalFrameGraphCopies *
+                          sizeof(std::vector<std::vector<std::size_t>>),
+                      &navigation_workspace_bytes) ||
+                  !CheckedAdd(navigation_workspace_bytes,
+                              aggregate_extra_input_bytes,
+                              &navigation_workspace_bytes)) {
+                return refuse(
+                    "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "composition SUM retained frame-carrier workspace overflowed");
+              }
+            }
             std::uint64_t navigation_work = 0;
             if (!CheckedMultiply(navigation_pair_count, 2,
                                  &navigation_work) ||
@@ -18933,10 +19286,21 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   "composition " + std::string(ranking_name) +
                       " navigation work exceeds its admitted bound");
             }
-            navigation_maximum_pair_comparisons = std::max<std::size_t>(
+            auto& maximum_pair_comparisons =
+                aggregate_sum_window
+                    ? aggregate_window_maximum_pair_comparisons
+                    : navigation_maximum_pair_comparisons;
+            auto& maximum_effective_row_references =
+                aggregate_sum_window
+                    ? aggregate_window_maximum_effective_row_references
+                    : navigation_maximum_effective_row_references;
+            maximum_pair_comparisons = std::max<std::size_t>(
                 1, static_cast<std::size_t>(navigation_pair_count));
-            navigation_maximum_effective_row_references =
-                navigation_maximum_pair_comparisons;
+            maximum_effective_row_references = maximum_pair_comparisons;
+            if (aggregate_sum_window) {
+              aggregate_window_maximum_transition_count =
+                  maximum_effective_row_references;
+            }
             auxiliary_memory =
                 std::max(auxiliary_memory, navigation_workspace_bytes);
           } else if (ntile_window) {
@@ -18974,9 +19338,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                     " payload reserve overflowed");
           }
         }
-        implementation_id = std::string(ranking_profile.semantic_variant_id);
+        implementation_id =
+            aggregate_sum_window
+                ? "window.aggregate-registry-frame-recompute.v1"
+                : std::string(ranking_profile.semantic_variant_id);
         capability_uuid =
-            value_window
+            aggregate_sum_window
+                ? aggregate_window_capability_uuid
+                : value_window
                 ? navigation_capability_uuid
                 : (ntile_window
                 ? ntile_order_term_binding_evidence_uuid
@@ -18984,7 +19353,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                        ? peer_ranking_order_term_binding_evidence_uuid
                        : window_capability_uuid));
         transformation_rule =
-            value_window
+            aggregate_sum_window
+                ? "canonical.window.composed-aggregate-registry-frame-recompute.v1"
+                : value_window
                 ? (first_value_window
                        ? "canonical.window.composed-first-value.v1"
                        : (last_value_window
@@ -19778,6 +20149,25 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             sort_input_row_count, navigation_maximum_pair_comparisons,
             navigation_maximum_effective_row_references,
             prepared_navigation_profile,
+            request.context));
+  }
+  if (prepared_aggregate_window.has_value() &&
+      prepared_aggregate_window_order_term.has_value() &&
+      prepared_aggregate_window_value_column.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveAggregateWindowRegistration(
+            *prepared_aggregate_window,
+            *prepared_aggregate_window_order_term,
+            *prepared_aggregate_window_value_column,
+            prepared_aggregate_window_descriptor,
+            prepared_aggregate_window_frame_descriptor_uuid,
+            aggregate_window_order_term_binding_evidence_uuid,
+            row_number_order_evidence_uuid,
+            aggregate_window_frame_property_binding_evidence_uuid,
+            aggregate_window_capability_uuid, sort_input_row_count,
+            aggregate_window_maximum_pair_comparisons,
+            aggregate_window_maximum_effective_row_references,
+            aggregate_window_maximum_transition_count,
             request.context));
   }
   if (prepared_peer_ranking.has_value() &&
@@ -51517,6 +51907,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   GlobalRankingWindowProfile prepared_heap_navigation_profile;
   std::string heap_navigation_order_term_binding_evidence_uuid;
   std::string heap_navigation_frame_property_binding_evidence_uuid;
+  std::optional<exec::ExecutorColumnDescriptor>
+      prepared_heap_aggregate_window;
+  std::optional<exec::CanonicalDescriptorOrderTerm>
+      prepared_heap_aggregate_window_order_term;
+  std::optional<std::size_t> prepared_heap_aggregate_window_value_column;
+  exec::CanonicalAggregateDescriptor
+      prepared_heap_aggregate_window_descriptor;
+  std::string prepared_heap_aggregate_window_frame_descriptor_uuid;
+  std::string heap_aggregate_window_order_term_binding_evidence_uuid;
+  std::string heap_aggregate_window_frame_property_binding_evidence_uuid;
+  std::string heap_aggregate_window_capability_uuid;
   std::string window_capability_uuid;
   std::string heap_ntile_order_term_binding_evidence_uuid;
   std::string heap_peer_ranking_order_term_binding_evidence_uuid;
@@ -51542,15 +51943,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         window_node->semantic_variant_id == "window.last-value.v1";
     const bool nth_value_window =
         window_node->semantic_variant_id == "window.nth-value.v1";
+    const bool aggregate_sum_window =
+        window_node->semantic_variant_id == "window.aggregate-bridge.v1";
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
-        nth_value_window;
+        nth_value_window || aggregate_sum_window;
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
-    const auto& ranking_profile =
-        value_window
+    const auto ranking_profile =
+        aggregate_sum_window
+            ? GlobalAggregateSumWindowProfileV1()
+            : value_window
             ? (first_value_window
                    ? kGlobalFirstValueProfile
                    : (last_value_window
@@ -51701,7 +52106,52 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                       "object-backed " + std::string(ranking_name) +
                           " order-term receipt is unresolved");
       }
-      if (value_window) {
+      if (aggregate_sum_window) {
+        const auto* aggregate_row =
+            exec::LookupCanonicalAggregateByFunctionV1(
+                exec::CanonicalAggregateFunction::sum);
+        if (aggregate_row == nullptr || !aggregate_row->executable ||
+            !aggregate_row->aggregate_as_window ||
+            aggregate_row->abi_version != 1 ||
+            aggregate_row->builtin_id != ranking_profile.builtin_id ||
+            aggregate_row->function_uuid != ranking_profile.function_uuid) {
+          return refuse(
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+              "object-backed SUM aggregate registry identity drifted");
+        }
+        prepared_heap_aggregate_window = std::move(ranking_column);
+        prepared_heap_aggregate_window_order_term =
+            heap_descriptor_order_terms.front();
+        prepared_heap_aggregate_window_value_column =
+            *ranking.navigation_value_column;
+        prepared_heap_aggregate_window_descriptor = {
+            aggregate_row->abi_version, aggregate_row->function,
+            aggregate_row->builtin_id, aggregate_row->function_uuid, false};
+        prepared_heap_aggregate_window_frame_descriptor_uuid =
+            ranking.window_frame_descriptor_uuid;
+        heap_aggregate_window_order_term_binding_evidence_uuid =
+            order_term_binding_evidence_uuid;
+        heap_aggregate_window_frame_property_binding_evidence_uuid =
+            DerivedCanonicalUuid(
+                identity_scope + ":" + ranking.window_property_uuid + ":" +
+                    ranking.window_frame_descriptor_uuid,
+                "heap-window.aggregate-sum.frame-property-binding");
+        heap_aggregate_window_capability_uuid = DerivedCanonicalUuid(
+            identity_scope + ":" + output_descriptor->descriptor_uuid + ":" +
+                heap_aggregate_window_order_term_binding_evidence_uuid + ":" +
+                heap_aggregate_window_frame_property_binding_evidence_uuid,
+            "heap-window.aggregate-sum.capability");
+        window_capability_uuid = heap_aggregate_window_capability_uuid;
+        if (window_capability_uuid.empty() ||
+            window_capability_uuid ==
+                heap_aggregate_window_order_term_binding_evidence_uuid ||
+            window_capability_uuid ==
+                heap_aggregate_window_frame_property_binding_evidence_uuid) {
+          return refuse(
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+              "object-backed SUM capability identity is not independent");
+        }
+      } else if (value_window) {
         prepared_heap_navigation_window = std::move(ranking_column);
         prepared_heap_navigation_order_term =
             heap_descriptor_order_terms.front();
@@ -51770,11 +52220,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         "heap-window.deterministic-order");
     profiles.push_back(
         {window_node->node_id,
-         std::string(ranking_profile.semantic_variant_id),
+         aggregate_sum_window
+             ? "window.aggregate-registry-frame-recompute.v1"
+             : std::string(ranking_profile.semantic_variant_id),
          window_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kWindow,
          exec::PhysicalNodeKind::kWindow,
-         value_window
+         aggregate_sum_window
+             ? "canonical.heap.window.aggregate-registry-frame-recompute.v1"
+             : value_window
              ? (first_value_window
                     ? "canonical.heap.window.first-value.v1"
                     : (last_value_window
@@ -51975,7 +52429,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                  : (project_composition
                  ? "object-backed heap hidden-column PROJECT composition"
                  : (window_composition
-                        ? (prepared_heap_navigation_window.has_value()
+                        ? (prepared_heap_aggregate_window.has_value()
+                               ? "object-backed heap SUM composition"
+                               : (prepared_heap_navigation_window.has_value()
                                ? "object-backed heap " +
                                      std::string(
                                          prepared_heap_navigation_profile
@@ -51988,7 +52444,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                                      std::string(prepared_heap_peer_ranking_profile
                                                      .display_name) +
                                      " composition"
-                               : "object-backed heap ROW_NUMBER composition")))
+                               : "object-backed heap ROW_NUMBER composition"))))
                         : (sort_composition
                                ? "object-backed heap ORDER BY composition"
                                : (filter_composition
@@ -52132,7 +52588,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
               input.context));
     }
     if (window_composition) {
-      if (prepared_heap_navigation_window.has_value() &&
+      if (prepared_heap_aggregate_window.has_value() &&
+          prepared_heap_aggregate_window_order_term.has_value() &&
+          prepared_heap_aggregate_window_value_column.has_value()) {
+        const auto maximum_quadratic_work = std::max<std::size_t>(
+            1, bounded_size(maximum_pair_comparisons_u64));
+        selected.available_executors.push_back(
+            MakeLiveAggregateWindowRegistration(
+                *prepared_heap_aggregate_window,
+                *prepared_heap_aggregate_window_order_term,
+                *prepared_heap_aggregate_window_value_column,
+                prepared_heap_aggregate_window_descriptor,
+                prepared_heap_aggregate_window_frame_descriptor_uuid,
+                heap_aggregate_window_order_term_binding_evidence_uuid,
+                window_order_evidence_uuid,
+                heap_aggregate_window_frame_property_binding_evidence_uuid,
+                heap_aggregate_window_capability_uuid,
+                maximum_output_rows, maximum_quadratic_work,
+                maximum_quadratic_work, maximum_quadratic_work,
+                input.context));
+      } else if (prepared_heap_navigation_window.has_value() &&
           prepared_heap_navigation_order_term.has_value() &&
           prepared_heap_navigation_value_column.has_value()) {
         selected.available_executors.push_back(

@@ -596,7 +596,8 @@ ValidateCanonicalLogicalRelationalGraph(
            node.semantic_variant_id == "window.lead.v1" ||
            node.semantic_variant_id == "window.first-value.v1" ||
            node.semantic_variant_id == "window.last-value.v1" ||
-           node.semantic_variant_id == "window.nth-value.v1") &&
+           node.semantic_variant_id == "window.nth-value.v1" ||
+           node.semantic_variant_id == "window.aggregate-bridge.v1") &&
           node.bound_expression_ids.size() ==
               (node.semantic_variant_id == "window.nth-value.v1" ? 4U : 3U) &&
           node.bound_expression_ids[0] == node.bound_expression_ids[1] &&
