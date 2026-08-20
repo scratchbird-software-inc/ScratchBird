@@ -839,14 +839,18 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          window_node->semantic_variant_id != "window.lag.v1" &&
          window_node->semantic_variant_id != "window.lead.v1" &&
          window_node->semantic_variant_id != "window.first-value.v1" &&
-         window_node->semantic_variant_id != "window.last-value.v1") ||
+         window_node->semantic_variant_id != "window.last-value.v1" &&
+         window_node->semantic_variant_id != "window.nth-value.v1") ||
         window_node->bound_expression_ids.size() !=
             ((window_node->semantic_variant_id == "window.ntile.v1" ||
               window_node->semantic_variant_id == "window.lag.v1" ||
               window_node->semantic_variant_id == "window.lead.v1" ||
               window_node->semantic_variant_id == "window.first-value.v1" ||
-              window_node->semantic_variant_id == "window.last-value.v1")
-                 ? 3U
+              window_node->semantic_variant_id == "window.last-value.v1" ||
+              window_node->semantic_variant_id == "window.nth-value.v1")
+                 ? (window_node->semantic_variant_id == "window.nth-value.v1"
+                        ? 4U
+                        : 3U)
                  : 2U) ||
         window_node->output_descriptor_ids.size() !=
             sort_node->output_descriptor_ids.size() + 1 ||
@@ -1037,6 +1041,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         "019de5fc-2400-7264-90fb-d25bd0f806f2";
     constexpr std::string_view kLastValueFunctionUuid =
         "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
+    constexpr std::string_view kNthValueFunctionUuid =
+        "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
     const bool rank_window =
         window_node->semantic_variant_id == "window.rank.v1";
     const bool dense_rank_window =
@@ -1055,9 +1061,12 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         window_node->semantic_variant_id == "window.first-value.v1";
     const bool last_value_window =
         window_node->semantic_variant_id == "window.last-value.v1";
+    const bool nth_value_window =
+        window_node->semantic_variant_id == "window.nth-value.v1";
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
-        navigation_window || first_value_window || last_value_window;
+        navigation_window || first_value_window || last_value_window ||
+        nth_value_window;
     const auto canonical_int64_type_uuid =
         value_window ? CanonicalCoreDatatypeUuid("int64") : std::string{};
     const std::string_view expected_builtin_id =
@@ -1066,7 +1075,10 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                    ? "sb.window.first_value"
                    : (last_value_window
                           ? "sb.window.last_value"
-                          : (lag_window ? "sb.window.lag" : "sb.window.lead")))
+                          : (nth_value_window
+                                 ? "sb.window.nth_value"
+                                 : (lag_window ? "sb.window.lag"
+                                               : "sb.window.lead"))))
             : (ntile_window
             ? "sb.window.ntile"
             : (cume_dist_window
@@ -1083,8 +1095,10 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                    ? kFirstValueFunctionUuid
                    : (last_value_window
                           ? kLastValueFunctionUuid
-                          : (lag_window ? kLagFunctionUuid
-                                        : kLeadFunctionUuid)))
+                          : (nth_value_window
+                                 ? kNthValueFunctionUuid
+                                 : (lag_window ? kLagFunctionUuid
+                                               : kLeadFunctionUuid))))
             : (ntile_window
             ? kNtileFunctionUuid
             : (cume_dist_window
@@ -1129,11 +1143,14 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             : relational.descriptors.end();
     const bool exact_argument_arity =
         relational.window_invocations.size() == 1 &&
-        ((ntile_window || value_window)
+        (nth_value_window
              ? relational.window_invocations.front()
-                       .argument_expression_ids.size() == 1
-             : relational.window_invocations.front()
-                   .argument_expression_ids.empty());
+                       .argument_expression_ids.size() == 2
+             : ((ntile_window || value_window)
+                    ? relational.window_invocations.front()
+                              .argument_expression_ids.size() == 1
+                    : relational.window_invocations.front()
+                          .argument_expression_ids.empty()));
     const auto ntile_argument =
         (ntile_window || value_window) && exact_argument_arity
             ? std::ranges::find_if(
@@ -1148,19 +1165,35 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             ? relational.descriptors.end()
             : std::ranges::find_if(
                   relational.descriptors, [&](const auto& descriptor) {
-                    return descriptor.descriptor_id ==
+                  return descriptor.descriptor_id ==
                            ntile_argument->result_descriptor_id;
+                  });
+    const auto nth_position_argument =
+        nth_value_window && exact_argument_arity
+            ? std::ranges::find_if(
+                  relational.expressions, [&](const auto& expression) {
+                    return expression.expression_id ==
+                           relational.window_invocations.front()
+                               .argument_expression_ids[1];
+                  })
+            : relational.expressions.end();
+    const auto nth_position_descriptor =
+        nth_position_argument == relational.expressions.end()
+            ? relational.descriptors.end()
+            : std::ranges::find_if(
+                  relational.descriptors, [&](const auto& descriptor) {
+                    return descriptor.descriptor_id ==
+                           nth_position_argument->result_descriptor_id;
                   });
     std::vector<std::uint32_t> expected_window_bound_expression_ids;
     if (sort_node->bound_expression_ids.size() == 1 &&
         relational.window_invocations.size() == 1 && exact_argument_arity) {
       expected_window_bound_expression_ids.push_back(
           sort_node->bound_expression_ids.front());
-      if (ntile_window || value_window) {
-        expected_window_bound_expression_ids.push_back(
-            relational.window_invocations.front()
-                .argument_expression_ids.front());
-      }
+      expected_window_bound_expression_ids.insert(
+          expected_window_bound_expression_ids.end(),
+          relational.window_invocations.front().argument_expression_ids.begin(),
+          relational.window_invocations.front().argument_expression_ids.end());
       expected_window_bound_expression_ids.push_back(
           relational.window_invocations.front().function_expression_id);
     }
@@ -1311,6 +1344,37 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
           std::ranges::find(sort_node->output_descriptor_ids,
                             ntile_argument_descriptor->descriptor_id) ==
               sort_node->output_descriptor_ids.end())) ||
+        (nth_value_window &&
+         (nth_position_argument == relational.expressions.end() ||
+          nth_position_argument->expression_kind !=
+              RelationalExpressionKind::kLiteral ||
+          !nth_position_argument->child_expression_ids.empty() ||
+          nth_position_argument->bound_name_uuid.has_value() ||
+          nth_position_argument->function_uuid.has_value() ||
+          nth_position_argument->literal_kind !=
+              RelationalLiteralKind::kNumeric ||
+          nth_position_argument->operator_name.has_value() ||
+          !nth_position_argument->literal_or_parameter_ref.has_value() ||
+          nth_position_descriptor == relational.descriptors.end() ||
+          nth_position_descriptor->descriptor_id ==
+              ntile_argument_descriptor->descriptor_id ||
+          nth_position_descriptor->descriptor_id ==
+              result_descriptor->descriptor_id ||
+          nth_position_descriptor->descriptor_uuid ==
+              ntile_argument_descriptor->descriptor_uuid ||
+          nth_position_descriptor->descriptor_uuid ==
+              result_descriptor->descriptor_uuid ||
+          nth_position_descriptor->descriptor_uuid == expected_function_uuid ||
+          canonical_int64_type_uuid.empty() ||
+          nth_position_descriptor->type_uuid != canonical_int64_type_uuid ||
+          nth_position_descriptor->type_uuid != result_descriptor->type_uuid ||
+          nth_position_descriptor->nullability !=
+              RelationalNullability::kNonNull ||
+          nth_position_descriptor->collation_uuid.has_value() ||
+          nth_position_descriptor->timezone_profile_id.has_value() ||
+          nth_position_descriptor->width.has_value() ||
+          nth_position_descriptor->precision.has_value() ||
+          nth_position_descriptor->scale.has_value())) ||
         window_outputs.back()->ordinal !=
             sort_node->output_descriptor_ids.size() ||
         !window_outputs.back()->visible ||
@@ -1325,9 +1389,11 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                                ? "heap_first_value_window_binding"
                                : (last_value_window
                                       ? "heap_last_value_window_binding"
-                                      : (lag_window
-                                             ? "heap_lag_window_binding"
-                                             : "heap_lead_window_binding")))
+                                      : (nth_value_window
+                                             ? "heap_nth_value_window_binding"
+                                             : (lag_window
+                                                    ? "heap_lag_window_binding"
+                                                    : "heap_lead_window_binding"))))
                         : (ntile_window
                         ? "heap_ntile_window_binding"
                         : (cume_dist_window

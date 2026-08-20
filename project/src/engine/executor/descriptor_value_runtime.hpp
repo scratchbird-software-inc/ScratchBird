@@ -1938,6 +1938,10 @@ struct CanonicalDescriptorNavigationWindowRequest {
   CanonicalDescriptorOrderTerm order_term;
   std::size_t value_column = 0;
   ExecutorColumnDescriptor result_column;
+  std::optional<scratchbird::engine::internal_api::EngineTypedValue>
+      nth_value_position_operand;
+  bool nth_value_from_first_explicit = false;
+  bool nth_value_respect_nulls_explicit = false;
   std::uint16_t function_abi_version = 0;
   std::string builtin_id;
   std::string function_uuid;
@@ -1965,7 +1969,7 @@ struct CanonicalDescriptorNavigationWindowResult {
 
 // Retain the exact LAG carrier names for source compatibility while the
 // canonical value-window carrier is shared by LAG, LEAD, FIRST_VALUE, and
-// LAST_VALUE.
+// LAST_VALUE, and NTH_VALUE.
 using CanonicalDescriptorLagWindowRequest =
     CanonicalDescriptorNavigationWindowRequest;
 using CanonicalDescriptorLagWindowResult =

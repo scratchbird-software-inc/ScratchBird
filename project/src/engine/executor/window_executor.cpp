@@ -247,7 +247,10 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
       request.operator_local_parent_implementation_id ==
           "window.first-value.v1" ||
       request.operator_local_parent_implementation_id ==
-          "window.last-value.v1";
+          "window.last-value.v1" ||
+      request.operator_local_parent_implementation_id ==
+          "window.nth-value.v1";
+
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kWindow ||
       selected_node->implementation_id !=
@@ -1113,24 +1116,37 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       request.builtin_id == "sb.window.last_value" &&
       request.function_uuid ==
           "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
+  const bool nth_value =
+      request.builtin_id == "sb.window.nth_value" &&
+      request.function_uuid ==
+          "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
   const std::string_view implementation_id =
       lag ? "window.lag.v1"
           : (lead ? "window.lead.v1"
                   : (first_value
                          ? "window.first-value.v1"
-                         : (last_value ? "window.last-value.v1" : "")));
+                         : (last_value
+                                ? "window.last-value.v1"
+                                : (nth_value ? "window.nth-value.v1" : ""))));
   const auto function =
       lag ? CanonicalWindowValueFunction::lag
           : (lead ? CanonicalWindowValueFunction::lead
                   : (first_value ? CanonicalWindowValueFunction::first_value
-                                 : CanonicalWindowValueFunction::last_value));
+                                 : (last_value
+                                        ? CanonicalWindowValueFunction::last_value
+                                        : CanonicalWindowValueFunction::nth_value)));
   const std::string_view display_name =
       lag ? "LAG"
-          : (lead ? "LEAD" : (first_value ? "FIRST_VALUE" : "LAST_VALUE"));
+          : (lead
+                 ? "LEAD"
+                 : (first_value
+                        ? "FIRST_VALUE"
+                        : (last_value ? "LAST_VALUE" : "NTH_VALUE")));
   if (request.function_abi_version != 1 ||
       static_cast<unsigned>(lag) + static_cast<unsigned>(lead) +
               static_cast<unsigned>(first_value) +
-              static_cast<unsigned>(last_value) !=
+              static_cast<unsigned>(last_value) +
+              static_cast<unsigned>(nth_value) !=
           1 ||
       !IsCanonicalUuid(request.function_uuid)) {
     return refuse(Refusal(
@@ -1227,6 +1243,21 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
   const auto result_type_uuid = CanonicalDescriptorField(
       request.result_column.descriptor, "type_uuid");
   const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
+  const auto* nth_operand =
+      request.nth_value_position_operand.has_value()
+          ? &*request.nth_value_position_operand
+          : nullptr;
+  const auto nth_operand_type_uuid =
+      nth_operand == nullptr
+          ? std::optional<std::string_view>{}
+          : CanonicalDescriptorField(nth_operand->descriptor, "type_uuid");
+  const auto nth_operand_nullability =
+      nth_operand == nullptr
+          ? std::optional<std::string_view>{}
+          : CanonicalDescriptorField(nth_operand->descriptor, "nullability");
+  const auto decoded_nth =
+      nth_operand == nullptr ? Int64DecodeResult{}
+                             : DecodeInt64Value(*nth_operand);
   const std::array<std::string_view, 11> independent_identities{
       request.function_uuid,
       execution_ordered_input_batch.columns[request.value_column]
@@ -1250,6 +1281,54 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
         std::string(display_name) +
             " source and result are not exact canonical int64"));
+  }
+  const bool exact_nth_operand =
+      nth_value && nth_operand != nullptr &&
+      request.nth_value_from_first_explicit &&
+      request.nth_value_respect_nulls_explicit &&
+      nth_operand->state ==
+          scratchbird::engine::internal_api::EngineValueState::value &&
+      !nth_operand->is_null && nth_operand->binary_value.empty() &&
+      nth_operand->descriptor.descriptor_kind == "scalar" &&
+      nth_operand->descriptor.canonical_type_name == "int64" &&
+      scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          nth_operand->descriptor) &&
+      nth_operand_type_uuid.has_value() &&
+      *nth_operand_type_uuid == canonical_int64_type_uuid &&
+      *nth_operand_type_uuid == *result_type_uuid &&
+      nth_operand_nullability.has_value() &&
+      *nth_operand_nullability == "non_null" &&
+      nth_operand->descriptor.descriptor_uuid.canonical !=
+          *nth_operand_type_uuid &&
+      nth_operand->descriptor.descriptor_uuid.canonical !=
+          execution_ordered_input_batch.columns[request.value_column]
+              .descriptor.descriptor_uuid.canonical &&
+      nth_operand->descriptor.descriptor_uuid.canonical !=
+          request.result_column.descriptor.descriptor_uuid.canonical &&
+      nth_operand->descriptor.descriptor_uuid.canonical !=
+          request.function_uuid &&
+      nth_operand->descriptor.descriptor_uuid.canonical != ordering_property_uuid &&
+      nth_operand->descriptor.descriptor_uuid.canonical != *window_property &&
+      nth_operand->descriptor.descriptor_uuid.canonical !=
+          request.window_frame_descriptor_uuid &&
+      nth_operand->descriptor.descriptor_uuid.canonical !=
+          request.executor_capability_uuid &&
+      nth_operand->descriptor.descriptor_uuid.canonical !=
+          request.order_term_binding_evidence_uuid &&
+      nth_operand->descriptor.descriptor_uuid.canonical !=
+          request.deterministic_order_evidence_uuid &&
+      nth_operand->descriptor.descriptor_uuid.canonical !=
+          request.frame_property_binding_evidence_uuid &&
+      decoded_nth.ok() && decoded_nth.value > 0;
+  const bool exact_non_nth_operand_state =
+      !nth_value && nth_operand == nullptr &&
+      !request.nth_value_from_first_explicit &&
+      !request.nth_value_respect_nulls_explicit;
+  if (!exact_nth_operand && !exact_non_nth_operand_state) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-NTH",
+        std::string(display_name) +
+            " position, origin, or NULL-treatment carrier is not exact"));
   }
   for (std::size_t left = 0; left < independent_identities.size(); ++left) {
     for (std::size_t right = left + 1;
@@ -1314,6 +1393,8 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
   std::uint64_t navigation_payload_bytes = 0;
   std::uint64_t maximum_value_payload_bytes = 0;
   std::uint64_t result_value_payload_bytes = 0;
+  std::uint64_t nth_operand_payload_bytes = 0;
+  std::uint64_t nth_operand_vector_payload_bytes = 0;
   std::uint64_t output_payload_bytes = 0;
   std::uint64_t planned_auxiliary_workspace_bytes = 0;
   std::uint64_t planned_peak_memory_bytes = 0;
@@ -1332,7 +1413,7 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
     maximum_value_payload_bytes =
         std::max(maximum_value_payload_bytes, value_payload_bytes);
   }
-  if (first_value || last_value) {
+  if (first_value || last_value || nth_value) {
     if (!checked_multiply(maximum_value_payload_bytes, row_count_u64,
                           &result_value_payload_bytes)) {
       return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
@@ -1341,6 +1422,13 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
     }
   } else {
     result_value_payload_bytes = navigation_payload_bytes;
+  }
+  if (nth_value &&
+      (!NtileOperandPayloadBytes(*nth_operand, &nth_operand_payload_bytes) ||
+       !checked_multiply(nth_operand_payload_bytes, row_count_u64,
+                         &nth_operand_vector_payload_bytes))) {
+    return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "NTH_VALUE position payload accounting overflowed"));
   }
   if (!RowNumberBatchPayloadBytes(execution_ordered_input_batch,
                                   &input_payload_bytes) ||
@@ -1360,7 +1448,8 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
                         &copied_row_metadata_bytes) ||
       !checked_multiply(
           row_count_u64,
-          2 * sizeof(scratchbird::engine::internal_api::EngineTypedValue) +
+          (nth_value ? 3 : 2) *
+                  sizeof(scratchbird::engine::internal_api::EngineTypedValue) +
               sizeof(std::uint64_t),
           &value_vector_bytes) ||
       !checked_multiply(row_count_u64, sizeof(std::size_t),
@@ -1398,6 +1487,12 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
                    &planned_auxiliary_workspace_bytes) ||
       !checked_add(planned_auxiliary_workspace_bytes,
                    navigation_payload_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes,
+                   nth_operand_payload_bytes,
+                   &planned_auxiliary_workspace_bytes) ||
+      !checked_add(planned_auxiliary_workspace_bytes,
+                   nth_operand_vector_payload_bytes,
                    &planned_auxiliary_workspace_bytes) ||
       !checked_add(input_payload_bytes, output_payload_bytes,
                    &planned_peak_memory_bytes) ||
@@ -1469,6 +1564,14 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
   value_request.value_expression_descriptor_id =
       execution_ordered_input_batch.columns[request.value_column].descriptor_id;
   value_request.result_column = request.result_column;
+  if (nth_value) {
+    value_request.nth_values =
+        std::vector<scratchbird::engine::internal_api::EngineTypedValue>(
+            execution_ordered_input_batch.rows.size(), *nth_operand);
+    value_request.nth_origin = CanonicalWindowNthOrigin::from_first;
+    value_request.null_treatment =
+        CanonicalWindowNullTreatment::respect_nulls;
+  }
   value_request.maximum_output_rows =
       execution_ordered_input_batch.rows.empty()
           ? 1
@@ -1483,13 +1586,24 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       !values.effective_frame_membership_consumed &&
       values.frame_and_exclusion_ignored_for_navigation;
   const bool exact_frame_value_consumption =
-      (first_value || last_value) &&
+      (first_value || last_value || nth_value) &&
       !values.used_implicit_navigation_offset &&
       !values.explicit_navigation_default_present &&
       !values.partition_metadata_consumed_for_navigation &&
       values.effective_frame_membership_consumed &&
       !values.frame_and_exclusion_ignored_for_navigation;
+  const bool exact_nth_consumption =
+      !nth_value ||
+      (values.resolved_nth_origin == CanonicalWindowNthOrigin::from_first &&
+       values.resolved_null_treatment ==
+           CanonicalWindowNullTreatment::respect_nulls &&
+       values.resolved_positions.size() ==
+           execution_ordered_input_batch.rows.size() &&
+       std::ranges::all_of(values.resolved_positions, [&](const auto position) {
+         return position == static_cast<std::uint64_t>(decoded_nth.value);
+       }));
   if ((!exact_navigation_consumption && !exact_frame_value_consumption) ||
+      !exact_nth_consumption ||
       !values.every_function_operand_consumed ||
       !values.frame_and_exclusion_validated ||
       values.values.size() != execution_ordered_input_batch.rows.size()) {
