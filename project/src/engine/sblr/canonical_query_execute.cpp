@@ -6946,7 +6946,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
                     " property binding is not exact";
     return result;
   }
-  if (fixed_unqualified_int64_result_window &&
+  if ((fixed_unqualified_int64_result_window || aggregate_window) &&
       (result_descriptor->descriptor_uuid == result_type_uuid ||
        result_descriptor->descriptor_uuid == profile.function_uuid ||
        result_descriptor->descriptor_uuid ==
