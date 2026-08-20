@@ -8,6 +8,7 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include <limits>
 #include <string_view>
 #include <utility>
 
@@ -45,6 +46,53 @@ bool IsCanonicalDescriptorProjectionImplementation(
     const std::string_view implementation_id) {
   return implementation_id == "project.typed.row.v1" ||
          implementation_id == "project.descriptor-direct.v1";
+}
+
+bool AddProjectionValueMemoryBytes(
+    const internal_api::EngineTypedValue& value,
+    std::uint64_t* memory_bytes) {
+  if (memory_bytes == nullptr ||
+      value.encoded_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *memory_bytes) {
+    return false;
+  }
+  *memory_bytes += value.encoded_value.size();
+  if (value.binary_value.size() >
+      std::numeric_limits<std::uint64_t>::max() - *memory_bytes) {
+    return false;
+  }
+  *memory_bytes += value.binary_value.size();
+  return true;
+}
+
+bool ProjectionInputMemoryBytes(const DescriptorBatch& batch,
+                                std::uint64_t* memory_bytes) {
+  if (memory_bytes == nullptr) return false;
+  *memory_bytes = 1;
+  for (const auto& row : batch.rows) {
+    for (const auto& value : row.values) {
+      if (!AddProjectionValueMemoryBytes(value, memory_bytes)) return false;
+    }
+  }
+  return true;
+}
+
+bool ProjectionOutputMemoryBytes(
+    const DescriptorBatch& batch,
+    const std::vector<std::size_t>& projected_columns,
+    std::uint64_t* memory_bytes) {
+  if (memory_bytes == nullptr) return false;
+  *memory_bytes = 1;
+  for (const auto& row : batch.rows) {
+    for (const auto source_column : projected_columns) {
+      if (source_column >= row.values.size() ||
+          !AddProjectionValueMemoryBytes(row.values[source_column],
+                                         memory_bytes)) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 }  // namespace
@@ -137,6 +185,35 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjectionBound(
           "projected column does not resolve to selected output descriptor",
           0, source_column));
     }
+  }
+
+  std::uint64_t input_memory_bytes = 0;
+  std::uint64_t output_memory_bytes = 0;
+  if (!ProjectionInputMemoryBytes(execution_input_batch,
+                                  &input_memory_bytes) ||
+      !ProjectionOutputMemoryBytes(execution_input_batch,
+                                   execution_projected_columns,
+                                   &output_memory_bytes) ||
+      selected_node->memory_bytes_required == 0 ||
+      selected_node->memory_bytes_required >
+          execution_dag.memory_budget_bytes ||
+      selected_node->memory_bytes_required >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max())) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "projection memory grant or runtime payload accounting is invalid"));
+  }
+  auto remaining_memory_bytes = selected_node->memory_bytes_required;
+  const auto charge = [&](const std::uint64_t bytes) {
+    if (bytes > remaining_memory_bytes) return false;
+    remaining_memory_bytes -= bytes;
+    return true;
+  };
+  if (!charge(input_memory_bytes) || !charge(output_memory_bytes)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "projection materialization exceeds the selected node memory grant"));
   }
 
   result.output_batch = ProjectDescriptorBatch(

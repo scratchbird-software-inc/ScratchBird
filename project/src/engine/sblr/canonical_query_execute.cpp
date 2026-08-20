@@ -5885,7 +5885,13 @@ bool MaterializeExpressionProjectBatch(
     const exec::DescriptorBatch& input_batch,
     const CanonicalRelationalExpressionRuntimeServices& expression_services,
     exec::DescriptorBatch* output_batch,
-    std::string* detail) {
+    std::string* detail,
+    const std::uint64_t maximum_output_bytes =
+        std::numeric_limits<std::uint64_t>::max(),
+    std::uint64_t* actual_output_bytes = nullptr,
+    bool* resource_refused = nullptr) {
+  if (actual_output_bytes != nullptr) *actual_output_bytes = 0;
+  if (resource_refused != nullptr) *resource_refused = false;
   if (output_batch == nullptr || detail == nullptr || expressions.empty() ||
       expressions.size() != output_columns.size()) {
     if (detail != nullptr) {
@@ -5895,6 +5901,12 @@ bool MaterializeExpressionProjectBatch(
   }
   *output_batch = {};
   detail->clear();
+  std::uint64_t materialized_bytes = 1;
+  if (materialized_bytes > maximum_output_bytes) {
+    *detail = "expression PROJECT output exceeds its materialization ceiling";
+    if (resource_refused != nullptr) *resource_refused = true;
+    return false;
+  }
   output_batch->columns = output_columns;
   output_batch->rows.reserve(input_batch.rows.size());
   CanonicalRelationalExpressionRuntime runtime(dag, expression_services);
@@ -5909,6 +5921,18 @@ bool MaterializeExpressionProjectBatch(
               api::EngineCanonicalExpressionConsumer::projection, &value,
               detail)) {
         *output_batch = {};
+        return false;
+      }
+      std::uint64_t value_bytes = 0;
+      if (!CheckedAdd(value.encoded_value.size(), value.binary_value.size(),
+                      &value_bytes) ||
+          !CheckedAdd(materialized_bytes, value_bytes,
+                      &materialized_bytes) ||
+          materialized_bytes > maximum_output_bytes) {
+        *detail =
+            "expression PROJECT value exceeds its materialization ceiling";
+        *output_batch = {};
+        if (resource_refused != nullptr) *resource_refused = true;
         return false;
       }
       output_row.values.push_back(std::move(value));
@@ -5929,6 +5953,9 @@ bool MaterializeExpressionProjectBatch(
                   : values.diagnostic_code + ":" + values.detail;
     *output_batch = {};
     return false;
+  }
+  if (actual_output_bytes != nullptr) {
+    *actual_output_bytes = materialized_bytes;
   }
   return true;
 }
@@ -6604,6 +6631,30 @@ bool AddBatchMemoryBytes(const exec::DescriptorBatch& batch,
   if (memory_bytes == nullptr) return false;
   for (const auto& row : batch.rows) {
     for (const auto& value : row.values) {
+      if (value.encoded_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *memory_bytes) {
+        return false;
+      }
+      *memory_bytes += value.encoded_value.size();
+      if (value.binary_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *memory_bytes) {
+        return false;
+      }
+      *memory_bytes += value.binary_value.size();
+    }
+  }
+  return true;
+}
+
+bool AddBatchProjectionMemoryBytes(
+    const exec::DescriptorBatch& batch,
+    const std::vector<std::size_t>& projected_columns,
+    std::uint64_t* memory_bytes) {
+  if (memory_bytes == nullptr) return false;
+  for (const auto& row : batch.rows) {
+    for (const auto source_column : projected_columns) {
+      if (source_column >= row.values.size()) return false;
+      const auto& value = row.values[source_column];
       if (value.encoded_value.size() >
           std::numeric_limits<std::uint64_t>::max() - *memory_bytes) {
         return false;
@@ -8449,16 +8500,51 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
             step.diagnostic = before;
             return step;
           }
+          std::uint64_t input_memory_bytes = 0;
+          if (!RuntimeMaterializedBatchMemoryBytes(
+                  input_batch, &input_memory_bytes) ||
+              node.memory_bytes_required == 0 ||
+              node.memory_bytes_required >
+                  execution_dag->memory_budget_bytes ||
+              node.memory_bytes_required >
+                  static_cast<std::uint64_t>(
+                      std::numeric_limits<std::size_t>::max()) ||
+              input_memory_bytes >= node.memory_bytes_required) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "expression PROJECT memory grant or input payload "
+                "accounting is invalid";
+            return step;
+          }
+          const auto maximum_output_bytes =
+              node.memory_bytes_required - input_memory_bytes;
           exec::DescriptorBatch output_batch;
           std::string expression_detail;
+          std::uint64_t actual_output_bytes = 0;
+          bool expression_resource_refused = false;
           if (!MaterializeExpressionProjectBatch(
                   relational_dag, expressions, expression_output_columns,
                   input_batch, expression_services, &output_batch,
-                  &expression_detail)) {
+                  &expression_detail, maximum_output_bytes,
+                  &actual_output_bytes, &expression_resource_refused)) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-PROJECT-EXPRESSION-V1";
+                expression_resource_refused
+                    ? "SBLR.PLAN_TREE.RESOURCE_LIMIT"
+                    : "QOW-DIAG-RELATIONAL-LIVE-PROJECT-EXPRESSION-V1";
             step.diagnostic.detail = std::move(expression_detail);
+            return step;
+          }
+          if (actual_output_bytes == 0 ||
+              actual_output_bytes > maximum_output_bytes) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+            step.diagnostic.detail =
+                "expression PROJECT output exceeds the selected node "
+                "memory grant";
             return step;
           }
           const auto output_validation =
@@ -16399,15 +16485,16 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     const bool dynamic_nonrecursive_cte =
         physical_kind == exec::PhysicalNodeKind::kCte;
     if ((physical_kind == exec::PhysicalNodeKind::kFilter ||
+         physical_kind == exec::PhysicalNodeKind::kProject ||
          physical_kind == exec::PhysicalNodeKind::kSort ||
          physical_kind == exec::PhysicalNodeKind::kLimit ||
          dynamic_table_subquery || dynamic_nonrecursive_cte) &&
         !planning_values_exact) {
       // The preceding complex aggregate owns its live result values.  The
       // planning batch is only a schema/cardinality placeholder, so bind the
-      // dynamic FILTER, SORT, LIMIT, TABLE-subquery, or nonrecursive CTE to
-      // the full selected budget and let its issuer/executor charge exact
-      // callback payloads and auxiliary state.
+      // dynamic FILTER, PROJECT, SORT, LIMIT, TABLE-subquery, or
+      // nonrecursive CTE to the full selected budget and let its
+      // issuer/executor charge exact callback payloads and auxiliary state.
       operator_memory =
           request.optimizer_request.resource.memory_budget_bytes;
     }
@@ -18283,6 +18370,7 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
   std::uint64_t filter_state_memory = 0;
   std::uint64_t join_memory = 0;
   std::uint64_t filter_memory = 0;
+  std::uint64_t project_peak_memory = 0;
   std::uint64_t project_memory = 0;
   std::uint64_t distinct_comparison_count = 0;
   std::uint64_t distinct_self_comparison_count = 0;
@@ -18306,6 +18394,8 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
       !CheckedAdd(join_memory, joined_memory, &join_memory) ||
       !CheckedAdd(join_memory, filter_state_memory, &filter_memory) ||
       !CheckedAdd(filter_memory, filtered_memory, &filter_memory) ||
+      !CheckedAdd(filtered_memory, projected_memory,
+                  &project_peak_memory) ||
       !CheckedAdd(filter_memory, projected_memory, &project_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "INNER JOIN/FILTER/PROJECT memory overflowed");
@@ -18468,7 +18558,7 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
            project_capability_uuid, node.node_kind,
            exec::PhysicalNodeKind::kProject,
            "canonical.project.filtered-joined-expression-row.v1",
-           filtered_row_count, project_memory, 1, 1});
+           filtered_row_count, project_peak_memory, 1, 1});
     } else if (has_distinct &&
                node.logical_node_id == sort_input_node->logical_node_id) {
       profiles.push_back(
@@ -19031,13 +19121,13 @@ ExecuteCanonicalObjectFreeProjectQuery(
   std::uint64_t output_memory = 1;
   std::uint64_t total_memory = 0;
   if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
-      (prepared_root.expression_projection &&
-       !AddBatchMemoryBytes(prepared_root.expression_output_batch,
-                            &output_memory)) ||
-      !CheckedAdd(input_memory,
-                  prepared_root.expression_projection ? output_memory
-                                                      : input_memory,
-                  &total_memory)) {
+      !(prepared_root.expression_projection
+            ? AddBatchMemoryBytes(prepared_root.expression_output_batch,
+                                  &output_memory)
+            : AddBatchProjectionMemoryBytes(
+                  input.batch, prepared_root.projected_columns,
+                  &output_memory)) ||
+      !CheckedAdd(input_memory, output_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live PROJECT input or output size overflowed");
   }
@@ -19316,6 +19406,7 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
   std::uint64_t filtered_memory = 1;
   std::uint64_t project_output_memory = 1;
   std::uint64_t filter_memory = 0;
+  std::uint64_t project_peak_memory = 0;
   std::uint64_t total_memory = 0;
   if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
       !CheckedMultiply(input_row_count, sizeof(api::EngineSqlTruthValue),
@@ -19325,6 +19416,8 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
                            &project_output_memory) ||
       !CheckedAdd(input_memory, predicate_memory, &filter_memory) ||
       !CheckedAdd(filter_memory, filtered_memory, &filter_memory) ||
+      !CheckedAdd(filtered_memory, project_output_memory,
+                  &project_peak_memory) ||
       !CheckedAdd(filter_memory, project_output_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "FILTER/PROJECT materialization size overflowed");
@@ -19372,7 +19465,7 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
        exec::PhysicalNodeKind::kProject,
        "canonical.project.filtered-expression-row.v1",
        filtered_row_count,
-       total_memory,
+       project_peak_memory,
        1,
        1}};
   if (!CompleteLiveRuntimeMemoryReceipts(
@@ -19932,6 +20025,7 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
   std::uint64_t filtered_memory = 1;
   std::uint64_t project_output_memory = 1;
   std::uint64_t filter_memory = 0;
+  std::uint64_t project_peak_memory = 0;
   std::uint64_t project_memory = 0;
   std::uint64_t comparison_count = 0;
   std::uint64_t row_order_memory = 0;
@@ -19944,6 +20038,8 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
                            &project_output_memory) ||
       !CheckedAdd(input_memory, predicate_memory, &filter_memory) ||
       !CheckedAdd(filter_memory, filtered_memory, &filter_memory) ||
+      !CheckedAdd(filtered_memory, project_output_memory,
+                  &project_peak_memory) ||
       !CheckedAdd(filter_memory, project_output_memory, &project_memory) ||
       !CheckedMultiply(filtered_row_count, filtered_row_count,
                        &comparison_count) ||
@@ -20004,7 +20100,7 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
        exec::PhysicalNodeKind::kProject,
        "canonical.project.filtered-expression-row.v1",
        filtered_row_count,
-       project_memory,
+       project_peak_memory,
        1,
        1},
       {root->logical_node_id,
@@ -20344,6 +20440,7 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
   std::uint64_t filtered_memory = 1;
   std::uint64_t project_output_memory = 1;
   std::uint64_t filter_memory = 0;
+  std::uint64_t project_peak_memory = 0;
   std::uint64_t project_memory = 0;
   std::uint64_t comparison_count = 0;
   std::uint64_t row_order_memory = 0;
@@ -20357,6 +20454,8 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
                            &project_output_memory) ||
       !CheckedAdd(input_memory, predicate_memory, &filter_memory) ||
       !CheckedAdd(filter_memory, filtered_memory, &filter_memory) ||
+      !CheckedAdd(filtered_memory, project_output_memory,
+                  &project_peak_memory) ||
       !CheckedAdd(filter_memory, project_output_memory, &project_memory) ||
       !CheckedMultiply(filtered_row_count, filtered_row_count,
                        &comparison_count) ||
@@ -20421,7 +20520,7 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
        exec::PhysicalNodeKind::kProject,
        "canonical.project.filtered-expression-row.v1",
        filtered_row_count,
-       project_memory,
+       project_peak_memory,
        1,
        1},
       {sort_node->logical_node_id,
@@ -20808,6 +20907,7 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
   std::uint64_t filtered_memory = 1;
   std::uint64_t project_output_memory = 1;
   std::uint64_t filter_memory = 0;
+  std::uint64_t project_peak_memory = 0;
   std::uint64_t project_memory = 0;
   std::uint64_t distinct_comparison_count = 0;
   std::uint64_t distinct_self_comparison_count = 0;
@@ -20824,6 +20924,8 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
                            &project_output_memory) ||
       !CheckedAdd(input_memory, predicate_memory, &filter_memory) ||
       !CheckedAdd(filter_memory, filtered_memory, &filter_memory) ||
+      !CheckedAdd(filtered_memory, project_output_memory,
+                  &project_peak_memory) ||
       !CheckedAdd(filter_memory, project_output_memory, &project_memory) ||
       !CheckedMultiply(filtered_row_count, filtered_row_count,
                        &distinct_comparison_count) ||
@@ -20906,7 +21008,7 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
        plan::CanonicalLogicalRelationalNodeKind::kProject,
        exec::PhysicalNodeKind::kProject,
        "canonical.project.filtered-expression-row.v1", filtered_row_count,
-       project_memory, 1, 1},
+       project_peak_memory, 1, 1},
       {distinct_node->logical_node_id, "aggregate.query-distinct.typed.v1",
        distinct_capability_uuid,
        plan::CanonicalLogicalRelationalNodeKind::kAggregate,
@@ -27254,6 +27356,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         profile.physical_node_kind = exec::PhysicalNodeKind::kProject;
         profile.transformation_rule_id =
             "canonical.time-series.project.expression-row.v1";
+        profile.memory_bytes_required = planning.memory_budget_bytes;
       } else if (consumer->node_kind ==
                  api::RelationalDagNodeKind::kSort) {
         if (consumer->semantic_variant_id != "sort.required-order.v1") {
@@ -31746,6 +31849,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kProject;
       consumer_profile.transformation_rule_id =
           "canonical.search.project.expression-row.v1";
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kSort) {
       if (consumer->semantic_variant_id != "sort.required-order.v1") {
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
@@ -33938,6 +34042,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kProject;
       consumer_profile.transformation_rule_id =
           "canonical.key-value.project.expression-row.v1";
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kSort) {
       if (consumer->semantic_variant_id != "sort.required-order.v1") {
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
@@ -36168,6 +36273,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           descriptor_direct
               ? "canonical.graph.project.descriptor-direct.v1"
               : "canonical.graph.project.expression-row.v1";
+      consumer_profile.memory_bytes_required = planning.memory_budget_bytes;
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kSort) {
       if (consumer->semantic_variant_id != "sort.required-order.v1") {
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
@@ -38765,6 +38871,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
               descriptor_direct
                   ? "canonical.document-unnest.project.descriptor-direct.v1"
                   : "canonical.document-unnest.project.expression-row.v1";
+          consumer_profile.memory_bytes_required =
+              planning.memory_budget_bytes;
           break;
         }
         case api::RelationalDagNodeKind::kSort: {
@@ -47989,7 +48097,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          project_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kProject,
          exec::PhysicalNodeKind::kProject,
-         "canonical.heap.project.visible-columns.v1", 1, 1024, 1, 1});
+         "canonical.heap.project.visible-columns.v1", 1,
+         planning_request.optimizer_request.resource.memory_budget_bytes,
+         1, 1});
   }
   std::uint64_t row_limit = 0;
   std::uint64_t row_offset = 0;
