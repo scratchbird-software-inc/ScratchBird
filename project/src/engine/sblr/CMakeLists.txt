@@ -129,6 +129,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_ddl_create_rewrite_rule_runtime.cpp
   sblr_ddl_alter_rewrite_rule_runtime.cpp
   sblr_ddl_drop_rewrite_rule_runtime.cpp
+  sblr_ddl_validate_constraint_runtime.cpp
   sblr_ddl_drop_trigger_runtime.cpp
   sblr_return_result_set_runtime.cpp
   sblr_sequence_currval_runtime.cpp

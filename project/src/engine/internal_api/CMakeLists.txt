@@ -454,6 +454,7 @@ add_library(sb_engine_internal_api
   sblr_ddl_drop_srs_coordinator.cpp
   sblr_ddl_create_rewrite_rule_coordinator.cpp
   sblr_ddl_drop_rewrite_rule_coordinator.cpp
+  sblr_ddl_validate_constraint_coordinator.cpp
   sblr_ddl_alter_rewrite_rule_coordinator.cpp
   sblr_ddl_drop_trigger_coordinator.cpp
   sblr_aggregate_coordinator.cpp

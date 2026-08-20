@@ -139,6 +139,7 @@ enum class SblrValueKind : std::uint16_t {
   rewrite_rule_descriptor = 106,
   rewrite_rule_alter_descriptor = 107,
   rewrite_rule_drop_descriptor = 108,
+  constraint_validation_descriptor = 109,
 };
 
 struct SblrOperand {
