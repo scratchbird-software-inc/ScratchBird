@@ -835,7 +835,47 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinctBound(
         "query DISTINCT requires one bounded equality term per output column");
   }
 
-  std::vector<bool> covered(execution_input_batch.columns.size(), false);
+  std::uint64_t input_memory_bytes = 0;
+  if (!CanonicalDescriptorBatchMemoryBytes(execution_input_batch,
+                                           &input_memory_bytes) ||
+      selected_node->memory_bytes_required == 0 ||
+      selected_node->memory_bytes_required > execution_dag.memory_budget_bytes ||
+      selected_node->memory_bytes_required >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max()) ||
+      execution_input_batch.columns.size() >
+          std::numeric_limits<std::uint64_t>::max() /
+              sizeof(std::uint8_t) ||
+      execution_input_batch.rows.size() >
+          std::numeric_limits<std::uint64_t>::max() /
+              sizeof(std::size_t)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "query DISTINCT memory grant or runtime payload accounting is invalid"));
+  }
+  auto remaining_memory_bytes = selected_node->memory_bytes_required;
+  const auto charge = [&](const std::uint64_t bytes) {
+    if (bytes > remaining_memory_bytes) return false;
+    remaining_memory_bytes -= bytes;
+    return true;
+  };
+  const auto coverage_memory_bytes =
+      static_cast<std::uint64_t>(execution_input_batch.columns.size()) *
+      sizeof(std::uint8_t);
+  const auto representative_memory_bytes =
+      static_cast<std::uint64_t>(execution_input_batch.rows.size()) *
+      sizeof(std::size_t);
+  if (!charge(input_memory_bytes) || !charge(coverage_memory_bytes) ||
+      !charge(representative_memory_bytes)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "query DISTINCT runtime state exceeds the selected node memory grant"));
+  }
+
+  // A byte per descriptor makes the admitted coverage carrier deterministic;
+  // vector<bool> has implementation-defined packed storage and cannot support
+  // an exact producer-memory receipt.
+  std::vector<std::uint8_t> covered(execution_input_batch.columns.size(), 0);
   for (const auto& term : request.equality_terms) {
     if (term.column >= execution_input_batch.columns.size() ||
         covered[term.column] ||
@@ -888,12 +928,17 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinctBound(
     }
   }
 
-  std::vector<std::size_t> representative_rows;
-  representative_rows.reserve(execution_input_batch.rows.size());
+  std::vector<std::size_t> representative_rows(
+      execution_input_batch.rows.size(), 0);
+  std::size_t representative_count = 0;
   std::size_t eliminated = 0;
   for (std::size_t row = 0; row < execution_input_batch.rows.size(); ++row) {
     bool duplicate = false;
-    for (const auto representative : representative_rows) {
+    for (std::size_t representative_index = 0;
+         representative_index < representative_count;
+         ++representative_index) {
+      const auto representative =
+          representative_rows[representative_index];
       bool equal = false;
       std::string detail;
       if (!equal_rows(execution_input_batch.rows[row],
@@ -909,14 +954,46 @@ CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinctBound(
     if (duplicate) {
       ++eliminated;
     } else {
-      representative_rows.push_back(row);
+      representative_rows[representative_count++] = row;
     }
   }
 
   DescriptorBatch output;
   output.columns = execution_input_batch.columns;
-  output.rows.reserve(representative_rows.size());
-  for (const auto row : representative_rows) {
+  std::uint64_t output_memory_bytes = 1;
+  for (std::size_t representative_index = 0;
+       representative_index < representative_count;
+       ++representative_index) {
+    const auto row = representative_rows[representative_index];
+    for (const auto& value : execution_input_batch.rows[row].values) {
+      if (value.encoded_value.size() >
+              std::numeric_limits<std::uint64_t>::max() -
+                  output_memory_bytes) {
+        return refuse(Refusal(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "query DISTINCT output payload accounting overflowed"));
+      }
+      output_memory_bytes += value.encoded_value.size();
+      if (value.binary_value.size() >
+          std::numeric_limits<std::uint64_t>::max() -
+              output_memory_bytes) {
+        return refuse(Refusal(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "query DISTINCT output payload accounting overflowed"));
+      }
+      output_memory_bytes += value.binary_value.size();
+    }
+  }
+  if (!charge(output_memory_bytes)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "query DISTINCT output exceeds the selected node memory grant"));
+  }
+  output.rows.reserve(representative_count);
+  for (std::size_t representative_index = 0;
+       representative_index < representative_count;
+       ++representative_index) {
+    const auto row = representative_rows[representative_index];
     output.rows.push_back(execution_input_batch.rows[row]);
   }
   validation = ValidateCanonicalDescriptorBatch(

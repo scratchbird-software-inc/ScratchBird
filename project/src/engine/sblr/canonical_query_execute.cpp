@@ -441,6 +441,9 @@ bool CheckedAdd(std::uint64_t left, std::uint64_t right,
                 std::uint64_t* result);
 bool CheckedMultiply(std::uint64_t left, std::uint64_t right,
                      std::uint64_t* result);
+bool QueryDistinctAuxiliaryMemoryBytes(std::size_t row_count,
+                                       std::size_t column_count,
+                                       std::uint64_t* memory_bytes);
 bool EncodeCanonicalScalarEqualityKey(
     const api::EngineTypedValue& value,
     std::string* key,
@@ -810,6 +813,20 @@ void PublishOrdinaryRuntimeObservations(
                                    sizeof(api::EngineSqlTruthValue),
                                    &runtime_work_bytes)) {
                 step.diagnostic.ok = false;
+              }
+            } else if (
+                node.node_kind == exec::PhysicalNodeKind::kAggregate &&
+                node.implementation_id ==
+                    "aggregate.query-distinct.typed.v1") {
+              if (inputs.size() != 1 ||
+                  !inputs.front().materialized_output_batch.has_value() ||
+                  !QueryDistinctAuxiliaryMemoryBytes(
+                      inputs.front().materialized_output_batch->rows.size(),
+                      inputs.front().materialized_output_batch->columns.size(),
+                      &runtime_work_bytes)) {
+                step.diagnostic.ok = false;
+              } else {
+                accounted_auxiliary_memory_bytes = runtime_work_bytes;
               }
             } else if (node.node_kind ==
                        exec::PhysicalNodeKind::kAggregate) {
@@ -6646,6 +6663,89 @@ bool AddBatchMemoryBytes(const exec::DescriptorBatch& batch,
   return true;
 }
 
+bool QueryDistinctAuxiliaryMemoryBytes(const std::size_t row_count,
+                                       const std::size_t column_count,
+                                       std::uint64_t* memory_bytes) {
+  if (memory_bytes == nullptr) return false;
+  std::uint64_t coverage_bytes = 0;
+  std::uint64_t representative_bytes = 0;
+  return CheckedMultiply(column_count, sizeof(std::uint8_t),
+                         &coverage_bytes) &&
+         CheckedMultiply(row_count, sizeof(std::size_t),
+                         &representative_bytes) &&
+         CheckedAdd(coverage_bytes, representative_bytes, memory_bytes);
+}
+
+bool QueryDistinctOutputMemoryBytes(
+    const exec::DescriptorBatch& batch,
+    const std::vector<exec::CanonicalDescriptorOrderTerm>& equality_terms,
+    const std::size_t maximum_value_comparisons,
+    std::uint64_t* memory_bytes,
+    std::string* detail) {
+  if (memory_bytes == nullptr || detail == nullptr ||
+      equality_terms.size() != batch.columns.size() ||
+      equality_terms.empty() ||
+      (maximum_value_comparisons == 0 && !batch.rows.empty())) {
+    return false;
+  }
+  *memory_bytes = 1;
+  detail->clear();
+  std::vector<std::size_t> representatives;
+  representatives.reserve(batch.rows.size());
+  std::size_t comparison_count = 0;
+  for (std::size_t row = 0; row < batch.rows.size(); ++row) {
+    bool duplicate = false;
+    for (const auto representative : representatives) {
+      bool equal = true;
+      for (const auto& term : equality_terms) {
+        if (comparison_count >= maximum_value_comparisons) {
+          *detail = "query DISTINCT memory projection exceeded its work bound";
+          return false;
+        }
+        ++comparison_count;
+        if (term.column >= batch.columns.size() ||
+            term.column >= batch.rows[row].values.size() ||
+            term.column >= batch.rows[representative].values.size()) {
+          *detail = "query DISTINCT memory projection is outside its schema";
+          return false;
+        }
+        const auto compared = exec::CompareCanonicalDescriptorOrderValues(
+            batch.rows[row].values[term.column],
+            batch.rows[representative].values[term.column], term);
+        if (!compared.diagnostic.ok) {
+          *detail = compared.diagnostic.detail;
+          return false;
+        }
+        if (compared.comparison != 0) {
+          equal = false;
+          break;
+        }
+      }
+      if (equal) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) continue;
+    representatives.push_back(row);
+    for (const auto& value : batch.rows[row].values) {
+      if (value.encoded_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *memory_bytes) {
+        *detail = "query DISTINCT output payload accounting overflowed";
+        return false;
+      }
+      *memory_bytes += value.encoded_value.size();
+      if (value.binary_value.size() >
+          std::numeric_limits<std::uint64_t>::max() - *memory_bytes) {
+        *detail = "query DISTINCT output payload accounting overflowed";
+        return false;
+      }
+      *memory_bytes += value.binary_value.size();
+    }
+  }
+  return true;
+}
+
 bool AddBatchProjectionMemoryBytes(
     const exec::DescriptorBatch& batch,
     const std::vector<std::size_t>& projected_columns,
@@ -8018,9 +8118,13 @@ bool CompleteLiveRuntimeMemoryReceipts(
         auxiliary_terms = {}) {
   if (profiles == nullptr || profiles->empty()) return false;
   for (auto& profile : *profiles) {
+    // Callback-derived profiles publish their actual input/output peak after
+    // execution.  Keep the pre-dispatch receipt internally consistent with
+    // any statically known resident state until that exact value replaces it.
     profile.runtime_producer_peak_memory_bytes =
         profile.runtime_peak_from_callback_batches
-            ? 1
+            ? std::max<std::uint64_t>(
+                  1, profile.runtime_accounted_auxiliary_memory_bytes)
             : profile.memory_bytes_required;
     profile.runtime_producer_peak_memory_exact = true;
   }
@@ -15878,7 +15982,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         transformation_rule =
             "canonical.aggregate.composed-query-distinct.v1";
         physical_kind = exec::PhysicalNodeKind::kAggregate;
-        auxiliary_memory = comparison_bound;
+        if (!QueryDistinctAuxiliaryMemoryBytes(
+                input_row_count, input_batch.columns.size(),
+                &auxiliary_memory)) {
+          return refuse(
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+              "composition DISTINCT resident state size overflowed");
+        }
         break;
       }
       case plan::CanonicalLogicalRelationalNodeKind::kSort: {
@@ -16457,7 +16567,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     std::uint64_t output_memory = 1;
     std::uint64_t operator_memory = 0;
     std::uint64_t aggregate_workspace_memory = 0;
+    const bool query_distinct =
+        physical_kind == exec::PhysicalNodeKind::kAggregate &&
+        implementation_id == "aggregate.query-distinct.typed.v1";
     if (physical_kind == exec::PhysicalNodeKind::kAggregate &&
+        !query_distinct &&
         (!CheckedMultiply(
              static_cast<std::uint64_t>(state.batch.rows.size()),
              sizeof(std::size_t), &aggregate_workspace_memory) ||
@@ -16471,6 +16585,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         !CheckedAdd(input_memory, output_memory, &operator_memory) ||
         !CheckedAdd(operator_memory, auxiliary_memory, &operator_memory) ||
         (physical_kind == exec::PhysicalNodeKind::kAggregate &&
+         !query_distinct &&
          !CheckedAdd(operator_memory,
                      aggregate_workspace_memory,
                      &operator_memory)) ||
@@ -16488,11 +16603,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          physical_kind == exec::PhysicalNodeKind::kProject ||
          physical_kind == exec::PhysicalNodeKind::kSort ||
          physical_kind == exec::PhysicalNodeKind::kLimit ||
-         dynamic_table_subquery || dynamic_nonrecursive_cte) &&
+         dynamic_table_subquery || dynamic_nonrecursive_cte ||
+         query_distinct) &&
         !planning_values_exact) {
       // The preceding complex aggregate owns its live result values.  The
       // planning batch is only a schema/cardinality placeholder, so bind the
-      // dynamic FILTER, PROJECT, SORT, LIMIT, TABLE-subquery, or
+      // dynamic FILTER, PROJECT, DISTINCT, SORT, LIMIT, TABLE-subquery, or
       // nonrecursive CTE to the full selected budget and let its
       // issuer/executor charge exact callback payloads and auxiliary state.
       operator_memory =
@@ -18374,6 +18490,8 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
   std::uint64_t project_memory = 0;
   std::uint64_t distinct_comparison_count = 0;
   std::uint64_t distinct_self_comparison_count = 0;
+  std::uint64_t distinct_output_memory = 1;
+  std::uint64_t distinct_auxiliary_memory = 0;
   std::uint64_t distinct_memory = 0;
   std::uint64_t comparison_count = 0;
   std::uint64_t row_order_memory = 0;
@@ -18400,29 +18518,54 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "INNER JOIN/FILTER/PROJECT memory overflowed");
   }
-  if (has_distinct &&
-      (!CheckedMultiply(filtered_row_count, filtered_row_count,
-                        &distinct_comparison_count) ||
-       !CheckedMultiply(
-           distinct_comparison_count,
-           prepared_project.expression_output_batch.columns.size(),
-           &distinct_comparison_count) ||
-       !CheckedMultiply(
-           filtered_row_count,
-           prepared_project.expression_output_batch.columns.size(),
-           &distinct_self_comparison_count) ||
-       !CheckedAdd(distinct_comparison_count,
-                   distinct_self_comparison_count,
-                   &distinct_comparison_count) ||
-       !CheckedAdd(project_memory, projected_memory, &distinct_memory) ||
-       !CheckedAdd(distinct_memory, distinct_comparison_count,
-                   &distinct_memory) ||
-       distinct_comparison_count >
-           std::numeric_limits<std::size_t>::max())) {
-    return refuse(
-        "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-        "INNER JOIN/FILTER/PROJECT/DISTINCT memory or comparison count "
-        "overflowed");
+  std::string distinct_memory_detail;
+  if (has_distinct) {
+    if (!QueryDistinctAuxiliaryMemoryBytes(
+            filtered_row_count,
+            prepared_project.expression_output_batch.columns.size(),
+            &distinct_auxiliary_memory) ||
+        !CheckedMultiply(filtered_row_count, filtered_row_count,
+                         &distinct_comparison_count) ||
+        !CheckedMultiply(
+            distinct_comparison_count,
+            prepared_project.expression_output_batch.columns.size(),
+            &distinct_comparison_count) ||
+        !CheckedMultiply(
+            filtered_row_count,
+            prepared_project.expression_output_batch.columns.size(),
+            &distinct_self_comparison_count) ||
+        !CheckedAdd(distinct_comparison_count,
+                    distinct_self_comparison_count,
+                    &distinct_comparison_count) ||
+        distinct_comparison_count >
+            std::numeric_limits<std::size_t>::max() ||
+        !CheckedAdd(total_work, distinct_comparison_count, &total_work)) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+          "INNER JOIN/FILTER/PROJECT/DISTINCT resident state or comparison "
+          "count overflowed");
+    }
+    if (total_work >
+        request.optimizer_request.resource.maximum_candidate_count) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+          "INNER JOIN/FILTER/PROJECT/DISTINCT work exceeds the admitted "
+          "candidate bound");
+    }
+    if (!QueryDistinctOutputMemoryBytes(
+            prepared_project.expression_output_batch,
+            prepared_distinct.equality_terms,
+            static_cast<std::size_t>(distinct_comparison_count),
+            &distinct_output_memory, &distinct_memory_detail) ||
+        !CheckedAdd(projected_memory, distinct_output_memory,
+                    &distinct_memory) ||
+        !CheckedAdd(distinct_memory, distinct_auxiliary_memory,
+                    &distinct_memory)) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+          "INNER JOIN/FILTER/PROJECT/DISTINCT output memory projection "
+          "failed: " + distinct_memory_detail);
+    }
   }
   const auto pre_sort_memory =
       has_distinct ? distinct_memory : project_memory;
@@ -18445,7 +18588,10 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
                   "INNER JOIN/FILTER/PROJECT/SORT/LIMIT memory overflowed");
   }
   const auto final_memory =
-      has_limit ? limit_memory : (has_sort ? sort_memory : project_memory);
+      has_limit ? limit_memory
+                : (has_sort ? sort_memory
+                            : (has_distinct ? distinct_memory
+                                            : project_memory));
   if (final_memory >
       request.optimizer_request.resource.memory_budget_bytes) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
@@ -18591,7 +18737,7 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
                                  filter_state_memory);
   if (has_distinct) {
     runtime_auxiliary.emplace_back(sort_input_node->logical_node_id,
-                                   distinct_comparison_count);
+                                   distinct_auxiliary_memory);
   }
   if (has_sort) {
     runtime_auxiliary.emplace_back(sort_node->logical_node_id,
@@ -20911,22 +21057,17 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
   std::uint64_t project_memory = 0;
   std::uint64_t distinct_comparison_count = 0;
   std::uint64_t distinct_self_comparison_count = 0;
+  std::uint64_t distinct_output_memory = 1;
+  std::uint64_t distinct_auxiliary_memory = 0;
   std::uint64_t distinct_memory = 0;
   std::uint64_t sort_comparison_count = 0;
   std::uint64_t row_order_memory = 0;
   std::uint64_t sort_memory = 0;
   std::uint64_t limit_memory = 0;
-  if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
-      !CheckedMultiply(input_row_count, sizeof(api::EngineSqlTruthValue),
-                       &predicate_memory) ||
-      !AddBatchMemoryBytes(filtered_input.batch, &filtered_memory) ||
-      !AddBatchMemoryBytes(prepared_project.expression_output_batch,
-                           &project_output_memory) ||
-      !CheckedAdd(input_memory, predicate_memory, &filter_memory) ||
-      !CheckedAdd(filter_memory, filtered_memory, &filter_memory) ||
-      !CheckedAdd(filtered_memory, project_output_memory,
-                  &project_peak_memory) ||
-      !CheckedAdd(filter_memory, project_output_memory, &project_memory) ||
+  std::string distinct_memory_detail;
+  if (!QueryDistinctAuxiliaryMemoryBytes(
+          filtered_row_count, projected_input.batch.columns.size(),
+          &distinct_auxiliary_memory) ||
       !CheckedMultiply(filtered_row_count, filtered_row_count,
                        &distinct_comparison_count) ||
       !CheckedMultiply(distinct_comparison_count,
@@ -20938,8 +21079,36 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
       !CheckedAdd(distinct_comparison_count,
                   distinct_self_comparison_count,
                   &distinct_comparison_count) ||
-      !CheckedAdd(project_memory, project_output_memory, &distinct_memory) ||
-      !CheckedAdd(distinct_memory, distinct_comparison_count,
+      distinct_comparison_count > std::numeric_limits<std::size_t>::max() ||
+      !CheckedAdd(total_expression_work, distinct_comparison_count,
+                  &total_expression_work)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "full SQL-tail DISTINCT work or resident state overflowed");
+  }
+  if (total_expression_work >
+      request.optimizer_request.resource.maximum_candidate_count) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "full SQL-tail DISTINCT work exceeds the admitted "
+                  "candidate bound");
+  }
+  if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
+      !CheckedMultiply(input_row_count, sizeof(api::EngineSqlTruthValue),
+                       &predicate_memory) ||
+      !AddBatchMemoryBytes(filtered_input.batch, &filtered_memory) ||
+      !AddBatchMemoryBytes(prepared_project.expression_output_batch,
+                           &project_output_memory) ||
+      !CheckedAdd(input_memory, predicate_memory, &filter_memory) ||
+      !CheckedAdd(filter_memory, filtered_memory, &filter_memory) ||
+      !CheckedAdd(filtered_memory, project_output_memory,
+                  &project_peak_memory) ||
+      !CheckedAdd(filter_memory, project_output_memory, &project_memory) ||
+      !QueryDistinctOutputMemoryBytes(
+          projected_input.batch, prepared_distinct.equality_terms,
+          static_cast<std::size_t>(distinct_comparison_count),
+          &distinct_output_memory, &distinct_memory_detail) ||
+      !CheckedAdd(project_output_memory, distinct_output_memory,
+                  &distinct_memory) ||
+      !CheckedAdd(distinct_memory, distinct_auxiliary_memory,
                   &distinct_memory) ||
       !CheckedMultiply(filtered_row_count, filtered_row_count,
                        &sort_comparison_count) ||
@@ -21029,7 +21198,7 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
   if (!CompleteLiveRuntimeMemoryReceipts(
           &profiles,
           {{filter_node->logical_node_id, predicate_memory},
-           {distinct_node->logical_node_id, distinct_comparison_count},
+           {distinct_node->logical_node_id, distinct_auxiliary_memory},
            {sort_node->logical_node_id, sort_comparison_count},
            {sort_node->logical_node_id, row_order_memory}})) {
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
@@ -24313,6 +24482,8 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
           ? remaining_bound
           : static_cast<std::size_t>(row_limit);
   std::uint64_t input_memory = 1;
+  std::uint64_t distinct_output_memory = 1;
+  std::uint64_t distinct_auxiliary_memory = 0;
   std::uint64_t distinct_memory = 0;
   std::uint64_t distinct_comparison_count = 0;
   std::uint64_t distinct_self_comparison_count = 0;
@@ -24320,8 +24491,11 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
   std::uint64_t row_order_memory = 0;
   std::uint64_t sort_memory = 0;
   std::uint64_t limit_memory = 0;
-  if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
-      !CheckedAdd(input_memory, input_memory, &distinct_memory) ||
+  std::string distinct_memory_detail;
+  std::uint64_t total_work = 0;
+  if (!QueryDistinctAuxiliaryMemoryBytes(
+          input_row_count, input.batch.columns.size(),
+          &distinct_auxiliary_memory) ||
       !CheckedMultiply(input_row_count, input_row_count,
                        &distinct_comparison_count) ||
       !CheckedMultiply(distinct_comparison_count,
@@ -24332,12 +24506,32 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
       !CheckedAdd(distinct_comparison_count,
                   distinct_self_comparison_count,
                   &distinct_comparison_count) ||
-      !CheckedAdd(distinct_memory, distinct_comparison_count,
-                  &distinct_memory) ||
       !CheckedMultiply(input_row_count, input_row_count,
                        &sort_comparison_count) ||
       !CheckedMultiply(input_row_count, sizeof(std::size_t),
                        &row_order_memory) ||
+      distinct_comparison_count > std::numeric_limits<std::size_t>::max() ||
+      sort_comparison_count > std::numeric_limits<std::size_t>::max() ||
+      !CheckedAdd(distinct_comparison_count, sort_comparison_count,
+                  &total_work) ||
+      !CheckedAdd(total_work, root->bound_expression_ids.size(),
+                  &total_work)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "composition work or DISTINCT resident state overflowed");
+  }
+  if (total_work >
+      request.optimizer_request.resource.maximum_candidate_count) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "composition work exceeds the admitted candidate bound");
+  }
+  if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
+      !QueryDistinctOutputMemoryBytes(
+          input.batch, prepared_distinct.equality_terms,
+          static_cast<std::size_t>(distinct_comparison_count),
+          &distinct_output_memory, &distinct_memory_detail) ||
+      !CheckedAdd(input_memory, distinct_output_memory, &distinct_memory) ||
+      !CheckedAdd(distinct_memory, distinct_auxiliary_memory,
+                  &distinct_memory) ||
       !CheckedAdd(distinct_memory, input_memory, &sort_memory) ||
       !CheckedAdd(sort_memory, sort_comparison_count, &sort_memory) ||
       !CheckedAdd(sort_memory, row_order_memory, &sort_memory) ||
@@ -24419,7 +24613,7 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
        1}};
   if (!CompleteLiveRuntimeMemoryReceipts(
           &profiles,
-          {{distinct_node->logical_node_id, distinct_comparison_count},
+          {{distinct_node->logical_node_id, distinct_auxiliary_memory},
            {sort_node->logical_node_id, sort_comparison_count},
            {sort_node->logical_node_id, row_order_memory}})) {
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
