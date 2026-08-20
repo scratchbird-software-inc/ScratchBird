@@ -1317,14 +1317,23 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       execution_ordered_input_batch.columns[request.value_column]
               .descriptor.canonical_type_name == "boolean" &&
       request.result_column.descriptor.canonical_type_name == "boolean";
+  const bool exact_int64_order =
+      order_type_uuid.has_value() &&
+      *order_type_uuid == canonical_int64_type_uuid &&
+      execution_ordered_input_batch.columns[request.order_term.column]
+              .descriptor.canonical_type_name == "int64";
+  const bool exact_boolean_order =
+      !nth_value && order_type_uuid.has_value() &&
+      !canonical_boolean_type_uuid.empty() &&
+      *order_type_uuid == canonical_boolean_type_uuid &&
+      execution_ordered_input_batch.columns[request.order_term.column]
+              .descriptor.canonical_type_name == "boolean";
   if (!result_type_uuid.has_value() || !IsCanonicalUuid(*result_type_uuid) ||
       !source_type_uuid.has_value() || !IsCanonicalUuid(*source_type_uuid) ||
-      !order_type_uuid.has_value() ||
-      *order_type_uuid != canonical_int64_type_uuid ||
-      execution_ordered_input_batch.columns[request.order_term.column]
-              .descriptor.canonical_type_name != "int64" ||
+      !order_type_uuid.has_value() || !IsCanonicalUuid(*order_type_uuid) ||
       canonical_int64_type_uuid.empty() ||
       (!exact_int64_value && !exact_boolean_value) ||
+      (!exact_int64_order && !exact_boolean_order) ||
       has_auxiliary_type_fields(
           execution_ordered_input_batch.columns[request.value_column]
               .descriptor) ||
@@ -1335,7 +1344,7 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
     return refuse(Refusal(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
         std::string(display_name) +
-            " source and result are not exact canonical int64/boolean"));
+            " source, result, or order is not exact canonical int64/boolean"));
   }
   const bool exact_nth_operand =
       nth_value && nth_operand != nullptr &&
