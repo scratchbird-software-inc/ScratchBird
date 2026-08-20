@@ -836,10 +836,12 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          window_node->semantic_variant_id != "window.percent-rank.v1" &&
          window_node->semantic_variant_id != "window.cume-dist.v1" &&
          window_node->semantic_variant_id != "window.ntile.v1" &&
-         window_node->semantic_variant_id != "window.lag.v1") ||
+         window_node->semantic_variant_id != "window.lag.v1" &&
+         window_node->semantic_variant_id != "window.lead.v1") ||
         window_node->bound_expression_ids.size() !=
             ((window_node->semantic_variant_id == "window.ntile.v1" ||
-              window_node->semantic_variant_id == "window.lag.v1")
+              window_node->semantic_variant_id == "window.lag.v1" ||
+              window_node->semantic_variant_id == "window.lead.v1")
                  ? 3U
                  : 2U) ||
         window_node->output_descriptor_ids.size() !=
@@ -1025,6 +1027,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         "019de5fc-2400-7047-9474-232ca488c094";
     constexpr std::string_view kLagFunctionUuid =
         "019de5fc-2400-782c-8436-9ac310301738";
+    constexpr std::string_view kLeadFunctionUuid =
+        "019de5fc-2400-7a06-bc3c-6747cf5be66f";
     const bool rank_window =
         window_node->semantic_variant_id == "window.rank.v1";
     const bool dense_rank_window =
@@ -1037,11 +1041,15 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         window_node->semantic_variant_id == "window.ntile.v1";
     const bool lag_window =
         window_node->semantic_variant_id == "window.lag.v1";
+    const bool lead_window =
+        window_node->semantic_variant_id == "window.lead.v1";
+    const bool navigation_window = lag_window || lead_window;
     const auto canonical_int64_type_uuid =
-        lag_window ? CanonicalCoreDatatypeUuid("int64") : std::string{};
+        navigation_window ? CanonicalCoreDatatypeUuid("int64")
+                          : std::string{};
     const std::string_view expected_builtin_id =
-        lag_window
-            ? "sb.window.lag"
+        navigation_window
+            ? (lag_window ? "sb.window.lag" : "sb.window.lead")
             : (ntile_window
             ? "sb.window.ntile"
             : (cume_dist_window
@@ -1053,8 +1061,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                           : (rank_window ? "sb.window.rank"
                                          : "sb.window.row_number")))));
     const std::string_view expected_function_uuid =
-        lag_window
-            ? kLagFunctionUuid
+        navigation_window
+            ? (lag_window ? kLagFunctionUuid : kLeadFunctionUuid)
             : (ntile_window
             ? kNtileFunctionUuid
             : (cume_dist_window
@@ -1099,13 +1107,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             : relational.descriptors.end();
     const bool exact_argument_arity =
         relational.window_invocations.size() == 1 &&
-        ((ntile_window || lag_window)
+        ((ntile_window || navigation_window)
              ? relational.window_invocations.front()
                        .argument_expression_ids.size() == 1
              : relational.window_invocations.front()
                    .argument_expression_ids.empty());
     const auto ntile_argument =
-        (ntile_window || lag_window) && exact_argument_arity
+        (ntile_window || navigation_window) && exact_argument_arity
             ? std::ranges::find_if(
                   relational.expressions, [&](const auto& expression) {
                     return expression.expression_id ==
@@ -1126,7 +1134,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         relational.window_invocations.size() == 1 && exact_argument_arity) {
       expected_window_bound_expression_ids.push_back(
           sort_node->bound_expression_ids.front());
-      if (ntile_window || lag_window) {
+      if (ntile_window || navigation_window) {
         expected_window_bound_expression_ids.push_back(
             relational.window_invocations.front()
                 .argument_expression_ids.front());
@@ -1218,8 +1226,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             relational.window_invocations.front().result_descriptor_id ||
         result_descriptor == relational.descriptors.end() ||
         result_descriptor->nullability !=
-            (lag_window ? RelationalNullability::kNullable
-                        : RelationalNullability::kNonNull) ||
+            (navigation_window ? RelationalNullability::kNullable
+                               : RelationalNullability::kNonNull) ||
         window_node->bound_expression_ids !=
             expected_window_bound_expression_ids ||
         (ntile_window &&
@@ -1248,7 +1256,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
           ntile_argument_descriptor->width.has_value() ||
           ntile_argument_descriptor->precision.has_value() ||
           ntile_argument_descriptor->scale.has_value())) ||
-        (lag_window &&
+        (navigation_window &&
          (ntile_argument == relational.expressions.end() ||
           ntile_argument->expression_kind !=
               RelationalExpressionKind::kIdentifier ||
@@ -1290,8 +1298,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         window_outputs.back()->output_name_utf8 !=
             relational.window_invocations.front().output_name_utf8) {
       return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
-                    lag_window
-                        ? "heap_lag_window_binding"
+                    navigation_window
+                        ? (lag_window ? "heap_lag_window_binding"
+                                      : "heap_lead_window_binding")
                         : (ntile_window
                         ? "heap_ntile_window_binding"
                         : (cume_dist_window

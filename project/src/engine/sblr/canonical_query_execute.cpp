@@ -6306,6 +6306,9 @@ constexpr GlobalRankingWindowProfile kGlobalNtileProfile{
 constexpr GlobalRankingWindowProfile kGlobalLagProfile{
     "window.lag.v1", "sb.window.lag",
     "019de5fc-2400-782c-8436-9ac310301738", "LAG", "int64"};
+constexpr GlobalRankingWindowProfile kGlobalLeadProfile{
+    "window.lead.v1", "sb.window.lead",
+    "019de5fc-2400-7a06-bc3c-6747cf5be66f", "LEAD", "int64"};
 constexpr std::uint64_t kRealRankingRatioTextMaximumBytes = 36;
 constexpr std::uint64_t kRealRankingConversionWorkspaceMaximumBytes =
     2 * kRealRankingRatioTextMaximumBytes;
@@ -6380,9 +6383,11 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           : dag.descriptors.end();
   const bool ntile_window = profile.builtin_id == "sb.window.ntile";
   const bool lag_window = profile.builtin_id == "sb.window.lag";
+  const bool lead_window = profile.builtin_id == "sb.window.lead";
+  const bool navigation_window = lag_window || lead_window;
   const bool exact_argument_arity =
       invocations.size() == 1 &&
-      ((ntile_window || lag_window)
+      ((ntile_window || navigation_window)
            ? invocations.front()->argument_expression_ids.size() == 1
            : invocations.front()->argument_expression_ids.empty());
   std::vector<std::uint32_t> expected_bound_expression_ids;
@@ -6391,7 +6396,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       invocations.size() == 1 && exact_argument_arity) {
     expected_bound_expression_ids.push_back(
         typed_sort->bound_expression_ids.front());
-    if (ntile_window || lag_window) {
+    if (ntile_window || navigation_window) {
       expected_bound_expression_ids.push_back(
           invocations.front()->argument_expression_ids.front());
     }
@@ -6530,8 +6535,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       result_descriptor == dag.descriptors.end() || result_type_uuid.empty() ||
       result_descriptor->type_uuid != result_type_uuid ||
       result_descriptor->nullability !=
-          (lag_window ? api::RelationalNullability::kNullable
-                      : api::RelationalNullability::kNonNull) ||
+          (navigation_window ? api::RelationalNullability::kNullable
+                             : api::RelationalNullability::kNonNull) ||
       consumer.output_descriptor_ids.size() !=
           previous_logical.output_descriptor_ids.size() + 1 ||
       !std::equal(previous_logical.output_descriptor_ids.begin(),
@@ -6643,7 +6648,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       return result;
     }
     result.ntile_bucket_count_operand = std::move(operand);
-  } else if (lag_window) {
+  } else if (navigation_window) {
     const auto argument_expression_id =
         invocations.front()->argument_expression_ids.front();
     const auto argument = std::ranges::find_if(
@@ -6686,7 +6691,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         result_descriptor->precision != argument_descriptor->precision ||
         result_descriptor->scale != argument_descriptor->scale) {
       result.detail = std::string(family_label) +
-                      " LAG value is not one direct canonical int64 column "
+                      " " + std::string(profile.display_name) +
+                      " value is not one direct canonical int64 column "
                       "with a distinct nullable result descriptor";
       return result;
     }
@@ -10037,7 +10043,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
   return registration;
 }
 
-exec::CanonicalPhysicalExecutorRegistration MakeLiveLagWindowRegistration(
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveNavigationWindowRegistration(
     exec::ExecutorColumnDescriptor result_column,
     exec::CanonicalDescriptorOrderTerm order_term,
     const std::size_t value_column,
@@ -10116,7 +10123,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLagWindowRegistration(
           }
           execution_dag = &*scoped_execution_dag;
         }
-        exec::CanonicalDescriptorLagWindowRequest request;
+        exec::CanonicalDescriptorNavigationWindowRequest request;
         request.selected_physical_node_id = node.physical_node_id;
         request.order_term = order_term;
         request.value_column = value_column;
@@ -10138,7 +10145,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLagWindowRegistration(
             maximum_effective_row_references;
         request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
-        auto window = exec::ExecuteCanonicalDescriptorLagWindow(
+        auto window = exec::ExecuteCanonicalDescriptorNavigationWindow(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
           step.diagnostic = std::move(window.diagnostic);
@@ -14501,11 +14508,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
              current->semantic_variant_id != "window.percent-rank.v1" &&
              current->semantic_variant_id != "window.cume-dist.v1" &&
              current->semantic_variant_id != "window.ntile.v1" &&
-             current->semantic_variant_id != "window.lag.v1") ||
+             current->semantic_variant_id != "window.lag.v1" &&
+             current->semantic_variant_id != "window.lead.v1") ||
             current->logical_node_id != graph.root_logical_node_id ||
             current->bound_expression_ids.size() !=
                 ((current->semantic_variant_id == "window.ntile.v1" ||
-                  current->semantic_variant_id == "window.lag.v1")
+                  current->semantic_variant_id == "window.lag.v1" ||
+                  current->semantic_variant_id == "window.lead.v1")
                      ? 3U
                      : 2U) ||
             current->required_property_uuids.size() != 1 ||
@@ -14655,6 +14664,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       prepared_navigation_order_term;
   std::optional<std::size_t> prepared_navigation_value_column;
   std::string prepared_navigation_frame_descriptor_uuid;
+  GlobalRankingWindowProfile prepared_navigation_profile;
   std::string navigation_order_term_binding_evidence_uuid;
   std::string navigation_frame_property_binding_evidence_uuid;
   std::string navigation_capability_uuid;
@@ -18119,14 +18129,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             node.semantic_variant_id == "window.ntile.v1";
         const bool lag_window =
             node.semantic_variant_id == "window.lag.v1";
+        const bool lead_window =
+            node.semantic_variant_id == "window.lead.v1";
+        const bool navigation_window = lag_window || lead_window;
         const bool peer_ranking_window =
             rank_window || dense_rank_window || percent_rank_window ||
             cume_dist_window;
         const bool real_ranking_window =
             percent_rank_window || cume_dist_window;
         const auto& ranking_profile =
-            lag_window
-                ? kGlobalLagProfile
+            navigation_window
+                ? (lag_window ? kGlobalLagProfile : kGlobalLeadProfile)
                 : (ntile_window
                 ? kGlobalNtileProfile
                 : (cume_dist_window
@@ -18145,7 +18158,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         if (typed_consumer == request.relational_dag.nodes.end() ||
             typed_consumer->node_kind != api::RelationalDagNodeKind::kWindow ||
             !prepared_sort.has_value() ||
-            ((peer_ranking_window || ntile_window || lag_window) &&
+            ((peer_ranking_window || ntile_window || navigation_window) &&
              (prepared_sort->expression_ordering ||
               prepared_sort->order_terms.size() != 1))) {
           return refuse(std::string(kPayloadDiagnostic),
@@ -18182,9 +18195,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           return refuse(std::string(kPayloadDiagnostic),
                         "composition NTILE bucket operand is unresolved");
         }
-        if (lag_window && !ranking.navigation_value_column.has_value()) {
+        if (navigation_window &&
+            !ranking.navigation_value_column.has_value()) {
           return refuse(std::string(kPayloadDiagnostic),
-                        "composition LAG value column is unresolved");
+                        "composition " + std::string(ranking_name) +
+                            " value column is unresolved");
         }
         if (input_row_count > static_cast<std::size_t>(
                                   std::numeric_limits<std::int64_t>::max())) {
@@ -18195,7 +18210,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         const auto* output_descriptor = ranking.result_descriptor;
         api::EngineDescriptor descriptor;
         std::uint64_t navigation_value_payload_memory = 0;
-        if (lag_window) {
+        if (navigation_window) {
           for (const auto& row : input_batch.rows) {
             const auto& value =
                 row.values[*ranking.navigation_value_column];
@@ -18207,7 +18222,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                             &navigation_value_payload_memory)) {
               return refuse(
                   "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "composition LAG value payload size overflowed");
+                  "composition " + std::string(ranking_name) +
+                      " value payload size overflowed");
             }
           }
           descriptor =
@@ -18222,7 +18238,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                       .nullable,
                   descriptor, true)) {
             return refuse(std::string(kPayloadDiagnostic),
-                          "composition LAG nullable result descriptor does not "
+                          "composition " + std::string(ranking_name) +
+                              " nullable result descriptor does not "
                           "preserve its exact source shape");
           }
         } else {
@@ -18236,7 +18253,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               ";nullability=non_null";
         }
         exec::ExecutorColumnDescriptor ranking_column{
-            ranking.outputs.back()->output_name_utf8, descriptor, lag_window,
+            ranking.outputs.back()->output_name_utf8, descriptor,
+            navigation_window,
             output_descriptor->descriptor_id};
         if (!api::QowCanonicalDescriptorIdentityV1(descriptor)) {
           return refuse(std::string(kPayloadDiagnostic),
@@ -18253,8 +18271,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 ranking_column.stable_name,
                 output_descriptor->descriptor_uuid,
                 output_descriptor->type_uuid,
-                lag_window ? exec::CanonicalResultNullability::kNullable
-                           : exec::CanonicalResultNullability::kNonNull,
+                navigation_window
+                    ? exec::CanonicalResultNullability::kNullable
+                    : exec::CanonicalResultNullability::kNonNull,
                 std::nullopt,
                 std::nullopt};
         exec::DescriptorBatch output = input_batch;
@@ -18357,13 +18376,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           if (cume_dist_window) continue;
           api::EngineTypedValue value;
-          if (lag_window) {
+          if (navigation_window) {
             value.descriptor = descriptor;
-            if (row == 0) {
+            const bool has_target = lag_window
+                                        ? row != 0
+                                        : row + 1 < input_batch.rows.size();
+            if (!has_target) {
               value.is_null = true;
               value.state = api::EngineValueState::sql_null;
             } else {
-              value = input_batch.rows[row - 1]
+              const auto target_row = lag_window ? row - 1 : row + 1;
+              value = input_batch.rows[target_row]
                           .values[*ranking.navigation_value_column];
               value.descriptor = descriptor;
             }
@@ -18451,7 +18474,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         state.batch = std::move(output);
         state.result_bindings = input_bindings;
         state.result_bindings.push_back(std::move(ranking_binding));
-        if (lag_window) {
+        if (navigation_window) {
           prepared_navigation_window = std::move(ranking_column);
           prepared_navigation_order_term =
               prepared_sort->order_terms.front();
@@ -18459,6 +18482,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               *ranking.navigation_value_column;
           prepared_navigation_frame_descriptor_uuid =
               ranking.window_frame_descriptor_uuid;
+          prepared_navigation_profile = ranking_profile;
         } else if (peer_ranking_window) {
           prepared_peer_ranking = std::move(ranking_column);
           prepared_peer_ranking_order_term =
@@ -18478,7 +18502,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         row_number_order_evidence_uuid = DerivedCanonicalUuid(
             identity_scope + ":" + prepared_sort->ordering_property_uuid,
             "node-composition.window.deterministic-order");
-        if (peer_ranking_window || ntile_window || lag_window) {
+        if (peer_ranking_window || ntile_window || navigation_window) {
           std::uint64_t planned_receipt_workspace_bytes = 0;
           std::uint64_t actual_receipt_workspace_bytes = 0;
           if (!exec::PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
@@ -18508,7 +18532,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           auxiliary_memory =
               std::max(auxiliary_memory, actual_receipt_workspace_bytes);
-          if (lag_window) {
+          if (navigation_window) {
             navigation_order_term_binding_evidence_uuid =
                 order_term_binding_evidence_uuid;
             navigation_frame_property_binding_evidence_uuid =
@@ -18521,7 +18545,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                     ranking.result_descriptor->descriptor_uuid + ":" +
                     navigation_order_term_binding_evidence_uuid + ":" +
                     navigation_frame_property_binding_evidence_uuid,
-                "node-composition.window.lag.capability");
+                lag_window
+                    ? "node-composition.window.lag.capability"
+                    : "node-composition.window.lead.capability");
             if (navigation_capability_uuid.empty() ||
                 navigation_capability_uuid ==
                     navigation_order_term_binding_evidence_uuid ||
@@ -18529,7 +18555,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                     navigation_frame_property_binding_evidence_uuid) {
               return refuse(
                   std::string(kPayloadDiagnostic),
-                  "composition LAG capability identity is not independent");
+                  "composition " + std::string(ranking_name) +
+                      " capability identity is not independent");
             }
             std::uint64_t navigation_pair_count = 0;
             std::uint64_t navigation_reference_bytes = 0;
@@ -18600,7 +18627,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                     std::numeric_limits<std::size_t>::max()) {
               return refuse(
                   "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "composition LAG navigation workspace overflowed");
+                  "composition " + std::string(ranking_name) +
+                      " navigation workspace overflowed");
             }
             std::uint64_t navigation_work = 0;
             if (!CheckedMultiply(navigation_pair_count, 2,
@@ -18608,7 +18636,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 !add_work(navigation_work)) {
               return refuse(
                   "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                  "composition LAG navigation work exceeds its admitted bound");
+                  "composition " + std::string(ranking_name) +
+                      " navigation work exceeds its admitted bound");
             }
             navigation_maximum_pair_comparisons = std::max<std::size_t>(
                 1, static_cast<std::size_t>(navigation_pair_count));
@@ -18653,7 +18682,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         }
         implementation_id = std::string(ranking_profile.semantic_variant_id);
         capability_uuid =
-            lag_window
+            navigation_window
                 ? navigation_capability_uuid
                 : (ntile_window
                 ? ntile_order_term_binding_evidence_uuid
@@ -18661,8 +18690,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                        ? peer_ranking_order_term_binding_evidence_uuid
                        : window_capability_uuid));
         transformation_rule =
-            lag_window
-                ? "canonical.window.composed-lag.v1"
+            navigation_window
+                ? (lag_window ? "canonical.window.composed-lag.v1"
+                              : "canonical.window.composed-lead.v1")
                 : (ntile_window
                 ? "canonical.window.composed-ntile.v1"
                 : (cume_dist_window
@@ -19434,7 +19464,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       prepared_navigation_order_term.has_value() &&
       prepared_navigation_value_column.has_value()) {
     execution_request.available_executors.push_back(
-        MakeLiveLagWindowRegistration(
+        MakeLiveNavigationWindowRegistration(
             *prepared_navigation_window,
             *prepared_navigation_order_term,
             *prepared_navigation_value_column,
@@ -19444,7 +19474,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             navigation_frame_property_binding_evidence_uuid,
             navigation_capability_uuid,
             sort_input_row_count, navigation_maximum_pair_comparisons,
-            navigation_maximum_effective_row_references, kGlobalLagProfile,
+            navigation_maximum_effective_row_references,
+            prepared_navigation_profile,
             request.context));
   }
   if (prepared_peer_ranking.has_value() &&
@@ -51179,6 +51210,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       prepared_heap_navigation_order_term;
   std::optional<std::size_t> prepared_heap_navigation_value_column;
   std::string prepared_heap_navigation_frame_descriptor_uuid;
+  GlobalRankingWindowProfile prepared_heap_navigation_profile;
   std::string heap_navigation_order_term_binding_evidence_uuid;
   std::string heap_navigation_frame_property_binding_evidence_uuid;
   std::string window_capability_uuid;
@@ -51198,12 +51230,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         window_node->semantic_variant_id == "window.ntile.v1";
     const bool lag_window =
         window_node->semantic_variant_id == "window.lag.v1";
+    const bool lead_window =
+        window_node->semantic_variant_id == "window.lead.v1";
+    const bool navigation_window = lag_window || lead_window;
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
     const auto& ranking_profile =
-        lag_window
-            ? kGlobalLagProfile
+        navigation_window
+            ? (lag_window ? kGlobalLagProfile : kGlobalLeadProfile)
             : (ntile_window
             ? kGlobalNtileProfile
             : (cume_dist_window
@@ -51253,17 +51288,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
                     "object-backed NTILE bucket operand is unresolved");
     }
-    if (lag_window && !ranking.navigation_value_column.has_value()) {
+    if (navigation_window &&
+        !ranking.navigation_value_column.has_value()) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
-                    "object-backed LAG value column is unresolved");
+                    "object-backed " + std::string(ranking_name) +
+                        " value column is unresolved");
     }
     const auto* output_descriptor = ranking.result_descriptor;
     api::EngineDescriptor descriptor;
-    if (lag_window) {
+    if (navigation_window) {
       if (*ranking.navigation_value_column >=
           admission.current_relation_projection_descriptors.size()) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
-                      "object-backed LAG source descriptor is unresolved");
+                      "object-backed " + std::string(ranking_name) +
+                          " source descriptor is unresolved");
       }
       const auto& source_descriptor =
           admission.current_relation_projection_descriptors
@@ -51286,7 +51324,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
               descriptor, true)) {
         return refuse(
             "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
-            "object-backed LAG nullable result descriptor does not preserve "
+            "object-backed " + std::string(ranking_name) +
+                " nullable result descriptor does not preserve "
             "its exact source shape");
       }
     } else {
@@ -51300,14 +51339,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
           ";nullability=non_null";
     }
     exec::ExecutorColumnDescriptor ranking_column{
-        ranking.outputs.back()->output_name_utf8, descriptor, lag_window,
+        ranking.outputs.back()->output_name_utf8, descriptor,
+        navigation_window,
         output_descriptor->descriptor_id};
     if (!api::QowCanonicalDescriptorIdentityV1(descriptor)) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
                     "object-backed " + std::string(ranking_name) +
                         " descriptor is invalid");
     }
-    if (peer_ranking_window || ntile_window || lag_window) {
+    if (peer_ranking_window || ntile_window || navigation_window) {
       if (heap_order_terms.size() != 1) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
                       "object-backed " + std::string(ranking_name) +
@@ -51336,7 +51376,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                       "object-backed " + std::string(ranking_name) +
                           " order-term receipt is unresolved");
       }
-      if (lag_window) {
+      if (navigation_window) {
         prepared_heap_navigation_window = std::move(ranking_column);
         prepared_heap_navigation_order_term =
             heap_descriptor_order_terms.front();
@@ -51344,6 +51384,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             *ranking.navigation_value_column;
         prepared_heap_navigation_frame_descriptor_uuid =
             ranking.window_frame_descriptor_uuid;
+        prepared_heap_navigation_profile = ranking_profile;
         heap_navigation_order_term_binding_evidence_uuid =
             order_term_binding_evidence_uuid;
         heap_navigation_frame_property_binding_evidence_uuid =
@@ -51355,14 +51396,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             identity_scope + ":" + output_descriptor->descriptor_uuid + ":" +
                 heap_navigation_order_term_binding_evidence_uuid + ":" +
                 heap_navigation_frame_property_binding_evidence_uuid,
-            "heap-window.lag.capability");
+            lag_window ? "heap-window.lag.capability"
+                       : "heap-window.lead.capability");
         if (window_capability_uuid.empty() ||
             window_capability_uuid ==
                 heap_navigation_order_term_binding_evidence_uuid ||
             window_capability_uuid ==
                 heap_navigation_frame_property_binding_evidence_uuid) {
           return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
-                        "object-backed LAG capability identity is not independent");
+                        "object-backed " + std::string(ranking_name) +
+                            " capability identity is not independent");
         }
       } else if (ntile_window) {
         prepared_heap_ntile = std::move(ranking_column);
@@ -51398,8 +51441,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          window_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kWindow,
          exec::PhysicalNodeKind::kWindow,
-         lag_window
-             ? "canonical.heap.window.lag.v1"
+         navigation_window
+             ? (lag_window ? "canonical.heap.window.lag.v1"
+                           : "canonical.heap.window.lead.v1")
              : (ntile_window
              ? "canonical.heap.window.ntile.v1"
              : (cume_dist_window
@@ -51592,7 +51636,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                  ? "object-backed heap hidden-column PROJECT composition"
                  : (window_composition
                         ? (prepared_heap_navigation_window.has_value()
-                               ? "object-backed heap LAG composition"
+                               ? "object-backed heap " +
+                                     std::string(
+                                         prepared_heap_navigation_profile
+                                             .display_name) +
+                                     " composition"
                                : (prepared_heap_ntile.has_value()
                                ? "object-backed heap NTILE composition"
                                : (prepared_heap_peer_ranking.has_value()
@@ -51748,7 +51796,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
           prepared_heap_navigation_order_term.has_value() &&
           prepared_heap_navigation_value_column.has_value()) {
         selected.available_executors.push_back(
-            MakeLiveLagWindowRegistration(
+            MakeLiveNavigationWindowRegistration(
                 *prepared_heap_navigation_window,
                 *prepared_heap_navigation_order_term,
                 *prepared_heap_navigation_value_column,
@@ -51764,7 +51812,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                 std::max<std::size_t>(
                     1, static_cast<std::size_t>(
                            maximum_pair_comparisons_u64)),
-                kGlobalLagProfile, input.context));
+                prepared_heap_navigation_profile, input.context));
       } else if (prepared_heap_ntile.has_value() &&
           prepared_heap_ntile_order_term.has_value() &&
           prepared_heap_ntile_bucket_count_operand.has_value()) {

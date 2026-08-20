@@ -617,7 +617,8 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
       selected_node->implementation_id == "window.partition-order-peer.v1";
   const bool operator_local_stage =
       input.operator_local_stage &&
-      input.operator_local_parent_implementation_id == "window.lag.v1" &&
+      (input.operator_local_parent_implementation_id == "window.lag.v1" ||
+       input.operator_local_parent_implementation_id == "window.lead.v1") &&
       selected_node != nullptr && selected_input_node != nullptr &&
       selected_node->implementation_id ==
           input.operator_local_parent_implementation_id &&

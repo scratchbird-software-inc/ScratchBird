@@ -1931,7 +1931,7 @@ struct CanonicalDescriptorNtileResult {
   PhysicalMgaStatementContext mga_statement_context;
 };
 
-struct CanonicalDescriptorLagWindowRequest {
+struct CanonicalDescriptorNavigationWindowRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch ordered_input_batch;
@@ -1951,7 +1951,7 @@ struct CanonicalDescriptorLagWindowRequest {
   CanonicalExecutionMgaAuthority mga_authority;
 };
 
-struct CanonicalDescriptorLagWindowResult {
+struct CanonicalDescriptorNavigationWindowResult {
   DescriptorRuntimeDiagnostic diagnostic;
   DescriptorBatch output_batch;
   std::size_t partition_order_comparison_count = 0;
@@ -1962,6 +1962,13 @@ struct CanonicalDescriptorLagWindowResult {
   std::uint64_t causal_counter_id = 0;
   PhysicalMgaStatementContext mga_statement_context;
 };
+
+// Retain the exact LAG carrier names for source compatibility while the
+// canonical navigation contract is shared by LAG and LEAD.
+using CanonicalDescriptorLagWindowRequest =
+    CanonicalDescriptorNavigationWindowRequest;
+using CanonicalDescriptorLagWindowResult =
+    CanonicalDescriptorNavigationWindowResult;
 
 enum class CanonicalAggregateExecutionStrategy : std::uint8_t {
   unknown = 0,
@@ -3147,6 +3154,14 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtile(
     const CanonicalDescriptorNtileRequest& request);
 CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtile(
     const CanonicalDescriptorNtileRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_ordered_input_batch);
+CanonicalDescriptorNavigationWindowResult
+ExecuteCanonicalDescriptorNavigationWindow(
+    const CanonicalDescriptorNavigationWindowRequest& request);
+CanonicalDescriptorNavigationWindowResult
+ExecuteCanonicalDescriptorNavigationWindow(
+    const CanonicalDescriptorNavigationWindowRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch);
 CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindow(

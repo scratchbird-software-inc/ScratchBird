@@ -7623,7 +7623,8 @@ bool CanonicalWindowFrameEvidenceValid(
       selected_node->implementation_id == "window.partition-order-peer.v1";
   const bool operator_local_stage =
       frames.operator_local_stage &&
-      frames.operator_local_parent_implementation_id == "window.lag.v1" &&
+      (frames.operator_local_parent_implementation_id == "window.lag.v1" ||
+       frames.operator_local_parent_implementation_id == "window.lead.v1") &&
       selected_node != nullptr && selected_input_node != nullptr &&
       selected_node->implementation_id ==
           frames.operator_local_parent_implementation_id &&
@@ -8527,9 +8528,15 @@ static CanonicalWindowValueResult ExecuteCanonicalWindowValueStrategy(
           return node.physical_node_id ==
                  request.frames.executed_physical_node_id;
         });
-    if (request.frames.operator_local_parent_implementation_id !=
-            "window.lag.v1" ||
-        request.function != CanonicalWindowValueFunction::lag ||
+    const bool exact_lag =
+        request.frames.operator_local_parent_implementation_id ==
+            "window.lag.v1" &&
+        request.function == CanonicalWindowValueFunction::lag;
+    const bool exact_lead =
+        request.frames.operator_local_parent_implementation_id ==
+            "window.lead.v1" &&
+        request.function == CanonicalWindowValueFunction::lead;
+    if ((!exact_lag && !exact_lead) ||
         selected_node == request.frames.physical_dag.nodes.end() ||
         selected_node->output_descriptor_ids.empty() ||
         request.result_column.descriptor_id == 0 ||
@@ -8537,7 +8544,7 @@ static CanonicalWindowValueResult ExecuteCanonicalWindowValueStrategy(
             request.result_column.descriptor_id) {
       return refuse(
           "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
-          "operator-local LAG evidence is not bound to its published result");
+          "operator-local navigation evidence is not bound to its published result");
     }
   }
   if (request.parser_execution_authority_claimed ||

@@ -242,7 +242,8 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
     }
   }
   const bool operator_local_stage =
-      request.operator_local_parent_implementation_id == "window.lag.v1";
+      request.operator_local_parent_implementation_id == "window.lag.v1" ||
+      request.operator_local_parent_implementation_id == "window.lead.v1";
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kWindow ||
       selected_node->implementation_id !=
@@ -1065,12 +1066,13 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtile(
 }
 
 namespace {
-CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindowBound(
-    const CanonicalDescriptorLagWindowRequest& request,
+CanonicalDescriptorNavigationWindowResult
+ExecuteCanonicalDescriptorNavigationWindowBound(
+    const CanonicalDescriptorNavigationWindowRequest& request,
     const TypedPhysicalNodeDag& execution_dag,
     const DescriptorBatch& execution_ordered_input_batch,
     const bool borrowed_execution_carriers) {
-  CanonicalDescriptorLagWindowResult result;
+  CanonicalDescriptorNavigationWindowResult result;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
     result.diagnostic = std::move(diagnostic);
     result.output_batch = {};
@@ -1096,8 +1098,15 @@ CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindowBound(
   const bool lag = request.builtin_id == "sb.window.lag" &&
                    request.function_uuid ==
                        "019de5fc-2400-782c-8436-9ac310301738";
-  constexpr std::string_view implementation_id = "window.lag.v1";
-  if (request.function_abi_version != 1 || !lag ||
+  const bool lead = request.builtin_id == "sb.window.lead" &&
+                    request.function_uuid ==
+                        "019de5fc-2400-7a06-bc3c-6747cf5be66f";
+  const std::string_view implementation_id =
+      lag ? "window.lag.v1" : (lead ? "window.lead.v1" : "");
+  const auto function = lag ? CanonicalWindowValueFunction::lag
+                            : CanonicalWindowValueFunction::lead;
+  const std::string_view display_name = lag ? "LAG" : "LEAD";
+  if (request.function_abi_version != 1 || lag == lead ||
       !IsCanonicalUuid(request.function_uuid)) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
@@ -1214,7 +1223,8 @@ CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindowBound(
       request.result_column.descriptor.canonical_type_name != "int64") {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
-        "LAG source and result are not exact canonical int64"));
+        std::string(display_name) +
+            " source and result are not exact canonical int64"));
   }
   for (std::size_t left = 0; left < independent_identities.size(); ++left) {
     for (std::size_t right = left + 1;
@@ -1288,7 +1298,8 @@ CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindowBound(
         !checked_add(navigation_payload_bytes, value.binary_value.size(),
                      &navigation_payload_bytes)) {
       return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                            "LAG value payload accounting overflowed"));
+                            std::string(display_name) +
+                                " value payload accounting overflowed"));
     }
   }
   if (!RowNumberBatchPayloadBytes(execution_ordered_input_batch,
@@ -1361,7 +1372,8 @@ CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindowBound(
       planned_peak_memory_bytes > selected_node->memory_bytes_required) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-        "LAG runtime materialization exceeds its selected node grant"));
+        std::string(display_name) +
+            " runtime materialization exceeds its selected node grant"));
   }
 
   CanonicalWindowPartitionOrderRequest partition_request;
@@ -1412,7 +1424,7 @@ CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindowBound(
 
   CanonicalWindowValueRequest value_request;
   value_request.frames = std::move(frames);
-  value_request.function = CanonicalWindowValueFunction::lag;
+  value_request.function = function;
   value_request.function_uuid = request.function_uuid;
   value_request.value_expression_descriptor_id =
       execution_ordered_input_batch.columns[request.value_column].descriptor_id;
@@ -1476,18 +1488,53 @@ CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindowBound(
 }
 }  // namespace
 
+CanonicalDescriptorNavigationWindowResult
+ExecuteCanonicalDescriptorNavigationWindow(
+    const CanonicalDescriptorNavigationWindowRequest& request) {
+  return ExecuteCanonicalDescriptorNavigationWindowBound(
+      request, request.physical_dag, request.ordered_input_batch, false);
+}
+
+CanonicalDescriptorNavigationWindowResult
+ExecuteCanonicalDescriptorNavigationWindow(
+    const CanonicalDescriptorNavigationWindowRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_ordered_input_batch) {
+  return ExecuteCanonicalDescriptorNavigationWindowBound(
+      request, borrowed_execution_dag, borrowed_ordered_input_batch, true);
+}
+
 CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindow(
     const CanonicalDescriptorLagWindowRequest& request) {
-  return ExecuteCanonicalDescriptorLagWindowBound(
-      request, request.physical_dag, request.ordered_input_batch, false);
+  if (request.function_abi_version != 1 ||
+      request.builtin_id != "sb.window.lag" ||
+      request.function_uuid !=
+          "019de5fc-2400-782c-8436-9ac310301738") {
+    CanonicalDescriptorLagWindowResult result;
+    result.diagnostic = Refusal(
+        "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
+        "LAG entrypoint requires the exact canonical LAG identity");
+    return result;
+  }
+  return ExecuteCanonicalDescriptorNavigationWindow(request);
 }
 
 CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindow(
     const CanonicalDescriptorLagWindowRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch) {
-  return ExecuteCanonicalDescriptorLagWindowBound(
-      request, borrowed_execution_dag, borrowed_ordered_input_batch, true);
+  if (request.function_abi_version != 1 ||
+      request.builtin_id != "sb.window.lag" ||
+      request.function_uuid !=
+          "019de5fc-2400-782c-8436-9ac310301738") {
+    CanonicalDescriptorLagWindowResult result;
+    result.diagnostic = Refusal(
+        "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
+        "LAG entrypoint requires the exact canonical LAG identity");
+    return result;
+  }
+  return ExecuteCanonicalDescriptorNavigationWindow(
+      request, borrowed_execution_dag, borrowed_ordered_input_batch);
 }
 
 namespace {
