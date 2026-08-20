@@ -7,11 +7,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "hash_digest.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <limits>
+#include <new>
 #include <numeric>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -152,6 +156,128 @@ bool IsCanonicalUuid(const std::string_view value) {
     if (!std::isxdigit(ch) || std::isupper(ch)) return false;
   }
   return true;
+}
+
+class OrderTermBindingEncoder {
+ public:
+  OrderTermBindingEncoder(
+      std::vector<scratchbird::core::platform::byte>* payload,
+      const std::uint64_t maximum_bytes)
+      : payload_(payload), maximum_bytes_(maximum_bytes) {}
+
+  bool AppendUint64(const std::uint64_t value) {
+    for (int shift = 56; shift >= 0; shift -= 8) {
+      if (!AppendByte(static_cast<scratchbird::core::platform::byte>(
+              value >> shift))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool AppendBool(const bool value) {
+    return AppendByte(value ? 1 : 0);
+  }
+
+  bool AppendString(const std::string_view value) {
+    if (value.size() > std::numeric_limits<std::uint64_t>::max() ||
+        !AppendUint64(static_cast<std::uint64_t>(value.size()))) {
+      return false;
+    }
+    for (const auto ch : value) {
+      if (!AppendByte(
+              static_cast<scratchbird::core::platform::byte>(ch))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  std::uint64_t bytes() const { return bytes_; }
+
+ private:
+  bool AppendByte(const scratchbird::core::platform::byte value) {
+    if (bytes_ >= maximum_bytes_ ||
+        (payload_ != nullptr &&
+         (bytes_ > std::numeric_limits<std::size_t>::max() ||
+          bytes_ >= payload_->size()))) {
+      return false;
+    }
+    if (payload_ != nullptr) {
+      (*payload_)[static_cast<std::size_t>(bytes_)] = value;
+    }
+    ++bytes_;
+    return true;
+  }
+
+  std::vector<scratchbird::core::platform::byte>* payload_;
+  std::uint64_t maximum_bytes_;
+  std::uint64_t bytes_{0};
+};
+
+bool EncodeOrderTermBindingFields(
+    OrderTermBindingEncoder* encoder,
+    const CanonicalDescriptorOrderTerm& term,
+    const std::string_view ordering_property_uuid) {
+  if (encoder == nullptr ||
+      !encoder->AppendString(
+          "scratchbird.order-term-binding-evidence.v1") ||
+      !encoder->AppendString(ordering_property_uuid) ||
+      !encoder->AppendUint64(term.column) ||
+      !encoder->AppendUint64(term.expression_descriptor_id) ||
+      !encoder->AppendUint64(static_cast<std::uint8_t>(term.direction)) ||
+      !encoder->AppendUint64(
+          static_cast<std::uint8_t>(term.null_placement)) ||
+      !encoder->AppendString(term.collation_uuid) ||
+      !encoder->AppendUint64(term.resource_epoch) ||
+      !encoder->AppendUint64(term.collation_epoch) ||
+      !encoder->AppendBool(term.text_seed.active) ||
+      !encoder->AppendString(term.text_seed.seed_pack_name) ||
+      !encoder->AppendString(term.text_seed.seed_pack_version) ||
+      !encoder->AppendString(term.text_seed.charset_name) ||
+      !encoder->AppendString(term.text_seed.collation_name) ||
+      !encoder->AppendBool(
+          term.text_seed.collation_case_insensitive) ||
+      !encoder->AppendBool(
+          term.text_seed.collation_accent_insensitive) ||
+      !encoder->AppendUint64(term.timezone_epoch) ||
+      !encoder->AppendBool(term.timezone_seed.active) ||
+      !encoder->AppendString(term.timezone_seed.seed_pack_name) ||
+      !encoder->AppendString(term.timezone_seed.seed_pack_version) ||
+      !encoder->AppendString(term.timezone_seed.content_hash) ||
+      !encoder->AppendUint64(term.timezone_seed.timezone_records) ||
+      !encoder->AppendUint64(
+          term.timezone_seed.timezone_transition_records) ||
+      !encoder->AppendUint64(
+          term.timezone_seed.timezone_leap_second_records) ||
+      !encoder->AppendUint64(term.timezone_seed.timezone_names.size())) {
+    return false;
+  }
+  return std::ranges::all_of(
+      term.timezone_seed.timezone_names,
+      [&](const auto& name) { return encoder->AppendString(name); });
+}
+
+std::string OrderTermBindingUuidFromSha256(
+    const scratchbird::core::hash::Digest256& digest) {
+  std::array<scratchbird::core::platform::byte, 16> bytes{};
+  std::copy_n(digest.begin(), bytes.size(), bytes.begin());
+  // UUIDv8 denotes a deterministic application-defined digest layout.
+  bytes[6] = static_cast<scratchbird::core::platform::byte>(
+      (bytes[6] & 0x0fU) | 0x80U);
+  bytes[8] = static_cast<scratchbird::core::platform::byte>(
+      (bytes[8] & 0x3fU) | 0x80U);
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(36);
+  for (std::size_t index = 0; index < bytes.size(); ++index) {
+    if (index == 4 || index == 6 || index == 8 || index == 10) {
+      result.push_back('-');
+    }
+    result.push_back(kHex[bytes[index] >> 4]);
+    result.push_back(kHex[bytes[index] & 0x0fU]);
+  }
+  return result;
 }
 
 std::string DescriptorField(const std::string& descriptor,
@@ -686,6 +812,71 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
     const ExecutorColumnDescriptor& column) {
   return ValidateCanonicalDescriptorOrderTermFields(
       term, column.descriptor, column.descriptor_id);
+}
+
+bool PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+    const CanonicalDescriptorOrderTerm& term,
+    const std::string_view ordering_property_uuid,
+    std::uint64_t* workspace_bytes) {
+  constexpr std::uint64_t kUuidOutputBytes = 36;
+  if (workspace_bytes == nullptr ||
+      !IsCanonicalUuid(ordering_property_uuid) ||
+      term.column > std::numeric_limits<std::uint64_t>::max()) {
+    return false;
+  }
+  *workspace_bytes = 0;
+  OrderTermBindingEncoder planner(
+      nullptr, std::numeric_limits<std::uint64_t>::max());
+  if (!EncodeOrderTermBindingFields(&planner, term,
+                                    ordering_property_uuid) ||
+      planner.bytes() > std::numeric_limits<std::uint64_t>::max() -
+                            kUuidOutputBytes) {
+    return false;
+  }
+  *workspace_bytes = planner.bytes() + kUuidOutputBytes;
+  return true;
+}
+
+std::string ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
+    const CanonicalDescriptorOrderTerm& term,
+    const std::string_view ordering_property_uuid,
+    const std::uint64_t maximum_workspace_bytes,
+    std::uint64_t* actual_workspace_bytes) {
+  namespace core_hash = scratchbird::core::hash;
+  namespace platform = scratchbird::core::platform;
+  constexpr std::uint64_t kUuidOutputBytes = 36;
+  if (actual_workspace_bytes == nullptr) return {};
+  *actual_workspace_bytes = 0;
+  std::uint64_t planned_workspace_bytes = 0;
+  if (!PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+          term, ordering_property_uuid, &planned_workspace_bytes) ||
+      planned_workspace_bytes > maximum_workspace_bytes ||
+      planned_workspace_bytes < kUuidOutputBytes ||
+      planned_workspace_bytes - kUuidOutputBytes >
+          std::numeric_limits<std::size_t>::max()) {
+    return {};
+  }
+  const auto payload_bytes = planned_workspace_bytes - kUuidOutputBytes;
+  try {
+    std::vector<platform::byte> payload(
+        static_cast<std::size_t>(payload_bytes));
+    OrderTermBindingEncoder encoder(&payload, payload_bytes);
+    if (!EncodeOrderTermBindingFields(&encoder, term,
+                                      ordering_property_uuid) ||
+        encoder.bytes() != payload_bytes) {
+      return {};
+    }
+    const auto digest = core_hash::ComputeSha256Digest(payload);
+    if (!digest.ok()) return {};
+    auto result = OrderTermBindingUuidFromSha256(digest.digest);
+    if (result.size() != kUuidOutputBytes) return {};
+    *actual_workspace_bytes = planned_workspace_bytes;
+    return result;
+  } catch (const std::bad_alloc&) {
+    return {};
+  } catch (const std::length_error&) {
+    return {};
+  }
 }
 
 CanonicalDescriptorOrderComparisonResult CompareCanonicalDescriptorOrderValues(

@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#include "descriptor_value_runtime.hpp"
+#include "executor_foundation.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -683,6 +683,291 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch) {
   return ExecuteCanonicalDescriptorRowNumberBound(
+      request, borrowed_execution_dag, borrowed_ordered_input_batch, true);
+}
+
+namespace {
+CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRankBound(
+    const CanonicalDescriptorRankRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& execution_ordered_input_batch,
+    const bool borrowed_execution_carriers) {
+  CanonicalDescriptorRankResult result;
+  const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
+    result.diagnostic = std::move(diagnostic);
+    result.output_batch = {};
+    return result;
+  };
+  if (borrowed_execution_carriers &&
+      (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
+       !DescriptorBatchCarrierIsExactDefault(
+           request.ordered_input_batch))) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1",
+        "RANK request carries conflicting owned execution carriers"));
+  }
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, execution_dag);
+  if (!authority_validation.ok) return refuse(authority_validation);
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          execution_dag.root_physical_node_id) {
+    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
+                          "selected RANK window node is not the root"));
+  }
+
+  const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* input_node = nullptr;
+  for (const auto& node : execution_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      selected_node = &node;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kWindow ||
+      selected_node->implementation_id != "window.rank.v1" ||
+      selected_node->input_physical_node_ids.size() != 1) {
+    return refuse(Refusal("QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1",
+                          "RANK requires one selected window node"));
+  }
+  for (const auto& node : execution_dag.nodes) {
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids.front()) {
+      input_node = &node;
+      break;
+    }
+  }
+  const bool exact_ordering_property =
+      selected_node->required_property_uuids.size() == 1 &&
+      IsCanonicalUuid(selected_node->required_property_uuids.front());
+  const std::string ordering_property_uuid =
+      exact_ordering_property
+          ? selected_node->required_property_uuids.front()
+          : std::string{};
+  const auto window_property = std::ranges::find_if(
+      selected_node->delivered_property_uuids,
+      [&](const auto& property_uuid) {
+        return property_uuid != ordering_property_uuid;
+      });
+  const bool exact_window_property =
+      exact_ordering_property &&
+      selected_node->delivered_property_uuids.size() == 2 &&
+      PropertyCount(selected_node->delivered_property_uuids,
+                    ordering_property_uuid) == 1 &&
+      window_property != selected_node->delivered_property_uuids.end() &&
+      IsCanonicalUuid(*window_property) &&
+      *window_property != ordering_property_uuid;
+  if (input_node == nullptr ||
+      input_node->node_kind != PhysicalNodeKind::kSort ||
+      input_node->delivered_property_uuids !=
+          std::vector<std::string>{ordering_property_uuid} ||
+      !exact_window_property ||
+      request.function_abi_version != 1 ||
+      request.builtin_id != "sb.window.rank" ||
+      request.function_uuid !=
+          "019de5fc-2400-7b94-870d-0dd789ca70ab" ||
+      !IsCanonicalUuid(request.function_uuid) ||
+      selected_node->executor_capability_abi_version != 1 ||
+      !selected_node->engine_capability_validated ||
+      !IsCanonicalUuid(selected_node->executor_capability_uuid) ||
+      !IsCanonicalUuid(request.order_term_binding_evidence_uuid) ||
+      !IsCanonicalUuid(request.deterministic_order_evidence_uuid) ||
+      request.order_term_binding_evidence_uuid == ordering_property_uuid ||
+      request.order_term_binding_evidence_uuid == *window_property ||
+      request.order_term_binding_evidence_uuid == request.function_uuid ||
+      request.deterministic_order_evidence_uuid ==
+          request.order_term_binding_evidence_uuid ||
+      request.deterministic_order_evidence_uuid == ordering_property_uuid ||
+      request.deterministic_order_evidence_uuid == *window_property) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
+        "RANK input lacks exact ordering/window property evidence"));
+  }
+  std::vector<std::uint32_t> output_descriptor_ids =
+      input_node->output_descriptor_ids;
+  output_descriptor_ids.push_back(request.rank_column.descriptor_id);
+  if (selected_node->output_descriptor_ids != output_descriptor_ids ||
+      request.rank_column.descriptor_id == 0 ||
+      request.rank_column.nullable ||
+      request.rank_column.descriptor.canonical_type_name != "int64" ||
+      request.order_term.column >=
+          execution_ordered_input_batch.columns.size()) {
+    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
+                          "RANK output or order descriptor is not bound"));
+  }
+  const auto order_validation = ValidateCanonicalDescriptorOrderTerm(
+      request.order_term,
+      execution_ordered_input_batch.columns[request.order_term.column]);
+  if (!order_validation.ok) return refuse(order_validation);
+  auto input_validation = ValidateCanonicalDescriptorBatch(
+      execution_ordered_input_batch, input_node->output_descriptor_ids);
+  if (!input_validation.ok) return refuse(std::move(input_validation));
+  if (execution_ordered_input_batch.rows.size() >
+      static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+    return refuse(Refusal("QOW-DIAG-QRY-007-WINDOW-OVERFLOW-V1",
+                          "RANK exceeds int64 result width"));
+  }
+
+  const auto peer_comparison_count =
+      execution_ordered_input_batch.rows.empty()
+          ? std::size_t{0}
+          : execution_ordered_input_batch.rows.size() - 1;
+  if (request.maximum_peer_comparisons == 0 ||
+      peer_comparison_count > request.maximum_peer_comparisons) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "RANK adjacent-peer comparison bound was exceeded"));
+  }
+  std::uint64_t peak_comparison_workspace_bytes = 0;
+  for (std::size_t row = 1;
+       row < execution_ordered_input_batch.rows.size(); ++row) {
+    const auto& left = execution_ordered_input_batch.rows[row - 1]
+                           .values[request.order_term.column];
+    const auto& right = execution_ordered_input_batch.rows[row]
+                            .values[request.order_term.column];
+    const auto left_plan =
+        PlanCanonicalDescriptorEqualityKey(left, request.order_term);
+    const auto right_plan =
+        PlanCanonicalDescriptorEqualityKey(right, request.order_term);
+    std::uint64_t pair_workspace = 0;
+    if (!left_plan.diagnostic.ok || !right_plan.diagnostic.ok ||
+        left_plan.peak_workspace_bytes >
+            std::numeric_limits<std::uint64_t>::max() ||
+        right_plan.peak_workspace_bytes >
+            std::numeric_limits<std::uint64_t>::max() ||
+        left_plan.peak_workspace_bytes >
+            std::numeric_limits<std::uint64_t>::max() -
+                right_plan.peak_workspace_bytes) {
+      return refuse(Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "RANK comparison workspace bound overflowed or was refused"));
+    }
+    pair_workspace =
+        static_cast<std::uint64_t>(left_plan.peak_workspace_bytes) +
+        static_cast<std::uint64_t>(right_plan.peak_workspace_bytes);
+    peak_comparison_workspace_bytes =
+        std::max(peak_comparison_workspace_bytes, pair_workspace);
+  }
+
+  std::uint64_t binding_receipt_workspace_bytes = 0;
+  if (!PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+          request.order_term, ordering_property_uuid,
+          &binding_receipt_workspace_bytes)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "RANK order-term binding receipt workspace was refused"));
+  }
+  const auto peak_auxiliary_workspace_bytes =
+      std::max(peak_comparison_workspace_bytes,
+               binding_receipt_workspace_bytes);
+  std::uint64_t input_payload_bytes = 0;
+  std::uint64_t rank_payload_bytes = 0;
+  if (!RowNumberBatchPayloadBytes(execution_ordered_input_batch,
+                                  &input_payload_bytes) ||
+      !RowNumberEncodedPayloadBytes(
+          execution_ordered_input_batch.rows.size(),
+          &rank_payload_bytes) ||
+      selected_node->memory_bytes_required == 0 ||
+      selected_node->memory_bytes_required > execution_dag.memory_budget_bytes ||
+      selected_node->memory_bytes_required >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max())) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "RANK memory grant or runtime payload accounting is invalid"));
+  }
+  auto remaining_memory_bytes = selected_node->memory_bytes_required;
+  const auto charge = [&](const std::uint64_t bytes) {
+    if (bytes > remaining_memory_bytes) return false;
+    remaining_memory_bytes -= bytes;
+    return true;
+  };
+  if (!charge(input_payload_bytes) || !charge(input_payload_bytes) ||
+      !charge(rank_payload_bytes) ||
+      !charge(peak_auxiliary_workspace_bytes)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "RANK runtime materialization exceeds its selected node grant"));
+  }
+  std::uint64_t actual_binding_receipt_workspace_bytes = 0;
+  const auto expected_order_term_binding_evidence_uuid =
+      ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
+          request.order_term, ordering_property_uuid,
+          binding_receipt_workspace_bytes,
+          &actual_binding_receipt_workspace_bytes);
+  if (expected_order_term_binding_evidence_uuid.empty() ||
+      actual_binding_receipt_workspace_bytes !=
+          binding_receipt_workspace_bytes ||
+      selected_node->executor_capability_uuid !=
+          expected_order_term_binding_evidence_uuid ||
+      request.order_term_binding_evidence_uuid !=
+          selected_node->executor_capability_uuid) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
+        "RANK order term differs from optimizer-published capability "
+        "evidence"));
+  }
+
+  result.output_batch.columns = execution_ordered_input_batch.columns;
+  result.output_batch.columns.push_back(request.rank_column);
+  result.output_batch.rows = execution_ordered_input_batch.rows;
+  std::size_t current_rank = 1;
+  for (std::size_t row = 0; row < result.output_batch.rows.size(); ++row) {
+    if (row != 0) {
+      const auto compared = CompareCanonicalDescriptorOrderValues(
+          execution_ordered_input_batch.rows[row - 1]
+              .values[request.order_term.column],
+          execution_ordered_input_batch.rows[row]
+              .values[request.order_term.column],
+          request.order_term);
+      if (!compared.diagnostic.ok) return refuse(compared.diagnostic);
+      if (compared.comparison > 0) {
+        return refuse(Refusal(
+            "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
+            "RANK input is not ordered by its canonical term"));
+      }
+      if (compared.comparison != 0) current_rank = row + 1;
+    }
+    CanonicalWindowRankValueRequest rank_request;
+    rank_request.function_abi_version = request.function_abi_version;
+    rank_request.builtin_id = request.builtin_id;
+    rank_request.function_uuid = request.function_uuid;
+    rank_request.output_descriptor = request.rank_column.descriptor;
+    rank_request.one_based_rank = current_rank;
+    auto rank = ComputeCanonicalWindowRankValue(rank_request);
+    if (!rank.diagnostic.ok) return refuse(std::move(rank.diagnostic));
+    result.output_batch.rows[row].values.push_back(std::move(rank.value));
+  }
+  auto output_validation = ValidateCanonicalDescriptorBatch(
+      result.output_batch, selected_node->output_descriptor_ids);
+  if (!output_validation.ok) return refuse(std::move(output_validation));
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, execution_dag);
+  if (!result_authority.ok) return refuse(result_authority);
+
+  result.diagnostic = {};
+  result.selected_plan_uuid = execution_dag.selected_plan_uuid;
+  result.executed_physical_node_id = selected_node->physical_node_id;
+  result.causal_counter_id = selected_node->causal_counter_id;
+  result.peer_comparison_count = peer_comparison_count;
+  result.peak_auxiliary_workspace_bytes =
+      peak_auxiliary_workspace_bytes;
+  result.mga_statement_context = request.mga_authority.statement_context;
+  return result;
+}
+}  // namespace
+
+CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRank(
+    const CanonicalDescriptorRankRequest& request) {
+  return ExecuteCanonicalDescriptorRankBound(
+      request, request.physical_dag, request.ordered_input_batch, false);
+}
+
+CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRank(
+    const CanonicalDescriptorRankRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_ordered_input_batch) {
+  return ExecuteCanonicalDescriptorRankBound(
       request, borrowed_execution_dag, borrowed_ordered_input_batch, true);
 }
 

@@ -22,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -1878,6 +1879,32 @@ struct CanonicalDescriptorRowNumberResult {
   PhysicalMgaStatementContext mga_statement_context;
 };
 
+struct CanonicalDescriptorRankRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch ordered_input_batch;
+  CanonicalDescriptorOrderTerm order_term;
+  ExecutorColumnDescriptor rank_column;
+  std::uint16_t function_abi_version = 0;
+  std::string builtin_id;
+  std::string function_uuid;
+  std::string order_term_binding_evidence_uuid;
+  std::string deterministic_order_evidence_uuid;
+  std::size_t maximum_peer_comparisons = 0;
+  CanonicalExecutionMgaAuthority mga_authority;
+};
+
+struct CanonicalDescriptorRankResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+  std::size_t peer_comparison_count = 0;
+  std::uint64_t peak_auxiliary_workspace_bytes = 0;
+  PhysicalMgaStatementContext mga_statement_context;
+};
+
 enum class CanonicalAggregateExecutionStrategy : std::uint8_t {
   unknown = 0,
   serial,
@@ -3042,6 +3069,12 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const CanonicalDescriptorRowNumberRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_ordered_input_batch);
+CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRank(
+    const CanonicalDescriptorRankRequest& request);
+CanonicalDescriptorRankResult ExecuteCanonicalDescriptorRank(
+    const CanonicalDescriptorRankRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_ordered_input_batch);
 CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
     const CanonicalDescriptorDistinctRequest& request);
 // Borrowed execution carriers are consumed synchronously and are never
@@ -3083,6 +3116,15 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
     const CanonicalDescriptorOrderTerm& term,
     const ExecutorColumnDescriptor& column);
+bool PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+    const CanonicalDescriptorOrderTerm& term,
+    std::string_view ordering_property_uuid,
+    std::uint64_t* workspace_bytes);
+std::string ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
+    const CanonicalDescriptorOrderTerm& term,
+    std::string_view ordering_property_uuid,
+    std::uint64_t maximum_workspace_bytes,
+    std::uint64_t* actual_workspace_bytes);
 CanonicalDescriptorOrderComparisonResult CompareCanonicalDescriptorOrderValues(
     const scratchbird::engine::internal_api::EngineTypedValue& left,
     const scratchbird::engine::internal_api::EngineTypedValue& right,

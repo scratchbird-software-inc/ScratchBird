@@ -209,6 +209,7 @@ target_include_directories(sb_engine_executor PUBLIC
 target_link_libraries(sb_engine_executor PUBLIC sb_storage_page)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_index)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_datatypes)
+target_link_libraries(sb_engine_executor PUBLIC sb_core_hash)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_memory)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_bulk_load)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_resource_governance)

@@ -12,6 +12,7 @@
 
 #include "catalog/name_resolution_api.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "engine/executor/executor_foundation.hpp"
 #include "engine/executor/model_family_executor.hpp"
 #include "engine/optimizer/model_family_coordinator.hpp"
 #include "engine/optimizer/optimizer_contract.hpp"
@@ -6253,9 +6254,23 @@ struct PreparedGlobalRowNumberWindowBinding {
   std::vector<const api::RelationalOutputRecord*> outputs;
 };
 
+struct GlobalIntegerRankingWindowProfile {
+  std::string_view semantic_variant_id;
+  std::string_view builtin_id;
+  std::string_view function_uuid;
+  std::string_view display_name;
+};
+
+constexpr GlobalIntegerRankingWindowProfile kGlobalRowNumberProfile{
+    "window.row-number.v1", "sb.window.row_number",
+    "019de5fc-2400-7539-bcce-00eef3ae7220", "ROW_NUMBER"};
+constexpr GlobalIntegerRankingWindowProfile kGlobalRankProfile{
+    "window.rank.v1", "sb.window.rank",
+    "019de5fc-2400-7b94-870d-0dd789ca70ab", "RANK"};
+
 // The optional Project-root form preserves a narrower public SELECT list and
 // additionally binds every Window passthrough to its ordered input expression.
-PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
+PreparedGlobalRowNumberWindowBinding PrepareGlobalIntegerRankingWindowBinding(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalPropertyCatalog& logical_properties,
     const api::RelationalDagNode& consumer,
@@ -6266,12 +6281,12 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
     const std::size_t result_binding_count,
     const std::string& int64_type_uuid,
     const std::string_view family_label,
+    const GlobalIntegerRankingWindowProfile& profile,
     const bool allow_project_root = false) {
-  constexpr std::string_view kRowNumberFunctionUuid =
-      "019de5fc-2400-7539-bcce-00eef3ae7220";
   PreparedGlobalRowNumberWindowBinding result;
-  result.detail = std::string(family_label) +
-                  " ROW_NUMBER binding is not exact";
+  result.detail = std::string(family_label) + " " +
+                  std::string(profile.display_name) +
+                  " binding is not exact";
 
   std::vector<const api::RelationalWindowDefinitionRecord*> definitions;
   std::vector<const api::RelationalWindowInvocationRecord*> invocations;
@@ -6410,7 +6425,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
             previous_logical.output_descriptor_ids[ordinal];
   }
 
-  if (consumer.semantic_variant_id != "window.row-number.v1" ||
+  if (consumer.semantic_variant_id != profile.semantic_variant_id ||
       !exact_window_position ||
       consumer.input_node_ids !=
           std::vector<std::uint32_t>{previous_logical.logical_node_id} ||
@@ -6437,14 +6452,14 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
       invocations.front()->window_definition_id !=
           definitions.front()->window_id ||
       invocations.front()->function_abi_version != 1 ||
-      invocations.front()->builtin_id != "sb.window.row_number" ||
-      invocations.front()->function_uuid != kRowNumberFunctionUuid ||
+      invocations.front()->builtin_id != profile.builtin_id ||
+      invocations.front()->function_uuid != profile.function_uuid ||
       !invocations.front()->argument_expression_ids.empty() ||
       function == dag.expressions.end() ||
       function->expression_kind !=
           api::RelationalExpressionKind::kFunctionCall ||
       function->function_uuid !=
-          std::optional<std::string>(kRowNumberFunctionUuid) ||
+          std::optional<std::string>(profile.function_uuid) ||
       function->bound_name_uuid.has_value() ||
       function->operator_name.has_value() ||
       function->literal_kind.has_value() ||
@@ -6494,8 +6509,9 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
           std::vector<std::string>{prepared_sort.ordering_property_uuid} ||
       window_property->window_frame_descriptor_uuid.empty()) {
     result.diagnostic_id = "QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1";
-    result.detail = std::string(family_label) +
-                    " ROW_NUMBER property binding is not exact";
+    result.detail = std::string(family_label) + " " +
+                    std::string(profile.display_name) +
+                    " property binding is not exact";
     return result;
   }
 
@@ -6504,6 +6520,44 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
   result.function = &*function;
   result.result_descriptor = &*result_descriptor;
   return result;
+}
+
+PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
+    const api::TypedRelationalDag& dag,
+    const plan::CanonicalLogicalPropertyCatalog& logical_properties,
+    const api::RelationalDagNode& consumer,
+    const plan::CanonicalLogicalRelationalNode& logical_consumer,
+    const plan::CanonicalLogicalRelationalNode& previous_logical,
+    const PreparedSortRoot& prepared_sort,
+    const std::size_t materialized_column_count,
+    const std::size_t result_binding_count,
+    const std::string& int64_type_uuid,
+    const std::string_view family_label,
+    const bool allow_project_root = false) {
+  return PrepareGlobalIntegerRankingWindowBinding(
+      dag, logical_properties, consumer, logical_consumer, previous_logical,
+      prepared_sort, materialized_column_count, result_binding_count,
+      int64_type_uuid, family_label, kGlobalRowNumberProfile,
+      allow_project_root);
+}
+
+PreparedGlobalRowNumberWindowBinding PrepareGlobalRankWindowBinding(
+    const api::TypedRelationalDag& dag,
+    const plan::CanonicalLogicalPropertyCatalog& logical_properties,
+    const api::RelationalDagNode& consumer,
+    const plan::CanonicalLogicalRelationalNode& logical_consumer,
+    const plan::CanonicalLogicalRelationalNode& previous_logical,
+    const PreparedSortRoot& prepared_sort,
+    const std::size_t materialized_column_count,
+    const std::size_t result_binding_count,
+    const std::string& int64_type_uuid,
+    const std::string_view family_label,
+    const bool allow_project_root = false) {
+  return PrepareGlobalIntegerRankingWindowBinding(
+      dag, logical_properties, consumer, logical_consumer, previous_logical,
+      prepared_sort, materialized_column_count, result_binding_count,
+      int64_type_uuid, family_label, kGlobalRankProfile,
+      allow_project_root);
 }
 
 bool MaterializeExpressionProjectBatch(
@@ -9683,6 +9737,134 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
         step.materialized_output_batch = std::move(window.output_batch);
         step.mga_statement_context =
             std::move(window.mga_statement_context);
+        return step;
+      };
+  return registration;
+}
+
+exec::CanonicalPhysicalExecutorRegistration MakeLiveRankRegistration(
+    exec::ExecutorColumnDescriptor rank_column,
+    exec::CanonicalDescriptorOrderTerm order_term,
+    std::string order_term_binding_evidence_uuid,
+    std::string deterministic_order_evidence_uuid,
+    std::string capability_uuid,
+    const std::size_t maximum_input_row_count,
+    const std::size_t maximum_peer_comparisons,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kWindow;
+  registration.implementation_id = "window.rank.v1";
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 = true;
+  registration.execute =
+      [rank_column = std::move(rank_column),
+       order_term = std::move(order_term),
+       order_term_binding_evidence_uuid =
+           std::move(order_term_binding_evidence_uuid),
+       deterministic_order_evidence_uuid =
+           std::move(deterministic_order_evidence_uuid),
+       maximum_input_row_count, maximum_peer_comparisons,
+       mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            node.input_physical_node_ids.size() != 1 ||
+            inputs.front().physical_node_id !=
+                node.input_physical_node_ids.front() ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-007-WINDOW-INPUT-V1";
+          step.diagnostic.detail =
+              "RANK did not receive its bounded sorted input batch";
+          return step;
+        }
+        const auto& input_batch = *inputs.front().materialized_output_batch;
+        const exec::TypedPhysicalNodeDag* execution_dag = &dag;
+        std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          scoped_execution_dag.emplace();
+          std::string scope_detail;
+          if (!BuildOperatorLocalPhysicalDag(
+                  dag, node.physical_node_id, &*scoped_execution_dag,
+                  &scope_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-007-WINDOW-INPUT-V1";
+            step.diagnostic.detail = "RANK execution view is unresolved";
+            return step;
+          }
+          execution_dag = &*scoped_execution_dag;
+        }
+        exec::CanonicalDescriptorRankRequest request;
+        request.selected_physical_node_id = node.physical_node_id;
+        request.order_term = order_term;
+        request.rank_column = rank_column;
+        request.function_abi_version = 1;
+        request.builtin_id = "sb.window.rank";
+        request.function_uuid =
+            "019de5fc-2400-7b94-870d-0dd789ca70ab";
+        request.order_term_binding_evidence_uuid =
+            order_term_binding_evidence_uuid;
+        request.deterministic_order_evidence_uuid =
+            deterministic_order_evidence_uuid;
+        request.maximum_peer_comparisons = maximum_peer_comparisons;
+        request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
+        auto window = exec::ExecuteCanonicalDescriptorRank(
+            request, *execution_dag, input_batch);
+        if (!window.diagnostic.ok) {
+          step.diagnostic = std::move(window.diagnostic);
+          return step;
+        }
+        std::uint64_t input_memory_bytes = 0;
+        std::uint64_t output_memory_bytes = 0;
+        std::uint64_t peak_memory_bytes = 0;
+        std::uint64_t rows_examined = 0;
+        if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
+                                                 &input_memory_bytes) ||
+            !RuntimeMaterializedBatchMemoryBytes(window.output_batch,
+                                                 &output_memory_bytes) ||
+            !CheckedAdd(
+                static_cast<std::uint64_t>(input_batch.rows.size()),
+                static_cast<std::uint64_t>(window.peer_comparison_count),
+                &rows_examined) ||
+            !CheckedAdd(input_memory_bytes, output_memory_bytes,
+                        &peak_memory_bytes) ||
+            !CheckedAdd(peak_memory_bytes,
+                        window.peak_auxiliary_workspace_bytes,
+                        &peak_memory_bytes) ||
+            peak_memory_bytes > node.memory_bytes_required ||
+            window.peer_comparison_count > maximum_peer_comparisons) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "RANK runtime work or memory observation exceeded its grant";
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = rows_examined;
+        step.output_row_count = window.output_batch.rows.size();
+        step.materialized_output_batch = std::move(window.output_batch);
+        step.mga_statement_context =
+            std::move(window.mga_statement_context);
+        PublishRuntimeMemoryObservation(
+            &step, output_memory_bytes, peak_memory_bytes);
         return step;
       };
   return registration;
@@ -13485,8 +13667,8 @@ MakeLiveRecursiveCteRegistration(
 // than by a whole-query shape name.  Existing exact profiles remain preferred
 // while this compiler grows across the remaining relational node families.
 // The compiler admits a descriptor-valid unary tail containing at most one
-// FILTER, PROJECT, query DISTINCT, SORT, exact global ROW_NUMBER WINDOW, and
-// LIMIT/FETCH node over either one canonical VALUES leaf, a two-VALUES
+// FILTER, PROJECT, query DISTINCT, SORT, exact global integer-ranking WINDOW,
+// and LIMIT/FETCH node over either one canonical VALUES leaf, a two-VALUES
 // accepted JOIN-kind branch, or an exact or losslessly reconciled ordinal/BY
 // NAME quantified set-operation subtree.
 // Every node still executes through the ordinary optimizer-published ABI-v2
@@ -13889,7 +14071,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         break;
       case plan::CanonicalLogicalRelationalNodeKind::kWindow:
         ++window_count;
-        if (current->semantic_variant_id != "window.row-number.v1" ||
+        if ((current->semantic_variant_id != "window.row-number.v1" &&
+             current->semantic_variant_id != "window.rank.v1") ||
             current->logical_node_id != graph.root_logical_node_id ||
             current->bound_expression_ids.size() != 2 ||
             current->required_property_uuids.size() != 1 ||
@@ -14027,7 +14210,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::size_t grouped_aggregate_output_row_bound = 0;
   std::optional<PreparedSortRoot> prepared_sort;
   std::optional<exec::ExecutorColumnDescriptor> prepared_row_number;
+  std::optional<exec::ExecutorColumnDescriptor> prepared_rank;
+  std::optional<exec::CanonicalDescriptorOrderTerm> prepared_rank_order_term;
   std::string row_number_order_evidence_uuid;
+  std::string rank_order_term_binding_evidence_uuid;
+  std::size_t rank_maximum_peer_comparisons = 0;
   std::size_t sort_input_row_count = 0;
   std::size_t sort_comparison_bound = 0;
   bool prepared_table_subquery = false;
@@ -14081,7 +14268,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   const auto sort_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.sort.capability");
   const auto window_capability_uuid = DerivedCanonicalUuid(
-      identity_scope, "composition.window.row-number.capability");
+      identity_scope, "composition.window.integer-ranking.capability");
   const auto subquery_capability_uuid = DerivedCanonicalUuid(
       identity_scope, "composition.subquery.capability");
   const auto cte_capability_uuid =
@@ -17471,22 +17658,30 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         break;
       }
       case plan::CanonicalLogicalRelationalNodeKind::kWindow: {
+        const bool rank_window =
+            node.semantic_variant_id == "window.rank.v1";
+        const std::string_view ranking_name =
+            rank_window ? "RANK" : "ROW_NUMBER";
         const auto typed_consumer = std::ranges::find_if(
             request.relational_dag.nodes, [&](const auto& candidate) {
               return candidate.node_id == node.logical_node_id;
             });
         if (typed_consumer == request.relational_dag.nodes.end() ||
             typed_consumer->node_kind != api::RelationalDagNodeKind::kWindow ||
-            !prepared_sort.has_value()) {
+            !prepared_sort.has_value() ||
+            (rank_window &&
+             (prepared_sort->expression_ordering ||
+              prepared_sort->order_terms.size() != 1))) {
           return refuse(std::string(kPayloadDiagnostic),
-                        "composition ROW_NUMBER input binding is unresolved");
+                        "composition " + std::string(ranking_name) +
+                            " input binding is unresolved");
         }
         const auto core_manifest =
             dt::LoadCurrentCoreDatatypeCatalogManifest();
         if (!core_manifest.ok()) {
           return refuse(std::string(kPayloadDiagnostic),
-                        "composition ROW_NUMBER core datatype catalog is "
-                        "unavailable");
+                        "composition " + std::string(ranking_name) +
+                            " core datatype catalog is unavailable");
         }
         const auto int64_type = std::ranges::find_if(
             core_manifest.manifest.descriptor_rows, [&](const auto& row) {
@@ -17497,20 +17692,30 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 ? std::string{}
                 : scratchbird::core::uuid::UuidToString(
                       int64_type->descriptor_uuid.value);
-        const auto row_number = PrepareGlobalRowNumberWindowBinding(
-            request.relational_dag,
-            request.optimizer_request.logical_properties, *typed_consumer,
-            node, input_node, *prepared_sort, input_batch.columns.size(),
-            input_bindings.size(), int64_type_uuid, "composition");
-        if (!row_number.ok) {
-          return refuse(row_number.diagnostic_id, row_number.detail);
+        const auto ranking =
+            rank_window
+                ? PrepareGlobalRankWindowBinding(
+                      request.relational_dag,
+                      request.optimizer_request.logical_properties,
+                      *typed_consumer, node, input_node, *prepared_sort,
+                      input_batch.columns.size(), input_bindings.size(),
+                      int64_type_uuid, "composition")
+                : PrepareGlobalRowNumberWindowBinding(
+                      request.relational_dag,
+                      request.optimizer_request.logical_properties,
+                      *typed_consumer, node, input_node, *prepared_sort,
+                      input_batch.columns.size(), input_bindings.size(),
+                      int64_type_uuid, "composition");
+        if (!ranking.ok) {
+          return refuse(ranking.diagnostic_id, ranking.detail);
         }
         if (input_row_count > static_cast<std::size_t>(
                                   std::numeric_limits<std::int64_t>::max())) {
           return refuse(std::string(kPayloadDiagnostic),
-                        "composition ROW_NUMBER exceeds int64 result width");
+                        "composition " + std::string(ranking_name) +
+                            " exceeds int64 result width");
         }
-        const auto* output_descriptor = row_number.result_descriptor;
+        const auto* output_descriptor = ranking.result_descriptor;
         api::EngineDescriptor descriptor;
         descriptor.descriptor_uuid.canonical =
             output_descriptor->descriptor_uuid;
@@ -17519,58 +17724,169 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         descriptor.encoded_descriptor =
             "type_uuid=" + output_descriptor->type_uuid +
             ";nullability=non_null";
-        exec::ExecutorColumnDescriptor row_number_column{
-            row_number.outputs.back()->output_name_utf8, descriptor, false,
+        exec::ExecutorColumnDescriptor ranking_column{
+            ranking.outputs.back()->output_name_utf8, descriptor, false,
             output_descriptor->descriptor_id};
         if (!api::QowCanonicalDescriptorIdentityV1(descriptor)) {
           return refuse(std::string(kPayloadDiagnostic),
-                        "composition ROW_NUMBER descriptor is invalid");
+                        "composition " + std::string(ranking_name) +
+                            " descriptor is invalid");
         }
-        exec::CanonicalResultColumnBinding row_number_binding;
-        row_number_binding.physical_column_ordinal =
+        exec::CanonicalResultColumnBinding ranking_binding;
+        ranking_binding.physical_column_ordinal =
             input_batch.columns.size();
-        row_number_binding.visible = true;
-        row_number_binding.published_descriptor =
+        ranking_binding.visible = true;
+        ranking_binding.published_descriptor =
             exec::CanonicalResultColumnDescriptor{
                 static_cast<std::uint32_t>(input_batch.columns.size()),
-                row_number_column.stable_name,
+                ranking_column.stable_name,
                 output_descriptor->descriptor_uuid,
                 output_descriptor->type_uuid,
                 exec::CanonicalResultNullability::kNonNull, std::nullopt,
                 std::nullopt};
         exec::DescriptorBatch output = input_batch;
-        output.columns.push_back(row_number_column);
+        output.columns.push_back(ranking_column);
+        std::size_t current_rank = 1;
+        std::uint64_t rank_comparison_workspace_bytes = 0;
         for (std::size_t row = 0; row < output.rows.size(); ++row) {
+          if (rank_window && row != 0) {
+            const auto& order_term = prepared_sort->order_terms.front();
+            const auto& left_value =
+                input_batch.rows[row - 1].values[order_term.column];
+            const auto& right_value =
+                input_batch.rows[row].values[order_term.column];
+            const auto left_plan =
+                exec::PlanCanonicalDescriptorEqualityKey(left_value,
+                                                          order_term);
+            const auto right_plan =
+                exec::PlanCanonicalDescriptorEqualityKey(right_value,
+                                                          order_term);
+            std::uint64_t pair_workspace_bytes = 0;
+            if (!left_plan.diagnostic.ok || !right_plan.diagnostic.ok ||
+                left_plan.peak_workspace_bytes >
+                    std::numeric_limits<std::uint64_t>::max() ||
+                right_plan.peak_workspace_bytes >
+                    std::numeric_limits<std::uint64_t>::max() ||
+                !CheckedAdd(
+                    static_cast<std::uint64_t>(
+                        left_plan.peak_workspace_bytes),
+                    static_cast<std::uint64_t>(
+                        right_plan.peak_workspace_bytes),
+                    &pair_workspace_bytes)) {
+              return refuse(
+                  "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "composition RANK comparison workspace overflowed or "
+                  "was refused");
+            }
+            rank_comparison_workspace_bytes = std::max(
+                rank_comparison_workspace_bytes, pair_workspace_bytes);
+            const auto compared = exec::CompareCanonicalDescriptorOrderValues(
+                left_value, right_value, order_term);
+            if (!compared.diagnostic.ok || compared.comparison > 0) {
+              return refuse(
+                  std::string(kPayloadDiagnostic),
+                  !compared.diagnostic.ok
+                      ? "composition RANK peer comparison: " +
+                            compared.diagnostic.detail
+                      : "composition RANK input is not canonically ordered");
+            }
+            if (compared.comparison != 0) current_rank = row + 1;
+          }
           api::EngineTypedValue value;
-          value.descriptor = descriptor;
-          value.state = api::EngineValueState::value;
-          value.encoded_value = std::to_string(row + 1);
+          if (rank_window) {
+            exec::CanonicalWindowRankValueRequest rank_request;
+            rank_request.function_abi_version = 1;
+            rank_request.builtin_id = "sb.window.rank";
+            rank_request.function_uuid =
+                "019de5fc-2400-7b94-870d-0dd789ca70ab";
+            rank_request.output_descriptor = descriptor;
+            rank_request.one_based_rank = current_rank;
+            auto rank = exec::ComputeCanonicalWindowRankValue(rank_request);
+            if (!rank.diagnostic.ok) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            rank.diagnostic.detail);
+            }
+            value = std::move(rank.value);
+          } else {
+            value.descriptor = descriptor;
+            value.state = api::EngineValueState::value;
+            value.encoded_value = std::to_string(row + 1);
+          }
           output.rows[row].values.push_back(std::move(value));
         }
         const auto canonical = exec::ValidateCanonicalDescriptorBatch(
             output, node.output_descriptor_ids);
         const auto values = exec::ValidateDescriptorBatch(output);
-        if (!canonical.ok || !values.ok || !add_work(input_row_count)) {
+        const auto peer_comparison_count =
+            rank_window && input_row_count != 0 ? input_row_count - 1 : 0;
+        std::uint64_t ranking_work = 0;
+        if (!CheckedAdd(input_row_count, peer_comparison_count,
+                        &ranking_work) ||
+            !canonical.ok || !values.ok || !add_work(ranking_work)) {
           return refuse(
               std::string(kPayloadDiagnostic),
               !canonical.ok
-                  ? "composition ROW_NUMBER output: " + canonical.detail
+                  ? "composition " + std::string(ranking_name) +
+                        " output: " + canonical.detail
                   : (!values.ok
-                         ? "composition ROW_NUMBER output: " + values.detail
-                         : "composition ROW_NUMBER work exceeds its admitted "
-                           "bound"));
+                         ? "composition " + std::string(ranking_name) +
+                               " output: " + values.detail
+                         : "composition " + std::string(ranking_name) +
+                               " work exceeds its admitted bound"));
         }
         state.batch = std::move(output);
         state.result_bindings = input_bindings;
-        state.result_bindings.push_back(std::move(row_number_binding));
-        prepared_row_number = std::move(row_number_column);
+        state.result_bindings.push_back(std::move(ranking_binding));
+        if (rank_window) {
+          prepared_rank = std::move(ranking_column);
+          prepared_rank_order_term = prepared_sort->order_terms.front();
+          rank_maximum_peer_comparisons =
+              std::max<std::size_t>(1, peer_comparison_count);
+          auxiliary_memory = rank_comparison_workspace_bytes;
+        } else {
+          prepared_row_number = std::move(ranking_column);
+        }
         row_number_order_evidence_uuid = DerivedCanonicalUuid(
             identity_scope + ":" + prepared_sort->ordering_property_uuid,
             "node-composition.window.deterministic-order");
-        implementation_id = "window.row-number.v1";
-        capability_uuid = window_capability_uuid;
-        transformation_rule =
-            "canonical.window.composed-row-number.v1";
+        if (rank_window) {
+          std::uint64_t planned_receipt_workspace_bytes = 0;
+          std::uint64_t actual_receipt_workspace_bytes = 0;
+          if (!exec::PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+                  prepared_sort->order_terms.front(),
+                  prepared_sort->ordering_property_uuid,
+                  &planned_receipt_workspace_bytes) ||
+              planned_receipt_workspace_bytes >
+                  request.optimizer_request.resource.memory_budget_bytes) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition RANK order-term receipt exceeds its memory "
+                "budget");
+          }
+          rank_order_term_binding_evidence_uuid =
+              exec::ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
+                  prepared_sort->order_terms.front(),
+                  prepared_sort->ordering_property_uuid,
+                  planned_receipt_workspace_bytes,
+                  &actual_receipt_workspace_bytes);
+          if (rank_order_term_binding_evidence_uuid.empty() ||
+              actual_receipt_workspace_bytes !=
+                  planned_receipt_workspace_bytes) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "composition RANK order-term binding receipt failed");
+          }
+          auxiliary_memory =
+              std::max(auxiliary_memory, actual_receipt_workspace_bytes);
+        }
+        implementation_id = rank_window ? "window.rank.v1"
+                                        : "window.row-number.v1";
+        capability_uuid = rank_window
+                              ? rank_order_term_binding_evidence_uuid
+                              : window_capability_uuid;
+        transformation_rule = rank_window
+                                  ? "canonical.window.composed-rank.v1"
+                                  : "canonical.window.composed-row-number.v1";
         physical_kind = exec::PhysicalNodeKind::kWindow;
         required_property_uuids = node.required_property_uuids;
         delivered_property_uuids = node.delivered_property_uuids;
@@ -18315,6 +18631,16 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         MakeLiveRowNumberRegistration(
             *prepared_row_number, row_number_order_evidence_uuid,
             window_capability_uuid, sort_input_row_count, request.context));
+  }
+  if (prepared_rank.has_value() && prepared_rank_order_term.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveRankRegistration(
+            *prepared_rank, *prepared_rank_order_term,
+            rank_order_term_binding_evidence_uuid,
+            row_number_order_evidence_uuid,
+            rank_order_term_binding_evidence_uuid,
+            sort_input_row_count, rank_maximum_peer_comparisons,
+            request.context));
   }
   if (prepared_table_subquery) {
     execution_request.available_executors.push_back(

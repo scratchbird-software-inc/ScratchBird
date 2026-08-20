@@ -7831,6 +7831,47 @@ RankingRealValue(
 
 }  // namespace
 
+CanonicalWindowRankValueResult ComputeCanonicalWindowRankValue(
+    const CanonicalWindowRankValueRequest& request) {
+  CanonicalWindowRankValueResult result;
+  const auto refuse = [&](std::string detail) {
+    result = {};
+    result.diagnostic = WindowRankingRefusal(
+        CanonicalWindowRankingFunction::rank, std::move(detail));
+    return result;
+  };
+  const auto type_uuid =
+      RankingDescriptorField(request.output_descriptor, "type_uuid");
+  const auto nullability =
+      RankingDescriptorField(request.output_descriptor, "nullability");
+  if (request.function_abi_version != 1 ||
+      request.builtin_id != "sb.window.rank" ||
+      request.function_uuid != kWindowRankUuid ||
+      !IsCanonicalUuid(request.function_uuid) ||
+      request.one_based_rank == 0 ||
+      request.one_based_rank >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::int64_t>::max()) ||
+      !IsCanonicalUuid(
+          request.output_descriptor.descriptor_uuid.canonical) ||
+      request.output_descriptor.descriptor_kind != "scalar" ||
+      request.output_descriptor.canonical_type_name != "int64" ||
+      request.output_descriptor.encoded_descriptor.empty() ||
+      !type_uuid.has_value() || !IsCanonicalUuid(*type_uuid) ||
+      !nullability.has_value() || *nullability != "non_null" ||
+      request.output_descriptor.descriptor_uuid.canonical == *type_uuid ||
+      request.output_descriptor.descriptor_uuid.canonical ==
+          request.function_uuid) {
+    return refuse(
+        "RANK value lacks its exact registry identity, descriptor, or "
+        "positive int64 position");
+  }
+  result.value = RankingInt64Value(request.output_descriptor,
+                                   request.one_based_rank);
+  result.diagnostic = {};
+  return result;
+}
+
 // QOW-SOURCE-WIN-006-V1
 // Ranking functions consume the exact partition and typed peer ranges created
 // by QOW-401 after QOW-402 has validated the complete frame and exclusion.
@@ -7907,8 +7948,19 @@ static CanonicalWindowRankingResult ExecuteCanonicalWindowRankingStrategy(
             request.output_descriptor, partition_position + 1));
         break;
       case CanonicalWindowRankingFunction::rank:
-        result.values.push_back(
-            RankingInt64Value(request.output_descriptor, rank));
+        {
+          CanonicalWindowRankValueRequest rank_request;
+          rank_request.function_abi_version = 1;
+          rank_request.builtin_id = "sb.window.rank";
+          rank_request.function_uuid = request.function_uuid;
+          rank_request.output_descriptor = request.output_descriptor;
+          rank_request.one_based_rank = rank;
+          auto rank_value = ComputeCanonicalWindowRankValue(rank_request);
+          if (!rank_value.diagnostic.ok) {
+            return refuse(rank_value.diagnostic.detail);
+          }
+          result.values.push_back(std::move(rank_value.value));
+        }
         break;
       case CanonicalWindowRankingFunction::dense_rank:
         result.values.push_back(
