@@ -4343,6 +4343,25 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   if (request.quantifier != admitted_quantifier) {
     return refuse("set-operation quantifier and entry point differ");
   }
+  const bool borrowed_left = request.borrowed_left_batch != nullptr;
+  const bool borrowed_right = request.borrowed_right_batch != nullptr;
+  const DescriptorBatch empty_batch;
+  const auto exact_default_batch = [&](const DescriptorBatch& batch) {
+    return batch.columns.empty() &&
+           batch.columns.capacity() == empty_batch.columns.capacity() &&
+           batch.rows.empty() &&
+           batch.rows.capacity() == empty_batch.rows.capacity();
+  };
+  if (borrowed_left != borrowed_right ||
+      (borrowed_left &&
+       (!exact_default_batch(request.left_batch) ||
+        !exact_default_batch(request.right_batch)))) {
+    return refuse("set-operation input ownership carriage is inconsistent");
+  }
+  const auto& left_batch = borrowed_left ? *request.borrowed_left_batch
+                                         : request.left_batch;
+  const auto& right_batch = borrowed_right ? *request.borrowed_right_batch
+                                           : request.right_batch;
   const bool bound_collation =
       request.equality_profile ==
       CanonicalSetOperationEqualityProfile::kNullEqualBoundCollation;
@@ -4459,12 +4478,12 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   }
 
   auto validation = ValidateCanonicalDescriptorBatch(
-      request.left_batch, left_node->output_descriptor_ids);
+      left_batch, left_node->output_descriptor_ids);
   if (!validation.ok) {
     return refuse(validation.diagnostic_code + ":" + validation.detail);
   }
   validation = ValidateCanonicalDescriptorBatch(
-      request.right_batch, right_node->output_descriptor_ids);
+      right_batch, right_node->output_descriptor_ids);
   if (!validation.ok) {
     return refuse(validation.diagnostic_code + ":" + validation.detail);
   }
@@ -4480,15 +4499,15 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   // Arity is decided from the three already-bound descriptor vectors, never
   // from the first physical row. Empty operands therefore retain the same
   // exact refusal behavior as populated operands.
-  if (request.left_batch.columns.size() != request.right_batch.columns.size() ||
-      request.left_batch.columns.size() != request.result_columns.size()) {
+  if (left_batch.columns.size() != right_batch.columns.size() ||
+      left_batch.columns.size() != request.result_columns.size()) {
     return refuse("set-operation input and result arity differ",
                   "QOW-DIAG-QRY-016-ARITY-REFUSAL-V1");
   }
 
-  DescriptorBatch aligned_right = request.right_batch;
+  DescriptorBatch aligned_right = right_batch;
   std::vector<std::size_t> right_to_result_column_indices(
-      request.right_batch.columns.size());
+      right_batch.columns.size());
   std::iota(right_to_result_column_indices.begin(),
             right_to_result_column_indices.end(), 0);
 
@@ -4503,10 +4522,10 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     for (std::size_t column = 0; column < request.result_columns.size();
          ++column) {
       if (!left_names
-               .emplace(request.left_batch.columns[column].stable_name, column)
+               .emplace(left_batch.columns[column].stable_name, column)
                .second ||
           !right_names
-               .emplace(request.right_batch.columns[column].stable_name, column)
+               .emplace(right_batch.columns[column].stable_name, column)
                .second ||
           !result_names
                .emplace(request.result_columns[column].stable_name, column)
@@ -4514,14 +4533,14 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
         return refuse("BY NAME requires unique bound column names",
                       "QOW-DIAG-QRY-016-BY-NAME-REFUSAL-V1");
       }
-      if (request.left_batch.columns[column].stable_name !=
+      if (left_batch.columns[column].stable_name !=
           request.result_columns[column].stable_name) {
         return refuse("BY NAME result order must follow the left operand",
                       "QOW-DIAG-QRY-016-BY-NAME-REFUSAL-V1");
       }
     }
     aligned_right.columns.clear();
-    aligned_right.rows.assign(request.right_batch.rows.size(), {});
+    aligned_right.rows.assign(right_batch.rows.size(), {});
     aligned_right.columns.reserve(request.result_columns.size());
     for (auto& row : aligned_right.rows) {
       row.values.reserve(request.result_columns.size());
@@ -4537,10 +4556,10 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       const auto right_column = found->second;
       right_to_result_column_indices[right_column] = result_column;
       aligned_right.columns.push_back(
-          request.right_batch.columns[right_column]);
-      for (std::size_t row = 0; row < request.right_batch.rows.size(); ++row) {
+          right_batch.columns[right_column]);
+      for (std::size_t row = 0; row < right_batch.rows.size(); ++row) {
         aligned_right.rows[row].values.push_back(
-            request.right_batch.rows[row].values[right_column]);
+            right_batch.rows[row].values[right_column]);
       }
     }
     if (left_names.size() != right_names.size() ||
@@ -4559,7 +4578,7 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   // core-classified lossless implicit conversions may reach set equality;
   // explicit-only, lossy, forbidden, and unknown conversions are refusals.
   for (std::size_t column = 0; column < request.result_columns.size(); ++column) {
-    const auto& left = request.left_batch.columns[column];
+    const auto& left = left_batch.columns[column];
     const auto& right = aligned_right.columns[column];
     const auto& output = request.result_columns[column];
     bool compatible = left.descriptor.descriptor_kind == "scalar" &&
@@ -4619,7 +4638,7 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     reconciled_type_names.push_back(output.descriptor.canonical_type_name);
   }
 
-  DescriptorBatch reconciled_left = request.left_batch;
+  DescriptorBatch reconciled_left = left_batch;
   DescriptorBatch reconciled_right = aligned_right;
   std::size_t coerced_value_count = 0;
   if (reconcile_types) {
@@ -4760,10 +4779,10 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     return refuse("set-operation output resource bound is zero");
   }
   if (!distinct && request.operation == CanonicalSetOperationKind::kUnion &&
-      (request.left_batch.rows.size() > request.maximum_output_row_count ||
-       request.right_batch.rows.size() >
+      (left_batch.rows.size() > request.maximum_output_row_count ||
+       right_batch.rows.size() >
            request.maximum_output_row_count -
-               request.left_batch.rows.size())) {
+               left_batch.rows.size())) {
     return refuse("UNION ALL output resource bound was exceeded");
   }
 
@@ -5047,8 +5066,8 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
 
   result.diagnostic = {};
   result.output_batch = std::move(output);
-  result.left_input_row_count = request.left_batch.rows.size();
-  result.right_input_row_count = request.right_batch.rows.size();
+  result.left_input_row_count = left_batch.rows.size();
+  result.right_input_row_count = right_batch.rows.size();
   result.consumed_right_multiplicity_count =
       consumed_right_multiplicity_count;
   result.eliminated_duplicate_row_count =

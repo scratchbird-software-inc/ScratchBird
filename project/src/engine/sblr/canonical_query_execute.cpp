@@ -10301,8 +10301,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
               node.physical_node_id;
         }
         set_request.selected_physical_node_id = node.physical_node_id;
-        set_request.left_batch = *inputs[0].materialized_output_batch;
-        set_request.right_batch = *inputs[1].materialized_output_batch;
+        set_request.borrowed_left_batch =
+            &*inputs[0].materialized_output_batch;
+        set_request.borrowed_right_batch =
+            &*inputs[1].materialized_output_batch;
         set_request.result_columns = config.prepared.result_columns;
         set_request.operation = config.profile.operation;
         set_request.alignment = config.profile.alignment;
@@ -17204,8 +17206,10 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
         exec::CanonicalSetOperationAllRequest set_request;
         set_request.physical_dag = dag;
         set_request.selected_physical_node_id = node.physical_node_id;
-        set_request.left_batch = *inputs[0].materialized_output_batch;
-        set_request.right_batch = *inputs[1].materialized_output_batch;
+        set_request.borrowed_left_batch =
+            &*inputs[0].materialized_output_batch;
+        set_request.borrowed_right_batch =
+            &*inputs[1].materialized_output_batch;
         set_request.result_columns = result_columns;
         set_request.operation = set_profile.operation;
         set_request.alignment = set_profile.alignment;
@@ -17678,8 +17682,10 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
                 node.physical_node_id;
           }
           set_request.selected_physical_node_id = node.physical_node_id;
-          set_request.left_batch = *inputs[0].materialized_output_batch;
-          set_request.right_batch = *inputs[1].materialized_output_batch;
+          set_request.borrowed_left_batch =
+              &*inputs[0].materialized_output_batch;
+          set_request.borrowed_right_batch =
+              &*inputs[1].materialized_output_batch;
           set_request.result_columns = config.prepared.result_columns;
           set_request.operation = config.profile.operation;
           set_request.alignment = config.profile.alignment;

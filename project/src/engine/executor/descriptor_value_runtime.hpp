@@ -1693,6 +1693,10 @@ struct CanonicalSetOperationAllRequest {
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch left_batch;
   DescriptorBatch right_batch;
+  // Live selected-DAG dispatch may synchronously borrow its already
+  // materialized operands instead of duplicating both batches in the request.
+  const DescriptorBatch* borrowed_left_batch = nullptr;
+  const DescriptorBatch* borrowed_right_batch = nullptr;
   std::vector<ExecutorColumnDescriptor> result_columns;
   CanonicalSetOperationKind operation = CanonicalSetOperationKind::kUnion;
   CanonicalSetOperationAlignment alignment =
