@@ -6946,6 +6946,19 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
                     " property binding is not exact";
     return result;
   }
+  if (fixed_unqualified_int64_result_window &&
+      (result_descriptor->descriptor_uuid == result_type_uuid ||
+       result_descriptor->descriptor_uuid == profile.function_uuid ||
+       result_descriptor->descriptor_uuid ==
+           prepared_sort.ordering_property_uuid ||
+       result_descriptor->descriptor_uuid == *window_property_uuid ||
+       result_descriptor->descriptor_uuid ==
+           window_property->window_frame_descriptor_uuid)) {
+    result.detail = std::string(family_label) + " " +
+                    std::string(profile.display_name) +
+                    " result descriptor identity is not independent";
+    return result;
+  }
 
   if (ntile_window) {
     const auto argument_expression_id =
@@ -40874,6 +40887,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
         return refuse("QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1",
                       "graph ROW_NUMBER property binding is not exact");
       }
+      if (row_number_descriptor->descriptor_uuid ==
+              row_number_descriptor->type_uuid ||
+          row_number_descriptor->descriptor_uuid == kRowNumberFunctionUuid ||
+          row_number_descriptor->descriptor_uuid ==
+              prepared_sort->ordering_property_uuid ||
+          row_number_descriptor->descriptor_uuid == *window_property_uuid ||
+          row_number_descriptor->descriptor_uuid ==
+              window_property->window_frame_descriptor_uuid) {
+        return refuse(
+            "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+            "graph ROW_NUMBER result descriptor identity is not independent");
+      }
       api::EngineDescriptor row_number_runtime;
       row_number_runtime.descriptor_uuid.canonical =
           row_number_descriptor->descriptor_uuid;
@@ -43482,6 +43507,21 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
             return refuse(
                 "QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1",
                 "DOCUMENT_UNNEST ROW_NUMBER property binding is not exact");
+          }
+          if (row_number_descriptor->descriptor_uuid ==
+                  row_number_descriptor->type_uuid ||
+              row_number_descriptor->descriptor_uuid ==
+                  kRowNumberFunctionUuid ||
+              row_number_descriptor->descriptor_uuid ==
+                  prepared_sort->ordering_property_uuid ||
+              row_number_descriptor->descriptor_uuid ==
+                  *window_property_uuid ||
+              row_number_descriptor->descriptor_uuid ==
+                  window_property->window_frame_descriptor_uuid) {
+            return refuse(
+                "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                "DOCUMENT_UNNEST ROW_NUMBER result descriptor identity is "
+                "not independent");
           }
           exec::ExecutorColumnDescriptor row_number_column{
               window_outputs.back()->output_name_utf8,
