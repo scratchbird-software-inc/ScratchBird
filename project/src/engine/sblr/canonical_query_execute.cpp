@@ -8947,7 +8947,11 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
     CanonicalRelationalExpressionRuntimeServices expression_services,
     std::string capability_uuid,
     const std::size_t maximum_input_row_count,
-    api::EngineRequestContext mga_context) {
+    api::EngineRequestContext mga_context,
+    const api::EngineCanonicalExpressionConsumer expression_consumer =
+        api::EngineCanonicalExpressionConsumer::filter,
+    const api::EnginePredicateConsumer predicate_consumer =
+        api::EnginePredicateConsumer::filter) {
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kFilter;
   registration.implementation_id = "filter.3vl.row.v1";
@@ -8960,7 +8964,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
        predicate_row_binding = std::move(predicate_row_binding),
        relational_dag = std::move(relational_dag),
        expression_services = std::move(expression_services),
-       maximum_input_row_count, mga_context = std::move(mga_context)](
+       maximum_input_row_count, mga_context = std::move(mga_context),
+       expression_consumer, predicate_consumer](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -9015,8 +9020,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
             IssueAndExecuteBorrowed(
                 relational_dag, predicate_expression_id,
                 predicate_row_binding, input_batch, expression_services,
-                api::EngineCanonicalExpressionConsumer::filter,
-                api::EnginePredicateConsumer::filter, *execution_dag,
+                expression_consumer, predicate_consumer, *execution_dag,
                 node.physical_node_id, node.physical_node_id,
                 maximum_input_row_count, mga_authority);
         if (!filtered.diagnostic.ok) {
@@ -13103,6 +13107,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
 
   std::optional<PreparedFilterRoot> prepared_filter;
   std::size_t filter_input_row_count = 0;
+  api::EngineCanonicalExpressionConsumer filter_expression_consumer =
+      api::EngineCanonicalExpressionConsumer::filter;
+  api::EnginePredicateConsumer filter_predicate_consumer =
+      api::EnginePredicateConsumer::filter;
   std::optional<PreparedProjectRoot> prepared_project;
   std::size_t project_input_row_count = 0;
   std::string project_implementation_id;
@@ -14415,7 +14423,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     switch (node.node_kind) {
       case plan::CanonicalLogicalRelationalNodeKind::kFilter: {
         PreparedFilterRoot prepared;
+        filter_expression_consumer =
+            api::EngineCanonicalExpressionConsumer::filter;
+        filter_predicate_consumer = api::EnginePredicateConsumer::filter;
         if (IsLiveGroupedHavingProfile(node.semantic_variant_id)) {
+          filter_expression_consumer =
+              api::EngineCanonicalExpressionConsumer::aggregate;
+          filter_predicate_consumer = api::EnginePredicateConsumer::having;
           if (!prepared_grouped_aggregate.has_value() ||
               input_node.node_kind !=
                   plan::CanonicalLogicalRelationalNodeKind::kAggregate ||
@@ -14466,8 +14480,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             if (!expression_runtime.EvaluatePredicateForConsumer(
                     prepared.predicate_expression_id,
                     prepared.predicate_row_binding, row.values,
-                    api::EngineCanonicalExpressionConsumer::filter, &truth,
-                    &detail)) {
+                    filter_expression_consumer, &truth, &detail)) {
               return refuse(
                   std::string(kPayloadDiagnostic),
                   "FILTER row " + std::to_string(row_ordinal) +
@@ -16890,7 +16903,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             prepared_filter->predicate_row_binding,
             request.relational_dag, request.expression_services,
             filter_capability_uuid, filter_input_row_count,
-            request.context));
+            request.context, filter_expression_consumer,
+            filter_predicate_consumer));
   }
   if (prepared_project.has_value()) {
     execution_request.available_executors.push_back(
