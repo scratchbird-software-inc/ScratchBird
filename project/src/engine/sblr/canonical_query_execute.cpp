@@ -2934,6 +2934,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool is_avg = function == exec::CanonicalAggregateFunction::avg;
   const bool is_min = function == exec::CanonicalAggregateFunction::min;
   const bool is_max = function == exec::CanonicalAggregateFunction::max;
+  const bool is_bounded_signed_integer_aggregate =
+      is_sum || is_min || is_max;
   const bool is_bool_and =
       function == exec::CanonicalAggregateFunction::bool_and;
   const bool is_bool_or =
@@ -3048,12 +3050,14 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   constexpr std::array<std::string_view, 4> kBoundedSignedTypeNames = {
       "int8", "int16", "int32", "int64"};
   std::array<std::string, kBoundedSignedTypeNames.size()>
-      sum_source_type_uuids;
-  std::string sum_result_type_uuid;
-  if (is_sum) {
+      bounded_signed_source_type_uuids;
+  std::string bounded_signed_result_type_uuid;
+  if (is_bounded_signed_integer_aggregate) {
     const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
     if (!core_manifest.ok()) {
-      result.detail = "global SUM core datatype catalog is unavailable";
+      result.detail =
+          "global bounded-signed aggregate core datatype catalog is "
+          "unavailable";
       return result;
     }
     for (std::size_t index = 0; index < kBoundedSignedTypeNames.size();
@@ -3071,18 +3075,21 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           row == core_manifest.manifest.descriptor_rows.end() ||
           !row->descriptor_uuid.valid()) {
         result.detail =
-            "global SUM bounded-signed core datatype cohort is incomplete";
+            "global bounded-signed aggregate core datatype cohort is "
+            "incomplete";
         return result;
       }
-      sum_source_type_uuids[index] =
+      bounded_signed_source_type_uuids[index] =
           scratchbird::core::uuid::UuidToString(row->descriptor_uuid.value);
-      if (sum_source_type_uuids[index].empty()) {
+      if (bounded_signed_source_type_uuids[index].empty()) {
         result.detail =
-            "global SUM bounded-signed core datatype identity is unavailable";
+            "global bounded-signed aggregate core datatype identity is "
+            "unavailable";
         return result;
       }
     }
-    sum_result_type_uuid = sum_source_type_uuids.back();
+    bounded_signed_result_type_uuid =
+        bounded_signed_source_type_uuids.back();
   }
   if (root.output_descriptor_ids.size() != 1 ||
       root.bound_expression_ids.size() != 1 ||
@@ -3178,12 +3185,13 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         "global aggregate function identity or argument binding is invalid";
     return result;
   }
-  if (is_sum &&
-      (descriptor->type_uuid != sum_result_type_uuid ||
+  if (is_bounded_signed_integer_aggregate &&
+      (descriptor->type_uuid != bounded_signed_result_type_uuid ||
        descriptor->descriptor_uuid == descriptor->type_uuid ||
        descriptor->descriptor_uuid == aggregate->function_uuid)) {
     result.detail =
-        "global SUM result is not the canonical nullable int64 type";
+        "global bounded-signed aggregate result is not the canonical "
+        "nullable int64 type";
     return result;
   }
 
@@ -3492,7 +3500,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         result.filter_descriptor_id = argument->result_descriptor_id;
         continue;
       }
-      if (is_sum) {
+      if (is_bounded_signed_integer_aggregate) {
         const auto source_type = std::ranges::find(
             kBoundedSignedTypeNames, std::string_view(input_type));
         const auto source_descriptor = std::ranges::find_if(
@@ -3507,7 +3515,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         const bool exact_source_type =
             source_type != kBoundedSignedTypeNames.end() &&
             source_descriptor != dag.descriptors.end() &&
-            source_index < sum_source_type_uuids.size() &&
+            source_index < bounded_signed_source_type_uuids.size() &&
             source_descriptor->descriptor_uuid ==
                 source_column.descriptor.descriptor_uuid.canonical &&
             source_descriptor->descriptor_uuid !=
@@ -3516,7 +3524,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             source_descriptor->descriptor_uuid !=
                 descriptor->descriptor_uuid &&
             source_descriptor->type_uuid ==
-                sum_source_type_uuids[source_index] &&
+                bounded_signed_source_type_uuids[source_index] &&
             source_descriptor->nullability ==
                 (source_column.nullable
                      ? api::RelationalNullability::kNullable
@@ -3532,12 +3540,14 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             api::QowCanonicalDescriptorIdentityV1(
                 source_column.descriptor) &&
             source_column.descriptor.encoded_descriptor ==
-                "type_uuid=" + sum_source_type_uuids[source_index] +
+                "type_uuid=" +
+                    bounded_signed_source_type_uuids[source_index] +
                     ";nullability=" +
                     (source_column.nullable ? "nullable" : "non_null");
         if (!exact_source_type) {
           result.detail =
-              "global SUM input is not one exact core bounded-signed column";
+              "global bounded-signed aggregate input is not one exact core "
+              "bounded-signed column";
           return result;
         }
       }
@@ -3582,8 +3592,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       }
       result.value_columns.push_back(value_column);
       result.value_descriptor_ids.push_back(argument->result_descriptor_id);
-      if ((is_avg || is_min || is_max || is_statistical ||
-           is_pair_statistical) &&
+      if ((is_avg || is_statistical || is_pair_statistical) &&
           input_type != "int64") {
         if (is_avg) {
           result.detail = "global AVG input must be a canonical int64 column";
@@ -3595,9 +3604,6 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           result.detail =
               "global pair statistical inputs must be canonical int64 "
               "columns";
-        } else {
-          result.detail =
-              "global MIN/MAX input must be a canonical int64 column";
         }
         return result;
       }
@@ -17611,10 +17617,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 value.is_null) {
               continue;
             }
-            if (value.descriptor.canonical_type_name != "int64") {
+            if (!exec::IsCanonicalBoundedSignedIntegerDescriptor(
+                    value.descriptor)) {
               return refuse(std::string(kPayloadDiagnostic),
                             "composition extremum input is not canonical "
-                            "int64");
+                            "bounded-signed");
             }
             if (!extremum.has_value()) {
               extremum = value;
