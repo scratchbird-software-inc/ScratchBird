@@ -4288,38 +4288,54 @@ BuildEngineProjectedNativeBindingContext(
         "019de5fc-2400-7b94-870d-0dd789ca70ab";
     constexpr std::string_view kDenseRankFunctionUuid =
         "019de5fc-2400-741d-bef0-f079fd3ba494";
+    constexpr std::string_view kPercentRankFunctionUuid =
+        "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
     const bool rank_window =
         function_expression != ast.expressions.end() &&
         function_expression->operator_name == "RANK";
     const bool dense_rank_window =
         function_expression != ast.expressions.end() &&
         function_expression->operator_name == "DENSE_RANK";
-    const bool recognized_integer_ranking =
+    const bool percent_rank_window =
         function_expression != ast.expressions.end() &&
-        (rank_window || dense_rank_window ||
+        function_expression->operator_name == "PERCENT_RANK";
+    const bool recognized_ranking =
+        function_expression != ast.expressions.end() &&
+        (rank_window || dense_rank_window || percent_rank_window ||
          function_expression->operator_name == "ROW_NUMBER");
-    const bool peer_ranking_window = rank_window || dense_rank_window;
+    const bool peer_ranking_window =
+        rank_window || dense_rank_window || percent_rank_window;
     const std::string_view expected_operator =
-        dense_rank_window ? "DENSE_RANK"
-                          : (rank_window ? "RANK" : "ROW_NUMBER");
+        percent_rank_window
+            ? "PERCENT_RANK"
+            : (dense_rank_window ? "DENSE_RANK"
+                                 : (rank_window ? "RANK" : "ROW_NUMBER"));
     const std::string_view expected_builtin =
-        dense_rank_window
-            ? "sb.window.dense_rank"
-            : (rank_window ? "sb.window.rank" : "sb.window.row_number");
+        percent_rank_window
+            ? "sb.window.percent_rank"
+            : (dense_rank_window
+                   ? "sb.window.dense_rank"
+                   : (rank_window ? "sb.window.rank"
+                                  : "sb.window.row_number"));
     const std::string_view expected_function_uuid =
-        dense_rank_window
-            ? kDenseRankFunctionUuid
-            : (rank_window ? kRankFunctionUuid : kRowNumberFunctionUuid);
+        percent_rank_window
+            ? kPercentRankFunctionUuid
+            : (dense_rank_window
+                   ? kDenseRankFunctionUuid
+                   : (rank_window ? kRankFunctionUuid
+                                  : kRowNumberFunctionUuid));
     const auto function_profile = std::ranges::find_if(
         statement_context.window_function_profiles,
         [&](const auto& candidate) {
           return candidate.builtin_id == expected_builtin;
         });
     const auto result_profile = std::ranges::find_if(
-        statement_context.descriptor_profiles, [](const auto& candidate) {
-          return candidate.profile_kind == 1 && candidate.slot == 0;
+        statement_context.descriptor_profiles, [&](const auto& candidate) {
+          return candidate.profile_kind ==
+                     (percent_rank_window ? 11 : 1) &&
+                 candidate.slot == 0;
         });
-    if (!recognized_integer_ranking ||
+    if (!recognized_ranking ||
         function_expression->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
         function_expression->operator_name != expected_operator ||
@@ -4355,9 +4371,12 @@ BuildEngineProjectedNativeBindingContext(
               NativeExpressionAstKind::kIdentifier ||
           source_relation->output_expression_ids !=
               std::vector<std::uint32_t>{order_expression->expression_id}) {
-        return fail(dense_rank_window
-                        ? "catalog_window_dense_rank_shape_invalid"
-                        : "catalog_window_rank_shape_invalid");
+        return fail(
+            percent_rank_window
+                ? "catalog_window_percent_rank_shape_invalid"
+                : (dense_rank_window
+                       ? "catalog_window_dense_rank_shape_invalid"
+                       : "catalog_window_rank_shape_invalid"));
       }
     }
     const auto function_binding_id =
@@ -4377,10 +4396,12 @@ BuildEngineProjectedNativeBindingContext(
     const auto window_output_name =
         invocation.output_alias.has_value()
             ? invocation.output_alias->spelling
-            : (dense_rank_window
-                   ? std::string("dense_rank")
-                   : (rank_window ? std::string("rank")
-                                  : std::string("row_number")));
+            : (percent_rank_window
+                   ? std::string("percent_rank")
+                   : (dense_rank_window
+                          ? std::string("dense_rank")
+                          : (rank_window ? std::string("rank")
+                                         : std::string("row_number"))));
     context.outputs.push_back(
         {static_cast<std::uint32_t>(context.outputs.size() + 1),
          function_binding_id,
@@ -4459,9 +4480,12 @@ BuildEngineProjectedNativeBindingContext(
     context.catalog_relations.push_back(std::move(catalog_relation));
     context.relations.push_back(
         {window_relation->relation_id,
-         dense_rank_window
-             ? "window.dense-rank.v1"
-             : (rank_window ? "window.rank.v1" : "window.row-number.v1")});
+         percent_rank_window
+             ? "window.percent-rank.v1"
+             : (dense_rank_window
+                    ? "window.dense-rank.v1"
+                    : (rank_window ? "window.rank.v1"
+                                   : "window.row-number.v1"))});
     if (has_qualify) {
       context.relations.push_back(
           {qualify_relation->relation_id,

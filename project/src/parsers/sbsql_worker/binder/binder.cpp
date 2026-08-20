@@ -4657,8 +4657,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool dense_rank_window =
         window_binding != context.relations.end() &&
         window_binding->semantic_variant_id == "window.dense-rank.v1";
-    const bool peer_ranking_window = rank_window || dense_rank_window;
-    const bool recognized_integer_ranking =
+    const bool percent_rank_window =
+        window_binding != context.relations.end() &&
+        window_binding->semantic_variant_id == "window.percent-rank.v1";
+    const bool peer_ranking_window =
+        rank_window || dense_rank_window || percent_rank_window;
+    const bool recognized_ranking =
         window_binding != context.relations.end() &&
         (peer_ranking_window || window_binding->semantic_variant_id ==
                                     "window.row-number.v1");
@@ -4668,17 +4672,27 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         "019de5fc-2400-7b94-870d-0dd789ca70ab";
     constexpr std::string_view kDenseRankFunctionUuid =
         "019de5fc-2400-741d-bef0-f079fd3ba494";
+    constexpr std::string_view kPercentRankFunctionUuid =
+        "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
     const std::string_view expected_operator =
-        dense_rank_window ? "DENSE_RANK"
-                          : (rank_window ? "RANK" : "ROW_NUMBER");
+        percent_rank_window
+            ? "PERCENT_RANK"
+            : (dense_rank_window ? "DENSE_RANK"
+                                 : (rank_window ? "RANK" : "ROW_NUMBER"));
     const std::string_view expected_builtin =
-        dense_rank_window
-            ? "sb.window.dense_rank"
-            : (rank_window ? "sb.window.rank" : "sb.window.row_number");
+        percent_rank_window
+            ? "sb.window.percent_rank"
+            : (dense_rank_window
+                   ? "sb.window.dense_rank"
+                   : (rank_window ? "sb.window.rank"
+                                  : "sb.window.row_number"));
     const std::string_view expected_function_uuid =
-        dense_rank_window
-            ? kDenseRankFunctionUuid
-            : (rank_window ? kRankFunctionUuid : kRowNumberFunctionUuid);
+        percent_rank_window
+            ? kPercentRankFunctionUuid
+            : (dense_rank_window
+                   ? kDenseRankFunctionUuid
+                   : (rank_window ? kRankFunctionUuid
+                                  : kRowNumberFunctionUuid));
     if (source_relation == ast.relations.end() ||
         ast.relations.size() != 2 + static_cast<std::size_t>(has_qualify) ||
         ast.root_relation_id !=
@@ -4695,7 +4709,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         context.relations.size() !=
             1 + static_cast<std::size_t>(has_qualify) ||
         context.window_functions.size() != 1 ||
-        !recognized_integer_ranking || (peer_ranking_window && has_qualify) ||
+        !recognized_ranking || (peer_ranking_window && has_qualify) ||
         (has_qualify &&
          (qualify_binding == context.relations.end() ||
           qualify_binding->semantic_variant_id !=
@@ -4820,7 +4834,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         (!effective_window_shapes[selected_definition->second].partition &&
          !effective_window_shapes[selected_definition->second].ordering)) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
-                            "typed integer ranking requires a resolved window key");
+                            "typed ranking requires a resolved window key");
       return RefusedBoundAst(std::move(bound));
     }
     const auto& selected_window_definition =
@@ -5029,7 +5043,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         result_output.visible == has_qualify || result_output.ordinal != 0 ||
         result_output.relation_id != window_relation->relation_id) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-                            "typed integer ranking binding is not exact");
+                            "typed ranking binding is not exact");
       return RefusedBoundAst(std::move(bound));
     }
     ast_to_bound.emplace(function_ast->expression_id,

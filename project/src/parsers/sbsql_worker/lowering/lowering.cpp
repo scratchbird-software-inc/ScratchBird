@@ -36080,7 +36080,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           relation.window_invocation_ids.size() != 1 ||
           (relation.semantic_variant_id != "window.row-number.v1" &&
            relation.semantic_variant_id != "window.rank.v1" &&
-           relation.semantic_variant_id != "window.dense-rank.v1") ||
+           relation.semantic_variant_id != "window.dense-rank.v1" &&
+           relation.semantic_variant_id != "window.percent-rank.v1") ||
           native.window_definitions.empty() ||
           native.window_definitions.size() > 1024 ||
           native.window_invocations.size() != 1 ||
@@ -36310,19 +36311,30 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         "019de5fc-2400-7b94-870d-0dd789ca70ab";
     constexpr std::string_view kDenseRankFunctionUuid =
         "019de5fc-2400-741d-bef0-f079fd3ba494";
+    constexpr std::string_view kPercentRankFunctionUuid =
+        "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
     const bool rank_window =
         window_relation->semantic_variant_id == "window.rank.v1";
     const bool dense_rank_window =
         window_relation->semantic_variant_id == "window.dense-rank.v1";
-    const bool peer_ranking_window = rank_window || dense_rank_window;
+    const bool percent_rank_window =
+        window_relation->semantic_variant_id == "window.percent-rank.v1";
+    const bool peer_ranking_window =
+        rank_window || dense_rank_window || percent_rank_window;
     const std::string_view expected_window_builtin =
-        dense_rank_window
-            ? "sb.window.dense_rank"
-            : (rank_window ? "sb.window.rank" : "sb.window.row_number");
+        percent_rank_window
+            ? "sb.window.percent_rank"
+            : (dense_rank_window
+                   ? "sb.window.dense_rank"
+                   : (rank_window ? "sb.window.rank"
+                                  : "sb.window.row_number"));
     const std::string_view expected_window_function_uuid =
-        dense_rank_window
-            ? kDenseRankFunctionUuid
-            : (rank_window ? kRankFunctionUuid : kRowNumberFunctionUuid);
+        percent_rank_window
+            ? kPercentRankFunctionUuid
+            : (dense_rank_window
+                   ? kDenseRankFunctionUuid
+                   : (rank_window ? kRankFunctionUuid
+                                  : kRowNumberFunctionUuid));
     const auto& invocation = native.window_invocations.front();
     const auto function = expressions_by_id.find(
         invocation.function_expression_id);
@@ -39362,10 +39374,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   }
 
   // QOW-SOURCE-INTEGER-RANKING-CATALOG-EXECUTION-NORMALIZATION-V1
-  // The canonical integer-ranking executor requires an explicit ordered
+  // The canonical ranking executor requires an explicit ordered
   // input and a passthrough Window schema. Preserve the validated BoundAST
   // and synthesize only an emission view with a root Project for the exact
-  // executable ROW_NUMBER/RANK/DENSE_RANK cohort.
+  // executable ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK cohort.
   constexpr std::string_view kCatalogOrderingPropertyUuid =
       "019f0000-0000-7200-8000-00000000c701";
   constexpr std::string_view kRowNumberFunctionUuid =
@@ -39374,35 +39386,45 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       "019de5fc-2400-7b94-870d-0dd789ca70ab";
   constexpr std::string_view kDenseRankFunctionUuid =
       "019de5fc-2400-741d-bef0-f079fd3ba494";
+  constexpr std::string_view kPercentRankFunctionUuid =
+      "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
   const bool normalize_rank_semantic =
       window_relation != nullptr &&
       window_relation->semantic_variant_id == "window.rank.v1";
   const bool normalize_dense_rank_semantic =
       window_relation != nullptr &&
       window_relation->semantic_variant_id == "window.dense-rank.v1";
+  const bool normalize_percent_rank_semantic =
+      window_relation != nullptr &&
+      window_relation->semantic_variant_id == "window.percent-rank.v1";
   const bool normalize_peer_ranking_semantic =
-      normalize_rank_semantic || normalize_dense_rank_semantic;
-  const bool normalize_integer_ranking_semantic =
+      normalize_rank_semantic || normalize_dense_rank_semantic ||
+      normalize_percent_rank_semantic;
+  const bool normalize_ranking_semantic =
       window_relation != nullptr &&
       (normalize_peer_ranking_semantic ||
        window_relation->semantic_variant_id == "window.row-number.v1");
   const std::string_view normalized_ranking_builtin =
-      normalize_dense_rank_semantic
-          ? "sb.window.dense_rank"
-          : (normalize_rank_semantic ? "sb.window.rank"
-                                     : "sb.window.row_number");
+      normalize_percent_rank_semantic
+          ? "sb.window.percent_rank"
+          : (normalize_dense_rank_semantic
+                 ? "sb.window.dense_rank"
+                 : (normalize_rank_semantic ? "sb.window.rank"
+                                            : "sb.window.row_number"));
   const std::string_view normalized_ranking_function_uuid =
-      normalize_dense_rank_semantic
-          ? kDenseRankFunctionUuid
-          : (normalize_rank_semantic ? kRankFunctionUuid
-                                     : kRowNumberFunctionUuid);
+      normalize_percent_rank_semantic
+          ? kPercentRankFunctionUuid
+          : (normalize_dense_rank_semantic
+                 ? kDenseRankFunctionUuid
+                 : (normalize_rank_semantic ? kRankFunctionUuid
+                                            : kRowNumberFunctionUuid));
   std::vector<BoundRelationAstRecord> emitted_relations = native.relations;
   std::vector<BoundOutputAstRecord> emitted_outputs = native.outputs;
   std::uint32_t emitted_root_relation_id = native.root_relation_id;
   std::uint32_t normalized_sort_relation_id = 0;
   std::uint32_t normalized_project_relation_id = 0;
-  const bool normalize_catalog_integer_ranking =
-      normalize_integer_ranking_semantic && catalog_window_graph_is_exact &&
+  const bool normalize_catalog_ranking =
+      normalize_ranking_semantic && catalog_window_graph_is_exact &&
       qualify_relation == nullptr &&
       catalog_relation != nullptr && window_relation != nullptr &&
       native.relations.size() == 2 &&
@@ -39435,15 +39457,17 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                   .expression_id,
               native.window_invocations.front().function_expression_id};
   if (normalize_peer_ranking_semantic &&
-      !normalize_catalog_integer_ranking) {
+      !normalize_catalog_ranking) {
     AddNativeRelationalLoweringError(
         &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
         std::string("typed ") +
-            (normalize_dense_rank_semantic ? "DENSE_RANK" : "RANK") +
+            (normalize_percent_rank_semantic
+                 ? "PERCENT_RANK"
+                 : (normalize_dense_rank_semantic ? "DENSE_RANK" : "RANK")) +
             " requires explicit canonical ordering normalization");
     return envelope;
   }
-  if (normalize_catalog_integer_ranking) {
+  if (normalize_catalog_ranking) {
     const auto maximum_relation_id = std::ranges::max(
         native.relations, {}, &BoundRelationAstRecord::relation_id)
                                          .relation_id;
@@ -39469,7 +39493,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         source_outputs.empty() || public_window_outputs.size() != 1) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-          "integer-ranking normalization handle space is exhausted");
+          "ranking normalization handle space is exhausted");
       return envelope;
     }
     normalized_sort_relation_id = maximum_relation_id + 1;
@@ -39560,7 +39584,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     (void)relation_id;
     std::ranges::sort(outputs, {}, &BoundOutputAstRecord::ordinal);
   }
-  if (normalize_catalog_integer_ranking) {
+  if (normalize_catalog_ranking) {
     const auto emitted_source = std::ranges::find_if(
         emitted_relations, [&](const auto& relation) {
           return relation.relation_id == catalog_relation->relation_id;
@@ -39597,10 +39621,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             std::vector<std::uint32_t>{emitted_window->relation_id} &&
         emitted_sort->semantic_variant_id == "sort.required-order.v1" &&
         emitted_window->semantic_variant_id ==
-            (normalize_dense_rank_semantic
-                 ? "window.dense-rank.v1"
-                 : (normalize_rank_semantic ? "window.rank.v1"
-                                            : "window.row-number.v1")) &&
+            (normalize_percent_rank_semantic
+                 ? "window.percent-rank.v1"
+                 : (normalize_dense_rank_semantic
+                        ? "window.dense-rank.v1"
+                        : (normalize_rank_semantic ? "window.rank.v1"
+                                                   : "window.row-number.v1"))) &&
         emitted_project->semantic_variant_id ==
             "project.catalog-visible-columns.v1" &&
         emitted_sort->output_expression_ids ==
@@ -39657,7 +39683,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                 ->output_id) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-          "integer-ranking normalized emission view is not exact");
+          "ranking normalized emission view is not exact");
       return envelope;
     }
   }
@@ -39887,7 +39913,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           window_partition_property_uuid);
     }
     if (!effective_window_ordering_terms.empty()) {
-      if (normalize_catalog_integer_ranking) {
+      if (normalize_catalog_ranking) {
         window_dependency_property_uuids.push_back(
             std::string(kCatalogOrderingPropertyUuid));
       } else {
@@ -39939,9 +39965,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   };
   std::string encoded_catalog_ordering_terms;
   if (catalog_sort_relation != nullptr ||
-      normalize_catalog_integer_ranking) {
+      normalize_catalog_ranking) {
     const auto& catalog_ordering_terms =
-        normalize_catalog_integer_ranking
+        normalize_catalog_ranking
             ? native.window_definitions.front().ordering_terms
             : catalog_sort_relation->ordering_terms;
     for (std::size_t ordinal = 0;
@@ -40041,9 +40067,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                          : "-"))});
   }
   if (catalog_sort_relation != nullptr ||
-      normalize_catalog_integer_ranking) {
+      normalize_catalog_ranking) {
     const auto ordering_origin_relation_id =
-        normalize_catalog_integer_ranking
+        normalize_catalog_ranking
             ? normalized_sort_relation_id
             : catalog_sort_relation->relation_id;
     envelope.operands.push_back(

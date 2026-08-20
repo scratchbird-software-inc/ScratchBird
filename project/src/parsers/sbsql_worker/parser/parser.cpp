@@ -2923,7 +2923,8 @@ class NativeRelationalParser final {
     return tokens_.size() >= 9 &&
            (IsWord(*tokens_[1], "ROW_NUMBER") ||
             IsWord(*tokens_[1], "RANK") ||
-            IsWord(*tokens_[1], "DENSE_RANK")) &&
+            IsWord(*tokens_[1], "DENSE_RANK") ||
+            IsWord(*tokens_[1], "PERCENT_RANK")) &&
            tokens_[2]->text == "(" &&
            tokens_[3]->text == ")" && IsWord(*tokens_[4], "OVER") &&
            (tokens_[5]->text == "(" ||
@@ -2933,9 +2934,9 @@ class NativeRelationalParser final {
   NativeRelationalAstDocument ParseWindowSelect() {
     // QOW-SOURCE-RCP-050-TYPED-WINDOW-AST-V1
     // The general ROW_NUMBER surface preserves the complete window
-    // specification. RANK and DENSE_RANK are admitted only for the exact
-    // nullary, global, one-direct-column ordering profile executed by the
-    // canonical spine.
+    // specification. RANK, DENSE_RANK, and PERCENT_RANK are admitted only for
+    // the exact nullary, global, one-direct-column ordering profile executed
+    // by the canonical spine.
     document_.status = NativeRelationalParseStatus::kRefused;
     if (cst_.messages.has_errors()) {
       document_.messages = cst_.messages;
@@ -2950,10 +2951,14 @@ class NativeRelationalParser final {
     const Token& function_token = Consume();
     const bool rank_window = IsWord(function_token, "RANK");
     const bool dense_rank_window = IsWord(function_token, "DENSE_RANK");
-    const bool peer_ranking_window = rank_window || dense_rank_window;
+    const bool percent_rank_window = IsWord(function_token, "PERCENT_RANK");
+    const bool peer_ranking_window =
+        rank_window || dense_rank_window || percent_rank_window;
     const std::string function_name =
-        dense_rank_window ? "DENSE_RANK"
-                          : (rank_window ? "RANK" : "ROW_NUMBER");
+        percent_rank_window
+            ? "PERCENT_RANK"
+            : (dense_rank_window ? "DENSE_RANK"
+                                 : (rank_window ? "RANK" : "ROW_NUMBER"));
     if (!RequireSymbol("(", "window_function_open_required",
                        function_name + " requires an opening parenthesis") ||
         !RequireSymbol(")", "window_function_close_required",
@@ -3226,7 +3231,7 @@ class NativeRelationalParser final {
       if (definition.partition_expression_ids.empty() &&
           definition.ordering_terms.empty()) {
         Refuse("window_partition_or_order_required",
-               "typed integer ranking requires PARTITION BY or ORDER BY");
+               "typed ranking requires PARTITION BY or ORDER BY");
         return FinishRefusal();
       }
     }
@@ -3415,10 +3420,12 @@ class NativeRelationalParser final {
       const auto expected_output_name = ToLowerAscii(
           invocation.output_alias.has_value()
               ? invocation.output_alias->spelling
-              : (dense_rank_window
-                     ? std::string("dense_rank")
-                     : (rank_window ? std::string("rank")
-                                    : std::string("row_number"))));
+              : (percent_rank_window
+                     ? std::string("percent_rank")
+                     : (dense_rank_window
+                            ? std::string("dense_rank")
+                            : (rank_window ? std::string("rank")
+                                           : std::string("row_number")))));
       if (ToLowerAscii(output_reference.text) != expected_output_name) {
         Refuse("qualify_window_output_unresolved",
                "QUALIFY may reference only the selected window result in this bounded profile");
@@ -3475,8 +3482,11 @@ class NativeRelationalParser final {
     }
     if (peer_ranking_window) {
       if (document_.window_definitions.size() != 1) {
-        Refuse(dense_rank_window ? "dense_rank_window_shape_unsupported"
-                                 : "rank_window_shape_unsupported",
+        Refuse(percent_rank_window
+                   ? "percent_rank_window_shape_unsupported"
+                   : (dense_rank_window
+                          ? "dense_rank_window_shape_unsupported"
+                          : "rank_window_shape_unsupported"),
                "typed " + function_name +
                    " requires one inline direct-column ORDER BY key");
         return FinishRefusal();
@@ -3492,8 +3502,11 @@ class NativeRelationalParser final {
           rank_definition.frame_end.has_value() ||
           rank_definition.exclusion !=
               NativeWindowFrameExclusion::kNoOthers) {
-        Refuse(dense_rank_window ? "dense_rank_window_shape_unsupported"
-                                 : "rank_window_shape_unsupported",
+        Refuse(percent_rank_window
+                   ? "percent_rank_window_shape_unsupported"
+                   : (dense_rank_window
+                          ? "dense_rank_window_shape_unsupported"
+                          : "rank_window_shape_unsupported"),
                "typed " + function_name +
                    " requires one inline direct-column ORDER BY key");
         return FinishRefusal();
