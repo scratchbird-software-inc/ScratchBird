@@ -36152,7 +36152,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
         !CanonicalUuidText(descriptor->type_uuid) ||
         !public_descriptor_uuids.insert(descriptor->descriptor_uuid).second ||
         descriptor->collation_uuid.has_value() ||
-        descriptor->timezone_profile_id.has_value()) {
+        descriptor->timezone_profile_id.has_value() ||
+        descriptor->width.has_value() || descriptor->precision.has_value() ||
+        descriptor->scale.has_value()) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "vector public output binding was substituted");
     }
@@ -36231,53 +36233,55 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
           input.context.database_uuid.canonical ||
       persisted_relation.relation_kind != "table" ||
       persisted_relation.storage_profile != "local_mga_rowstore_v1" ||
-      persisted_relation.descriptor_generation == 0 ||
-      persisted_relation.columns.size() != 2 ||
-      persisted_relation.columns[0].ordinal != 0 ||
-      persisted_relation.columns[0].canonical_name_key != "embedding" ||
-      persisted_relation.columns[0].nullable ||
-      persisted_relation.columns[0].value_descriptor.canonical_type_name !=
-          "dense_vector" ||
-      persisted_relation.columns[1].ordinal != 1 ||
-      persisted_relation.columns[1].canonical_name_key != "metadata" ||
-      persisted_relation.columns[1].nullable ||
-      persisted_relation.columns[1].value_descriptor.canonical_type_name !=
-          "text") {
+      persisted_relation.descriptor_generation == 0) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent vector relation descriptor is invalid");
+  }
+  if (!api::ExactBoundVectorStorageDescriptorV1(persisted_relation,
+                                                 object_uuid)) {
+    return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                  "persistent vector relation type binding is not exact");
   }
   const auto query_descriptor = descriptor_for(query->result_descriptor_id);
   const auto metric_descriptor = descriptor_for(metric->result_descriptor_id);
   const auto top_k_descriptor = descriptor_for(top_k->result_descriptor_id);
   const auto stored_embedding_type =
-      persisted_relation.columns[0].value_descriptor.encoded_descriptor;
+      ExactCanonicalCoreDatatypeUuidV1("dense_vector");
   const auto stored_metadata_type =
-      persisted_relation.columns[1].value_descriptor.encoded_descriptor;
-  const auto descriptor_type_uuid = [](const std::string_view encoded) {
-    constexpr std::string_view prefix = "type_uuid=";
-    const auto begin = encoded.find(prefix);
-    if (begin == std::string_view::npos) return std::string{};
-    const auto value_begin = begin + prefix.size();
-    const auto end = encoded.find(';', value_begin);
-    return std::string(encoded.substr(
-        value_begin, end == std::string_view::npos
-                         ? encoded.size() - value_begin
-                         : end - value_begin));
-  };
+      ExactCanonicalCoreDatatypeUuidV1("character");
+  const auto top_k_type = ExactCanonicalCoreDatatypeUuidV1("uint64");
   if (query_descriptor == dag.descriptors.end() ||
       metric_descriptor == dag.descriptors.end() ||
       top_k_descriptor == dag.descriptors.end() ||
       query_descriptor->descriptor_uuid !=
           persisted_relation.columns[0].value_descriptor.descriptor_uuid
               .canonical ||
-      query_descriptor->type_uuid != descriptor_type_uuid(stored_embedding_type) ||
-      metric_descriptor->type_uuid != descriptor_type_uuid(stored_metadata_type) ||
+      stored_embedding_type.empty() || stored_metadata_type.empty() ||
+      top_k_type.empty() ||
+      query_descriptor->type_uuid != stored_embedding_type ||
+      metric_descriptor->type_uuid != stored_metadata_type ||
+      top_k_descriptor->type_uuid != top_k_type ||
       query_descriptor->nullability !=
           api::RelationalNullability::kNonNull ||
+      query_descriptor->width != std::optional<std::uint32_t>(3) ||
+      query_descriptor->collation_uuid.has_value() ||
+      query_descriptor->timezone_profile_id.has_value() ||
+      query_descriptor->precision.has_value() ||
+      query_descriptor->scale.has_value() ||
       metric_descriptor->nullability !=
           api::RelationalNullability::kNonNull ||
+      metric_descriptor->collation_uuid.has_value() ||
+      metric_descriptor->timezone_profile_id.has_value() ||
+      metric_descriptor->width.has_value() ||
+      metric_descriptor->precision.has_value() ||
+      metric_descriptor->scale.has_value() ||
       top_k_descriptor->nullability !=
-          api::RelationalNullability::kNonNull) {
+          api::RelationalNullability::kNonNull ||
+      top_k_descriptor->collation_uuid.has_value() ||
+      top_k_descriptor->timezone_profile_id.has_value() ||
+      top_k_descriptor->width.has_value() ||
+      top_k_descriptor->precision.has_value() ||
+      top_k_descriptor->scale.has_value()) {
     return refuse("SB_MODEL_VECTOR_VALUE_REFUSED_V1",
                   "vector operation descriptor cohort differs from storage");
   }
@@ -36290,9 +36294,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
         value_descriptor->descriptor_uuid !=
             persisted_relation.columns[1].value_descriptor.descriptor_uuid
                 .canonical ||
-        value_descriptor->type_uuid != descriptor_type_uuid(stored_metadata_type) ||
+        value_descriptor->type_uuid != stored_metadata_type ||
         value_descriptor->nullability !=
-            api::RelationalNullability::kNonNull) {
+            api::RelationalNullability::kNonNull ||
+        value_descriptor->collation_uuid.has_value() ||
+        value_descriptor->timezone_profile_id.has_value() ||
+        value_descriptor->width.has_value() ||
+        value_descriptor->precision.has_value() ||
+        value_descriptor->scale.has_value()) {
       return refuse("SB_MODEL_VECTOR_FILTER_REFUSED_V1",
                     "vector metadata filter descriptor differs from storage");
     }
@@ -36625,6 +36634,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   api::EngineBoundVectorReadRequestV1 vector_request;
   vector_request.context = input.context;
   vector_request.collection_uuid = object_uuid;
+  vector_request.expected_descriptor_uuid =
+      persisted_relation.descriptor_uuid.canonical;
+  vector_request.expected_descriptor_generation =
+      persisted_relation.descriptor_generation;
   vector_request.selected_alternative_uuid = alternative_uuid;
   vector_request.selected_provider_uuid = provider_uuid;
   vector_request.selected_capability_uuid = capability_uuid;
