@@ -1162,12 +1162,56 @@ bool CheckedAdd(std::uint64_t left, std::uint64_t right,
 bool CheckedMultiply(std::uint64_t left, std::uint64_t right,
                      std::uint64_t* result);
 
+bool BoundSetOperationEqualityComparisons(
+    const PreparedSetOperationRoot& prepared,
+    const LiveSetOperationProfile& profile,
+    const std::uint64_t maximum_input_row_count,
+    std::uint64_t* comparison_bound,
+    std::uint64_t* collation_comparison_count) {
+  if (comparison_bound == nullptr ||
+      collation_comparison_count == nullptr || !prepared.ok ||
+      !profile.matched ||
+      !CheckedMultiply(maximum_input_row_count, maximum_input_row_count,
+                       comparison_bound)) {
+    return false;
+  }
+  *collation_comparison_count = 0;
+  if (profile.equality_profile !=
+      exec::CanonicalSetOperationEqualityProfile::kNullEqualBoundCollation) {
+    return true;
+  }
+  if (prepared.collation_bindings.size() >
+      prepared.result_columns.size()) {
+    return false;
+  }
+  std::uint64_t adjacent = maximum_input_row_count;
+  std::uint64_t triangular = 0;
+  if (adjacent != 0) --adjacent;
+  if ((maximum_input_row_count & 1U) == 0) {
+    if (!CheckedMultiply(maximum_input_row_count / 2, adjacent,
+                         &triangular)) {
+      return false;
+    }
+  } else if (!CheckedMultiply(maximum_input_row_count, adjacent / 2,
+                              &triangular)) {
+    return false;
+  }
+  if (!CheckedMultiply(prepared.collation_bindings.size(), triangular,
+                       collation_comparison_count)) {
+    return false;
+  }
+  *comparison_bound =
+      std::max(*comparison_bound, *collation_comparison_count);
+  return true;
+}
+
 MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(
     const PreparedSetOperationRoot& prepared,
     const LiveSetOperationProfile& profile,
     const MaterializedValues& left,
     const MaterializedValues& right) {
   MaterializedSetOperationPlanningState result;
+  std::uint64_t collation_comparison_count = 0;
   if (!prepared.ok || !left.ok || !right.ok ||
       (profile.alignment != exec::CanonicalSetOperationAlignment::kOrdinal &&
        profile.alignment !=
@@ -1183,18 +1227,28 @@ MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(
                kNullEqualBoundCollation) ||
       !CheckedAdd(left.batch.rows.size(), right.batch.rows.size(),
                   &result.output_bound) ||
-      !CheckedMultiply(result.output_bound, result.output_bound,
-                       &result.comparison_bound)) {
+      !BoundSetOperationEqualityComparisons(
+          prepared, profile, result.output_bound,
+          &result.comparison_bound, &collation_comparison_count)) {
     result.values.detail =
         "set-operation planning-state contract or bound is invalid";
     return result;
   }
-  result.work_bound =
-      profile.operation == exec::CanonicalSetOperationKind::kUnion &&
-              profile.quantifier ==
-                  exec::CanonicalSetOperationQuantifier::kAll
-          ? result.output_bound
-          : result.comparison_bound;
+  std::uint64_t base_work = result.output_bound;
+  if ((profile.operation != exec::CanonicalSetOperationKind::kUnion ||
+       profile.quantifier !=
+           exec::CanonicalSetOperationQuantifier::kAll) &&
+      !CheckedMultiply(result.output_bound, result.output_bound,
+                       &base_work)) {
+    result.values.detail = "set-operation base work bound overflowed";
+    return result;
+  }
+  if (!CheckedAdd(base_work, collation_comparison_count,
+                  &result.work_bound)) {
+    result.values.detail =
+        "set-operation collation work bound overflowed";
+    return result;
+  }
 
   result.values.ok = true;
   result.values.batch.columns = prepared.result_columns;
@@ -21827,18 +21881,27 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
   const auto set_output_row_bound =
       left.batch.rows.size() + right.batch.rows.size();
   std::uint64_t set_comparison_bound = 0;
-  if (!CheckedMultiply(set_output_row_bound, set_output_row_bound,
-                       &set_comparison_bound)) {
+  std::uint64_t set_collation_comparison_count = 0;
+  if (!BoundSetOperationEqualityComparisons(
+          prepared_root, set_profile, set_output_row_bound,
+          &set_comparison_bound, &set_collation_comparison_count) ||
+      set_comparison_bound > std::numeric_limits<std::size_t>::max()) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live set-operation comparison bound overflowed");
   }
   const bool concatenation_only =
       set_profile.operation == exec::CanonicalSetOperationKind::kUnion &&
       set_profile.quantifier == exec::CanonicalSetOperationQuantifier::kAll;
-  const auto set_work =
-      concatenation_only
-          ? static_cast<std::uint64_t>(set_output_row_bound)
-          : set_comparison_bound;
+  std::uint64_t set_base_work = set_output_row_bound;
+  std::uint64_t set_work = 0;
+  if ((!concatenation_only &&
+       !CheckedMultiply(set_output_row_bound, set_output_row_bound,
+                        &set_base_work)) ||
+      !CheckedAdd(set_base_work, set_collation_comparison_count,
+                  &set_work)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live set-operation work bound overflowed");
+  }
   if (set_work >
       request.optimizer_request.resource.maximum_candidate_count) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
@@ -22239,12 +22302,16 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
       }
       std::uint64_t output_bound = 0;
       std::uint64_t comparison_bound = 0;
+      std::uint64_t collation_comparison_count = 0;
       const auto left_bound =
           row_bounds.at(node->input_logical_node_ids[0]);
       const auto right_bound =
           row_bounds.at(node->input_logical_node_ids[1]);
       if (!CheckedAdd(left_bound, right_bound, &output_bound) ||
-          !CheckedMultiply(output_bound, output_bound, &comparison_bound)) {
+          !BoundSetOperationEqualityComparisons(
+              prepared, set_profiles.at(node_id), output_bound,
+              &comparison_bound, &collation_comparison_count) ||
+          comparison_bound > std::numeric_limits<std::size_t>::max()) {
         return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                       "nested set-operation row/comparison bound overflowed");
       }
@@ -22253,9 +22320,14 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
               exec::CanonicalSetOperationKind::kUnion &&
           set_profiles.at(node_id).quantifier ==
               exec::CanonicalSetOperationQuantifier::kAll;
-      const auto node_work =
-          concatenation_only ? output_bound : comparison_bound;
-      if (!CheckedAdd(total_set_work, node_work, &total_set_work)) {
+      std::uint64_t node_base_work = output_bound;
+      std::uint64_t node_work = 0;
+      if ((!concatenation_only &&
+           !CheckedMultiply(output_bound, output_bound,
+                            &node_base_work)) ||
+          !CheckedAdd(node_base_work, collation_comparison_count,
+                      &node_work) ||
+          !CheckedAdd(total_set_work, node_work, &total_set_work)) {
         return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                       "nested set-operation work bound overflowed");
       }
@@ -32869,9 +32941,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                       "time-series UNION ALL: " + prepared.detail);
       }
       std::uint64_t comparison_bound = 0;
-      if (!CheckedMultiply(kTimeSeriesCompositionRowBound,
-                           kTimeSeriesCompositionRowBound,
-                           &comparison_bound) ||
+      std::uint64_t collation_comparison_count = 0;
+      if (!BoundSetOperationEqualityComparisons(
+              prepared, time_series_set_profile,
+              kTimeSeriesCompositionRowBound, &comparison_bound,
+              &collation_comparison_count) ||
           comparison_bound > std::numeric_limits<std::size_t>::max()) {
         return refuse(
             "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -37448,9 +37522,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
                     "search UNION ALL: " + prepared.detail);
     }
     std::uint64_t comparison_bound = 0;
-    if (!CheckedMultiply(kSearchCompositionRowBound,
-                         kSearchCompositionRowBound,
-                         &comparison_bound) ||
+    std::uint64_t collation_comparison_count = 0;
+    if (!BoundSetOperationEqualityComparisons(
+            prepared, search_set_profile, kSearchCompositionRowBound,
+            &comparison_bound, &collation_comparison_count) ||
         comparison_bound > std::numeric_limits<std::size_t>::max()) {
       return refuse(
           "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -39641,9 +39716,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
                     "key/value UNION ALL: " + prepared.detail);
     }
     std::uint64_t comparison_bound = 0;
-    if (!CheckedMultiply(kKeyValueCompositionRowBound,
-                         kKeyValueCompositionRowBound,
-                         &comparison_bound) ||
+    std::uint64_t collation_comparison_count = 0;
+    if (!BoundSetOperationEqualityComparisons(
+            prepared, key_value_set_profile, kKeyValueCompositionRowBound,
+            &comparison_bound, &collation_comparison_count) ||
         comparison_bound > std::numeric_limits<std::size_t>::max()) {
       return refuse(
           "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -42064,9 +42140,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
                     "graph UNION ALL: " + prepared.detail);
     }
     std::uint64_t comparison_bound = 0;
-    if (!CheckedMultiply(kGraphCompositionRowBound,
-                         kGraphCompositionRowBound,
-                         &comparison_bound) ||
+    std::uint64_t collation_comparison_count = 0;
+    if (!BoundSetOperationEqualityComparisons(
+            prepared, graph_set_profile, kGraphCompositionRowBound,
+            &comparison_bound, &collation_comparison_count) ||
         comparison_bound > std::numeric_limits<std::size_t>::max()) {
       return refuse(
           "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -44784,7 +44861,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                       "DOCUMENT_UNNEST UNION ALL: " + prepared.detail);
       }
       std::uint64_t comparison_bound = 0;
-      if (!CheckedMultiply(bounded_rows, bounded_rows, &comparison_bound) ||
+      std::uint64_t collation_comparison_count = 0;
+      if (!BoundSetOperationEqualityComparisons(
+              prepared, document_set_profile, bounded_rows,
+              &comparison_bound, &collation_comparison_count) ||
           comparison_bound > std::numeric_limits<std::size_t>::max()) {
         return refuse(
             "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
