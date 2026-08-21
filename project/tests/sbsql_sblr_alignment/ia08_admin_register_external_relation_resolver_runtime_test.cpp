@@ -1,0 +1,4 @@
+#include <cassert>
+#include "engine/sblr/sblr_admin_register_external_relation_resolver_runtime.hpp"
+using namespace scratchbird::engine::sblr;
+int main(){SblrAdminRegisterExternalRelationResolverRequestV1 q;q.receipt[0]=1;q.occurrence=1;q.resolver_occurrence=1;auto qb=EncodeSblrAdminRegisterExternalRelationResolverRequestV1(q);assert(qb.size()==64);SblrAdminRegisterExternalRelationResolverRequestV1 q2;assert(DecodeSblrAdminRegisterExternalRelationResolverRequestV1(qb.data(),qb.size(),&q2,nullptr));SblrAdminRegisterExternalRelationResolverDescriptorV1 d;d.body[0]=1;d.availability=1;auto db=EncodeSblrAdminRegisterExternalRelationResolverDescriptorV1(d,true);assert(db.size()==488);SblrAdminRegisterExternalRelationResolverDescriptorV1 d2;assert(DecodeSblrAdminRegisterExternalRelationResolverDescriptorV1(db.data(),db.size(),&d2,nullptr,true));db[416]^=1;assert(!DecodeSblrAdminRegisterExternalRelationResolverDescriptorV1(db.data(),db.size(),&d2,nullptr,true));return 0;}

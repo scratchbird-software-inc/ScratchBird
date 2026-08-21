@@ -143,6 +143,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_database_serialize_logical_snapshot_runtime.cpp
   sblr_ddl_create_macro_runtime.cpp
   sblr_ddl_drop_macro_runtime.cpp
+  sblr_admin_register_external_relation_resolver_runtime.cpp
   sblr_database_deserialize_logical_snapshot_runtime.cpp
   sblr_database_serialize_logical_snapshot_runtime.cpp
   sblr_ddl_drop_trigger_runtime.cpp
