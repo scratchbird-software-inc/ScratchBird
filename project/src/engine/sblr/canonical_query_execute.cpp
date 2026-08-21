@@ -7077,10 +7077,12 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
   const bool aggregate_bounded_signed_window =
       aggregate_window && !aggregate_count_window &&
       !aggregate_boolean_window;
-  const bool fixed_unqualified_int64_result_window =
+  const bool fixed_unqualified_ranking_result_window =
       profile.builtin_id == "sb.window.row_number" ||
       profile.builtin_id == "sb.window.rank" ||
       profile.builtin_id == "sb.window.dense_rank" ||
+      profile.builtin_id == "sb.window.percent_rank" ||
+      profile.builtin_id == "sb.window.cume_dist" ||
       profile.builtin_id == "sb.window.ntile";
   const bool aggregate_count_star_window =
       aggregate_count_window && invocations.size() == 1 &&
@@ -7247,7 +7249,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           (value_window && !aggregate_count_window
                ? api::RelationalNullability::kNullable
                : api::RelationalNullability::kNonNull) ||
-      ((aggregate_window || fixed_unqualified_int64_result_window) &&
+      ((aggregate_window || fixed_unqualified_ranking_result_window) &&
        (result_descriptor->collation_uuid.has_value() ||
         result_descriptor->timezone_profile_id.has_value() ||
         result_descriptor->width.has_value() ||
@@ -7296,7 +7298,27 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
                     " property binding is not exact";
     return result;
   }
-  if ((fixed_unqualified_int64_result_window || aggregate_window) &&
+  if (fixed_unqualified_ranking_result_window) {
+    const std::array<std::string_view, 6> ranking_identity_domain{
+        result_descriptor->descriptor_uuid,
+        result_type_uuid,
+        profile.function_uuid,
+        prepared_sort.ordering_property_uuid,
+        *window_property_uuid,
+        window_property->window_frame_descriptor_uuid};
+    const std::unordered_set<std::string_view> distinct_ranking_identities(
+        ranking_identity_domain.begin(), ranking_identity_domain.end());
+    if (distinct_ranking_identities.size() != ranking_identity_domain.size() ||
+        std::ranges::any_of(ranking_identity_domain, [](const auto identity) {
+          return !CanonicalUuidText(identity);
+        })) {
+      result.detail = std::string(family_label) + " " +
+                      std::string(profile.display_name) +
+                      " result identity domain is not independent";
+      return result;
+    }
+  }
+  if (aggregate_window &&
       (result_descriptor->descriptor_uuid == result_type_uuid ||
        result_descriptor->descriptor_uuid == profile.function_uuid ||
        result_descriptor->descriptor_uuid ==
