@@ -2283,6 +2283,7 @@ bool RevalidatePreparedAggregateValueBindings(
 struct PreparedGroupedCountSumRoot {
   bool ok{false};
   std::vector<exec::CanonicalDescriptorOrderTerm> key_terms;
+  std::vector<PreparedAggregateValueBindingReceipt> key_binding_receipts;
   std::vector<exec::ExecutorColumnDescriptor> key_result_columns;
   std::vector<exec::CanonicalAggregateGroupingSet> grouping_sets;
   std::vector<exec::ExecutorColumnDescriptor> grouping_projection_columns;
@@ -2291,6 +2292,52 @@ struct PreparedGroupedCountSumRoot {
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
   std::string detail;
 };
+
+bool RevalidatePreparedGroupedKeyBindings(
+    const PreparedGroupedCountSumRoot& prepared,
+    const exec::DescriptorBatch& input_batch,
+    std::string* detail) {
+  if (detail == nullptr) return false;
+  detail->clear();
+  if (prepared.key_terms.empty() ||
+      prepared.key_binding_receipts.size() != prepared.key_terms.size()) {
+    *detail = "grouped aggregate exact key-binding receipt arity drifted";
+    return false;
+  }
+  for (std::size_t index = 0; index < prepared.key_terms.size(); ++index) {
+    const auto& term = prepared.key_terms[index];
+    const auto& receipt = prepared.key_binding_receipts[index];
+    if (receipt.value_column != term.column ||
+        receipt.descriptor_id != term.expression_descriptor_id ||
+        receipt.value_column >= input_batch.columns.size()) {
+      *detail = "grouped aggregate exact key-binding receipt is unresolved";
+      return false;
+    }
+    const auto& column = input_batch.columns[receipt.value_column];
+    const auto expected_nullability =
+        receipt.nullable ? std::string_view("nullable")
+                         : std::string_view("non_null");
+    if (receipt.canonical_type_name != "int64" ||
+        receipt.descriptor_uuid.empty() || receipt.type_uuid.empty() ||
+        receipt.encoded_descriptor !=
+            "type_uuid=" + receipt.type_uuid +
+                ";nullability=" + std::string(expected_nullability) ||
+        column.descriptor_id != receipt.descriptor_id ||
+        column.nullable != receipt.nullable ||
+        column.descriptor.descriptor_uuid.canonical !=
+            receipt.descriptor_uuid ||
+        column.descriptor.descriptor_kind != "scalar" ||
+        column.descriptor.canonical_type_name !=
+            receipt.canonical_type_name ||
+        column.descriptor.encoded_descriptor !=
+            receipt.encoded_descriptor ||
+        !api::QowCanonicalDescriptorIdentityV1(column.descriptor)) {
+      *detail = "grouped aggregate exact int64 key binding drifted";
+      return false;
+    }
+  }
+  return true;
+}
 
 struct PreparedGroupedHavingRoot {
   bool ok{false};
@@ -4226,6 +4273,13 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
         "grouped COUNT/SUM grouping-set expansion has an unused key";
     return result;
   }
+  const auto core_int64_key_type_uuid =
+      ExactCanonicalCoreDatatypeUuidV1("int64");
+  if (!CanonicalUuidText(core_int64_key_type_uuid)) {
+    result.detail =
+        "grouped COUNT/SUM core int64 key identity is unavailable";
+    return result;
+  }
   for (std::size_t key_ordinal = 0; key_ordinal < profile.key_count;
        ++key_ordinal) {
     const auto key_expression = std::ranges::find_if(
@@ -4282,11 +4336,36 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
         input_node.output_descriptor_ids.begin(), supplied_key));
     if (key_column >= input.batch.columns.size() ||
         input.batch.columns[key_column].descriptor_id !=
-            key_expression->result_descriptor_id ||
-        input.batch.columns[key_column].descriptor.canonical_type_name !=
-            "int64") {
+            key_expression->result_descriptor_id) {
       result.detail =
           "grouped COUNT/SUM key must be a descriptor-exact int64 column";
+      return result;
+    }
+    const auto& runtime_key = input.batch.columns[key_column];
+    const auto expected_nullability =
+        runtime_key.nullable ? std::string_view("nullable")
+                             : std::string_view("non_null");
+    if (key_descriptor->type_uuid != core_int64_key_type_uuid ||
+        key_descriptor->descriptor_uuid !=
+            runtime_key.descriptor.descriptor_uuid.canonical ||
+        key_descriptor->descriptor_uuid == key_descriptor->type_uuid ||
+        key_descriptor->nullability !=
+            (runtime_key.nullable
+                 ? api::RelationalNullability::kNullable
+                 : api::RelationalNullability::kNonNull) ||
+        key_descriptor->collation_uuid.has_value() ||
+        key_descriptor->timezone_profile_id.has_value() ||
+        key_descriptor->width.has_value() ||
+        key_descriptor->precision.has_value() ||
+        key_descriptor->scale.has_value() ||
+        runtime_key.descriptor.descriptor_kind != "scalar" ||
+        runtime_key.descriptor.canonical_type_name != "int64" ||
+        !api::QowCanonicalDescriptorIdentityV1(runtime_key.descriptor) ||
+        runtime_key.descriptor.encoded_descriptor !=
+            "type_uuid=" + core_int64_key_type_uuid +
+                ";nullability=" + std::string(expected_nullability)) {
+      result.detail =
+          "grouped COUNT/SUM key must bind the exact core int64 type";
       return result;
     }
 
@@ -4302,6 +4381,15 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
       return result;
     }
     result.key_terms.push_back(std::move(key_term));
+    result.key_binding_receipts.push_back(
+        PreparedAggregateValueBindingReceipt{
+            key_column,
+            key_expression->result_descriptor_id,
+            key_descriptor->descriptor_uuid,
+            key_descriptor->type_uuid,
+            runtime_key.nullable,
+            runtime_key.descriptor.canonical_type_name,
+            runtime_key.descriptor.encoded_descriptor});
 
     auto key_result_column = input.batch.columns[key_column];
     key_result_column.stable_name = key_output->output_name_utf8;
@@ -13636,6 +13724,15 @@ MakeLiveGroupedCountSumRegistration(
         }
         const auto& input_batch =
             *inputs.front().materialized_output_batch;
+        std::string key_binding_detail;
+        if (!RevalidatePreparedGroupedKeyBindings(
+                prepared, input_batch, &key_binding_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail = std::move(key_binding_detail);
+          return step;
+        }
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
         if (node.physical_node_id != dag.root_physical_node_id ||
@@ -26597,6 +26694,15 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
               "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
           step.diagnostic.detail =
               "grouped COUNT/SUM cardinality differs from selected cost";
+          return step;
+        }
+        std::string key_binding_detail;
+        if (!RevalidatePreparedGroupedKeyBindings(
+                prepared_root, input_batch, &key_binding_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail = std::move(key_binding_detail);
           return step;
         }
 
