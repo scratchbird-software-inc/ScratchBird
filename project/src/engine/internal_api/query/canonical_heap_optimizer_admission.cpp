@@ -606,7 +606,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                       std::to_string(issue.node_id));
   }
   if (relational.wire_version != 2 || relational.nodes.empty() ||
-      relational.nodes.size() > 5) {
+      relational.nodes.size() > 6) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
                   "bounded_heap_scan_composition");
   }
@@ -622,6 +622,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   const RelationalDagNode* sort_node = nullptr;
   const RelationalDagNode* window_node = nullptr;
   const RelationalDagNode* aggregate_node = nullptr;
+  const RelationalDagNode* cte_node = nullptr;
   const RelationalDagNode* limit_node = nullptr;
   for (const auto& candidate : relational.nodes) {
     if (candidate.node_kind == RelationalDagNodeKind::kScan) {
@@ -660,6 +661,12 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                       "one_optional_heap_aggregate");
       }
       aggregate_node = &candidate;
+    } else if (candidate.node_kind == RelationalDagNodeKind::kCte) {
+      if (cte_node != nullptr) {
+        return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
+                      "one_optional_nonrecursive_cte");
+      }
+      cte_node = &candidate;
     } else if (candidate.node_kind == RelationalDagNodeKind::kLimit) {
       if (limit_node != nullptr) {
         return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
@@ -684,12 +691,28 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                                                  : (filter_node != nullptr
                                                         ? filter_node
                                                         : scan_node)))));
+  const auto direct_or_cte_input =
+      [&](const RelationalDagNode* consumer,
+          const std::uint32_t producer_node_id) {
+        if (consumer == nullptr) return false;
+        if (consumer->input_node_ids ==
+            std::vector<std::uint32_t>{producer_node_id}) {
+          return true;
+        }
+        return cte_node != nullptr &&
+               consumer->input_node_ids ==
+                   std::vector<std::uint32_t>{cte_node->node_id} &&
+               cte_node->input_node_ids ==
+                   std::vector<std::uint32_t>{producer_node_id};
+      };
   const auto expected_project_input =
       window_node != nullptr
           ? window_node->node_id
           : (sort_node != nullptr
                  ? sort_node->node_id
-                 : (filter_node == nullptr ? 0 : filter_node->node_id));
+                 : (filter_node != nullptr
+                        ? filter_node->node_id
+                        : (scan_node == nullptr ? 0 : scan_node->node_id)));
   // FILTER and SORT are schema-preserving and intentionally own no output
   // records in this profile.  Project lineage therefore resolves at the
   // Window when present, otherwise at the Scan.
@@ -782,23 +805,56 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                  : (filter_node != nullptr
                         ? filter_node->node_id
                         : (scan_node == nullptr ? 0 : scan_node->node_id))));
+  const auto cte_input_node =
+      cte_node == nullptr || cte_node->input_node_ids.size() != 1
+          ? relational.nodes.end()
+          : std::ranges::find_if(relational.nodes, [&](const auto& candidate) {
+              return candidate.node_id == cte_node->input_node_ids.front();
+            });
+  const bool cte_is_root =
+      cte_node != nullptr && terminal_node != nullptr &&
+      relational.root_node_id == cte_node->node_id &&
+      cte_node->input_node_ids ==
+          std::vector<std::uint32_t>{terminal_node->node_id};
+  const auto cte_consumer_count =
+      cte_node == nullptr
+          ? std::size_t{0}
+          : static_cast<std::size_t>(std::ranges::count_if(
+                relational.nodes, [&](const auto& candidate) {
+                  return candidate.node_id != cte_node->node_id &&
+                         candidate.input_node_ids ==
+                             std::vector<std::uint32_t>{cte_node->node_id};
+                }));
   if (scan_node == nullptr ||
-      relational.root_node_id != terminal_node->node_id ||
+      terminal_node == nullptr ||
+      (relational.root_node_id != terminal_node->node_id && !cte_is_root) ||
       relational.nodes.size() !=
           1 + static_cast<std::size_t>(filter_node != nullptr) +
               static_cast<std::size_t>(project_node != nullptr) +
               static_cast<std::size_t>(sort_node != nullptr) +
               static_cast<std::size_t>(window_node != nullptr) +
               static_cast<std::size_t>(aggregate_node != nullptr) +
+              static_cast<std::size_t>(cte_node != nullptr) +
               static_cast<std::size_t>(limit_node != nullptr) ||
+      (cte_node != nullptr &&
+       (cte_input_node == relational.nodes.end() ||
+        cte_node->semantic_variant_id != "cte.bound.v1" ||
+        cte_node->output_descriptor_ids !=
+            cte_input_node->output_descriptor_ids ||
+        !cte_node->bound_expression_ids.empty() ||
+        !cte_node->required_object_uuids.empty() ||
+        !cte_node->values_row_ids.empty() ||
+        !cte_node->required_property_uuids.empty() ||
+        !cte_node->delivered_property_uuids.empty() ||
+        (cte_is_root ? cte_consumer_count != 0
+                     : cte_consumer_count != 1))) ||
       (aggregate_node != nullptr &&
        (project_node != nullptr || sort_node != nullptr)) ||
       (window_node != nullptr &&
        (sort_node == nullptr || aggregate_node != nullptr ||
         limit_node != nullptr)) ||
       (filter_node != nullptr &&
-       (filter_node->input_node_ids !=
-            std::vector<std::uint32_t>{scan_node->node_id} ||
+       (!direct_or_cte_input(filter_node, scan_node->node_id) ||
         filter_node->semantic_variant_id !=
             "filter.catalog-column-numeric-comparison.v1" ||
         filter_node->bound_expression_ids.size() != 1 ||
@@ -809,8 +865,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         !filter_node->required_property_uuids.empty() ||
         !filter_node->delivered_property_uuids.empty())) ||
       (project_node != nullptr &&
-       (project_node->input_node_ids !=
-            std::vector<std::uint32_t>{expected_project_input} ||
+       (!direct_or_cte_input(project_node, expected_project_input) ||
         !exact_project_outputs ||
         project_node->semantic_variant_id !=
             "project.catalog-visible-columns.v1" ||
@@ -833,10 +888,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         !project_node->required_property_uuids.empty() ||
         !project_node->delivered_property_uuids.empty())) ||
       (sort_node != nullptr &&
-       (sort_node->input_node_ids !=
-            std::vector<std::uint32_t>{
-                filter_node != nullptr ? filter_node->node_id
-                                       : scan_node->node_id} ||
+       (!direct_or_cte_input(
+            sort_node, filter_node != nullptr ? filter_node->node_id
+                                               : scan_node->node_id) ||
         sort_node->semantic_variant_id != "sort.required-order.v1" ||
         sort_node->bound_expression_ids.empty() ||
         sort_node->output_descriptor_ids != scan_node->output_descriptor_ids ||
@@ -887,10 +941,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                           sort_node->delivered_property_uuids.front()) ==
             window_node->delivered_property_uuids.end())) ||
       (aggregate_node != nullptr &&
-       (aggregate_node->input_node_ids !=
-            std::vector<std::uint32_t>{
-                filter_node != nullptr ? filter_node->node_id
-                                       : scan_node->node_id} ||
+       (!direct_or_cte_input(
+            aggregate_node, filter_node != nullptr ? filter_node->node_id
+                                                    : scan_node->node_id) ||
         (aggregate_node->semantic_variant_id !=
              "aggregate.global-count-star.v1" &&
          aggregate_node->semantic_variant_id !=
@@ -986,8 +1039,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         !aggregate_node->required_property_uuids.empty() ||
         !aggregate_node->delivered_property_uuids.empty())) ||
       (limit_node != nullptr &&
-       (limit_node->input_node_ids !=
-            std::vector<std::uint32_t>{expected_limit_input} ||
+       (!direct_or_cte_input(limit_node, expected_limit_input) ||
         (limit_node->semantic_variant_id != "limit.bound-count.v1" &&
          limit_node->semantic_variant_id !=
              "limit.bound-count-offset.v1") ||

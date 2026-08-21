@@ -56385,6 +56385,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kAggregate;
       });
+  const auto cte_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.node_kind == api::RelationalDagNodeKind::kCte;
+      });
   const auto limit_node = std::ranges::find_if(
       dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kLimit;
@@ -56394,8 +56398,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   const bool sort_composition = sort_node != dag.nodes.end();
   const bool window_composition = window_node != dag.nodes.end();
   const bool aggregate_composition = aggregate_node != dag.nodes.end();
+  const bool cte_composition = cte_node != dag.nodes.end();
   const bool limit_composition = limit_node != dag.nodes.end();
-  const auto expected_root =
+  const auto expected_terminal =
       limit_composition
           ? limit_node->node_id
           : (aggregate_composition
@@ -56411,12 +56416,29 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                                       : (scan_node == dag.nodes.end()
                                              ? 0
                                              : scan_node->node_id))))));
+  const auto direct_or_cte_input =
+      [&](const api::RelationalDagNode* consumer,
+          const std::uint32_t producer_node_id) {
+        if (consumer == nullptr) return false;
+        if (consumer->input_node_ids ==
+            std::vector<std::uint32_t>{producer_node_id}) {
+          return true;
+        }
+        return cte_composition &&
+               consumer->input_node_ids ==
+                   std::vector<std::uint32_t>{cte_node->node_id} &&
+               cte_node->input_node_ids ==
+                   std::vector<std::uint32_t>{producer_node_id};
+      };
   const auto expected_project_input =
       window_composition
           ? window_node->node_id
           : (sort_composition
                  ? sort_node->node_id
-                 : (filter_composition ? filter_node->node_id : 0));
+                 : (filter_composition
+                        ? filter_node->node_id
+                        : (scan_node == dag.nodes.end() ? 0
+                                                        : scan_node->node_id)));
   const auto expected_limit_input =
       aggregate_composition
           ? aggregate_node->node_id
@@ -56428,6 +56450,25 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                         ? filter_node->node_id
                         : (scan_node == dag.nodes.end() ? 0
                                                        : scan_node->node_id))));
+  const auto cte_input_node =
+      !cte_composition || cte_node->input_node_ids.size() != 1
+          ? dag.nodes.end()
+          : std::ranges::find_if(dag.nodes, [&](const auto& candidate) {
+              return candidate.node_id == cte_node->input_node_ids.front();
+            });
+  const bool cte_is_root =
+      cte_composition && dag.root_node_id == cte_node->node_id &&
+      cte_node->input_node_ids ==
+          std::vector<std::uint32_t>{expected_terminal};
+  const auto cte_consumer_count =
+      cte_composition
+          ? static_cast<std::size_t>(std::ranges::count_if(
+                dag.nodes, [&](const auto& candidate) {
+                  return candidate.node_id != cte_node->node_id &&
+                         candidate.input_node_ids ==
+                             std::vector<std::uint32_t>{cte_node->node_id};
+                }))
+          : std::size_t{0};
   const bool exact_composition =
       scan_node != dag.nodes.end() &&
       dag.nodes.size() ==
@@ -56436,33 +56477,41 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
               static_cast<std::size_t>(window_composition) +
               static_cast<std::size_t>(project_composition) +
               static_cast<std::size_t>(aggregate_composition) +
+              static_cast<std::size_t>(cte_composition) +
               static_cast<std::size_t>(limit_composition) &&
-      dag.root_node_id == expected_root &&
+      (dag.root_node_id == expected_terminal || cte_is_root) &&
+      (!cte_composition ||
+       (cte_input_node != dag.nodes.end() &&
+        cte_node->semantic_variant_id == "cte.bound.v1" &&
+        cte_node->output_descriptor_ids ==
+            cte_input_node->output_descriptor_ids &&
+        cte_node->bound_expression_ids.empty() &&
+        cte_node->required_object_uuids.empty() &&
+        cte_node->values_row_ids.empty() &&
+        cte_node->required_property_uuids.empty() &&
+        cte_node->delivered_property_uuids.empty() &&
+        (cte_is_root ? cte_consumer_count == 0
+                     : cte_consumer_count == 1))) &&
       (!filter_composition ||
-       filter_node->input_node_ids ==
-           std::vector<std::uint32_t>{scan_node->node_id}) &&
+       direct_or_cte_input(&*filter_node, scan_node->node_id)) &&
       (!project_composition ||
-       project_node->input_node_ids ==
-           std::vector<std::uint32_t>{expected_project_input}) &&
+       direct_or_cte_input(&*project_node, expected_project_input)) &&
       (!sort_composition ||
-       sort_node->input_node_ids ==
-           std::vector<std::uint32_t>{
-               filter_composition ? filter_node->node_id
-                                  : scan_node->node_id}) &&
+       direct_or_cte_input(
+           &*sort_node, filter_composition ? filter_node->node_id
+                                           : scan_node->node_id)) &&
       (!window_composition ||
        (sort_composition &&
         window_node->input_node_ids ==
             std::vector<std::uint32_t>{sort_node->node_id} &&
         !aggregate_composition && !limit_composition)) &&
       (!aggregate_composition ||
-       (aggregate_node->input_node_ids ==
-            std::vector<std::uint32_t>{
-                filter_composition ? filter_node->node_id
-                                   : scan_node->node_id} &&
+       (direct_or_cte_input(
+            &*aggregate_node,
+            filter_composition ? filter_node->node_id : scan_node->node_id) &&
         !project_composition && !sort_composition)) &&
       (!limit_composition ||
-       limit_node->input_node_ids ==
-           std::vector<std::uint32_t>{expected_limit_input});
+       direct_or_cte_input(&*limit_node, expected_limit_input));
   if (dag.wire_version != 2 ||
       !exact_composition ||
       scan_node->semantic_variant_id != "relation.source.v1" ||
@@ -57470,6 +57519,34 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          planning_request.optimizer_request.resource.memory_budget_bytes,
          1, 1});
   }
+  std::string cte_implementation_id;
+  std::string cte_capability_uuid;
+  if (cte_composition) {
+    cte_implementation_id =
+        cte_node->shareable ? "cte.bound.materialize.typed.v1"
+                            : "cte.bound.inline.typed.v1";
+    cte_capability_uuid =
+        DerivedCanonicalUuid(identity_scope, "heap-cte.capability");
+    LivePhysicalNodeProfile cte_profile;
+    cte_profile.logical_node_id = cte_node->node_id;
+    cte_profile.implementation_id = cte_implementation_id;
+    cte_profile.capability_uuid = cte_capability_uuid;
+    cte_profile.logical_node_kind =
+        plan::CanonicalLogicalRelationalNodeKind::kCte;
+    cte_profile.physical_node_kind = exec::PhysicalNodeKind::kCte;
+    cte_profile.transformation_rule_id =
+        cte_node->shareable ? "canonical.cte.composed-materialize.v1"
+                            : "canonical.cte.composed-inline.v1";
+    cte_profile.estimated_rows = 1;
+    cte_profile.memory_bytes_required =
+        planning_request.optimizer_request.resource.memory_budget_bytes;
+    cte_profile.minimum_input_count = 1;
+    cte_profile.maximum_input_count = 1;
+    cte_profile.runtime_peak_from_callback_batches = true;
+    cte_profile.runtime_auxiliary_from_first_input_batch =
+        cte_node->shareable;
+    profiles.push_back(std::move(cte_profile));
+  }
   for (auto& profile : profiles) {
     if (!profile.implementation_id.starts_with("scan.heap")) {
       profile.runtime_peak_from_callback_batches = true;
@@ -57481,7 +57558,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   }
   const auto physical = PlanAndPublishLivePhysicalDag(
       planning_request, profiles,
-      limit_composition
+      cte_is_root
+          ? "heap-cte.selected-plan"
+          : limit_composition
           ? "heap-limit.selected-plan"
           : (aggregate_composition
                  ? "heap-aggregate.selected-plan"
@@ -57494,7 +57573,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                                : (filter_composition
                                       ? "heap-filter.selected-plan"
                                       : "heap-scan.selected-plan"))))),
-      limit_composition
+      cte_is_root
+          ? "object-backed heap nonrecursive CTE composition"
+          : limit_composition
           ? "object-backed heap LIMIT composition"
           : (aggregate_composition
                  ? "object-backed heap global aggregate composition"
@@ -57561,7 +57642,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   }
 
   if (filter_composition || sort_composition || window_composition ||
-      project_composition || aggregate_composition || limit_composition) {
+      project_composition || aggregate_composition || cte_composition ||
+      limit_composition) {
     exec::CanonicalHeapPhysicalDagDispatchRequest heap_request;
     heap_request.context = &input.context;
     heap_request.relational_dag = &input.relational_dag;
@@ -57735,6 +57817,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
               projected_columns, project_capability_uuid,
               maximum_output_rows, input.context));
     }
+    if (cte_composition) {
+      selected.available_executors.push_back(
+          MakeLiveNonrecursiveCteRegistration(
+              cte_implementation_id, cte_capability_uuid,
+              maximum_output_rows, input.context));
+    }
     if (limit_composition) {
       selected.available_executors.push_back(
           MakeLiveLimitRegistration(
@@ -57747,7 +57835,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     selected.result_publication_request.execution_attempt_uuid =
         DerivedCanonicalUuid(
             identity_scope + ":" + input.context.current_monotonic_ns,
-            limit_composition
+            cte_is_root
+                ? "heap-cte.execution-attempt"
+                : limit_composition
                 ? "heap-limit.execution-attempt"
                 : (aggregate_composition
                        ? "heap-aggregate.execution-attempt"
@@ -57762,10 +57852,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         DerivedCanonicalUuid(
             identity_scope + ":" +
                 std::to_string(input.context.local_transaction_id) + ":" +
-                std::to_string(
+            std::to_string(
                     input.context
                         .snapshot_visible_through_local_transaction_id),
-            limit_composition
+            cte_is_root
+                ? "heap-cte.transaction-effect-unchanged"
+                : limit_composition
                 ? "heap-limit.transaction-effect-unchanged"
                 : (aggregate_composition
                        ? "heap-aggregate.transaction-effect-unchanged"
@@ -57815,7 +57907,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         !execution.canonical_result_published || !execution.issues.empty()) {
       return refuse(
           execution.issues.empty()
-              ? (limit_composition
+              ? (cte_is_root
+                     ? "QOW-DIAG-PACKET7-OBJECT-HEAP-CTE-EXECUTION-V1"
+                     : (limit_composition
                      ? "QOW-DIAG-PACKET7-OBJECT-HEAP-LIMIT-EXECUTION-V1"
                      : (aggregate_composition
                             ? "QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-EXECUTION-V1"
@@ -57825,10 +57919,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                                    ? "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-EXECUTION-V1"
                                    : (sort_composition
                                           ? "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-EXECUTION-V1"
-                                          : "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1")))))
+                                          : "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1"))))))
               : execution.issues.front().diagnostic_id,
           execution.issues.empty()
-              ? (limit_composition
+              ? (cte_is_root
+                     ? "object-backed heap nonrecursive CTE selected DAG was not completed"
+                     : (limit_composition
                      ? "object-backed heap LIMIT selected DAG was not completed"
                      : (aggregate_composition
                             ? "object-backed heap aggregate selected DAG was not completed"
@@ -57844,7 +57940,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                                           : "object-backed heap ROW_NUMBER selected DAG was not completed")
                                    : (sort_composition
                                           ? "object-backed heap ORDER BY selected DAG was not completed"
-                                          : "object-backed heap WHERE selected DAG was not completed")))))
+                                          : "object-backed heap WHERE selected DAG was not completed"))))))
               : execution.issues.front().field_id);
     }
     result.physical_dag_executed = true;
