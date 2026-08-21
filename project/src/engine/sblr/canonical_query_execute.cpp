@@ -36141,6 +36141,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   std::vector<exec::ExecutorColumnDescriptor> public_columns;
   std::vector<api::EngineDescriptor> output_descriptors;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
+  const auto uuid_type_uuid = ExactCanonicalCoreDatatypeUuidV1("uuid");
+  const auto real64_type_uuid = ExactCanonicalCoreDatatypeUuidV1("real64");
+  if (uuid_type_uuid.empty() || real64_type_uuid.empty()) {
+    return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                  "vector public core type registry is unavailable");
+  }
   for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
     const auto descriptor = descriptor_for(outputs[ordinal]->descriptor_id);
     if (!outputs[ordinal]->visible || outputs[ordinal]->ordinal != ordinal ||
@@ -36156,6 +36162,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
         descriptor->timezone_profile_id.has_value()) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "vector public output binding was substituted");
+    }
+    const auto& expected_type_uuid =
+        ordinal == 0 ? uuid_type_uuid : real64_type_uuid;
+    if (descriptor->type_uuid != expected_type_uuid) {
+      return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                    "vector public type identity was substituted");
     }
     api::EngineDescriptor engine_descriptor;
     engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
@@ -37405,6 +37417,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
   std::vector<exec::ExecutorColumnDescriptor> public_columns;
   std::vector<api::EngineDescriptor> output_descriptors;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
+  const auto uuid_type_uuid = ExactCanonicalCoreDatatypeUuidV1("uuid");
+  const auto uint64_type_uuid = ExactCanonicalCoreDatatypeUuidV1("uint64");
+  const auto real64_type_uuid = ExactCanonicalCoreDatatypeUuidV1("real64");
+  if (uuid_type_uuid.empty() || uint64_type_uuid.empty() ||
+      real64_type_uuid.empty()) {
+    return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                  "search public core type registry is unavailable");
+  }
   for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
     const auto descriptor = descriptor_for(outputs[ordinal]->descriptor_id);
     if (!outputs[ordinal]->visible || outputs[ordinal]->ordinal != ordinal ||
@@ -37420,6 +37440,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
         descriptor->timezone_profile_id.has_value()) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "search public output binding was substituted");
+    }
+    const auto& expected_type_uuid =
+        ordinal < 2 ? uuid_type_uuid
+                    : ordinal == 3 ? real64_type_uuid : uint64_type_uuid;
+    if (descriptor->type_uuid != expected_type_uuid) {
+      return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                    "search public type identity was substituted");
     }
     api::EngineDescriptor engine_descriptor;
     engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
@@ -39811,6 +39838,21 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
           api::RelationalNullability::kNonNull) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "key/value public descriptor cohort differs from storage");
+  }
+  const auto row_type_uuid = ExactCanonicalCoreDatatypeUuidV1("uuid");
+  const auto text_type_uuid = ExactCanonicalCoreDatatypeUuidV1("character");
+  if (row_type_uuid.empty() || text_type_uuid.empty() ||
+      !CanonicalDescriptorFieldEqualsV1(
+          persisted_relation.columns[0].value_descriptor, "type_uuid",
+          std::string_view(text_type_uuid)) ||
+      !CanonicalDescriptorFieldEqualsV1(
+          persisted_relation.columns[1].value_descriptor, "type_uuid",
+          std::string_view(text_type_uuid)) ||
+      row_descriptor->type_uuid != row_type_uuid ||
+      key_descriptor->type_uuid != text_type_uuid ||
+      value_descriptor->type_uuid != text_type_uuid) {
+    return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                  "key/value public type identity differs from storage");
   }
 
   const auto identity_scope =
