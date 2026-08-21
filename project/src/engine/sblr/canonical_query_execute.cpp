@@ -11614,6 +11614,19 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
   return registration;
 }
 
+template <typename ExecutionReceipt>
+bool CanonicalOperatorExecutionReceiptMatches(
+    const ExecutionReceipt& receipt,
+    const exec::TypedPhysicalNodeDag& execution_dag,
+    const exec::PhysicalNodeRecord& node,
+    const exec::PhysicalMgaStatementContext& expected_mga_context) {
+  return receipt.selected_plan_uuid == execution_dag.selected_plan_uuid &&
+         receipt.executed_physical_node_id == node.physical_node_id &&
+         receipt.causal_counter_id == node.causal_counter_id &&
+         exec::PhysicalMgaStatementContextEqual(
+             receipt.mga_statement_context, expected_mga_context);
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
     exec::ExecutorColumnDescriptor row_number_column,
     std::string deterministic_order_evidence_uuid,
@@ -11685,6 +11698,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
           step.diagnostic = std::move(window.diagnostic);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                window, *execution_dag, node,
+                request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1";
+          step.diagnostic.detail =
+              "ROW_NUMBER execution receipt changed";
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -11784,6 +11807,15 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
           step.diagnostic = std::move(window.diagnostic);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                window, *execution_dag, node,
+                request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1";
+          step.diagnostic.detail = "NTILE execution receipt changed";
           return step;
         }
         const auto decoded_bucket_count =
@@ -11937,6 +11969,16 @@ MakeLiveAggregateWindowRegistration(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
           step.diagnostic = std::move(window.diagnostic);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                window, *execution_dag, node,
+                request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-PHYSICAL";
+          step.diagnostic.detail =
+              "aggregate window execution receipt changed";
           return step;
         }
         std::uint64_t input_memory_bytes = 0;
@@ -12102,6 +12144,16 @@ MakeLiveNavigationWindowRegistration(
           step.diagnostic = std::move(window.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                window, *execution_dag, node,
+                request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1";
+          step.diagnostic.detail = std::string(profile.display_name) +
+                                   " execution receipt changed";
+          return step;
+        }
         std::uint64_t input_memory_bytes = 0;
         std::uint64_t output_memory_bytes = 0;
         std::uint64_t peak_memory_bytes = 0;
@@ -12237,6 +12289,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLivePeerRankingRegistration(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
           step.diagnostic = std::move(window.diagnostic);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                window, *execution_dag, node,
+                request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1";
+          step.diagnostic.detail = std::string(profile.display_name) +
+                                   " execution receipt changed";
           return step;
         }
         std::uint64_t input_memory_bytes = 0;
