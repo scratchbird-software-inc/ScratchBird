@@ -577,6 +577,7 @@ class SbpsClient {
   ServerVariableBindingResult CoordinateDatabaseDeserializeLogicalSnapshot(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlCreateMacro(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlCreateDictionary(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDdlDropDictionary(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlDropMacro(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateAdminRegisterExternalRelationResolver(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateAdminUnregisterExternalRelationResolver(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
