@@ -778,7 +778,7 @@ bool ExactKeyValueValueDescriptor(const EngineDescriptor& descriptor,
              (expected_nullable ? "true" : "false");
 }
 
-bool ExactKeyValueStorageDescriptor(
+bool ExactKeyValueStorageDescriptorImpl(
     const MgaRelationStorageDescriptor& descriptor) {
   static constexpr std::array<std::string_view, 3> kNames{
       "key", "value", "expires_at"};
@@ -853,6 +853,11 @@ bool UnsignedUtf8Less(const std::string& left, const std::string& right) {
 }
 
 }  // namespace
+
+bool ExactKeyValueStorageDescriptorV1(
+    const MgaRelationStorageDescriptor& descriptor) {
+  return ExactKeyValueStorageDescriptorImpl(descriptor);
+}
 
 EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(
     const EngineBoundKeyValueReadRequestV1& request) {
@@ -961,6 +966,40 @@ EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(
                   "key/value SELECT authorization was refused");
   }
 
+  const auto preflight =
+      LoadMgaRelationStorageDescriptor(request.context, request.object_uuid);
+  if (!preflight.ok) {
+    const auto detail =
+        preflight.diagnostic.detail.empty()
+            ? std::string("key/value persisted descriptor preflight failed")
+            : preflight.diagnostic.detail;
+    const auto mga_failure =
+        detail.find("transaction") != std::string::npos ||
+        detail.find("snapshot") != std::string::npos ||
+        detail.find("visibility") != std::string::npos;
+    return refuse(mga_failure ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
+                              : "SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                  detail);
+  }
+  const auto& persisted = preflight.descriptor;
+  if (persisted.relation_uuid.canonical != request.object_uuid ||
+      persisted.database_uuid.canonical !=
+          request.context.database_uuid.canonical ||
+      persisted.schema_uuid.canonical.empty() ||
+      persisted.relation_kind != "table" ||
+      persisted.storage_profile != "local_mga_rowstore_v1" ||
+      persisted.descriptor_uuid.canonical !=
+          request.expected_descriptor_uuid ||
+      persisted.descriptor_generation !=
+          request.expected_descriptor_generation) {
+    return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                  "key/value persisted descriptor identity changed");
+  }
+  if (!ExactKeyValueStorageDescriptorV1(persisted)) {
+    return refuse("SB_MODEL_KEY_VALUE_VALUE_TYPE_REFUSED_V1",
+                  "key/value storage descriptor is not exact before data access");
+  }
+
   MgaVisibleHeapRelationReadRequest read_request;
   read_request.relation_uuid = request.object_uuid;
   read_request.maximum_scanned_row_versions =
@@ -1017,7 +1056,7 @@ EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(
                   "key/value relation descriptor generation changed");
   }
 
-  if (!ExactKeyValueStorageDescriptor(read.descriptor)) {
+  if (!ExactKeyValueStorageDescriptorV1(read.descriptor)) {
     return refuse("SB_MODEL_KEY_VALUE_VALUE_TYPE_REFUSED_V1",
                   "key/value storage descriptor is not key/value/expires_at");
   }

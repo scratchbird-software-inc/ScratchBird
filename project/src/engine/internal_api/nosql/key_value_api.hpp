@@ -19,6 +19,8 @@
 
 namespace scratchbird::engine::internal_api {
 
+struct MgaRelationStorageDescriptor;
+
 inline constexpr const char* kKeyValueExactKeyProofMissing =
     "SB_KV_EXACT_KEY_PHYSICAL_PROOF_MISSING";
 inline constexpr const char* kKeyValuePrefixProofMissing =
@@ -151,6 +153,12 @@ struct EngineBoundKeyValueReadResultV1 : EngineApiResult {
   std::uint64_t provider_generation{0};
   std::vector<EngineBoundKeyValueRowV1> rows;
 };
+
+// Exact persisted storage-shape admission shared by the canonical query route
+// and the engine-bound provider.  This is a read-only descriptor check; it
+// performs no MGA row access and owns no snapshot or finality decisions.
+bool ExactKeyValueStorageDescriptorV1(
+    const MgaRelationStorageDescriptor& descriptor);
 
 EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(
     const EngineBoundKeyValueReadRequestV1& request);

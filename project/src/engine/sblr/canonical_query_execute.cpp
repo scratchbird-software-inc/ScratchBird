@@ -39808,13 +39808,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       persisted_relation.relation_kind != "table" ||
       persisted_relation.storage_profile != "local_mga_rowstore_v1" ||
       persisted_relation.descriptor_uuid.canonical.empty() ||
-      persisted_relation.descriptor_generation == 0 ||
-      persisted_relation.columns.size() != 3 ||
-      persisted_relation.columns[0].canonical_name_key != "key" ||
-      persisted_relation.columns[1].canonical_name_key != "value" ||
-      persisted_relation.columns[2].canonical_name_key != "expires_at") {
+      persisted_relation.descriptor_generation == 0) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent key/value relation descriptor is invalid");
+  }
+  if (!api::ExactKeyValueStorageDescriptorV1(persisted_relation)) {
+    return refuse("SB_MODEL_KEY_VALUE_VALUE_TYPE_REFUSED_V1",
+                  "key/value storage descriptor is not exact before data access");
   }
   const auto row_descriptor = descriptor_for(outputs[0]->descriptor_id);
   const auto key_descriptor = descriptor_for(outputs[1]->descriptor_id);
