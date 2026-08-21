@@ -6961,6 +6961,12 @@ sb_engine_status_t DispatchStatementContextReceipt(
       if (member.opcode_code == 1630 && member.operation_id == "engine.op.ddl_set_table_type_enforcement") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT");
       if (member.opcode_code == 1631 && member.operation_id == "engine.op.database_serialize_logical_snapshot") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DATABASE_SERIALIZE_LOGICAL_SNAPSHOT");
       if (member.opcode_code == 1632 && member.operation_id == "engine.op.database_deserialize_logical_snapshot") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DATABASE_DESERIALIZE_LOGICAL_SNAPSHOT");
+      if (member.opcode_code == 1554 && member.operation_id == "engine.op.ddl_create_procedure") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_CREATE_PROCEDURE");
+      if (member.opcode_code == 1555 && member.operation_id == "engine.op.ddl_alter_procedure") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_ALTER_PROCEDURE");
+      if (member.opcode_code == 1556 && member.operation_id == "engine.op.ddl_drop_procedure") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_DROP_PROCEDURE");
+      if (member.opcode_code == 1557 && member.operation_id == "engine.op.ddl_create_function") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_CREATE_FUNCTION");
+      if (member.opcode_code == 1558 && member.operation_id == "engine.op.ddl_alter_function") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_ALTER_FUNCTION");
+      if (member.opcode_code == 1559 && member.operation_id == "engine.op.ddl_drop_function") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_DROP_FUNCTION");
       if (member_entry != nullptr) {
         member.requires_security_context =
             member_entry->requires_security_context;
