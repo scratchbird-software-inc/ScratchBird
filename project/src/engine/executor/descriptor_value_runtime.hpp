@@ -2341,6 +2341,13 @@ struct CanonicalGroupedAggregateRuntimeResult {
   std::size_t combined_state_bytes = 0;
   std::size_t combined_final_output_bytes = 0;
   std::size_t peak_finalization_workspace_bytes = 0;
+  std::size_t input_payload_bytes = 0;
+  std::size_t fixed_retained_memory_bytes = 0;
+  std::size_t grouping_membership_bytes = 0;
+  std::size_t working_group_bytes = 0;
+  std::size_t output_payload_bytes = 0;
+  std::size_t current_memory_bytes = 0;
+  std::size_t peak_memory_bytes = 0;
   bool aggregate_state_spill_required = false;
   bool shared_state_authority_used = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
@@ -2395,6 +2402,12 @@ struct CanonicalGroupedAggregateSetRuntimeResult {
   std::size_t combined_state_bytes = 0;
   std::size_t combined_final_output_bytes = 0;
   std::size_t peak_finalization_workspace_bytes = 0;
+  std::size_t input_payload_bytes = 0;
+  std::size_t fixed_retained_memory_bytes = 0;
+  std::size_t retained_execution_payload_bytes = 0;
+  std::size_t output_payload_bytes = 0;
+  std::size_t current_memory_bytes = 0;
+  std::size_t peak_memory_bytes = 0;
   bool group_identity_proven = false;
   bool aggregate_state_spill_required = false;
   bool shared_state_authority_used = false;

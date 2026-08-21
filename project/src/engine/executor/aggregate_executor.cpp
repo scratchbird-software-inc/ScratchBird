@@ -681,6 +681,69 @@ bool AggregateBatchPayloadBytes(const DescriptorBatch& batch,
   return true;
 }
 
+bool GroupedIndicatorBytes(const std::size_t key_count,
+                           std::size_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = key_count / 8;
+  if (key_count % 8 != 0) {
+    return CheckedAggregateFinalizationAdd(bytes, 1);
+  }
+  return true;
+}
+
+bool GroupedRecordTopologyBytes(const std::size_t record_count,
+                                const std::size_t source_row_count,
+                                const std::size_t key_count,
+                                std::size_t* bytes) {
+  if (bytes == nullptr) return false;
+  std::size_t indicator_bytes = 0;
+  std::size_t record_bytes = 0;
+  std::size_t records = 0;
+  std::size_t source_rows = 0;
+  *bytes = 0;
+  return GroupedIndicatorBytes(key_count, &indicator_bytes) &&
+         CheckedAggregateFinalizationAdd(&record_bytes,
+                                          sizeof(std::uint32_t)) &&
+         CheckedAggregateFinalizationAdd(&record_bytes,
+                                          sizeof(std::uint64_t)) &&
+         CheckedAggregateFinalizationAdd(&record_bytes,
+                                          sizeof(std::size_t)) &&
+         CheckedAggregateFinalizationAdd(&record_bytes,
+                                          indicator_bytes) &&
+         CheckedAggregateFinalizationMultiply(record_count, record_bytes,
+                                                &records) &&
+         CheckedAggregateFinalizationMultiply(source_row_count,
+                                                sizeof(std::size_t),
+                                                &source_rows) &&
+         CheckedAggregateFinalizationAdd(bytes, records) &&
+         CheckedAggregateFinalizationAdd(bytes, source_rows);
+}
+
+bool GroupedMembershipBytes(const std::size_t grouping_set_count,
+                            const std::size_t key_count,
+                            std::size_t* bytes) {
+  if (bytes == nullptr) return false;
+  std::size_t indicator_bytes = 0;
+  return GroupedIndicatorBytes(key_count, &indicator_bytes) &&
+         CheckedAggregateFinalizationMultiply(
+             grouping_set_count, indicator_bytes, bytes);
+}
+
+template <typename... Values>
+bool ObserveGroupedMemoryPhase(const std::size_t memory_grant,
+                               std::size_t* peak_memory_bytes,
+                               Values... values) {
+  if (peak_memory_bytes == nullptr) return false;
+  std::size_t phase_memory_bytes = 0;
+  const bool summed =
+      (CheckedAggregateFinalizationAdd(&phase_memory_bytes,
+                                       static_cast<std::size_t>(values)) &&
+       ...);
+  if (!summed || phase_memory_bytes > memory_grant) return false;
+  *peak_memory_bytes = std::max(*peak_memory_bytes, phase_memory_bytes);
+  return true;
+}
+
 bool AggregateValueStateBytes(const EngineTypedValue& value,
                               std::size_t* bytes) {
   if (bytes == nullptr) return false;
@@ -7337,6 +7400,13 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
     result.combined_state_bytes = 0;
     result.combined_final_output_bytes = 0;
     result.peak_finalization_workspace_bytes = 0;
+    result.input_payload_bytes = 0;
+    result.fixed_retained_memory_bytes = 0;
+    result.grouping_membership_bytes = 0;
+    result.working_group_bytes = 0;
+    result.output_payload_bytes = 0;
+    result.current_memory_bytes = 0;
+    result.peak_memory_bytes = 0;
     result.aggregate_state_spill_required = false;
     result.shared_state_authority_used = false;
     result.authority = {};
@@ -7483,6 +7553,29 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
         "grouped aggregate selected-node memory grant is invalid or exhausted"));
   }
+  const auto fixed_retained_memory_bytes =
+      retained_memory_bytes + aggregate.retained_memory_bytes +
+      input_payload_bytes + source_filter_bytes;
+  result.input_payload_bytes = input_payload_bytes;
+  result.fixed_retained_memory_bytes = fixed_retained_memory_bytes;
+  if (!ObserveGroupedMemoryPhase(*node_memory_grant,
+                                 &result.peak_memory_bytes,
+                                 fixed_retained_memory_bytes)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "grouped aggregate fixed memory exceeds the selected-node grant"));
+  }
+  if (!GroupedMembershipBytes(request.grouping_sets.size(),
+                              request.group_key_terms.size(),
+                              &result.grouping_membership_bytes) ||
+      !ObserveGroupedMemoryPhase(
+          *node_memory_grant, &result.peak_memory_bytes,
+          fixed_retained_memory_bytes,
+          result.grouping_membership_bytes)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "grouping membership memory exceeds the selected-node grant"));
+  }
   auto maximum_combined_final_output_bytes =
       request.maximum_combined_final_output_bytes == 0
           ? *node_memory_grant
@@ -7606,13 +7699,16 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   auto preflight = ExecuteCanonicalAggregateRuntimeSelected(
       preflight_request, kernel_dag, preflight_input_batch, true,
       detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
-      {retained_memory_bytes + input_payload_bytes + source_filter_bytes,
+      {retained_memory_bytes + input_payload_bytes + source_filter_bytes +
+           result.grouping_membership_bytes,
        std::nullopt});
   if (!preflight.diagnostic.ok) {
     return refuse(preflight.diagnostic);
   }
   result.peak_finalization_workspace_bytes =
       preflight.peak_finalization_workspace_bytes;
+  result.peak_memory_bytes =
+      std::max(result.peak_memory_bytes, preflight.peak_memory_bytes);
   preflight.output_batch = {};
 
   struct WorkingGroup {
@@ -7623,6 +7719,25 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
     std::vector<std::size_t> source_rows;
   };
   std::vector<WorkingGroup> working_groups;
+  std::size_t working_source_row_count = 0;
+  const auto admit_working_topology =
+      [&](const std::size_t prospective_group_count,
+          const std::size_t prospective_source_row_count) {
+        std::size_t prospective_working_group_bytes = 0;
+        if (!GroupedRecordTopologyBytes(
+                prospective_group_count, prospective_source_row_count,
+                request.group_key_terms.size(),
+                &prospective_working_group_bytes) ||
+            !ObserveGroupedMemoryPhase(
+                *node_memory_grant, &result.peak_memory_bytes,
+                fixed_retained_memory_bytes,
+                result.grouping_membership_bytes,
+                prospective_working_group_bytes)) {
+          return false;
+        }
+        result.working_group_bytes = prospective_working_group_bytes;
+        return true;
+      };
   const auto compare_key = [&](const EngineTypedValue& left,
                                const EngineTypedValue& right,
                                const CanonicalDescriptorOrderTerm& term,
@@ -7651,28 +7766,39 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   for (std::size_t set_ordinal = 0;
        set_ordinal < grouping_membership.size(); ++set_ordinal) {
     const auto& included = grouping_membership[set_ordinal];
-    const auto metadata = ComputeCanonicalAggregateGroupingMetadata(
-        request.group_key_terms.size(), request.grouping_sets[set_ordinal]);
-    if (!metadata.diagnostic.ok) {
-      return refuse(metadata.diagnostic);
-    }
     bool grand_total = true;
+    std::uint64_t grouping_id = 0;
     for (std::size_t index = 0; index < included.size(); ++index) {
       if (included[index]) {
         grand_total = false;
+      } else {
+        grouping_id |=
+            std::uint64_t{1} << (included.size() - 1 - index);
       }
     }
     if (grand_total) {
+      std::size_t prospective_group_count = working_groups.size();
+      std::size_t prospective_source_row_count = working_source_row_count;
+      if (!CheckedAggregateFinalizationAdd(&prospective_group_count, 1) ||
+          !CheckedAggregateFinalizationAdd(&prospective_source_row_count,
+                                           row_count) ||
+          !admit_working_topology(prospective_group_count,
+                                  prospective_source_row_count)) {
+        return refuse(Refusal(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "grouped aggregate working topology exceeds the selected-node grant"));
+      }
       WorkingGroup group;
       group.grouping_set_ordinal = static_cast<std::uint32_t>(set_ordinal);
-      group.grouping_id = metadata.grouping_id;
-      group.grouping_indicators = metadata.grouping_indicators;
+      group.grouping_id = grouping_id;
+      group.grouping_indicators.assign(included.size(), true);
       group.source_rows.resize(row_count);
       std::iota(group.source_rows.begin(), group.source_rows.end(), 0);
       if (!add_group(std::move(group))) {
         return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                               "group or output row bound is exceeded"));
       }
+      working_source_row_count = prospective_source_row_count;
       continue;
     }
 
@@ -7705,7 +7831,17 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
         }
       }
       if (matching_group.has_value()) {
+        std::size_t prospective_source_row_count = working_source_row_count;
+        if (!CheckedAggregateFinalizationAdd(
+                &prospective_source_row_count, 1) ||
+            !admit_working_topology(working_groups.size(),
+                                    prospective_source_row_count)) {
+          return refuse(Refusal(
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+              "grouped aggregate working topology exceeds the selected-node grant"));
+        }
         working_groups[*matching_group].source_rows.push_back(row);
+        working_source_row_count = prospective_source_row_count;
         continue;
       }
 
@@ -7725,24 +7861,57 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
           return grouped_refusal("group key is not equal to itself");
         }
       }
+      std::size_t prospective_group_count = working_groups.size();
+      std::size_t prospective_source_row_count = working_source_row_count;
+      if (!CheckedAggregateFinalizationAdd(&prospective_group_count, 1) ||
+          !CheckedAggregateFinalizationAdd(&prospective_source_row_count,
+                                           1) ||
+          !admit_working_topology(prospective_group_count,
+                                  prospective_source_row_count)) {
+        return refuse(Refusal(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "grouped aggregate working topology exceeds the selected-node grant"));
+      }
       WorkingGroup group;
       group.grouping_set_ordinal = static_cast<std::uint32_t>(set_ordinal);
-      group.grouping_id = metadata.grouping_id;
-      group.grouping_indicators = metadata.grouping_indicators;
+      group.grouping_id = grouping_id;
+      group.grouping_indicators.reserve(included.size());
+      for (const bool key_included : included) {
+        group.grouping_indicators.push_back(!key_included);
+      }
       group.representative_row = row;
       group.source_rows = {row};
       if (!add_group(std::move(group))) {
         return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                               "group or output row bound is exceeded"));
       }
+      working_source_row_count = prospective_source_row_count;
     }
+  }
+
+  std::size_t expected_source_row_count = 0;
+  if (!CheckedAggregateFinalizationMultiply(
+          row_count, grouping_membership.size(),
+          &expected_source_row_count) ||
+      working_source_row_count != expected_source_row_count) {
+    return grouped_refusal(
+        "grouped aggregate source-row topology is incomplete");
+  }
+  std::size_t final_working_group_bytes = 0;
+  if (!GroupedRecordTopologyBytes(
+          working_groups.size(), working_source_row_count,
+          request.group_key_terms.size(), &final_working_group_bytes) ||
+      final_working_group_bytes != result.working_group_bytes) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "grouped aggregate working topology receipt is inconsistent"));
   }
 
   result.output_batch.columns = request.group_result_columns;
   result.output_batch.columns.push_back(aggregate.result_column);
   result.output_batch.rows.reserve(working_groups.size());
   result.groups.reserve(working_groups.size());
-  std::size_t retained_output_payload_bytes = 0;
+  std::size_t retained_output_payload_bytes = 1;
   for (const auto& group : working_groups) {
     auto group_request = make_kernel_request();
     DescriptorBatch group_input_batch;
@@ -7750,9 +7919,28 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
     const auto remaining_finalization_bytes =
         maximum_combined_final_output_bytes -
         result.combined_final_output_bytes;
-    const auto copy_fixed_memory =
-        retained_memory_bytes + aggregate.retained_memory_bytes +
-        input_payload_bytes + source_filter_bytes;
+    std::size_t scope_retained_memory = retained_memory_bytes;
+    if (!CheckedAggregateFinalizationAdd(&scope_retained_memory,
+                                         input_payload_bytes) ||
+        !CheckedAggregateFinalizationAdd(&scope_retained_memory,
+                                         source_filter_bytes) ||
+        !CheckedAggregateFinalizationAdd(
+            &scope_retained_memory, result.grouping_membership_bytes) ||
+        !CheckedAggregateFinalizationAdd(
+            &scope_retained_memory, result.working_group_bytes) ||
+        !CheckedAggregateFinalizationAdd(&scope_retained_memory,
+                                         retained_output_payload_bytes)) {
+      return refuse(Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "grouped aggregate retained memory size overflowed"));
+    }
+    auto copy_fixed_memory = scope_retained_memory;
+    if (!CheckedAggregateFinalizationAdd(
+            &copy_fixed_memory, aggregate.retained_memory_bytes)) {
+      return refuse(Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "grouped aggregate fixed copy memory size overflowed"));
+    }
     std::size_t group_input_payload_bytes = 1;
     for (const auto row : group.source_rows) {
       for (const auto& value : input_batch.rows[row].values) {
@@ -7778,14 +7966,12 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
           "grouped aggregate FILTER workspace size overflowed"));
     }
-    if (retained_output_payload_bytes >
-            *node_memory_grant - copy_fixed_memory ||
+    if (copy_fixed_memory > *node_memory_grant ||
         group_input_payload_bytes >
-            *node_memory_grant - copy_fixed_memory -
-                retained_output_payload_bytes ||
+            *node_memory_grant - copy_fixed_memory ||
         group_filter_bytes >
             *node_memory_grant - copy_fixed_memory -
-                retained_output_payload_bytes - group_input_payload_bytes) {
+                group_input_payload_bytes) {
       return refuse(Refusal(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
           "grouped aggregate input or FILTER copy exceeds the selected-node grant"));
@@ -7803,42 +7989,10 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
       }
       group_request.filter_truth_values = std::move(group_filter);
     }
-    const auto scope_retained_memory =
-        retained_memory_bytes + input_payload_bytes + source_filter_bytes;
-    const auto fixed_retained_memory =
-        scope_retained_memory + aggregate.retained_memory_bytes;
-    std::size_t group_key_payload_bytes = 0;
-    for (std::size_t key_index = 0;
-         key_index < request.group_result_columns.size(); ++key_index) {
-      if (group.grouping_indicators[key_index]) continue;
-      const auto source_column = request.group_key_terms[key_index].column;
-      std::size_t value_bytes = 0;
-      if (!AggregateTypedValuePayloadBytes(
-              input_batch.rows[group.representative_row]
-                  .values[source_column],
-              &value_bytes) ||
-          group_key_payload_bytes >
-              std::numeric_limits<std::size_t>::max() - value_bytes) {
-        return refuse(Refusal(
-            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-            "grouped aggregate key payload size overflowed"));
-      }
-      group_key_payload_bytes += value_bytes;
-    }
-    if (retained_output_payload_bytes >
-            *node_memory_grant - fixed_retained_memory ||
-        group_key_payload_bytes >
-            *node_memory_grant - fixed_retained_memory -
-                retained_output_payload_bytes) {
-      return refuse(Refusal(
-          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-          "grouped aggregate retained output exhausted the selected-node grant"));
-    }
     auto aggregate_result = ExecuteCanonicalAggregateRuntimeSelected(
         group_request, kernel_dag, group_input_batch, true,
         detail::CanonicalAggregateRuntimeExecutionContext::ordinary_non_window,
-        {scope_retained_memory + retained_output_payload_bytes +
-             group_key_payload_bytes,
+        {scope_retained_memory,
          remaining_finalization_bytes});
     if (!aggregate_result.diagnostic.ok) {
       return refuse(std::move(aggregate_result.diagnostic));
@@ -7849,6 +8003,66 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
       return grouped_refusal(
           "shared aggregate state returned an invalid group result");
     }
+    std::size_t expected_child_fixed_memory = scope_retained_memory;
+    std::size_t expected_child_current_memory = 1;
+    std::size_t group_key_payload_bytes = 0;
+    std::size_t expected_retained_output_payload_bytes =
+        retained_output_payload_bytes;
+    if (!CheckedAggregateFinalizationAdd(
+            &expected_child_fixed_memory,
+            aggregate.retained_memory_bytes) ||
+        !CheckedAggregateFinalizationAdd(&expected_child_fixed_memory,
+                                         group_filter_bytes) ||
+        !CheckedAggregateFinalizationAdd(
+            &expected_child_current_memory,
+            aggregate_result.final_output_bytes)) {
+      return refuse(Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "grouped aggregate child memory receipt overflowed"));
+    }
+    for (std::size_t key_index = 0;
+         key_index < request.group_result_columns.size(); ++key_index) {
+      if (group.grouping_indicators[key_index]) continue;
+      const auto source_column = request.group_key_terms[key_index].column;
+      const auto& value = input_batch.rows[group.representative_row]
+                              .values[source_column];
+      if (!CheckedAggregateFinalizationAdd(
+              &group_key_payload_bytes, value.encoded_value.size()) ||
+          !CheckedAggregateFinalizationAdd(
+              &group_key_payload_bytes, value.binary_value.size())) {
+        return refuse(Refusal(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "grouped aggregate result key payload size overflowed"));
+      }
+    }
+    if (aggregate_result.input_payload_bytes != group_input_payload_bytes ||
+        aggregate_result.fixed_retained_memory_bytes !=
+            expected_child_fixed_memory ||
+        aggregate_result.current_memory_bytes !=
+            expected_child_current_memory ||
+        aggregate_result.current_memory_bytes >
+            aggregate_result.peak_memory_bytes ||
+        aggregate_result.peak_memory_bytes > *node_memory_grant ||
+        !ObserveGroupedMemoryPhase(
+            *node_memory_grant, &result.peak_memory_bytes,
+            aggregate_result.fixed_retained_memory_bytes,
+            aggregate_result.input_payload_bytes,
+            aggregate_result.current_memory_bytes,
+            group_key_payload_bytes) ||
+        !CheckedAggregateFinalizationAdd(
+            &expected_retained_output_payload_bytes,
+            group_key_payload_bytes) ||
+        aggregate_result.current_memory_bytes == 0 ||
+        !CheckedAggregateFinalizationAdd(
+            &expected_retained_output_payload_bytes,
+            aggregate_result.current_memory_bytes - 1)) {
+      return refuse(Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "grouped aggregate child memory receipt is inconsistent or exhausted"));
+    }
+    result.peak_memory_bytes =
+        std::max(result.peak_memory_bytes,
+                 aggregate_result.peak_memory_bytes);
     if (aggregate_result.final_output_bytes >
         maximum_combined_final_output_bytes -
             result.combined_final_output_bytes) {
@@ -7928,18 +8142,6 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
     }
     output_row.values.push_back(
         std::move(aggregate_result.output_batch.rows.front().values.front()));
-    if (group_key_payload_bytes >
-            *node_memory_grant - fixed_retained_memory -
-                retained_output_payload_bytes ||
-        aggregate_result.final_output_bytes >
-            *node_memory_grant - fixed_retained_memory -
-                retained_output_payload_bytes - group_key_payload_bytes) {
-      return refuse(Refusal(
-          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-          "grouped aggregate output exhausted the selected-node memory grant"));
-    }
-    retained_output_payload_bytes +=
-        group_key_payload_bytes + aggregate_result.final_output_bytes;
     result.output_batch.rows.push_back(std::move(output_row));
     result.groups.push_back(
         {.grouping_set_ordinal = group.grouping_set_ordinal,
@@ -7955,8 +8157,28 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
          .aggregate_equality_comparison_count =
              aggregate_result.equality_comparison_count,
          .aggregate_state_bytes = aggregate_result.state_bytes});
+    if (!AggregateBatchPayloadBytes(result.output_batch,
+                                    &retained_output_payload_bytes) ||
+        retained_output_payload_bytes !=
+            expected_retained_output_payload_bytes) {
+      return refuse(Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "grouped aggregate result payload receipt is inconsistent"));
+    }
   }
 
+  result.output_payload_bytes = retained_output_payload_bytes;
+  result.current_memory_bytes = result.output_payload_bytes;
+  if (!ObserveGroupedMemoryPhase(
+          *node_memory_grant, &result.peak_memory_bytes,
+          fixed_retained_memory_bytes,
+          result.grouping_membership_bytes,
+          result.working_group_bytes,
+          result.output_payload_bytes)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "grouped aggregate final memory receipt exceeds the selected-node grant"));
+  }
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, aggregate_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
@@ -8024,6 +8246,12 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
     result.combined_state_bytes = 0;
     result.combined_final_output_bytes = 0;
     result.peak_finalization_workspace_bytes = 0;
+    result.input_payload_bytes = 0;
+    result.fixed_retained_memory_bytes = 0;
+    result.retained_execution_payload_bytes = 0;
+    result.output_payload_bytes = 0;
+    result.current_memory_bytes = 0;
+    result.peak_memory_bytes = 0;
     result.group_identity_proven = false;
     result.aggregate_state_spill_required = false;
     result.shared_state_authority_used = false;
@@ -8198,6 +8426,18 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
         "aggregate-set FILTER memory exceeds the selected-node grant"));
   }
+  const auto fixed_retained_memory_bytes =
+      retained_memory_bytes + common.retained_memory_bytes +
+      input_payload_bytes + total_source_filter_bytes;
+  result.input_payload_bytes = input_payload_bytes;
+  result.fixed_retained_memory_bytes = fixed_retained_memory_bytes;
+  if (!ObserveGroupedMemoryPhase(*node_memory_grant,
+                                 &result.peak_memory_bytes,
+                                 fixed_retained_memory_bytes)) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "aggregate-set fixed memory exceeds the selected-node grant"));
+  }
 
   const auto within_total = [](const std::size_t next,
                                const std::size_t current,
@@ -8333,24 +8573,44 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
         result.peak_finalization_workspace_bytes,
         execution.peak_finalization_workspace_bytes);
     std::size_t execution_payload_bytes = 0;
+    std::size_t expected_execution_fixed_memory =
+        fixed_retained_memory_bytes;
     if (!AggregateBatchPayloadBytes(execution.output_batch,
                                     &execution_payload_bytes) ||
+        !CheckedAggregateFinalizationAdd(
+            &expected_execution_fixed_memory,
+            retained_execution_payload_bytes) ||
+        execution.input_payload_bytes != input_payload_bytes ||
+        execution.fixed_retained_memory_bytes !=
+            expected_execution_fixed_memory ||
+        execution.output_payload_bytes != execution_payload_bytes ||
+        execution.current_memory_bytes != execution_payload_bytes ||
+        execution.current_memory_bytes > execution.peak_memory_bytes ||
+        execution.peak_memory_bytes > *node_memory_grant ||
         retained_execution_payload_bytes >
             std::numeric_limits<std::size_t>::max() -
                 execution_payload_bytes ||
-        retained_memory_bytes + common.retained_memory_bytes +
-                input_payload_bytes + total_source_filter_bytes >
-            *node_memory_grant ||
+        fixed_retained_memory_bytes > *node_memory_grant ||
         retained_execution_payload_bytes + execution_payload_bytes >
-            *node_memory_grant - retained_memory_bytes -
-                common.retained_memory_bytes -
-                input_payload_bytes - total_source_filter_bytes) {
+            *node_memory_grant - fixed_retained_memory_bytes) {
       return refuse(Refusal(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-          "aggregate-set retained output exhausted the selected-node grant"));
+          "aggregate-set child memory receipt is inconsistent or exhausted"));
     }
+    result.peak_memory_bytes =
+        std::max(result.peak_memory_bytes, execution.peak_memory_bytes);
     retained_execution_payload_bytes += execution_payload_bytes;
     executions.push_back(std::move(execution));
+  }
+  result.retained_execution_payload_bytes =
+      retained_execution_payload_bytes;
+  if (!ObserveGroupedMemoryPhase(
+          *node_memory_grant, &result.peak_memory_bytes,
+          fixed_retained_memory_bytes,
+          retained_execution_payload_bytes, std::size_t{1})) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "aggregate-set merge memory exceeds the selected-node grant"));
   }
 
   const auto& identity = executions.front();
@@ -8443,6 +8703,19 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
     result.output_batch.rows.push_back(std::move(row));
     result.groups.push_back(std::move(metadata));
   }
+
+  std::size_t redistribution_payload_bound =
+      retained_execution_payload_bytes;
+  if (!CheckedAggregateFinalizationAdd(&redistribution_payload_bound, 1) ||
+      !AggregateBatchPayloadBytes(result.output_batch,
+                                  &result.output_payload_bytes) ||
+      result.output_payload_bytes > redistribution_payload_bound ||
+      result.output_payload_bytes > result.peak_memory_bytes) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "aggregate-set final memory receipt is inconsistent"));
+  }
+  result.current_memory_bytes = result.output_payload_bytes;
 
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, aggregate_node->output_descriptor_ids);

@@ -9107,6 +9107,25 @@ bool CheckedMultiply(const std::uint64_t left, const std::uint64_t right,
   return true;
 }
 
+bool LogicalBitVectorPayloadBytes(const std::size_t bit_count,
+                                  std::uint64_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = static_cast<std::uint64_t>(bit_count / 8);
+  if (bit_count % 8 != 0) {
+    return CheckedAdd(*bytes, 1, bytes);
+  }
+  return true;
+}
+
+std::uint64_t CanonicalUnsignedDecimalWidth(std::uint64_t value) {
+  std::uint64_t width = 1;
+  while (value >= 10) {
+    value /= 10;
+    ++width;
+  }
+  return width;
+}
+
 struct LiveJoinPredicateScratchBound {
   bool ok = false;
   bool cancelled = false;
@@ -13991,6 +14010,7 @@ MakeLiveGroupedCountSumRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 = true;
   registration.execute =
       [prepared = std::move(prepared), maximum_input_row_count,
        maximum_output_row_count, mga_context = std::move(mga_context)](
@@ -14157,6 +14177,29 @@ MakeLiveGroupedCountSumRegistration(
           step.diagnostic = std::move(grouped.diagnostic);
           return step;
         }
+        std::uint64_t input_memory_bytes = 0;
+        std::uint64_t unprojected_output_memory_bytes = 0;
+        std::uint64_t peak_memory_bytes = grouped.peak_memory_bytes;
+        if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
+                                                 &input_memory_bytes) ||
+            !RuntimeMaterializedBatchMemoryBytes(
+                grouped.output_batch,
+                &unprojected_output_memory_bytes) ||
+            grouped.input_payload_bytes != input_memory_bytes ||
+            grouped.fixed_retained_memory_bytes != input_memory_bytes ||
+            grouped.output_payload_bytes !=
+                unprojected_output_memory_bytes ||
+            grouped.current_memory_bytes !=
+                unprojected_output_memory_bytes ||
+            grouped.current_memory_bytes > grouped.peak_memory_bytes ||
+            grouped.peak_memory_bytes > *aggregate_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "grouped aggregate-set runtime memory receipt is inconsistent";
+          return step;
+        }
         if (!grouped.group_identity_proven ||
             !grouped.shared_state_authority_used ||
             grouped.aggregate_count != 2 ||
@@ -14169,44 +14212,76 @@ MakeLiveGroupedCountSumRegistration(
               "composed grouped COUNT/SUM shared state is unproven";
           return step;
         }
-        std::vector<bool> grouping_sets_observed(
-            prepared.grouping_sets.size(), false);
-        for (const auto& group : grouped.groups) {
-          if (group.grouping_set_ordinal >= prepared.grouping_sets.size() ||
-              group.grouping_indicators.size() !=
-                  prepared.key_terms.size()) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-            step.diagnostic.detail =
-                "composed grouped runtime returned invalid metadata";
-            return step;
-          }
-          grouping_sets_observed[group.grouping_set_ordinal] = true;
-          const auto expected =
-              exec::ComputeCanonicalAggregateGroupingMetadata(
-                  prepared.key_terms.size(),
-                  prepared.grouping_sets[group.grouping_set_ordinal]);
-          if (!expected.diagnostic.ok ||
-              group.grouping_indicators != expected.grouping_indicators ||
-              group.grouping_id != expected.grouping_id) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-            step.diagnostic.detail =
-                "composed grouping metadata identity drifted";
-            return step;
-          }
-        }
-        if (std::ranges::find(grouping_sets_observed, false) !=
-            grouping_sets_observed.end()) {
+        std::uint64_t observed_set_memory_bytes = 0;
+        std::uint64_t expected_indicator_memory_bytes = 0;
+        std::uint64_t validation_phase_memory_bytes = 0;
+        if (!LogicalBitVectorPayloadBytes(prepared.grouping_sets.size(),
+                                          &observed_set_memory_bytes) ||
+            !LogicalBitVectorPayloadBytes(prepared.key_terms.size(),
+                                          &expected_indicator_memory_bytes) ||
+            !CheckedAdd(grouped.fixed_retained_memory_bytes,
+                        unprojected_output_memory_bytes,
+                        &validation_phase_memory_bytes) ||
+            !CheckedAdd(validation_phase_memory_bytes,
+                        observed_set_memory_bytes,
+                        &validation_phase_memory_bytes) ||
+            !CheckedAdd(validation_phase_memory_bytes,
+                        expected_indicator_memory_bytes,
+                        &validation_phase_memory_bytes) ||
+            validation_phase_memory_bytes > *aggregate_memory_bound) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
           step.diagnostic.detail =
-              "composed grouped runtime omitted a grouping set";
+              "grouped aggregate validation memory exceeded its grant";
           return step;
         }
+        peak_memory_bytes =
+            std::max(peak_memory_bytes, validation_phase_memory_bytes);
+        {
+          std::vector<bool> grouping_sets_observed(
+              prepared.grouping_sets.size(), false);
+          for (const auto& group : grouped.groups) {
+            if (group.grouping_set_ordinal >=
+                    prepared.grouping_sets.size() ||
+                group.grouping_indicators.size() !=
+                    prepared.key_terms.size()) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "composed grouped runtime returned invalid metadata";
+              return step;
+            }
+            grouping_sets_observed[group.grouping_set_ordinal] = true;
+            const auto expected =
+                exec::ComputeCanonicalAggregateGroupingMetadata(
+                    prepared.key_terms.size(),
+                    prepared.grouping_sets[group.grouping_set_ordinal]);
+            if (!expected.diagnostic.ok ||
+                group.grouping_indicators !=
+                    expected.grouping_indicators ||
+                group.grouping_id != expected.grouping_id) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "composed grouping metadata identity drifted";
+              return step;
+            }
+          }
+          if (std::ranges::find(grouping_sets_observed, false) !=
+              grouping_sets_observed.end()) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+            step.diagnostic.detail =
+                "composed grouped runtime omitted a grouping set";
+            return step;
+          }
+        }
+        std::uint64_t expected_output_memory_bytes =
+            unprojected_output_memory_bytes;
         if (!prepared.grouping_projection_columns.empty()) {
           if (prepared.grouping_projection_columns.size() !=
                   prepared.key_terms.size() + 1 ||
@@ -14219,6 +14294,41 @@ MakeLiveGroupedCountSumRegistration(
                 "composed grouping projection result shape drifted";
             return step;
           }
+          for (const auto& metadata : grouped.groups) {
+            if (metadata.grouping_id >
+                    static_cast<std::uint64_t>(
+                        std::numeric_limits<std::int64_t>::max()) ||
+                !CheckedAdd(expected_output_memory_bytes,
+                            prepared.key_terms.size(),
+                            &expected_output_memory_bytes) ||
+                !CheckedAdd(
+                    expected_output_memory_bytes,
+                    CanonicalUnsignedDecimalWidth(metadata.grouping_id),
+                    &expected_output_memory_bytes)) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "composed GROUPING projection payload is invalid";
+              return step;
+            }
+          }
+          std::uint64_t prospective_projection_phase_memory_bytes = 0;
+          if (!CheckedAdd(grouped.fixed_retained_memory_bytes,
+                          expected_output_memory_bytes,
+                          &prospective_projection_phase_memory_bytes) ||
+              prospective_projection_phase_memory_bytes >
+                  *aggregate_memory_bound) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-OPT-017-REFUSAL-V1";
+            step.diagnostic.detail =
+                "grouped aggregate projection exceeded its memory grant";
+            return step;
+          }
+          peak_memory_bytes = std::max(
+              peak_memory_bytes,
+              prospective_projection_phase_memory_bytes);
           grouped.output_batch.columns.insert(
               grouped.output_batch.columns.end(),
               prepared.grouping_projection_columns.begin(),
@@ -14238,16 +14348,6 @@ MakeLiveGroupedCountSumRegistration(
               indicator.state = api::EngineValueState::value;
               output_row.values.push_back(std::move(indicator));
             }
-            if (metadata.grouping_id >
-                static_cast<std::uint64_t>(
-                    std::numeric_limits<std::int64_t>::max())) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-              step.diagnostic.detail =
-                  "composed GROUPING_ID exceeds int64";
-              return step;
-            }
             api::EngineTypedValue grouping_id;
             grouping_id.descriptor =
                 prepared.grouping_projection_columns.back().descriptor;
@@ -14263,12 +14363,40 @@ MakeLiveGroupedCountSumRegistration(
             return step;
           }
         }
+        std::uint64_t output_memory_bytes = 0;
+        std::uint64_t projection_phase_memory_bytes = 0;
+        if (!RuntimeMaterializedBatchMemoryBytes(
+                grouped.output_batch, &output_memory_bytes) ||
+            output_memory_bytes != expected_output_memory_bytes ||
+            !CheckedAdd(grouped.fixed_retained_memory_bytes,
+                        output_memory_bytes,
+                        &projection_phase_memory_bytes)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "grouped aggregate projection memory receipt overflowed";
+          return step;
+        }
+        peak_memory_bytes =
+            std::max(peak_memory_bytes, projection_phase_memory_bytes);
+        if (output_memory_bytes > peak_memory_bytes ||
+            peak_memory_bytes > *aggregate_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "grouped aggregate projection exceeded its memory grant";
+          return step;
+        }
         step.authority = grouped.authority;
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = step.input_row_count;
         step.output_row_count = grouped.output_batch.rows.size();
         step.materialized_output_batch = std::move(grouped.output_batch);
+        PublishRuntimeMemoryObservation(
+            &step, output_memory_bytes, peak_memory_bytes);
         step.mga_statement_context =
             std::move(grouped.mga_statement_context);
         return step;
@@ -19820,7 +19948,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               grouped_aggregate_profile.transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = aggregate_work;
+          auxiliary_memory = 0;
           break;
         }
         auto prepared = PrepareQueryDistinctRoot(
@@ -21789,6 +21917,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         implementation_id == "aggregate.query-distinct.typed.v1";
     const bool count_star_aggregate =
         implementation_id == "aggregate.count-star.v1";
+    const bool grouped_registry_aggregate =
+        implementation_id == "aggregate.registry-grouping-sets.v1";
     const bool exact_registry_aggregate =
         implementation_id == "aggregate.registry-core.v1" &&
         planning_values_exact;
@@ -21797,6 +21927,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         !planning_values_exact;
     if (physical_kind == exec::PhysicalNodeKind::kAggregate &&
         !query_distinct && !count_star_aggregate &&
+        !grouped_registry_aggregate &&
         !exact_registry_aggregate &&
         !dynamic_registry_aggregate &&
         (!CheckedMultiply(
@@ -21812,7 +21943,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                     "composition output memory overflowed");
     }
-    if (dynamic_registry_aggregate) {
+    if (dynamic_registry_aggregate || grouped_registry_aggregate) {
       operator_memory =
           request.optimizer_request.resource.memory_budget_bytes;
     } else if (exact_registry_aggregate) {
@@ -21897,7 +22028,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     profiles.back().runtime_accounted_auxiliary_memory_bytes =
         runtime_accounted_auxiliary_memory;
     profiles.back().runtime_peak_from_callback_batches =
-        !planning_values_exact;
+        grouped_registry_aggregate || !planning_values_exact;
     profiles.back().runtime_auxiliary_from_first_input_batch =
         (!planning_values_exact && subquery_retains_intermediate_table) ||
         (dynamic_nonrecursive_cte &&
@@ -26876,56 +27007,20 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   }
   std::uint64_t input_memory = 1;
   std::uint64_t output_row_bound = 0;
-  std::uint64_t per_group_memory = 0;
-  std::uint64_t output_memory = 0;
-  std::uint64_t projection_memory = 0;
-  std::uint64_t aggregate_workspace_memory = 0;
-  std::uint64_t total_memory = 0;
-  constexpr std::uint64_t kGroupedStateOverhead =
-      kCanonicalAggregateKernelBaseMemoryBytes;
-  constexpr std::uint64_t kGroupingProjectionBytes = 64;
+  const auto total_memory =
+      request.optimizer_request.resource.memory_budget_bytes;
   if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
       !CheckedMultiply(
           std::max<std::uint64_t>(1, input_row_count),
           static_cast<std::uint64_t>(prepared_root.grouping_sets.size()),
           &output_row_bound) ||
-      !CheckedMultiply(output_row_bound,
-                       kGroupedStateOverhead, &per_group_memory) ||
-      !CheckedMultiply(
-          input_memory,
-          static_cast<std::uint64_t>(prepared_root.grouping_sets.size()),
-          &output_memory) ||
-      !CheckedMultiply(
-          output_row_bound,
-          static_cast<std::uint64_t>(grouping_projection_count) *
-              kGroupingProjectionBytes,
-          &projection_memory) ||
-      !CheckedMultiply(input_row_count, sizeof(std::size_t),
-                       &aggregate_workspace_memory) ||
-      !CheckedAdd(input_memory, per_group_memory, &total_memory) ||
-      !CheckedAdd(total_memory, output_memory, &total_memory) ||
-      !CheckedAdd(total_memory, projection_memory, &total_memory) ||
-      !CheckedAdd(total_memory, aggregate_workspace_memory, &total_memory) ||
       output_row_bound > std::numeric_limits<std::size_t>::max()) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live grouped COUNT/SUM memory size overflowed");
   }
   const auto maximum_output_rows =
       static_cast<std::size_t>(output_row_bound);
-  std::uint64_t filter_truth_memory = 0;
-  std::uint64_t filter_memory = total_memory;
-  if ((has_having &&
-       (!CheckedMultiply(output_row_bound,
-                         sizeof(api::EngineSqlTruthValue),
-                         &filter_truth_memory) ||
-        !CheckedAdd(total_memory, filter_truth_memory, &filter_memory))) ||
-      total_memory >
-          request.optimizer_request.resource.memory_budget_bytes ||
-      filter_memory >
-      request.optimizer_request.resource.memory_budget_bytes) {
-    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                  "live grouped COUNT/SUM exceeds the admitted memory budget");
-  }
+  const auto filter_memory = total_memory;
 
   const auto identity_scope =
       graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
@@ -26946,6 +27041,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
        plan::CanonicalLogicalRelationalNodeKind::kAggregate,
        exec::PhysicalNodeKind::kAggregate, profile.transformation_id,
        output_row_bound, total_memory, 1, 1}};
+  profiles.back().runtime_peak_from_callback_batches = true;
   if (has_having) {
     profiles.push_back(
         {root->logical_node_id, "filter.3vl.row.v1", filter_capability_uuid,
@@ -26989,13 +27085,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
          request.optimizer_request.resource.memory_budget_bytes, 1, 1});
     profiles.back().runtime_peak_from_callback_batches = true;
   }
-  std::vector<std::pair<std::uint32_t, std::uint64_t>> runtime_auxiliary;
-  runtime_auxiliary.emplace_back(aggregate_root->logical_node_id,
-                                 per_group_memory);
-  runtime_auxiliary.emplace_back(aggregate_root->logical_node_id,
-                                 projection_memory);
-  if (!CompleteLiveRuntimeMemoryReceipts(&profiles,
-                                         runtime_auxiliary)) {
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "grouped aggregate runtime memory receipts are incomplete");
   }
@@ -27027,6 +27117,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   aggregate_registration.executor_capability_abi_version = 1;
   aggregate_registration.engine_owned = true;
   aggregate_registration.accepts_optimizer_publication_v2 = true;
+  aggregate_registration.publishes_runtime_observation_v1 = true;
   aggregate_registration.execute =
       [prepared_root, input_row_count, maximum_output_rows, has_having,
        mga_context = request.context](
@@ -27188,6 +27279,32 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
           step.diagnostic = std::move(aggregate_result.diagnostic);
           return step;
         }
+        std::uint64_t input_memory_bytes = 0;
+        std::uint64_t unprojected_output_memory_bytes = 0;
+        std::uint64_t peak_memory_bytes =
+            aggregate_result.peak_memory_bytes;
+        if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
+                                                 &input_memory_bytes) ||
+            !RuntimeMaterializedBatchMemoryBytes(
+                aggregate_result.output_batch,
+                &unprojected_output_memory_bytes) ||
+            aggregate_result.input_payload_bytes != input_memory_bytes ||
+            aggregate_result.fixed_retained_memory_bytes !=
+                input_memory_bytes ||
+            aggregate_result.output_payload_bytes !=
+                unprojected_output_memory_bytes ||
+            aggregate_result.current_memory_bytes !=
+                unprojected_output_memory_bytes ||
+            aggregate_result.current_memory_bytes >
+                aggregate_result.peak_memory_bytes ||
+            aggregate_result.peak_memory_bytes > *aggregate_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "grouped aggregate-set runtime memory receipt is inconsistent";
+          return step;
+        }
         if (!aggregate_result.group_identity_proven ||
             !aggregate_result.shared_state_authority_used ||
             aggregate_result.aggregate_count != 2 ||
@@ -27202,47 +27319,79 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
               "grouped COUNT/SUM runtime did not prove shared group identity";
           return step;
         }
-        std::vector<bool> grouping_sets_observed(
-            prepared_root.grouping_sets.size(), false);
-        for (const auto& group : aggregate_result.groups) {
-          if (group.grouping_set_ordinal >=
-                  prepared_root.grouping_sets.size() ||
-              group.grouping_indicators.size() !=
-                  prepared_root.key_terms.size()) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-            step.diagnostic.detail =
-                "grouped COUNT/SUM runtime returned invalid grouping metadata";
-            return step;
-          }
-          grouping_sets_observed[group.grouping_set_ordinal] = true;
-          const auto& grouping_set = prepared_root.grouping_sets[
-              group.grouping_set_ordinal];
-          const auto expected_metadata =
-              exec::ComputeCanonicalAggregateGroupingMetadata(
-                  prepared_root.key_terms.size(), grouping_set);
-          if (!expected_metadata.diagnostic.ok ||
-              group.grouping_indicators !=
-                  expected_metadata.grouping_indicators ||
-              group.grouping_id != expected_metadata.grouping_id) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-            step.diagnostic.detail =
-                "grouped COUNT/SUM grouping metadata identity drifted";
-            return step;
-          }
-        }
-        if (std::ranges::find(grouping_sets_observed, false) !=
-            grouping_sets_observed.end()) {
+        std::uint64_t observed_set_memory_bytes = 0;
+        std::uint64_t expected_indicator_memory_bytes = 0;
+        std::uint64_t validation_phase_memory_bytes = 0;
+        if (!LogicalBitVectorPayloadBytes(
+                prepared_root.grouping_sets.size(),
+                &observed_set_memory_bytes) ||
+            !LogicalBitVectorPayloadBytes(
+                prepared_root.key_terms.size(),
+                &expected_indicator_memory_bytes) ||
+            !CheckedAdd(aggregate_result.fixed_retained_memory_bytes,
+                        unprojected_output_memory_bytes,
+                        &validation_phase_memory_bytes) ||
+            !CheckedAdd(validation_phase_memory_bytes,
+                        observed_set_memory_bytes,
+                        &validation_phase_memory_bytes) ||
+            !CheckedAdd(validation_phase_memory_bytes,
+                        expected_indicator_memory_bytes,
+                        &validation_phase_memory_bytes) ||
+            validation_phase_memory_bytes > *aggregate_memory_bound) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
           step.diagnostic.detail =
-              "grouped COUNT/SUM runtime omitted a grouping-set identity";
+              "grouped aggregate validation memory exceeded its grant";
           return step;
         }
+        peak_memory_bytes =
+            std::max(peak_memory_bytes, validation_phase_memory_bytes);
+        {
+          std::vector<bool> grouping_sets_observed(
+              prepared_root.grouping_sets.size(), false);
+          for (const auto& group : aggregate_result.groups) {
+            if (group.grouping_set_ordinal >=
+                    prepared_root.grouping_sets.size() ||
+                group.grouping_indicators.size() !=
+                    prepared_root.key_terms.size()) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "grouped COUNT/SUM runtime returned invalid grouping metadata";
+              return step;
+            }
+            grouping_sets_observed[group.grouping_set_ordinal] = true;
+            const auto& grouping_set = prepared_root.grouping_sets[
+                group.grouping_set_ordinal];
+            const auto expected_metadata =
+                exec::ComputeCanonicalAggregateGroupingMetadata(
+                    prepared_root.key_terms.size(), grouping_set);
+            if (!expected_metadata.diagnostic.ok ||
+                group.grouping_indicators !=
+                    expected_metadata.grouping_indicators ||
+                group.grouping_id != expected_metadata.grouping_id) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "grouped COUNT/SUM grouping metadata identity drifted";
+              return step;
+            }
+          }
+          if (std::ranges::find(grouping_sets_observed, false) !=
+              grouping_sets_observed.end()) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+            step.diagnostic.detail =
+                "grouped COUNT/SUM runtime omitted a grouping-set identity";
+            return step;
+          }
+        }
+        std::uint64_t expected_output_memory_bytes =
+            unprojected_output_memory_bytes;
         if (!prepared_root.grouping_projection_columns.empty()) {
           if (prepared_root.grouping_projection_columns.size() !=
                   prepared_root.key_terms.size() + 1 ||
@@ -27255,6 +27404,41 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
                 "grouping projection result descriptor shape drifted";
             return step;
           }
+          for (const auto& metadata : aggregate_result.groups) {
+            if (metadata.grouping_id >
+                    static_cast<std::uint64_t>(
+                        std::numeric_limits<std::int64_t>::max()) ||
+                !CheckedAdd(expected_output_memory_bytes,
+                            prepared_root.key_terms.size(),
+                            &expected_output_memory_bytes) ||
+                !CheckedAdd(
+                    expected_output_memory_bytes,
+                    CanonicalUnsignedDecimalWidth(metadata.grouping_id),
+                    &expected_output_memory_bytes)) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "GROUPING projection payload is invalid";
+              return step;
+            }
+          }
+          std::uint64_t prospective_projection_phase_memory_bytes = 0;
+          if (!CheckedAdd(aggregate_result.fixed_retained_memory_bytes,
+                          expected_output_memory_bytes,
+                          &prospective_projection_phase_memory_bytes) ||
+              prospective_projection_phase_memory_bytes >
+                  *aggregate_memory_bound) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-OPT-017-REFUSAL-V1";
+            step.diagnostic.detail =
+                "grouped aggregate projection exceeded its memory grant";
+            return step;
+          }
+          peak_memory_bytes = std::max(
+              peak_memory_bytes,
+              prospective_projection_phase_memory_bytes);
           aggregate_result.output_batch.columns.insert(
               aggregate_result.output_batch.columns.end(),
               prepared_root.grouping_projection_columns.begin(),
@@ -27276,16 +27460,6 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
               indicator.state = api::EngineValueState::value;
               output_row.values.push_back(std::move(indicator));
             }
-            if (metadata.grouping_id >
-                static_cast<std::uint64_t>(
-                    std::numeric_limits<std::int64_t>::max())) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-              step.diagnostic.detail =
-                  "GROUPING_ID exceeds the bound int64 result domain";
-              return step;
-            }
             api::EngineTypedValue grouping_id;
             grouping_id.descriptor =
                 prepared_root.grouping_projection_columns.back().descriptor;
@@ -27302,6 +27476,32 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
             return step;
           }
         }
+        std::uint64_t output_memory_bytes = 0;
+        std::uint64_t projection_phase_memory_bytes = 0;
+        if (!RuntimeMaterializedBatchMemoryBytes(
+                aggregate_result.output_batch, &output_memory_bytes) ||
+            output_memory_bytes != expected_output_memory_bytes ||
+            !CheckedAdd(aggregate_result.fixed_retained_memory_bytes,
+                        output_memory_bytes,
+                        &projection_phase_memory_bytes)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "grouped aggregate projection memory receipt overflowed";
+          return step;
+        }
+        peak_memory_bytes =
+            std::max(peak_memory_bytes, projection_phase_memory_bytes);
+        if (output_memory_bytes > peak_memory_bytes ||
+            peak_memory_bytes > *aggregate_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "grouped aggregate projection exceeded its memory grant";
+          return step;
+        }
         step.authority = aggregate_result.authority;
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
@@ -27309,6 +27509,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         step.output_row_count = aggregate_result.output_batch.rows.size();
         step.materialized_output_batch =
             std::move(aggregate_result.output_batch);
+        PublishRuntimeMemoryObservation(
+            &step, output_memory_bytes, peak_memory_bytes);
         step.mga_statement_context =
             std::move(aggregate_result.mga_statement_context);
         return step;
@@ -37982,6 +38184,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
             grouped_profile.transformation_id;
         consumer_profile.estimated_rows =
             grouped_aggregate_output_row_bound;
+        consumer_profile.memory_bytes_required =
+            planning.memory_budget_bytes;
         profiles.push_back(std::move(consumer_profile));
         previous_logical = logical_consumer;
         continue;
