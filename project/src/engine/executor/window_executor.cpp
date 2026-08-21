@@ -2737,11 +2737,17 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
   std::vector<std::uint32_t> output_descriptor_ids =
       input_node->output_descriptor_ids;
   output_descriptor_ids.push_back(request.ranking_column.descriptor_id);
+  const auto result_type_uuid = CanonicalDescriptorField(
+      request.ranking_column.descriptor, "type_uuid");
+  const auto expected_result_type_uuid =
+      CanonicalCoreDatatypeUuid(expected_result_type);
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
       request.ranking_column.descriptor_id == 0 ||
       request.ranking_column.nullable ||
       request.ranking_column.descriptor.canonical_type_name !=
           expected_result_type ||
+      !result_type_uuid.has_value() || expected_result_type_uuid.empty() ||
+      *result_type_uuid != expected_result_type_uuid ||
       request.order_term.column >=
           execution_ordered_input_batch.columns.size()) {
     return refuse(Refusal(
