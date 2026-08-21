@@ -55169,6 +55169,7 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   source_registration.executor_capability_abi_version = 1;
   source_registration.engine_owned = true;
   source_registration.accepts_optimizer_publication_v2 = true;
+  source_registration.publishes_runtime_observation_v1 = true;
   const auto context = input.context;
   const auto cancellation_requested =
       input.context.query_cancellation_requested
@@ -55200,6 +55201,9 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
               return candidate.logical_node_id == selected_node.relational_node_id;
             });
         if (!inputs.empty() || source == prepared_sources.end() ||
+            selected_node.memory_bytes_required == 0 ||
+            selected_node.memory_bytes_required >
+                selected_dag.memory_budget_bytes ||
             selected_node.implementation_id != source->implementation_id ||
             selected_node.executor_capability_uuid != source->capability_uuid ||
             selected_node.output_descriptor_ids !=
@@ -55258,7 +55262,7 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
         source_input.maximum_cells =
             static_cast<std::size_t>(source_maximum_cells);
         source_input.maximum_memory_bytes =
-            context.optimizer_memory_budget_bytes / 4;
+            selected_node.memory_bytes_required;
         source_input.exact_fallback_selected = true;
         request.capability.capability_uuid = source->capability_uuid;
         request.capability.family_id = "columnar";
@@ -55288,8 +55292,11 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
             source->persisted.descriptor_generation;
         request.current_mga_statement_context = mga;
         const auto source_copy = *source;
+        Rcp079ColumnarSourceRuntimeMemoryReceiptV1
+            source_runtime_memory_receipt;
         request.execute_provider =
-            [context, source_copy, cancellation_requested](
+            [context, source_copy, cancellation_requested,
+             &source_runtime_memory_receipt](
                 const exec::ModelSourceInputDescriptorV1& source_input) {
               exec::ModelProviderExecutionResultV1 provider;
               const auto fail = [&](std::string diagnostic,
@@ -55357,6 +55364,32 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
               if (cancellation_requested()) {
                 return fail("SB_MODEL_EXECUTION_CANCELLED_V1",
                             "columnar composition was cancelled after MGA access");
+              }
+              const auto retained_visible_row_memory =
+                  Rcp079VisibleRowsMemoryBytesV1(read.visible_rows);
+              const api::TypedRelationalDag source_only_dag;
+              const auto materialization_memory =
+                  Rcp079ColumnarLogicalMaterializationAdditionalBytesV1(
+                      source_copy.persisted, read.visible_rows.size(),
+                      source_only_dag, source_input,
+                      source_copy.property_uuid,
+                      source_copy.security_receipt_uuid, false);
+              std::uint64_t retained_and_materialized = 0;
+              std::uint64_t projected_live_memory = 0;
+              if (!retained_visible_row_memory.has_value() ||
+                  *retained_visible_row_memory >=
+                      source_input.maximum_memory_bytes ||
+                  !materialization_memory.has_value() ||
+                  !CheckedAdd(*retained_visible_row_memory,
+                              *materialization_memory,
+                              &retained_and_materialized) ||
+                  !CheckedMultiply(retained_and_materialized, 2,
+                                   &projected_live_memory) ||
+                  projected_live_memory >
+                      source_input.maximum_memory_bytes) {
+                return fail(
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "columnar source materialization exceeds the selected-node grant");
               }
               const auto post_authorization =
                   api::EvaluateMaterializedAuthorization(
@@ -55449,20 +55482,148 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                   source_input.maximum_cells;
               columnar_request.maximum_cells = source_input.maximum_cells;
               columnar_request.maximum_memory_bytes =
-                  source_input.maximum_memory_bytes;
+                  source_input.maximum_memory_bytes -
+                  *retained_visible_row_memory;
               columnar_request.cancellation_requested = [](const void* context) {
                 return (*static_cast<const std::function<bool()>*>(context))();
               };
               columnar_request.cancellation_context = &cancellation_requested;
               columnar_request.security_admitted = true;
               columnar_request.exact_reconstruction_fallback_available = true;
+              const auto pre_api_batch_memory =
+                  Rcp079DescriptorBatchLogicalMemoryBytesV1(
+                      columnar_request.logical_rows);
+              const auto pre_api_request_memory =
+                  Rcp079ColumnarRequestNonBatchLogicalMemoryBytesV2(
+                      columnar_request);
+              std::uint64_t pre_api_peak_memory = 0;
+              if (!pre_api_batch_memory.has_value() ||
+                  !pre_api_request_memory.has_value() ||
+                  !CheckedAdd(*retained_visible_row_memory,
+                              *pre_api_batch_memory,
+                              &pre_api_peak_memory) ||
+                  !CheckedAdd(pre_api_peak_memory,
+                              *pre_api_request_memory,
+                              &pre_api_peak_memory) ||
+                  pre_api_peak_memory >
+                      source_input.maximum_memory_bytes) {
+                return fail(
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "columnar source request exceeded the selected-node grant");
+              }
               auto reconstructed =
                   api::nosql::ExecuteColumnarLogicalV2(
                       std::move(columnar_request));
               if (!reconstructed.accepted ||
                   !reconstructed.root_publishable) {
-                return fail(reconstructed.diagnostic_id,
-                            reconstructed.detail);
+                return fail(reconstructed.diagnostic_id.empty()
+                                ? "SB_MODEL_TYPED_EXCHANGE_INVALID_V1"
+                                : reconstructed.diagnostic_id,
+                            reconstructed.detail.empty()
+                                ? "columnar source reconstruction did not publish"
+                                : reconstructed.detail);
+              }
+              if (!reconstructed.exact_fallback_selected ||
+                  !reconstructed.exact_reconstruction_complete ||
+                  !reconstructed.predicate_recheck_complete ||
+                  !reconstructed.mga_recheck_complete ||
+                  reconstructed.cancellation_observed ||
+                  reconstructed.cancellation_probe_failed ||
+                  !reconstructed.memory_receipt_complete ||
+                  reconstructed.current_live_memory_bytes >
+                      reconstructed.peak_live_memory_bytes ||
+                  reconstructed.peak_live_memory_bytes >
+                      reconstructed.memory_grant_bytes ||
+                  reconstructed.memory_grant_bytes !=
+                      source_input.maximum_memory_bytes -
+                          *retained_visible_row_memory ||
+                  reconstructed.physical_operator_id !=
+                      "COLUMNAR_ROW_RECONSTRUCTION_SCAN_V1" ||
+                  !reconstructed.fallback_reason_id.empty() ||
+                  reconstructed.diagnostic_id != "SB_EXECUTOR_OK" ||
+                  !reconstructed.detail.empty() ||
+                  reconstructed.row_uuids.size() !=
+                      read.visible_rows.size() ||
+                  reconstructed.batch.rows.size() !=
+                      read.visible_rows.size() ||
+                  reconstructed.batch.rows.size() >
+                      source_input.maximum_rows ||
+                  reconstructed.batch.columns.size() !=
+                      source_copy.columns.size() ||
+                  !std::ranges::equal(
+                      reconstructed.batch.columns, source_copy.columns,
+                      [](const auto& actual, const auto& expected) {
+                        return Rcp079ExactExecutorColumnV1(actual,
+                                                          expected);
+                      })) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "columnar source reconstruction receipt changed");
+              }
+              std::uint64_t combined_peak_memory = 0;
+              if (!CheckedAdd(*retained_visible_row_memory,
+                              reconstructed.peak_live_memory_bytes,
+                              &combined_peak_memory) ||
+                  combined_peak_memory >
+                      source_input.maximum_memory_bytes) {
+                return fail(
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "columnar source retained rows and reconstruction peak exceed the selected-node grant");
+              }
+              if (reconstructed.batch.rows.size() != 0 &&
+                  reconstructed.batch.columns.size() >
+                      source_input.maximum_cells /
+                          reconstructed.batch.rows.size()) {
+                return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                            "columnar source reconstruction cell receipt exceeded its bound");
+              }
+              for (std::size_t row = 0;
+                   row < read.visible_rows.size(); ++row) {
+                const auto& source_row = read.visible_rows[row];
+                const auto& actual_row = reconstructed.batch.rows[row];
+                if (reconstructed.row_uuids[row] != source_row.row_uuid ||
+                    actual_row.values.size() !=
+                        source_copy.persisted.columns.size()) {
+                  return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                              "columnar source row identity or width changed");
+                }
+                for (std::size_t ordinal = 0;
+                     ordinal < source_copy.persisted.columns.size();
+                     ++ordinal) {
+                  const auto& persisted_column =
+                      source_copy.persisted.columns[ordinal];
+                  const std::string* expected_encoded = nullptr;
+                  for (const auto& [name, value] : source_row.values) {
+                    if (name == persisted_column.canonical_name_key) {
+                      if (expected_encoded != nullptr) {
+                        return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                                    "columnar source row repeats a field during receipt replay");
+                      }
+                      expected_encoded = &value;
+                    }
+                  }
+                  if (expected_encoded == nullptr) {
+                    return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                                "columnar source row omitted a field during receipt replay");
+                  }
+                  const auto& actual = actual_row.values[ordinal];
+                  const bool expected_null = *expected_encoded == "<NULL>";
+                  if (!CanonicalQueryEngineDescriptorExactlyEqual(
+                          actual.descriptor,
+                          source_copy.columns[ordinal].descriptor) ||
+                      (expected_null
+                           ? (actual.state !=
+                                  api::EngineValueState::sql_null ||
+                              !actual.is_null ||
+                              !actual.encoded_value.empty() ||
+                              !actual.binary_value.empty())
+                           : (actual.state != api::EngineValueState::value ||
+                              actual.is_null ||
+                              actual.encoded_value != *expected_encoded ||
+                              !actual.binary_value.empty()))) {
+                    return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                                "columnar source reconstructed value changed");
+                  }
+                }
               }
               auto& batch = provider.provider_batch;
               batch.provider_uuid = source_input.provider_uuid;
@@ -55493,6 +55654,42 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                 identity.row_uuid = std::move(row_uuid);
                 batch.ordered_row_identities.push_back(std::move(identity));
               }
+              const auto provider_memory =
+                  Rcp079ModelProviderBatchLogicalMemoryBytesV1(batch);
+              const auto output_memory =
+                  Rcp079ProjectedModelSourceOutputLogicalMemoryBytesV1(
+                      source_input, batch);
+              const auto uniqueness_memory =
+                  Rcp079ColumnarUniquenessLogicalMemoryBytesV1(
+                      batch.ordered_row_identities);
+              std::uint64_t output_copy_peak = 0;
+              std::uint64_t uniqueness_peak = 0;
+              if (!provider_memory.has_value() ||
+                  !output_memory.has_value() ||
+                  !uniqueness_memory.has_value() ||
+                  !CheckedAdd(*provider_memory, *output_memory,
+                              &output_copy_peak) ||
+                  !CheckedAdd(*provider_memory, *uniqueness_memory,
+                              &uniqueness_peak)) {
+                return fail(
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "columnar source provider/exchange memory receipt overflowed");
+              }
+              source_runtime_memory_receipt.provider_logical_memory_bytes =
+                  *provider_memory;
+              source_runtime_memory_receipt.peak_live_memory_bytes =
+                  std::max({pre_api_peak_memory, combined_peak_memory,
+                            output_copy_peak, uniqueness_peak});
+              source_runtime_memory_receipt.memory_grant_bytes =
+                  source_input.maximum_memory_bytes;
+              source_runtime_memory_receipt.complete =
+                  source_runtime_memory_receipt.peak_live_memory_bytes <=
+                  source_runtime_memory_receipt.memory_grant_bytes;
+              if (!source_runtime_memory_receipt.complete) {
+                return fail(
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "columnar source provider/exchange peak exceeded the selected-node grant");
+              }
               provider.ok = true;
               return provider;
             };
@@ -55509,6 +55706,26 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
           step.diagnostic.detail = executed.detail;
           return step;
         }
+        std::uint64_t current_memory_bytes = 0;
+        if (!source_runtime_memory_receipt.complete ||
+            source_runtime_memory_receipt.memory_grant_bytes !=
+                selected_node.memory_bytes_required ||
+            source_runtime_memory_receipt.peak_live_memory_bytes >
+                source_runtime_memory_receipt.memory_grant_bytes ||
+            !RuntimeMaterializedBatchMemoryBytes(
+                executed.output.batch, &current_memory_bytes) ||
+            current_memory_bytes >
+                source_runtime_memory_receipt.peak_live_memory_bytes) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+          step.diagnostic.detail =
+              "columnar source runtime memory receipt changed";
+          return step;
+        }
+        PublishRuntimeMemoryObservation(
+            &step, current_memory_bytes,
+            source_runtime_memory_receipt.peak_live_memory_bytes);
         step.result_handle_id = selected_node.physical_node_id;
         step.output_row_count = executed.output.batch.rows.size();
         step.rows_examined = executed.rows_examined;
@@ -56478,8 +56695,15 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   result.physical_node_count = 1;
   result.selected_plan_uuid = physical.physical_dag.selected_plan_uuid;
 
-  const auto provider_memory = planning.memory_budget_bytes / 2;
-  const auto exchange_memory = planning.memory_budget_bytes - provider_memory;
+  if (physical_source.memory_bytes_required == 0 ||
+      physical_source.memory_bytes_required >
+          physical.physical_dag.memory_budget_bytes ||
+      physical_source.memory_bytes_required > planning.memory_budget_bytes) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "spatial/columnar selected source grant is invalid");
+  }
+  const auto exchange_memory = physical_source.memory_bytes_required;
+  const auto provider_memory = planning.memory_budget_bytes - exchange_memory;
   const auto maximum_rows = std::min<std::uint64_t>(
       {65'536, input.context.optimizer_maximum_candidate_count,
        std::max<std::uint64_t>(1, provider_memory / 256)});
@@ -56952,18 +57176,6 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             batch.ordered_row_identities.push_back(std::move(identity));
           }
         } else {
-          const auto mutable_value_for = [](
-                                             api::CrudRowVersionRecord& row,
-                                             const std::string_view name)
-              -> std::string* {
-            std::string* value = nullptr;
-            for (auto& [field, candidate] : row.values) {
-              if (field != name) continue;
-              if (value != nullptr) return nullptr;
-              value = &candidate;
-            }
-            return value;
-          };
           exec::DescriptorBatch logical_rows;
           std::vector<std::uint32_t> logical_descriptor_ids;
           logical_rows.columns.reserve(persisted.columns.size());
@@ -56995,7 +57207,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           }
           std::vector<std::string> row_uuids;
           row_uuids.reserve(read.visible_rows.size());
-          for (auto& row : read.visible_rows) {
+          for (const auto& row : read.visible_rows) {
             if (cancellation_requested()) {
               return fail(cancellation_diagnostic(),
                           "columnar row reconstruction was cancelled");
@@ -57008,7 +57220,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                 return fail(cancellation_diagnostic(),
                             "columnar value reconstruction was cancelled");
               }
-              auto* encoded = mutable_value_for(
+              const auto* encoded = value_for(
                   row, persisted.columns[ordinal].canonical_name_key);
               if (encoded == nullptr) {
                 return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
@@ -57019,13 +57231,13 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               if (*encoded == "<NULL>") {
                 value.setState(api::EngineValueState::sql_null);
               } else {
-                value.encoded_value = std::move(*encoded);
+                value.encoded_value = *encoded;
                 value.setState(api::EngineValueState::value);
               }
               tuple.values.push_back(std::move(value));
             }
             logical_rows.rows.push_back(std::move(tuple));
-            row_uuids.push_back(std::move(row.row_uuid));
+            row_uuids.push_back(row.row_uuid);
           }
           const auto retained_visible_row_memory =
               Rcp079VisibleRowsMemoryBytesV1(read.visible_rows);
@@ -57178,9 +57390,25 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                             ? "columnar reconstruction did not publish"
                             : reconstructed.detail);
           }
-          if (!reconstructed.memory_receipt_complete ||
+          if (!reconstructed.exact_fallback_selected ||
+              !reconstructed.exact_reconstruction_complete ||
+              !reconstructed.predicate_recheck_complete ||
+              !reconstructed.mga_recheck_complete ||
+              reconstructed.cancellation_observed ||
+              reconstructed.cancellation_probe_failed ||
+              !reconstructed.memory_receipt_complete ||
+              reconstructed.current_live_memory_bytes >
+                  reconstructed.peak_live_memory_bytes ||
               reconstructed.peak_live_memory_bytes >
                   reconstructed.memory_grant_bytes ||
+              reconstructed.memory_grant_bytes !=
+                  source_input.maximum_memory_bytes -
+                      *retained_visible_row_memory ||
+              reconstructed.physical_operator_id !=
+                  "COLUMNAR_ROW_RECONSTRUCTION_SCAN_V1" ||
+              !reconstructed.fallback_reason_id.empty() ||
+              reconstructed.diagnostic_id != "SB_EXECUTOR_OK" ||
+              !reconstructed.detail.empty() ||
               !std::ranges::equal(
                   reconstructed.batch.columns, public_columns,
                   [](const auto& actual, const auto& expected) {
@@ -57198,6 +57426,18 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             return fail(
                 "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                 "columnar reconstruction peak exceeded the source memory grant");
+          }
+          const bool source_only =
+              source_input.operation_ids.size() == 1 &&
+              source_input.operation_ids.front() == "COLUMNAR_SOURCE" &&
+              source_input.operation_id == "COLUMNAR_SOURCE";
+          if (source_only &&
+              (reconstructed.row_uuids.size() !=
+                   read.visible_rows.size() ||
+               reconstructed.batch.rows.size() !=
+                   read.visible_rows.size())) {
+            return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "columnar source result cardinality changed");
           }
           for (const auto& row : reconstructed.batch.rows) {
             if (cancellation_requested()) {
@@ -57227,6 +57467,46 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                       value_column, public_columns[ordinal])) {
                 return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                             "columnar result value descriptor changed");
+              }
+            }
+          }
+          if (source_only) {
+            for (std::size_t row = 0; row < read.visible_rows.size(); ++row) {
+              const auto& source_row = read.visible_rows[row];
+              const auto& actual_row = reconstructed.batch.rows[row];
+              if (reconstructed.row_uuids[row] != source_row.row_uuid ||
+                  actual_row.values.size() != persisted.columns.size()) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "columnar source row identity or width changed");
+              }
+              for (std::size_t ordinal = 0;
+                   ordinal < persisted.columns.size(); ++ordinal) {
+                const auto* expected_encoded = value_for(
+                    source_row,
+                    persisted.columns[ordinal].canonical_name_key);
+                if (expected_encoded == nullptr) {
+                  return fail(
+                      "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                      "columnar source row omitted a field during receipt replay");
+                }
+                const auto& actual = actual_row.values[ordinal];
+                const bool expected_null = *expected_encoded == "<NULL>";
+                if (!CanonicalQueryEngineDescriptorExactlyEqual(
+                        actual.descriptor,
+                        public_columns[ordinal].descriptor) ||
+                    (expected_null
+                         ? (actual.state !=
+                                api::EngineValueState::sql_null ||
+                            !actual.is_null ||
+                            !actual.encoded_value.empty() ||
+                            !actual.binary_value.empty())
+                         : (actual.state != api::EngineValueState::value ||
+                            actual.is_null ||
+                            actual.encoded_value != *expected_encoded ||
+                            !actual.binary_value.empty()))) {
+                  return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                              "columnar source reconstructed value changed");
+                }
               }
             }
           }
@@ -57350,6 +57630,11 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
         step.authority.engine_mga_snapshot_bound = true;
         step.data_access_observation_known = true;
         if (!inputs.empty() || selected_dag.abi_version != 2 ||
+            selected_node.memory_bytes_required == 0 ||
+            selected_node.memory_bytes_required >
+                selected_dag.memory_budget_bytes ||
+            selected_node.memory_bytes_required !=
+                execution_request.input.maximum_memory_bytes ||
             selected_node.implementation_id != implementation_id ||
             selected_node.selected_alternative_uuid !=
                 execution_request.input.selected_alternative_uuid ||
@@ -57408,7 +57693,8 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           if (!columnar_runtime_memory_receipt->complete ||
               columnar_runtime_memory_receipt
                       ->provider_logical_memory_bytes == 0 ||
-              columnar_runtime_memory_receipt->memory_grant_bytes == 0 ||
+              columnar_runtime_memory_receipt->memory_grant_bytes !=
+                  selected_node.memory_bytes_required ||
               columnar_runtime_memory_receipt->peak_live_memory_bytes >
                   columnar_runtime_memory_receipt->memory_grant_bytes ||
               !RuntimeMaterializedBatchMemoryBytes(executed.output.batch,
