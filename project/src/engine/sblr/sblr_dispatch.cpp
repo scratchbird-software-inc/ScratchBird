@@ -9562,6 +9562,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_database_serialize_logical_snapshot = request.envelope.operation_id=="engine.op.database_serialize_logical_snapshot"&&request.envelope.opcode=="SBLR_DATABASE_SERIALIZE_LOGICAL_SNAPSHOT"&&request.envelope.opcode_code==1631;
   const bool exact_database_deserialize_logical_snapshot = request.envelope.operation_id=="engine.op.database_deserialize_logical_snapshot"&&request.envelope.opcode=="SBLR_DATABASE_DESERIALIZE_LOGICAL_SNAPSHOT"&&request.envelope.opcode_code==1632;
   const bool exact_ddl_create_macro = request.envelope.operation_id=="engine.op.ddl_create_macro"&&request.envelope.opcode=="SBLR_DDL_CREATE_MACRO"&&request.envelope.opcode_code==1633;
+  const bool exact_ddl_drop_macro = request.envelope.operation_id=="engine.op.ddl_drop_macro"&&request.envelope.opcode=="SBLR_DDL_DROP_MACRO"&&request.envelope.opcode_code==1634;
   const bool exact_aggregate = request.envelope.operation_id=="engine.op.aggregate"&&request.envelope.opcode=="SBLR_AGGREGATE"&&request.envelope.opcode_code==1281;
   const bool exact_group = request.envelope.operation_id=="engine.op.group"&&request.envelope.opcode=="SBLR_GROUP"&&request.envelope.opcode_code==1282;
   const bool exact_sort = request.envelope.operation_id=="engine.op.sort"&&request.envelope.opcode=="SBLR_SORT"&&request.envelope.opcode_code==1283;
@@ -9907,6 +9908,13 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   }
   if (request.envelope.operation_id == "engine.op.ddl_create_macro" && request.envelope.opcode == "SBLR_DDL_CREATE_MACRO" && request.envelope.opcode_code == 1633) {
     result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result;
+  }
+  const bool exact_ddl_drop_macro_dispatch = request.envelope.operation_id=="engine.op.ddl_drop_macro" && request.envelope.opcode=="SBLR_DDL_DROP_MACRO" && request.envelope.opcode_code==1634;
+  if (exact_ddl_drop_macro_dispatch) {
+    result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true;
+    result.api_result.operation_id=request.envelope.operation_id;
+    result.api_result.result_shape.result_kind="ddl_result";
+    return result;
   }
 
   // QOW-SOURCE-PACKET7-POST-VALIDATION-OPERAND-MATERIALIZATION-V1
