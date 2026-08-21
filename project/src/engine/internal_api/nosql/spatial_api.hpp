@@ -89,6 +89,60 @@ struct SpatialExecutionResultV1 {
   std::string detail;
 };
 
+using SpatialCancellationProbeV2 = bool (*)(const void* context);
+
+struct SpatialExecutionRequestV2 {
+  std::uint16_t abi_version{2};
+  std::string profile_id{std::string(kSpatialNativeCartesianPoint2dV1)};
+  std::string operation_id;
+  std::string predicate_id;
+  std::string object_uuid;
+  std::string geometry_descriptor_uuid;
+  std::string geometry_type_uuid;
+  std::string crs_uuid;
+  std::string query_crs_uuid;
+  std::uint64_t crs_generation{0};
+  std::uint64_t source_generation{0};
+  std::uint64_t catalog_generation{0};
+  std::uint64_t policy_generation{0};
+  std::uint64_t security_generation{0};
+  std::uint64_t resource_generation{0};
+  std::uint64_t route_generation{0};
+  executor::PhysicalMgaStatementContext statement_context;
+  executor::PhysicalMgaStatementContext current_statement_context;
+  std::vector<SpatialSourceRowV1> source_rows;
+  std::vector<std::uint8_t> encoded_query_point;
+  std::uint32_t top_k{0};
+  std::size_t maximum_rows{0};
+  std::uint64_t maximum_memory_bytes{0};
+  SpatialCancellationProbeV2 cancellation_requested{nullptr};
+  const void* cancellation_context{nullptr};
+  bool security_admitted{false};
+  bool exact_scan_fallback_available{false};
+  bool parser_execution_authority_claimed{false};
+  bool provider_visibility_authority_claimed{false};
+  bool provider_finality_authority_claimed{false};
+  SpatialCandidateProofV1 candidate_proof;
+};
+
+struct SpatialExecutionResultV2 {
+  bool accepted{false};
+  bool root_publishable{false};
+  bool exact_fallback_selected{false};
+  bool candidate_recheck_complete{false};
+  bool mga_recheck_complete{false};
+  bool cancellation_observed{false};
+  bool cancellation_probe_failed{false};
+  bool memory_receipt_complete{false};
+  std::uint64_t current_live_memory_bytes{0};
+  std::uint64_t peak_live_memory_bytes{0};
+  std::uint64_t memory_grant_bytes{0};
+  std::vector<SpatialResultRowV1> rows;
+  std::string physical_operator_id;
+  std::string diagnostic_id;
+  std::string detail;
+};
+
 std::vector<std::uint8_t> EncodeSpatialPoint2dV1(SpatialPoint2dV1 point);
 
 bool DecodeSpatialPoint2dV1(const std::vector<std::uint8_t>& bytes,
@@ -96,5 +150,7 @@ bool DecodeSpatialPoint2dV1(const std::vector<std::uint8_t>& bytes,
 
 SpatialExecutionResultV1 ExecuteSpatialNativeV1(
     const SpatialExecutionRequestV1& request);
+SpatialExecutionResultV2 ExecuteSpatialNativeV2(
+    SpatialExecutionRequestV2&& request);
 
 }  // namespace scratchbird::engine::internal_api::nosql

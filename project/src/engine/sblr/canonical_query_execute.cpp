@@ -33139,6 +33139,11 @@ MakeRcp079CapturedModelLegRegistration(
             });
         if (!inputs.empty() || captured == captured_legs.end() ||
             !captured->captured ||
+            selected_node.memory_bytes_required == 0 ||
+            selected_node.memory_bytes_required >
+                selected_dag.memory_budget_bytes ||
+            selected_node.memory_bytes_required !=
+                captured->execution_request.input.maximum_memory_bytes ||
             selected_node.implementation_id != captured->implementation_id ||
             selected_node.executor_capability_uuid !=
                 captured->capability_uuid ||
@@ -33254,7 +33259,8 @@ MakeRcp079CapturedModelLegRegistration(
           const auto& memory = *captured->columnar_runtime_memory_receipt;
           if (!memory.complete ||
               memory.provider_logical_memory_bytes == 0 ||
-              memory.memory_grant_bytes == 0 ||
+              memory.memory_grant_bytes !=
+                  selected_node.memory_bytes_required ||
               memory.peak_live_memory_bytes > memory.memory_grant_bytes ||
               !RuntimeMaterializedBatchMemoryBytes(executed.output.batch,
                                                    &current_memory_bytes) ||
@@ -54649,6 +54655,146 @@ Rcp079ColumnarLogicalMaterializationAdditionalBytesV1(
   return bytes;
 }
 
+std::optional<std::uint64_t>
+Rcp079SpatialSourceMaterializationAdditionalBytesV1(
+    const std::vector<api::CrudRowVersionRecord>& rows,
+    const exec::ModelSourceInputDescriptorV1& source_input) {
+  std::uint64_t bytes = sizeof(api::nosql::SpatialExecutionRequestV1) +
+                        sizeof(api::nosql::SpatialExecutionRequestV2);
+  const auto add_array = [&](const std::uint64_t count,
+                             const std::uint64_t element_bytes) {
+    std::uint64_t allocation = 0;
+    return CheckedMultiply(count, element_bytes, &allocation) &&
+           CheckedAdd(bytes, allocation, &bytes);
+  };
+  const auto add_string = [&](const std::string_view value) {
+    return CheckedAdd(bytes, value.size(), &bytes) &&
+           CheckedAdd(bytes, 1, &bytes);
+  };
+  if (!add_array(rows.size(), sizeof(api::nosql::SpatialSourceRowV1)) ||
+      !add_string(api::nosql::kSpatialNativeCartesianPoint2dV1) ||
+      !add_string(api::nosql::kSpatialNativeCartesianPoint2dV1) ||
+      !add_string(source_input.operation_id) ||
+      !add_string(source_input.object_uuid) ||
+      !add_string(source_input.spatial_geometry_descriptor_uuid) ||
+      !add_string(source_input.spatial_geometry_type_uuid) ||
+      !add_string(source_input.spatial_crs_uuid) ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& row : rows) {
+    const std::string* point = nullptr;
+    const std::string* crs = nullptr;
+    for (const auto& [name, value] : row.values) {
+      if (name == "spatial_value") point = &value;
+      if (name == "crs_uuid") crs = &value;
+    }
+    if (point == nullptr || crs == nullptr ||
+        !add_string(row.row_uuid) ||
+        !CheckedAdd(bytes, point->size(), &bytes) || !add_string(*crs) ||
+        !add_string(api::nosql::kSpatialNativeCartesianPoint2dV1)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t> Rcp079SpatialResultRowsLogicalMemoryBytesV1(
+    const std::vector<api::nosql::SpatialResultRowV1>& rows) {
+  std::uint64_t bytes = 0;
+  if (!CheckedMultiply(rows.capacity(),
+                       sizeof(api::nosql::SpatialResultRowV1), &bytes)) {
+    return std::nullopt;
+  }
+  const auto add_string = [&](const std::string& value) {
+    return CheckedAdd(bytes, value.capacity(), &bytes) &&
+           CheckedAdd(bytes, 1, &bytes);
+  };
+  for (const auto& row : rows) {
+    if (!add_string(row.row_uuid) ||
+        !CheckedAdd(bytes, row.encoded_point.capacity(), &bytes) ||
+        !add_string(row.crs_uuid)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t> Rcp079SpatialProviderBuildAdditionalBytesV1(
+    const std::vector<api::nosql::SpatialResultRowV1>& rows,
+    const std::vector<exec::ExecutorColumnDescriptor>& public_columns,
+    const exec::ModelSourceInputDescriptorV1& source_input,
+    const std::string& property_uuid,
+    const std::string& security_receipt_uuid) {
+  std::uint64_t bytes = sizeof(exec::ModelProviderBatchV1);
+  const auto add_array = [&](const std::uint64_t count,
+                             const std::uint64_t element_bytes) {
+    std::uint64_t allocation = 0;
+    return CheckedMultiply(count, element_bytes, &allocation) &&
+           CheckedAdd(bytes, allocation, &bytes);
+  };
+  const auto add_string = [&](const std::string_view value) {
+    return CheckedAdd(bytes, value.size(), &bytes) &&
+           CheckedAdd(bytes, 1, &bytes);
+  };
+  std::uint64_t cells = 0;
+  if (!CheckedMultiply(rows.size(), public_columns.size(), &cells) ||
+      !add_array(public_columns.size(),
+                 sizeof(exec::ExecutorColumnDescriptor)) ||
+      !add_array(rows.size(), sizeof(exec::DescriptorTuple)) ||
+      !add_array(cells, sizeof(api::EngineTypedValue)) ||
+      !add_array(rows.size(), sizeof(exec::ModelProviderRowIdentityV1)) ||
+      !add_array(source_input.output_descriptor_ids.size(),
+                 sizeof(std::uint32_t)) ||
+      !add_string(source_input.provider_uuid) ||
+      !add_string(source_input.selected_alternative_uuid) ||
+      !add_string(source_input.capability_uuid) ||
+      !add_string(source_input.result_handle_uuid) ||
+      !add_string(property_uuid) || !add_string(security_receipt_uuid) ||
+      !add_string("SB_MODEL_PROPERTY_DESCRIPTOR_V1") ||
+      !add_string("fixture_order") ||
+      !add_string("single_local_partition") || !add_string("row_uuid") ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes)) {
+    return std::nullopt;
+  }
+  std::uint64_t per_cell_descriptor_bytes = 0;
+  for (const auto& column : public_columns) {
+    if (!add_string(column.stable_name) ||
+        !add_string(column.descriptor.descriptor_uuid.canonical) ||
+        !add_string(column.descriptor.descriptor_kind) ||
+        !add_string(column.descriptor.canonical_type_name) ||
+        !add_string(column.descriptor.encoded_descriptor)) {
+      return std::nullopt;
+    }
+    const auto add_cell_descriptor_string = [&](const std::string& value) {
+      return CheckedAdd(per_cell_descriptor_bytes, value.capacity(),
+                        &per_cell_descriptor_bytes) &&
+             CheckedAdd(per_cell_descriptor_bytes, 1,
+                        &per_cell_descriptor_bytes);
+    };
+    if (!add_cell_descriptor_string(
+            column.descriptor.descriptor_uuid.canonical) ||
+        !add_cell_descriptor_string(column.descriptor.descriptor_kind) ||
+        !add_cell_descriptor_string(column.descriptor.canonical_type_name) ||
+        !add_cell_descriptor_string(column.descriptor.encoded_descriptor)) {
+      return std::nullopt;
+    }
+  }
+  std::uint64_t cell_descriptor_bytes = 0;
+  if (!CheckedMultiply(rows.size(), per_cell_descriptor_bytes,
+                       &cell_descriptor_bytes) ||
+      !CheckedAdd(bytes, cell_descriptor_bytes, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& row : rows) {
+    if (!add_string(row.row_uuid)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalColumnarFamilyJoinQuery(
     const CanonicalCurrentHeapExecutionRequest& input) {
@@ -56772,10 +56918,12 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           return true;
         }
       };
+  const bool source_runtime_memory_receipt_required =
+      !spatial || (!has_match && !has_nearest);
   const auto columnar_runtime_memory_receipt =
-      spatial
-          ? std::shared_ptr<Rcp079ColumnarSourceRuntimeMemoryReceiptV1>{}
-          : std::make_shared<Rcp079ColumnarSourceRuntimeMemoryReceiptV1>();
+      source_runtime_memory_receipt_required
+          ? std::make_shared<Rcp079ColumnarSourceRuntimeMemoryReceiptV1>()
+          : std::shared_ptr<Rcp079ColumnarSourceRuntimeMemoryReceiptV1>{};
   exec::ModelFamilyExecutionRequestV1 execution_request;
   execution_request.input = source_input;
   execution_request.capability.capability_uuid = capability_uuid;
@@ -56951,6 +57099,26 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
         }
         const auto visible_row_memory =
             Rcp079VisibleRowsMemoryBytesV1(read.visible_rows);
+        std::uint64_t spatial_preflight_peak_memory = 0;
+        if (source_input.family_id == "spatial" &&
+            columnar_runtime_memory_receipt != nullptr) {
+          const auto materialization_memory =
+              Rcp079SpatialSourceMaterializationAdditionalBytesV1(
+                  read.visible_rows, source_input);
+          std::uint64_t retained_and_materialized = 0;
+          if (!visible_row_memory.has_value() ||
+              *visible_row_memory >= source_input.maximum_memory_bytes ||
+              !materialization_memory.has_value() ||
+              !CheckedAdd(*visible_row_memory, *materialization_memory,
+                          &retained_and_materialized) ||
+              retained_and_materialized >
+                  source_input.maximum_memory_bytes) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "spatial source materialization exceeds the source memory grant");
+          }
+          spatial_preflight_peak_memory = retained_and_materialized;
+        }
         if (source_input.family_id == "columnar" &&
             (!visible_row_memory.has_value() ||
              *visible_row_memory >= source_input.maximum_memory_bytes)) {
@@ -56998,6 +57166,10 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           std::vector<api::nosql::SpatialSourceRowV1> source_rows;
           source_rows.reserve(read.visible_rows.size());
           for (const auto& row : read.visible_rows) {
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial source-row materialization was cancelled");
+            }
             const auto row_uuid = value_for(row, "row_uuid");
             const auto point = value_for(row, "spatial_value");
             const auto crs = value_for(row, "crs_uuid");
@@ -57236,8 +57408,73 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               return fail(cancellation_diagnostic(),
                           "spatial source execution was cancelled before dispatch");
             }
+            if (columnar_runtime_memory_receipt == nullptr ||
+                !visible_row_memory.has_value() ||
+                *visible_row_memory >= source_input.maximum_memory_bytes) {
+              return fail(
+                  "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "spatial source byte receipt is unavailable");
+            }
+            api::nosql::SpatialExecutionRequestV2 bounded_spatial;
+            bounded_spatial.profile_id = std::move(spatial_request.profile_id);
+            bounded_spatial.operation_id =
+                std::move(spatial_request.operation_id);
+            bounded_spatial.predicate_id =
+                std::move(spatial_request.predicate_id);
+            bounded_spatial.object_uuid =
+                std::move(spatial_request.object_uuid);
+            bounded_spatial.geometry_descriptor_uuid =
+                std::move(spatial_request.geometry_descriptor_uuid);
+            bounded_spatial.geometry_type_uuid =
+                std::move(spatial_request.geometry_type_uuid);
+            bounded_spatial.crs_uuid = std::move(spatial_request.crs_uuid);
+            bounded_spatial.query_crs_uuid =
+                std::move(spatial_request.query_crs_uuid);
+            bounded_spatial.crs_generation =
+                spatial_request.crs_generation;
+            bounded_spatial.source_generation =
+                spatial_request.source_generation;
+            bounded_spatial.catalog_generation =
+                spatial_request.catalog_generation;
+            bounded_spatial.policy_generation =
+                spatial_request.policy_generation;
+            bounded_spatial.security_generation =
+                spatial_request.security_generation;
+            bounded_spatial.resource_generation =
+                spatial_request.resource_generation;
+            bounded_spatial.route_generation =
+                spatial_request.route_generation;
+            bounded_spatial.statement_context =
+                std::move(spatial_request.statement_context);
+            bounded_spatial.current_statement_context =
+                std::move(spatial_request.current_statement_context);
+            bounded_spatial.source_rows =
+                std::move(spatial_request.source_rows);
+            bounded_spatial.encoded_query_point =
+                std::move(spatial_request.encoded_query_point);
+            bounded_spatial.top_k = spatial_request.top_k;
+            bounded_spatial.maximum_rows = spatial_request.maximum_rows;
+            bounded_spatial.maximum_memory_bytes =
+                source_input.maximum_memory_bytes - *visible_row_memory;
+            bounded_spatial.cancellation_requested = [](const void* context) {
+              return (*static_cast<const std::function<bool()>*>(context))();
+            };
+            bounded_spatial.cancellation_context = &cancellation_requested;
+            bounded_spatial.security_admitted =
+                spatial_request.security_admitted;
+            bounded_spatial.exact_scan_fallback_available =
+                spatial_request.exact_scan_fallback_available;
+            bounded_spatial.parser_execution_authority_claimed =
+                spatial_request.parser_execution_authority_claimed;
+            bounded_spatial.provider_visibility_authority_claimed =
+                spatial_request.provider_visibility_authority_claimed;
+            bounded_spatial.provider_finality_authority_claimed =
+                spatial_request.provider_finality_authority_claimed;
+            bounded_spatial.candidate_proof =
+                std::move(spatial_request.candidate_proof);
             auto sourced =
-                api::nosql::ExecuteSpatialNativeV1(spatial_request);
+                api::nosql::ExecuteSpatialNativeV2(
+                    std::move(bounded_spatial));
             if (cancellation_requested()) {
               return fail(cancellation_diagnostic(),
                           "spatial source execution was cancelled after dispatch");
@@ -57253,12 +57490,20 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             if (!sourced.exact_fallback_selected ||
                 !sourced.candidate_recheck_complete ||
                 !sourced.mga_recheck_complete ||
+                sourced.cancellation_observed ||
+                sourced.cancellation_probe_failed ||
+                !sourced.memory_receipt_complete ||
+                sourced.current_live_memory_bytes >
+                    sourced.peak_live_memory_bytes ||
+                sourced.peak_live_memory_bytes >
+                    sourced.memory_grant_bytes ||
+                sourced.memory_grant_bytes !=
+                    source_input.maximum_memory_bytes -
+                        *visible_row_memory ||
                 sourced.physical_operator_id !=
                     "SPATIAL_EXACT_GEOMETRY_SCAN_V1" ||
                 sourced.diagnostic_id != "SB_EXECUTOR_OK" ||
                 !sourced.detail.empty() ||
-                spatial_request.source_rows.size() !=
-                    read.visible_rows.size() ||
                 sourced.rows.size() != read.visible_rows.size() ||
                 sourced.rows.size() > source_input.maximum_rows ||
                 (sourced.rows.size() != 0 &&
@@ -57267,17 +57512,43 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                           "spatial source execution receipt changed");
             }
+            std::uint64_t retained_api_peak_memory = 0;
+            if (!CheckedAdd(*visible_row_memory,
+                            sourced.peak_live_memory_bytes,
+                            &retained_api_peak_memory) ||
+                retained_api_peak_memory >
+                    source_input.maximum_memory_bytes) {
+              return fail(
+                  "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "spatial source retained rows and API peak exceed the source memory grant");
+            }
             for (std::size_t ordinal = 0;
                  ordinal < read.visible_rows.size(); ++ordinal) {
               if (cancellation_requested()) {
                 return fail(cancellation_diagnostic(),
                             "spatial source receipt replay was cancelled");
               }
-              const auto& source_row = spatial_request.source_rows[ordinal];
+              const auto& retained_row = read.visible_rows[ordinal];
+              const auto* retained_row_uuid =
+                  value_for(retained_row, "row_uuid");
+              const auto* retained_point =
+                  value_for(retained_row, "spatial_value");
+              const auto* retained_crs =
+                  value_for(retained_row, "crs_uuid");
               const auto& actual = sourced.rows[ordinal];
-              if (actual.row_uuid != source_row.row_uuid ||
-                  actual.encoded_point != source_row.encoded_point ||
-                  actual.crs_uuid != source_row.crs_uuid ||
+              if (retained_row_uuid == nullptr || retained_point == nullptr ||
+                  retained_crs == nullptr ||
+                  actual.row_uuid != retained_row.row_uuid ||
+                  actual.row_uuid != *retained_row_uuid ||
+                  actual.encoded_point.size() != retained_point->size() ||
+                  !std::ranges::equal(
+                      actual.encoded_point, *retained_point,
+                      [](const std::uint8_t actual_byte,
+                         const char retained_byte) {
+                        return actual_byte ==
+                               static_cast<std::uint8_t>(retained_byte);
+                      }) ||
+                  actual.crs_uuid != *retained_crs ||
                   actual.crs_uuid != source_input.spatial_crs_uuid ||
                   actual.predicate_truth || actual.distance != 0.0 ||
                   std::signbit(actual.distance)) {
@@ -57285,16 +57556,52 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                             "spatial source result changed before publication");
               }
             }
+            const auto provider_build_memory =
+                Rcp079SpatialProviderBuildAdditionalBytesV1(
+                    sourced.rows, public_columns, source_input,
+                    property_uuid, security_receipt_uuid);
+            const auto retained_result_rows_memory =
+                Rcp079SpatialResultRowsLogicalMemoryBytesV1(sourced.rows);
+            std::uint64_t provider_build_peak_memory = 0;
+            if (!provider_build_memory.has_value() ||
+                !retained_result_rows_memory.has_value() ||
+                !CheckedAdd(*visible_row_memory,
+                            *retained_result_rows_memory,
+                            &provider_build_peak_memory) ||
+                !CheckedAdd(provider_build_peak_memory,
+                            *provider_build_memory,
+                            &provider_build_peak_memory) ||
+                provider_build_peak_memory >
+                    source_input.maximum_memory_bytes) {
+              return fail(
+                  "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "spatial provider materialization exceeds the source memory grant");
+            }
+            columnar_runtime_memory_receipt->peak_live_memory_bytes =
+                std::max({spatial_preflight_peak_memory,
+                          retained_api_peak_memory,
+                          provider_build_peak_memory});
             rows = std::move(sourced.rows);
           }
           batch.properties.ordering_id =
               has_nearest ? "spatial_distance_row_uuid_ascending_v1"
                           : "fixture_order";
           batch.batch.columns = public_columns;
+          batch.batch.rows.reserve(rows.size());
+          batch.ordered_row_identities.reserve(rows.size());
           for (auto& row : rows) {
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial provider materialization was cancelled");
+            }
             exec::DescriptorTuple tuple;
+            tuple.values.reserve(public_columns.size());
             for (std::size_t ordinal = 0; ordinal < public_columns.size();
                  ++ordinal) {
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "spatial provider value materialization was cancelled");
+              }
               api::EngineTypedValue value;
               value.descriptor = public_columns[ordinal].descriptor;
               value.setState(api::EngineValueState::value);
@@ -57315,6 +57622,10 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             exec::ModelProviderRowIdentityV1 identity;
             identity.row_uuid = std::move(row.row_uuid);
             batch.ordered_row_identities.push_back(std::move(identity));
+          }
+          if (cancellation_requested()) {
+            return fail(cancellation_diagnostic(),
+                        "spatial provider materialization was cancelled before publication");
           }
         } else {
           exec::DescriptorBatch logical_rows;
