@@ -29175,7 +29175,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   aggregate_registration.executor_capability_abi_version = 1;
   aggregate_registration.engine_owned = true;
   aggregate_registration.accepts_optimizer_publication_v2 = true;
-  aggregate_registration.publishes_runtime_observation_v1 = count_star;
+  aggregate_registration.publishes_runtime_observation_v1 = true;
   aggregate_registration.execute =
       [aggregate_descriptor = prepared_root.aggregate_descriptor,
        result_column = prepared_root.result_column,
@@ -29383,7 +29383,27 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
             step.diagnostic = std::move(aggregate_result.diagnostic);
             return step;
           }
+          std::uint64_t output_memory_bytes = 0;
+          if (!RuntimeMaterializedBatchMemoryBytes(
+                  aggregate_result.output_batch, &output_memory_bytes) ||
+              aggregate_result.executed_strategy !=
+                  exec::CanonicalAggregateExecutionStrategy::serial ||
+              aggregate_result.input_payload_bytes != input_memory_bytes ||
+              aggregate_result.fixed_retained_memory_bytes !=
+                  retained_filter_truth_bytes ||
+              aggregate_result.current_memory_bytes != output_memory_bytes ||
+              aggregate_result.current_memory_bytes >
+                  aggregate_result.peak_memory_bytes ||
+              aggregate_result.peak_memory_bytes > *aggregate_memory_bound) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code = "QOW-DIAG-OPT-017-REFUSAL-V1";
+            step.diagnostic.detail =
+                "global aggregate runtime phase memory receipt is inconsistent";
+            return step;
+          }
           step.authority = aggregate_result.authority;
+          PublishRuntimeMemoryObservation(
+              &step, output_memory_bytes, aggregate_result.peak_memory_bytes);
           output_batch = std::move(aggregate_result.output_batch);
         }
         step.result_handle_id = node.physical_node_id;
