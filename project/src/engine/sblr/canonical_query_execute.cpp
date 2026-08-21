@@ -2141,12 +2141,24 @@ bool BindPreparedRecursiveCtePeakMemory(
   return prepared->planned_peak_memory_bytes <= memory_budget_bytes;
 }
 
+struct PreparedAggregateValueBindingReceipt {
+  std::size_t value_column{0};
+  std::uint32_t descriptor_id{0};
+  std::string descriptor_uuid;
+  std::string type_uuid;
+  bool nullable{false};
+  std::string canonical_type_name;
+  std::string encoded_descriptor;
+};
+
 struct PreparedGlobalAggregateRoot {
   bool ok{false};
   bool count_star{false};
   bool distinct{false};
   std::vector<std::size_t> value_columns;
   std::vector<std::uint32_t> value_descriptor_ids;
+  std::vector<PreparedAggregateValueBindingReceipt>
+      exact_value_binding_receipts;
   std::vector<api::EngineTypedValue> direct_arguments;
   std::optional<std::size_t> filter_column;
   std::uint32_t filter_descriptor_id{0};
@@ -2162,6 +2174,57 @@ struct PreparedGlobalAggregateRoot {
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
   std::string detail;
 };
+
+std::string ExactCanonicalCoreDatatypeUuidV1(
+    std::string_view stable_name);
+
+bool RevalidatePreparedAggregateValueBindings(
+    const std::vector<std::size_t>& value_columns,
+    const std::vector<std::uint32_t>& value_descriptor_ids,
+    const std::vector<PreparedAggregateValueBindingReceipt>& receipts,
+    const exec::DescriptorBatch& input_batch,
+    std::string* detail) {
+  if (detail == nullptr) return false;
+  detail->clear();
+  if (receipts.empty()) return true;
+  if (receipts.size() != value_columns.size() ||
+      receipts.size() != value_descriptor_ids.size()) {
+    *detail = "aggregate exact value-binding receipt arity drifted";
+    return false;
+  }
+  for (std::size_t index = 0; index < receipts.size(); ++index) {
+    const auto& receipt = receipts[index];
+    if (receipt.value_column != value_columns[index] ||
+        receipt.descriptor_id != value_descriptor_ids[index] ||
+        receipt.value_column >= input_batch.columns.size()) {
+      *detail = "aggregate exact value-binding receipt is unresolved";
+      return false;
+    }
+    const auto& column = input_batch.columns[receipt.value_column];
+    const auto expected_nullability =
+        receipt.nullable ? std::string_view("nullable")
+                         : std::string_view("non_null");
+    if (receipt.canonical_type_name != "int64" ||
+        receipt.descriptor_uuid.empty() || receipt.type_uuid.empty() ||
+        receipt.encoded_descriptor !=
+            "type_uuid=" + receipt.type_uuid +
+                ";nullability=" + std::string(expected_nullability) ||
+        column.descriptor_id != receipt.descriptor_id ||
+        column.nullable != receipt.nullable ||
+        column.descriptor.descriptor_uuid.canonical !=
+            receipt.descriptor_uuid ||
+        column.descriptor.descriptor_kind != "scalar" ||
+        column.descriptor.canonical_type_name !=
+            receipt.canonical_type_name ||
+        column.descriptor.encoded_descriptor !=
+            receipt.encoded_descriptor ||
+        !api::QowCanonicalDescriptorIdentityV1(column.descriptor)) {
+      *detail = "aggregate exact int64 value binding drifted";
+      return false;
+    }
+  }
+  return true;
+}
 
 struct PreparedGroupedCountSumRoot {
   bool ok{false};
@@ -2972,6 +3035,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       function == exec::CanonicalAggregateFunction::regr_sxx ||
       function == exec::CanonicalAggregateFunction::regr_sxy ||
       function == exec::CanonicalAggregateFunction::regr_syy;
+  const bool requires_exact_core_int64_input =
+      is_avg || is_statistical || is_pair_statistical;
   const bool is_string_agg =
       function == exec::CanonicalAggregateFunction::string_agg;
   const auto string_aggregate_profile =
@@ -3064,7 +3129,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       "int8", "int16", "int32", "int64"};
   std::array<std::string, kBoundedSignedTypeNames.size()>
       bounded_signed_source_type_uuids;
-  std::string core_int64_result_type_uuid;
+  std::string core_int64_type_uuid;
   std::string core_real64_result_type_uuid;
   std::string core_boolean_type_uuid;
   if (uses_exact_core_int64_result ||
@@ -3104,9 +3169,14 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         return result;
       }
     }
-    if (uses_exact_core_int64_result) {
-      core_int64_result_type_uuid =
-          bounded_signed_source_type_uuids.back();
+  }
+  if (uses_exact_core_int64_result ||
+      requires_exact_core_int64_input) {
+    core_int64_type_uuid = ExactCanonicalCoreDatatypeUuidV1("int64");
+    if (core_int64_type_uuid.empty()) {
+      result.detail =
+          "global aggregate core int64 datatype identity is unavailable";
+      return result;
     }
   }
   if (uses_exact_core_real64_result) {
@@ -3262,7 +3332,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     return result;
   }
   if (uses_exact_core_int64_result &&
-      (descriptor->type_uuid != core_int64_result_type_uuid ||
+      (descriptor->type_uuid != core_int64_type_uuid ||
        descriptor->descriptor_uuid == descriptor->type_uuid ||
        descriptor->descriptor_uuid == aggregate->function_uuid)) {
     result.detail =
@@ -3336,6 +3406,61 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
                          bounded_signed_source_type_uuids[source_index] +
                          ";nullability=" +
                          (source_column.nullable ? "nullable" : "non_null");
+        };
+    const auto exact_core_int64_input =
+        [&](const std::uint32_t expression_descriptor_id,
+            const std::size_t value_column,
+            PreparedAggregateValueBindingReceipt* receipt) {
+          if (receipt == nullptr || core_int64_type_uuid.empty() ||
+              value_column >= input.batch.columns.size()) {
+            return false;
+          }
+          const auto source_descriptor = std::ranges::find_if(
+              dag.descriptors, [&](const auto& candidate) {
+                return candidate.descriptor_id == expression_descriptor_id;
+              });
+          const auto& source_column = input.batch.columns[value_column];
+          const auto expected_nullability =
+              source_column.nullable ? std::string_view("nullable")
+                                     : std::string_view("non_null");
+          if (source_descriptor == dag.descriptors.end() ||
+              source_descriptor->descriptor_uuid !=
+                  source_column.descriptor.descriptor_uuid.canonical ||
+              source_descriptor->descriptor_uuid ==
+                  source_descriptor->type_uuid ||
+              source_descriptor->descriptor_uuid ==
+                  aggregate->function_uuid ||
+              source_descriptor->descriptor_uuid ==
+                  descriptor->descriptor_uuid ||
+              source_descriptor->type_uuid != core_int64_type_uuid ||
+              source_descriptor->nullability !=
+                  (source_column.nullable
+                       ? api::RelationalNullability::kNullable
+                       : api::RelationalNullability::kNonNull) ||
+              source_descriptor->collation_uuid.has_value() ||
+              source_descriptor->timezone_profile_id.has_value() ||
+              source_descriptor->width.has_value() ||
+              source_descriptor->precision.has_value() ||
+              source_descriptor->scale.has_value() ||
+              source_column.descriptor.descriptor_kind != "scalar" ||
+              source_column.descriptor.canonical_type_name != "int64" ||
+              !api::QowCanonicalDescriptorIdentityV1(
+                  source_column.descriptor) ||
+              source_column.descriptor.encoded_descriptor !=
+                  "type_uuid=" + core_int64_type_uuid +
+                      ";nullability=" +
+                      std::string(expected_nullability)) {
+            return false;
+          }
+          *receipt = PreparedAggregateValueBindingReceipt{
+              value_column,
+              expression_descriptor_id,
+              source_descriptor->descriptor_uuid,
+              source_descriptor->type_uuid,
+              source_column.nullable,
+              source_column.descriptor.canonical_type_name,
+              source_column.descriptor.encoded_descriptor};
+          return true;
         };
     const auto exact_boolean_input =
         [&](const std::uint32_t expression_descriptor_id,
@@ -3739,23 +3864,28 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         }
         continue;
       }
+      if (requires_exact_core_int64_input) {
+        PreparedAggregateValueBindingReceipt receipt;
+        if (!exact_core_int64_input(argument->result_descriptor_id,
+                                    value_column, &receipt)) {
+          if (is_avg) {
+            result.detail =
+                "global AVG input must be one exact core int64 column";
+          } else if (is_statistical) {
+            result.detail =
+                "global unary statistical input must be one exact core int64 "
+                "column";
+          } else if (is_pair_statistical) {
+            result.detail =
+                "global pair statistical inputs must each be exact core int64 "
+                "columns";
+          }
+          return result;
+        }
+        result.exact_value_binding_receipts.push_back(std::move(receipt));
+      }
       result.value_columns.push_back(value_column);
       result.value_descriptor_ids.push_back(argument->result_descriptor_id);
-      if ((is_avg || is_statistical || is_pair_statistical) &&
-          input_type != "int64") {
-        if (is_avg) {
-          result.detail = "global AVG input must be a canonical int64 column";
-        } else if (is_statistical) {
-          result.detail =
-              "global unary statistical input must be a canonical int64 "
-              "column";
-        } else if (is_pair_statistical) {
-          result.detail =
-              "global pair statistical inputs must be canonical int64 "
-              "columns";
-        }
-        return result;
-      }
       if (is_boolean &&
           !exact_boolean_input(argument->result_descriptor_id, value_column,
                                input_type)) {
@@ -3933,9 +4063,6 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   result.ok = true;
   return result;
 }
-
-std::string ExactCanonicalCoreDatatypeUuidV1(
-    std::string_view stable_name);
 
 PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
     const api::TypedRelationalDag& dag,
@@ -13258,6 +13385,17 @@ MakeLiveAggregateRegistryRegistration(
         }
         const auto& input_batch =
             *inputs.front().materialized_output_batch;
+        std::string value_binding_detail;
+        if (!RevalidatePreparedAggregateValueBindings(
+                prepared.value_columns, prepared.value_descriptor_ids,
+                prepared.exact_value_binding_receipts, input_batch,
+                &value_binding_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail = std::move(value_binding_detail);
+          return step;
+        }
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
         if (node.physical_node_id != dag.root_physical_node_id) {
@@ -28424,6 +28562,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
        distinct = prepared_root.distinct,
        value_columns = prepared_root.value_columns,
        value_descriptor_ids = prepared_root.value_descriptor_ids,
+       exact_value_binding_receipts =
+           prepared_root.exact_value_binding_receipts,
        direct_arguments = prepared_root.direct_arguments,
        filter_column = prepared_root.filter_column,
        filter_descriptor_id = prepared_root.filter_descriptor_id,
@@ -28465,6 +28605,17 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
               "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
           step.diagnostic.detail =
               "global aggregate input cardinality differs from its selected cost";
+          return step;
+        }
+        std::string value_binding_detail;
+        if (!RevalidatePreparedAggregateValueBindings(
+                value_columns, value_descriptor_ids,
+                exact_value_binding_receipts, input_batch,
+                &value_binding_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail = std::move(value_binding_detail);
           return step;
         }
         const auto aggregate_memory_bound =
