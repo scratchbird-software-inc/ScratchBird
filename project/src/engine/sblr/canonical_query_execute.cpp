@@ -5970,7 +5970,8 @@ bool InitializePlanningAggregateDistinctState(
     const PreparedGlobalAggregateRoot& prepared,
     const std::uint64_t maximum_auxiliary_memory_bytes,
     PlanningAggregateDistinctState* state,
-    std::string* detail) {
+    std::string* detail,
+    const std::optional<std::size_t> admitted_row_count = std::nullopt) {
   if (state == nullptr || detail == nullptr) return false;
   *state = {};
   detail->clear();
@@ -5981,8 +5982,14 @@ bool InitializePlanningAggregateDistinctState(
     *detail = "aggregate DISTINCT planning arity is not exact";
     return false;
   }
+  const auto planned_row_count =
+      admitted_row_count.value_or(input_batch.rows.size());
+  if (planned_row_count > input_batch.rows.size()) {
+    *detail = "aggregate DISTINCT admitted-row count exceeds its input";
+    return false;
+  }
   std::uint64_t planned_container_bytes = 0;
-  if (!CheckedMultiply(input_batch.rows.size(), sizeof(std::string),
+  if (!CheckedMultiply(planned_row_count, sizeof(std::string),
                        &planned_container_bytes) ||
       planned_container_bytes > maximum_auxiliary_memory_bytes) {
     *detail = "aggregate DISTINCT planning container exceeds its memory bound";
@@ -6005,7 +6012,7 @@ bool InitializePlanningAggregateDistinctState(
       }
       state->equality_terms.push_back(std::move(term));
     }
-    state->keys.reserve(input_batch.rows.size());
+    state->keys.reserve(planned_row_count);
   } catch (const std::bad_alloc&) {
     *detail = "aggregate DISTINCT planning allocation was refused";
     return false;
@@ -28684,36 +28691,120 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
     }
   }
   std::uint64_t filter_truth_memory_bytes = 0;
-  if (prepared_root.filter_column.has_value()) {
-    if (input_memory >
-        request.optimizer_request.resource.memory_budget_bytes) {
-      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                    "live aggregate FILTER input exceeds its memory bound");
+  std::size_t admitted_input_row_count = input_row_count;
+  std::uint64_t aggregate_workspace_memory = 0;
+  std::uint64_t distinct_peak_memory_bytes = 0;
+  {
+    std::optional<std::vector<api::EngineSqlTruthValue>>
+        planning_filter_truth_values;
+    if (prepared_root.filter_column.has_value()) {
+      if (input_memory >
+          request.optimizer_request.resource.memory_budget_bytes) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                      "live aggregate FILTER input exceeds its memory bound");
+      }
+      std::vector<api::EngineSqlTruthValue> materialized_filter_truth_values;
+      std::string filter_detail;
+      if (!MaterializeAggregateFilterTruthValues(
+              input.batch, *prepared_root.filter_column,
+              prepared_root.filter_descriptor_id,
+              request.optimizer_request.resource.memory_budget_bytes -
+                  input_memory,
+              &materialized_filter_truth_values, &filter_truth_memory_bytes,
+              &filter_detail)) {
+        return refuse(
+            "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
+            std::move(filter_detail));
+      }
+      planning_filter_truth_values =
+          std::move(materialized_filter_truth_values);
     }
-    std::vector<api::EngineSqlTruthValue> planning_filter_truth_values;
-    std::string filter_detail;
-    if (!MaterializeAggregateFilterTruthValues(
-            input.batch, *prepared_root.filter_column,
-            prepared_root.filter_descriptor_id,
-            request.optimizer_request.resource.memory_budget_bytes -
-                input_memory,
-            &planning_filter_truth_values, &filter_truth_memory_bytes,
-            &filter_detail)) {
+    admitted_input_row_count =
+        planning_filter_truth_values.has_value()
+            ? static_cast<std::size_t>(std::ranges::count(
+                  *planning_filter_truth_values,
+                  api::EngineSqlTruthValue::true_value))
+            : input_row_count;
+    std::vector<std::size_t> planning_transition_ordinals;
+    try {
+      planning_transition_ordinals.reserve(admitted_input_row_count);
+    } catch (const std::bad_alloc&) {
       return refuse(
-          "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
-          std::move(filter_detail));
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+          "live aggregate transition workspace allocation was refused");
+    } catch (const std::length_error&) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+          "live aggregate transition workspace capacity overflowed");
     }
-  }
-  if (prepared_root.distinct) {
-    std::uint64_t distinct_row_overhead = 0;
-    if (!CheckedMultiply(static_cast<std::uint64_t>(input_row_count), 64U,
-                         &distinct_row_overhead) ||
-        !CheckedAdd(aggregate_result_memory, input_memory,
-                    &aggregate_result_memory) ||
-        !CheckedAdd(aggregate_result_memory, distinct_row_overhead,
-                    &aggregate_result_memory)) {
-      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                    "live aggregate DISTINCT state size overflowed");
+    if (!CheckedMultiply(planning_transition_ordinals.capacity(),
+                         sizeof(std::size_t),
+                         &aggregate_workspace_memory) ||
+        input_memory >
+            request.optimizer_request.resource.memory_budget_bytes ||
+        filter_truth_memory_bytes >
+            request.optimizer_request.resource.memory_budget_bytes -
+                input_memory ||
+        aggregate_workspace_memory >
+            request.optimizer_request.resource.memory_budget_bytes -
+                input_memory - filter_truth_memory_bytes) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+          "live aggregate transition workspace exceeds its memory bound");
+    }
+    if (prepared_root.distinct) {
+      std::uint64_t distinct_generation_bound = 0;
+      std::uint64_t distinct_comparison_bound = 0;
+      if (!CheckedMultiply(admitted_input_row_count,
+                           prepared_root.value_columns.size(),
+                           &distinct_generation_bound) ||
+          (admitted_input_row_count > 1 &&
+           (!CheckedMultiply(admitted_input_row_count,
+                             admitted_input_row_count - 1,
+                             &distinct_comparison_bound)))) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+            "live aggregate DISTINCT work or memory bound overflowed");
+      }
+      distinct_comparison_bound /= 2;
+      const auto distinct_memory_bound =
+          request.optimizer_request.resource.memory_budget_bytes -
+          input_memory - filter_truth_memory_bytes -
+          aggregate_workspace_memory;
+      PlanningAggregateDistinctState distinct_state;
+      std::string distinct_detail;
+      if (!InitializePlanningAggregateDistinctState(
+              request.context, input.batch, prepared_root,
+              distinct_memory_bound, &distinct_state, &distinct_detail,
+              admitted_input_row_count)) {
+        return refuse(
+            "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
+            "live aggregate DISTINCT: " + distinct_detail);
+      }
+      for (std::size_t row = 0; row < input.batch.rows.size(); ++row) {
+        if (planning_filter_truth_values.has_value() &&
+            (*planning_filter_truth_values)[row] !=
+                api::EngineSqlTruthValue::true_value) {
+          continue;
+        }
+        std::array<const api::EngineTypedValue*, 2> values{};
+        for (std::size_t value = 0;
+             value < prepared_root.value_columns.size(); ++value) {
+          values[value] = &input.batch.rows[row].values[
+              prepared_root.value_columns[value]];
+        }
+        bool admitted = false;
+        if (!AdmitPlanningAggregateDistinctTuple(
+                values, prepared_root.value_columns.size(),
+                distinct_generation_bound, distinct_comparison_bound,
+                distinct_memory_bound, &distinct_state, &admitted,
+                &distinct_detail)) {
+          return refuse(
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
+              "live aggregate DISTINCT: " + distinct_detail);
+        }
+      }
+      distinct_peak_memory_bytes = distinct_state.peak_memory_bytes;
     }
   }
   if (ordered_collection_expression) {
@@ -28772,23 +28863,17 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
                     "live approximate aggregate result size overflowed");
     }
   }
-  if (!CheckedAdd(aggregate_result_memory, filter_truth_memory_bytes,
-                  &aggregate_result_memory)) {
-    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "live aggregate FILTER state size overflowed");
-  }
-  std::uint64_t aggregate_workspace_memory = 0;
-  if (!CheckedMultiply(input_row_count, sizeof(std::size_t),
-                       &aggregate_workspace_memory) ||
-      !CheckedAdd(aggregate_result_memory, aggregate_workspace_memory,
-                  &aggregate_result_memory)) {
-    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "live aggregate transition workspace size overflowed");
-  }
   if (!CheckedAdd(aggregate_result_memory,
                   kCanonicalAggregateKernelBaseMemoryBytes,
-                  &aggregate_result_memory) ||
-      !CheckedAdd(input_memory, aggregate_result_memory, &total_memory)) {
+                  &aggregate_result_memory)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live aggregate result or state size overflowed");
+  }
+  const auto aggregate_phase_memory =
+      std::max(aggregate_result_memory, distinct_peak_memory_bytes);
+  if (!CheckedAdd(input_memory, filter_truth_memory_bytes, &total_memory) ||
+      !CheckedAdd(total_memory, aggregate_workspace_memory, &total_memory) ||
+      !CheckedAdd(total_memory, aggregate_phase_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live global aggregate input or result size overflowed");
   }
