@@ -8513,7 +8513,10 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
       return result;
     }
 
-    if (result_type_name == "text" &&
+    const bool character_result_type =
+        dt::CanonicalTypeIdFromStableName(result_type_name) ==
+        dt::CanonicalTypeId::character;
+    if (character_result_type &&
         profile.equality_profile ==
             exec::CanonicalSetOperationEqualityProfile::kNullEqualBoundCollation) {
       if (!descriptor->second->collation_uuid.has_value()) {
@@ -8562,7 +8565,7 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
       result.collation_bindings.push_back(std::move(binding));
 #endif
     } else if (descriptor->second->collation_uuid.has_value() &&
-               result_type_name != "text") {
+               !character_result_type) {
       result.detail = "set-operation collation targets a non-character type";
       return result;
     }
@@ -8579,8 +8582,8 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
           descriptor->second->descriptor_uuid,
           descriptor->second->type_uuid,
           ResultNullability(descriptor->second->nullability),
-          std::nullopt,
-          std::nullopt};
+          descriptor->second->collation_uuid,
+          descriptor->second->timezone_profile_id};
     }
     result.result_bindings.push_back(std::move(binding));
   }
