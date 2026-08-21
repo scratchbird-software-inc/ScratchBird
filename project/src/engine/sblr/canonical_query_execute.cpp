@@ -15175,7 +15175,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     if (current->node_kind ==
         plan::CanonicalLogicalRelationalNodeKind::kValues) {
       if (current->semantic_variant_id != "values.literal-table.v1" ||
-          !current->input_logical_node_ids.empty()) {
+          !current->input_logical_node_ids.empty() ||
+          !current->required_object_uuids.empty()) {
         return result;
       }
       break;
