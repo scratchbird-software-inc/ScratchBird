@@ -20930,6 +20930,28 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         exec::DescriptorBatch output;
         output.columns = input_batch.columns;
         auto result_bindings = state.result_bindings;
+        std::unordered_set<std::string> cardinality_result_identity_domain;
+        if (!CanonicalUuidText(subquery_capability_uuid)) {
+          return refuse(
+              std::string(kPayloadDiagnostic),
+              "cardinality subquery capability identity is unresolved");
+        }
+        cardinality_result_identity_domain.insert(subquery_capability_uuid);
+        for (const auto& source_column : input_batch.columns) {
+          const auto source_type_uuid = ExactEncodedDescriptorField(
+              source_column.descriptor.encoded_descriptor, "type_uuid");
+          if (!CanonicalUuidText(
+                  source_column.descriptor.descriptor_uuid.canonical) ||
+              !source_type_uuid.has_value() ||
+              !CanonicalUuidText(*source_type_uuid)) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "cardinality subquery source identity domain is unresolved");
+          }
+          cardinality_result_identity_domain.insert(
+              source_column.descriptor.descriptor_uuid.canonical);
+          cardinality_result_identity_domain.insert(*source_type_uuid);
+        }
         for (std::size_t column = 0; column < output.columns.size(); ++column) {
           if (!output.columns[column].nullable) {
             output.columns[column].nullable = true;
@@ -20940,12 +20962,32 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   "cardinality subquery result lacks a nullable descriptor carrier");
             }
           }
+          const auto result_descriptor_uuid = DerivedCanonicalUuid(
+              identity_scope,
+              "composition.subquery.cardinality.result." +
+                  std::to_string(node.logical_node_id) + "." +
+                  node.semantic_variant_id + "." + std::to_string(column) +
+                  "." +
+                  input_batch.columns[column]
+                      .descriptor.descriptor_uuid.canonical);
+          if (!CanonicalUuidText(result_descriptor_uuid) ||
+              !cardinality_result_identity_domain
+                   .insert(result_descriptor_uuid)
+                   .second) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "cardinality subquery result descriptor identity collides with its bound role domain");
+          }
+          output.columns[column].descriptor.descriptor_uuid.canonical =
+              result_descriptor_uuid;
           if (result_bindings[column].visible) {
             if (!result_bindings[column].published_descriptor.has_value()) {
               return refuse(
                   std::string(kPayloadDiagnostic),
                   "cardinality subquery visible result binding is unresolved");
             }
+            result_bindings[column].published_descriptor->descriptor_uuid =
+                result_descriptor_uuid;
             result_bindings[column].published_descriptor->nullability =
                 exec::CanonicalResultNullability::kNullable;
           }

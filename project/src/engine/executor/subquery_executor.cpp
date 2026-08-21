@@ -19,14 +19,30 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <iterator>
 #include <limits>
 #include <optional>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::executor {
 namespace {
+
+bool IsCanonicalUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-' ||
+      value == "00000000-0000-0000-0000-000000000000") {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const auto ch = static_cast<unsigned char>(value[index]);
+    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+  }
+  return true;
+}
 
 DescriptorRuntimeDiagnostic TableSubqueryRefusal(std::string detail) {
   DescriptorRuntimeDiagnostic diagnostic;
@@ -211,6 +227,16 @@ bool TableSubqueryImplementationMatches(
                  "subquery.quantified.int64.typed.v1";
   }
   return false;
+}
+
+const PhysicalNodeRecord* FindPhysicalNode(
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t physical_node_id) {
+  const auto found = std::ranges::find_if(
+      execution_dag.nodes, [&](const auto& node) {
+        return node.physical_node_id == physical_node_id;
+      });
+  return found == execution_dag.nodes.end() ? nullptr : &*found;
 }
 
 CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
@@ -428,15 +454,35 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubqueryBound(
   if (table.output_batch.columns.size() != 1) {
     return refuse("scalar subquery requires exactly one result column");
   }
+  const auto* selected_node =
+      FindPhysicalNode(execution_dag, scoped_root_physical_node_id);
+  if (selected_node == nullptr ||
+      !IsCanonicalUuid(selected_node->executor_capability_uuid)) {
+    return refuse("scalar subquery capability identity is unresolved");
+  }
 
   const auto& source_column = table.output_batch.columns.front();
   const auto& source_descriptor = source_column.descriptor;
   const auto& result_descriptor = request.result_column.descriptor;
+  const auto source_type_uuid =
+      CanonicalDescriptorField(source_descriptor, "type_uuid");
+  const auto result_type_uuid =
+      CanonicalDescriptorField(result_descriptor, "type_uuid");
   if (request.value_expression_descriptor_id == 0 ||
       request.value_expression_descriptor_id != source_column.descriptor_id ||
       request.result_column.descriptor_id != source_column.descriptor_id ||
       request.result_column.stable_name.empty() ||
       !request.result_column.nullable ||
+      !source_type_uuid.has_value() || !result_type_uuid.has_value() ||
+      !IsCanonicalUuid(*source_type_uuid) ||
+      !IsCanonicalUuid(*result_type_uuid) ||
+      *source_type_uuid != *result_type_uuid ||
+      !IsCanonicalUuid(result_descriptor.descriptor_uuid.canonical) ||
+      result_descriptor.descriptor_uuid.canonical ==
+          source_descriptor.descriptor_uuid.canonical ||
+      result_descriptor.descriptor_uuid.canonical == *source_type_uuid ||
+      result_descriptor.descriptor_uuid.canonical ==
+          selected_node->executor_capability_uuid ||
       !CanonicalDerivedDescriptorTypeMatches(
           source_descriptor, source_column.nullable, result_descriptor,
           true)) {
@@ -535,6 +581,27 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubqueryBound(
     return refuse("row subquery result width is not completely bound");
   }
 
+  const auto* selected_node =
+      FindPhysicalNode(execution_dag, scoped_root_physical_node_id);
+  if (selected_node == nullptr ||
+      !IsCanonicalUuid(selected_node->executor_capability_uuid)) {
+    return refuse("row subquery capability identity is unresolved");
+  }
+  std::unordered_set<std::string_view> source_identity_domain;
+  source_identity_domain.insert(selected_node->executor_capability_uuid);
+  for (const auto& source : table.output_batch.columns) {
+    const auto source_type_uuid =
+        CanonicalDescriptorField(source.descriptor, "type_uuid");
+    if (!IsCanonicalUuid(source.descriptor.descriptor_uuid.canonical) ||
+        !source_type_uuid.has_value() ||
+        !IsCanonicalUuid(*source_type_uuid)) {
+      return refuse("row subquery source identity domain is unresolved");
+    }
+    source_identity_domain.insert(
+        source.descriptor.descriptor_uuid.canonical);
+    source_identity_domain.insert(*source_type_uuid);
+  }
+  std::unordered_set<std::string_view> result_descriptor_uuids;
   std::vector<std::uint32_t> result_descriptor_ids;
   result_descriptor_ids.reserve(width);
   for (std::size_t column = 0; column < width; ++column) {
@@ -542,11 +609,25 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubqueryBound(
     const auto& bound = request.result_columns[column];
     const auto& source_descriptor = source.descriptor;
     const auto& bound_descriptor = bound.descriptor;
+    const auto source_type_uuid =
+        CanonicalDescriptorField(source_descriptor, "type_uuid");
+    const auto result_type_uuid =
+        CanonicalDescriptorField(bound_descriptor, "type_uuid");
     if (request.row_expression_descriptor_ids[column] == 0 ||
         request.row_expression_descriptor_ids[column] !=
             source.descriptor_id ||
         bound.descriptor_id != source.descriptor_id ||
         bound.stable_name.empty() || !bound.nullable ||
+        !source_type_uuid.has_value() || !result_type_uuid.has_value() ||
+        !IsCanonicalUuid(*source_type_uuid) ||
+        !IsCanonicalUuid(*result_type_uuid) ||
+        *source_type_uuid != *result_type_uuid ||
+        !IsCanonicalUuid(bound_descriptor.descriptor_uuid.canonical) ||
+        source_identity_domain.contains(
+            bound_descriptor.descriptor_uuid.canonical) ||
+        !result_descriptor_uuids
+             .insert(bound_descriptor.descriptor_uuid.canonical)
+             .second ||
         !CanonicalDerivedDescriptorTypeMatches(
             source_descriptor, source.nullable, bound_descriptor, true)) {
       return refuse("row result descriptor is not the bound source field");
