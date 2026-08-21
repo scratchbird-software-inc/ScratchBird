@@ -34102,7 +34102,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           "canonical.time-series.mixed-join." +
           composition_mixed_join_component + ".v1";
       join_profile.estimated_rows = kTimeSeriesCompositionRowBound;
-      join_profile.memory_bytes_required = 1;
+      join_profile.memory_bytes_required = planning.memory_budget_bytes;
       join_profile.minimum_input_count = 2;
       join_profile.maximum_input_count = 2;
       join_profile.runtime_peak_from_callback_batches = true;
@@ -34393,7 +34393,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       join_profile.transformation_rule_id =
           exec::CanonicalTimeSeriesAsofTransformationReceiptV1(receipt);
       join_profile.estimated_rows = composition_asof_maximum_output_rows;
-      join_profile.memory_bytes_required = 1;
+      join_profile.memory_bytes_required = planning.memory_budget_bytes;
       join_profile.minimum_input_count = 2;
       join_profile.maximum_input_count = 2;
       join_profile.runtime_peak_from_callback_batches = true;
@@ -38626,7 +38626,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     join_profile.transformation_rule_id =
         "canonical.search.mixed-join.inner.v1";
     join_profile.estimated_rows = 65536;
-    join_profile.memory_bytes_required = 1;
+    join_profile.memory_bytes_required = planning.memory_budget_bytes;
     join_profile.minimum_input_count = 2;
     join_profile.maximum_input_count = 2;
     join_profile.runtime_peak_from_callback_batches = true;
@@ -40856,7 +40856,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
     join_profile.transformation_rule_id =
         "canonical.key-value.mixed-join." + mixed_join_component + ".v1";
     join_profile.estimated_rows = 65536;
-    join_profile.memory_bytes_required = 1;
+    join_profile.memory_bytes_required = planning.memory_budget_bytes;
     join_profile.minimum_input_count = 2;
     join_profile.maximum_input_count = 2;
     join_profile.runtime_peak_from_callback_batches = true;
