@@ -15158,6 +15158,17 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
                                       cancellation_policy, &step);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                sort_result, *execution_dag, node,
+                sort_request.mga_authority.statement_context) ||
+            sort_result.output_batch.rows.size() !=
+                input_batch.rows.size()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SORT-EXECUTION-V1";
+          step.diagnostic.detail = "SORT execution receipt changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
@@ -15263,6 +15274,17 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
         if (!sorted.diagnostic.ok) {
           BindLiveCancellationFailure(std::move(sorted.diagnostic),
                                       cancellation_policy, &step);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                sorted, *execution_dag, node,
+                sort_request.mga_authority.statement_context) ||
+            sorted.output_batch.rows.size() != input_batch.rows.size()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-EXECUTION-V1";
+          step.diagnostic.detail =
+              "object-backed SORT execution receipt changed";
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -15395,6 +15417,17 @@ MakeLiveExpressionSortRegistration(
         if (!sorted.diagnostic.ok) {
           BindLiveCancellationFailure(std::move(sorted.diagnostic),
                                       cancellation_policy, &step);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                sorted, *execution_dag, node,
+                mga_authority.statement_context) ||
+            sorted.output_batch.rows.size() != input_batch.rows.size()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SORT-EXECUTION-V1";
+          step.diagnostic.detail =
+              "expression SORT execution receipt changed";
           return step;
         }
         auto output_validation = exec::ValidateCanonicalDescriptorBatch(
