@@ -5791,7 +5791,9 @@ bool PrepareCanonicalSortOrderTerm(
           : exec::CanonicalDescriptorNullPlacement::last;
   term->collation_uuid = logical_term.collation_uuid;
 
-  if (column.descriptor.canonical_type_name == "text") {
+  if (dt::CanonicalTypeIdFromStableName(
+          column.descriptor.canonical_type_name) ==
+      dt::CanonicalTypeId::character) {
 #if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
     *term = {};
     *detail =
@@ -6011,7 +6013,9 @@ PreparedDistinctRoot PrepareQueryDistinctRoot(
     term.expression_descriptor_id = descriptor_id;
     term.direction = exec::CanonicalDescriptorOrderDirection::ascending;
     term.null_placement = exec::CanonicalDescriptorNullPlacement::first;
-    if (input.batch.columns[column].descriptor.canonical_type_name == "text") {
+    if (dt::CanonicalTypeIdFromStableName(
+            input.batch.columns[column].descriptor.canonical_type_name) ==
+        dt::CanonicalTypeId::character) {
       if (!descriptor->second->collation_uuid.has_value()) {
         result.equality_terms.clear();
         result.detail =
