@@ -468,6 +468,7 @@ add_library(sb_engine_internal_api
   sblr_database_serialize_logical_snapshot_coordinator.cpp
   sblr_database_deserialize_logical_snapshot_coordinator.cpp
   sblr_ddl_create_macro_coordinator.cpp
+  sblr_ddl_drop_macro_coordinator.cpp
   sblr_ddl_alter_rewrite_rule_coordinator.cpp
   sblr_ddl_drop_trigger_coordinator.cpp
   sblr_aggregate_coordinator.cpp
