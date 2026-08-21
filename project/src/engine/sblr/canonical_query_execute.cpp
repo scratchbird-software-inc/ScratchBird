@@ -13456,25 +13456,47 @@ MakeLiveCorrelatedSubqueryRegistration(
               "correlated subquery execution receipt changed";
           return step;
         }
+        if (poll_cancellation("before result flattening preflight")) {
+          return step;
+        }
+        std::size_t flattened_row_count = 0;
+        for (std::size_t scope_index = 0;
+             scope_index < correlated.scopes.size(); ++scope_index) {
+          if (poll_cancellation("while preflighting a result scope")) {
+            return step;
+          }
+          const auto& scope = correlated.scopes[scope_index];
+          if (scope.outer_row_index != scope_index ||
+              flattened_row_count > correlated.result_row_count ||
+              scope.output_batch.rows.size() >
+                  correlated.result_row_count - flattened_row_count) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-013-CORRELATED-REFUSAL-V1";
+            step.diagnostic.detail =
+                "correlated subquery scope preflight changed";
+            return step;
+          }
+          flattened_row_count += scope.output_batch.rows.size();
+        }
+        if (flattened_row_count != correlated.result_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-013-CORRELATED-REFUSAL-V1";
+          step.diagnostic.detail =
+              "correlated subquery result cardinality changed";
+          return step;
+        }
         exec::DescriptorBatch output;
         output.columns =
             inputs[1].materialized_output_batch->columns;
-        output.rows.reserve(correlated.result_row_count);
-        if (poll_cancellation("before result flattening")) return step;
+        output.rows.reserve(flattened_row_count);
         for (std::size_t scope_index = 0;
              scope_index < correlated.scopes.size(); ++scope_index) {
           if (poll_cancellation("while flattening a result scope")) {
             return step;
           }
           auto& scope = correlated.scopes[scope_index];
-          if (scope.outer_row_index != scope_index) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-QRY-013-CORRELATED-REFUSAL-V1";
-            step.diagnostic.detail =
-                "correlated subquery scope order changed";
-            return step;
-          }
           for (auto& row : scope.output_batch.rows) {
             if (poll_cancellation("while flattening a result row")) {
               return step;
