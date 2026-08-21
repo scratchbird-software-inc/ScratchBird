@@ -899,6 +899,7 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
       DecodeInt64Value(request.bucket_count_operand);
   const auto output_type_uuid = CanonicalDescriptorField(
       request.ntile_column.descriptor, "type_uuid");
+  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
   const auto output_nullability = CanonicalDescriptorField(
       request.ntile_column.descriptor, "nullability");
   const auto operand_type_uuid = CanonicalDescriptorField(
@@ -914,6 +915,8 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
           request.ntile_column.descriptor) ||
       !output_type_uuid.has_value() ||
       !IsCanonicalUuid(*output_type_uuid) ||
+      canonical_int64_type_uuid.empty() ||
+      *output_type_uuid != canonical_int64_type_uuid ||
       !output_nullability.has_value() ||
       *output_nullability != "non_null" ||
       request.ntile_column.descriptor.descriptor_uuid.canonical ==
