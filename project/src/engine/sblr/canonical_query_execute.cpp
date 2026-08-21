@@ -6602,6 +6602,128 @@ bool ExactCanonicalBooleanWindowSourceV1(
                  (runtime_nullable ? "nullable" : "non_null");
 }
 
+bool CanonicalDescriptorFieldEqualsV1(
+    const api::EngineDescriptor& descriptor,
+    const std::string_view key,
+    const std::optional<std::string_view> expected) {
+  const auto prefix = std::string(key) + "=";
+  std::optional<std::string_view> value;
+  std::size_t begin = 0;
+  while (begin <= descriptor.encoded_descriptor.size()) {
+    const auto end = descriptor.encoded_descriptor.find(';', begin);
+    const auto field = std::string_view(descriptor.encoded_descriptor).substr(
+        begin, end == std::string::npos ? std::string::npos : end - begin);
+    if (field.starts_with(prefix)) {
+      if (value.has_value()) return false;
+      value = field.substr(prefix.size());
+    }
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return expected.has_value() ? value == expected : !value.has_value();
+}
+
+bool ExactCanonicalCountWindowSourceV1(
+    const api::RelationalTypeDescriptor& relational_descriptor,
+    const api::EngineDescriptor& runtime_descriptor,
+    const bool runtime_nullable,
+    const std::string_view function_uuid,
+    const std::string_view result_descriptor_uuid,
+    const std::string_view result_type_uuid,
+    const std::string_view order_descriptor_uuid,
+    const std::string_view order_type_uuid,
+    const bool same_order_ordinal,
+    const std::string_view ordering_property_uuid,
+    const std::string_view window_property_uuid,
+    const std::string_view window_frame_descriptor_uuid) {
+  const auto expected_nullability =
+      runtime_nullable ? std::string_view("nullable")
+                       : std::string_view("non_null");
+  const auto expected_legacy_nullability =
+      runtime_nullable ? std::string_view("true") : std::string_view("false");
+  const bool exact_nullability =
+      (CanonicalDescriptorFieldEqualsV1(
+           runtime_descriptor, "nullability", expected_nullability) &&
+       CanonicalDescriptorFieldEqualsV1(runtime_descriptor, "nullable",
+                                        std::nullopt)) ||
+      (CanonicalDescriptorFieldEqualsV1(runtime_descriptor, "nullability",
+                                        std::nullopt) &&
+       CanonicalDescriptorFieldEqualsV1(
+           runtime_descriptor, "nullable", expected_legacy_nullability));
+  const auto width = relational_descriptor.width.has_value()
+                         ? std::optional<std::string>(
+                               std::to_string(*relational_descriptor.width))
+                         : std::nullopt;
+  const auto precision =
+      relational_descriptor.precision.has_value()
+          ? std::optional<std::string>(
+                std::to_string(*relational_descriptor.precision))
+          : std::nullopt;
+  const auto scale = relational_descriptor.scale.has_value()
+                         ? std::optional<std::string>(
+                               std::to_string(*relational_descriptor.scale))
+                         : std::nullopt;
+  const auto field_matches = [&](const std::string_view key,
+                                 const std::optional<std::string>& value) {
+    return CanonicalDescriptorFieldEqualsV1(
+        runtime_descriptor, key,
+        value.has_value()
+            ? std::optional<std::string_view>(*value)
+            : std::optional<std::string_view>{});
+  };
+  return CanonicalUuidText(relational_descriptor.type_uuid) &&
+         !result_type_uuid.empty() &&
+         relational_descriptor.descriptor_uuid ==
+             runtime_descriptor.descriptor_uuid.canonical &&
+         relational_descriptor.descriptor_uuid !=
+             relational_descriptor.type_uuid &&
+         relational_descriptor.descriptor_uuid != result_type_uuid &&
+         (same_order_ordinal || relational_descriptor.descriptor_uuid !=
+                                    order_descriptor_uuid) &&
+         relational_descriptor.descriptor_uuid != order_type_uuid &&
+         relational_descriptor.descriptor_uuid != function_uuid &&
+         relational_descriptor.descriptor_uuid != result_descriptor_uuid &&
+         relational_descriptor.descriptor_uuid != ordering_property_uuid &&
+         relational_descriptor.descriptor_uuid != window_property_uuid &&
+         relational_descriptor.descriptor_uuid !=
+             window_frame_descriptor_uuid &&
+         relational_descriptor.type_uuid != function_uuid &&
+         relational_descriptor.type_uuid != result_descriptor_uuid &&
+         relational_descriptor.type_uuid != order_descriptor_uuid &&
+         relational_descriptor.type_uuid != ordering_property_uuid &&
+         relational_descriptor.type_uuid != window_property_uuid &&
+         relational_descriptor.type_uuid != window_frame_descriptor_uuid &&
+         relational_descriptor.nullability ==
+             (runtime_nullable ? api::RelationalNullability::kNullable
+                               : api::RelationalNullability::kNonNull) &&
+         runtime_descriptor.descriptor_kind == "scalar" &&
+         !runtime_descriptor.canonical_type_name.empty() &&
+         api::QowCanonicalDescriptorIdentityV1(runtime_descriptor) &&
+         exec::CanonicalDerivedDescriptorTypeMatches(
+             runtime_descriptor, runtime_nullable, runtime_descriptor,
+             runtime_nullable) &&
+         CanonicalDescriptorFieldEqualsV1(runtime_descriptor, "type_uuid",
+                                          relational_descriptor.type_uuid) &&
+         exact_nullability &&
+         CanonicalDescriptorFieldEqualsV1(
+             runtime_descriptor, "collation_uuid",
+             relational_descriptor.collation_uuid.has_value()
+                 ? std::optional<std::string_view>(
+                       *relational_descriptor.collation_uuid)
+                 : std::optional<std::string_view>{}) &&
+         (!relational_descriptor.collation_uuid.has_value() ||
+          CanonicalUuidText(*relational_descriptor.collation_uuid)) &&
+         CanonicalDescriptorFieldEqualsV1(
+             runtime_descriptor, "timezone_profile_id",
+             relational_descriptor.timezone_profile_id.has_value()
+                 ? std::optional<std::string_view>(
+                       *relational_descriptor.timezone_profile_id)
+                 : std::optional<std::string_view>{}) &&
+         field_matches("width", width) &&
+         field_matches("precision", precision) &&
+         field_matches("scale", scale);
+}
+
 bool ExactCanonicalBoundedSignedWindowSourceV1(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
@@ -19240,6 +19362,45 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 "composition " + std::string(ranking_name) +
                     " order key is not one exact core bounded-signed "
                     "column");
+          }
+        }
+        if (aggregate_count_window && !ranking.aggregate_count_star) {
+          const auto source_column = *ranking.navigation_value_column;
+          const auto order_column = prepared_sort->order_terms.front().column;
+          const auto source_relational_descriptor = std::ranges::find_if(
+              request.relational_dag.descriptors, [&](const auto& candidate) {
+                return source_column < input_node.output_descriptor_ids.size() &&
+                       candidate.descriptor_id ==
+                           input_node.output_descriptor_ids[source_column];
+              });
+          const auto order_relational_descriptor = std::ranges::find_if(
+              request.relational_dag.descriptors, [&](const auto& candidate) {
+                return order_column < input_node.output_descriptor_ids.size() &&
+                       candidate.descriptor_id ==
+                           input_node.output_descriptor_ids[order_column];
+              });
+          if (source_column >= input_batch.columns.size() ||
+              order_column >= input_batch.columns.size() ||
+              source_relational_descriptor ==
+                  request.relational_dag.descriptors.end() ||
+              order_relational_descriptor ==
+                  request.relational_dag.descriptors.end() ||
+              !ExactCanonicalCountWindowSourceV1(
+                  *source_relational_descriptor,
+                  input_batch.columns[source_column].descriptor,
+                  input_batch.columns[source_column].nullable,
+                  ranking_profile.function_uuid,
+                  output_descriptor->descriptor_uuid, result_type_uuid,
+                  input_batch.columns[order_column]
+                      .descriptor.descriptor_uuid.canonical,
+                  order_relational_descriptor->type_uuid,
+                  source_column == order_column,
+                  prepared_sort->ordering_property_uuid,
+                  ranking.window_property_uuid,
+                  ranking.window_frame_descriptor_uuid)) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "composition COUNT source descriptor is not exact");
           }
         }
         if (aggregate_boolean_window || aggregate_bounded_signed_window) {
@@ -53052,6 +53213,35 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
                       "object-backed " + std::string(ranking_name) +
                           " source relational descriptor is unresolved");
+      }
+      if (aggregate_count_window) {
+        const auto order_column = heap_descriptor_order_terms.front().column;
+        const auto order_relational_descriptor = std::ranges::find_if(
+            dag.descriptors, [&](const auto& candidate) {
+              return order_column < sort_node->output_descriptor_ids.size() &&
+                     candidate.descriptor_id ==
+                         sort_node->output_descriptor_ids[order_column];
+            });
+        if (order_column >=
+                admission.current_relation_projection_descriptors.size() ||
+            order_relational_descriptor == dag.descriptors.end() ||
+            !ExactCanonicalCountWindowSourceV1(
+                *source_relational_descriptor, source_descriptor,
+                source_relational_descriptor->nullability ==
+                    api::RelationalNullability::kNullable,
+                ranking_profile.function_uuid,
+                output_descriptor->descriptor_uuid, result_type_uuid,
+                admission.current_relation_projection_descriptors[order_column]
+                    .descriptor_uuid.canonical,
+                order_relational_descriptor->type_uuid,
+                *ranking.navigation_value_column == order_column,
+                heap_sort_binding.ordering_property_uuid,
+                ranking.window_property_uuid,
+                ranking.window_frame_descriptor_uuid)) {
+          return refuse(
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+              "object-backed COUNT source descriptor is not exact");
+        }
       }
       if ((aggregate_boolean_window || aggregate_bounded_signed_window) &&
           (aggregate_boolean_window

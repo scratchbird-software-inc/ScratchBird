@@ -1895,6 +1895,38 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
                     .descriptor,
                 "type_uuid")
           : std::optional<std::string_view>{};
+  const auto source_nullability =
+      value_column_in_range
+          ? CanonicalDescriptorField(
+                execution_ordered_input_batch.columns[*request.value_column]
+                    .descriptor,
+                "nullability")
+          : std::optional<std::string_view>{};
+  const auto source_legacy_nullability =
+      value_column_in_range
+          ? CanonicalDescriptorField(
+                execution_ordered_input_batch.columns[*request.value_column]
+                    .descriptor,
+                "nullable")
+          : std::optional<std::string_view>{};
+  const bool exact_source_nullability =
+      value_column_in_range &&
+      ((source_nullability ==
+            std::optional<std::string_view>(
+                execution_ordered_input_batch
+                        .columns[*request.value_column]
+                        .nullable
+                    ? "nullable"
+                    : "non_null") &&
+        !source_legacy_nullability.has_value()) ||
+       (!source_nullability.has_value() &&
+        source_legacy_nullability ==
+            std::optional<std::string_view>(
+                execution_ordered_input_batch
+                        .columns[*request.value_column]
+                        .nullable
+                    ? "true"
+                    : "false")));
   const auto canonical_source_type_uuid =
       value_column_in_range
           ? CanonicalCoreDatatypeUuid(
@@ -1962,7 +1994,29 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
   if (count_window) {
     exact_value_result_contract =
         (count_star_window ||
-         (value_column_in_range && source_type_uuid.has_value())) &&
+         (value_column_in_range && source_type_uuid.has_value() &&
+          IsCanonicalUuid(*source_type_uuid) &&
+          *source_type_uuid !=
+              "00000000-0000-0000-0000-000000000000" &&
+          exact_source_nullability &&
+          execution_ordered_input_batch.columns[*request.value_column]
+                  .descriptor.descriptor_kind == "scalar" &&
+          !execution_ordered_input_batch.columns[*request.value_column]
+               .descriptor.canonical_type_name.empty() &&
+          scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+              execution_ordered_input_batch.columns[*request.value_column]
+                  .descriptor) &&
+          CanonicalDerivedDescriptorTypeMatches(
+              execution_ordered_input_batch.columns[*request.value_column]
+                  .descriptor,
+              execution_ordered_input_batch.columns[*request.value_column]
+                  .nullable,
+              execution_ordered_input_batch.columns[*request.value_column]
+                  .descriptor,
+              execution_ordered_input_batch.columns[*request.value_column]
+                  .nullable) &&
+          (canonical_source_type_uuid.empty() ||
+           *source_type_uuid == canonical_source_type_uuid))) &&
         !request.result_column.nullable &&
         request.result_column.descriptor.encoded_descriptor ==
             "type_uuid=" + canonical_int64_type_uuid +
@@ -2074,10 +2128,9 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
         execution_ordered_input_batch.columns[*request.value_column]
             .descriptor.descriptor_uuid.canonical);
   }
-  if (bounded_signed_window &&
-      canonical_source_type_uuid != canonical_int64_type_uuid) {
+  if (!count_star_window && *source_type_uuid != *result_type_uuid) {
     independent_identities.insert(independent_identities.begin() + 2,
-                                  canonical_source_type_uuid);
+                                  *source_type_uuid);
   }
   const std::array<std::string_view, 9> order_authority_identities = {
       request.aggregate_descriptor.function_uuid,
