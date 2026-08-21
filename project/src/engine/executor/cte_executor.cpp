@@ -1419,10 +1419,32 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
     return refuse(anchor_validation.diagnostic.diagnostic_code + ":" +
                   anchor_validation.diagnostic.detail);
   }
+  const auto count_anchor_int64_type_uuid =
+      materialized_count_anchor ? CanonicalCoreDatatypeUuid("int64")
+                                : std::string{};
+  const auto count_anchor_type_uuid =
+      materialized_count_anchor && anchor_batch.columns.size() == 1
+          ? RecursiveCteDescriptorField(
+                anchor_batch.columns.front().descriptor, "type_uuid")
+          : std::optional<std::string_view>{};
   if (materialized_count_anchor &&
       (anchor_batch.columns.size() != 1 ||
-       anchor_batch.columns.front().descriptor.canonical_type_name !=
-           "int64" ||
+       !IsCanonicalCteEvidenceUuid(count_anchor_int64_type_uuid) ||
+       !count_anchor_type_uuid.has_value() ||
+       *count_anchor_type_uuid != count_anchor_int64_type_uuid ||
+       !internal_api::QowCanonicalDescriptorIdentityV1(
+           anchor_batch.columns.front().descriptor) ||
+       !IsCanonicalCteEvidenceUuid(
+           anchor_batch.columns.front()
+               .descriptor.descriptor_uuid.canonical) ||
+       anchor_batch.columns.front().descriptor.descriptor_uuid.canonical ==
+           count_anchor_int64_type_uuid ||
+       anchor_batch.columns.front().descriptor.descriptor_kind != "scalar" ||
+       anchor_batch.columns.front().descriptor.canonical_type_name != "int64" ||
+       anchor_batch.columns.front().descriptor.encoded_descriptor !=
+           "type_uuid=" + count_anchor_int64_type_uuid +
+               ";nullability=non_null" ||
+       anchor_batch.columns.front().nullable ||
        anchor_batch.rows.size() != 1 ||
        anchor_batch.rows.front().values.size() != 1 ||
        anchor_batch.rows.front().values.front().is_null ||
