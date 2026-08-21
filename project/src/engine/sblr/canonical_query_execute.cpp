@@ -57139,10 +57139,58 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             rows = std::move(nearest_result.rows);
           } else if (!has_match) {
             spatial_request.operation_id = "SPATIAL_SOURCE";
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial source execution was cancelled before dispatch");
+            }
             auto sourced =
                 api::nosql::ExecuteSpatialNativeV1(spatial_request);
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial source execution was cancelled after dispatch");
+            }
             if (!sourced.accepted || !sourced.root_publishable) {
-              return fail(sourced.diagnostic_id, sourced.detail);
+              return fail(sourced.diagnostic_id.empty()
+                              ? "SB_MODEL_TYPED_EXCHANGE_INVALID_V1"
+                              : sourced.diagnostic_id,
+                          sourced.detail.empty()
+                              ? "spatial source execution did not publish"
+                              : sourced.detail);
+            }
+            if (!sourced.exact_fallback_selected ||
+                !sourced.candidate_recheck_complete ||
+                !sourced.mga_recheck_complete ||
+                sourced.physical_operator_id !=
+                    "SPATIAL_EXACT_GEOMETRY_SCAN_V1" ||
+                sourced.diagnostic_id != "SB_EXECUTOR_OK" ||
+                !sourced.detail.empty() ||
+                spatial_request.source_rows.size() !=
+                    read.visible_rows.size() ||
+                sourced.rows.size() != read.visible_rows.size() ||
+                sourced.rows.size() > source_input.maximum_rows ||
+                (sourced.rows.size() != 0 &&
+                 public_columns.size() >
+                     source_input.maximum_cells / sourced.rows.size())) {
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "spatial source execution receipt changed");
+            }
+            for (std::size_t ordinal = 0;
+                 ordinal < read.visible_rows.size(); ++ordinal) {
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "spatial source receipt replay was cancelled");
+              }
+              const auto& source_row = spatial_request.source_rows[ordinal];
+              const auto& actual = sourced.rows[ordinal];
+              if (actual.row_uuid != source_row.row_uuid ||
+                  actual.encoded_point != source_row.encoded_point ||
+                  actual.crs_uuid != source_row.crs_uuid ||
+                  actual.crs_uuid != source_input.spatial_crs_uuid ||
+                  actual.predicate_truth || actual.distance != 0.0 ||
+                  std::signbit(actual.distance)) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "spatial source result changed before publication");
+              }
             }
             rows = std::move(sourced.rows);
           }
