@@ -15,8 +15,13 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include "datatype_catalog_manifest.hpp"
+#include "uuid.hpp"
+
+#include <algorithm>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -37,6 +42,43 @@ bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
   return batch.columns.empty() &&
          batch.columns.capacity() == empty.columns.capacity() &&
          batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
+}
+
+std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
+  static const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  return count == 1 && found != manifest.manifest.descriptor_rows.end() &&
+                 found->descriptor_uuid.valid()
+             ? scratchbird::core::uuid::UuidToString(
+                   found->descriptor_uuid.value)
+             : std::string{};
+}
+
+std::optional<std::string_view> CanonicalDescriptorField(
+    const scratchbird::engine::internal_api::EngineDescriptor& descriptor,
+    const std::string_view key) {
+  const auto prefix = std::string(key) + "=";
+  std::optional<std::string_view> result;
+  std::size_t begin = 0;
+  while (begin <= descriptor.encoded_descriptor.size()) {
+    const auto end = descriptor.encoded_descriptor.find(';', begin);
+    const auto field = std::string_view(descriptor.encoded_descriptor).substr(
+        begin, end == std::string::npos ? std::string::npos : end - begin);
+    if (field.starts_with(prefix)) {
+      if (result.has_value()) return std::nullopt;
+      result = field.substr(prefix.size());
+    }
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return result;
 }
 
 bool CanonicalSubqueryBatchMemoryBytes(const DescriptorBatch& batch,
@@ -641,13 +683,21 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
           request.table_request.mga_authority.statement_context)) {
     return refuse("EXISTS table subquery returned a different MGA statement context");
   }
+  const auto result_type_uuid = CanonicalDescriptorField(
+      request.result_column.descriptor, "type_uuid");
+  const auto canonical_boolean_type_uuid =
+      CanonicalCoreDatatypeUuid("boolean");
   if (request.exists_expression_descriptor_id == 0 ||
       request.result_column.descriptor_id !=
           request.exists_expression_descriptor_id ||
       request.result_column.stable_name.empty() ||
       request.result_column.nullable ||
       request.result_column.descriptor.descriptor_kind != "scalar" ||
-      request.result_column.descriptor.canonical_type_name != "boolean") {
+      request.result_column.descriptor.canonical_type_name != "boolean" ||
+      !result_type_uuid.has_value() || canonical_boolean_type_uuid.empty() ||
+      *result_type_uuid != canonical_boolean_type_uuid ||
+      request.result_column.descriptor.descriptor_uuid.canonical ==
+          *result_type_uuid) {
     return refuse("EXISTS result is not a bound non-null boolean");
   }
 
@@ -786,13 +836,21 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     return refuse(
         "quantified comparison authority carrier is not exact");
   }
+  const auto result_type_uuid = CanonicalDescriptorField(
+      request.result_column.descriptor, "type_uuid");
+  const auto canonical_boolean_type_uuid =
+      CanonicalCoreDatatypeUuid("boolean");
   if (request.result_expression_descriptor_id == 0 ||
       request.result_column.descriptor_id !=
           request.result_expression_descriptor_id ||
       request.result_column.stable_name.empty() ||
       !request.result_column.nullable ||
       request.result_column.descriptor.descriptor_kind != "scalar" ||
-      request.result_column.descriptor.canonical_type_name != "boolean") {
+      request.result_column.descriptor.canonical_type_name != "boolean" ||
+      !result_type_uuid.has_value() || canonical_boolean_type_uuid.empty() ||
+      *result_type_uuid != canonical_boolean_type_uuid ||
+      request.result_column.descriptor.descriptor_uuid.canonical ==
+          *result_type_uuid) {
     return refuse("quantified result is not a bound nullable boolean");
   }
 

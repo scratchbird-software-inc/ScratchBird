@@ -6666,6 +6666,23 @@ bool CanonicalDescriptorFieldEqualsV1(
   return expected.has_value() ? value == expected : !value.has_value();
 }
 
+std::string ExactCanonicalCoreDatatypeUuidV1(
+    const std::string_view stable_name) {
+  static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  return count == 1 && found != manifest.manifest.descriptor_rows.end() &&
+                 found->descriptor_uuid.valid()
+             ? scratchbird::core::uuid::UuidToString(
+                   found->descriptor_uuid.value)
+             : std::string{};
+}
+
 bool ExactCanonicalScalarWindowOperandV1(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
@@ -20483,9 +20500,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               predicate_profile.transformation_id;
           const bool exists =
               prepared.kind == LivePredicateSubqueryKind::kExists;
+          const auto canonical_boolean_type_uuid =
+              ExactCanonicalCoreDatatypeUuidV1("boolean");
           if (prepared.result_column.descriptor.canonical_type_name !=
                   "boolean" ||
-              prepared.result_column.nullable == exists) {
+              prepared.result_column.nullable == exists ||
+              canonical_boolean_type_uuid.empty() ||
+              !CanonicalDescriptorFieldEqualsV1(
+                  prepared.result_column.descriptor, "type_uuid",
+                  std::string_view(canonical_boolean_type_uuid)) ||
+              prepared.result_column.descriptor.descriptor_uuid.canonical ==
+                  canonical_boolean_type_uuid) {
             return refuse(
                 std::string(kPayloadDiagnostic),
                 exists
