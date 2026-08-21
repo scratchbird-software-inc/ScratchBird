@@ -11166,6 +11166,49 @@ bool CanonicalOperatorExecutionReceiptMatches(
              receipt.mga_statement_context, expected_mga_context);
 }
 
+bool CanonicalSetOperationExecutionReceiptMatches(
+    const exec::CanonicalSetOperationAllRequest& request,
+    const exec::PhysicalNodeRecord& node,
+    const exec::CanonicalSetOperationAllResult& result) {
+  const auto& left_batch = request.borrowed_left_batch != nullptr
+                               ? *request.borrowed_left_batch
+                               : request.left_batch;
+  const auto& right_batch = request.borrowed_right_batch != nullptr
+                                ? *request.borrowed_right_batch
+                                : request.right_batch;
+  if (!CanonicalOperatorExecutionReceiptMatches(
+          result, request.physical_dag, node,
+          request.mga_authority.statement_context) ||
+      result.left_input_row_count != left_batch.rows.size() ||
+      result.right_input_row_count != right_batch.rows.size() ||
+      left_batch.rows.size() >
+          std::numeric_limits<std::size_t>::max() -
+              right_batch.rows.size() ||
+      result.equality_comparison_count >
+          request.maximum_equality_comparison_count ||
+      result.output_batch.rows.size() >
+          request.maximum_output_row_count) {
+    return false;
+  }
+  const auto input_row_count =
+      left_batch.rows.size() + right_batch.rows.size();
+  switch (request.operation) {
+    case exec::CanonicalSetOperationKind::kUnion:
+      return request.quantifier ==
+                     exec::CanonicalSetOperationQuantifier::kAll
+                 ? result.output_batch.rows.size() == input_row_count
+                 : (request.quantifier ==
+                        exec::CanonicalSetOperationQuantifier::kDistinct &&
+                    result.output_batch.rows.size() <= input_row_count);
+    case exec::CanonicalSetOperationKind::kIntersect:
+      return result.output_batch.rows.size() <=
+             std::min(left_batch.rows.size(), right_batch.rows.size());
+    case exec::CanonicalSetOperationKind::kExcept:
+      return result.output_batch.rows.size() <= left_batch.rows.size();
+  }
+  return false;
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
     const PreparedProjectRoot& prepared_root,
     std::string implementation_id,
@@ -13986,6 +14029,15 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
                 : exec::ExecuteCanonicalSetOperationDistinct(set_request);
         if (!set_result.diagnostic.ok) {
           step.diagnostic = std::move(set_result.diagnostic);
+          return step;
+        }
+        if (!CanonicalSetOperationExecutionReceiptMatches(
+                set_request, node, set_result)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SET-EXECUTION-V1";
+          step.diagnostic.detail =
+              "set-operation execution receipt is inconsistent";
           return step;
         }
         std::uint64_t current_memory_bytes = 0;
@@ -23390,6 +23442,15 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
           step.diagnostic = std::move(set_result.diagnostic);
           return step;
         }
+        if (!CanonicalSetOperationExecutionReceiptMatches(
+                set_request, node, set_result)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SET-EXECUTION-V1";
+          step.diagnostic.detail =
+              "set-operation execution receipt is inconsistent";
+          return step;
+        }
         std::uint64_t current_memory_bytes = 0;
         std::uint64_t peak_memory_bytes = 0;
         std::string memory_detail;
@@ -23894,6 +23955,15 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
                   : exec::ExecuteCanonicalSetOperationDistinct(set_request);
           if (!set_result.diagnostic.ok) {
             step.diagnostic = std::move(set_result.diagnostic);
+            return step;
+          }
+          if (!CanonicalSetOperationExecutionReceiptMatches(
+                  set_request, node, set_result)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SET-EXECUTION-V1";
+            step.diagnostic.detail =
+                "set-operation execution receipt is inconsistent";
             return step;
           }
           std::uint64_t current_memory_bytes = 0;

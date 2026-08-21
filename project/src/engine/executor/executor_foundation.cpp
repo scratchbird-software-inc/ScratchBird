@@ -6820,6 +6820,127 @@ CanonicalUnpivotResult ExecuteCanonicalUnpivot(
   return result;
 }
 
+static bool CanonicalSetOperationResultReceiptMatches(
+    const CanonicalSetOperationAllRequest& request,
+    const CanonicalSetOperationAllResult& result) {
+  const PhysicalNodeRecord* selected_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      selected_node = &node;
+      break;
+    }
+  }
+  const bool borrowed_left = request.borrowed_left_batch != nullptr;
+  const bool borrowed_right = request.borrowed_right_batch != nullptr;
+  if (selected_node == nullptr || borrowed_left != borrowed_right) {
+    return false;
+  }
+  const auto& left_batch = borrowed_left ? *request.borrowed_left_batch
+                                         : request.left_batch;
+  const auto& right_batch = borrowed_right ? *request.borrowed_right_batch
+                                           : request.right_batch;
+  if (result.implementation_id != selected_node->implementation_id ||
+      result.selected_plan_uuid != request.physical_dag.selected_plan_uuid ||
+      result.executed_physical_node_id != selected_node->physical_node_id ||
+      result.causal_counter_id != selected_node->causal_counter_id ||
+      !PhysicalMgaStatementContextEqual(
+          result.mga_statement_context,
+          request.mga_authority.statement_context) ||
+      result.left_input_row_count != left_batch.rows.size() ||
+      result.right_input_row_count != right_batch.rows.size() ||
+      left_batch.rows.size() >
+          std::numeric_limits<std::size_t>::max() -
+              right_batch.rows.size() ||
+      result.equality_comparison_count >
+          request.maximum_equality_comparison_count ||
+      result.output_batch.rows.size() > request.maximum_output_row_count) {
+    return false;
+  }
+  const auto input_row_count =
+      left_batch.rows.size() + right_batch.rows.size();
+  if (result.consumed_right_multiplicity_count >
+          right_batch.rows.size() ||
+      result.eliminated_duplicate_row_count > input_row_count) {
+    return false;
+  }
+  switch (request.operation) {
+    case CanonicalSetOperationKind::kUnion:
+      if (request.quantifier == CanonicalSetOperationQuantifier::kAll) {
+        if (result.output_batch.rows.size() != input_row_count) return false;
+      } else if (request.quantifier ==
+                 CanonicalSetOperationQuantifier::kDistinct) {
+        if (result.output_batch.rows.size() > input_row_count) return false;
+      } else {
+        return false;
+      }
+      break;
+    case CanonicalSetOperationKind::kIntersect:
+      if ((request.quantifier != CanonicalSetOperationQuantifier::kAll &&
+           request.quantifier !=
+               CanonicalSetOperationQuantifier::kDistinct) ||
+          result.output_batch.rows.size() >
+              std::min(left_batch.rows.size(), right_batch.rows.size())) {
+        return false;
+      }
+      break;
+    case CanonicalSetOperationKind::kExcept:
+      if ((request.quantifier != CanonicalSetOperationQuantifier::kAll &&
+           request.quantifier !=
+               CanonicalSetOperationQuantifier::kDistinct) ||
+          result.output_batch.rows.size() > left_batch.rows.size()) {
+        return false;
+      }
+      break;
+    default:
+      return false;
+  }
+  const auto validation = ValidateCanonicalDescriptorBatch(
+      result.output_batch, selected_node->output_descriptor_ids);
+  if (!validation.ok) return false;
+
+  if (!request.enforce_payload_memory_grant) {
+    return result.output_payload_bytes == 0 &&
+           result.peak_live_payload_bytes == 0 &&
+           result.resident_structural_bytes == 0 &&
+           result.current_live_memory_bytes == 0 &&
+           result.peak_live_memory_bytes == 0 &&
+           result.memory_grant_bytes == 0 &&
+           result.memory_grant_evidence_uuid.empty();
+  }
+  const PhysicalAdmissionEvidence* resource_evidence = nullptr;
+  for (const auto& evidence : request.physical_dag.admission_evidence) {
+    if (evidence.stage != PhysicalAdmissionStage::kResource) continue;
+    if (resource_evidence != nullptr) return false;
+    resource_evidence = &evidence;
+  }
+  std::size_t measured_output_payload_bytes = 0;
+  return resource_evidence != nullptr &&
+         !resource_evidence->evidence_uuid.empty() &&
+         request.physical_dag.memory_budget_bytes != 0 &&
+         selected_node->memory_bytes_required != 0 &&
+         selected_node->memory_bytes_required <=
+             request.physical_dag.memory_budget_bytes &&
+         selected_node->memory_bytes_required <=
+             static_cast<std::uint64_t>(
+                 std::numeric_limits<std::size_t>::max()) &&
+         (selected_node->retained_cost.memory_bytes_required == 0 ||
+          selected_node->retained_cost.memory_bytes_required ==
+              selected_node->memory_bytes_required) &&
+         FoundationBatchPayloadBytes(
+             result.output_batch, &measured_output_payload_bytes) &&
+         result.output_payload_bytes == measured_output_payload_bytes &&
+         result.resident_structural_bytes == 0 &&
+         result.current_live_memory_bytes == measured_output_payload_bytes &&
+         result.peak_live_payload_bytes >= result.output_payload_bytes &&
+         result.peak_live_memory_bytes >= result.peak_live_payload_bytes &&
+         result.peak_live_memory_bytes >= result.current_live_memory_bytes &&
+         result.peak_live_memory_bytes <=
+             selected_node->memory_bytes_required &&
+         result.memory_grant_bytes == selected_node->memory_bytes_required &&
+         result.memory_grant_evidence_uuid ==
+             resource_evidence->evidence_uuid;
+}
+
 // QOW-SOURCE-QRY-016-NESTING-V1
 // Resolve one three-operand set expression before executing either physical
 // node. INTERSECT has higher SQL precedence than UNION/EXCEPT; otherwise the
@@ -6931,6 +7052,8 @@ CanonicalSetOperationNestingResult ExecuteCanonicalSetOperationNesting(
                                    : request.first_quantifier;
   inner.alignment = right_grouped ? request.second_alignment
                                   : request.first_alignment;
+  inner.borrowed_left_batch = nullptr;
+  inner.borrowed_right_batch = nullptr;
   inner.left_batch = right_grouped ? request.second_operand
                                    : request.first_operand;
   inner.right_batch = right_grouped ? request.third_operand
@@ -6939,6 +7062,9 @@ CanonicalSetOperationNestingResult ExecuteCanonicalSetOperationNesting(
   if (!inner_result.diagnostic.ok) {
     return refuse("inner:" + inner_result.diagnostic.diagnostic_code + ":" +
                   inner_result.diagnostic.detail);
+  }
+  if (!CanonicalSetOperationResultReceiptMatches(inner, inner_result)) {
+    return refuse("inner set operation execution receipt changed");
   }
   if (!PhysicalMgaStatementContextEqual(
           inner_result.mga_statement_context,
@@ -6957,6 +7083,8 @@ CanonicalSetOperationNestingResult ExecuteCanonicalSetOperationNesting(
                                    : request.second_quantifier;
   outer.alignment = right_grouped ? request.first_alignment
                                   : request.second_alignment;
+  outer.borrowed_left_batch = nullptr;
+  outer.borrowed_right_batch = nullptr;
   outer.left_batch = right_grouped ? request.first_operand
                                    : inner_result.output_batch;
   outer.right_batch = right_grouped ? inner_result.output_batch
@@ -6965,6 +7093,9 @@ CanonicalSetOperationNestingResult ExecuteCanonicalSetOperationNesting(
   if (!outer_result.diagnostic.ok) {
     return refuse("outer:" + outer_result.diagnostic.diagnostic_code + ":" +
                   outer_result.diagnostic.detail);
+  }
+  if (!CanonicalSetOperationResultReceiptMatches(outer, outer_result)) {
+    return refuse("outer set operation execution receipt changed");
   }
   if (!PhysicalMgaStatementContextEqual(
           outer_result.mga_statement_context,
