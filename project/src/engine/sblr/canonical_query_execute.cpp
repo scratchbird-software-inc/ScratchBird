@@ -14608,6 +14608,16 @@ MakeLiveGroupedCountSumRegistration(
           step.diagnostic = std::move(grouped.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                grouped, *execution_dag, node,
+                first.aggregate_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-EXECUTION-V1";
+          step.diagnostic.detail =
+              "grouped COUNT/SUM execution receipt changed";
+          return step;
+        }
         std::uint64_t input_memory_bytes = 0;
         std::uint64_t unprojected_output_memory_bytes = 0;
         std::uint64_t peak_memory_bytes = grouped.peak_memory_bytes;
@@ -27895,6 +27905,16 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
                 grouped_request, *grouped_runtime_dag, input_batch);
         if (!aggregate_result.diagnostic.ok) {
           step.diagnostic = std::move(aggregate_result.diagnostic);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                aggregate_result, *grouped_runtime_dag, node,
+                first.aggregate_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-EXECUTION-V1";
+          step.diagnostic.detail =
+              "object-free grouped COUNT/SUM execution receipt changed";
           return step;
         }
         std::uint64_t input_memory_bytes = 0;
