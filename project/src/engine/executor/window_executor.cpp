@@ -958,6 +958,9 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
       *output_type_uuid != canonical_int64_type_uuid ||
       !output_nullability.has_value() ||
       *output_nullability != "non_null" ||
+      request.ntile_column.descriptor.encoded_descriptor !=
+          "type_uuid=" + canonical_int64_type_uuid +
+              ";nullability=non_null" ||
       request.ntile_column.descriptor.descriptor_uuid.canonical ==
           *output_type_uuid ||
       request.ntile_column.descriptor.descriptor_uuid.canonical ==
@@ -984,6 +987,9 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
       *operand_type_uuid != *output_type_uuid ||
       !operand_nullability.has_value() ||
       *operand_nullability != "non_null" ||
+      request.bucket_count_operand.descriptor.encoded_descriptor !=
+          "type_uuid=" + canonical_int64_type_uuid +
+              ";nullability=non_null" ||
       request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
           *operand_type_uuid ||
       request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
@@ -1003,16 +1009,53 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
         "NTILE output and positive int64 bucket operand are not exact"));
   }
-  const auto& order_descriptor_uuid =
-      execution_ordered_input_batch.columns[request.order_term.column]
-          .descriptor.descriptor_uuid.canonical;
-  if (order_descriptor_uuid ==
-          request.ntile_column.descriptor.descriptor_uuid.canonical ||
-      order_descriptor_uuid ==
-          request.bucket_count_operand.descriptor.descriptor_uuid.canonical) {
+  const std::array<std::string_view, 8> ntile_identity_domain{
+      request.function_uuid,
+      request.ntile_column.descriptor.descriptor_uuid.canonical,
+      *output_type_uuid,
+      request.bucket_count_operand.descriptor.descriptor_uuid.canonical,
+      ordering_property_uuid,
+      *window_property,
+      selected_node->executor_capability_uuid,
+      request.deterministic_order_evidence_uuid};
+  const std::unordered_set<std::string_view> distinct_ntile_identities(
+      ntile_identity_domain.begin(), ntile_identity_domain.end());
+  if (selected_node->executor_capability_uuid !=
+          request.order_term_binding_evidence_uuid ||
+      distinct_ntile_identities.size() != ntile_identity_domain.size() ||
+      std::ranges::any_of(ntile_identity_domain, [](const auto identity) {
+        return !IsCanonicalUuid(identity);
+      })) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-PROPERTY-BINDING",
-        "NTILE order descriptor identity is not independent"));
+        "NTILE result identity domain is not independent"));
+  }
+  const auto& order_descriptor =
+      execution_ordered_input_batch.columns[request.order_term.column]
+          .descriptor;
+  const auto& order_descriptor_uuid =
+      order_descriptor.descriptor_uuid.canonical;
+  const auto order_type_uuid =
+      CanonicalDescriptorField(order_descriptor, "type_uuid");
+  const std::array<std::string_view, 7> forbidden_order_type_roles{
+      request.function_uuid,
+      request.ntile_column.descriptor.descriptor_uuid.canonical,
+      request.bucket_count_operand.descriptor.descriptor_uuid.canonical,
+      ordering_property_uuid,
+      *window_property,
+      selected_node->executor_capability_uuid,
+      request.deterministic_order_evidence_uuid};
+  if (!scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          order_descriptor) ||
+      !IsCanonicalUuid(order_descriptor_uuid) ||
+      !order_type_uuid.has_value() || !IsCanonicalUuid(*order_type_uuid) ||
+      order_descriptor_uuid == *order_type_uuid ||
+      distinct_ntile_identities.contains(order_descriptor_uuid) ||
+      std::ranges::find(forbidden_order_type_roles, *order_type_uuid) !=
+          forbidden_order_type_roles.end()) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        "NTILE order/result identity domains are not independent"));
   }
   const auto order_validation = ValidateCanonicalDescriptorOrderTerm(
       request.order_term,
