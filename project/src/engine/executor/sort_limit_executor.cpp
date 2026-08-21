@@ -1549,15 +1549,33 @@ ExecuteCanonicalDescriptorFetchProfileBound(
   auto limited = ExecuteCanonicalDescriptorLimitBound(
       limit_request, execution_dag, execution_input_batch,
       DescriptorLimitExecutionRoute::fetch_first_rows_only, true);
-  if (limited.diagnostic.ok &&
-      !PhysicalMgaStatementContextEqual(
-          limited.mga_statement_context,
-          request.mga_authority.statement_context)) {
-    limited.diagnostic.ok = false;
-    limited.diagnostic.diagnostic_code =
-        "QOW-DIAG-QRY-010-FETCH-TOP-MGA-V1";
-    limited.diagnostic.detail =
-        "FETCH nested limit returned a different MGA statement context";
+  if (limited.diagnostic.ok) {
+    const PhysicalNodeRecord* selected_node = nullptr;
+    for (const auto& node : execution_dag.nodes) {
+      if (node.physical_node_id == request.selected_physical_node_id) {
+        selected_node = &node;
+        break;
+      }
+    }
+    if (selected_node == nullptr ||
+        limited.selected_plan_uuid != execution_dag.selected_plan_uuid ||
+        limited.executed_physical_node_id !=
+            request.selected_physical_node_id ||
+        limited.causal_counter_id != selected_node->causal_counter_id) {
+      limited.diagnostic.ok = false;
+      limited.diagnostic.diagnostic_code =
+          "QOW-DIAG-QRY-010-FETCH-TOP-PROFILE-REFUSAL-V1";
+      limited.diagnostic.detail =
+          "FETCH nested limit execution receipt changed";
+    } else if (!PhysicalMgaStatementContextEqual(
+                   limited.mga_statement_context,
+                   request.mga_authority.statement_context)) {
+      limited.diagnostic.ok = false;
+      limited.diagnostic.diagnostic_code =
+          "QOW-DIAG-QRY-010-FETCH-TOP-MGA-V1";
+      limited.diagnostic.detail =
+          "FETCH nested limit returned a different MGA statement context";
+    }
   }
   if (limited.diagnostic.ok) {
     const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(

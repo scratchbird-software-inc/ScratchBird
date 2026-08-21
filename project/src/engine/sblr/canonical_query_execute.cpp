@@ -15884,6 +15884,19 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
           step.diagnostic = std::move(limited.diagnostic);
           return step;
         }
+        if (limited.selected_plan_uuid != execution_dag->selected_plan_uuid ||
+            limited.executed_physical_node_id != node.physical_node_id ||
+            limited.causal_counter_id != node.causal_counter_id ||
+            !exec::PhysicalMgaStatementContextEqual(
+                limited.mga_statement_context,
+                execution_dag->mga_statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-LIMIT-EXECUTION-V1";
+          step.diagnostic.detail =
+              "LIMIT/FETCH execution receipt changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
