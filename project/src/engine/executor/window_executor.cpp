@@ -16,6 +16,7 @@
 #include <cctype>
 #include <limits>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -2772,10 +2773,16 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
       request.ranking_column.descriptor_id == 0 ||
       request.ranking_column.nullable ||
+      request.ranking_column.descriptor.descriptor_kind != "scalar" ||
       request.ranking_column.descriptor.canonical_type_name !=
           expected_result_type ||
+      !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          request.ranking_column.descriptor) ||
       !result_type_uuid.has_value() || expected_result_type_uuid.empty() ||
       *result_type_uuid != expected_result_type_uuid ||
+      request.ranking_column.descriptor.encoded_descriptor !=
+          "type_uuid=" + expected_result_type_uuid +
+              ";nullability=non_null" ||
       request.ranking_column.descriptor.descriptor_uuid.canonical ==
           *result_type_uuid ||
       request.ranking_column.descriptor.descriptor_uuid.canonical ==
@@ -2795,13 +2802,53 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
         std::string(ranking_name) +
             " output or order descriptor is not bound"));
   }
-  if (execution_ordered_input_batch.columns[request.order_term.column]
-          .descriptor.descriptor_uuid.canonical ==
-      request.ranking_column.descriptor.descriptor_uuid.canonical) {
+  const std::array<std::string_view, 8> ranking_identity_domain{
+      request.function_uuid,
+      request.ranking_column.descriptor.descriptor_uuid.canonical,
+      *result_type_uuid,
+      ordering_property_uuid,
+      *window_property,
+      selected_node->executor_capability_uuid,
+      request.order_term_binding_evidence_uuid,
+      request.deterministic_order_evidence_uuid};
+  const std::unordered_set<std::string_view> distinct_ranking_identities(
+      ranking_identity_domain.begin(), ranking_identity_domain.end());
+  if (distinct_ranking_identities.size() != ranking_identity_domain.size() ||
+      std::ranges::any_of(ranking_identity_domain, [](const auto identity) {
+        return !IsCanonicalUuid(identity);
+      })) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-PROPERTY-BINDING",
         std::string(ranking_name) +
-            " order/result descriptor identities are not independent"));
+            " result identity domain is not independent"));
+  }
+  const auto& order_descriptor =
+      execution_ordered_input_batch.columns[request.order_term.column]
+          .descriptor;
+  const auto order_type_uuid =
+      CanonicalDescriptorField(order_descriptor, "type_uuid");
+  const auto& order_descriptor_uuid =
+      order_descriptor.descriptor_uuid.canonical;
+  const std::array<std::string_view, 7> forbidden_order_type_roles{
+      request.function_uuid,
+      request.ranking_column.descriptor.descriptor_uuid.canonical,
+      ordering_property_uuid,
+      *window_property,
+      selected_node->executor_capability_uuid,
+      request.order_term_binding_evidence_uuid,
+      request.deterministic_order_evidence_uuid};
+  if (!scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          order_descriptor) ||
+      !IsCanonicalUuid(order_descriptor_uuid) ||
+      !order_type_uuid.has_value() || !IsCanonicalUuid(*order_type_uuid) ||
+      order_descriptor_uuid == *order_type_uuid ||
+      distinct_ranking_identities.contains(order_descriptor_uuid) ||
+      std::ranges::find(forbidden_order_type_roles, *order_type_uuid) !=
+          forbidden_order_type_roles.end()) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        std::string(ranking_name) +
+            " order/result identity domains are not independent"));
   }
   const auto order_validation = ValidateCanonicalDescriptorOrderTerm(
       request.order_term,
