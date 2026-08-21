@@ -2002,7 +2002,6 @@ bool BoundPreparedRecursiveCtePeakPayload(
     const PreparedRecursiveCteRoot& prepared,
     std::size_t* peak_payload_bytes) {
   if (peak_payload_bytes == nullptr ||
-      prepared.maximum_anchor_row_count == 0 ||
       prepared.anchor_columns.empty() ||
       prepared.maximum_working_row_count == 0 ||
       prepared.maximum_term_output_row_count == 0 ||
