@@ -18079,6 +18079,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       case plan::CanonicalLogicalRelationalNodeKind::kAggregate: {
         if (node.semantic_variant_id ==
             "aggregate.global-count-star.v1") {
+          if (input_row_count >
+              static_cast<std::size_t>(
+                  std::numeric_limits<std::int64_t>::max())) {
+            return refuse("QOW-DIAG-QRY-007-AGGREGATE-OVERFLOW-V1",
+                          "COUNT(*) exceeds int64 result width");
+          }
           auto prepared = PrepareGlobalAggregateRoot(
               request.relational_dag, node, input_node, state,
               exec::CanonicalAggregateFunction::count, true, false, false);
@@ -18121,8 +18127,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               "canonical.aggregate.composed-global-count-star.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory =
-              std::numeric_limits<std::int64_t>::digits10 + 2;
+          auxiliary_memory = sizeof(std::int64_t);
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -21782,6 +21787,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     const bool query_distinct =
         physical_kind == exec::PhysicalNodeKind::kAggregate &&
         implementation_id == "aggregate.query-distinct.typed.v1";
+    const bool count_star_aggregate =
+        implementation_id == "aggregate.count-star.v1";
     const bool exact_registry_aggregate =
         implementation_id == "aggregate.registry-core.v1" &&
         planning_values_exact;
@@ -21789,7 +21796,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         implementation_id == "aggregate.registry-core.v1" &&
         !planning_values_exact;
     if (physical_kind == exec::PhysicalNodeKind::kAggregate &&
-        !query_distinct && !exact_registry_aggregate &&
+        !query_distinct && !count_star_aggregate &&
+        !exact_registry_aggregate &&
         !dynamic_registry_aggregate &&
         (!CheckedMultiply(
              input_row_count,
@@ -21859,11 +21867,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          physical_kind == exec::PhysicalNodeKind::kWindow ||
          physical_kind == exec::PhysicalNodeKind::kLimit ||
          dynamic_subquery || dynamic_nonrecursive_cte ||
-         query_distinct) &&
+         query_distinct || count_star_aggregate) &&
         !planning_values_exact) {
       // The preceding complex aggregate owns its live result values.  The
       // planning batch is only a schema/cardinality placeholder, so bind the
-      // dynamic FILTER, PROJECT, DISTINCT, SORT, WINDOW, LIMIT,
+      // dynamic FILTER, PROJECT, DISTINCT, COUNT(*), SORT, WINDOW, LIMIT,
       // SUBQUERY, or nonrecursive CTE to the full selected budget and let its
       // issuer/executor charge exact callback payloads and auxiliary state.
       operator_memory =
@@ -28830,6 +28838,13 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
 
   const auto input_row_count = input.batch.rows.size();
+  if (count_star &&
+      input_row_count >
+          static_cast<std::size_t>(
+              std::numeric_limits<std::int64_t>::max())) {
+    return refuse("QOW-DIAG-QRY-007-AGGREGATE-OVERFLOW-V1",
+                  "COUNT(*) exceeds int64 result width");
+  }
   std::uint64_t input_memory = 1;
   std::uint64_t total_memory = 0;
   // Signed text width plus the mandatory runtime batch base byte.
@@ -28853,12 +28868,26 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       aggregate_function ==
           exec::CanonicalAggregateFunction::approx_percentile_disc;
   std::uint64_t aggregate_result_memory =
-      (avg_expression || statistical_expression || pair_real_result ||
-       ordered_set_real_result || approximate_real_result)
-          ? kRealAggregateResultMemory
-          : ((bool_and_expression || bool_or_expression || every_expression)
-                 ? kBooleanAggregateResultMemory
-                 : kIntegerAggregateResultMemory);
+      count_star
+          ? 1
+          : ((avg_expression || statistical_expression || pair_real_result ||
+              ordered_set_real_result || approximate_real_result)
+                 ? kRealAggregateResultMemory
+                 : ((bool_and_expression || bool_or_expression ||
+                     every_expression)
+                        ? kBooleanAggregateResultMemory
+                        : kIntegerAggregateResultMemory));
+  if (count_star) {
+    auto remaining_count = input_row_count;
+    do {
+      if (!CheckedAdd(aggregate_result_memory, 1,
+                      &aggregate_result_memory)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                      "live COUNT(*) result size overflowed");
+      }
+      remaining_count /= 10;
+    } while (remaining_count != 0);
+  }
   if (!AddBatchMemoryBytes(input.batch, &input_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live global aggregate input size overflowed");
@@ -28923,16 +28952,18 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
                   api::EngineSqlTruthValue::true_value))
             : input_row_count;
     std::vector<std::size_t> planning_transition_ordinals;
-    try {
-      planning_transition_ordinals.reserve(admitted_input_row_count);
-    } catch (const std::bad_alloc&) {
-      return refuse(
-          "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-          "live aggregate transition workspace allocation was refused");
-    } catch (const std::length_error&) {
-      return refuse(
-          "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-          "live aggregate transition workspace capacity overflowed");
+    if (!count_star) {
+      try {
+        planning_transition_ordinals.reserve(admitted_input_row_count);
+      } catch (const std::bad_alloc&) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+            "live aggregate transition workspace allocation was refused");
+      } catch (const std::length_error&) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+            "live aggregate transition workspace capacity overflowed");
+      }
     }
     if (!CheckedMultiply(planning_transition_ordinals.capacity(),
                          sizeof(std::size_t),
@@ -29060,9 +29091,11 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
                     "live approximate aggregate result size overflowed");
     }
   }
-  if (!CheckedAdd(aggregate_result_memory,
-                  kCanonicalAggregateKernelBaseMemoryBytes,
-                  &aggregate_result_memory)) {
+  if (!CheckedAdd(
+          aggregate_result_memory,
+          count_star ? sizeof(std::int64_t)
+                     : kCanonicalAggregateKernelBaseMemoryBytes,
+          &aggregate_result_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live aggregate result or state size overflowed");
   }
