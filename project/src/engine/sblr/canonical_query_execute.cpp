@@ -15307,6 +15307,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             current->input_logical_node_ids[0] ==
                 current->input_logical_node_ids[1] ||
             current->bound_expression_ids.size() != 1 ||
+            !current->required_object_uuids.empty() ||
             !current->required_property_uuids.empty() ||
             !current->delivered_property_uuids.empty()) {
           return result;
@@ -15571,6 +15572,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       case plan::CanonicalLogicalRelationalNodeKind::kCte:
         if (current->semantic_variant_id != "cte.bound.v1" ||
             !current->bound_expression_ids.empty() ||
+            !current->required_object_uuids.empty() ||
             !current->required_property_uuids.empty() ||
             !current->delivered_property_uuids.empty()) {
           return result;
