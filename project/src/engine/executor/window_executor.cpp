@@ -1994,6 +1994,18 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
                 .descriptor) &&
         !canonical_source_type_uuid.empty() &&
         *source_type_uuid == canonical_source_type_uuid &&
+        execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor.encoded_descriptor ==
+            "type_uuid=" + canonical_source_type_uuid +
+                ";nullability=" +
+                (execution_ordered_input_batch
+                         .columns[*request.value_column]
+                         .nullable
+                     ? "nullable"
+                     : "non_null") &&
+        request.result_column.descriptor.encoded_descriptor ==
+            "type_uuid=" + canonical_int64_type_uuid +
+                ";nullability=nullable" &&
         !has_auxiliary_type_fields(
             execution_ordered_input_batch.columns[*request.value_column]
                 .descriptor) &&
@@ -2049,6 +2061,11 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
         independent_identities.begin() + 1,
         execution_ordered_input_batch.columns[*request.value_column]
             .descriptor.descriptor_uuid.canonical);
+  }
+  if (bounded_signed_window &&
+      canonical_source_type_uuid != canonical_int64_type_uuid) {
+    independent_identities.insert(independent_identities.begin() + 2,
+                                  canonical_source_type_uuid);
   }
   for (std::size_t left = 0; left < independent_identities.size(); ++left) {
     for (std::size_t right = left + 1;

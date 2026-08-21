@@ -6602,6 +6602,63 @@ bool ExactCanonicalBooleanWindowSourceV1(
                  (runtime_nullable ? "nullable" : "non_null");
 }
 
+bool ExactCanonicalBoundedSignedWindowSourceV1(
+    const api::RelationalTypeDescriptor& relational_descriptor,
+    const api::EngineDescriptor& runtime_descriptor,
+    const bool runtime_nullable,
+    const std::array<std::string, 4>& bounded_signed_type_uuids,
+    const std::string_view function_uuid,
+    const std::string_view result_descriptor_uuid,
+    const std::string_view ordering_property_uuid,
+    const std::string_view window_property_uuid,
+    const std::string_view window_frame_descriptor_uuid) {
+  constexpr std::array<std::string_view, 4> kBoundedSignedTypeNames = {
+      "int8", "int16", "int32", "int64"};
+  const auto type_uuid = std::ranges::find(
+      bounded_signed_type_uuids, relational_descriptor.type_uuid);
+  const auto type_index = static_cast<std::size_t>(
+      std::distance(bounded_signed_type_uuids.begin(), type_uuid));
+  const auto& result_type_uuid = bounded_signed_type_uuids.back();
+  return type_uuid != bounded_signed_type_uuids.end() &&
+         !type_uuid->empty() && type_index < kBoundedSignedTypeNames.size() &&
+         !result_type_uuid.empty() &&
+         relational_descriptor.descriptor_uuid ==
+             runtime_descriptor.descriptor_uuid.canonical &&
+         relational_descriptor.descriptor_uuid !=
+             relational_descriptor.type_uuid &&
+         relational_descriptor.descriptor_uuid != result_type_uuid &&
+         relational_descriptor.descriptor_uuid != function_uuid &&
+         relational_descriptor.descriptor_uuid != result_descriptor_uuid &&
+         relational_descriptor.descriptor_uuid != ordering_property_uuid &&
+         relational_descriptor.descriptor_uuid != window_property_uuid &&
+         relational_descriptor.descriptor_uuid !=
+             window_frame_descriptor_uuid &&
+         *type_uuid != function_uuid &&
+         *type_uuid != result_descriptor_uuid &&
+         *type_uuid != ordering_property_uuid &&
+         *type_uuid != window_property_uuid &&
+         *type_uuid != window_frame_descriptor_uuid &&
+         (type_index == kBoundedSignedTypeNames.size() - 1 ||
+          *type_uuid != result_type_uuid) &&
+         relational_descriptor.nullability ==
+             (runtime_nullable ? api::RelationalNullability::kNullable
+                               : api::RelationalNullability::kNonNull) &&
+         !relational_descriptor.collation_uuid.has_value() &&
+         !relational_descriptor.timezone_profile_id.has_value() &&
+         !relational_descriptor.width.has_value() &&
+         !relational_descriptor.precision.has_value() &&
+         !relational_descriptor.scale.has_value() &&
+         runtime_descriptor.descriptor_kind == "scalar" &&
+         runtime_descriptor.canonical_type_name ==
+             kBoundedSignedTypeNames[type_index] &&
+         exec::IsCanonicalBoundedSignedIntegerDescriptor(
+             runtime_descriptor) &&
+         api::QowCanonicalDescriptorIdentityV1(runtime_descriptor) &&
+         runtime_descriptor.encoded_descriptor ==
+             "type_uuid=" + *type_uuid + ";nullability=" +
+                 (runtime_nullable ? "nullable" : "non_null");
+}
+
 GlobalRankingWindowProfile GlobalAggregateWindowProfileV1(
     const api::TypedRelationalDag& dag,
     const std::uint32_t relation_node_id) {
@@ -19093,7 +19150,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                             " exceeds its supported partition cardinality");
         }
         const auto* output_descriptor = ranking.result_descriptor;
-        if (aggregate_boolean_window) {
+        if (aggregate_boolean_window || aggregate_bounded_signed_window) {
           const auto source_column = *ranking.navigation_value_column;
           const auto source_relational_descriptor = std::ranges::find_if(
               request.relational_dag.descriptors, [&](const auto& candidate) {
@@ -19104,19 +19161,33 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (source_column >= input_batch.columns.size() ||
               source_relational_descriptor ==
                   request.relational_dag.descriptors.end() ||
-              !ExactCanonicalBooleanWindowSourceV1(
-                  *source_relational_descriptor,
-                  input_batch.columns[source_column].descriptor,
-                  input_batch.columns[source_column].nullable,
-                  boolean_type_uuid, ranking_profile.function_uuid,
-                  output_descriptor->descriptor_uuid,
-                  prepared_sort->ordering_property_uuid,
-                  ranking.window_property_uuid,
-                  ranking.window_frame_descriptor_uuid)) {
+              (aggregate_boolean_window
+                   ? !ExactCanonicalBooleanWindowSourceV1(
+                         *source_relational_descriptor,
+                         input_batch.columns[source_column].descriptor,
+                         input_batch.columns[source_column].nullable,
+                         boolean_type_uuid, ranking_profile.function_uuid,
+                         output_descriptor->descriptor_uuid,
+                         prepared_sort->ordering_property_uuid,
+                         ranking.window_property_uuid,
+                         ranking.window_frame_descriptor_uuid)
+                   : !ExactCanonicalBoundedSignedWindowSourceV1(
+                         *source_relational_descriptor,
+                         input_batch.columns[source_column].descriptor,
+                         input_batch.columns[source_column].nullable,
+                         bounded_signed_type_uuids,
+                         ranking_profile.function_uuid,
+                         output_descriptor->descriptor_uuid,
+                         prepared_sort->ordering_property_uuid,
+                         ranking.window_property_uuid,
+                         ranking.window_frame_descriptor_uuid))) {
             return refuse(
                 std::string(kPayloadDiagnostic),
                 "composition " + std::string(ranking_name) +
-                    " source is not one exact core boolean column");
+                    " source is not one exact core " +
+                    (aggregate_boolean_window ? "boolean"
+                                              : "bounded-signed") +
+                    " column");
           }
         }
         api::EngineDescriptor descriptor;
@@ -52853,20 +52924,33 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                       "object-backed " + std::string(ranking_name) +
                           " source relational descriptor is unresolved");
       }
-      if (aggregate_boolean_window &&
-          !ExactCanonicalBooleanWindowSourceV1(
-              *source_relational_descriptor, source_descriptor,
-              source_relational_descriptor->nullability ==
-                  api::RelationalNullability::kNullable,
-              boolean_type_uuid, ranking_profile.function_uuid,
-              output_descriptor->descriptor_uuid,
-              heap_sort_binding.ordering_property_uuid,
-              ranking.window_property_uuid,
-              ranking.window_frame_descriptor_uuid)) {
+      if ((aggregate_boolean_window || aggregate_bounded_signed_window) &&
+          (aggregate_boolean_window
+               ? !ExactCanonicalBooleanWindowSourceV1(
+                     *source_relational_descriptor, source_descriptor,
+                     source_relational_descriptor->nullability ==
+                         api::RelationalNullability::kNullable,
+                     boolean_type_uuid, ranking_profile.function_uuid,
+                     output_descriptor->descriptor_uuid,
+                     heap_sort_binding.ordering_property_uuid,
+                     ranking.window_property_uuid,
+                     ranking.window_frame_descriptor_uuid)
+               : !ExactCanonicalBoundedSignedWindowSourceV1(
+                     *source_relational_descriptor, source_descriptor,
+                     source_relational_descriptor->nullability ==
+                         api::RelationalNullability::kNullable,
+                     bounded_signed_type_uuids,
+                     ranking_profile.function_uuid,
+                     output_descriptor->descriptor_uuid,
+                     heap_sort_binding.ordering_property_uuid,
+                     ranking.window_property_uuid,
+                     ranking.window_frame_descriptor_uuid))) {
         return refuse(
             "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
             "object-backed " + std::string(ranking_name) +
-                " source is not one exact core boolean column");
+                " source is not one exact core " +
+                (aggregate_boolean_window ? "boolean" : "bounded-signed") +
+                " column");
       }
       if (aggregate_bounded_signed_window) {
         descriptor.descriptor_uuid.canonical =
