@@ -2994,8 +2994,18 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
     const DescriptorBatch& borrowed_input_batch);
 CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
     const CanonicalExistsSubqueryRequest& request);
+CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
+    const CanonicalExistsSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     const CanonicalQuantifiedSubqueryRequest& request);
+CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
+    const CanonicalQuantifiedSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     const CanonicalCorrelatedSubqueryRequest& request);
 // The borrowed DAG is consumed synchronously and is never retained. The

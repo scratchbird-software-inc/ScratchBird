@@ -911,6 +911,30 @@ void PublishOrdinaryRuntimeObservations(
               runtime_work_bytes = std::max<std::uint64_t>(
                   sizeof(std::int64_t),
                   memory->second.accounted_auxiliary_memory_bytes);
+            } else if (node.node_kind ==
+                       exec::PhysicalNodeKind::kSubquery) {
+              // Predicate and cardinality subqueries retain one canonical
+              // table-result copy (and, when applicable, a descriptor-bound
+              // comparison carrier) while constructing their callback output.
+              runtime_work_bytes =
+                  memory->second.accounted_auxiliary_memory_bytes;
+              if (memory->second
+                      .accounted_auxiliary_from_first_input_batch) {
+                std::uint64_t intermediate_table_bytes = 0;
+                if (inputs.size() != 1 ||
+                    !inputs.front().materialized_output_batch.has_value() ||
+                    !RuntimeMaterializedBatchMemoryBytes(
+                        *inputs.front().materialized_output_batch,
+                        &intermediate_table_bytes) ||
+                    !CheckedAdd(runtime_work_bytes,
+                                intermediate_table_bytes,
+                                &runtime_work_bytes)) {
+                  step.diagnostic.ok = false;
+                }
+              }
+              if (step.diagnostic.ok) {
+                accounted_auxiliary_memory_bytes = runtime_work_bytes;
+              }
             } else if (
                 node.node_kind == exec::PhysicalNodeKind::kCte &&
                 memory->second.accounted_auxiliary_from_first_input_batch &&
@@ -14732,15 +14756,12 @@ MakeLivePredicateSubqueryRegistration(
             table_input->output_descriptor_ids;
 
         exec::CanonicalTableSubqueryRequest table_request;
-        table_request.physical_dag = std::move(operator_dag);
         table_request.selected_physical_node_id = node.physical_node_id;
-        table_request.input_batch =
-            *inputs.front().materialized_output_batch;
         table_request.maximum_materialized_row_count =
             std::max<std::size_t>(1, maximum_input_row_count);
         table_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
-                mga_context, table_request.physical_dag);
+                mga_context, operator_dag);
 
         exec::DescriptorBatch output;
         exec::DescriptorRuntimeDiagnostic diagnostic;
@@ -14752,8 +14773,9 @@ MakeLivePredicateSubqueryRegistration(
           exists_request.exists_expression_descriptor_id =
               prepared.result_column.descriptor_id;
           exists_request.result_column = prepared.result_column;
-          auto exists =
-              exec::ExecuteCanonicalExistsSubquery(exists_request);
+          auto exists = exec::ExecuteCanonicalExistsSubquery(
+              exists_request, operator_dag, node.physical_node_id,
+              *inputs.front().materialized_output_batch);
           diagnostic = std::move(exists.diagnostic);
           output = std::move(exists.output_batch);
           result_mga = std::move(exists.mga_statement_context);
@@ -14802,8 +14824,9 @@ MakeLivePredicateSubqueryRegistration(
           quantified_request.result_column = prepared.result_column;
           quantified_request.maximum_comparison_count =
               std::max<std::size_t>(1, maximum_input_row_count);
-          auto quantified =
-              exec::ExecuteCanonicalQuantifiedSubquery(quantified_request);
+          auto quantified = exec::ExecuteCanonicalQuantifiedSubquery(
+              quantified_request, operator_dag, node.physical_node_id,
+              *inputs.front().materialized_output_batch);
           diagnostic = std::move(quantified.diagnostic);
           output = std::move(quantified.output_batch);
           result_mga = std::move(quantified.mga_statement_context);
@@ -21206,6 +21229,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             prepared.comparison_operator =
                 predicate_profile.comparison_operator;
             prepared.quantifier = predicate_profile.quantifier;
+            std::uint64_t left_operand_memory = 0;
+            if (!RuntimeTypedValueMemoryBytes(
+                    prepared.left_value, &left_operand_memory) ||
+                !CheckedAdd(auxiliary_memory, left_operand_memory,
+                            &auxiliary_memory)) {
+              return refuse(
+                  "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "quantified left operand receipt size overflowed");
+            }
             prepared.comparison_authority_required =
                 CanonicalRelationalComparisonAuthorityRequiredV1(
                     prepared.left_value.descriptor,
@@ -21610,9 +21642,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
           "composition aggregate runtime auxiliary receipt overflowed");
     }
-    const bool dynamic_table_subquery =
-        physical_kind == exec::PhysicalNodeKind::kSubquery &&
-        implementation_id == "subquery.table.materialize.typed.v1";
+    const bool dynamic_subquery =
+        physical_kind == exec::PhysicalNodeKind::kSubquery;
+    const bool subquery_retains_intermediate_table =
+        dynamic_subquery &&
+        implementation_id != "subquery.table.materialize.typed.v1";
     const bool dynamic_nonrecursive_cte =
         physical_kind == exec::PhysicalNodeKind::kCte;
     if ((physical_kind == exec::PhysicalNodeKind::kFilter ||
@@ -21620,17 +21654,27 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          physical_kind == exec::PhysicalNodeKind::kSort ||
          physical_kind == exec::PhysicalNodeKind::kWindow ||
          physical_kind == exec::PhysicalNodeKind::kLimit ||
-         dynamic_table_subquery || dynamic_nonrecursive_cte ||
+         dynamic_subquery || dynamic_nonrecursive_cte ||
          query_distinct) &&
         !planning_values_exact) {
       // The preceding complex aggregate owns its live result values.  The
       // planning batch is only a schema/cardinality placeholder, so bind the
       // dynamic FILTER, PROJECT, DISTINCT, SORT, WINDOW, LIMIT,
-      // TABLE-subquery, or nonrecursive CTE to the full selected budget and
-      // let its
+      // SUBQUERY, or nonrecursive CTE to the full selected budget and let its
       // issuer/executor charge exact callback payloads and auxiliary state.
       operator_memory =
           request.optimizer_request.resource.memory_budget_bytes;
+    }
+    if (!planning_values_exact && subquery_retains_intermediate_table) {
+      if (runtime_accounted_auxiliary_memory < input_memory) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+            "dynamic subquery auxiliary receipt is incomplete");
+      }
+      // The planning input is only a placeholder. Carry fixed state here;
+      // the runtime receipt reconstructs the exact intermediate-table bytes
+      // from the first dispatch input.
+      runtime_accounted_auxiliary_memory -= input_memory;
     }
     profiles.push_back(
         {node.logical_node_id, implementation_id, capability_uuid,
@@ -21643,8 +21687,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     profiles.back().runtime_peak_from_callback_batches =
         !planning_values_exact;
     profiles.back().runtime_auxiliary_from_first_input_batch =
-        dynamic_nonrecursive_cte &&
-        implementation_id == "cte.bound.materialize.typed.v1";
+        (!planning_values_exact && subquery_retains_intermediate_table) ||
+        (dynamic_nonrecursive_cte &&
+         implementation_id == "cte.bound.materialize.typed.v1");
   }
 
   if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {

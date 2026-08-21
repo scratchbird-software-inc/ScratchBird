@@ -730,8 +730,13 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
 // Evaluate EXISTS only after the complete canonical table-subquery result has
 // validated. The result is always one bound non-NULL boolean row; no input
 // value or parser-level predicate can supply existence authority.
-CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
-    const CanonicalExistsSubqueryRequest& request) {
+namespace {
+CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubqueryBound(
+    const CanonicalExistsSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   using scratchbird::engine::internal_api::EngineTypedValue;
   using scratchbird::engine::internal_api::EngineValueState;
 
@@ -751,10 +756,9 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
   };
 
   auto table = ExecuteCanonicalTableSubqueryBound(
-      request.table_request, request.table_request.physical_dag,
-      request.table_request.physical_dag.root_physical_node_id,
-      TableSubqueryExecutionRoute::exists, false,
-      request.table_request.input_batch, false);
+      request.table_request, execution_dag, scoped_root_physical_node_id,
+      TableSubqueryExecutionRoute::exists, borrowed_execution_carriers,
+      execution_input_batch, borrowed_execution_carriers);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
@@ -805,7 +809,7 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.table_request.mga_authority,
-      request.table_request.physical_dag);
+      execution_dag);
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
@@ -821,6 +825,25 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
       request.table_request.mga_authority.statement_context;
   return result;
 }
+}  // namespace
+
+CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
+    const CanonicalExistsSubqueryRequest& request) {
+  return ExecuteCanonicalExistsSubqueryBound(
+      request, request.table_request.physical_dag,
+      request.table_request.physical_dag.root_physical_node_id,
+      request.table_request.input_batch, false);
+}
+
+CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
+    const CanonicalExistsSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalExistsSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id,
+      borrowed_input_batch, true);
+}
 
 // QOW-SOURCE-QRY-013-QUANTIFIED-V1
 // Evaluate one descriptor-compatible canonical scalar comparison against a
@@ -829,8 +852,13 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
 // cannot hide malformed later input. Collated character values remain behind
 // the catalog-bound comparison seam and are refused by the shared expression
 // runtime when no such authority is present.
-CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
-    const CanonicalQuantifiedSubqueryRequest& request) {
+namespace {
+CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubqueryBound(
+    const CanonicalQuantifiedSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   namespace api = scratchbird::engine::internal_api;
 
   CanonicalQuantifiedSubqueryResult result;
@@ -848,11 +876,26 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     return result;
   };
 
+  // Validate the independently bound left operand before table
+  // materialization so this temporary carrier cannot overlap the retained
+  // table result and escape the predicate-subquery memory receipt.
+  {
+    DescriptorBatch left_batch;
+    left_batch.columns = {request.left_operand_column};
+    left_batch.rows = {{{request.left_value}}};
+    auto left_validation = ValidateCanonicalDescriptorBatch(
+        left_batch, {request.left_operand_column.descriptor_id});
+    if (!left_validation.ok) {
+      return refuse(left_validation.diagnostic_code + ":" +
+                    left_validation.detail);
+    }
+  }
+
   auto table = ExecuteCanonicalTableSubqueryBound(
-      request.table_request, request.table_request.physical_dag,
-      request.table_request.physical_dag.root_physical_node_id,
-      TableSubqueryExecutionRoute::quantified, false,
-      request.table_request.input_batch, false);
+      request.table_request, execution_dag, scoped_root_physical_node_id,
+      TableSubqueryExecutionRoute::quantified,
+      borrowed_execution_carriers, execution_input_batch,
+      borrowed_execution_carriers);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
@@ -935,16 +978,6 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     return refuse("quantified result is not a bound nullable boolean");
   }
 
-  DescriptorBatch left_batch;
-  left_batch.columns = {request.left_operand_column};
-  left_batch.rows = {{{request.left_value}}};
-  auto left_validation = ValidateCanonicalDescriptorBatch(
-      left_batch, {request.left_operand_column.descriptor_id});
-  if (!left_validation.ok) {
-    return refuse(left_validation.diagnostic_code + ":" +
-                  left_validation.detail);
-  }
-
   api::EngineCanonicalExpressionOperation expression_operation =
       api::EngineCanonicalExpressionOperation::equal;
   if (request.comparison_operator == Operation::not_equal) {
@@ -965,8 +998,9 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
         api::EngineCanonicalExpressionOperation::greater_than_or_equal;
   }
 
-  std::vector<api::EngineSqlTruthValue> comparison_truths;
-  comparison_truths.reserve(table.materialized_row_count);
+  auto truth = any ? api::EngineSqlTruthValue::false_value
+                   : api::EngineSqlTruthValue::true_value;
+  std::size_t comparison_count = 0;
   for (std::size_t row_index = 0;
        row_index < table.output_batch.rows.size(); ++row_index) {
     const auto& row = table.output_batch.rows[row_index];
@@ -999,12 +1033,7 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
       return refuse("canonical quantified comparison refused: " +
                     expression_detail);
     }
-    comparison_truths.push_back(expression_result.truth);
-  }
-
-  auto truth = any ? api::EngineSqlTruthValue::false_value
-                   : api::EngineSqlTruthValue::true_value;
-  for (const auto comparison_truth : comparison_truths) {
+    const auto comparison_truth = expression_result.truth;
     if (any) {
       if (comparison_truth == api::EngineSqlTruthValue::true_value) {
         truth = api::EngineSqlTruthValue::true_value;
@@ -1020,6 +1049,7 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
         truth = api::EngineSqlTruthValue::unknown;
       }
     }
+    ++comparison_count;
   }
 
   DescriptorBatch output;
@@ -1047,7 +1077,7 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.table_request.mga_authority,
-      request.table_request.physical_dag);
+      execution_dag);
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
@@ -1055,13 +1085,32 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
   result.diagnostic = {};
   result.output_batch = std::move(output);
   result.truth_value = truth;
-  result.comparison_count = comparison_truths.size();
+  result.comparison_count = comparison_count;
   result.selected_plan_uuid = std::move(table.selected_plan_uuid);
   result.executed_physical_node_id = table.executed_physical_node_id;
   result.causal_counter_id = table.causal_counter_id;
   result.mga_statement_context =
       request.table_request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
+    const CanonicalQuantifiedSubqueryRequest& request) {
+  return ExecuteCanonicalQuantifiedSubqueryBound(
+      request, request.table_request.physical_dag,
+      request.table_request.physical_dag.root_physical_node_id,
+      request.table_request.input_batch, false);
+}
+
+CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
+    const CanonicalQuantifiedSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalQuantifiedSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id,
+      borrowed_input_batch, true);
 }
 
 // QOW-SOURCE-QRY-013-CORRELATED-V1
