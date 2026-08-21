@@ -2736,7 +2736,8 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
       request.deterministic_order_evidence_uuid ==
           request.order_term_binding_evidence_uuid ||
       request.deterministic_order_evidence_uuid == ordering_property_uuid ||
-      request.deterministic_order_evidence_uuid == *window_property) {
+      request.deterministic_order_evidence_uuid == *window_property ||
+      request.deterministic_order_evidence_uuid == request.function_uuid) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
         std::string(ranking_name) +
