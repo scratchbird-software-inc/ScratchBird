@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -64,7 +65,83 @@ bool AccountJoinValue(const internal_api::EngineTypedValue& value,
                           limit, total);
 }
 
+bool CanonicalJoinUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const auto ch = value[index];
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::optional<std::string_view> CanonicalJoinDescriptorField(
+    const internal_api::EngineDescriptor& descriptor,
+    const std::string_view key) {
+  const auto prefix = std::string(key) + "=";
+  std::optional<std::string_view> value;
+  std::size_t begin = 0;
+  while (begin <= descriptor.encoded_descriptor.size()) {
+    const auto end = descriptor.encoded_descriptor.find(';', begin);
+    const auto field =
+        std::string_view(descriptor.encoded_descriptor)
+            .substr(begin, end == std::string::npos ? std::string::npos
+                                                    : end - begin);
+    if (field.starts_with(prefix)) {
+      if (value.has_value() || field.size() == prefix.size()) {
+        return std::nullopt;
+      }
+      value = field.substr(prefix.size());
+    }
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return value;
+}
+
 }  // namespace
+
+DescriptorRuntimeDiagnostic ValidateCanonicalJoinDescriptorRoleDomains(
+    const DescriptorBatch& left_batch,
+    const DescriptorBatch& right_batch) {
+  std::unordered_set<std::string_view> descriptor_uuids;
+  std::unordered_set<std::string_view> type_uuids;
+  const auto collect = [&](const DescriptorBatch& batch) {
+    for (std::size_t column = 0; column < batch.columns.size(); ++column) {
+      const auto& descriptor = batch.columns[column].descriptor;
+      const auto type_uuid =
+          CanonicalJoinDescriptorField(descriptor, "type_uuid");
+      if (!internal_api::QowCanonicalDescriptorIdentityV1(descriptor) ||
+          !type_uuid.has_value() || !CanonicalJoinUuid(*type_uuid)) {
+        auto diagnostic = Refusal(
+            "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "join descriptor or type identity is unresolved");
+        diagnostic.column_index = column;
+        return diagnostic;
+      }
+      descriptor_uuids.insert(descriptor.descriptor_uuid.canonical);
+      type_uuids.insert(*type_uuid);
+    }
+    return DescriptorRuntimeDiagnostic{};
+  };
+  auto validation = collect(left_batch);
+  if (!validation.ok) return validation;
+  validation = collect(right_batch);
+  if (!validation.ok) return validation;
+  for (const auto descriptor_uuid : descriptor_uuids) {
+    if (type_uuids.contains(descriptor_uuid)) {
+      return Refusal(
+          "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "join descriptor and type identity domains are not independent");
+    }
+  }
+  return {};
+}
 
 // QOW-SOURCE-QRY-007-JOIN-V1
 // First canonical implementation in this module: typed inner join over the
@@ -149,6 +226,9 @@ CanonicalDescriptorInnerJoinResult ExecuteCanonicalDescriptorInnerJoin(
   auto right_validation = ValidateCanonicalDescriptorBatch(
       request.right_batch, right_node->output_descriptor_ids);
   if (!right_validation.ok) return refuse(std::move(right_validation));
+  auto role_validation = ValidateCanonicalJoinDescriptorRoleDomains(
+      request.left_batch, request.right_batch);
+  if (!role_validation.ok) return refuse(std::move(role_validation));
   if (request.consumer != EnginePredicateConsumer::join_on) {
     return refuse(Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
                           "join predicate consumer is not bound"));

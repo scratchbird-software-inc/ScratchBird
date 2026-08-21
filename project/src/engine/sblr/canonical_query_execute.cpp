@@ -7951,6 +7951,32 @@ PreparedJoinRoot PrepareJoinRoot(
     result.detail = "join root output lineage is not admitted by this profile";
     return result;
   }
+  std::unordered_map<std::uint32_t, const api::RelationalTypeDescriptor*>
+      descriptors;
+  for (const auto& descriptor : dag.descriptors) {
+    descriptors.emplace(descriptor.descriptor_id, &descriptor);
+  }
+  std::unordered_set<std::string_view> join_descriptor_uuids;
+  std::unordered_set<std::string_view> join_type_uuids;
+  for (const auto descriptor_id : predicate_descriptors) {
+    const auto descriptor = descriptors.find(descriptor_id);
+    if (descriptor == descriptors.end() ||
+        descriptor->second->descriptor_uuid.empty() ||
+        descriptor->second->type_uuid.empty()) {
+      result.detail = "join input descriptor or type identity is unresolved";
+      return result;
+    }
+    join_descriptor_uuids.insert(descriptor->second->descriptor_uuid);
+    join_type_uuids.insert(descriptor->second->type_uuid);
+  }
+  if (std::ranges::any_of(join_descriptor_uuids,
+                          [&](const auto descriptor_uuid) {
+                            return join_type_uuids.contains(descriptor_uuid);
+                          })) {
+    result.detail =
+        "join descriptor and type identity domains are not independent";
+    return result;
+  }
   const bool left_null_extended =
       join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
       join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter;

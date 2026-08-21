@@ -2069,6 +2069,12 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
   if (!entry_authority.ok)
     return refuse(entry_authority.diagnostic_code + ":" +
                   entry_authority.detail);
+  const auto role_validation =
+      ValidateCanonicalJoinDescriptorRoleDomains(left_batch, right_batch);
+  if (!role_validation.ok) {
+    return refuse(role_validation.diagnostic_code + ":" +
+                  role_validation.detail);
+  }
   const auto left_count = left_batch.rows.size();
   const auto right_count = right_batch.rows.size();
   if (left_count != 0 &&

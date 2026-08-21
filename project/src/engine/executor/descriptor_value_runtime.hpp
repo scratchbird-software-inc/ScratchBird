@@ -2918,6 +2918,9 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     const std::vector<std::uint32_t>& output_descriptor_ids,
     const std::function<bool()>& cancellation_requested = {},
     bool* cancellation_observed = nullptr);
+DescriptorRuntimeDiagnostic ValidateCanonicalJoinDescriptorRoleDomains(
+    const DescriptorBatch& left_batch,
+    const DescriptorBatch& right_batch);
 CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
     const CanonicalDescriptorProjectionRequest& request);
 // Borrowed execution carriers are consumed synchronously and are never
