@@ -694,6 +694,9 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
       input_node->delivered_property_uuids !=
           std::vector<std::string>{ordering_property_uuid} ||
       !exact_window_property ||
+      selected_node->executor_capability_abi_version != 1 ||
+      !selected_node->engine_capability_validated ||
+      !IsCanonicalUuid(selected_node->executor_capability_uuid) ||
       !IsCanonicalUuid(request.deterministic_order_evidence_uuid) ||
       request.deterministic_order_evidence_uuid == ordering_property_uuid ||
       request.deterministic_order_evidence_uuid == *window_property) {
@@ -707,12 +710,20 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
   const auto result_type_uuid = CanonicalDescriptorField(
       request.row_number_column.descriptor, "type_uuid");
   const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
+  constexpr std::string_view kRowNumberFunctionUuid =
+      "019de5fc-2400-7539-bcce-00eef3ae7220";
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
       request.row_number_column.descriptor_id == 0 ||
       request.row_number_column.nullable ||
+      request.row_number_column.descriptor.descriptor_kind != "scalar" ||
       request.row_number_column.descriptor.canonical_type_name != "int64" ||
+      !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          request.row_number_column.descriptor) ||
       !result_type_uuid.has_value() || canonical_int64_type_uuid.empty() ||
       *result_type_uuid != canonical_int64_type_uuid ||
+      request.row_number_column.descriptor.encoded_descriptor !=
+          "type_uuid=" + canonical_int64_type_uuid +
+              ";nullability=non_null" ||
       request.row_number_column.descriptor.descriptor_uuid.canonical ==
           *result_type_uuid ||
       request.row_number_column.descriptor.descriptor_uuid.canonical ==
@@ -723,6 +734,25 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
           request.deterministic_order_evidence_uuid) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "ROW_NUMBER output descriptor is not bound int64"));
+  }
+  const std::array<std::string_view, 7> row_number_identity_domain{
+      kRowNumberFunctionUuid,
+      request.row_number_column.descriptor.descriptor_uuid.canonical,
+      *result_type_uuid,
+      ordering_property_uuid,
+      *window_property,
+      selected_node->executor_capability_uuid,
+      request.deterministic_order_evidence_uuid};
+  const std::unordered_set<std::string_view> distinct_row_number_identities(
+      row_number_identity_domain.begin(), row_number_identity_domain.end());
+  if (distinct_row_number_identities.size() !=
+          row_number_identity_domain.size() ||
+      std::ranges::any_of(row_number_identity_domain, [](const auto identity) {
+        return !IsCanonicalUuid(identity);
+      })) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        "ROW_NUMBER result identity domain is not independent"));
   }
   auto input_validation = ValidateCanonicalDescriptorBatch(
       execution_ordered_input_batch, input_node->output_descriptor_ids);
