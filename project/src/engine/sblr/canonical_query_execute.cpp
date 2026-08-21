@@ -14003,6 +14003,30 @@ MakeLiveQueryDistinctRegistration(
           step.diagnostic = std::move(distinct_result.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                distinct_result, *execution_dag, node,
+                distinct_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-010-DISTINCT-REFUSAL-V1";
+          step.diagnostic.detail =
+              "query DISTINCT execution receipt changed";
+          return step;
+        }
+        if (distinct_result.output_batch.rows.size() >
+                input_batch.rows.size() ||
+            distinct_result.eliminated_duplicate_row_count !=
+                input_batch.rows.size() -
+                    distinct_result.output_batch.rows.size() ||
+            distinct_result.value_comparison_count >
+                maximum_value_comparisons) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-010-DISTINCT-REFUSAL-V1";
+          step.diagnostic.detail =
+              "query DISTINCT execution counters changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
