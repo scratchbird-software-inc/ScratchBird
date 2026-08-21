@@ -37527,20 +37527,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
           input.context.database_uuid.canonical ||
       persisted_relation.relation_kind != "table" ||
       persisted_relation.storage_profile != "local_mga_rowstore_v1" ||
-      persisted_relation.descriptor_generation == 0 ||
-      persisted_relation.columns.size() != 2 ||
-      persisted_relation.columns[0].ordinal != 0 ||
-      persisted_relation.columns[0].canonical_name_key != "body" ||
-      persisted_relation.columns[0].nullable ||
-      persisted_relation.columns[0].value_descriptor.canonical_type_name !=
-          "text" ||
-      persisted_relation.columns[1].ordinal != 1 ||
-      persisted_relation.columns[1].canonical_name_key != "category" ||
-      persisted_relation.columns[1].nullable ||
-      persisted_relation.columns[1].value_descriptor.canonical_type_name !=
-          "text") {
+      persisted_relation.descriptor_generation == 0) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent search relation descriptor is invalid");
+  }
+  if (!api::ExactBoundSearchStorageDescriptorV1(persisted_relation,
+                                                 object_uuid)) {
+    return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                  "persistent search relation type binding is not exact");
   }
   const auto query_descriptor =
       descriptor_for(query_text->result_descriptor_id);
@@ -37553,31 +37547,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       descriptor_for(outputs[1]->descriptor_id);
   const auto generation_output_descriptor =
       descriptor_for(outputs[2]->descriptor_id);
-  const auto stored_body_type =
-      persisted_relation.columns[0].value_descriptor.encoded_descriptor;
-  const auto stored_category_type =
-      persisted_relation.columns[1].value_descriptor.encoded_descriptor;
-  const auto descriptor_type_uuid = [](const std::string_view encoded) {
-    constexpr std::string_view prefix = "type_uuid=";
-    const auto begin = encoded.find(prefix);
-    if (begin == std::string_view::npos) return std::string{};
-    const auto value_begin = begin + prefix.size();
-    const auto end = encoded.find(';', value_begin);
-    return std::string(encoded.substr(
-        value_begin, end == std::string_view::npos
-                         ? encoded.size() - value_begin
-                         : end - value_begin));
-  };
+  const auto stored_text_type =
+      ExactCanonicalCoreDatatypeUuidV1("character");
   if (query_descriptor == dag.descriptors.end() ||
       analyzer_descriptor == dag.descriptors.end() ||
       analyzer_generation_descriptor == dag.descriptors.end() ||
       top_k_descriptor == dag.descriptors.end() ||
       analyzer_output_descriptor == dag.descriptors.end() ||
       generation_output_descriptor == dag.descriptors.end() ||
+      stored_text_type.empty() ||
       query_descriptor->descriptor_uuid !=
           persisted_relation.columns[0].value_descriptor.descriptor_uuid
               .canonical ||
-      query_descriptor->type_uuid != descriptor_type_uuid(stored_body_type) ||
+      query_descriptor->type_uuid != stored_text_type ||
       analyzer_descriptor->type_uuid != analyzer_output_descriptor->type_uuid ||
       analyzer_generation_descriptor->type_uuid !=
           generation_output_descriptor->type_uuid ||
@@ -37617,8 +37599,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       category_descriptor->descriptor_uuid !=
           persisted_relation.columns[1].value_descriptor.descriptor_uuid
               .canonical ||
-      category_descriptor->type_uuid !=
-          descriptor_type_uuid(stored_category_type) ||
+      category_descriptor->type_uuid != stored_text_type ||
       category_descriptor->nullability !=
           api::RelationalNullability::kNonNull) {
     return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
@@ -37633,7 +37614,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
         value_descriptor->descriptor_uuid !=
             persisted_relation.columns[1].value_descriptor.descriptor_uuid
                 .canonical ||
-        value_descriptor->type_uuid != descriptor_type_uuid(stored_category_type) ||
+        value_descriptor->type_uuid != stored_text_type ||
         value_descriptor->nullability !=
             api::RelationalNullability::kNonNull) {
       return refuse("SB_MODEL_SEARCH_FILTER_REFUSED_V1",
@@ -38749,6 +38730,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
   api::EngineBoundSearchReadRequestV1 search_request;
   search_request.context = input.context;
   search_request.collection_uuid = object_uuid;
+  search_request.expected_descriptor_uuid =
+      persisted_relation.descriptor_uuid.canonical;
+  search_request.expected_descriptor_generation =
+      persisted_relation.descriptor_generation;
   search_request.selected_alternative_uuid = alternative_uuid;
   search_request.selected_provider_uuid = provider_uuid;
   search_request.selected_capability_uuid = capability_uuid;
