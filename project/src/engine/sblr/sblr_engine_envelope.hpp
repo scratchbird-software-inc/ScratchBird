@@ -110,6 +110,7 @@ enum class SblrValueKind : std::uint16_t {
   table_type_enforcement_descriptor = 119,
   logical_snapshot_serialization_descriptor = 120,
   logical_snapshot_deserialization_descriptor = 121,
+  macro_descriptor = 122,
   sequence_setval_descriptor = 65,
   numeric_operation_descriptor = 66,
   advanced_datatype_family_descriptor = 67,
