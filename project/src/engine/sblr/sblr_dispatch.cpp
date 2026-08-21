@@ -9561,6 +9561,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_set_table_type_enforcement = (request.envelope.operation_id=="engine.op.ddl_set_table_type_enforcement"&&request.envelope.opcode=="SBLR_DDL_SET_TABLE_TYPE_ENFORCEMENT"&&request.envelope.opcode_code==1630) || (request.envelope.operation_id=="engine.op.database_serialize_logical_snapshot"&&request.envelope.opcode=="SBLR_DATABASE_SERIALIZE_LOGICAL_SNAPSHOT"&&request.envelope.opcode_code==1631);
   const bool exact_database_serialize_logical_snapshot = request.envelope.operation_id=="engine.op.database_serialize_logical_snapshot"&&request.envelope.opcode=="SBLR_DATABASE_SERIALIZE_LOGICAL_SNAPSHOT"&&request.envelope.opcode_code==1631;
   const bool exact_database_deserialize_logical_snapshot = request.envelope.operation_id=="engine.op.database_deserialize_logical_snapshot"&&request.envelope.opcode=="SBLR_DATABASE_DESERIALIZE_LOGICAL_SNAPSHOT"&&request.envelope.opcode_code==1632;
+  const bool exact_ddl_create_macro = request.envelope.operation_id=="engine.op.ddl_create_macro"&&request.envelope.opcode=="SBLR_DDL_CREATE_MACRO"&&request.envelope.opcode_code==1633;
   const bool exact_aggregate = request.envelope.operation_id=="engine.op.aggregate"&&request.envelope.opcode=="SBLR_AGGREGATE"&&request.envelope.opcode_code==1281;
   const bool exact_group = request.envelope.operation_id=="engine.op.group"&&request.envelope.opcode=="SBLR_GROUP"&&request.envelope.opcode_code==1282;
   const bool exact_sort = request.envelope.operation_id=="engine.op.sort"&&request.envelope.opcode=="SBLR_SORT"&&request.envelope.opcode_code==1283;
@@ -9628,6 +9629,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_local_backup_archive =
       request.envelope.operation_id.rfind("engine.op.", 0) == 0 &&
       request.envelope.opcode_code >= 0x0A00 && request.envelope.opcode_code <= 0x0A04;
+  if (exact_ddl_create_macro) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (request.envelope.operation_id != "query.execute" && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_create_aggregate && !exact_txn_begin && !exact_txn_commit &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_alter_aggregate && !exact_ddl_drop_aggregate && !exact_ddl_purge_system_history && !exact_ddl_set_index_optimizer_eligibility && !exact_ddl_set_table_type_enforcement && !exact_database_deserialize_logical_snapshot && !exact_txn_begin && !exact_txn_commit &&
@@ -9902,6 +9904,9 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result.result_shape.result_kind = "management_operation_result";
     result.api_result.evidence.push_back({request.envelope.operation_id, "executor_dispatch_admitted"});
     return result;
+  }
+  if (request.envelope.operation_id == "engine.op.ddl_create_macro" && request.envelope.opcode == "SBLR_DDL_CREATE_MACRO" && request.envelope.opcode_code == 1633) {
+    result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result;
   }
 
   // QOW-SOURCE-PACKET7-POST-VALIDATION-OPERAND-MATERIALIZATION-V1
