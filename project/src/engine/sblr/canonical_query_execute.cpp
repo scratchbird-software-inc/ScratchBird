@@ -57087,22 +57087,115 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               return fail("SB_MODEL_SPATIAL_COORDINATE_INVALID_V1",
                           "SPATIAL_MATCH POINT evaluation failed");
             }
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial match execution was cancelled before dispatch");
+            }
             auto matched =
                 api::nosql::ExecuteSpatialNativeV1(spatial_request);
-            if (!matched.accepted || !matched.root_publishable) {
-              return fail(matched.diagnostic_id, matched.detail);
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial match execution was cancelled after dispatch");
             }
-            rows = std::move(matched.rows);
+            if (!matched.accepted || !matched.root_publishable) {
+              return fail(matched.diagnostic_id.empty()
+                              ? "SB_MODEL_TYPED_EXCHANGE_INVALID_V1"
+                              : matched.diagnostic_id,
+                          matched.detail.empty()
+                              ? "spatial match execution did not publish"
+                              : matched.detail);
+            }
+            if (!matched.exact_fallback_selected ||
+                !matched.candidate_recheck_complete ||
+                !matched.mga_recheck_complete ||
+                matched.physical_operator_id !=
+                    "SPATIAL_EXACT_GEOMETRY_SCAN_V1" ||
+                matched.diagnostic_id != "SB_EXECUTOR_OK" ||
+                !matched.detail.empty() ||
+                spatial_request.source_rows.size() !=
+                    read.visible_rows.size() ||
+                spatial_request.source_rows.size() >
+                    source_input.maximum_rows ||
+                matched.rows.size() > spatial_request.source_rows.size() ||
+                matched.rows.size() > source_input.maximum_rows ||
+                (matched.rows.size() != 0 &&
+                 public_columns.size() >
+                     source_input.maximum_cells / matched.rows.size())) {
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "spatial match execution receipt changed");
+            }
+            std::size_t matched_ordinal = 0;
+            for (std::size_t source_ordinal = 0;
+                 source_ordinal < spatial_request.source_rows.size();
+                 ++source_ordinal) {
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "spatial match receipt replay was cancelled");
+              }
+              const auto& retained_row = read.visible_rows[source_ordinal];
+              const auto* retained_row_uuid =
+                  value_for(retained_row, "row_uuid");
+              const auto* retained_point =
+                  value_for(retained_row, "spatial_value");
+              const auto* retained_crs = value_for(retained_row, "crs_uuid");
+              const auto& source_row =
+                  spatial_request.source_rows[source_ordinal];
+              if (retained_row_uuid == nullptr || retained_point == nullptr ||
+                  retained_crs == nullptr ||
+                  source_row.row_uuid != retained_row.row_uuid ||
+                  source_row.row_uuid != *retained_row_uuid ||
+                  source_row.crs_uuid != *retained_crs ||
+                  source_row.crs_uuid != source_input.spatial_crs_uuid ||
+                  source_row.encoded_point.size() != retained_point->size() ||
+                  !std::ranges::equal(
+                      source_row.encoded_point, *retained_point,
+                      [](const std::uint8_t source_byte,
+                         const char retained_byte) {
+                        return source_byte ==
+                               static_cast<std::uint8_t>(retained_byte);
+                      })) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "spatial match source cohort changed");
+              }
+              if (source_row.encoded_point !=
+                  spatial_request.encoded_query_point) {
+                continue;
+              }
+              if (matched_ordinal >= matched.rows.size()) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "spatial match result omitted an exact match");
+              }
+              const auto& actual = matched.rows[matched_ordinal++];
+              if (actual.row_uuid != source_row.row_uuid ||
+                  actual.encoded_point != source_row.encoded_point ||
+                  actual.crs_uuid != source_row.crs_uuid ||
+                  actual.crs_uuid != source_input.spatial_crs_uuid ||
+                  !actual.predicate_truth || actual.distance != 0.0 ||
+                  std::signbit(actual.distance)) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "spatial match result changed before publication");
+              }
+            }
+            if (matched_ordinal != matched.rows.size()) {
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "spatial match result added or reordered a row");
+            }
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial match execution was cancelled before handoff");
+            }
             if (has_nearest) {
               source_rows.clear();
-              source_rows.reserve(rows.size());
-              for (auto& row : rows) {
+              source_rows.reserve(matched.rows.size());
+              for (auto& row : matched.rows) {
                 source_rows.push_back(
                     {std::move(row.row_uuid),
                      std::move(row.encoded_point),
                      std::move(row.crs_uuid)});
               }
               spatial_request.source_rows = std::move(source_rows);
+            } else {
+              rows = std::move(matched.rows);
             }
           }
           if (has_nearest) {
