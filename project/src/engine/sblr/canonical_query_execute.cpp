@@ -49468,6 +49468,14 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
              std::string::npos) {
     condition_form = "NATURAL";
   }
+  if (condition_form == "USING" || condition_form == "NATURAL") {
+    return refuse(
+        condition_form == "USING"
+            ? "SB_MODEL_JOIN_USING_BINDING_REFUSED_V1"
+            : "SB_MODEL_JOIN_NATURAL_BINDING_REFUSED_V1",
+        "captured model-family USING/NATURAL join lacks binder-owned named "
+        "bindings and a coalescing projection");
+  }
   const auto left_family = Rcp079ModelFamilyForSource(dag, *sources[0]);
   const auto right_family = Rcp079ModelFamilyForSource(dag, *sources[1]);
   opt::ModelFamilyJoinAdmissionRequestV1 pair_request;
@@ -50414,6 +50422,14 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   } else if (join->semantic_variant_id.find(".natural.") !=
              std::string::npos) {
     condition_form = "NATURAL";
+  }
+  if (condition_form == "USING" || condition_form == "NATURAL") {
+    return refuse(
+        condition_form == "USING"
+            ? "SB_MODEL_JOIN_USING_BINDING_REFUSED_V1"
+            : "SB_MODEL_JOIN_NATURAL_BINDING_REFUSED_V1",
+        "columnar USING/NATURAL join lacks binder-owned named bindings and "
+        "a coalescing projection");
   }
   const bool predicate_join = join_form != "CROSS";
   const bool left_only = join_form == "SEMI" || join_form == "ANTI";
