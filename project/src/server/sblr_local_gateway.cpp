@@ -419,6 +419,7 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
   if (exact_local_ddl_purge_system_history) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_set_table_type_enforcement) exact_local_ddl_create_schema = true;
   if (exact_local_database_serialize_logical_snapshot) exact_local_ddl_create_schema = true;
+  if (exact_local_database_deserialize_logical_snapshot) exact_local_ddl_create_schema = true;
   if (exact_local_ddl_set_index_optimizer_eligibility) exact_local_ddl_create_schema = true;
   if (exact_kv_structured_mutate && !exact_local_kv_structured_mutate) return Refuse(request,"SBLR.OPERAND.INVALID");
   if (exact_kv_structured_stream_append && !exact_local_kv_structured_stream_append) return Refuse(request,"SBLR.OPERAND.INVALID");

@@ -9894,6 +9894,15 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result.evidence.push_back({request.envelope.operation_id, "executor_dispatch_admitted"});
     return result;
   }
+  if (request.envelope.operation_id == "engine.op.database_deserialize_logical_snapshot" && request.envelope.opcode == "SBLR_DATABASE_DESERIALIZE_LOGICAL_SNAPSHOT" && request.envelope.opcode_code == 1632) {
+    result.accepted = true;
+    result.dispatched_to_api = true;
+    result.api_result.ok = true;
+    result.api_result.operation_id = request.envelope.operation_id;
+    result.api_result.result_shape.result_kind = "management_operation_result";
+    result.api_result.evidence.push_back({request.envelope.operation_id, "executor_dispatch_admitted"});
+    return result;
+  }
 
   // QOW-SOURCE-PACKET7-POST-VALIDATION-OPERAND-MATERIALIZATION-V1
   // Canonical SBOP validation owns the serialized typed value body.  The
