@@ -1963,6 +1963,18 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
         execution_ordered_input_batch.columns[*request.value_column]
                 .descriptor.canonical_type_name == "boolean" &&
         *source_type_uuid == canonical_boolean_type_uuid &&
+        execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor.encoded_descriptor ==
+            "type_uuid=" + canonical_boolean_type_uuid +
+                ";nullability=" +
+                (execution_ordered_input_batch
+                         .columns[*request.value_column]
+                         .nullable
+                     ? "nullable"
+                     : "non_null") &&
+        request.result_column.descriptor.encoded_descriptor ==
+            "type_uuid=" + canonical_boolean_type_uuid +
+                ";nullability=nullable" &&
         CanonicalDerivedDescriptorTypeMatches(
             execution_ordered_input_batch.columns[*request.value_column]
                 .descriptor,
