@@ -12,6 +12,7 @@
 
 #include "catalog/name_resolution_api.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
 #include "engine/executor/executor_foundation.hpp"
 #include "engine/executor/model_family_executor.hpp"
 #include "engine/optimizer/model_family_coordinator.hpp"
@@ -2294,6 +2295,27 @@ struct PreparedGlobalAggregateRoot {
 
 std::string ExactCanonicalCoreDatatypeUuidV1(
     std::string_view stable_name);
+
+std::optional<std::string> Rcp079DescriptorField(
+    const std::string_view encoded, const std::string_view key) {
+  const std::string prefix = std::string(key) + "=";
+  std::optional<std::string> value;
+  std::size_t offset = 0;
+  while (offset <= encoded.size()) {
+    const auto separator = encoded.find(';', offset);
+    const auto end = separator == std::string_view::npos
+                         ? encoded.size()
+                         : separator;
+    const auto field = encoded.substr(offset, end - offset);
+    if (field.starts_with(prefix)) {
+      if (value.has_value()) return std::nullopt;
+      value = std::string(field.substr(prefix.size()));
+    }
+    if (separator == std::string_view::npos) break;
+    offset = separator + 1;
+  }
+  return value;
+}
 
 bool RevalidatePreparedAggregateValueBindings(
     const std::vector<std::size_t>& value_columns,
@@ -6641,7 +6663,11 @@ bool PrepareInputRowBinding(
     const std::uint32_t root_expression_id,
     const std::vector<std::uint32_t>& input_descriptor_ids,
     CanonicalRelationalExpressionRowBinding* row_binding,
-    std::string* detail) {
+    std::string* detail,
+    std::uint64_t* preparation_peak_structural_bytes = nullptr) {
+  if (preparation_peak_structural_bytes != nullptr) {
+    *preparation_peak_structural_bytes = 0;
+  }
   if (row_binding == nullptr || detail == nullptr ||
       root_expression_id == 0 || input_descriptor_ids.empty()) {
     if (detail != nullptr) {
@@ -6697,6 +6723,41 @@ bool PrepareInputRowBinding(
     pending.insert(pending.end(),
                    expression->second->child_expression_ids.begin(),
                    expression->second->child_expression_ids.end());
+  }
+  if (preparation_peak_structural_bytes != nullptr) {
+    std::uint64_t bytes = sizeof(*row_binding);
+    std::uint64_t allocation = 0;
+    const auto add_array = [&](const std::uint64_t count,
+                               const std::uint64_t element_bytes) {
+      return CheckedMultiply(count, element_bytes, &allocation) &&
+             CheckedAdd(bytes, allocation, &bytes);
+    };
+    // This is the exact live container cohort retained by this implementation
+    // under the engine logical-memory convention: bucket arrays, conservative
+    // node/link storage, vector capacities, and the surviving row binding.
+    constexpr std::uint64_t kNodeLinks = 6 * sizeof(void*);
+    if (!add_array(row_binding->row_descriptor_ids.capacity(),
+                   sizeof(std::uint32_t)) ||
+        !add_array(row_binding->slots.capacity(),
+                   sizeof(CanonicalRelationalExpressionRowSlotBinding)) ||
+        !add_array(input_ordinals.bucket_count(), sizeof(void*)) ||
+        !add_array(input_ordinals.size(),
+                   sizeof(std::pair<const std::uint32_t, std::size_t>) +
+                       kNodeLinks) ||
+        !add_array(expressions.bucket_count(), sizeof(void*)) ||
+        !add_array(
+            expressions.size(),
+            sizeof(std::pair<
+                const std::uint32_t,
+                const api::RelationalExpressionRecord*>) + kNodeLinks) ||
+        !add_array(reachable.bucket_count(), sizeof(void*)) ||
+        !add_array(reachable.size(), sizeof(std::uint32_t) + kNodeLinks) ||
+        !add_array(pending.capacity(), sizeof(std::uint32_t))) {
+      *row_binding = {};
+      *detail = "row expression binding memory receipt overflowed";
+      return false;
+    }
+    *preparation_peak_structural_bytes = bytes;
   }
   return true;
 }
@@ -12621,9 +12682,10 @@ WithMultilegResultDescriptorRebindingV1(
           } else if (column.descriptor.descriptor_uuid.canonical !=
                          allocation.descriptor_uuid ||
                      allocation.type_uuid.empty() ||
-                     column.descriptor.encoded_descriptor.find(
-                         "type_uuid=" + allocation.type_uuid) ==
-                         std::string::npos ||
+                     Rcp079DescriptorField(
+                         column.descriptor.encoded_descriptor,
+                         "type_uuid") !=
+                         std::optional<std::string>(allocation.type_uuid) ||
                      column.nullable != allocation.demand.nullable) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
@@ -31462,6 +31524,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
 #endif
 
 #if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+struct Rcp079ColumnarSourceRuntimeMemoryReceiptV1 {
+  bool complete{false};
+  std::uint64_t provider_logical_memory_bytes{0};
+  std::uint64_t peak_live_memory_bytes{0};
+  std::uint64_t memory_grant_bytes{0};
+};
+
 struct Rcp079CapturedModelLegV1 {
   bool captured{false};
   std::uint32_t logical_node_id{0};
@@ -31476,7 +31545,15 @@ struct Rcp079CapturedModelLegV1 {
       plan::CanonicalLogicalRelationalNodeKind::kRelationSource};
   exec::PhysicalNodeKind physical_node_kind{exec::PhysicalNodeKind::kScan};
   exec::ModelFamilyExecutionRequestV1 execution_request;
+  std::vector<exec::ExecutorColumnDescriptor> exact_output_columns;
+  std::shared_ptr<Rcp079ColumnarSourceRuntimeMemoryReceiptV1>
+      columnar_runtime_memory_receipt;
+  std::shared_ptr<std::atomic_bool> cancellation_probe_failed;
 };
+
+bool Rcp079ExactExecutorColumnV1(
+    const exec::ExecutorColumnDescriptor& actual,
+    const exec::ExecutorColumnDescriptor& expected);
 
 void CaptureRcp079ModelLegV1(
     Rcp079CapturedModelLegV1* capture, const std::uint32_t logical_node_id,
@@ -31516,6 +31593,10 @@ MakeRcp079CapturedModelLegRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 =
+      std::ranges::all_of(captured_legs, [](const auto& leg) {
+        return leg.columnar_runtime_memory_receipt != nullptr;
+      });
   registration.execute =
       [captured_legs](const exec::TypedPhysicalNodeDag& selected_dag,
                  const exec::PhysicalNodeRecord& selected_node,
@@ -31583,6 +31664,41 @@ MakeRcp079CapturedModelLegRegistration(
             };
         const auto executed = exec::ExecuteModelFamilySourceV1(request);
         step.data_access_observed = executed.data_access_observed;
+        if (captured->cancellation_probe_failed != nullptr &&
+            captured->cancellation_probe_failed->load(
+                std::memory_order_relaxed)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+          step.diagnostic.detail =
+              "model-family cancellation probe failed";
+          return step;
+        }
+        if (executed.diagnostic_id == "SB_MODEL_EXECUTION_CANCELLED_V1") {
+          const exec::PhysicalAdmissionEvidence* cancellation_policy = nullptr;
+          for (const auto& evidence : selected_dag.admission_evidence) {
+            if (evidence.stage !=
+                exec::PhysicalAdmissionStage::kPolicyCapability) {
+              continue;
+            }
+            if (cancellation_policy != nullptr) {
+              cancellation_policy = nullptr;
+              break;
+            }
+            cancellation_policy = &evidence;
+          }
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = executed.diagnostic_id;
+          step.diagnostic.detail = executed.detail;
+          step.cancellation_observed = true;
+          step.transient_state_cleanup_proven =
+              executed.cleanup_complete && executed.cleanup_count == 1;
+          step.cancellation_evidence_uuid =
+              cancellation_policy == nullptr
+                  ? std::string{}
+                  : cancellation_policy->evidence_uuid;
+          return step;
+        }
         if (!executed.accepted || !executed.root_published ||
             !executed.cleanup_complete || executed.cleanup_count != 1 ||
             !executed.output.exact_exchange_validated) {
@@ -31593,6 +31709,42 @@ MakeRcp079CapturedModelLegRegistration(
                   : executed.diagnostic_id;
           step.diagnostic.detail = executed.detail;
           return step;
+        }
+        if (!captured->exact_output_columns.empty() &&
+            (executed.output.batch.columns.size() !=
+                 captured->exact_output_columns.size() ||
+             !std::ranges::equal(
+                 executed.output.batch.columns,
+                 captured->exact_output_columns,
+                 [](const auto& actual, const auto& expected) {
+                   return Rcp079ExactExecutorColumnV1(actual, expected);
+                 }))) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1";
+          step.diagnostic.detail =
+              "captured model-family output descriptor changed";
+          return step;
+        }
+        if (captured->columnar_runtime_memory_receipt != nullptr) {
+          std::uint64_t current_memory_bytes = 0;
+          const auto& memory = *captured->columnar_runtime_memory_receipt;
+          if (!memory.complete ||
+              memory.provider_logical_memory_bytes == 0 ||
+              memory.memory_grant_bytes == 0 ||
+              memory.peak_live_memory_bytes > memory.memory_grant_bytes ||
+              !RuntimeMaterializedBatchMemoryBytes(executed.output.batch,
+                                                   &current_memory_bytes) ||
+              current_memory_bytes > memory.peak_live_memory_bytes) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+            step.diagnostic.detail =
+                "captured columnar runtime memory receipt is incomplete";
+            return step;
+          }
+          PublishRuntimeMemoryObservation(
+              &step, current_memory_bytes, memory.peak_live_memory_bytes);
         }
         step.result_handle_id = selected_node.physical_node_id;
         step.output_row_count = executed.output.batch.rows.size();
@@ -47946,27 +48098,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   return result;
 }
 
-std::optional<std::string> Rcp079DescriptorField(
-    const std::string_view encoded, const std::string_view key) {
-  const std::string prefix = std::string(key) + "=";
-  std::optional<std::string> value;
-  std::size_t offset = 0;
-  while (offset <= encoded.size()) {
-    const auto separator = encoded.find(';', offset);
-    const auto end = separator == std::string_view::npos
-                         ? encoded.size()
-                         : separator;
-    const auto field = encoded.substr(offset, end - offset);
-    if (field.starts_with(prefix)) {
-      if (value.has_value()) return std::nullopt;
-      value = std::string(field.substr(prefix.size()));
-    }
-    if (separator == std::string_view::npos) break;
-    offset = separator + 1;
-  }
-  return value;
-}
-
 std::string Rcp079CanonicalReal64(const double value) {
   if (!std::isfinite(value)) return {};
   if (value == 0.0) return "0";
@@ -51151,6 +51282,36 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
                   "captured model-family pair DAG is incomplete");
   }
 
+  std::vector<std::string> authorized_object_uuids;
+  authorized_object_uuids.reserve(sources.size());
+  for (const auto* source : sources) {
+    if (source->required_object_uuids.size() != 1 ||
+        !CanonicalUuidText(source->required_object_uuids.front())) {
+      return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                    "captured model-family object closure is not exact");
+    }
+    if (std::ranges::find(authorized_object_uuids,
+                          source->required_object_uuids.front()) ==
+        authorized_object_uuids.end()) {
+      authorized_object_uuids.push_back(source->required_object_uuids.front());
+    }
+  }
+  const auto complete_object_closure_authorized = [&] {
+    return std::ranges::all_of(
+        authorized_object_uuids, [&](const auto& object_uuid) {
+          const auto authorization = api::EvaluateMaterializedAuthorization(
+              input.context, input.context.authorization_context, "SELECT",
+              object_uuid);
+          return authorization.authorized && !authorization.denied &&
+                 !authorization.policy_recheck_required &&
+                 authorization.diagnostics.empty();
+        });
+  };
+  if (!complete_object_closure_authorized()) {
+    return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                  "captured model-family SELECT closure was refused");
+  }
+
   const auto descriptor_preflight =
       Rcp079PreflightMultilegResultDescriptorsV1(
           input, sources, join_kind, left_only);
@@ -51198,6 +51359,42 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
                               ? "model-family source adapter was not captured"
                               : attempted.api_result.diagnostics.front().detail;
       return refuse(diagnostic, detail);
+    }
+  }
+  const bool exact_columnar_pair =
+      std::ranges::all_of(captured, [](const auto& leg) {
+        return leg.family_id == "columnar" &&
+               !leg.exact_output_columns.empty() &&
+               leg.exact_output_columns.size() ==
+                   leg.execution_request.input.output_descriptor_ids.size();
+      });
+  std::vector<exec::ExecutorColumnDescriptor> exact_join_columns;
+  if (exact_columnar_pair) {
+    exact_join_columns = captured[0].exact_output_columns;
+    if (!left_only) {
+      exact_join_columns.insert(exact_join_columns.end(),
+                                captured[1].exact_output_columns.begin(),
+                                captured[1].exact_output_columns.end());
+    }
+    const auto left_width = captured[0].exact_output_columns.size();
+    for (std::size_t ordinal = 0; ordinal < exact_join_columns.size();
+         ++ordinal) {
+      const bool null_extended =
+          (ordinal < left_width &&
+           (join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
+            join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter)) ||
+          (ordinal >= left_width &&
+           (join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
+            join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter));
+      if (null_extended) {
+        exact_join_columns[ordinal].nullable = true;
+        if (!exec::DeriveCanonicalNullableDescriptorEncoding(
+                &exact_join_columns[ordinal].descriptor)) {
+          return refuse(
+              "SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+              "columnar outer result lacks an exact nullable carrier");
+        }
+      }
     }
   }
   const auto model_leg = std::ranges::find_if(captured, [](const auto& leg) {
@@ -51352,12 +51549,17 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
   std::uint64_t maximum_cells = 0;
   std::uint64_t maximum_total_rows = 0;
   std::uint64_t maximum_total_cells = 0;
+  std::uint64_t input_columns = 0;
+  std::uint64_t source_cells = 0;
   if (maximum_rows == 0 || maximum_columns == 0 ||
+      !CheckedAdd(sources[0]->output_descriptor_ids.size(),
+                  sources[1]->output_descriptor_ids.size(), &input_columns) ||
       !CheckedMultiply(maximum_rows, maximum_rows, &maximum_pairs) ||
       maximum_pairs > std::numeric_limits<std::size_t>::max() ||
       !CheckedMultiply(maximum_rows, maximum_columns, &maximum_cells) ||
+      !CheckedMultiply(maximum_rows, input_columns, &source_cells) ||
       !CheckedMultiply(maximum_rows, 3, &maximum_total_rows) ||
-      !CheckedMultiply(maximum_cells, 3, &maximum_total_cells) ||
+      !CheckedAdd(source_cells, maximum_cells, &maximum_total_cells) ||
       maximum_cells > std::numeric_limits<std::size_t>::max() ||
       maximum_total_rows > std::numeric_limits<std::size_t>::max() ||
       maximum_total_cells > std::numeric_limits<std::size_t>::max()) {
@@ -51785,6 +51987,35 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
         predicate_join ? join->bound_expression_ids.front() : 0,
         std::move(predicate_binding), dag, std::move(predicate_services));
   }
+  if (exact_columnar_pair) {
+    auto execute_join = std::move(join_registration.execute);
+    join_registration.execute =
+        [execute_join = std::move(execute_join), exact_join_columns](
+            const exec::TypedPhysicalNodeDag& selected_dag,
+            const exec::PhysicalNodeRecord& selected_node,
+            const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs)
+            mutable {
+          auto step = execute_join(selected_dag, selected_node, inputs);
+          if (!step.diagnostic.ok) return step;
+          if (!step.materialized_output_batch.has_value() ||
+              step.materialized_output_batch->columns.size() !=
+                  exact_join_columns.size() ||
+              !std::ranges::equal(
+                  step.materialized_output_batch->columns,
+                  exact_join_columns,
+                  [](const auto& actual, const auto& expected) {
+                    return Rcp079ExactExecutorColumnV1(actual, expected);
+                  })) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1";
+            step.diagnostic.detail =
+                "columnar join result descriptor carrier changed";
+            step.materialized_output_batch.reset();
+          }
+          return step;
+        };
+  }
   selected.available_executors.push_back(
       WithMultilegResultDescriptorRebindingV1(
           std::move(join_registration),
@@ -51827,12 +52058,43 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
     });
   };
   const auto left_width = sources[0]->output_descriptor_ids.size();
+  std::vector<const api::RelationalOutputRecord*> exact_source_outputs;
+  if (exact_columnar_pair) {
+    for (std::size_t source_ordinal = 0; source_ordinal < sources.size();
+         ++source_ordinal) {
+      if (left_only && source_ordinal != 0) break;
+      std::vector<const api::RelationalOutputRecord*> outputs;
+      for (const auto& output : dag.outputs) {
+        if (output.relation_node_id == sources[source_ordinal]->node_id) {
+          outputs.push_back(&output);
+        }
+      }
+      std::ranges::sort(outputs, {}, &api::RelationalOutputRecord::ordinal);
+      exact_source_outputs.insert(exact_source_outputs.end(), outputs.begin(),
+                                  outputs.end());
+    }
+    if (exact_source_outputs.size() != root_outputs.size() ||
+        exact_join_columns.size() != root_outputs.size()) {
+      return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                    "columnar join source output closure changed");
+    }
+  }
   for (std::size_t ordinal = 0; ordinal < root_outputs.size(); ++ordinal) {
     const auto descriptor = descriptor_for(root_outputs[ordinal]->descriptor_id);
     if (descriptor == dag.descriptors.end() ||
-        root_outputs[ordinal]->ordinal != ordinal) {
+        root_outputs[ordinal]->ordinal != ordinal ||
+        !root_outputs[ordinal]->visible ||
+        root_outputs[ordinal]->descriptor_id !=
+            join->output_descriptor_ids[ordinal] ||
+        (exact_columnar_pair &&
+         (root_outputs[ordinal]->expression_id !=
+              exact_source_outputs[ordinal]->expression_id ||
+          root_outputs[ordinal]->output_name_utf8 !=
+              exact_source_outputs[ordinal]->output_name_utf8 ||
+          root_outputs[ordinal]->descriptor_id !=
+              exact_source_outputs[ordinal]->descriptor_id))) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                    "captured model-family root descriptor is unresolved");
+                    "captured model-family root descriptor is not source-exact");
     }
     const bool null_extended =
         ((join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
@@ -51846,13 +52108,27 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
     published.name_utf8 = root_outputs[ordinal]->output_name_utf8;
     const auto& allocation =
         descriptor_preflight.publication_allocations[ordinal];
+    const auto exact_type_uuid =
+        exact_columnar_pair
+            ? Rcp079DescriptorField(
+                  exact_join_columns[ordinal].descriptor.encoded_descriptor,
+                  "type_uuid")
+            : std::optional<std::string>{};
     if (allocation.demand.nullable !=
             (null_extended ||
              descriptor->nullability ==
                  api::RelationalNullability::kNullable) ||
         (!allocation.demand.derived &&
          (allocation.descriptor_uuid != descriptor->descriptor_uuid ||
-          allocation.type_uuid != descriptor->type_uuid))) {
+          allocation.type_uuid != descriptor->type_uuid)) ||
+        (exact_columnar_pair &&
+         (!exact_type_uuid.has_value() ||
+          allocation.descriptor_uuid !=
+              exact_join_columns[ordinal]
+                  .descriptor.descriptor_uuid.canonical ||
+          allocation.type_uuid != *exact_type_uuid ||
+          allocation.demand.nullable !=
+              exact_join_columns[ordinal].nullable))) {
       return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                     "captured model-family publication allocation changed");
     }
@@ -51867,6 +52143,10 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
     }
     selected.result_publication_request.column_bindings.push_back(
         {ordinal, true, std::move(published)});
+  }
+  if (!complete_object_closure_authorized()) {
+    return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                  "captured model-family SELECT closure changed before execution");
   }
   const auto execution = ExecuteSelectedWithMgaGuard(
       input.context, selected, physical.ordinary_runtime_memory_receipts);
@@ -51921,6 +52201,7 @@ struct Rcp079ColumnarJoinSourceV1 {
   api::MgaRelationStorageDescriptor persisted;
   std::vector<exec::ExecutorColumnDescriptor> columns;
   std::vector<std::uint32_t> output_descriptor_ids;
+  std::vector<std::uint32_t> output_expression_ids;
   std::string implementation_id{"physical_columnar_zone_scan_v1"};
   std::string capability_uuid;
   std::string provider_uuid;
@@ -51928,6 +52209,829 @@ struct Rcp079ColumnarJoinSourceV1 {
   std::string property_uuid;
   std::string security_receipt_uuid;
 };
+
+std::optional<std::map<std::string_view, std::string_view>>
+Rcp079ExactDescriptorFieldsV1(const api::EngineDescriptor& descriptor) {
+  std::map<std::string_view, std::string_view> fields;
+  const auto encoded = std::string_view(descriptor.encoded_descriptor);
+  std::size_t offset = 0;
+  while (offset <= encoded.size()) {
+    const auto separator = encoded.find(';', offset);
+    const auto field = encoded.substr(
+        offset, separator == std::string_view::npos
+                    ? std::string_view::npos
+                    : separator - offset);
+    const auto equal = field.find('=');
+    if (field.empty() || equal == std::string_view::npos || equal == 0 ||
+        equal + 1 == field.size() ||
+        !fields.emplace(field.substr(0, equal), field.substr(equal + 1))
+             .second) {
+      return std::nullopt;
+    }
+    if (separator == std::string_view::npos) break;
+    offset = separator + 1;
+  }
+  return fields;
+}
+
+bool Rcp079ExactColumnarJoinStorageSnapshotV1(
+    const api::MgaRelationStorageDescriptor& actual,
+    const api::MgaRelationStorageDescriptor& expected) {
+  if (actual.descriptor_uuid.canonical !=
+          expected.descriptor_uuid.canonical ||
+      actual.database_uuid.canonical != expected.database_uuid.canonical ||
+      actual.schema_uuid.canonical != expected.schema_uuid.canonical ||
+      actual.relation_uuid.canonical != expected.relation_uuid.canonical ||
+      actual.primary_filespace_uuid.canonical !=
+          expected.primary_filespace_uuid.canonical ||
+      actual.relation_kind != expected.relation_kind ||
+      actual.storage_profile != expected.storage_profile ||
+      actual.descriptor_generation != expected.descriptor_generation ||
+      actual.page_size != expected.page_size ||
+      actual.root_page_number != expected.root_page_number ||
+      actual.allocation_root_page_number !=
+          expected.allocation_root_page_number ||
+      actual.row_identity_rule != expected.row_identity_rule ||
+      actual.version_identity_rule != expected.version_identity_rule ||
+      actual.mutation_rule != expected.mutation_rule ||
+      actual.visibility_rule != expected.visibility_rule ||
+      actual.cleanup_rule != expected.cleanup_rule ||
+      actual.recovery_rule != expected.recovery_rule ||
+      actual.descriptor_status != expected.descriptor_status ||
+      actual.required_evidence_kinds != expected.required_evidence_kinds ||
+      actual.columns.size() != expected.columns.size() ||
+      actual.indexes.size() != expected.indexes.size()) {
+    return false;
+  }
+  for (std::size_t ordinal = 0; ordinal < actual.columns.size(); ++ordinal) {
+    const auto& left = actual.columns[ordinal];
+    const auto& right = expected.columns[ordinal];
+    if (left.column_uuid.canonical != right.column_uuid.canonical ||
+        left.ordinal != right.ordinal ||
+        left.canonical_name_key != right.canonical_name_key ||
+        left.value_descriptor.descriptor_uuid.canonical !=
+            right.value_descriptor.descriptor_uuid.canonical ||
+        left.value_descriptor.descriptor_kind !=
+            right.value_descriptor.descriptor_kind ||
+        left.value_descriptor.canonical_type_name !=
+            right.value_descriptor.canonical_type_name ||
+        left.value_descriptor.encoded_descriptor !=
+            right.value_descriptor.encoded_descriptor ||
+        left.nullable != right.nullable || left.generated != right.generated ||
+        left.identity_column != right.identity_column ||
+        left.storage_class != right.storage_class ||
+        left.charset_uuid != right.charset_uuid ||
+        left.collation_uuid != right.collation_uuid ||
+        left.character_length != right.character_length ||
+        left.max_inline_bytes != right.max_inline_bytes ||
+        left.overflow_policy != right.overflow_policy) {
+      return false;
+    }
+  }
+  for (std::size_t ordinal = 0; ordinal < actual.indexes.size(); ++ordinal) {
+    const auto& left = actual.indexes[ordinal];
+    const auto& right = expected.indexes[ordinal];
+    if (left.index_uuid.canonical != right.index_uuid.canonical ||
+        left.family != right.family || left.profile != right.profile ||
+        left.unique != right.unique ||
+        left.approximate != right.approximate ||
+        left.key_envelopes != right.key_envelopes ||
+        left.include_columns != right.include_columns ||
+        left.predicate_kind != right.predicate_kind ||
+        left.predicate_column != right.predicate_column ||
+        left.predicate_value != right.predicate_value ||
+        left.residency_policy != right.residency_policy) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool Rcp079ExactPersistedColumnDescriptorV1(
+    const api::MgaRelationColumnStorageDescriptor& persisted) {
+  const auto fields =
+      Rcp079ExactDescriptorFieldsV1(persisted.value_descriptor);
+  if (!fields.has_value() || persisted.canonical_name_key.empty() ||
+      !CanonicalUuidText(persisted.column_uuid.canonical) ||
+      !api::QowCanonicalDescriptorIdentityV1(persisted.value_descriptor) ||
+      persisted.value_descriptor.descriptor_kind !=
+          "canonical_type_descriptor" ||
+      !CanonicalUuidText(
+          persisted.value_descriptor.descriptor_uuid.canonical) ||
+      persisted.storage_class != "inline_row_value" ||
+      persisted.max_inline_bytes != 4096 ||
+      persisted.overflow_policy != "mga_large_value_locator") {
+    return false;
+  }
+  const auto field = [&](const std::string_view name)
+      -> std::optional<std::string_view> {
+    const auto found = fields->find(name);
+    return found == fields->end()
+               ? std::optional<std::string_view>{}
+               : std::optional<std::string_view>{found->second};
+  };
+  const auto type_uuid = field("type_uuid");
+  std::optional<std::string_view> encoded_type_name;
+  for (const auto alias :
+       {std::string_view("type"), std::string_view("canonical"),
+        std::string_view("canonical_type"),
+        std::string_view("descriptor")}) {
+    const auto candidate = field(alias);
+    if (!candidate.has_value()) continue;
+    if (encoded_type_name.has_value() &&
+        *encoded_type_name != *candidate) {
+      return false;
+    }
+    if (!encoded_type_name.has_value()) encoded_type_name = candidate;
+  }
+  static const auto datatype_manifest =
+      dt::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto canonical_type_id = dt::CanonicalTypeIdFromStableName(
+      persisted.value_descriptor.canonical_type_name);
+  const auto canonical_type =
+      datatype_manifest.ok()
+          ? dt::LookupDatatypeCatalogRow(datatype_manifest.manifest,
+                                         canonical_type_id)
+          : dt::DatatypeCatalogManifestResult{};
+  if (!type_uuid.has_value() ||
+      !CanonicalUuidText(std::string(*type_uuid)) ||
+      canonical_type_id == dt::CanonicalTypeId::unknown ||
+      !canonical_type.ok() ||
+      canonical_type.manifest.descriptor_rows.size() != 1 ||
+      !canonical_type.manifest.descriptor_rows.front()
+           .descriptor_uuid.valid() ||
+      scratchbird::core::uuid::UuidToString(
+          canonical_type.manifest.descriptor_rows.front()
+              .descriptor_uuid.value) != *type_uuid ||
+      persisted.value_descriptor.descriptor_uuid.canonical == *type_uuid ||
+      !encoded_type_name.has_value() ||
+      *encoded_type_name !=
+          persisted.value_descriptor.canonical_type_name) {
+    return false;
+  }
+
+  const auto canonical_nullability = field("nullability");
+  const auto storage_nullability = field("nullable");
+  if (canonical_nullability.has_value() == storage_nullability.has_value()) {
+    return false;
+  }
+  std::optional<bool> nullable;
+  if (canonical_nullability == std::optional<std::string_view>{"nullable"}) {
+    nullable = true;
+  } else if (canonical_nullability ==
+             std::optional<std::string_view>{"non_null"}) {
+    nullable = false;
+  } else if (storage_nullability ==
+                 std::optional<std::string_view>{"true"} ||
+             storage_nullability == std::optional<std::string_view>{"1"}) {
+    nullable = true;
+  } else if (storage_nullability ==
+                 std::optional<std::string_view>{"false"} ||
+             storage_nullability == std::optional<std::string_view>{"0"}) {
+    nullable = false;
+  } else {
+    return false;
+  }
+  if (*nullable != persisted.nullable) return false;
+
+  const auto exact_optional_bool = [&](const std::string_view name,
+                                       const bool expected) {
+    const auto encoded = field(name);
+    if (!encoded.has_value()) return !expected;
+    const auto actual =
+        *encoded == "true" || *encoded == "1"
+            ? std::optional<bool>{true}
+            : (*encoded == "false" || *encoded == "0")
+                  ? std::optional<bool>{false}
+                  : std::optional<bool>{};
+    return actual.has_value() && *actual == expected;
+  };
+  if (!exact_optional_bool("generated", persisted.generated) ||
+      !exact_optional_bool("identity", persisted.identity_column)) {
+    return false;
+  }
+
+  const auto encoded_collation = field("collation_uuid");
+  const auto encoded_charset = field("charset_uuid");
+  if (encoded_collation.has_value() !=
+          !persisted.collation_uuid.empty() ||
+      (encoded_collation.has_value() &&
+       *encoded_collation != persisted.collation_uuid) ||
+      (encoded_collation.has_value() &&
+       !CanonicalUuidText(std::string(*encoded_collation))) ||
+      encoded_charset.has_value() != !persisted.charset_uuid.empty() ||
+      (encoded_charset.has_value() &&
+       *encoded_charset != persisted.charset_uuid) ||
+      (encoded_charset.has_value() &&
+       !CanonicalUuidText(std::string(*encoded_charset)))) {
+    return false;
+  }
+
+  const auto parse_u32 = [&](const std::string_view name,
+                             std::optional<std::uint32_t>* value) {
+    value->reset();
+    const auto encoded = field(name);
+    if (!encoded.has_value()) return true;
+    if (encoded->empty() ||
+        (encoded->size() > 1 && encoded->front() == '0')) {
+      return false;
+    }
+    std::uint32_t parsed = 0;
+    const auto converted = std::from_chars(
+        encoded->data(), encoded->data() + encoded->size(), parsed);
+    if (converted.ec != std::errc{} ||
+        converted.ptr != encoded->data() + encoded->size()) {
+      return false;
+    }
+    *value = parsed;
+    return true;
+  };
+  std::optional<std::uint32_t> width;
+  std::optional<std::uint32_t> character_length;
+  std::optional<std::uint32_t> precision;
+  std::optional<std::uint32_t> scale;
+  if (!parse_u32("width", &width) ||
+      !parse_u32("character_length", &character_length) ||
+      !parse_u32("precision", &precision) ||
+      !parse_u32("scale", &scale) ||
+      character_length.has_value() !=
+          (persisted.character_length != 0) ||
+      (character_length.has_value() &&
+       *character_length != persisted.character_length) ||
+      (character_length.has_value() && width.has_value() &&
+       *character_length != *width)) {
+    return false;
+  }
+  const auto timezone = field("timezone_profile_id");
+  return !timezone.has_value() || !timezone->empty();
+}
+
+bool Rcp079ExactColumnarJoinColumnBindingV1(
+    const api::RelationalTypeDescriptor& relational,
+    const api::MgaRelationColumnStorageDescriptor& persisted) {
+  const auto fields =
+      Rcp079ExactDescriptorFieldsV1(persisted.value_descriptor);
+  if (!fields.has_value() ||
+      !Rcp079ExactPersistedColumnDescriptorV1(persisted)) {
+    return false;
+  }
+  const auto field = [&](const std::string_view name)
+      -> std::optional<std::string_view> {
+    const auto found = fields->find(name);
+    return found == fields->end()
+               ? std::optional<std::string_view>{}
+               : std::optional<std::string_view>{found->second};
+  };
+  const auto type_uuid = field("type_uuid");
+  static const auto datatype_manifest =
+      dt::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto canonical_type_id = dt::CanonicalTypeIdFromStableName(
+      persisted.value_descriptor.canonical_type_name);
+  const auto canonical_type =
+      datatype_manifest.ok()
+          ? dt::LookupDatatypeCatalogRow(datatype_manifest.manifest,
+                                         canonical_type_id)
+          : dt::DatatypeCatalogManifestResult{};
+  const auto canonical_type_uuid =
+      canonical_type.ok() &&
+              canonical_type.manifest.descriptor_rows.size() == 1 &&
+              canonical_type.manifest.descriptor_rows.front()
+                  .descriptor_uuid.valid()
+          ? scratchbird::core::uuid::UuidToString(
+                canonical_type.manifest.descriptor_rows.front()
+                    .descriptor_uuid.value)
+          : std::string{};
+  if (!type_uuid.has_value() ||
+      !CanonicalUuidText(std::string(*type_uuid)) ||
+      canonical_type_id == dt::CanonicalTypeId::unknown ||
+      canonical_type_uuid != *type_uuid ||
+      relational.descriptor_uuid !=
+          persisted.value_descriptor.descriptor_uuid.canonical ||
+      relational.type_uuid != *type_uuid ||
+      relational.descriptor_uuid == relational.type_uuid) {
+    return false;
+  }
+  const auto canonical_nullability = field("nullability");
+  const auto storage_nullability = field("nullable");
+  if (canonical_nullability.has_value() == storage_nullability.has_value()) {
+    return false;
+  }
+  std::optional<bool> nullable;
+  if (canonical_nullability == std::optional<std::string_view>{"nullable"}) {
+    nullable = true;
+  } else if (canonical_nullability ==
+             std::optional<std::string_view>{"non_null"}) {
+    nullable = false;
+  } else if (storage_nullability ==
+                 std::optional<std::string_view>{"true"} ||
+             storage_nullability == std::optional<std::string_view>{"1"}) {
+    nullable = true;
+  } else if (storage_nullability ==
+                 std::optional<std::string_view>{"false"} ||
+             storage_nullability == std::optional<std::string_view>{"0"}) {
+    nullable = false;
+  } else {
+    return false;
+  }
+  if (*nullable != persisted.nullable ||
+      relational.nullability !=
+          (persisted.nullable ? api::RelationalNullability::kNullable
+                              : api::RelationalNullability::kNonNull)) {
+    return false;
+  }
+  const auto encoded_collation = field("collation_uuid");
+  const auto persisted_collation =
+      persisted.collation_uuid.empty()
+          ? encoded_collation
+          : std::optional<std::string_view>{persisted.collation_uuid};
+  if ((!persisted.collation_uuid.empty() &&
+       encoded_collation != persisted_collation) ||
+      (persisted_collation.has_value() &&
+       !CanonicalUuidText(std::string(*persisted_collation))) ||
+      relational.collation_uuid !=
+          (persisted_collation.has_value()
+               ? std::optional<std::string>{*persisted_collation}
+               : std::optional<std::string>{})) {
+    return false;
+  }
+  const auto encoded_charset = field("charset_uuid");
+  if ((!persisted.charset_uuid.empty() &&
+       encoded_charset !=
+           std::optional<std::string_view>{persisted.charset_uuid}) ||
+      (encoded_charset.has_value() &&
+       !CanonicalUuidText(std::string(*encoded_charset)))) {
+    return false;
+  }
+  const auto parse_u32 = [&](const std::string_view name,
+                             std::optional<std::uint32_t>* value) {
+    value->reset();
+    const auto encoded = field(name);
+    if (!encoded.has_value() || encoded->empty()) return !encoded.has_value();
+    if (encoded->size() > 1 && encoded->front() == '0') return false;
+    std::uint32_t parsed = 0;
+    const auto converted = std::from_chars(
+        encoded->data(), encoded->data() + encoded->size(), parsed);
+    if (converted.ec != std::errc{} ||
+        converted.ptr != encoded->data() + encoded->size()) {
+      return false;
+    }
+    *value = parsed;
+    return true;
+  };
+  std::optional<std::uint32_t> width;
+  std::optional<std::uint32_t> precision;
+  std::optional<std::uint32_t> scale;
+  if (!parse_u32("width", &width) ||
+      !parse_u32("precision", &precision) ||
+      !parse_u32("scale", &scale)) {
+    return false;
+  }
+  if (persisted.character_length != 0) {
+    if (width.has_value() && *width != persisted.character_length) {
+      return false;
+    }
+    width = persisted.character_length;
+  }
+  const auto timezone = field("timezone_profile_id");
+  return relational.timezone_profile_id ==
+             (timezone.has_value()
+                  ? std::optional<std::string>{*timezone}
+                  : std::optional<std::string>{}) &&
+         relational.width == width && relational.precision == precision &&
+         relational.scale == scale;
+}
+
+bool Rcp079ExactExecutorColumnV1(
+    const exec::ExecutorColumnDescriptor& actual,
+    const exec::ExecutorColumnDescriptor& expected) {
+  return actual.stable_name == expected.stable_name &&
+         actual.nullable == expected.nullable &&
+         actual.descriptor_id == expected.descriptor_id &&
+         actual.descriptor.descriptor_uuid.canonical ==
+             expected.descriptor.descriptor_uuid.canonical &&
+         actual.descriptor.descriptor_kind ==
+             expected.descriptor.descriptor_kind &&
+         actual.descriptor.canonical_type_name ==
+             expected.descriptor.canonical_type_name &&
+         actual.descriptor.encoded_descriptor ==
+             expected.descriptor.encoded_descriptor;
+}
+
+std::optional<std::uint64_t> Rcp079VisibleRowsMemoryBytesV1(
+    const std::vector<api::CrudRowVersionRecord>& rows) {
+  std::uint64_t bytes = 0;
+  if (!CheckedMultiply(rows.capacity(), sizeof(api::CrudRowVersionRecord),
+                       &bytes)) {
+    return std::nullopt;
+  }
+  const auto account_string = [&](const std::string& value) {
+    return CheckedAdd(bytes, value.capacity(), &bytes) &&
+           CheckedAdd(bytes, 1, &bytes);
+  };
+  for (const auto& row : rows) {
+    std::uint64_t values_bytes = 0;
+    if (!account_string(row.table_uuid) || !account_string(row.row_uuid) ||
+        !account_string(row.version_uuid) ||
+        !account_string(row.temporary_session_uuid) ||
+        !account_string(row.previous_version_uuid) ||
+        !CheckedMultiply(
+            row.values.capacity(),
+            sizeof(std::pair<std::string, std::string>), &values_bytes) ||
+        !CheckedAdd(bytes, values_bytes, &bytes)) {
+      return std::nullopt;
+    }
+    for (const auto& [name, value] : row.values) {
+      if (!account_string(name) || !account_string(value)) {
+        return std::nullopt;
+      }
+    }
+  }
+  return bytes;
+}
+
+bool Rcp079AccountLogicalStringV1(const std::string_view value,
+                                  std::uint64_t* bytes) {
+  return bytes != nullptr && CheckedAdd(*bytes, value.size(), bytes) &&
+         CheckedAdd(*bytes, 1, bytes);
+}
+
+bool Rcp079AccountLogicalArrayV1(const std::size_t count,
+                                 const std::size_t element_bytes,
+                                 std::uint64_t* bytes) {
+  std::uint64_t allocation = 0;
+  return bytes != nullptr &&
+         CheckedMultiply(count, element_bytes, &allocation) &&
+         CheckedAdd(*bytes, allocation, bytes);
+}
+
+bool Rcp079AccountLogicalMgaV1(
+    const exec::PhysicalMgaStatementContext& context,
+    std::uint64_t* bytes) {
+  return Rcp079AccountLogicalStringV1(context.statement_uuid, bytes) &&
+         Rcp079AccountLogicalStringV1(context.owning_transaction_uuid,
+                                      bytes) &&
+         Rcp079AccountLogicalStringV1(context.statement_snapshot_uuid,
+                                      bytes) &&
+         Rcp079AccountLogicalStringV1(
+             context.statement_metadata_snapshot_uuid, bytes) &&
+         Rcp079AccountLogicalArrayV1(
+             context.active_excluded_local_transaction_ids.size(),
+             sizeof(std::uint64_t), bytes) &&
+         Rcp079AccountLogicalArrayV1(
+             context.in_doubt_excluded_local_transaction_ids.size(),
+             sizeof(std::uint64_t), bytes) &&
+         Rcp079AccountLogicalStringV1(context.snapshot_kind, bytes) &&
+         Rcp079AccountLogicalStringV1(context.statement_timestamp, bytes);
+}
+
+std::optional<std::uint64_t> Rcp079DescriptorBatchLogicalMemoryBytesV1(
+    const exec::DescriptorBatch& batch) {
+  std::uint64_t bytes = sizeof(batch);
+  if (!Rcp079AccountLogicalArrayV1(
+          batch.columns.size(), sizeof(exec::ExecutorColumnDescriptor),
+          &bytes) ||
+      !Rcp079AccountLogicalArrayV1(
+          batch.rows.size(), sizeof(exec::DescriptorTuple), &bytes)) {
+    return std::nullopt;
+  }
+  const auto account_descriptor = [&](const api::EngineDescriptor& descriptor) {
+    return Rcp079AccountLogicalStringV1(
+               descriptor.descriptor_uuid.canonical, &bytes) &&
+           Rcp079AccountLogicalStringV1(descriptor.descriptor_kind, &bytes) &&
+           Rcp079AccountLogicalStringV1(descriptor.canonical_type_name,
+                                        &bytes) &&
+           Rcp079AccountLogicalStringV1(descriptor.encoded_descriptor,
+                                        &bytes);
+  };
+  for (const auto& column : batch.columns) {
+    if (!Rcp079AccountLogicalStringV1(column.stable_name, &bytes) ||
+        !account_descriptor(column.descriptor)) {
+      return std::nullopt;
+    }
+  }
+  for (const auto& row : batch.rows) {
+    if (!Rcp079AccountLogicalArrayV1(
+            row.values.size(), sizeof(api::EngineTypedValue), &bytes)) {
+      return std::nullopt;
+    }
+    for (const auto& value : row.values) {
+      if (!account_descriptor(value.descriptor) ||
+          !Rcp079AccountLogicalStringV1(value.encoded_value, &bytes) ||
+          !Rcp079AccountLogicalArrayV1(value.binary_value.size(),
+                                       sizeof(std::uint8_t), &bytes)) {
+        return std::nullopt;
+      }
+    }
+  }
+  return bytes;
+}
+
+bool Rcp079AccountModelRowIdentityLogicalMemoryV1(
+    const exec::ModelProviderRowIdentityV1& identity,
+    std::uint64_t* bytes) {
+  if (!Rcp079AccountLogicalArrayV1(1, sizeof(identity), bytes)) return false;
+  const std::array<std::string_view, 17> strings{
+      identity.document_uuid,
+      identity.row_uuid,
+      identity.vertex_uuid,
+      identity.edge_uuid,
+      identity.path_uuid,
+      identity.key,
+      identity.series_uuid,
+      identity.metric_uuid,
+      identity.tags,
+      identity.time_series_payload_kind,
+      identity.time_series_raw_value,
+      identity.time_series_sample_count,
+      identity.time_series_aggregate_value,
+      identity.vector_distance,
+      identity.vector_score,
+      identity.search_analyzer_uuid,
+      identity.search_score};
+  return std::ranges::all_of(strings, [&](const auto value) {
+    return Rcp079AccountLogicalStringV1(value, bytes);
+  });
+}
+
+bool Rcp079AccountModelPropertyLogicalMemoryV1(
+    const exec::ModelPropertyDescriptorV1& property,
+    std::uint64_t* bytes) {
+  return Rcp079AccountLogicalArrayV1(1, sizeof(property), bytes) &&
+         Rcp079AccountLogicalStringV1(property.property_descriptor_id,
+                                      bytes) &&
+         Rcp079AccountLogicalStringV1(property.property_uuid, bytes) &&
+         Rcp079AccountLogicalStringV1(property.ordering_id, bytes) &&
+         Rcp079AccountLogicalStringV1(property.partitioning_id, bytes) &&
+         Rcp079AccountLogicalStringV1(property.uniqueness_id, bytes);
+}
+
+std::optional<std::uint64_t> Rcp079ModelProviderBatchLogicalMemoryBytesV1(
+    const exec::ModelProviderBatchV1& batch) {
+  std::uint64_t bytes = sizeof(batch);
+  const auto descriptor_batch =
+      Rcp079DescriptorBatchLogicalMemoryBytesV1(batch.batch);
+  if (!descriptor_batch.has_value() ||
+      !CheckedAdd(bytes, *descriptor_batch, &bytes) ||
+      !Rcp079AccountLogicalStringV1(batch.provider_uuid, &bytes) ||
+      !Rcp079AccountLogicalStringV1(batch.selected_alternative_uuid, &bytes) ||
+      !Rcp079AccountLogicalStringV1(batch.capability_uuid, &bytes) ||
+      !Rcp079AccountLogicalStringV1(batch.result_handle_uuid, &bytes) ||
+      !Rcp079AccountLogicalArrayV1(batch.output_descriptor_ids.size(),
+                                   sizeof(std::uint32_t), &bytes) ||
+      !Rcp079AccountLogicalStringV1(batch.security_receipt_uuid, &bytes) ||
+      !Rcp079AccountLogicalStringV1(
+          batch.multimodel_composition_receipt_uuid, &bytes) ||
+      !Rcp079AccountModelPropertyLogicalMemoryV1(batch.properties, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(batch.mga_statement_context, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& identity : batch.ordered_row_identities) {
+    if (!Rcp079AccountModelRowIdentityLogicalMemoryV1(identity, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t>
+Rcp079ProjectedModelSourceOutputLogicalMemoryBytesV1(
+    const exec::ModelSourceInputDescriptorV1& input,
+    const exec::ModelProviderBatchV1& provider) {
+  std::uint64_t bytes = sizeof(exec::ModelSourceOutputDescriptorV1);
+  const auto descriptor_batch =
+      Rcp079DescriptorBatchLogicalMemoryBytesV1(provider.batch);
+  if (!descriptor_batch.has_value() ||
+      !CheckedAdd(bytes, *descriptor_batch, &bytes)) {
+    return std::nullopt;
+  }
+  const std::array<std::string_view, 11> strings{
+      "SB_MODEL_SOURCE_OUTPUT_DESCRIPTOR_V1",
+      input.family_id,
+      input.operation_id,
+      input.object_uuid,
+      input.spatial_geometry_descriptor_uuid,
+      input.spatial_geometry_type_uuid,
+      input.spatial_crs_uuid,
+      input.selected_alternative_uuid,
+      input.capability_uuid,
+      input.provider_uuid,
+      input.result_handle_uuid};
+  if (!std::ranges::all_of(strings, [&](const auto value) {
+        return Rcp079AccountLogicalStringV1(value, &bytes);
+      }) ||
+      !Rcp079AccountLogicalArrayV1(input.operation_ids.size(),
+                                   sizeof(std::string), &bytes) ||
+      !Rcp079AccountLogicalArrayV1(input.output_descriptor_ids.size(),
+                                   sizeof(std::uint32_t), &bytes) ||
+      !Rcp079AccountLogicalStringV1(provider.security_receipt_uuid, &bytes) ||
+      !Rcp079AccountLogicalStringV1(
+          provider.multimodel_composition_receipt_uuid, &bytes) ||
+      !Rcp079AccountModelPropertyLogicalMemoryV1(provider.properties, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(input.mga_statement_context, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& operation : input.operation_ids) {
+    if (!Rcp079AccountLogicalStringV1(operation, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  for (const auto& identity : provider.ordered_row_identities) {
+    if (!Rcp079AccountModelRowIdentityLogicalMemoryV1(identity, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t> Rcp079ColumnarUniquenessLogicalMemoryBytesV1(
+    const std::vector<exec::ModelProviderRowIdentityV1>& identities) {
+  std::uint64_t bytes = 3 * sizeof(std::unordered_set<std::string>);
+  constexpr std::uint64_t kSetNodeOverhead =
+      sizeof(std::string) + 4 * sizeof(void*) + 64;
+  for (const auto& identity : identities) {
+    std::uint64_t node = kSetNodeOverhead;
+    if (!CheckedAdd(node, identity.row_uuid.size(), &node) ||
+        !CheckedAdd(bytes, node, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t>
+Rcp079ColumnarRequestNonBatchLogicalMemoryBytesV2(
+    const api::nosql::ColumnarExecutionRequestV2& request) {
+  std::uint64_t bytes = sizeof(request);
+  if (!Rcp079AccountLogicalStringV1(request.profile_id, &bytes) ||
+      !Rcp079AccountLogicalStringV1(request.operation_id, &bytes) ||
+      !Rcp079AccountLogicalStringV1(request.relation_uuid, &bytes) ||
+      !Rcp079AccountLogicalArrayV1(request.operation_ids.size(),
+                                   sizeof(std::string), &bytes) ||
+      !Rcp079AccountLogicalArrayV1(request.row_uuids.size(),
+                                   sizeof(std::string), &bytes) ||
+      !Rcp079AccountLogicalArrayV1(request.projected_columns.size(),
+                                   sizeof(std::size_t), &bytes) ||
+      !Rcp079AccountLogicalArrayV1(request.filter_truth_values.size(),
+                                   sizeof(api::EngineSqlTruthValue), &bytes) ||
+      !Rcp079AccountLogicalArrayV1(
+          request.zone_proof.candidate_row_ordinals.size(),
+          sizeof(std::size_t), &bytes) ||
+      !Rcp079AccountLogicalMgaV1(request.statement_context, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(request.current_statement_context, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& operation : request.operation_ids) {
+    if (!Rcp079AccountLogicalStringV1(operation, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  for (const auto& row_uuid : request.row_uuids) {
+    if (!Rcp079AccountLogicalStringV1(row_uuid, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t>
+Rcp079ColumnarLogicalMaterializationAdditionalBytesV1(
+    const api::MgaRelationStorageDescriptor& persisted,
+    const std::size_t row_count,
+    const api::TypedRelationalDag& dag,
+    const exec::ModelSourceInputDescriptorV1& source_input,
+    const std::string& property_uuid,
+    const std::string& security_receipt_uuid,
+    const bool has_filter) {
+  std::uint64_t bytes = sizeof(exec::DescriptorBatch);
+  std::uint64_t allocation = 0;
+  const auto add_array = [&](const std::uint64_t count,
+                             const std::uint64_t element_bytes) {
+    return CheckedMultiply(count, element_bytes, &allocation) &&
+           CheckedAdd(bytes, allocation, &bytes);
+  };
+  const auto add_string = [&](const std::string& value) {
+    return CheckedAdd(bytes, value.capacity(), &bytes) &&
+           CheckedAdd(bytes, 1, &bytes);
+  };
+  if (!add_array(persisted.columns.size(),
+                 sizeof(exec::ExecutorColumnDescriptor)) ||
+      !add_array(persisted.columns.size(), sizeof(std::uint32_t)) ||
+      !add_array(row_count, sizeof(exec::DescriptorTuple)) ||
+      !add_array(row_count, sizeof(std::string)) ||
+      !add_array(row_count, sizeof(api::EngineSqlTruthValue)) ||
+      !add_array(persisted.columns.size(), sizeof(std::size_t)) ||
+      !add_array(1, sizeof(api::nosql::ColumnarExecutionRequestV2)) ||
+      !add_array(source_input.operation_ids.size(), sizeof(std::string)) ||
+      !add_array(source_input.output_descriptor_ids.size(),
+                 sizeof(std::uint32_t)) ||
+      !add_array(row_count, sizeof(exec::ModelProviderRowIdentityV1))) {
+    return std::nullopt;
+  }
+  if (!add_string(source_input.operation_id) ||
+      !add_string(source_input.object_uuid) ||
+      !add_string(source_input.provider_uuid) ||
+      !add_string(source_input.selected_alternative_uuid) ||
+      !add_string(source_input.capability_uuid) ||
+      !add_string(source_input.result_handle_uuid) ||
+      !add_string(source_input.security_context_uuid) ||
+      !add_string(source_input.policy_snapshot_uuid) ||
+      !add_string(source_input.resource_contract_uuid) ||
+      !add_string(property_uuid) ||
+      !add_string(security_receipt_uuid) ||
+      !Rcp079AccountLogicalStringV1(
+          "SB_MODEL_PROPERTY_DESCRIPTOR_V1", &bytes) ||
+      !Rcp079AccountLogicalStringV1("fixture_order", &bytes) ||
+      !Rcp079AccountLogicalStringV1("single_local_partition", &bytes) ||
+      !Rcp079AccountLogicalStringV1("row_uuid", &bytes) ||
+      !Rcp079AccountLogicalStringV1(
+          api::nosql::kColumnarLogicalReconstructionV2, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& operation : source_input.operation_ids) {
+    if (!add_string(operation)) return std::nullopt;
+  }
+  std::uint64_t per_cell_descriptor_bytes = 0;
+  for (const auto& column : persisted.columns) {
+    if (!add_string(column.canonical_name_key) ||
+        !add_string(column.value_descriptor.descriptor_uuid.canonical) ||
+        !add_string(column.value_descriptor.descriptor_kind) ||
+        !add_string(column.value_descriptor.canonical_type_name) ||
+        !add_string(column.value_descriptor.encoded_descriptor)) {
+      return std::nullopt;
+    }
+    const auto account_per_cell = [&](const std::string& value) {
+      return CheckedAdd(per_cell_descriptor_bytes, value.capacity(),
+                        &per_cell_descriptor_bytes) &&
+             CheckedAdd(per_cell_descriptor_bytes, 1,
+                        &per_cell_descriptor_bytes);
+    };
+    if (!account_per_cell(
+            column.value_descriptor.descriptor_uuid.canonical) ||
+        !account_per_cell(column.value_descriptor.descriptor_kind) ||
+        !account_per_cell(column.value_descriptor.canonical_type_name) ||
+        !account_per_cell(column.value_descriptor.encoded_descriptor)) {
+      return std::nullopt;
+    }
+  }
+  std::uint64_t cells = 0;
+  std::uint64_t cell_objects = 0;
+  std::uint64_t cell_descriptors = 0;
+  if (!CheckedMultiply(row_count, persisted.columns.size(), &cells) ||
+      !CheckedMultiply(cells, sizeof(api::EngineTypedValue),
+                       &cell_objects) ||
+      !CheckedMultiply(row_count, per_cell_descriptor_bytes,
+                       &cell_descriptors) ||
+      !CheckedAdd(bytes, cell_objects, &bytes) ||
+      !CheckedAdd(bytes, cell_descriptors, &bytes)) {
+    return std::nullopt;
+  }
+  if (has_filter) {
+    std::uint64_t edge_count = 0;
+    for (const auto& expression : dag.expressions) {
+      if (!CheckedAdd(edge_count, expression.child_expression_ids.size(),
+                      &edge_count)) {
+        return std::nullopt;
+      }
+    }
+    constexpr std::uint64_t kNodeLinks = 6 * sizeof(void*);
+    const auto expression_count = dag.expressions.size();
+    std::uint64_t bucket_pointer_count = 0;
+    std::uint64_t expression_bucket_pointer_count = 0;
+    std::uint64_t pending_count = 0;
+    if (!CheckedMultiply(persisted.columns.size(), 2,
+                         &bucket_pointer_count) ||
+        !CheckedMultiply(expression_count, 4,
+                         &expression_bucket_pointer_count) ||
+        !CheckedAdd(bucket_pointer_count,
+                    expression_bucket_pointer_count,
+                    &bucket_pointer_count) ||
+        !CheckedAdd(edge_count, 1, &pending_count)) {
+      return std::nullopt;
+    }
+    if (!add_array(persisted.columns.size(),
+                   sizeof(std::pair<const std::uint32_t, std::size_t>) +
+                       kNodeLinks) ||
+        !add_array(expression_count,
+                   sizeof(std::pair<
+                       const std::uint32_t,
+                       const api::RelationalExpressionRecord*>) + kNodeLinks) ||
+        !add_array(expression_count, sizeof(std::uint32_t) + kNodeLinks) ||
+        !add_array(bucket_pointer_count, sizeof(void*)) ||
+        !add_array(pending_count, sizeof(std::uint32_t)) ||
+        !add_array(persisted.columns.size(), sizeof(std::uint32_t)) ||
+        !add_array(expression_count,
+                   sizeof(CanonicalRelationalExpressionRowSlotBinding)) ||
+        !add_array(1, sizeof(CanonicalRelationalExpressionRowBinding)) ||
+        !add_array(1, sizeof(CanonicalRelationalExpressionRuntime))) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
 
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalColumnarFamilyJoinQuery(
@@ -52095,6 +53199,9 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   std::vector<Rcp079ColumnarJoinSourceV1> prepared_sources;
   prepared_sources.reserve(2);
   std::vector<std::string> object_uuids;
+  std::unordered_set<std::string> column_uuids;
+  std::unordered_set<std::string> descriptor_uuids;
+  std::unordered_set<std::string> type_uuids;
   for (const auto* source : sources) {
     if (!source->input_node_ids.empty() ||
         source->required_object_uuids.size() != 1 ||
@@ -52126,9 +53233,15 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
     if (prepared.persisted.relation_uuid.canonical != prepared.object_uuid ||
         prepared.persisted.database_uuid.canonical !=
             input.context.database_uuid.canonical ||
+        !CanonicalUuidText(prepared.persisted.schema_uuid.canonical) ||
+        !CanonicalUuidText(
+            prepared.persisted.descriptor_uuid.canonical) ||
         prepared.persisted.relation_kind != "table" ||
         prepared.persisted.storage_profile != "local_mga_rowstore_v1" ||
         prepared.persisted.descriptor_generation == 0 ||
+        (prepared.persisted.descriptor_status != "production_descriptor" &&
+         prepared.persisted.descriptor_status !=
+             "metadata_bridge_vetted_descriptor") ||
         prepared.persisted.columns.size() !=
             source->output_descriptor_ids.size()) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
@@ -52154,22 +53267,36 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
           outputs[ordinal]->ordinal != ordinal || !outputs[ordinal]->visible ||
           outputs[ordinal]->descriptor_id !=
               source->output_descriptor_ids[ordinal] ||
+          expression->expression_kind !=
+              api::RelationalExpressionKind::kIdentifier ||
+          expression->result_descriptor_id != descriptor->descriptor_id ||
           expression->bound_name_uuid !=
               std::optional<std::string>(column.column_uuid.canonical) ||
           outputs[ordinal]->output_name_utf8 != column.canonical_name_key ||
-          descriptor->descriptor_uuid !=
-              column.value_descriptor.descriptor_uuid.canonical ||
-          descriptor->nullability !=
-              (column.nullable ? api::RelationalNullability::kNullable
-                               : api::RelationalNullability::kNonNull)) {
+          column.ordinal != ordinal ||
+          !column_uuids.insert(column.column_uuid.canonical).second ||
+          !descriptor_uuids.insert(descriptor->descriptor_uuid).second ||
+          !Rcp079ExactColumnarJoinColumnBindingV1(*descriptor, column)) {
         return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                       "columnar source binding was substituted");
       }
+      type_uuids.insert(descriptor->type_uuid);
       auto engine_descriptor = column.value_descriptor;
       engine_descriptor.descriptor_kind = "scalar";
       prepared.columns.push_back(
           {column.canonical_name_key, std::move(engine_descriptor),
            column.nullable, descriptor->descriptor_id});
+      prepared.output_expression_ids.push_back(
+          outputs[ordinal]->expression_id);
+    }
+    if (source->bound_expression_ids.size() != outputs.size() + 1 ||
+        std::ranges::any_of(prepared.output_expression_ids,
+                            [&](const auto expression_id) {
+          return std::ranges::count(source->bound_expression_ids,
+                                    expression_id) != 1;
+        })) {
+      return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                    "columnar source expression binding is incomplete");
     }
     prepared.output_descriptor_ids = source->output_descriptor_ids;
     const auto suffix = std::to_string(source->node_id);
@@ -52188,6 +53315,12 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   if (object_uuids[0] == object_uuids[1]) {
     return refuse("SB_MODEL_JOIN_SEMANTIC_PRECONDITION_REFUSED_V1",
                   "columnar composition requires distinct bound legs");
+  }
+  if (std::ranges::any_of(descriptor_uuids, [&](const auto& descriptor_uuid) {
+        return type_uuids.contains(descriptor_uuid);
+      })) {
+    return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                  "columnar descriptor and type identity domains overlap");
   }
 
   api::CanonicalRelationalPlanningScope planning_scope;
@@ -52425,6 +53558,13 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
       input.context.query_cancellation_requested
           ? input.context.query_cancellation_requested
           : std::function<bool()>([] { return false; });
+  std::vector<exec::ExecutorColumnDescriptor> expected_join_columns;
+  expected_join_columns.reserve(join->output_descriptor_ids.size());
+  for (const auto& source : prepared_sources) {
+    expected_join_columns.insert(expected_join_columns.end(),
+                                 source.columns.begin(), source.columns.end());
+  }
+  const auto left_width = prepared_sources[0].columns.size();
   source_registration.execute =
       [prepared_sources, context, cancellation_requested, mga,
        maximum_rows](const exec::TypedPhysicalNodeDag& selected_dag,
@@ -52487,7 +53627,20 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
             context.authorization_context.policy_epoch;
         source_input.resource_generation = context.resource_epoch;
         source_input.maximum_rows = maximum_rows;
-        source_input.maximum_cells = maximum_rows * source->columns.size();
+        std::uint64_t source_maximum_cells = 0;
+        if (!CheckedMultiply(maximum_rows, source->columns.size(),
+                             &source_maximum_cells) ||
+            source_maximum_cells >
+                std::numeric_limits<std::size_t>::max()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+          step.diagnostic.detail =
+              "columnar composition source cell bound overflowed";
+          return step;
+        }
+        source_input.maximum_cells =
+            static_cast<std::size_t>(source_maximum_cells);
         source_input.maximum_memory_bytes =
             context.optimizer_memory_budget_bytes / 4;
         source_input.exact_fallback_selected = true;
@@ -52529,6 +53682,10 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                 provider.detail = std::move(detail);
                 return provider;
               };
+              if (cancellation_requested()) {
+                return fail("SB_MODEL_EXECUTION_CANCELLED_V1",
+                            "columnar composition was cancelled before source revalidation");
+              }
               const auto authorization = api::EvaluateMaterializedAuthorization(
                   context, context.authorization_context, "SELECT",
                   source_input.object_uuid);
@@ -52538,6 +53695,18 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                 return fail("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
                             "columnar composition authorization changed");
               }
+              const auto preflight = api::LoadMgaRelationStorageDescriptor(
+                  context, source_input.object_uuid);
+              if (!preflight.ok ||
+                  !Rcp079ExactColumnarJoinStorageSnapshotV1(
+                      preflight.descriptor, source_copy.persisted)) {
+                return fail("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                            "columnar composition descriptor changed before MGA access");
+              }
+              if (cancellation_requested()) {
+                return fail("SB_MODEL_EXECUTION_CANCELLED_V1",
+                            "columnar composition was cancelled before MGA access");
+              }
               api::MgaVisibleHeapRelationReadRequest read_request;
               read_request.relation_uuid = source_input.object_uuid;
               read_request.maximum_scanned_row_versions =
@@ -52546,25 +53715,63 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                   source_input.maximum_memory_bytes / 2;
               read_request.maximum_output_rows = source_input.maximum_rows;
               read_request.cancellation_requested = cancellation_requested;
+              if (read_request.maximum_scanned_row_versions == 0 ||
+                  read_request.maximum_decoded_bytes == 0 ||
+                  read_request.maximum_output_rows == 0) {
+                return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                            "columnar composition MGA read bound is zero");
+              }
               const auto read =
                   api::ReadVisibleMgaHeapRelation(context, read_request);
-              provider.data_access_observed = true;
+              provider.data_access_observed =
+                  read.ok || read.scanned_row_version_count != 0 ||
+                  read.decoded_byte_count != 0;
               provider.rows_examined = read.scanned_row_version_count;
               if (!read.ok) {
                 return fail(read.diagnostic.code, read.diagnostic.detail);
               }
-              if (read.descriptor.descriptor_uuid.canonical !=
-                      source_copy.persisted.descriptor_uuid.canonical ||
-                  read.descriptor.descriptor_generation !=
-                      source_input.descriptor_generation) {
+              if (!Rcp079ExactColumnarJoinStorageSnapshotV1(
+                      read.descriptor, preflight.descriptor) ||
+                  !Rcp079ExactColumnarJoinStorageSnapshotV1(
+                      read.descriptor, source_copy.persisted) ||
+                  read.current_relation_base_generation == 0) {
                 return fail("SB_MODEL_CATALOG_GENERATION_STALE_V1",
                             "columnar composition descriptor changed");
+              }
+              if (cancellation_requested()) {
+                return fail("SB_MODEL_EXECUTION_CANCELLED_V1",
+                            "columnar composition was cancelled after MGA access");
+              }
+              const auto post_authorization =
+                  api::EvaluateMaterializedAuthorization(
+                      context, context.authorization_context, "SELECT",
+                      source_input.object_uuid);
+              if (!post_authorization.authorized ||
+                  post_authorization.denied ||
+                  post_authorization.policy_recheck_required ||
+                  !post_authorization.diagnostics.empty()) {
+                return fail("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                            "columnar composition authorization changed after MGA access");
               }
               exec::DescriptorBatch logical_rows;
               logical_rows.columns = source_copy.columns;
               std::vector<std::string> row_uuids;
+              logical_rows.rows.reserve(read.visible_rows.size());
+              row_uuids.reserve(read.visible_rows.size());
               for (const auto& row : read.visible_rows) {
+                if (cancellation_requested()) {
+                  return fail("SB_MODEL_EXECUTION_CANCELLED_V1",
+                              "columnar composition row reconstruction was cancelled");
+                }
+                if (row.table_uuid != source_input.object_uuid ||
+                    !CanonicalUuidText(row.row_uuid) ||
+                    !CanonicalUuidText(row.version_uuid) ||
+                    row.values.size() != source_copy.persisted.columns.size()) {
+                  return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                              "columnar row identity or width is invalid");
+                }
                 exec::DescriptorTuple tuple;
+                tuple.values.reserve(source_copy.persisted.columns.size());
                 for (std::size_t ordinal = 0;
                      ordinal < source_copy.persisted.columns.size();
                      ++ordinal) {
@@ -52584,6 +53791,10 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                     return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                                 "columnar row omits a field");
                   }
+                  if (*encoded == "<NULL>" && !column.nullable) {
+                    return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                                "columnar row nulls a non-null field");
+                  }
                   api::EngineTypedValue value;
                   value.descriptor = source_copy.columns[ordinal].descriptor;
                   if (*encoded == "<NULL>") {
@@ -52597,7 +53808,11 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                 logical_rows.rows.push_back(std::move(tuple));
                 row_uuids.push_back(row.row_uuid);
               }
-              api::nosql::ColumnarExecutionRequestV1 columnar_request;
+              if (cancellation_requested()) {
+                return fail("SB_MODEL_EXECUTION_CANCELLED_V1",
+                            "columnar composition was cancelled before reconstruction");
+              }
+              api::nosql::ColumnarExecutionRequestV2 columnar_request;
               columnar_request.operation_ids = {"COLUMNAR_SOURCE"};
               columnar_request.operation_id = "COLUMNAR_SOURCE";
               columnar_request.relation_uuid = source_input.object_uuid;
@@ -52614,11 +53829,20 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
               columnar_request.summary_generation =
                   source_input.provider_generation;
               columnar_request.maximum_rows = source_input.maximum_rows;
+              columnar_request.maximum_input_cells =
+                  source_input.maximum_cells;
               columnar_request.maximum_cells = source_input.maximum_cells;
+              columnar_request.maximum_memory_bytes =
+                  source_input.maximum_memory_bytes;
+              columnar_request.cancellation_requested = [](const void* context) {
+                return (*static_cast<const std::function<bool()>*>(context))();
+              };
+              columnar_request.cancellation_context = &cancellation_requested;
               columnar_request.security_admitted = true;
               columnar_request.exact_reconstruction_fallback_available = true;
               auto reconstructed =
-                  api::nosql::ExecuteColumnarLogicalV1(columnar_request);
+                  api::nosql::ExecuteColumnarLogicalV2(
+                      std::move(columnar_request));
               if (!reconstructed.accepted ||
                   !reconstructed.root_publishable) {
                 return fail(reconstructed.diagnostic_id,
@@ -52708,12 +53932,40 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
         return CompareCanonicalQueryScalarsV1(
             context, left, right, comparison, diagnostic_id, refusal_detail);
       };
-  selected.available_executors.push_back(MakeLiveJoinRegistration(
+  auto join_registration = MakeLiveJoinRegistration(
       "join." + join_component + ".3vl.nested.v1", join_capability_uuid, {},
       static_cast<std::size_t>(maximum_pairs_u64), maximum_rows, join_kind,
       "columnar model-family join", input.context, true,
       predicate_join ? join->bound_expression_ids.front() : 0,
-      std::move(predicate_binding), dag, std::move(predicate_services)));
+      std::move(predicate_binding), dag, std::move(predicate_services));
+  auto execute_join = std::move(join_registration.execute);
+  join_registration.execute =
+      [execute_join = std::move(execute_join), expected_join_columns](
+          const exec::TypedPhysicalNodeDag& selected_dag,
+          const exec::PhysicalNodeRecord& selected_node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs)
+          mutable {
+        auto step = execute_join(selected_dag, selected_node, inputs);
+        if (!step.diagnostic.ok) return step;
+        if (!step.materialized_output_batch.has_value() ||
+            step.materialized_output_batch->columns.size() !=
+                expected_join_columns.size() ||
+            !std::ranges::equal(
+                step.materialized_output_batch->columns,
+                expected_join_columns,
+                [](const auto& actual, const auto& expected) {
+                  return Rcp079ExactExecutorColumnV1(actual, expected);
+                })) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_TYPED_EXCHANGE_INVALID_V1";
+          step.diagnostic.detail =
+              "columnar join output descriptor differs from its exact source binding";
+          step.materialized_output_batch.reset();
+        }
+        return step;
+      };
+  selected.available_executors.push_back(std::move(join_registration));
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
       input.context.statement_uuid.canonical;
@@ -52738,33 +53990,47 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
     if (output.relation_node_id == join->node_id) root_outputs.push_back(&output);
   }
   std::ranges::sort(root_outputs, {}, &api::RelationalOutputRecord::ordinal);
-  if (root_outputs.size() != join->output_descriptor_ids.size()) {
+  if (root_outputs.size() != join->output_descriptor_ids.size() ||
+      root_outputs.size() != expected_join_columns.size()) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "columnar join root bindings are incomplete");
   }
-  const auto left_width = sources[0]->output_descriptor_ids.size();
   for (std::size_t ordinal = 0; ordinal < root_outputs.size(); ++ordinal) {
     const auto descriptor = descriptor_for(root_outputs[ordinal]->descriptor_id);
+    const auto source_index = ordinal < left_width ? 0U : 1U;
+    const auto source_ordinal =
+        source_index == 0 ? ordinal : ordinal - left_width;
+    const auto& exact_source = prepared_sources[source_index];
+    const auto& base_column = exact_source.columns[source_ordinal];
+    const auto& persisted_column =
+        exact_source.persisted.columns[source_ordinal];
+    const auto& expected_column = expected_join_columns[ordinal];
     if (descriptor == dag.descriptors.end() ||
-        root_outputs[ordinal]->ordinal != ordinal) {
+        root_outputs[ordinal]->ordinal != ordinal ||
+        !root_outputs[ordinal]->visible ||
+        root_outputs[ordinal]->descriptor_id !=
+            join->output_descriptor_ids[ordinal] ||
+        root_outputs[ordinal]->expression_id !=
+            exact_source.output_expression_ids[source_ordinal] ||
+        root_outputs[ordinal]->output_name_utf8 != base_column.stable_name ||
+        descriptor->descriptor_id != base_column.descriptor_id ||
+        descriptor->descriptor_uuid !=
+            base_column.descriptor.descriptor_uuid.canonical ||
+        !Rcp079ExactColumnarJoinColumnBindingV1(*descriptor,
+                                                persisted_column) ||
+        expected_column.descriptor_id != descriptor->descriptor_id ||
+        expected_column.descriptor.descriptor_uuid.canonical !=
+            descriptor->descriptor_uuid) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                    "columnar join root descriptor is unresolved");
+                    "columnar join root descriptor is not source-exact");
     }
-    const bool null_extended =
-        ((join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
-          join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) &&
-         ordinal < left_width) ||
-        ((join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
-          join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) &&
-         ordinal >= left_width);
     exec::CanonicalResultColumnDescriptor published;
     published.ordinal = static_cast<std::uint32_t>(ordinal);
     published.name_utf8 = root_outputs[ordinal]->output_name_utf8;
     published.descriptor_uuid = descriptor->descriptor_uuid;
     published.type_uuid = descriptor->type_uuid;
     published.nullability =
-        null_extended ||
-                descriptor->nullability == api::RelationalNullability::kNullable
+        expected_column.nullable
             ? exec::CanonicalResultNullability::kNullable
             : exec::CanonicalResultNullability::kNonNull;
     published.collation_uuid = descriptor->collation_uuid;
@@ -52929,6 +54195,21 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   }
 
   const auto object_uuid = source->required_object_uuids.front();
+  if (columnar) {
+    const auto columnar_source = operation_expression("COLUMNAR_SOURCE");
+    if (columnar_source == dag.expressions.end() ||
+        columnar_source->expression_kind !=
+            api::RelationalExpressionKind::kFunctionCall ||
+        columnar_source->function_uuid.has_value() ||
+        !columnar_source->child_expression_ids.empty() ||
+        columnar_source->bound_name_uuid !=
+            std::optional<std::string>(object_uuid) ||
+        columnar_source->literal_kind.has_value() ||
+        columnar_source->literal_or_parameter_ref.has_value()) {
+      return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "COLUMNAR_SOURCE object binding is not exact");
+    }
+  }
   const auto authorization = api::EvaluateMaterializedAuthorization(
       input.context, input.context.authorization_context, "SELECT", object_uuid);
   if (!authorization.authorized || authorization.denied ||
@@ -52951,11 +54232,26 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   if (persisted.relation_uuid.canonical != object_uuid ||
       persisted.database_uuid.canonical !=
           input.context.database_uuid.canonical ||
-      persisted.schema_uuid.canonical.empty() ||
+      !CanonicalUuidText(persisted.schema_uuid.canonical) ||
       persisted.relation_kind != "table" ||
       persisted.storage_profile != "local_mga_rowstore_v1" ||
-      persisted.descriptor_uuid.canonical.empty() ||
+      persisted.row_identity_rule != "engine_uuid_v7_only" ||
+      persisted.version_identity_rule != "engine_uuid_v7_only" ||
+      persisted.mutation_rule != "copy_on_write" ||
+      persisted.visibility_rule !=
+          "local_inventory_snapshot_visibility" ||
+      persisted.cleanup_rule != "authoritative_local_horizon" ||
+      persisted.recovery_rule !=
+          "dirty_manifest_classification_no_wal" ||
+      persisted.required_evidence_kinds !=
+          std::vector<std::string>{"relation_descriptor", "row_version",
+                                   "transaction_inventory",
+                                   "dirty_manifest"} ||
+      !CanonicalUuidText(persisted.descriptor_uuid.canonical) ||
       persisted.descriptor_generation == 0 || persisted.columns.empty() ||
+      (persisted.descriptor_status != "production_descriptor" &&
+       persisted.descriptor_status !=
+           "metadata_bridge_vetted_descriptor") ||
       persisted.columns.size() > 256) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent spatial/columnar relation descriptor is invalid");
@@ -52974,6 +54270,57 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                             [](const auto& uuid) { return uuid.empty(); })) {
       return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                     "spatial core datatype registry is unavailable");
+    }
+  }
+  if (columnar) {
+    std::unordered_set<std::string> column_uuids;
+    std::unordered_set<std::string> column_names;
+    std::unordered_set<std::string> descriptor_uuids;
+    for (std::size_t ordinal = 0; ordinal < persisted.columns.size();
+         ++ordinal) {
+      const auto& column = persisted.columns[ordinal];
+      if (column.ordinal != ordinal || column.canonical_name_key.empty() ||
+          !CanonicalUuidText(column.column_uuid.canonical) ||
+          !column_uuids.insert(column.column_uuid.canonical).second ||
+          !column_names.insert(column.canonical_name_key).second ||
+          !api::QowCanonicalDescriptorIdentityV1(column.value_descriptor) ||
+          column.value_descriptor.descriptor_kind !=
+              "canonical_type_descriptor" ||
+          !Rcp079ExactPersistedColumnDescriptorV1(column) ||
+          !descriptor_uuids
+               .insert(column.value_descriptor.descriptor_uuid.canonical)
+               .second ||
+          !Rcp079ExactDescriptorFieldsV1(column.value_descriptor)
+               .has_value()) {
+        return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                      "columnar persisted descriptor identity is not exact");
+      }
+    }
+    for (const auto& expression : dag.expressions) {
+      if (expression.expression_kind !=
+              api::RelationalExpressionKind::kIdentifier ||
+          !expression.bound_name_uuid.has_value()) {
+        continue;
+      }
+      const auto persisted_column = std::ranges::find_if(
+          persisted.columns, [&](const auto& column) {
+            return column.column_uuid.canonical ==
+                   *expression.bound_name_uuid;
+          });
+      if (persisted_column == persisted.columns.end()) {
+        return refuse(
+            "SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+            "columnar identifier is not bound to a persisted column");
+      }
+      const auto relational_descriptor =
+          descriptor_for(expression.result_descriptor_id);
+      if (relational_descriptor == dag.descriptors.end() ||
+          !Rcp079ExactColumnarJoinColumnBindingV1(
+              *relational_descriptor, *persisted_column)) {
+        return refuse(
+            "SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+            "columnar referenced identifier differs from persisted type authority");
+      }
     }
   }
   if (spatial &&
@@ -53066,35 +54413,15 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       engine_descriptor = column.value_descriptor;
       engine_descriptor.descriptor_kind = "scalar";
     } else if (persisted_column != nullptr && !spatial) {
-      const auto persisted_type_uuid = Rcp079DescriptorField(
-          persisted_column->value_descriptor.encoded_descriptor, "type_uuid");
-      const auto persisted_collation =
-          persisted_column->collation_uuid.empty()
-              ? std::optional<std::string_view>{}
-              : std::optional<std::string_view>{
-                    persisted_column->collation_uuid};
-      const auto dag_timezone = descriptor->timezone_profile_id.has_value()
-                                    ? std::optional<std::string_view>{
-                                          *descriptor->timezone_profile_id}
-                                    : std::optional<std::string_view>{};
       if (outputs[ordinal]->output_name_utf8 !=
               persisted_column->canonical_name_key ||
-          descriptor->descriptor_uuid !=
-              persisted_column->value_descriptor.descriptor_uuid.canonical ||
-          !persisted_type_uuid.has_value() ||
-          !CanonicalUuidText(*persisted_type_uuid) ||
-          descriptor->type_uuid != *persisted_type_uuid ||
-          descriptor->nullability !=
-              (persisted_column->nullable
-                   ? api::RelationalNullability::kNullable
-                   : api::RelationalNullability::kNonNull) ||
-          descriptor->collation_uuid != persisted_collation ||
-          !CanonicalDescriptorFieldEqualsV1(
-              persisted_column->value_descriptor, "collation_uuid",
-              persisted_collation) ||
-          !CanonicalDescriptorFieldEqualsV1(
-              persisted_column->value_descriptor, "timezone_profile_id",
-              dag_timezone)) {
+          std::ranges::count_if(
+              persisted.columns, [&](const auto& candidate) {
+                return candidate.column_uuid.canonical ==
+                       persisted_column->column_uuid.canonical;
+              }) != 1 ||
+          !Rcp079ExactColumnarJoinColumnBindingV1(*descriptor,
+                                                  *persisted_column)) {
         return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                       "columnar output differs from persisted type authority");
       }
@@ -53273,22 +54600,27 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               : "LOGICAL_COLUMNAR_SOURCE_V1";
   const auto identity_scope =
       dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+  const auto source_identity_scope =
+      identity_scope + ":" + std::to_string(source->node_id) + ":" +
+      object_uuid;
   const auto provider_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".provider");
+      DerivedCanonicalUuid(source_identity_scope, family + ".provider");
   const auto capability_uuid =
       DerivedCanonicalUuid(identity_scope, family + ".capability");
   const auto result_handle_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".result-handle");
+      DerivedCanonicalUuid(source_identity_scope, family + ".result-handle");
   const auto property_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".property");
+      DerivedCanonicalUuid(source_identity_scope, family + ".property");
   const auto security_receipt_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".security-receipt");
+      DerivedCanonicalUuid(source_identity_scope, family + ".security-receipt");
   const auto policy_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".policy-snapshot");
+      DerivedCanonicalUuid(source_identity_scope, family + ".policy-snapshot");
   const auto statistics_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".statistics-snapshot");
+      DerivedCanonicalUuid(source_identity_scope,
+                           family + ".statistics-snapshot");
   const auto resource_contract_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".resource-contract");
+      DerivedCanonicalUuid(source_identity_scope,
+                           family + ".resource-contract");
   const auto suffix = std::to_string(source->node_id) + "." + implementation_id;
   const auto alternative_uuid =
       DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
@@ -53536,9 +54868,14 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       {65'536, input.context.optimizer_maximum_candidate_count,
        std::max<std::uint64_t>(1, provider_memory / 256)});
   std::uint64_t maximum_cells = 0;
+  std::uint64_t maximum_reconstruction_cells = 0;
   if (provider_memory < 4096 || exchange_memory < 4096 || maximum_rows == 0 ||
       !CheckedMultiply(maximum_rows, expected_width, &maximum_cells) ||
-      maximum_cells > std::numeric_limits<std::size_t>::max()) {
+      !CheckedMultiply(maximum_rows, persisted.columns.size(),
+                       &maximum_reconstruction_cells) ||
+      maximum_cells > std::numeric_limits<std::size_t>::max() ||
+      maximum_reconstruction_cells >
+          std::numeric_limits<std::size_t>::max()) {
     return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                   "spatial/columnar route resource bounds are incomplete");
   }
@@ -53580,10 +54917,25 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   source_input.maximum_memory_bytes = exchange_memory;
   source_input.exact_fallback_selected = true;
 
-  const auto cancellation_requested =
-      input.context.query_cancellation_requested
-          ? input.context.query_cancellation_requested
-          : std::function<bool()>([] { return false; });
+  const auto model_cancellation_probe_failed =
+      std::make_shared<std::atomic_bool>(false);
+  const auto raw_model_cancellation =
+      input.context.query_cancellation_requested;
+  const std::function<bool()> cancellation_requested =
+      [raw_model_cancellation, model_cancellation_probe_failed]() noexcept {
+        if (!raw_model_cancellation) return false;
+        try {
+          return raw_model_cancellation();
+        } catch (...) {
+          model_cancellation_probe_failed->store(
+              true, std::memory_order_relaxed);
+          return true;
+        }
+      };
+  const auto columnar_runtime_memory_receipt =
+      spatial
+          ? std::shared_ptr<Rcp079ColumnarSourceRuntimeMemoryReceiptV1>{}
+          : std::make_shared<Rcp079ColumnarSourceRuntimeMemoryReceiptV1>();
   exec::ModelFamilyExecutionRequestV1 execution_request;
   execution_request.input = source_input;
   execution_request.capability.capability_uuid = capability_uuid;
@@ -53599,6 +54951,10 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   execution_request.capability.residual_recheck_supported = true;
   execution_request.capability.base_row_mga_recheck_supported = true;
   execution_request.capability.security_recheck_supported = true;
+  // The no-throw sticky wrapper prevents the generic exchange helper from
+  // laundering a thrown engine probe into an ordinary cancellation.  The
+  // registration checks the sticky failure before emitting cancellation
+  // evidence.
   execution_request.cancellation_requested = cancellation_requested;
   execution_request.cleanup_provider = [] {};
   execution_request.exact_fallback_selected = true;
@@ -53616,13 +54972,28 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   execution_request.execute_provider =
       [context, dag, persisted, source_input, public_columns, property_uuid,
        security_receipt_uuid, has_match, has_nearest, has_filter, has_project,
-       cancellation_requested](const exec::ModelSourceInputDescriptorV1&) mutable {
+       cancellation_requested, maximum_reconstruction_cells,
+       model_cancellation_probe_failed, columnar_runtime_memory_receipt](
+          const exec::ModelSourceInputDescriptorV1&) mutable {
         exec::ModelProviderExecutionResultV1 provider;
         const auto fail = [&](std::string diagnostic, std::string detail) {
           provider.diagnostic_id = std::move(diagnostic);
           provider.detail = std::move(detail);
           return provider;
         };
+        const auto cancellation_diagnostic = [&] {
+          return model_cancellation_probe_failed->load(
+                     std::memory_order_relaxed)
+                     ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                     : "SB_MODEL_EXECUTION_CANCELLED_V1";
+        };
+        if (columnar_runtime_memory_receipt != nullptr) {
+          *columnar_runtime_memory_receipt = {};
+        }
+        if (cancellation_requested()) {
+          return fail(cancellation_diagnostic(),
+                      "model-family execution was cancelled before revalidation");
+        }
         const auto authorization = api::EvaluateMaterializedAuthorization(
             context, context.authorization_context, "SELECT",
             source_input.object_uuid);
@@ -53632,6 +55003,18 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           return fail("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
                       "model-family execution authorization changed");
         }
+        const auto preflight = api::LoadMgaRelationStorageDescriptor(
+            context, source_input.object_uuid);
+        if (!preflight.ok ||
+            !Rcp079ExactColumnarJoinStorageSnapshotV1(
+                preflight.descriptor, persisted)) {
+          return fail("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                      "model-family descriptor changed before MGA access");
+        }
+        if (cancellation_requested()) {
+          return fail(cancellation_diagnostic(),
+                      "model-family execution was cancelled before MGA access");
+        }
         api::MgaVisibleHeapRelationReadRequest read_request;
         read_request.relation_uuid = source_input.object_uuid;
         read_request.maximum_scanned_row_versions =
@@ -53640,24 +55023,53 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             source_input.maximum_memory_bytes / 2;
         read_request.maximum_output_rows = source_input.maximum_rows;
         read_request.cancellation_requested = cancellation_requested;
-        const auto read = api::ReadVisibleMgaHeapRelation(context, read_request);
-        provider.data_access_observed = true;
+        if (read_request.maximum_scanned_row_versions == 0 ||
+            read_request.maximum_decoded_bytes == 0 ||
+            read_request.maximum_output_rows == 0) {
+          return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "model-family MGA read bound is zero");
+        }
+        auto read = api::ReadVisibleMgaHeapRelation(context, read_request);
+        provider.data_access_observed =
+            read.ok || read.scanned_row_version_count != 0 ||
+            read.decoded_byte_count != 0;
         provider.rows_examined = read.scanned_row_version_count;
         if (!read.ok) {
-          return fail(read.diagnostic.code.empty()
-                          ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
-                          : read.diagnostic.code,
+          if (read.cancellation_observed ||
+              model_cancellation_probe_failed->load(
+                  std::memory_order_relaxed)) {
+            return fail(cancellation_diagnostic(),
+                        model_cancellation_probe_failed->load(
+                                std::memory_order_relaxed)
+                            ? "model-family MGA cancellation probe failed"
+                            : "model-family MGA read was cancelled");
+          }
+          return fail(model_cancellation_probe_failed->load(
+                              std::memory_order_relaxed)
+                          ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                          : (read.diagnostic.code.empty()
+                                 ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
+                                 : read.diagnostic.code),
                       read.diagnostic.detail.empty()
                           ? "current MGA-visible relation read failed"
                           : read.diagnostic.detail);
         }
-        if (read.descriptor.descriptor_uuid.canonical !=
-                persisted.descriptor_uuid.canonical ||
-            read.descriptor.descriptor_generation !=
-                source_input.descriptor_generation ||
+        const auto post_access = api::LoadMgaRelationStorageDescriptor(
+            context, source_input.object_uuid);
+        if (!Rcp079ExactColumnarJoinStorageSnapshotV1(
+                read.descriptor, preflight.descriptor) ||
+            !Rcp079ExactColumnarJoinStorageSnapshotV1(
+                read.descriptor, persisted) ||
+            !post_access.ok ||
+            !Rcp079ExactColumnarJoinStorageSnapshotV1(
+                post_access.descriptor, read.descriptor) ||
             read.current_relation_base_generation == 0) {
           return fail("SB_MODEL_CATALOG_GENERATION_STALE_V1",
                       "model-family descriptor changed during execution");
+        }
+        if (cancellation_requested()) {
+          return fail(cancellation_diagnostic(),
+                      "model-family execution was cancelled after MGA access");
         }
         const auto post_authorization = api::EvaluateMaterializedAuthorization(
             context, context.authorization_context, "SELECT",
@@ -53668,30 +55080,69 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           return fail("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
                       "model-family security recheck failed");
         }
+        for (const auto& row : read.visible_rows) {
+          if (cancellation_requested()) {
+            return fail(cancellation_diagnostic(),
+                        "model-family row validation was cancelled");
+          }
+          if (row.table_uuid != source_input.object_uuid ||
+              !CanonicalUuidText(row.row_uuid) ||
+              !CanonicalUuidText(row.version_uuid) ||
+              row.values.size() != persisted.columns.size()) {
+            return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "model-family row identity or width is invalid");
+          }
+          for (const auto& column : persisted.columns) {
+            const std::string* encoded = nullptr;
+            for (const auto& [name, value] : row.values) {
+              if (name != column.canonical_name_key) continue;
+              if (encoded != nullptr) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "model-family row repeats a field");
+              }
+              encoded = &value;
+            }
+            if (encoded == nullptr ||
+                (*encoded == "<NULL>" && !column.nullable)) {
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "model-family row omits or nulls a required field");
+            }
+          }
+        }
+        const auto visible_row_memory =
+            Rcp079VisibleRowsMemoryBytesV1(read.visible_rows);
+        if (source_input.family_id == "columnar" &&
+            (!visible_row_memory.has_value() ||
+             *visible_row_memory >= source_input.maximum_memory_bytes)) {
+          return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "columnar MGA rows exhaust the source memory grant");
+        }
+        if (source_input.family_id == "columnar") {
+          const auto materialization_memory =
+              Rcp079ColumnarLogicalMaterializationAdditionalBytesV1(
+                  persisted, read.visible_rows.size(), dag, source_input,
+                  property_uuid, security_receipt_uuid, has_filter);
+          std::uint64_t projected_live_memory = 0;
+          std::uint64_t retained_and_materialized = 0;
+          // Admission precedes every logical-row allocation.  Two complete
+          // cohorts cover the retained provider image and the simultaneous
+          // engine-owned exchange copy; the helper also includes request,
+          // row-binding, result-identity, property, and four MGA-context
+          // carriers.  The later measured receipt may be smaller, but may
+          // never exceed this grant.
+          if (!materialization_memory.has_value() ||
+              !CheckedAdd(*visible_row_memory, *materialization_memory,
+                          &retained_and_materialized) ||
+              !CheckedMultiply(retained_and_materialized, 2,
+                               &projected_live_memory) ||
+              projected_live_memory > source_input.maximum_memory_bytes) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "columnar logical materialization exceeds the source memory grant");
+          }
+        }
 
         auto& batch = provider.provider_batch;
-        batch.provider_uuid = source_input.provider_uuid;
-        batch.provider_generation = source_input.provider_generation;
-        batch.selected_alternative_uuid =
-            source_input.selected_alternative_uuid;
-        batch.capability_uuid = source_input.capability_uuid;
-        batch.exact_fallback_selected = true;
-        batch.result_handle_uuid = source_input.result_handle_uuid;
-        batch.causal_counter_id = source_input.causal_counter_id;
-        batch.output_descriptor_ids = source_input.output_descriptor_ids;
-        batch.mga_statement_context = source_input.mga_statement_context;
-        batch.security_receipt_uuid = security_receipt_uuid;
-        batch.properties.property_uuid = property_uuid;
-        batch.properties.partitioning_id = "single_local_partition";
-        batch.properties.uniqueness_id = "row_uuid";
-        batch.properties.exact = true;
-        batch.properties.residual_recheck_complete = true;
-        batch.properties.base_row_mga_recheck_complete = true;
-        batch.properties.security_recheck_complete = true;
-        batch.residual_recheck_complete = true;
-        batch.base_row_mga_recheck_complete = true;
-        batch.security_recheck_complete = true;
-
         const auto value_for = [](const api::CrudRowVersionRecord& row,
                                   const std::string_view name)
             -> const std::string* {
@@ -53885,12 +55336,28 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             batch.ordered_row_identities.push_back(std::move(identity));
           }
         } else {
+          const auto mutable_value_for = [](
+                                             api::CrudRowVersionRecord& row,
+                                             const std::string_view name)
+              -> std::string* {
+            std::string* value = nullptr;
+            for (auto& [field, candidate] : row.values) {
+              if (field != name) continue;
+              if (value != nullptr) return nullptr;
+              value = &candidate;
+            }
+            return value;
+          };
           exec::DescriptorBatch logical_rows;
           std::vector<std::uint32_t> logical_descriptor_ids;
           logical_rows.columns.reserve(persisted.columns.size());
           logical_descriptor_ids.reserve(persisted.columns.size());
           std::uint32_t synthetic_descriptor = 0x80000000u;
           for (const auto& column : persisted.columns) {
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "columnar descriptor reconstruction was cancelled");
+            }
             const auto identifier = std::ranges::find_if(
                 dag.expressions, [&](const auto& expression) {
                   return expression.expression_kind ==
@@ -53912,11 +55379,20 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           }
           std::vector<std::string> row_uuids;
           row_uuids.reserve(read.visible_rows.size());
-          for (const auto& row : read.visible_rows) {
+          for (auto& row : read.visible_rows) {
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "columnar row reconstruction was cancelled");
+            }
             exec::DescriptorTuple tuple;
+            tuple.values.reserve(persisted.columns.size());
             for (std::size_t ordinal = 0; ordinal < persisted.columns.size();
                  ++ordinal) {
-              const auto* encoded = value_for(
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "columnar value reconstruction was cancelled");
+              }
+              auto* encoded = mutable_value_for(
                   row, persisted.columns[ordinal].canonical_name_key);
               if (encoded == nullptr) {
                 return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
@@ -53927,15 +55403,24 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               if (*encoded == "<NULL>") {
                 value.setState(api::EngineValueState::sql_null);
               } else {
-                value.encoded_value = *encoded;
+                value.encoded_value = std::move(*encoded);
                 value.setState(api::EngineValueState::value);
               }
               tuple.values.push_back(std::move(value));
             }
             logical_rows.rows.push_back(std::move(tuple));
-            row_uuids.push_back(row.row_uuid);
+            row_uuids.push_back(std::move(row.row_uuid));
           }
-          api::nosql::ColumnarExecutionRequestV1 columnar_request;
+          const auto retained_visible_row_memory =
+              Rcp079VisibleRowsMemoryBytesV1(read.visible_rows);
+          if (!retained_visible_row_memory.has_value() ||
+              *retained_visible_row_memory >=
+                  source_input.maximum_memory_bytes) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "columnar retained MGA carriers exhaust the source memory grant");
+          }
+          api::nosql::ColumnarExecutionRequestV2 columnar_request;
           columnar_request.operation_ids = source_input.operation_ids;
           columnar_request.operation_id = source_input.operation_id;
           columnar_request.relation_uuid = source_input.object_uuid;
@@ -53947,9 +55432,19 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           columnar_request.catalog_generation = source_input.catalog_generation;
           columnar_request.summary_generation = source_input.provider_generation;
           columnar_request.maximum_rows = source_input.maximum_rows;
+          columnar_request.maximum_input_cells =
+              static_cast<std::size_t>(maximum_reconstruction_cells);
           columnar_request.maximum_cells = source_input.maximum_cells;
+          columnar_request.maximum_memory_bytes =
+              source_input.maximum_memory_bytes -
+              *retained_visible_row_memory;
+          columnar_request.cancellation_requested = [](const void* context) {
+            return (*static_cast<const std::function<bool()>*>(context))();
+          };
+          columnar_request.cancellation_context = &cancellation_requested;
           columnar_request.security_admitted = true;
           columnar_request.exact_reconstruction_fallback_available = true;
+          std::uint64_t row_binding_peak_structural_bytes = 0;
           if (has_filter) {
             const auto filter = std::ranges::find_if(
                 dag.expressions, [](const auto& expression) {
@@ -53964,11 +55459,16 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             std::string detail;
             if (!PrepareInputRowBinding(
                     dag, filter->child_expression_ids[1],
-                    logical_descriptor_ids, &row_binding, &detail)) {
+                    logical_descriptor_ids, &row_binding, &detail,
+                    &row_binding_peak_structural_bytes)) {
               return fail("SB_MODEL_COLUMNAR_FILTER_INVALID_V1", detail);
             }
             CanonicalRelationalExpressionRuntime runtime(dag);
             for (const auto& row : logical_rows.rows) {
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "columnar filter evaluation was cancelled");
+              }
               api::EngineSqlTruthValue truth =
                   api::EngineSqlTruthValue::unknown;
               if (!runtime.EvaluatePredicateForConsumer(
@@ -53979,6 +55479,26 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               }
               columnar_request.filter_truth_values.push_back(truth);
             }
+          }
+          const auto pre_api_batch_memory =
+              Rcp079DescriptorBatchLogicalMemoryBytesV1(logical_rows);
+          const auto pre_api_request_memory =
+              Rcp079ColumnarRequestNonBatchLogicalMemoryBytesV2(
+                  columnar_request);
+          std::uint64_t pre_api_peak_memory = 0;
+          if (!pre_api_batch_memory.has_value() ||
+              !pre_api_request_memory.has_value() ||
+              !CheckedAdd(*retained_visible_row_memory,
+                          *pre_api_batch_memory, &pre_api_peak_memory) ||
+              !CheckedAdd(pre_api_peak_memory, *pre_api_request_memory,
+                          &pre_api_peak_memory) ||
+              !CheckedAdd(pre_api_peak_memory,
+                          row_binding_peak_structural_bytes,
+                          &pre_api_peak_memory) ||
+              pre_api_peak_memory > source_input.maximum_memory_bytes) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "columnar row binding exceeded the source memory grant");
           }
           columnar_request.logical_rows = std::move(logical_rows);
           if (has_project) {
@@ -53993,6 +55513,10 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             }
             for (std::size_t index = 1;
                  index < project->child_expression_ids.size(); ++index) {
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "columnar projection binding was cancelled");
+              }
               const auto expression = std::ranges::find_if(
                   dag.expressions, [&](const auto& candidate) {
                     return candidate.expression_id ==
@@ -54017,8 +55541,18 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                       std::distance(persisted.columns.begin(), column)));
             }
           }
+          if (cancellation_requested()) {
+            return fail(cancellation_diagnostic(),
+                        "columnar execution was cancelled before reconstruction");
+          }
           auto reconstructed =
-              api::nosql::ExecuteColumnarLogicalV1(columnar_request);
+              api::nosql::ExecuteColumnarLogicalV2(
+                  std::move(columnar_request));
+          if (model_cancellation_probe_failed->load(
+                  std::memory_order_relaxed)) {
+            return fail("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+                        "columnar cancellation probe failed");
+          }
           if (!reconstructed.accepted || !reconstructed.root_publishable ||
               reconstructed.batch.columns.size() != public_columns.size()) {
             return fail(reconstructed.diagnostic_id.empty()
@@ -54028,23 +55562,130 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                             ? "columnar reconstruction did not publish"
                             : reconstructed.detail);
           }
+          if (!reconstructed.memory_receipt_complete ||
+              reconstructed.peak_live_memory_bytes >
+                  reconstructed.memory_grant_bytes ||
+              !std::ranges::equal(
+                  reconstructed.batch.columns, public_columns,
+                  [](const auto& actual, const auto& expected) {
+                    return Rcp079ExactExecutorColumnV1(actual, expected);
+                  })) {
+            return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "columnar result descriptor carrier changed");
+          }
+          std::uint64_t api_peak_with_retained_rows = 0;
+          if (!CheckedAdd(*retained_visible_row_memory,
+                          reconstructed.peak_live_memory_bytes,
+                          &api_peak_with_retained_rows) ||
+              api_peak_with_retained_rows >
+                  source_input.maximum_memory_bytes) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "columnar reconstruction peak exceeded the source memory grant");
+          }
+          for (const auto& row : reconstructed.batch.rows) {
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "columnar result validation was cancelled");
+            }
+            if (row.values.size() != public_columns.size()) {
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "columnar result row width changed");
+            }
+            for (std::size_t ordinal = 0; ordinal < row.values.size();
+                 ++ordinal) {
+              const auto& value = row.values[ordinal];
+              const exec::ExecutorColumnDescriptor value_column{
+                  public_columns[ordinal].stable_name, value.descriptor,
+                  public_columns[ordinal].nullable,
+                  public_columns[ordinal].descriptor_id};
+              const bool exact_state =
+                  (value.state == api::EngineValueState::value &&
+                   !value.is_null) ||
+                  (value.state == api::EngineValueState::sql_null &&
+                   value.is_null && value.encoded_value.empty() &&
+                   value.binary_value.empty() &&
+                   public_columns[ordinal].nullable);
+              if (!exact_state ||
+                  !Rcp079ExactExecutorColumnV1(
+                      value_column, public_columns[ordinal])) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "columnar result value descriptor changed");
+              }
+            }
+          }
           batch.properties.ordering_id = "fixture_order";
           batch.batch = std::move(reconstructed.batch);
-          for (std::size_t ordinal = 0;
-               ordinal < batch.batch.columns.size(); ++ordinal) {
-            if (batch.batch.columns[ordinal].stable_name !=
-                    public_columns[ordinal].stable_name ||
-                batch.batch.columns[ordinal].descriptor.descriptor_uuid.canonical !=
-                    public_columns[ordinal].descriptor.descriptor_uuid.canonical) {
-              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                          "columnar result descriptor order changed");
-            }
-            batch.batch.columns[ordinal] = public_columns[ordinal];
-          }
+          batch.ordered_row_identities.reserve(
+              reconstructed.row_uuids.size());
           for (auto& row_uuid : reconstructed.row_uuids) {
             exec::ModelProviderRowIdentityV1 identity;
             identity.row_uuid = std::move(row_uuid);
             batch.ordered_row_identities.push_back(std::move(identity));
+          }
+          if (columnar_runtime_memory_receipt != nullptr) {
+            columnar_runtime_memory_receipt->peak_live_memory_bytes =
+                std::max(pre_api_peak_memory,
+                         api_peak_with_retained_rows);
+          }
+        }
+        batch.provider_uuid = source_input.provider_uuid;
+        batch.provider_generation = source_input.provider_generation;
+        batch.selected_alternative_uuid =
+            source_input.selected_alternative_uuid;
+        batch.capability_uuid = source_input.capability_uuid;
+        batch.exact_fallback_selected = true;
+        batch.result_handle_uuid = source_input.result_handle_uuid;
+        batch.causal_counter_id = source_input.causal_counter_id;
+        batch.output_descriptor_ids = source_input.output_descriptor_ids;
+        batch.mga_statement_context = source_input.mga_statement_context;
+        batch.security_receipt_uuid = security_receipt_uuid;
+        batch.properties.property_uuid = property_uuid;
+        batch.properties.partitioning_id = "single_local_partition";
+        batch.properties.uniqueness_id = "row_uuid";
+        batch.properties.exact = true;
+        batch.properties.residual_recheck_complete = true;
+        batch.properties.base_row_mga_recheck_complete = true;
+        batch.properties.security_recheck_complete = true;
+        batch.residual_recheck_complete = true;
+        batch.base_row_mga_recheck_complete = true;
+        batch.security_recheck_complete = true;
+        if (columnar_runtime_memory_receipt != nullptr) {
+          const auto provider_memory =
+              Rcp079ModelProviderBatchLogicalMemoryBytesV1(batch);
+          const auto output_memory =
+              Rcp079ProjectedModelSourceOutputLogicalMemoryBytesV1(
+                  source_input, batch);
+          const auto uniqueness_memory =
+              Rcp079ColumnarUniquenessLogicalMemoryBytesV1(
+                  batch.ordered_row_identities);
+          std::uint64_t output_copy_peak = 0;
+          std::uint64_t uniqueness_peak = 0;
+          if (!provider_memory.has_value() || !output_memory.has_value() ||
+              !uniqueness_memory.has_value() ||
+              !CheckedAdd(*provider_memory, *output_memory,
+                          &output_copy_peak) ||
+              !CheckedAdd(*provider_memory, *uniqueness_memory,
+                          &uniqueness_peak)) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "columnar provider/exchange memory receipt overflowed");
+          }
+          columnar_runtime_memory_receipt->provider_logical_memory_bytes =
+              *provider_memory;
+          columnar_runtime_memory_receipt->peak_live_memory_bytes =
+              std::max({columnar_runtime_memory_receipt
+                            ->peak_live_memory_bytes,
+                        output_copy_peak, uniqueness_peak});
+          columnar_runtime_memory_receipt->memory_grant_bytes =
+              source_input.maximum_memory_bytes;
+          columnar_runtime_memory_receipt->complete =
+              columnar_runtime_memory_receipt->peak_live_memory_bytes <=
+              columnar_runtime_memory_receipt->memory_grant_bytes;
+          if (!columnar_runtime_memory_receipt->complete) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "columnar provider/exchange peak exceeded the source memory grant");
           }
         }
         provider.ok = true;
@@ -54059,6 +55700,13 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       persisted.descriptor_generation,
       plan::CanonicalLogicalRelationalNodeKind::kRelationSource,
       exec::PhysicalNodeKind::kScan, execution_request);
+  if (leg_capture != nullptr) {
+    leg_capture->exact_output_columns = public_columns;
+    leg_capture->columnar_runtime_memory_receipt =
+        columnar_runtime_memory_receipt;
+    leg_capture->cancellation_probe_failed =
+        model_cancellation_probe_failed;
+  }
   if (leg_capture != nullptr) return result;
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kScan;
@@ -54067,10 +55715,13 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 =
+      columnar_runtime_memory_receipt != nullptr;
   registration.execute =
       [execution_request, persisted_descriptor_uuid =
                               persisted.descriptor_uuid.canonical,
-       implementation_id](
+       implementation_id, columnar_runtime_memory_receipt,
+       model_cancellation_probe_failed](
           const exec::TypedPhysicalNodeDag& selected_dag,
           const exec::PhysicalNodeRecord& selected_node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -54105,6 +55756,15 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
         }
         const auto executed = exec::ExecuteModelFamilySourceV1(execution_request);
         step.data_access_observed = executed.data_access_observed;
+        if (model_cancellation_probe_failed->load(
+                std::memory_order_relaxed)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+          step.diagnostic.detail =
+              "model-family cancellation probe failed";
+          return step;
+        }
         if (!executed.accepted || !executed.root_published ||
             !executed.cleanup_complete || executed.cleanup_count != 1 ||
             !executed.output.exact_exchange_validated ||
@@ -54126,6 +55786,29 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                   ? "spatial/columnar source execution did not complete"
                   : executed.detail;
           return step;
+        }
+        if (columnar_runtime_memory_receipt != nullptr) {
+          std::uint64_t current_memory_bytes = 0;
+          if (!columnar_runtime_memory_receipt->complete ||
+              columnar_runtime_memory_receipt
+                      ->provider_logical_memory_bytes == 0 ||
+              columnar_runtime_memory_receipt->memory_grant_bytes == 0 ||
+              columnar_runtime_memory_receipt->peak_live_memory_bytes >
+                  columnar_runtime_memory_receipt->memory_grant_bytes ||
+              !RuntimeMaterializedBatchMemoryBytes(executed.output.batch,
+                                                   &current_memory_bytes) ||
+              current_memory_bytes >
+                  columnar_runtime_memory_receipt->peak_live_memory_bytes) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+            step.diagnostic.detail =
+                "columnar runtime memory receipt is incomplete";
+            return step;
+          }
+          PublishRuntimeMemoryObservation(
+              &step, current_memory_bytes,
+              columnar_runtime_memory_receipt->peak_live_memory_bytes);
         }
         step.result_handle_id = selected_node.physical_node_id;
         step.output_row_count = executed.output.batch.rows.size();

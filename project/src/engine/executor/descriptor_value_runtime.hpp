@@ -2948,6 +2948,16 @@ bool CanonicalDerivedDescriptorTypeMatches(
 bool DeriveCanonicalNullableDescriptorEncoding(
     scratchbird::engine::internal_api::EngineDescriptor* descriptor);
 DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch);
+using DescriptorCancellationProbe = bool (*)(const void* context);
+DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
+    const DescriptorBatch& batch,
+    DescriptorCancellationProbe cancellation_requested,
+    const void* cancellation_context,
+    bool* cancellation_observed);
+DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
+    const DescriptorBatch& batch,
+    const std::function<bool()>& cancellation_requested,
+    bool* cancellation_observed);
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     const DescriptorBatch& batch,
     const std::vector<std::uint32_t>& output_descriptor_ids,

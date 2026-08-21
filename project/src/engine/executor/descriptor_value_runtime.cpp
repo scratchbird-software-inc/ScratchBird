@@ -711,11 +711,47 @@ bool DeriveCanonicalNullableDescriptorEncoding(
   return true;
 }
 
-DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch) {
+DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
+    const DescriptorBatch& batch,
+    const DescriptorCancellationProbe cancellation_requested,
+    const void* cancellation_context,
+    bool* cancellation_observed) {
+  if (cancellation_observed != nullptr) *cancellation_observed = false;
+  const auto poll_cancellation = [&](const std::size_t row,
+                                     const std::size_t column)
+      -> std::optional<DescriptorRuntimeDiagnostic> {
+    if (!cancellation_requested) return std::nullopt;
+    try {
+      if (!cancellation_requested(cancellation_context)) return std::nullopt;
+      if (cancellation_observed != nullptr) *cancellation_observed = true;
+      return ErrorDiagnostic("SB_MODEL_EXECUTION_CANCELLED_V1",
+                             "descriptor-batch validation was cancelled",
+                             row, column);
+    } catch (const std::exception& exception) {
+      return ErrorDiagnostic(
+          "SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+          std::string("descriptor-batch cancellation probe threw: ") +
+              exception.what(),
+          row, column);
+    } catch (...) {
+      return ErrorDiagnostic(
+          "SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+          "descriptor-batch cancellation probe threw a non-standard exception",
+          row, column);
+    }
+  };
+  if (const auto cancelled = poll_cancellation(0, 0);
+      cancelled.has_value()) {
+    return *cancelled;
+  }
   if (batch.columns.empty()) {
     return ErrorDiagnostic("SB_EXECUTOR_DESCRIPTOR_REQUIRED", "column descriptor vector is empty");
   }
   for (std::size_t column = 0; column < batch.columns.size(); ++column) {
+    if (const auto cancelled = poll_cancellation(0, column);
+        cancelled.has_value()) {
+      return *cancelled;
+    }
     const auto& descriptor = batch.columns[column].descriptor;
     if (descriptor.canonical_type_name.empty() || descriptor.descriptor_kind.empty()) {
       return ErrorDiagnostic("SB_EXECUTOR_DESCRIPTOR_INVALID", "descriptor kind and canonical type are required", 0, column);
@@ -725,10 +761,18 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch
     }
   }
   for (std::size_t row = 0; row < batch.rows.size(); ++row) {
+    if (const auto cancelled = poll_cancellation(row, 0);
+        cancelled.has_value()) {
+      return *cancelled;
+    }
     if (batch.rows[row].values.size() != batch.columns.size()) {
       return ErrorDiagnostic("SB_EXECUTOR_ROW_WIDTH_MISMATCH", "row width does not match descriptor width", row, 0);
     }
     for (std::size_t column = 0; column < batch.columns.size(); ++column) {
+      if (const auto cancelled = poll_cancellation(row, column);
+          cancelled.has_value()) {
+        return *cancelled;
+      }
       const auto& value = batch.rows[row].values[column];
       const auto& expected = batch.columns[column];
       if (!DescriptorMatches(expected.descriptor, value.descriptor)) {
@@ -793,6 +837,26 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch
     }
   }
   return OkDiagnostic();
+}
+
+DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
+    const DescriptorBatch& batch,
+    const std::function<bool()>& cancellation_requested,
+    bool* cancellation_observed) {
+  const auto probe = [](const void* context) {
+    return (*static_cast<const std::function<bool()>*>(context))();
+  };
+  const DescriptorCancellationProbe callback =
+      cancellation_requested ? +probe : nullptr;
+  return ValidateDescriptorBatch(
+      batch, callback,
+      cancellation_requested ? &cancellation_requested : nullptr,
+      cancellation_observed);
+}
+
+DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
+    const DescriptorBatch& batch) {
+  return ValidateDescriptorBatch(batch, nullptr, nullptr, nullptr);
 }
 
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
