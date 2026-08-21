@@ -6623,7 +6623,7 @@ bool CanonicalDescriptorFieldEqualsV1(
   return expected.has_value() ? value == expected : !value.has_value();
 }
 
-bool ExactCanonicalCountWindowSourceV1(
+bool ExactCanonicalScalarWindowSourceV1(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     const bool runtime_nullable,
@@ -19385,7 +19385,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   request.relational_dag.descriptors.end() ||
               order_relational_descriptor ==
                   request.relational_dag.descriptors.end() ||
-              !ExactCanonicalCountWindowSourceV1(
+              !ExactCanonicalScalarWindowSourceV1(
                   *source_relational_descriptor,
                   input_batch.columns[source_column].descriptor,
                   input_batch.columns[source_column].nullable,
@@ -19401,6 +19401,46 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             return refuse(
                 std::string(kPayloadDiagnostic),
                 "composition COUNT source descriptor is not exact");
+          }
+        }
+        if (value_window && !aggregate_window) {
+          const auto source_column = *ranking.navigation_value_column;
+          const auto order_column = prepared_sort->order_terms.front().column;
+          const auto source_relational_descriptor = std::ranges::find_if(
+              request.relational_dag.descriptors, [&](const auto& candidate) {
+                return source_column < input_node.output_descriptor_ids.size() &&
+                       candidate.descriptor_id ==
+                           input_node.output_descriptor_ids[source_column];
+              });
+          const auto order_relational_descriptor = std::ranges::find_if(
+              request.relational_dag.descriptors, [&](const auto& candidate) {
+                return order_column < input_node.output_descriptor_ids.size() &&
+                       candidate.descriptor_id ==
+                           input_node.output_descriptor_ids[order_column];
+              });
+          if (source_column >= input_batch.columns.size() ||
+              order_column >= input_batch.columns.size() ||
+              source_relational_descriptor ==
+                  request.relational_dag.descriptors.end() ||
+              order_relational_descriptor ==
+                  request.relational_dag.descriptors.end() ||
+              !ExactCanonicalScalarWindowSourceV1(
+                  *source_relational_descriptor,
+                  input_batch.columns[source_column].descriptor,
+                  input_batch.columns[source_column].nullable,
+                  ranking_profile.function_uuid,
+                  output_descriptor->descriptor_uuid, result_type_uuid,
+                  input_batch.columns[order_column]
+                      .descriptor.descriptor_uuid.canonical,
+                  order_relational_descriptor->type_uuid,
+                  source_column == order_column,
+                  prepared_sort->ordering_property_uuid,
+                  ranking.window_property_uuid,
+                  ranking.window_frame_descriptor_uuid)) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "composition " + std::string(ranking_name) +
+                    " source descriptor is not exact");
           }
         }
         if (aggregate_boolean_window || aggregate_bounded_signed_window) {
@@ -53214,7 +53254,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                       "object-backed " + std::string(ranking_name) +
                           " source relational descriptor is unresolved");
       }
-      if (aggregate_count_window) {
+      if (aggregate_count_window || !aggregate_window) {
         const auto order_column = heap_descriptor_order_terms.front().column;
         const auto order_relational_descriptor = std::ranges::find_if(
             dag.descriptors, [&](const auto& candidate) {
@@ -53225,7 +53265,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         if (order_column >=
                 admission.current_relation_projection_descriptors.size() ||
             order_relational_descriptor == dag.descriptors.end() ||
-            !ExactCanonicalCountWindowSourceV1(
+            !ExactCanonicalScalarWindowSourceV1(
                 *source_relational_descriptor, source_descriptor,
                 source_relational_descriptor->nullability ==
                     api::RelationalNullability::kNullable,
@@ -53240,7 +53280,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                 ranking.window_frame_descriptor_uuid)) {
           return refuse(
               "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
-              "object-backed COUNT source descriptor is not exact");
+              "object-backed " + std::string(ranking_name) +
+                  " source descriptor is not exact");
         }
       }
       if ((aggregate_boolean_window || aggregate_bounded_signed_window) &&
