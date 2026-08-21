@@ -711,7 +711,9 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
       request.row_number_column.nullable ||
       request.row_number_column.descriptor.canonical_type_name != "int64" ||
       !result_type_uuid.has_value() || canonical_int64_type_uuid.empty() ||
-      *result_type_uuid != canonical_int64_type_uuid) {
+      *result_type_uuid != canonical_int64_type_uuid ||
+      request.row_number_column.descriptor.descriptor_uuid.canonical ==
+          *result_type_uuid) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "ROW_NUMBER output descriptor is not bound int64"));
   }
