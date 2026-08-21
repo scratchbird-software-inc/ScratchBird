@@ -1210,7 +1210,7 @@ set(SBSQL_SURFACE_TO_SBLR_FIXTURE_ROOT
   "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/fixtures/surface_to_sblr"
 )
 set(SBSQL_CANONICALIZATION_ROOT
-  "${PROJECT_SOURCE_DIR}/../public_input_snapshot"
+  "${PROJECT_SOURCE_DIR}/../public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv"
 )
 add_test(
   NAME sbp_sbsql_registry_generation_probe
@@ -1242,6 +1242,16 @@ set_tests_properties(sbp_sbsql_generated_full_surface_conformance_probe PROPERTI
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(SBSQL_PYTHON3 "${Python3_EXECUTABLE}")
+
+add_test(
+  NAME sbp_sbsql_command_zero_grey_audit_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_command_zero_grey_audit_gate.py"
+          "${PROJECT_SOURCE_DIR}/../../Completed-Workplans/sbsql-sblr-command-semantic-closure/SBSQL_COMMAND_AUDIT.csv"
+          "${PROJECT_SOURCE_DIR}/../../Specifications/Core/registries/sbsql-command-sblr-zero-grey-closure.csv"
+)
+set_tests_properties(sbp_sbsql_command_zero_grey_audit_gate PROPERTIES
+  LABELS "sbsql_generated_full_surface_conformance;parser_v3_closure_gate")
 
 add_test(
   NAME sbsql_multilingual_resource_edge_safety_gate
