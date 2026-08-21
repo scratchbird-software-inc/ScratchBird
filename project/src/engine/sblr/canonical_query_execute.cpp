@@ -16453,6 +16453,19 @@ MakeLiveRecursiveCteRegistration(
           auto result =
               exec::ExecuteCanonicalRecursiveCteSearchCycle(
                   recursive, *execution_dag, node.physical_node_id);
+          if (result.diagnostic.ok &&
+              (!CanonicalOperatorExecutionReceiptMatches(
+                   result, *execution_dag, node,
+                   recursive.mga_authority.statement_context) ||
+               !result.converged || !result.working_state_cleaned ||
+               result.cancellation_observed)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-014-SEARCH-CYCLE-REFUSAL-V1";
+            step.diagnostic.detail =
+                "recursive CTE SEARCH/CYCLE execution receipt changed";
+            return step;
+          }
           diagnostic = std::move(result.diagnostic);
           output = std::move(result.output_batch);
           result_mga = std::move(result.mga_statement_context);
@@ -16534,6 +16547,24 @@ MakeLiveRecursiveCteRegistration(
           auto result =
               exec::ExecuteCanonicalRecursiveCteUnion(
                   recursive, *execution_dag, node.physical_node_id);
+          if (result.working_result.diagnostic.ok &&
+              (!CanonicalOperatorExecutionReceiptMatches(
+                   result.working_result, *execution_dag, node,
+                   working.mga_authority.statement_context) ||
+               !exec::PhysicalMgaStatementContextEqual(
+                   result.mga_statement_context,
+                   working.mga_authority.statement_context) ||
+               !result.working_result.converged ||
+               !result.working_result.working_state_cleaned ||
+               result.working_result.cancellation_observed ||
+               result.union_mode != recursive.union_mode)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-014-UNION-REFUSAL-V1";
+            step.diagnostic.detail =
+                "recursive CTE UNION execution receipt changed";
+            return step;
+          }
           diagnostic = std::move(result.working_result.diagnostic);
           output = std::move(result.working_result.output_batch);
           result_mga = std::move(result.mga_statement_context);
