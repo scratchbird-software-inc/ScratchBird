@@ -49318,6 +49318,34 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
       return expression.expression_id == expression_id;
     });
   };
+  std::array<std::string, 5> exact_derived_type_uuids;
+  if (std::ranges::any_of(families, [](const std::string_view family) {
+        return family == "key_value" || family == "time_series" ||
+               family == "vector" || family == "search";
+      })) {
+    exact_derived_type_uuids = {
+        ExactCanonicalCoreDatatypeUuidV1("uuid"),
+        ExactCanonicalCoreDatatypeUuidV1("character"),
+        ExactCanonicalCoreDatatypeUuidV1("timestamp"),
+        ExactCanonicalCoreDatatypeUuidV1("real64"),
+        ExactCanonicalCoreDatatypeUuidV1("uint64")};
+    if (std::ranges::any_of(exact_derived_type_uuids,
+                            [](const auto& uuid) { return uuid.empty(); })) {
+      return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                    "bounded derived source core type registry is unavailable");
+    }
+  }
+  const auto exact_derived_type_uuid =
+      [&](const std::string_view canonical_type_name) -> std::string_view {
+    if (canonical_type_name == "uuid") return exact_derived_type_uuids[0];
+    if (canonical_type_name == "text") return exact_derived_type_uuids[1];
+    if (canonical_type_name == "timestamp_tz") {
+      return exact_derived_type_uuids[2];
+    }
+    if (canonical_type_name == "real64") return exact_derived_type_uuids[3];
+    if (canonical_type_name == "uint64") return exact_derived_type_uuids[4];
+    return {};
+  };
   std::unordered_set<std::string> object_uuids;
   std::vector<Rcp080BoundedSourceV1> prepared_sources;
   prepared_sources.reserve(sources.size());
@@ -49455,6 +49483,13 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
                    expression->bound_name_uuid != search_analyzer_uuid) {
           return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                         "bounded search analyzer public binding diverged");
+        }
+        const auto exact_type_uuid =
+            exact_derived_type_uuid(derived_types[ordinal]);
+        if (exact_type_uuid.empty() ||
+            descriptor->type_uuid != exact_type_uuid) {
+          return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                        "bounded derived source type UUID was substituted");
         }
         api::EngineDescriptor engine_descriptor;
         engine_descriptor.descriptor_uuid.canonical =
