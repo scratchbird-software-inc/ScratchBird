@@ -154,6 +154,12 @@ struct EngineBoundTimeSeriesDownsampleRowV1 {
 
 struct EngineBoundTimeSeriesReadResultV1 : EngineApiResult {
   bool data_access_observed{false};
+  bool cancellation_observed{false};
+  bool cancellation_probe_failed{false};
+  bool memory_receipt_complete{false};
+  std::uint64_t current_live_memory_bytes{0};
+  std::uint64_t peak_live_memory_bytes{0};
+  std::uint64_t memory_grant_bytes{0};
   bool exact_fallback_observed{false};
   bool rollup_observed{false};
   bool rollup_equivalence_recheck_complete{false};

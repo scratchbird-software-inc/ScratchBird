@@ -556,11 +556,13 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
       }
     }
   };
+  std::atomic_bool cancellation_probe_failed{false};
   const auto cancelled = [&]() {
     try {
       return !request.cancellation_requested ||
              request.cancellation_requested();
     } catch (...) {
+      cancellation_probe_failed.store(true, std::memory_order_release);
       return true;
     }
   };
@@ -629,6 +631,12 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     return result.cleanup_complete;
   };
   const auto refuse = [&](std::string diagnostic, std::string detail) {
+    if (cancellation_probe_failed.load(std::memory_order_acquire)) {
+      diagnostic = "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+      detail = "model-family composition cancellation probe failed";
+      result.failure_frozen = true;
+      receipt("COORD-020-V1", true);
+    }
     result.accepted = false;
     result.root_published = false;
     result.no_partial_root = true;
@@ -960,13 +968,16 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
         const auto original_probe = execution.cancellation_requested;
         const auto composition_probe = request.cancellation_requested;
         execution.cancellation_requested =
-            [fanout_cancel, original_probe, composition_probe]() {
+            [fanout_cancel, original_probe, composition_probe,
+             &cancellation_probe_failed]() {
               if (fanout_cancel->load(std::memory_order_acquire)) return true;
               try {
                 return !original_probe || original_probe() ||
                        !composition_probe || composition_probe();
               } catch (...) {
-                return true;
+                cancellation_probe_failed.store(true,
+                                                std::memory_order_release);
+                throw;
               }
             };
         ModelFamilyExecutionResultV1 executed;
@@ -1301,13 +1312,15 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
       const auto original_probe = execution.cancellation_requested;
       const auto composition_probe = request.cancellation_requested;
       execution.cancellation_requested =
-          [fanout_cancel, original_probe, composition_probe]() {
+          [fanout_cancel, original_probe, composition_probe,
+           &cancellation_probe_failed]() {
         if (fanout_cancel->load(std::memory_order_acquire)) return true;
         try {
           return !original_probe || original_probe() ||
                  !composition_probe || composition_probe();
         } catch (...) {
-          return true;
+          cancellation_probe_failed.store(true, std::memory_order_release);
+          throw;
         }
       };
       const auto run_execution =

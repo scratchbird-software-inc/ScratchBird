@@ -1129,13 +1129,210 @@ struct HeapReadRuntimeObservation {
 struct BoundedScopedRowReadControl {
   std::uint64_t maximum_row_versions = 0;
   std::uint64_t maximum_bytes = 0;
+  std::uint64_t maximum_memory_bytes = 0;
+  std::uint64_t retained_parent_memory_bytes = 0;
+  std::uint64_t retained_decode_row_memory_bytes = 0;
+  std::uint64_t peak_live_memory_bytes = 0;
   std::function<bool()> cancellation_requested;
   std::uint64_t decoded_row_versions = 0;
   std::uint64_t decoded_bytes = 0;
   bool cancellation_observed = false;
+  MgaHeapReadFailureCategoryV1 failure_category =
+      MgaHeapReadFailureCategoryV1::kNone;
   std::string refusal_detail;
   HeapReadRuntimeObservation* runtime_observation = nullptr;
 };
+
+bool CheckedHeapReadMemoryAdd(const std::uint64_t value,
+                              std::uint64_t* total) {
+  if (total == nullptr ||
+      value > std::numeric_limits<std::uint64_t>::max() - *total) {
+    return false;
+  }
+  *total += value;
+  return true;
+}
+
+bool CheckedHeapReadMemoryMultiply(const std::uint64_t left,
+                                   const std::uint64_t right,
+                                   std::uint64_t* product) {
+  if (product == nullptr ||
+      (right != 0 &&
+       left > std::numeric_limits<std::uint64_t>::max() / right)) {
+    return false;
+  }
+  *product = left * right;
+  return true;
+}
+
+bool AccountHeapReadOwnedString(const std::string& value,
+                                std::uint64_t* total) {
+  return value.capacity() < std::numeric_limits<std::uint64_t>::max() &&
+         CheckedHeapReadMemoryAdd(
+             static_cast<std::uint64_t>(value.capacity()) + 1, total);
+}
+
+std::optional<std::uint64_t> HeapReadRowVectorMemoryBytes(
+    const std::vector<CrudRowVersionRecord>& rows) {
+  std::uint64_t bytes = sizeof(rows);
+  std::uint64_t allocation_bytes = 0;
+  if (!CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(rows.capacity()),
+          sizeof(CrudRowVersionRecord), &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& row : rows) {
+    if (!AccountHeapReadOwnedString(row.table_uuid, &bytes) ||
+        !AccountHeapReadOwnedString(row.row_uuid, &bytes) ||
+        !AccountHeapReadOwnedString(row.version_uuid, &bytes) ||
+        !AccountHeapReadOwnedString(row.temporary_session_uuid, &bytes) ||
+        !AccountHeapReadOwnedString(row.previous_version_uuid, &bytes) ||
+        !CheckedHeapReadMemoryMultiply(
+            static_cast<std::uint64_t>(row.values.capacity()),
+            sizeof(std::pair<std::string, std::string>),
+            &allocation_bytes) ||
+        !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
+      return std::nullopt;
+    }
+    for (const auto& [key, value] : row.values) {
+      if (!AccountHeapReadOwnedString(key, &bytes) ||
+          !AccountHeapReadOwnedString(value, &bytes)) {
+        return std::nullopt;
+      }
+    }
+  }
+  return bytes;
+}
+
+bool AccountHeapReadRowDynamicMemoryBytes(
+    const CrudRowVersionRecord& row, std::uint64_t* total) {
+  std::uint64_t allocation_bytes = 0;
+  if (!AccountHeapReadOwnedString(row.table_uuid, total) ||
+      !AccountHeapReadOwnedString(row.row_uuid, total) ||
+      !AccountHeapReadOwnedString(row.version_uuid, total) ||
+      !AccountHeapReadOwnedString(row.temporary_session_uuid, total) ||
+      !AccountHeapReadOwnedString(row.previous_version_uuid, total) ||
+      !CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(row.values.capacity()),
+          sizeof(std::pair<std::string, std::string>),
+          &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, total)) {
+    return false;
+  }
+  for (const auto& [key, value] : row.values) {
+    if (!AccountHeapReadOwnedString(key, total) ||
+        !AccountHeapReadOwnedString(value, total)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::optional<std::uint64_t> HeapReadVersionIndexProjectionMemoryBytes(
+    const std::vector<CrudRowVersionRecord>& rows) {
+  constexpr std::uint64_t kNodeOverhead = 4 * sizeof(void*);
+  std::uint64_t bytes =
+      sizeof(std::unordered_map<std::string, const CrudRowVersionRecord*>);
+  std::uint64_t allocation_bytes = 0;
+  if (!CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(rows.size()), 2 * sizeof(void*),
+          &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
+      !CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(rows.size()),
+          sizeof(std::pair<const std::string,
+                           const CrudRowVersionRecord*>) +
+              kNodeOverhead,
+          &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& row : rows) {
+    if (!AccountHeapReadOwnedString(row.version_uuid, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t> HeapReadVisibilityMapProjectionMemoryBytes(
+    const std::vector<CrudRowVersionRecord>& rows) {
+  constexpr std::uint64_t kNodeOverhead = 4 * sizeof(void*);
+  std::uint64_t bytes =
+      sizeof(std::unordered_map<std::string, std::size_t>);
+  std::uint64_t allocation_bytes = 0;
+  if (!CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(rows.size()), 2 * sizeof(void*),
+          &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
+      !CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(rows.size()),
+          sizeof(std::pair<const std::string, std::size_t>) +
+              kNodeOverhead,
+          &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& row : rows) {
+    if (!AccountHeapReadOwnedString(row.row_uuid, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t> HeapReadStringVectorMemoryBytes(
+    const std::vector<std::string>& values) {
+  std::uint64_t bytes = sizeof(values);
+  std::uint64_t allocation_bytes = 0;
+  if (!CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(values.capacity()),
+          sizeof(std::string), &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& value : values) {
+    if (!AccountHeapReadOwnedString(value, &bytes)) return std::nullopt;
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t> HeapReadStringCacheMemoryBytes(
+    const std::unordered_map<std::string, std::string>& cache) {
+  constexpr std::uint64_t kNodeOverhead = 4 * sizeof(void*);
+  std::uint64_t bytes = sizeof(cache);
+  std::uint64_t allocation_bytes = 0;
+  if (!CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(cache.bucket_count()), sizeof(void*),
+          &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
+      !CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(cache.size()),
+          sizeof(std::pair<const std::string, std::string>) + kNodeOverhead,
+          &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& [key, value] : cache) {
+    if (!AccountHeapReadOwnedString(key, &bytes) ||
+        !AccountHeapReadOwnedString(value, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+bool ObserveBoundedHeapReadMemory(BoundedScopedRowReadControl* control,
+                                  const std::uint64_t live_bytes) {
+  if (control == nullptr || control->maximum_memory_bytes == 0) return true;
+  control->peak_live_memory_bytes =
+      std::max(control->peak_live_memory_bytes, live_bytes);
+  if (live_bytes <= control->maximum_memory_bytes) return true;
+  control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
+  control->refusal_detail = "heap_read_maximum_memory_bytes_exceeded";
+  return false;
+}
 
 bool AccountHeapReadWait(
     BoundedScopedRowReadControl* control,
@@ -1152,6 +1349,7 @@ bool AccountHeapReadWait(
           std::numeric_limits<std::uint64_t>::max() -
               control->runtime_observation->operator_wait_ns) {
     control->runtime_observation->complete = false;
+    control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
     control->refusal_detail = "heap_read_wait_observation_overflow";
     return false;
   }
@@ -1168,6 +1366,7 @@ bool AccountHeapStorageBytes(BoundedScopedRowReadControl* control,
   if (bytes > std::numeric_limits<std::uint64_t>::max() -
                   control->runtime_observation->storage_bytes_read) {
     control->runtime_observation->complete = false;
+    control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
     control->refusal_detail = "heap_read_storage_byte_observation_overflow";
     return false;
   }
@@ -1179,6 +1378,7 @@ bool BoundedScopedReadCancelled(BoundedScopedRowReadControl* control) {
   if (control == nullptr || !control->cancellation_requested) { return false; }
   if (!control->cancellation_requested()) { return false; }
   control->cancellation_observed = true;
+  control->failure_category = MgaHeapReadFailureCategoryV1::kCancellation;
   control->refusal_detail = "heap_read_cancelled";
   return true;
 }
@@ -1188,6 +1388,7 @@ bool AccountBoundedScopedBytes(BoundedScopedRowReadControl* control,
   if (control == nullptr) { return true; }
   if (control->decoded_bytes > control->maximum_bytes ||
       bytes > control->maximum_bytes - control->decoded_bytes) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
     control->refusal_detail = "heap_read_maximum_decoded_bytes_exceeded";
     return false;
   }
@@ -1204,6 +1405,7 @@ bool ReadBinaryFileBounded(const std::string& path,
           static_cast<std::uint64_t>(
               std::numeric_limits<std::size_t>::max())) {
     if (control != nullptr) {
+      control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
       control->refusal_detail = "heap_read_scoped_binary_size_overflow";
     }
     return false;
@@ -1213,10 +1415,28 @@ bool ReadBinaryFileBounded(const std::string& path,
   input.open(path, std::ios::binary);
   if (!AccountHeapReadWait(control, open_started)) return false;
   if (!input) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
     control->refusal_detail = "heap_read_scoped_binary_open_failed";
     return false;
   }
   bytes->clear();
+  std::uint64_t binary_phase_bytes = control->retained_parent_memory_bytes;
+  std::uint64_t binary_allocation_bytes = 0;
+  if (!CheckedHeapReadMemoryMultiply(
+          authorized_file_bytes, sizeof(idx::byte),
+          &binary_allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(control->retained_decode_row_memory_bytes,
+                                &binary_phase_bytes) ||
+      !CheckedHeapReadMemoryAdd(sizeof(*bytes), &binary_phase_bytes) ||
+      !CheckedHeapReadMemoryAdd(binary_allocation_bytes,
+                                &binary_phase_bytes) ||
+      !ObserveBoundedHeapReadMemory(control, binary_phase_bytes)) {
+    if (control->refusal_detail.empty()) {
+      control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
+      control->refusal_detail = "heap_read_binary_memory_receipt_overflow";
+    }
+    return false;
+  }
   bytes->reserve(static_cast<std::size_t>(authorized_file_bytes));
   constexpr std::size_t kReadChunkBytes = 64 * 1024;
   char chunk[kReadChunkBytes];
@@ -1237,6 +1457,7 @@ bool ReadBinaryFileBounded(const std::string& path,
     if (read_count < 0 ||
         static_cast<std::uint64_t>(read_count) > remaining) {
       control->refusal_detail = "heap_read_scoped_binary_grew_during_read";
+      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
       return false;
     }
     if (read_count > 0) {
@@ -1244,6 +1465,7 @@ bool ReadBinaryFileBounded(const std::string& path,
       const std::size_t appended = static_cast<std::size_t>(read_count);
       if (appended > std::numeric_limits<std::size_t>::max() - old_size) {
         control->refusal_detail = "heap_read_scoped_binary_size_overflow";
+        control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
         return false;
       }
       bytes->resize(old_size + appended);
@@ -1255,6 +1477,7 @@ bool ReadBinaryFileBounded(const std::string& path,
       }
     }
     if (input.bad()) {
+      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
       control->refusal_detail = "heap_read_scoped_binary_read_failed";
       return false;
     }
@@ -1263,11 +1486,13 @@ bool ReadBinaryFileBounded(const std::string& path,
         if (actual_file_bytes != authorized_file_bytes) {
           control->refusal_detail =
               "heap_read_scoped_binary_changed_during_read";
+          control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
           return false;
         }
         return true;
       }
       control->refusal_detail = "heap_read_scoped_binary_read_failed";
+      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
       return false;
     }
   }
@@ -1278,12 +1503,14 @@ bool AdmitBoundedScopedRow(BoundedScopedRowReadControl* control,
   if (control == nullptr) { return true; }
   if (BoundedScopedReadCancelled(control)) { return false; }
   if (control->decoded_row_versions >= control->maximum_row_versions) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
     control->refusal_detail = "heap_read_maximum_row_versions_exceeded";
     return false;
   }
   std::uint64_t decoded_bytes = 0;
   const auto add_decoded_size = [&](const std::size_t bytes) {
     if (bytes > std::numeric_limits<std::uint64_t>::max() - decoded_bytes) {
+      control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
       control->refusal_detail = "heap_read_decoded_byte_count_overflow";
       return false;
     }
@@ -1307,6 +1534,7 @@ bool AdmitBoundedScopedRow(BoundedScopedRowReadControl* control,
     if (decoded_bytes > std::numeric_limits<std::uint64_t>::max() -
                             control->runtime_observation->decoded_bytes) {
       control->runtime_observation->complete = false;
+      control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
       control->refusal_detail = "heap_read_decode_observation_overflow";
       return false;
     }
@@ -1329,6 +1557,8 @@ bool DecodeScopedRowBinaryStore(
   if (!AccountHeapReadWait(control, existence_started)) return false;
   if (!file_exists) {
     if (control != nullptr && authorized_file_bytes != 0) {
+      control->failure_category =
+          MgaHeapReadFailureCategoryV1::kCorruptStorage;
       control->refusal_detail =
           "heap_read_scoped_binary_changed_during_read";
       return false;
@@ -1380,6 +1610,42 @@ bool DecodeScopedRowBinaryStore(
       summary->malformed = true;
       summary->trusted = false;
       return false;
+    }
+    if (control != nullptr && control->maximum_memory_bytes != 0) {
+      std::uint64_t field_projection = 0;
+      std::uint64_t field_structural_bytes = 0;
+      std::uint64_t remaining_projection = 0;
+      std::uint64_t field_phase_memory =
+          control->retained_parent_memory_bytes;
+      std::uint64_t binary_bytes = 0;
+      if (!CheckedHeapReadMemoryMultiply(
+              static_cast<std::uint64_t>(column_count),
+              2 * sizeof(std::string) + sizeof(std::uint8_t),
+              &field_structural_bytes) ||
+          !CheckedHeapReadMemoryMultiply(
+              static_cast<std::uint64_t>(bytes.size() - offset), 4,
+              &remaining_projection) ||
+          !CheckedHeapReadMemoryAdd(field_structural_bytes,
+                                    &field_projection) ||
+          !CheckedHeapReadMemoryAdd(remaining_projection,
+                                    &field_projection) ||
+          !CheckedHeapReadMemoryMultiply(
+              static_cast<std::uint64_t>(bytes.capacity()),
+              sizeof(idx::byte), &binary_bytes) ||
+          !CheckedHeapReadMemoryAdd(
+              control->retained_decode_row_memory_bytes,
+              &field_phase_memory) ||
+          !CheckedHeapReadMemoryAdd(sizeof(bytes), &field_phase_memory) ||
+          !CheckedHeapReadMemoryAdd(binary_bytes, &field_phase_memory) ||
+          !CheckedHeapReadMemoryAdd(field_projection,
+                                    &field_phase_memory) ||
+          !ObserveBoundedHeapReadMemory(control, field_phase_memory)) {
+        if (control->refusal_detail.empty()) {
+          control->refusal_detail =
+              "heap_read_binary_field_memory_receipt_overflow";
+        }
+        return false;
+      }
     }
     std::vector<std::string> field_order;
     field_order.reserve(column_count);
@@ -1483,6 +1749,118 @@ bool DecodeScopedRowBinaryStore(
         control->refusal_detail = "heap_read_row_count_exceeds_segment";
       }
       return false;
+    }
+    const std::size_t batch_payload_start = offset;
+    std::uint64_t batch_fixed_retained_projection = 0;
+    std::uint64_t batch_retained_projection = 0;
+    if (control != nullptr && control->maximum_memory_bytes != 0) {
+      const auto field_order_memory =
+          HeapReadStringVectorMemoryBytes(field_order);
+      const auto field_type_memory =
+          HeapReadStringVectorMemoryBytes(field_types);
+      std::uint64_t binary_bytes = 0;
+      std::uint64_t native_tag_bytes = 0;
+      std::uint64_t target_row_structural_bytes = 0;
+      std::uint64_t new_row_structural_bytes = 0;
+      std::uint64_t value_pair_bytes = 0;
+      std::uint64_t copied_key_bytes = 0;
+      std::uint64_t source_payload_projection = 0;
+      std::uint64_t compact_identity_projection = 0;
+      std::uint64_t target_row_count =
+          static_cast<std::uint64_t>(rows->size()) + row_count;
+      std::uint64_t field_name_bytes = 0;
+      for (const auto& field : field_order) {
+        if (!AccountHeapReadOwnedString(field, &field_name_bytes)) {
+          control->refusal_detail =
+              "heap_read_binary_decode_memory_receipt_overflow";
+          return false;
+        }
+      }
+      if (!field_order_memory.has_value() ||
+          !field_type_memory.has_value() ||
+          !CheckedHeapReadMemoryMultiply(
+              static_cast<std::uint64_t>(bytes.capacity()),
+              sizeof(idx::byte), &binary_bytes) ||
+          !CheckedHeapReadMemoryMultiply(
+              static_cast<std::uint64_t>(
+                  native_field_type_tags.capacity()),
+              sizeof(std::uint8_t), &native_tag_bytes) ||
+          !CheckedHeapReadMemoryMultiply(target_row_count,
+                                         sizeof(CrudRowVersionRecord),
+                                         &target_row_structural_bytes) ||
+          !CheckedHeapReadMemoryMultiply(row_count,
+                                         sizeof(CrudRowVersionRecord),
+                                         &new_row_structural_bytes) ||
+          !CheckedHeapReadMemoryMultiply(row_count, column_count,
+                                         &value_pair_bytes) ||
+          !CheckedHeapReadMemoryMultiply(
+              value_pair_bytes,
+              sizeof(std::pair<std::string, std::string>),
+              &value_pair_bytes) ||
+          !CheckedHeapReadMemoryMultiply(row_count, field_name_bytes,
+                                         &copied_key_bytes) ||
+          !CheckedHeapReadMemoryMultiply(
+              static_cast<std::uint64_t>(bytes.size() - offset), 4,
+              &source_payload_projection)) {
+        control->refusal_detail =
+            "heap_read_binary_decode_memory_receipt_overflow";
+        return false;
+      }
+      if (compact_batch) {
+        std::uint64_t per_row_identity = 2 * 37;
+        if (!AccountHeapReadOwnedString(compact_table_uuid,
+                                        &per_row_identity) ||
+            !AccountHeapReadOwnedString(compact_temporary_session_uuid,
+                                        &per_row_identity) ||
+            !CheckedHeapReadMemoryMultiply(row_count, per_row_identity,
+                                           &compact_identity_projection)) {
+          control->refusal_detail =
+              "heap_read_binary_decode_memory_receipt_overflow";
+          return false;
+        }
+      }
+      batch_fixed_retained_projection = new_row_structural_bytes;
+      if (!CheckedHeapReadMemoryAdd(value_pair_bytes,
+                                    &batch_fixed_retained_projection) ||
+          !CheckedHeapReadMemoryAdd(copied_key_bytes,
+                                    &batch_fixed_retained_projection) ||
+          !CheckedHeapReadMemoryAdd(compact_identity_projection,
+                                    &batch_fixed_retained_projection)) {
+        control->refusal_detail =
+            "heap_read_binary_decode_memory_receipt_overflow";
+        return false;
+      }
+      batch_retained_projection = batch_fixed_retained_projection;
+      if (!CheckedHeapReadMemoryAdd(source_payload_projection,
+                                    &batch_retained_projection)) {
+        control->refusal_detail =
+            "heap_read_binary_decode_memory_receipt_overflow";
+        return false;
+      }
+      std::uint64_t phase_memory = control->retained_parent_memory_bytes;
+      if (!CheckedHeapReadMemoryAdd(
+              control->retained_decode_row_memory_bytes, &phase_memory) ||
+          !CheckedHeapReadMemoryAdd(sizeof(bytes), &phase_memory) ||
+          !CheckedHeapReadMemoryAdd(binary_bytes, &phase_memory) ||
+          !CheckedHeapReadMemoryAdd(*field_order_memory, &phase_memory) ||
+          !CheckedHeapReadMemoryAdd(*field_type_memory, &phase_memory) ||
+          !CheckedHeapReadMemoryAdd(sizeof(native_field_type_tags),
+                                    &phase_memory) ||
+          !CheckedHeapReadMemoryAdd(native_tag_bytes, &phase_memory) ||
+          !AccountHeapReadOwnedString(compact_table_uuid, &phase_memory) ||
+          !AccountHeapReadOwnedString(compact_temporary_session_uuid,
+                                      &phase_memory) ||
+          !CheckedHeapReadMemoryAdd(target_row_structural_bytes,
+                                    &phase_memory) ||
+          !CheckedHeapReadMemoryAdd(batch_retained_projection,
+                                    &phase_memory) ||
+          !ObserveBoundedHeapReadMemory(control, phase_memory)) {
+        if (control->refusal_detail.empty()) {
+          control->refusal_detail =
+              "heap_read_binary_decode_memory_receipt_overflow";
+        }
+        return false;
+      }
     }
     rows->reserve(rows->size() + static_cast<std::size_t>(row_count));
     for (std::uint64_t row_index = 0; row_index < row_count; ++row_index) {
@@ -1612,6 +1990,23 @@ bool DecodeScopedRowBinaryStore(
       if (!row.previous_version_uuid.empty()) { ++summary->update_count; }
       if (!AdmitBoundedScopedRow(control, row)) { return false; }
       rows->push_back(std::move(row));
+    }
+    if (control != nullptr && control->maximum_memory_bytes != 0) {
+      std::uint64_t retained_payload_projection = 0;
+      std::uint64_t retained_batch_memory =
+          batch_fixed_retained_projection;
+      if (!CheckedHeapReadMemoryMultiply(
+              static_cast<std::uint64_t>(offset - batch_payload_start), 4,
+              &retained_payload_projection) ||
+          !CheckedHeapReadMemoryAdd(retained_payload_projection,
+                                    &retained_batch_memory) ||
+          !CheckedHeapReadMemoryAdd(
+              retained_batch_memory,
+              &control->retained_decode_row_memory_bytes)) {
+        control->refusal_detail =
+            "heap_read_binary_decode_memory_receipt_overflow";
+        return false;
+      }
     }
   }
   summary->trusted = true;
@@ -4121,6 +4516,24 @@ bool LoadDecodedScopedRowsForTableBounded(
   if (used_segment != nullptr) { *used_segment = false; }
   if (BoundedScopedReadCancelled(control)) { return false; }
 
+  std::uint64_t path_projection = control->retained_parent_memory_bytes;
+  std::uint64_t path_character_bytes = 128;
+  std::uint64_t path_dynamic_bytes = 0;
+  if (!CheckedHeapReadMemoryAdd(
+          static_cast<std::uint64_t>(context.database_path.size()),
+          &path_character_bytes) ||
+      !CheckedHeapReadMemoryAdd(static_cast<std::uint64_t>(table_uuid.size()),
+                                &path_character_bytes) ||
+      !CheckedHeapReadMemoryMultiply(path_character_bytes, 2,
+                                     &path_dynamic_bytes) ||
+      !CheckedHeapReadMemoryAdd(path_dynamic_bytes, &path_projection) ||
+      !ObserveBoundedHeapReadMemory(control, path_projection)) {
+    if (control->refusal_detail.empty()) {
+      control->refusal_detail =
+          "heap_read_path_memory_receipt_overflow";
+    }
+    return false;
+  }
   const std::string text_path = ScopedRowStorePath(context, table_uuid);
   const std::string binary_path =
       ScopedRowBinaryStorePath(context, table_uuid);
@@ -4142,11 +4555,12 @@ bool LoadDecodedScopedRowsForTableBounded(
     if (!AccountHeapReadWait(control, size_started)) return false;
     if (ignored || size == static_cast<std::uintmax_t>(-1) ||
         size > std::numeric_limits<std::uint64_t>::max()) {
+      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
       control->refusal_detail = "heap_read_scoped_segment_size_unavailable";
       return false;
     }
     *authorized_file_bytes = static_cast<std::uint64_t>(size);
-    return AccountBoundedScopedBytes(control, *authorized_file_bytes);
+    return true;
   };
   std::uint64_t authorized_text_bytes = 0;
   std::uint64_t authorized_binary_bytes = 0;
@@ -4159,17 +4573,96 @@ bool LoadDecodedScopedRowsForTableBounded(
 
   std::vector<CrudRowVersionRecord> decoded_rows;
   std::unordered_map<std::string, std::string> row_value_key_cache;
-  row_value_key_cache.reserve(64);
+  std::uint64_t initial_decode_memory = control->retained_parent_memory_bytes;
+  std::uint64_t initial_allocation_bytes = 0;
+  constexpr std::uint64_t kInitialDecodedKeyCacheEntries = 64;
+  if (!AccountHeapReadOwnedString(text_path, &initial_decode_memory) ||
+      !AccountHeapReadOwnedString(binary_path, &initial_decode_memory) ||
+      !CheckedHeapReadMemoryMultiply(kInitialDecodedKeyCacheEntries,
+                                     2 * sizeof(void*),
+                                     &initial_allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(initial_allocation_bytes,
+                                &initial_decode_memory) ||
+      !CheckedHeapReadMemoryMultiply(
+          kInitialDecodedKeyCacheEntries,
+          sizeof(std::pair<const std::string, std::string>) +
+              4 * sizeof(void*),
+          &initial_allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(initial_allocation_bytes,
+                                &initial_decode_memory) ||
+      !ObserveBoundedHeapReadMemory(control, initial_decode_memory)) {
+    if (control->refusal_detail.empty()) {
+      control->refusal_detail =
+          "heap_read_decode_initial_memory_receipt_overflow";
+    }
+    return false;
+  }
+  row_value_key_cache.reserve(kInitialDecodedKeyCacheEntries);
+  const auto decode_parent_memory = [&]() -> std::optional<std::uint64_t> {
+    std::uint64_t bytes = control->retained_parent_memory_bytes;
+    const auto cache_memory =
+        HeapReadStringCacheMemoryBytes(row_value_key_cache);
+    if (!cache_memory.has_value() ||
+        !AccountHeapReadOwnedString(text_path, &bytes) ||
+        !AccountHeapReadOwnedString(binary_path, &bytes) ||
+        !CheckedHeapReadMemoryAdd(*cache_memory, &bytes)) {
+      return std::nullopt;
+    }
+    return bytes;
+  };
   if (text_exists) {
+    constexpr std::uint64_t kMinimumTextRowRecordBytes = 27;
+    const std::uint64_t maximum_text_rows = std::min(
+        control->maximum_row_versions,
+        (authorized_text_bytes + kMinimumTextRowRecordBytes - 1) /
+            kMinimumTextRowRecordBytes);
+    std::uint64_t text_vector_bytes = 0;
+    std::uint64_t text_preflight_memory = initial_decode_memory;
+    if (!CheckedHeapReadMemoryMultiply(maximum_text_rows,
+                                       sizeof(CrudRowVersionRecord),
+                                       &text_vector_bytes) ||
+        !CheckedHeapReadMemoryAdd(sizeof(decoded_rows),
+                                  &text_preflight_memory) ||
+        !CheckedHeapReadMemoryAdd(text_vector_bytes,
+                                  &text_preflight_memory) ||
+        !CheckedHeapReadMemoryAdd(authorized_text_bytes,
+                                  &text_preflight_memory) ||
+        !ObserveBoundedHeapReadMemory(control, text_preflight_memory)) {
+      if (control->refusal_detail.empty()) {
+        control->refusal_detail =
+            "heap_read_text_memory_receipt_overflow";
+      }
+      return false;
+    }
+    decoded_rows.reserve(static_cast<std::size_t>(maximum_text_rows));
+    std::uint64_t retained_text_row_projection =
+        sizeof(decoded_rows) + text_vector_bytes;
     std::ifstream input;
     const auto open_started = std::chrono::steady_clock::now();
     input.open(text_path, std::ios::binary);
     if (!AccountHeapReadWait(control, open_started)) return false;
     if (!input) {
+      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
       control->refusal_detail = "heap_read_scoped_text_open_failed";
       return false;
     }
     const auto consume_line = [&](const std::string& line) {
+      std::uint64_t line_projection = 0;
+      std::uint64_t line_phase_memory = initial_decode_memory;
+      if (!CheckedHeapReadMemoryMultiply(
+              static_cast<std::uint64_t>(line.size()) + 1, 128,
+              &line_projection) ||
+          !CheckedHeapReadMemoryAdd(retained_text_row_projection,
+                                    &line_phase_memory) ||
+          !CheckedHeapReadMemoryAdd(line_projection,
+                                    &line_phase_memory) ||
+          !ObserveBoundedHeapReadMemory(control, line_phase_memory)) {
+        if (control->refusal_detail.empty()) {
+          control->refusal_detail =
+              "heap_read_text_memory_receipt_overflow";
+        }
+        return false;
+      }
       const auto fields = SplitTabs(line);
       if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
           fields[1] != "ROW_VERSION") {
@@ -4190,6 +4683,12 @@ bool LoadDecodedScopedRowsForTableBounded(
       if (fields.size() >= 12) { row.temporary_session_uuid = fields[11]; }
       if (!AdmitBoundedScopedRow(control, row)) { return false; }
       decoded_rows.push_back(std::move(row));
+      if (!CheckedHeapReadMemoryAdd(line_projection,
+                                    &retained_text_row_projection)) {
+        control->refusal_detail =
+            "heap_read_text_memory_receipt_overflow";
+        return false;
+      }
       return true;
     };
     constexpr std::size_t kReadChunkBytes = 64 * 1024;
@@ -4199,6 +4698,19 @@ bool LoadDecodedScopedRowsForTableBounded(
     bool reached_eof = false;
     while (!reached_eof) {
       if (BoundedScopedReadCancelled(control)) { return false; }
+      std::uint64_t line_append_phase_memory = initial_decode_memory;
+      if (!CheckedHeapReadMemoryAdd(retained_text_row_projection,
+                                    &line_append_phase_memory) ||
+          !CheckedHeapReadMemoryAdd(authorized_text_bytes,
+                                    &line_append_phase_memory) ||
+          !ObserveBoundedHeapReadMemory(control,
+                                        line_append_phase_memory)) {
+        if (control->refusal_detail.empty()) {
+          control->refusal_detail =
+              "heap_read_text_memory_receipt_overflow";
+        }
+        return false;
+      }
       const std::uint64_t remaining =
           authorized_text_bytes - actual_text_bytes;
       const std::size_t requested = remaining == 0
@@ -4212,6 +4724,7 @@ bool LoadDecodedScopedRowsForTableBounded(
       const std::streamsize read_count = input.gcount();
       if (read_count < 0 ||
           static_cast<std::uint64_t>(read_count) > remaining) {
+        control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
         control->refusal_detail = "heap_read_scoped_text_grew_during_read";
         return false;
       }
@@ -4231,11 +4744,13 @@ bool LoadDecodedScopedRowsForTableBounded(
       }
       if (begin < count) { line.append(chunk + begin, count - begin); }
       if (input.bad()) {
+        control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
         control->refusal_detail = "heap_read_scoped_text_read_failed";
         return false;
       }
       if (read_count < static_cast<std::streamsize>(requested)) {
         if (!input.eof()) {
+          control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
           control->refusal_detail = "heap_read_scoped_text_read_failed";
           return false;
         }
@@ -4243,12 +4758,36 @@ bool LoadDecodedScopedRowsForTableBounded(
       }
     }
     if (actual_text_bytes != authorized_text_bytes) {
+      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
       control->refusal_detail = "heap_read_scoped_text_changed_during_read";
       return false;
     }
     if (!line.empty() && !consume_line(line)) { return false; }
+    const auto parent_memory = decode_parent_memory();
+    const auto row_memory = HeapReadRowVectorMemoryBytes(decoded_rows);
+    std::uint64_t phase_memory = 0;
+    if (!parent_memory.has_value() || !row_memory.has_value() ||
+        !CheckedHeapReadMemoryAdd(*parent_memory, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*row_memory, &phase_memory) ||
+        !AccountHeapReadOwnedString(line, &phase_memory) ||
+        !ObserveBoundedHeapReadMemory(control, phase_memory)) {
+      if (control->refusal_detail.empty()) {
+        control->refusal_detail =
+            "heap_read_text_memory_receipt_overflow";
+      }
+      return false;
+    }
   }
   if (binary_exists) {
+    const auto parent_memory = decode_parent_memory();
+    const auto retained_row_memory =
+        HeapReadRowVectorMemoryBytes(decoded_rows);
+    if (!parent_memory.has_value() || !retained_row_memory.has_value()) {
+      control->refusal_detail = "heap_read_binary_parent_memory_overflow";
+      return false;
+    }
+    control->retained_parent_memory_bytes = *parent_memory;
+    control->retained_decode_row_memory_bytes = *retained_row_memory;
     ScopedRelationSummary binary_summary;
     if (!DecodeScopedRowBinaryStore(binary_path,
                                     &decoded_rows,
@@ -4256,7 +4795,13 @@ bool LoadDecodedScopedRowsForTableBounded(
                                     control,
                                     authorized_binary_bytes) ||
         binary_summary.malformed) {
+      if (binary_summary.malformed) {
+        control->failure_category =
+            MgaHeapReadFailureCategoryV1::kCorruptStorage;
+      }
       if (control->refusal_detail.empty()) {
+        control->failure_category =
+            MgaHeapReadFailureCategoryV1::kCorruptStorage;
         control->refusal_detail = "heap_read_scoped_binary_decode_failed";
       }
       return false;
@@ -4410,42 +4955,228 @@ struct SavepointRollbackRange {
 struct SavepointParsedState {
   std::map<std::uint64_t, std::map<std::string, SavepointCutoffs>> active_savepoints;
   std::map<std::uint64_t, std::vector<SavepointRollbackRange>> rollback_ranges;
+  std::map<std::uint64_t,
+           std::vector<std::pair<std::uint64_t, std::uint64_t>>>
+      normalized_row_rollback_ranges;
+  bool row_rollback_ranges_normalized = false;
 };
+
+void ApplySavepointRecordLine(const std::string& line,
+                              SavepointParsedState* state) {
+  if (state == nullptr) return;
+  const auto fields = SplitTabs(line);
+  if (fields.size() < 5 || fields[0] != kRowStoreMagic) return;
+  const std::string& kind = fields[1];
+  const std::uint64_t tx = ParseU64(fields[2]);
+  const std::string name = DecodeCrudTextLocal(fields[3]);
+  SavepointCutoffs cutoffs;
+  cutoffs.row_event_sequence = ParseU64(fields[4]);
+  cutoffs.metadata_event_sequence =
+      fields.size() >= 6 ? ParseU64(fields[5]) : cutoffs.row_event_sequence;
+  cutoffs.index_event_sequence =
+      fields.size() >= 7 ? ParseU64(fields[6]) : cutoffs.row_event_sequence;
+  if (kind == "SAVEPOINT") {
+    state->active_savepoints[tx][name] = cutoffs;
+  } else if (kind == "RELEASE_SAVEPOINT") {
+    const auto tx_it = state->active_savepoints.find(tx);
+    if (tx_it != state->active_savepoints.end()) {
+      tx_it->second.erase(name);
+    }
+  } else if (kind == "ROLLBACK_TO_SAVEPOINT") {
+    SavepointRollbackRange range;
+    range.cutoffs = cutoffs;
+    if (fields.size() >= 10) {
+      range.row_upper_event_sequence = ParseU64(fields[7]);
+      range.metadata_upper_event_sequence = ParseU64(fields[8]);
+      range.index_upper_event_sequence = ParseU64(fields[9]);
+    }
+    state->rollback_ranges[tx].push_back(range);
+  }
+}
+
+void NormalizeSavepointRowRollbackRanges(SavepointParsedState* state) {
+  if (state == nullptr) return;
+  state->normalized_row_rollback_ranges.clear();
+  for (const auto& [transaction, source_ranges] : state->rollback_ranges) {
+    auto& normalized = state->normalized_row_rollback_ranges[transaction];
+    normalized.reserve(source_ranges.size());
+    for (const auto& range : source_ranges) {
+      if (range.row_upper_event_sequence <=
+          range.cutoffs.row_event_sequence) {
+        continue;
+      }
+      normalized.push_back({range.cutoffs.row_event_sequence,
+                            range.row_upper_event_sequence});
+    }
+    std::ranges::sort(normalized);
+    std::size_t write = 0;
+    for (const auto& range : normalized) {
+      if (write != 0 && range.first <= normalized[write - 1].second) {
+        normalized[write - 1].second =
+            std::max(normalized[write - 1].second, range.second);
+      } else {
+        normalized[write++] = range;
+      }
+    }
+    normalized.resize(write);
+  }
+  state->row_rollback_ranges_normalized = true;
+}
 
 SavepointParsedState ParseSavepoints(const EngineRequestContext& context) {
   SavepointParsedState state;
   for (const auto& line : ReadLines(SavepointStorePath(context))) {
-    const auto fields = SplitTabs(line);
-    if (fields.size() < 5 || fields[0] != kRowStoreMagic) { continue; }
-    const std::string& kind = fields[1];
-    const std::uint64_t tx = ParseU64(fields[2]);
-    const std::string name = DecodeCrudTextLocal(fields[3]);
-    SavepointCutoffs cutoffs;
-    cutoffs.row_event_sequence = ParseU64(fields[4]);
-    cutoffs.metadata_event_sequence = fields.size() >= 6 ? ParseU64(fields[5]) : cutoffs.row_event_sequence;
-    cutoffs.index_event_sequence = fields.size() >= 7 ? ParseU64(fields[6]) : cutoffs.row_event_sequence;
-    if (kind == "SAVEPOINT") {
-      state.active_savepoints[tx][name] = cutoffs;
-    } else if (kind == "RELEASE_SAVEPOINT") {
-      const auto tx_it = state.active_savepoints.find(tx);
-      if (tx_it != state.active_savepoints.end()) { tx_it->second.erase(name); }
-    } else if (kind == "ROLLBACK_TO_SAVEPOINT") {
-      SavepointRollbackRange range;
-      range.cutoffs = cutoffs;
-      if (fields.size() >= 10) {
-        range.row_upper_event_sequence = ParseU64(fields[7]);
-        range.metadata_upper_event_sequence = ParseU64(fields[8]);
-        range.index_upper_event_sequence = ParseU64(fields[9]);
+    ApplySavepointRecordLine(line, &state);
+  }
+  NormalizeSavepointRowRollbackRanges(&state);
+  return state;
+}
+
+bool ParseSavepointsBounded(const EngineRequestContext& context,
+                            BoundedScopedRowReadControl* control,
+                            const std::uint64_t retained_memory_bytes,
+                            SavepointParsedState* state) {
+  if (control == nullptr || state == nullptr) return false;
+  *state = {};
+  std::uint64_t path_projection = retained_memory_bytes;
+  if (!CheckedHeapReadMemoryAdd(
+          static_cast<std::uint64_t>(context.database_path.size()),
+          &path_projection) ||
+      !CheckedHeapReadMemoryAdd(64, &path_projection) ||
+      !ObserveBoundedHeapReadMemory(control, path_projection)) {
+    if (control->refusal_detail.empty()) {
+      control->refusal_detail =
+          "heap_read_savepoint_memory_receipt_overflow";
+    }
+    return false;
+  }
+  const std::string path = SavepointStorePath(context);
+  std::error_code ignored;
+  const auto size_started = std::chrono::steady_clock::now();
+  const auto raw_size = std::filesystem::file_size(path, ignored);
+  if (!AccountHeapReadWait(control, size_started)) return false;
+  if (ignored) {
+    NormalizeSavepointRowRollbackRanges(state);
+    return true;
+  }
+  if (raw_size > std::numeric_limits<std::uint64_t>::max()) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
+    control->refusal_detail = "heap_read_savepoint_size_overflow";
+    return false;
+  }
+  const auto file_bytes = static_cast<std::uint64_t>(raw_size);
+  // A valid record can create map/vector nodes and decoded field temporaries.
+  // Reserve a conservative logical envelope before opening or parsing it so
+  // the operator grant is an admission gate, not a post-allocation sample.
+  std::uint64_t parse_projection = 0;
+  if (!CheckedHeapReadMemoryMultiply(file_bytes, 128,
+                                     &parse_projection) ||
+      !CheckedHeapReadMemoryAdd(sizeof(*state) + 4096,
+                                &parse_projection) ||
+      !CheckedHeapReadMemoryAdd(retained_memory_bytes,
+                                &parse_projection) ||
+      !ObserveBoundedHeapReadMemory(control, parse_projection)) {
+    if (control->refusal_detail.empty()) {
+      control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
+      control->refusal_detail =
+          "heap_read_savepoint_memory_receipt_overflow";
+    }
+    return false;
+  }
+  std::ifstream input;
+  const auto open_started = std::chrono::steady_clock::now();
+  input.open(path, std::ios::binary);
+  if (!AccountHeapReadWait(control, open_started)) return false;
+  if (!input) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+    control->refusal_detail = "heap_read_savepoint_open_failed";
+    return false;
+  }
+  constexpr std::size_t kReadChunkBytes = 64 * 1024;
+  char chunk[kReadChunkBytes];
+  std::string line;
+  std::uint64_t actual_file_bytes = 0;
+  bool reached_eof = false;
+  while (!reached_eof) {
+    if (BoundedScopedReadCancelled(control)) return false;
+    const std::uint64_t remaining = file_bytes - actual_file_bytes;
+    const std::size_t requested =
+        remaining == 0
+            ? 1
+            : static_cast<std::size_t>(
+                  std::min<std::uint64_t>(remaining, kReadChunkBytes));
+    const auto read_started = std::chrono::steady_clock::now();
+    input.read(chunk, static_cast<std::streamsize>(requested));
+    if (!AccountHeapReadWait(control, read_started)) return false;
+    const std::streamsize read_count = input.gcount();
+    if (read_count < 0 ||
+        static_cast<std::uint64_t>(read_count) > remaining) {
+      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+      control->refusal_detail =
+          "heap_read_savepoint_grew_during_read";
+      return false;
+    }
+    actual_file_bytes += static_cast<std::uint64_t>(read_count);
+    if (!AccountHeapStorageBytes(
+            control, static_cast<std::uint64_t>(read_count))) {
+      return false;
+    }
+    std::size_t begin = 0;
+    const std::size_t count = static_cast<std::size_t>(read_count);
+    for (std::size_t index = 0; index < count; ++index) {
+      if (chunk[index] != '\n') continue;
+      line.append(chunk + begin, index - begin);
+      ApplySavepointRecordLine(line, state);
+      line.clear();
+      begin = index + 1;
+    }
+    if (begin < count) line.append(chunk + begin, count - begin);
+    if (input.bad()) {
+      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+      control->refusal_detail = "heap_read_savepoint_read_failed";
+      return false;
+    }
+    if (read_count < static_cast<std::streamsize>(requested)) {
+      if (!input.eof()) {
+        control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+        control->refusal_detail = "heap_read_savepoint_read_failed";
+        return false;
       }
-      state.rollback_ranges[tx].push_back(range);
+      reached_eof = true;
     }
   }
-  return state;
+  if (actual_file_bytes != file_bytes) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+    control->refusal_detail =
+        "heap_read_savepoint_changed_during_read";
+    return false;
+  }
+  if (!line.empty()) ApplySavepointRecordLine(line, state);
+  NormalizeSavepointRowRollbackRanges(state);
+  return true;
 }
 
 bool RowEventRolledBackBySavepoint(const SavepointParsedState& savepoints,
                                    std::uint64_t creator_tx,
                                    std::uint64_t event_sequence) {
+  if (savepoints.row_rollback_ranges_normalized) {
+    const auto ranges_it =
+        savepoints.normalized_row_rollback_ranges.find(creator_tx);
+    if (ranges_it == savepoints.normalized_row_rollback_ranges.end() ||
+        ranges_it->second.empty()) {
+      return false;
+    }
+    const auto& ranges = ranges_it->second;
+    auto candidate = std::upper_bound(
+        ranges.begin(), ranges.end(), event_sequence,
+        [](const std::uint64_t value, const auto& range) {
+          return value < range.first;
+        });
+    if (candidate == ranges.begin()) return false;
+    --candidate;
+    return event_sequence > candidate->first &&
+           event_sequence <= candidate->second;
+  }
   const auto ranges_it = savepoints.rollback_ranges.find(creator_tx);
   if (ranges_it == savepoints.rollback_ranges.end()) {
     return false;
@@ -6692,30 +7423,237 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
   return result;
 }
 
+bool AccountHeapReadEngineDescriptorMemory(
+    const EngineDescriptor& descriptor, std::uint64_t* total) {
+  return AccountHeapReadOwnedString(descriptor.descriptor_uuid.canonical,
+                                    total) &&
+         AccountHeapReadOwnedString(descriptor.descriptor_kind, total) &&
+         AccountHeapReadOwnedString(descriptor.canonical_type_name, total) &&
+         AccountHeapReadOwnedString(descriptor.encoded_descriptor, total);
+}
+
+std::optional<std::uint64_t> HeapReadStorageDescriptorMemoryBytes(
+    const MgaRelationStorageDescriptor& descriptor) {
+  std::uint64_t bytes = sizeof(descriptor);
+  std::uint64_t allocation_bytes = 0;
+  const auto account_uuid = [&](const EngineUuid& uuid) {
+    return AccountHeapReadOwnedString(uuid.canonical, &bytes);
+  };
+  if (!account_uuid(descriptor.descriptor_uuid) ||
+      !account_uuid(descriptor.database_uuid) ||
+      !account_uuid(descriptor.schema_uuid) ||
+      !account_uuid(descriptor.relation_uuid) ||
+      !account_uuid(descriptor.primary_filespace_uuid) ||
+      !AccountHeapReadOwnedString(descriptor.relation_kind, &bytes) ||
+      !AccountHeapReadOwnedString(descriptor.storage_profile, &bytes) ||
+      !AccountHeapReadOwnedString(descriptor.row_identity_rule, &bytes) ||
+      !AccountHeapReadOwnedString(descriptor.version_identity_rule, &bytes) ||
+      !AccountHeapReadOwnedString(descriptor.mutation_rule, &bytes) ||
+      !AccountHeapReadOwnedString(descriptor.visibility_rule, &bytes) ||
+      !AccountHeapReadOwnedString(descriptor.cleanup_rule, &bytes) ||
+      !AccountHeapReadOwnedString(descriptor.recovery_rule, &bytes) ||
+      !AccountHeapReadOwnedString(descriptor.descriptor_status, &bytes) ||
+      !CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(descriptor.columns.capacity()),
+          sizeof(MgaRelationColumnStorageDescriptor), &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
+      !CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(descriptor.indexes.capacity()),
+          sizeof(MgaRelationIndexStorageDescriptor), &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
+      !CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(
+              descriptor.required_evidence_kinds.capacity()),
+          sizeof(std::string), &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& column : descriptor.columns) {
+    if (!account_uuid(column.column_uuid) ||
+        !AccountHeapReadOwnedString(column.canonical_name_key, &bytes) ||
+        !AccountHeapReadEngineDescriptorMemory(column.value_descriptor,
+                                               &bytes) ||
+        !AccountHeapReadOwnedString(column.storage_class, &bytes) ||
+        !AccountHeapReadOwnedString(column.charset_uuid, &bytes) ||
+        !AccountHeapReadOwnedString(column.collation_uuid, &bytes) ||
+        !AccountHeapReadOwnedString(column.overflow_policy, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  for (const auto& index : descriptor.indexes) {
+    if (!account_uuid(index.index_uuid) ||
+        !AccountHeapReadOwnedString(index.family, &bytes) ||
+        !AccountHeapReadOwnedString(index.profile, &bytes) ||
+        !AccountHeapReadOwnedString(index.predicate_kind, &bytes) ||
+        !AccountHeapReadOwnedString(index.predicate_column, &bytes) ||
+        !AccountHeapReadOwnedString(index.predicate_value, &bytes) ||
+        !AccountHeapReadOwnedString(index.residency_policy, &bytes) ||
+        !CheckedHeapReadMemoryMultiply(
+            static_cast<std::uint64_t>(index.key_envelopes.capacity()),
+            sizeof(std::string), &allocation_bytes) ||
+        !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
+        !CheckedHeapReadMemoryMultiply(
+            static_cast<std::uint64_t>(index.include_columns.capacity()),
+            sizeof(std::string), &allocation_bytes) ||
+        !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
+      return std::nullopt;
+    }
+    for (const auto& value : index.key_envelopes) {
+      if (!AccountHeapReadOwnedString(value, &bytes)) return std::nullopt;
+    }
+    for (const auto& value : index.include_columns) {
+      if (!AccountHeapReadOwnedString(value, &bytes)) return std::nullopt;
+    }
+  }
+  for (const auto& value : descriptor.required_evidence_kinds) {
+    if (!AccountHeapReadOwnedString(value, &bytes)) return std::nullopt;
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t> HeapReadTransactionStateMemoryBytes(
+    const std::map<std::uint64_t, std::string>& transactions) {
+  constexpr std::uint64_t kMapNodeOverhead = 4 * sizeof(void*);
+  std::uint64_t bytes = sizeof(transactions);
+  std::uint64_t node_bytes = 0;
+  if (!CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(transactions.size()),
+          sizeof(std::pair<const std::uint64_t, std::string>) +
+              kMapNodeOverhead,
+          &node_bytes) ||
+      !CheckedHeapReadMemoryAdd(node_bytes, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& [transaction, state] : transactions) {
+    (void)transaction;
+    if (!AccountHeapReadOwnedString(state, &bytes)) return std::nullopt;
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t> HeapReadSavepointMemoryBytes(
+    const SavepointParsedState& savepoints) {
+  constexpr std::uint64_t kMapNodeOverhead = 4 * sizeof(void*);
+  std::uint64_t bytes = sizeof(savepoints);
+  for (const auto& [transaction, names] : savepoints.active_savepoints) {
+    (void)transaction;
+    std::uint64_t node_bytes =
+        sizeof(std::pair<const std::uint64_t,
+                         std::map<std::string, SavepointCutoffs>>) +
+        kMapNodeOverhead;
+    if (!CheckedHeapReadMemoryAdd(node_bytes, &bytes)) return std::nullopt;
+    for (const auto& [name, cutoffs] : names) {
+      (void)cutoffs;
+      node_bytes =
+          sizeof(std::pair<const std::string, SavepointCutoffs>) +
+          kMapNodeOverhead;
+      if (!CheckedHeapReadMemoryAdd(node_bytes, &bytes) ||
+          !AccountHeapReadOwnedString(name, &bytes)) {
+        return std::nullopt;
+      }
+    }
+  }
+  for (const auto& [transaction, ranges] : savepoints.rollback_ranges) {
+    (void)transaction;
+    std::uint64_t node_bytes =
+        sizeof(std::pair<const std::uint64_t,
+                         std::vector<SavepointRollbackRange>>) +
+        kMapNodeOverhead;
+    std::uint64_t allocation_bytes = 0;
+    if (!CheckedHeapReadMemoryAdd(node_bytes, &bytes) ||
+        !CheckedHeapReadMemoryMultiply(
+            static_cast<std::uint64_t>(ranges.capacity()),
+            sizeof(SavepointRollbackRange), &allocation_bytes) ||
+        !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  for (const auto& [transaction, ranges] :
+       savepoints.normalized_row_rollback_ranges) {
+    (void)transaction;
+    std::uint64_t node_bytes =
+        sizeof(std::pair<
+                   const std::uint64_t,
+                   std::vector<std::pair<std::uint64_t, std::uint64_t>>>) +
+        kMapNodeOverhead;
+    std::uint64_t allocation_bytes = 0;
+    if (!CheckedHeapReadMemoryAdd(node_bytes, &bytes) ||
+        !CheckedHeapReadMemoryMultiply(
+            static_cast<std::uint64_t>(ranges.capacity()),
+            sizeof(std::pair<std::uint64_t, std::uint64_t>),
+            &allocation_bytes) ||
+        !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t> HeapReadVisibilityMapMemoryBytes(
+    const std::unordered_map<std::string, std::size_t>& rows) {
+  constexpr std::uint64_t kNodeOverhead = 4 * sizeof(void*);
+  std::uint64_t bytes = sizeof(rows);
+  std::uint64_t allocation_bytes = 0;
+  if (!CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(rows.bucket_count()), sizeof(void*),
+          &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
+      !CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(rows.size()),
+          sizeof(std::pair<const std::string, std::size_t>) + kNodeOverhead,
+          &allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& [uuid, ordinal] : rows) {
+    (void)ordinal;
+    if (!AccountHeapReadOwnedString(uuid, &bytes)) return std::nullopt;
+  }
+  return bytes;
+}
+
 static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
     const EngineRequestContext& context,
     const MgaVisibleHeapRelationReadRequest& request,
     HeapReadRuntimeObservation* runtime_observation) {
   MgaVisibleHeapRelationReadResult result;
   const auto refuse = [&](EngineApiDiagnostic diagnostic,
-                          const BoundedScopedRowReadControl* control = nullptr) {
+                          const BoundedScopedRowReadControl* control = nullptr,
+                          const MgaHeapReadFailureCategoryV1 category =
+                              MgaHeapReadFailureCategoryV1::kInvalidRequest) {
     result.ok = false;
     result.diagnostic = std::move(diagnostic);
+    result.failure_category = category;
+    if (control != nullptr) {
+      result.failure_category =
+          control->failure_category != MgaHeapReadFailureCategoryV1::kNone
+              ? control->failure_category
+              : category != MgaHeapReadFailureCategoryV1::kInvalidRequest
+                    ? category
+                    : MgaHeapReadFailureCategoryV1::kResource;
+    }
     result.descriptor = {};
-    result.visible_rows.clear();
+    std::vector<CrudRowVersionRecord>{}.swap(result.visible_rows);
+    std::vector<EngineEvidenceReference>{}.swap(result.evidence);
     result.current_relation_base_generation = 0;
+    result.current_live_memory_bytes = 0;
+    result.memory_grant_bytes = request.maximum_memory_bytes;
+    result.memory_receipt_complete = false;
     if (control != nullptr) {
       result.scanned_row_version_count = control->decoded_row_versions;
       result.decoded_byte_count = control->decoded_bytes;
       result.cancellation_observed = control->cancellation_observed;
+      result.peak_live_memory_bytes = control->peak_live_memory_bytes;
     }
     return result;
   };
   const auto invalid = [&](std::string detail,
-                           const BoundedScopedRowReadControl* control = nullptr) {
+                           const BoundedScopedRowReadControl* control = nullptr,
+                           const MgaHeapReadFailureCategoryV1 category =
+                               MgaHeapReadFailureCategoryV1::kInvalidRequest) {
     return refuse(MakeInvalidRequestDiagnostic("mga.heap_relation_read",
                                                std::move(detail)),
-                  control);
+                  control, category);
   };
 
   if (request.relation_uuid.empty()) {
@@ -6723,57 +7661,98 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
   }
   if (context.local_transaction_id == 0 ||
       context.transaction_uuid.canonical.empty()) {
-    return invalid("exact_active_transaction_and_snapshot_required");
+    return invalid("exact_active_transaction_and_snapshot_required", nullptr,
+                   MgaHeapReadFailureCategoryV1::kMgaContext);
   }
   if (request.maximum_scanned_row_versions == 0 ||
       request.maximum_decoded_bytes == 0 ||
       request.maximum_output_rows == 0) {
-    return invalid("nonzero_heap_read_resource_bounds_required");
+    return invalid("nonzero_heap_read_resource_bounds_required", nullptr,
+                   MgaHeapReadFailureCategoryV1::kResource);
   }
   if (!request.cancellation_requested) {
     return invalid("engine_cancellation_probe_required");
   }
   if (request.cancellation_requested()) {
     result.cancellation_observed = true;
-    return invalid("heap_read_cancelled_before_descriptor_load");
+    return invalid("heap_read_cancelled_before_descriptor_load", nullptr,
+                   MgaHeapReadFailureCategoryV1::kCancellation);
   }
 
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(context.database_path);
-  EngineResolveStatementSnapshotRequest snapshot_request;
-  snapshot_request.context = context;
-  const auto snapshot = EngineResolveStatementSnapshot(snapshot_request);
-  if (!snapshot.ok || !snapshot.snapshot_vector.inventory_authoritative ||
-      !snapshot.snapshot_vector.complete) {
-    return invalid("exact_current_statement_snapshot_vector_required");
+  scratchbird::transaction::mga::SnapshotVectorDescriptor snapshot_vector;
+  {
+    EngineResolveStatementSnapshotRequest snapshot_request;
+    snapshot_request.context = context;
+    auto snapshot = EngineResolveStatementSnapshot(snapshot_request);
+    if (!snapshot.ok || !snapshot.snapshot_vector.inventory_authoritative ||
+        !snapshot.snapshot_vector.complete) {
+      return invalid("exact_current_statement_snapshot_vector_required",
+                     nullptr, MgaHeapReadFailureCategoryV1::kMgaContext);
+    }
+    // Retain only the engine-issued visibility carrier.  Request/result
+    // diagnostics and identity strings are catalog-authority transients and
+    // must not remain live in the operator-local row-carrier phase.
+    snapshot_vector = std::move(snapshot.snapshot_vector);
   }
 
-  const auto loaded_descriptor =
-      LoadMgaRelationStorageDescriptor(context, request.relation_uuid);
-  if (!loaded_descriptor.ok) { return refuse(loaded_descriptor.diagnostic); }
-  const auto& descriptor = loaded_descriptor.descriptor;
-  if (descriptor.relation_uuid.canonical != request.relation_uuid ||
-      descriptor.database_uuid.canonical != context.database_uuid.canonical ||
-      descriptor.relation_kind != "table" ||
-      descriptor.storage_profile != "local_mga_rowstore_v1" ||
-      descriptor.descriptor_uuid.canonical.empty() ||
-      descriptor.descriptor_generation == 0 ||
-      descriptor.descriptor_status.empty()) {
-    return invalid("current_persisted_local_heap_descriptor_required");
+  {
+    auto loaded_descriptor =
+        LoadMgaRelationStorageDescriptor(context, request.relation_uuid);
+    if (!loaded_descriptor.ok) {
+      return refuse(std::move(loaded_descriptor.diagnostic), nullptr,
+                    MgaHeapReadFailureCategoryV1::kCatalog);
+    }
+    const auto& loaded = loaded_descriptor.descriptor;
+    if (loaded.relation_uuid.canonical != request.relation_uuid ||
+        loaded.database_uuid.canonical != context.database_uuid.canonical ||
+        loaded.relation_kind != "table" ||
+        loaded.storage_profile != "local_mga_rowstore_v1" ||
+        loaded.descriptor_uuid.canonical.empty() ||
+        loaded.descriptor_generation == 0 ||
+        loaded.descriptor_status.empty()) {
+      return invalid("current_persisted_local_heap_descriptor_required",
+                     nullptr, MgaHeapReadFailureCategoryV1::kCatalog);
+    }
+    result.descriptor = std::move(loaded_descriptor.descriptor);
   }
+  const auto& descriptor = result.descriptor;
 
-  CrudState metadata;
-  const auto metadata_loaded = LoadMgaMetadata(&metadata, context);
-  if (metadata_loaded.error) { return refuse(metadata_loaded); }
-  const auto authority = OverlayMgaTransactionAuthority(context, &metadata);
-  if (authority.error) { return refuse(authority); }
-  FilterVisibleRetiredTemporaryMetadata(context, &metadata);
-  FilterMgaTemporaryObjectsForSession(context, &metadata);
+  std::map<std::uint64_t, std::string> transaction_states;
+  std::uint64_t current_relation_base_generation = 0;
+  {
+    CrudState metadata;
+    const auto metadata_loaded = LoadMgaMetadata(&metadata, context);
+    if (metadata_loaded.error) {
+      return refuse(metadata_loaded, nullptr,
+                    MgaHeapReadFailureCategoryV1::kCatalog);
+    }
+    const auto authority = OverlayMgaTransactionAuthority(context, &metadata);
+    if (authority.error) {
+      return refuse(authority, nullptr,
+                    MgaHeapReadFailureCategoryV1::kMgaContext);
+    }
+    FilterVisibleRetiredTemporaryMetadata(context, &metadata);
+    FilterMgaTemporaryObjectsForSession(context, &metadata);
+    const auto table = FindVisibleCrudTable(
+        metadata, request.relation_uuid, context.local_transaction_id);
+    if (!table) {
+      return invalid("heap_relation_not_visible", nullptr,
+                     MgaHeapReadFailureCategoryV1::kCatalog);
+    }
+    if (table->temporary) {
+      return invalid("temporary_relation_outside_local_heap_profile",
+                     nullptr, MgaHeapReadFailureCategoryV1::kCatalog);
+    }
+    current_relation_base_generation = table->event_sequence;
+    transaction_states = std::move(metadata.transactions);
+  }
   const auto creator_visible = [&](const std::uint64_t creator) {
-    const auto& vector = snapshot.snapshot_vector;
+    const auto& vector = snapshot_vector;
     if (creator == 0) return false;
-    const auto transaction = metadata.transactions.find(creator);
-    if (transaction == metadata.transactions.end()) return false;
+    const auto transaction = transaction_states.find(creator);
+    if (transaction == transaction_states.end()) return false;
     if (creator == vector.owning_transaction.value) {
       return transaction->second == "active" ||
              transaction->second == "preparing" ||
@@ -6794,19 +7773,40 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
                vector.in_doubt_excluded_local_transaction_ids.begin(),
                vector.in_doubt_excluded_local_transaction_ids.end(), creator);
   };
-  const auto table = FindVisibleCrudTable(
-      metadata, request.relation_uuid, context.local_transaction_id);
-  if (!table) { return invalid("heap_relation_not_visible"); }
-  if (table->temporary) {
-    return invalid("temporary_relation_outside_local_heap_profile");
-  }
-  std::uint64_t current_relation_base_generation = table->event_sequence;
-
   BoundedScopedRowReadControl control;
   control.maximum_row_versions = request.maximum_scanned_row_versions;
   control.maximum_bytes = request.maximum_decoded_bytes;
+  control.maximum_memory_bytes = request.maximum_memory_bytes;
   control.cancellation_requested = request.cancellation_requested;
   control.runtime_observation = runtime_observation;
+  const auto descriptor_memory =
+      HeapReadStorageDescriptorMemoryBytes(descriptor);
+  const auto transaction_memory =
+      HeapReadTransactionStateMemoryBytes(transaction_states);
+  std::uint64_t authority_memory = sizeof(result) + sizeof(snapshot_vector);
+  std::uint64_t snapshot_vector_bytes = 0;
+  if (!descriptor_memory.has_value() || !transaction_memory.has_value() ||
+      !CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(snapshot_vector
+                                         .active_excluded_local_transaction_ids
+                                         .capacity()),
+          sizeof(std::uint64_t), &snapshot_vector_bytes) ||
+      !CheckedHeapReadMemoryAdd(snapshot_vector_bytes, &authority_memory) ||
+      !CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(snapshot_vector
+                                         .in_doubt_excluded_local_transaction_ids
+                                         .capacity()),
+          sizeof(std::uint64_t), &snapshot_vector_bytes) ||
+      !CheckedHeapReadMemoryAdd(snapshot_vector_bytes, &authority_memory) ||
+      !CheckedHeapReadMemoryAdd(*descriptor_memory, &authority_memory) ||
+      !CheckedHeapReadMemoryAdd(*transaction_memory, &authority_memory)) {
+    control.refusal_detail = "heap_read_authority_memory_receipt_overflow";
+    return invalid(control.refusal_detail, &control);
+  }
+  control.retained_parent_memory_bytes = authority_memory;
+  if (!ObserveBoundedHeapReadMemory(&control, authority_memory)) {
+    return invalid(control.refusal_detail, &control);
+  }
   std::vector<CrudRowVersionRecord> row_versions;
   bool used_segment = false;
   if (!LoadDecodedScopedRowsForTableBounded(context,
@@ -6823,8 +7823,57 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
   result.decoded_byte_count = control.decoded_bytes;
   result.scoped_physical_segment_used = used_segment;
 
-  const auto savepoints = ParseSavepoints(context);
+  const auto row_version_memory =
+      HeapReadRowVectorMemoryBytes(row_versions);
+  if (!row_version_memory.has_value()) {
+    control.refusal_detail = "heap_read_visibility_memory_receipt_overflow";
+    return invalid(control.refusal_detail, &control);
+  }
+  std::uint64_t savepoint_parent_memory = authority_memory;
+  if (!CheckedHeapReadMemoryAdd(*row_version_memory,
+                                &savepoint_parent_memory)) {
+    control.refusal_detail = "heap_read_visibility_memory_receipt_overflow";
+    return invalid(control.refusal_detail, &control);
+  }
+  SavepointParsedState savepoints;
+  if (!ParseSavepointsBounded(context, &control, savepoint_parent_memory,
+                              &savepoints)) {
+    return invalid(control.refusal_detail.empty()
+                       ? "bounded_savepoint_read_failed"
+                       : control.refusal_detail,
+                   &control);
+  }
+  const auto savepoint_memory = HeapReadSavepointMemoryBytes(savepoints);
+  std::uint64_t visibility_base_memory = authority_memory;
+  if (!savepoint_memory.has_value() ||
+      !CheckedHeapReadMemoryAdd(*savepoint_memory,
+                                &visibility_base_memory) ||
+      !CheckedHeapReadMemoryAdd(*row_version_memory,
+                                &visibility_base_memory) ||
+      !ObserveBoundedHeapReadMemory(&control, visibility_base_memory)) {
+    if (control.refusal_detail.empty()) {
+      control.refusal_detail = "heap_read_visibility_memory_receipt_overflow";
+    }
+    return invalid(control.refusal_detail, &control);
+  }
   std::vector<CrudRowVersionRecord> admitted_versions;
+  std::uint64_t admitted_reserve_bytes = 0;
+  std::uint64_t admitted_preflight_memory = visibility_base_memory;
+  if (!CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(row_versions.size()),
+          sizeof(CrudRowVersionRecord), &admitted_reserve_bytes) ||
+      !CheckedHeapReadMemoryAdd(sizeof(admitted_versions),
+                                &admitted_preflight_memory) ||
+      !CheckedHeapReadMemoryAdd(admitted_reserve_bytes,
+                                &admitted_preflight_memory) ||
+      !ObserveBoundedHeapReadMemory(&control,
+                                    admitted_preflight_memory)) {
+    if (control.refusal_detail.empty()) {
+      control.refusal_detail =
+          "heap_read_admission_memory_receipt_overflow";
+    }
+    return invalid(control.refusal_detail, &control);
+  }
   admitted_versions.reserve(row_versions.size());
   for (auto& row : row_versions) {
     if (request.cancellation_requested()) {
@@ -6833,7 +7882,8 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
       return invalid(control.refusal_detail, &control);
     }
     if (row.table_uuid != request.relation_uuid) {
-      return invalid("scoped_heap_row_relation_identity_mismatch", &control);
+      return invalid("scoped_heap_row_relation_identity_mismatch", &control,
+                     MgaHeapReadFailureCategoryV1::kCorruptStorage);
     }
     if (RowEventRolledBackBySavepoint(savepoints,
                                       row.creator_tx,
@@ -6845,15 +7895,79 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
         std::max(current_relation_base_generation, row.event_sequence);
     admitted_versions.push_back(std::move(row));
   }
-  const auto chain_status =
-      ValidateMgaRowVersionRecordChains(admitted_versions);
-  if (chain_status.error) { return refuse(chain_status, &control); }
+  {
+    const auto current_rows = HeapReadRowVectorMemoryBytes(row_versions);
+    const auto admitted_rows =
+        HeapReadRowVectorMemoryBytes(admitted_versions);
+    std::uint64_t phase_memory = authority_memory;
+    if (!current_rows.has_value() || !admitted_rows.has_value() ||
+        !CheckedHeapReadMemoryAdd(*savepoint_memory, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*current_rows, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*admitted_rows, &phase_memory) ||
+        !ObserveBoundedHeapReadMemory(&control, phase_memory)) {
+      if (control.refusal_detail.empty()) {
+        control.refusal_detail =
+            "heap_read_admission_memory_receipt_overflow";
+      }
+      return invalid(control.refusal_detail, &control);
+    }
+  }
+  {
+    const auto current_rows = HeapReadRowVectorMemoryBytes(row_versions);
+    const auto admitted_rows =
+        HeapReadRowVectorMemoryBytes(admitted_versions);
+    const auto chain_index =
+        HeapReadVersionIndexProjectionMemoryBytes(admitted_versions);
+    std::uint64_t chain_phase_memory = authority_memory;
+    if (!current_rows.has_value() || !admitted_rows.has_value() ||
+        !chain_index.has_value() ||
+        !CheckedHeapReadMemoryAdd(*savepoint_memory,
+                                  &chain_phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*current_rows, &chain_phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*admitted_rows, &chain_phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*chain_index, &chain_phase_memory) ||
+        !CheckedHeapReadMemoryAdd(512, &chain_phase_memory) ||
+        !ObserveBoundedHeapReadMemory(&control, chain_phase_memory)) {
+      if (control.refusal_detail.empty()) {
+        control.refusal_detail =
+            "heap_read_chain_validation_memory_receipt_overflow";
+      }
+      return invalid(control.refusal_detail, &control);
+    }
+    const auto chain_status =
+        ValidateMgaRowVersionRecordChains(admitted_versions);
+    if (chain_status.error) {
+      return refuse(chain_status, &control,
+                    MgaHeapReadFailureCategoryV1::kCorruptStorage);
+    }
+  }
   if (RowsContainLargeValueLocators(admitted_versions)) {
     return invalid("large_value_outside_bounded_inline_heap_profile",
-                   &control);
+                   &control, MgaHeapReadFailureCategoryV1::kCorruptStorage);
   }
 
   std::unordered_map<std::string, std::size_t> newest_visible_by_row;
+  {
+    const auto current_rows = HeapReadRowVectorMemoryBytes(row_versions);
+    const auto admitted_rows =
+        HeapReadRowVectorMemoryBytes(admitted_versions);
+    const auto visibility_projection =
+        HeapReadVisibilityMapProjectionMemoryBytes(admitted_versions);
+    std::uint64_t phase_memory = authority_memory;
+    if (!current_rows.has_value() || !admitted_rows.has_value() ||
+        !visibility_projection.has_value() ||
+        !CheckedHeapReadMemoryAdd(*savepoint_memory, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*current_rows, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*admitted_rows, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*visibility_projection, &phase_memory) ||
+        !ObserveBoundedHeapReadMemory(&control, phase_memory)) {
+      if (control.refusal_detail.empty()) {
+        control.refusal_detail =
+            "heap_read_visibility_map_memory_receipt_overflow";
+      }
+      return invalid(control.refusal_detail, &control);
+    }
+  }
   newest_visible_by_row.reserve(admitted_versions.size());
   for (std::size_t index = 0; index < admitted_versions.size(); ++index) {
     if (request.cancellation_requested()) {
@@ -6875,9 +7989,81 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
       newest_visible_by_row[row.row_uuid] = index;
     }
   }
+  {
+    const auto current_rows = HeapReadRowVectorMemoryBytes(row_versions);
+    const auto admitted_rows =
+        HeapReadRowVectorMemoryBytes(admitted_versions);
+    const auto visibility_map =
+        HeapReadVisibilityMapMemoryBytes(newest_visible_by_row);
+    std::uint64_t phase_memory = authority_memory;
+    if (!current_rows.has_value() || !admitted_rows.has_value() ||
+        !visibility_map.has_value() ||
+        !CheckedHeapReadMemoryAdd(*savepoint_memory, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*current_rows, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*admitted_rows, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*visibility_map, &phase_memory) ||
+        !ObserveBoundedHeapReadMemory(&control, phase_memory)) {
+      if (control.refusal_detail.empty()) {
+        control.refusal_detail =
+            "heap_read_visibility_map_memory_receipt_overflow";
+      }
+      return invalid(control.refusal_detail, &control);
+    }
+  }
 
   std::vector<CrudRowVersionRecord> visible_rows;
-  visible_rows.reserve(newest_visible_by_row.size());
+  std::uint64_t visible_row_count = 0;
+  std::uint64_t visible_projection_bytes = sizeof(visible_rows);
+  for (std::size_t index = 0; index < admitted_versions.size(); ++index) {
+    const auto& row = admitted_versions[index];
+    const auto newest = newest_visible_by_row.find(row.row_uuid);
+    if (newest == newest_visible_by_row.end() || newest->second != index ||
+        row.deleted) {
+      continue;
+    }
+    if (visible_row_count >= request.maximum_output_rows ||
+        !AccountHeapReadRowDynamicMemoryBytes(
+            row, &visible_projection_bytes)) {
+      return invalid(visible_row_count >= request.maximum_output_rows
+                         ? "heap_read_maximum_output_rows_exceeded"
+                         : "heap_read_publication_memory_receipt_overflow",
+                     &control);
+    }
+    ++visible_row_count;
+  }
+  std::uint64_t visible_structural_bytes = 0;
+  if (!CheckedHeapReadMemoryMultiply(visible_row_count,
+                                     sizeof(CrudRowVersionRecord),
+                                     &visible_structural_bytes) ||
+      !CheckedHeapReadMemoryAdd(visible_structural_bytes,
+                                &visible_projection_bytes)) {
+    control.refusal_detail = "heap_read_publication_memory_receipt_overflow";
+    return invalid(control.refusal_detail, &control);
+  }
+  {
+    const auto current_rows = HeapReadRowVectorMemoryBytes(row_versions);
+    const auto admitted_rows =
+        HeapReadRowVectorMemoryBytes(admitted_versions);
+    const auto visibility_map =
+        HeapReadVisibilityMapMemoryBytes(newest_visible_by_row);
+    std::uint64_t phase_memory = authority_memory;
+    if (!current_rows.has_value() || !admitted_rows.has_value() ||
+        !visibility_map.has_value() ||
+        !CheckedHeapReadMemoryAdd(*savepoint_memory, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*current_rows, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*admitted_rows, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*visibility_map, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(visible_projection_bytes,
+                                  &phase_memory) ||
+        !ObserveBoundedHeapReadMemory(&control, phase_memory)) {
+      if (control.refusal_detail.empty()) {
+        control.refusal_detail =
+            "heap_read_publication_memory_receipt_overflow";
+      }
+      return invalid(control.refusal_detail, &control);
+    }
+  }
+  visible_rows.reserve(static_cast<std::size_t>(visible_row_count));
   for (std::size_t index = 0; index < admitted_versions.size(); ++index) {
     if (request.cancellation_requested()) {
       control.cancellation_observed = true;
@@ -6898,10 +8084,67 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
     }
     visible_rows.push_back(row);
   }
+  {
+    const auto current_rows = HeapReadRowVectorMemoryBytes(row_versions);
+    const auto admitted_rows =
+        HeapReadRowVectorMemoryBytes(admitted_versions);
+    const auto visibility_map =
+        HeapReadVisibilityMapMemoryBytes(newest_visible_by_row);
+    const auto published_rows =
+        HeapReadRowVectorMemoryBytes(visible_rows);
+    std::uint64_t phase_memory = authority_memory;
+    if (!current_rows.has_value() || !admitted_rows.has_value() ||
+        !visibility_map.has_value() || !published_rows.has_value() ||
+        !CheckedHeapReadMemoryAdd(*savepoint_memory, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*current_rows, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*admitted_rows, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*visibility_map, &phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*published_rows, &phase_memory) ||
+        !ObserveBoundedHeapReadMemory(&control, phase_memory)) {
+      if (control.refusal_detail.empty()) {
+        control.refusal_detail =
+            "heap_read_publication_memory_receipt_overflow";
+      }
+      return invalid(control.refusal_detail, &control);
+    }
+  }
 
+  {
+    const auto current_rows = HeapReadRowVectorMemoryBytes(row_versions);
+    const auto admitted_rows =
+        HeapReadRowVectorMemoryBytes(admitted_versions);
+    const auto visibility_map =
+        HeapReadVisibilityMapMemoryBytes(newest_visible_by_row);
+    const auto published_rows = HeapReadRowVectorMemoryBytes(visible_rows);
+    std::uint64_t publication_phase_memory = authority_memory;
+    constexpr std::uint64_t kResultPublicationEnvelopeBytes =
+        6 * sizeof(EngineEvidenceReference) + 2048;
+    if (!current_rows.has_value() || !admitted_rows.has_value() ||
+        !visibility_map.has_value() || !published_rows.has_value() ||
+        !CheckedHeapReadMemoryAdd(*savepoint_memory,
+                                  &publication_phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*current_rows,
+                                  &publication_phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*admitted_rows,
+                                  &publication_phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*visibility_map,
+                                  &publication_phase_memory) ||
+        !CheckedHeapReadMemoryAdd(*published_rows,
+                                  &publication_phase_memory) ||
+        !CheckedHeapReadMemoryAdd(kResultPublicationEnvelopeBytes,
+                                  &publication_phase_memory) ||
+        !ObserveBoundedHeapReadMemory(&control,
+                                      publication_phase_memory)) {
+      if (control.refusal_detail.empty()) {
+        control.refusal_detail =
+            "heap_read_result_memory_receipt_overflow";
+      }
+      return invalid(control.refusal_detail, &control);
+    }
+  }
+  result.evidence.reserve(6);
   result.ok = true;
   result.diagnostic = OkDiagnostic();
-  result.descriptor = descriptor;
   result.visible_rows = std::move(visible_rows);
   result.current_relation_base_generation = current_relation_base_generation;
   result.evidence.push_back(
@@ -6920,6 +8163,67 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
        "durable_transaction_inventory_statement_snapshot"});
   result.evidence.push_back(
       {"mga_heap_read_parser_or_candidate_authority", "false"});
+  const auto current_rows =
+      HeapReadRowVectorMemoryBytes(result.visible_rows);
+  std::uint64_t evidence_bytes = 0;
+  std::uint64_t evidence_allocation_bytes = 0;
+  if (!current_rows.has_value() ||
+      !CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(result.evidence.capacity()),
+          sizeof(EngineEvidenceReference), &evidence_allocation_bytes) ||
+      !CheckedHeapReadMemoryAdd(evidence_allocation_bytes,
+                                &evidence_bytes)) {
+    control.refusal_detail = "heap_read_result_memory_receipt_overflow";
+    return invalid(control.refusal_detail, &control);
+  }
+  for (const auto& evidence : result.evidence) {
+    if (!AccountHeapReadOwnedString(evidence.evidence_kind,
+                                    &evidence_bytes) ||
+        !AccountHeapReadOwnedString(evidence.evidence_id,
+                                    &evidence_bytes)) {
+      control.refusal_detail = "heap_read_result_memory_receipt_overflow";
+      return invalid(control.refusal_detail, &control);
+    }
+  }
+  std::uint64_t current_memory = sizeof(result);
+  if (!CheckedHeapReadMemoryAdd(*descriptor_memory, &current_memory) ||
+      !CheckedHeapReadMemoryAdd(*current_rows, &current_memory) ||
+      !CheckedHeapReadMemoryAdd(evidence_bytes, &current_memory)) {
+    control.refusal_detail = "heap_read_result_memory_receipt_overflow";
+    return invalid(control.refusal_detail, &control);
+  }
+  const auto retained_rows = HeapReadRowVectorMemoryBytes(row_versions);
+  const auto admitted_rows =
+      HeapReadRowVectorMemoryBytes(admitted_versions);
+  const auto visibility_map =
+      HeapReadVisibilityMapMemoryBytes(newest_visible_by_row);
+  std::uint64_t final_phase_memory = authority_memory;
+  if (!retained_rows.has_value() || !admitted_rows.has_value() ||
+      !visibility_map.has_value() ||
+      !CheckedHeapReadMemoryAdd(*savepoint_memory, &final_phase_memory) ||
+      !CheckedHeapReadMemoryAdd(*retained_rows, &final_phase_memory) ||
+      !CheckedHeapReadMemoryAdd(*admitted_rows, &final_phase_memory) ||
+      !CheckedHeapReadMemoryAdd(*visibility_map, &final_phase_memory) ||
+      !CheckedHeapReadMemoryAdd(*current_rows, &final_phase_memory) ||
+      !CheckedHeapReadMemoryAdd(evidence_bytes, &final_phase_memory) ||
+      !ObserveBoundedHeapReadMemory(&control, final_phase_memory)) {
+    if (control.refusal_detail.empty()) {
+      control.refusal_detail = "heap_read_final_memory_receipt_overflow";
+    }
+    return invalid(control.refusal_detail, &control);
+  }
+  result.current_live_memory_bytes = current_memory;
+  result.peak_live_memory_bytes = control.peak_live_memory_bytes;
+  result.memory_grant_bytes = request.maximum_memory_bytes;
+  result.memory_receipt_complete =
+      request.maximum_memory_bytes != 0 &&
+      result.current_live_memory_bytes <= result.peak_live_memory_bytes &&
+      result.peak_live_memory_bytes <= result.memory_grant_bytes;
+  if (request.maximum_memory_bytes != 0 &&
+      !result.memory_receipt_complete) {
+    control.refusal_detail = "heap_read_memory_receipt_incomplete";
+    return invalid(control.refusal_detail, &control);
+  }
   return result;
 }
 
