@@ -1934,6 +1934,37 @@ CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
   return result;
 }
 
+bool BoundCanonicalJoinRetainedStateBytes(
+    const std::size_t left_row_count,
+    const std::size_t right_row_count,
+    std::uint64_t* retained_state_bytes) {
+  if (retained_state_bytes == nullptr ||
+      (left_row_count != 0 &&
+       right_row_count >
+           std::numeric_limits<std::uint64_t>::max() / left_row_count)) {
+    return false;
+  }
+  const auto left_rows = static_cast<std::uint64_t>(left_row_count);
+  const auto right_rows = static_cast<std::uint64_t>(right_row_count);
+  const auto pair_count = left_rows * right_rows;
+  constexpr auto bytes_per_pair =
+      sizeof(internal_api::EngineSqlTruthValue) + sizeof(std::size_t);
+  if (pair_count != 0 &&
+      bytes_per_pair >
+          std::numeric_limits<std::uint64_t>::max() / pair_count) {
+    return false;
+  }
+  const auto pair_state_bytes = pair_count * bytes_per_pair;
+  if (right_rows >
+          std::numeric_limits<std::uint64_t>::max() - left_rows ||
+      left_rows + right_rows >
+          std::numeric_limits<std::uint64_t>::max() - pair_state_bytes) {
+    return false;
+  }
+  *retained_state_bytes = pair_state_bytes + left_rows + right_rows;
+  return true;
+}
+
 // QOW-SOURCE-QRY-012-KIND-V1
 // Produce canonical CROSS, INNER, LEFT/RIGHT/FULL OUTER, LEFT SEMI, and LEFT
 // ANTI cardinality from one physical pair identity. Accepted pairs retain
@@ -2165,8 +2196,6 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     // payload plus explicit operator work state. Borrowed batches are charged
     // once here, without copying them, before pair state is reserved.
     retained_join_state_bytes = 2;
-    std::size_t truth_bytes = 0;
-    std::size_t accepted_bytes = 0;
     const bool input_payload_accounted =
         account_batch_payload(left_batch,
                               "while accounting left join input payload",
@@ -2178,20 +2207,16 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
       if (!result.diagnostic.ok) return result;
       return refuse_resource("bound join retained-state size overflowed");
     }
-    if ((pair_count != 0 &&
-         sizeof(api::EngineSqlTruthValue) >
-             std::numeric_limits<std::size_t>::max() / pair_count) ||
-        (pair_count != 0 &&
-         sizeof(std::size_t) >
-             std::numeric_limits<std::size_t>::max() / pair_count)) {
+    std::uint64_t retained_work_state_bytes = 0;
+    if (!BoundCanonicalJoinRetainedStateBytes(
+            left_count, right_count, &retained_work_state_bytes) ||
+        retained_work_state_bytes >
+            std::numeric_limits<std::size_t>::max()) {
       return refuse_resource("bound join retained-state size overflowed");
     }
-    truth_bytes = pair_count * sizeof(api::EngineSqlTruthValue);
-    accepted_bytes = pair_count * sizeof(std::size_t);
-    if (!add_payload_bytes(truth_bytes, &retained_join_state_bytes) ||
-        !add_payload_bytes(accepted_bytes, &retained_join_state_bytes) ||
-        !add_payload_bytes(left_count, &retained_join_state_bytes) ||
-        !add_payload_bytes(right_count, &retained_join_state_bytes)) {
+    if (!add_payload_bytes(
+            static_cast<std::size_t>(retained_work_state_bytes),
+            &retained_join_state_bytes)) {
       return refuse_resource("bound join retained-state size overflowed");
     }
     if (retained_join_state_bytes > *selected_node_memory_grant) {

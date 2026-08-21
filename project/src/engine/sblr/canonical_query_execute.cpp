@@ -829,6 +829,21 @@ void PublishOrdinaryRuntimeObservations(
                       "join.cross-apply.correlated.typed.v1" ||
                   node.implementation_id ==
                       "join.outer-apply.correlated.typed.v1";
+              static constexpr std::array<std::string_view, 7>
+                  kOrdinaryJoinImplementationIds = {{
+                      "join.cross.3vl.nested.v1",
+                      "join.inner.3vl.nested.v1",
+                      "join.left-outer.3vl.nested.v1",
+                      "join.right-outer.3vl.nested.v1",
+                      "join.full-outer.3vl.nested.v1",
+                      "join.left-semi.3vl.nested.v1",
+                      "join.left-anti.3vl.nested.v1",
+                  }};
+              const bool ordinary_join = std::ranges::any_of(
+                  kOrdinaryJoinImplementationIds,
+                  [&](const auto implementation_id) {
+                    return node.implementation_id == implementation_id;
+                  });
               const bool descriptor_bound_correlation =
                   correlated_equality &&
                   !inputs[0].materialized_output_batch->columns.empty() &&
@@ -840,17 +855,39 @@ void PublishOrdinaryRuntimeObservations(
                       inputs[1]
                           .materialized_output_batch->columns.front()
                           .descriptor);
-              const std::uint64_t pair_memory_bytes =
-                  descriptor_bound_correlation
-                      ? sizeof(std::optional<int>)
-                      : sizeof(api::EngineSqlTruthValue);
-              if (!CheckedMultiply(
-                      inputs[0].materialized_output_batch->rows.size(),
-                      inputs[1].materialized_output_batch->rows.size(),
-                      &pairs) ||
-                  !CheckedMultiply(pairs, pair_memory_bytes,
-                                   &runtime_work_bytes)) {
+              const bool pair_count_valid = CheckedMultiply(
+                  inputs[0].materialized_output_batch->rows.size(),
+                  inputs[1].materialized_output_batch->rows.size(), &pairs);
+              if (!pair_count_valid) {
                 step.diagnostic.ok = false;
+              } else if (correlated_equality) {
+                // Descriptor-bound correlation retains one comparison result
+                // per candidate pair. Scalar equality is evaluated directly
+                // and retains no pair buffer.
+                if (descriptor_bound_correlation &&
+                    !CheckedMultiply(pairs, sizeof(std::optional<int>),
+                                     &runtime_work_bytes)) {
+                  step.diagnostic.ok = false;
+                }
+              } else if (ordinary_join &&
+                         !exec::BoundCanonicalJoinRetainedStateBytes(
+                             inputs[0]
+                                 .materialized_output_batch->rows.size(),
+                             inputs[1]
+                                 .materialized_output_batch->rows.size(),
+                             &runtime_work_bytes)) {
+                step.diagnostic.ok = false;
+              } else if (!ordinary_join &&
+                         !CheckedMultiply(
+                             pairs, sizeof(api::EngineSqlTruthValue),
+                             &runtime_work_bytes)) {
+                // Preserve the existing conservative pair-truth fallback for
+                // custom JOIN implementations (for example ASOF).
+                step.diagnostic.ok = false;
+              }
+              if (step.diagnostic.ok &&
+                  (correlated_equality || ordinary_join)) {
+                accounted_auxiliary_memory_bytes = runtime_work_bytes;
               }
             } else if (
                 node.node_kind == exec::PhysicalNodeKind::kAggregate &&
@@ -12007,10 +12044,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
         }
         const auto selected_node_memory_bound =
             SelectedNodeAggregateMemoryBound(dag, node);
-        const auto truth_value_count = runtime_bounded_inputs
-                                           ? actual_pair_count
-                                           : predicate_truth_values.size();
-        std::uint64_t truth_value_bytes = 0;
+        std::uint64_t join_retained_state_bytes = 0;
         std::uint64_t preflight_retained_bytes = 2;
         const auto account_batch_payload =
             [&](const exec::DescriptorBatch& batch, const char* phase) {
@@ -12059,26 +12093,20 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
         std::uint64_t right_row_scratch = 0;
         bool preflight_ok =
             selected_node_memory_bound.has_value() &&
-            CheckedMultiply(truth_value_count,
-                            sizeof(api::EngineSqlTruthValue),
-                            &truth_value_bytes) &&
+            exec::BoundCanonicalJoinRetainedStateBytes(
+                left_batch.rows.size(), right_batch.rows.size(),
+                &join_retained_state_bytes) &&
             account_batch_payload(
                 left_batch, "while accounting left join input payload") &&
             account_batch_payload(
-                right_batch, "while accounting right join input payload") &&
-            CheckedAdd(preflight_retained_bytes, truth_value_bytes,
-                       &preflight_retained_bytes);
+                right_batch, "while accounting right join input payload");
+        std::uint64_t maximum_phase_work_bytes =
+            join_retained_state_bytes;
         if (preflight_ok && runtime_bounded_inputs &&
             join_kind != exec::CanonicalAcceptedJoinKind::kCross) {
           preflight_ok = largest_row_payload(left_batch, &left_row_scratch) &&
                          largest_row_payload(right_batch,
-                                             &right_row_scratch) &&
-                         CheckedAdd(preflight_retained_bytes,
-                                    left_row_scratch,
-                                    &preflight_retained_bytes) &&
-                         CheckedAdd(preflight_retained_bytes,
-                                    right_row_scratch,
-                                    &preflight_retained_bytes);
+                                             &right_row_scratch);
           if (preflight_ok) {
             std::uint64_t pair_payload_bytes = 0;
             if (!CheckedAdd(left_row_scratch, right_row_scratch,
@@ -12103,12 +12131,26 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
                                          predicate_scratch.detail;
                 return step;
               }
-              preflight_ok = CheckedAdd(
-                  preflight_retained_bytes,
-                  predicate_scratch.maximum_payload_bytes,
-                  &preflight_retained_bytes);
+              std::uint64_t truth_value_bytes = 0;
+              std::uint64_t predicate_phase_bytes = 0;
+              preflight_ok =
+                  CheckedMultiply(actual_pair_count,
+                                  sizeof(api::EngineSqlTruthValue),
+                                  &truth_value_bytes) &&
+                  CheckedAdd(truth_value_bytes,
+                             predicate_scratch.maximum_payload_bytes,
+                             &predicate_phase_bytes);
+              if (preflight_ok) {
+                maximum_phase_work_bytes = std::max(
+                    maximum_phase_work_bytes, predicate_phase_bytes);
+              }
             }
           }
+        }
+        if (preflight_ok) {
+          preflight_ok = CheckedAdd(preflight_retained_bytes,
+                                    maximum_phase_work_bytes,
+                                    &preflight_retained_bytes);
         }
         if (!preflight_ok ||
             preflight_retained_bytes > *selected_node_memory_bound) {
@@ -17485,15 +17527,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     std::uint64_t left_memory = 1;
     std::uint64_t right_memory = 1;
     std::uint64_t join_memory = 1;
-    std::uint64_t truth_memory = 0;
+    std::uint64_t join_state_memory = 0;
     if (!AddBatchMemoryBytes(join_left_values->batch, &left_memory) ||
         !AddBatchMemoryBytes(join_right_values->batch, &right_memory) ||
         !AddBatchMemoryBytes(state.batch, &join_memory) ||
-        !CheckedMultiply(join_pair_count,
-                         sizeof(api::EngineSqlTruthValue), &truth_memory) ||
+        !exec::BoundCanonicalJoinRetainedStateBytes(
+            left_count, right_count, &join_state_memory) ||
         !CheckedAdd(join_memory, left_memory, &join_memory) ||
         !CheckedAdd(join_memory, right_memory, &join_memory) ||
-        !CheckedAdd(join_memory, truth_memory, &join_memory) ||
+        !CheckedAdd(join_memory, join_state_memory, &join_memory) ||
         join_memory >
             request.optimizer_request.resource.memory_budget_bytes) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
@@ -17518,7 +17560,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          exec::PhysicalNodeKind::kJoin,
          "canonical." + join_implementation_id, join_output_row_bound,
          join_memory, 2, 2});
-    profiles.back().runtime_accounted_auxiliary_memory_bytes = truth_memory;
+    profiles.back().runtime_accounted_auxiliary_memory_bytes =
+        join_state_memory;
     if (!CheckedAdd(left_count, right_count, &total_work) ||
         !CheckedAdd(total_work, join_pair_count, &total_work) ||
         total_work >
@@ -22949,14 +22992,14 @@ ExecuteCanonicalObjectFreeJoinQuery(
                   "live " + operation_name + " input size overflowed");
   }
   std::uint64_t total_memory = 0;
-  std::uint64_t predicate_memory = 0;
+  std::uint64_t join_retained_state_memory = 0;
   if (!CheckedAdd(left_memory, right_memory, &total_memory) ||
-      !CheckedMultiply(pair_count, sizeof(api::EngineSqlTruthValue),
-                       &predicate_memory) ||
-      !CheckedAdd(total_memory, predicate_memory, &total_memory)) {
+      !exec::BoundCanonicalJoinRetainedStateBytes(
+          left_count, right_count, &join_retained_state_memory) ||
+      !CheckedAdd(total_memory, join_retained_state_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live " + operation_name +
-                      " predicate state size overflowed");
+                      " retained join state size overflowed");
   }
   if (total_memory >
       request.optimizer_request.resource.memory_budget_bytes) {
@@ -23061,8 +23104,11 @@ ExecuteCanonicalObjectFreeJoinQuery(
       break;
   }
 
-  if (output_row_bound != 0) {
-    std::uint64_t output_memory = output_row_bound;
+  {
+    // RuntimeMaterializedBatchMemoryBytes assigns every materialized batch one
+    // logical base byte, including an empty result; rows themselves add only
+    // their encoded and binary value payloads.
+    std::uint64_t output_memory = 1;
     const auto add_tuple_memory = [&](const exec::DescriptorTuple& tuple) {
       for (const auto& value : tuple.values) {
         if (!CheckedAdd(output_memory, value.encoded_value.size(),
@@ -23184,7 +23230,7 @@ ExecuteCanonicalObjectFreeJoinQuery(
   }
   if (!CompleteLiveRuntimeMemoryReceipts(
           &profiles,
-          {{root->logical_node_id, predicate_memory}})) {
+          {{root->logical_node_id, join_retained_state_memory}})) {
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "join runtime memory receipts are incomplete");
   }
@@ -23626,8 +23672,8 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
       !AddBatchMemoryBytes(filtered_input.batch, &filtered_memory) ||
       !AddBatchMemoryBytes(prepared_project.expression_output_batch,
                            &projected_memory) ||
-      !CheckedMultiply(pair_count, sizeof(api::EngineSqlTruthValue),
-                       &join_state_memory) ||
+      !exec::BoundCanonicalJoinRetainedStateBytes(
+          left_count, right_count, &join_state_memory) ||
       !CheckedMultiply(joined_row_count, sizeof(api::EngineSqlTruthValue),
                        &filter_state_memory) ||
       !CheckedAdd(left_memory, right_memory, &join_memory) ||
@@ -30530,6 +30576,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
               : predicate_detail);
     }
   }
+  const auto join_memory_grant =
+      input.context.optimizer_memory_budget_bytes;
+  if (join_memory_grant == 0 ||
+      join_memory_grant >
+          planning_request.optimizer_request.resource.memory_budget_bytes ||
+      join_memory_grant >
+          std::numeric_limits<std::size_t>::max()) {
+    return refuse(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "object-backed heap JOIN memory grant is absent or outside the "
+        "optimizer admission domain");
+  }
   std::vector<LivePhysicalNodeProfile> profiles;
   for (const auto* scan : scans) {
     LivePhysicalNodeProfile profile;
@@ -30557,7 +30615,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
        plan::CanonicalLogicalRelationalNodeKind::kJoin,
        exec::PhysicalNodeKind::kJoin,
        "canonical.heap.join." + join_component + ".v1",
-       1, 2048, 2, 2});
+       1, join_memory_grant, 2, 2});
   profiles.back().runtime_peak_from_callback_batches = true;
   if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",

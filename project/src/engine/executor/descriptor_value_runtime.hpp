@@ -1134,6 +1134,15 @@ enum class CanonicalAcceptedJoinKind : std::uint8_t {
   kLeftAnti,
 };
 
+// Logical retained work state owned by every canonical ordinary join: one
+// truth value and one accepted-pair ordinal for every candidate pair, plus
+// the matched-row state for both inputs. Input and output batch payloads are
+// accounted separately by the caller.
+bool BoundCanonicalJoinRetainedStateBytes(
+    std::size_t left_row_count,
+    std::size_t right_row_count,
+    std::uint64_t* retained_state_bytes);
+
 struct CanonicalJoinKindRequest {
   CanonicalJoinResidualRequest residual_request;
   CanonicalAcceptedJoinKind join_kind =
