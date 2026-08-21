@@ -1946,8 +1946,17 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
   const bool exact_bounded_signed_order =
       order_descriptor != nullptr && order_type_uuid.has_value() &&
       IsCanonicalBoundedSignedIntegerDescriptor(*order_descriptor) &&
+      scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          *order_descriptor) &&
       !canonical_order_type_uuid.empty() &&
       *order_type_uuid == canonical_order_type_uuid &&
+      order_descriptor->encoded_descriptor ==
+          "type_uuid=" + canonical_order_type_uuid + ";nullability=" +
+              (execution_ordered_input_batch
+                       .columns[request.order_term.column]
+                       .nullable
+                   ? "nullable"
+                   : "non_null") &&
       !has_auxiliary_type_fields(*order_descriptor);
   bool exact_value_result_contract = false;
   if (count_window) {
@@ -2066,6 +2075,40 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       canonical_source_type_uuid != canonical_int64_type_uuid) {
     independent_identities.insert(independent_identities.begin() + 2,
                                   canonical_source_type_uuid);
+  }
+  const std::array<std::string_view, 9> order_authority_identities = {
+      request.aggregate_descriptor.function_uuid,
+      request.result_column.descriptor.descriptor_uuid.canonical,
+      ordering_property_uuid,
+      *window_property,
+      request.window_frame_descriptor_uuid,
+      request.executor_capability_uuid,
+      request.order_term_binding_evidence_uuid,
+      request.deterministic_order_evidence_uuid,
+      request.frame_property_binding_evidence_uuid};
+  const auto& order_descriptor_uuid =
+      order_descriptor->descriptor_uuid.canonical;
+  const bool order_identity_collision =
+      order_descriptor_uuid == *order_type_uuid ||
+      order_descriptor_uuid == *result_type_uuid ||
+      (!count_star_window && order_descriptor_uuid == *source_type_uuid) ||
+      (!count_star_window &&
+       request.order_term.column != *request.value_column &&
+       order_descriptor_uuid ==
+           execution_ordered_input_batch.columns[*request.value_column]
+               .descriptor.descriptor_uuid.canonical) ||
+      (!count_star_window &&
+       *order_type_uuid ==
+           execution_ordered_input_batch.columns[*request.value_column]
+               .descriptor.descriptor_uuid.canonical) ||
+      std::ranges::any_of(order_authority_identities, [&](const auto identity) {
+        return order_descriptor_uuid == identity ||
+               *order_type_uuid == identity;
+      });
+  if (order_identity_collision) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        "aggregate window order descriptor identities are not independent"));
   }
   for (std::size_t left = 0; left < independent_identities.size(); ++left) {
     for (std::size_t right = left + 1;
