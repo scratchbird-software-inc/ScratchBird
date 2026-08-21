@@ -6002,6 +6002,483 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationDistinct(
       request, CanonicalSetOperationQuantifier::kDistinct);
 }
 
+struct CanonicalPivotExpectedAggregateTransitions {
+  std::vector<std::size_t> row_indices;
+  std::size_t filtered_row_count = 0;
+  std::size_t distinct_tuple_count = 0;
+  std::size_t equality_key_generation_count = 0;
+  std::size_t equality_comparison_count = 0;
+  std::size_t order_comparison_count = 0;
+  std::size_t transition_workspace_bytes = 0;
+  std::size_t peak_distinct_memory_bytes = 0;
+};
+
+static bool BuildCanonicalPivotExpectedAggregateTransitions(
+    const CanonicalAggregateRuntimeRequest& request,
+    const DescriptorBatch& input_batch,
+    CanonicalPivotExpectedAggregateTransitions* expected) {
+  namespace api = scratchbird::engine::internal_api;
+  if (expected == nullptr ||
+      (request.filter_truth_values.has_value() &&
+       request.filter_truth_values->size() != input_batch.rows.size()) ||
+      (request.distinct &&
+       request.aggregate_equality_terms.size() !=
+           request.value_columns.size())) {
+    return false;
+  }
+  *expected = {};
+  try {
+    std::size_t admitted_row_count = 0;
+    for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+      bool passes = true;
+      if (request.filter_truth_values.has_value()) {
+        std::string detail;
+        if (!api::QowPredicateConsumerPassesV1(
+                (*request.filter_truth_values)[row],
+                api::EnginePredicateConsumer::filter, &passes, &detail)) {
+          return false;
+        }
+      }
+      if (passes) ++admitted_row_count;
+    }
+    expected->row_indices.reserve(admitted_row_count);
+    if (!FoundationCheckedMultiply(expected->row_indices.capacity(),
+                                   sizeof(std::size_t),
+                                   &expected->transition_workspace_bytes)) {
+      return false;
+    }
+
+    std::vector<std::string> distinct_keys;
+    std::size_t distinct_container_bytes = 0;
+    if (request.distinct) {
+      distinct_keys.reserve(admitted_row_count);
+      if (!FoundationCheckedMultiply(distinct_keys.capacity(),
+                                     sizeof(std::string),
+                                     &distinct_container_bytes)) {
+        return false;
+      }
+      expected->peak_distinct_memory_bytes = distinct_container_bytes;
+    }
+    std::size_t retained_distinct_key_bytes = 0;
+    for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+      bool passes = true;
+      if (request.filter_truth_values.has_value()) {
+        std::string detail;
+        if (!api::QowPredicateConsumerPassesV1(
+                (*request.filter_truth_values)[row],
+                api::EnginePredicateConsumer::filter, &passes, &detail)) {
+          return false;
+        }
+      }
+      if (!passes) continue;
+      ++expected->filtered_row_count;
+      if (request.distinct) {
+        std::size_t key_allocation_bound = 0;
+        std::size_t maximum_scalar_generation_peak = 0;
+        for (std::size_t value = 0;
+             value < request.value_columns.size(); ++value) {
+          const auto column = request.value_columns[value];
+          if (column >= input_batch.columns.size()) return false;
+          const auto plan = PlanCanonicalDescriptorEqualityKey(
+              input_batch.rows[row].values[column],
+              request.aggregate_equality_terms[value]);
+          std::size_t framed_key_bytes = plan.retained_key_bytes;
+          if (!plan.diagnostic.ok ||
+              !FoundationCheckedAdd(&framed_key_bytes,
+                                    sizeof(std::uint64_t)) ||
+              !FoundationCheckedAdd(&key_allocation_bound,
+                                    framed_key_bytes)) {
+            return false;
+          }
+          maximum_scalar_generation_peak = std::max(
+              maximum_scalar_generation_peak,
+              plan.peak_workspace_bytes);
+        }
+        std::size_t key_workspace_bound = key_allocation_bound;
+        std::size_t candidate_distinct_peak = distinct_container_bytes;
+        if (!FoundationCheckedAdd(&key_workspace_bound,
+                                  maximum_scalar_generation_peak) ||
+            !FoundationCheckedAdd(&candidate_distinct_peak,
+                                  retained_distinct_key_bytes) ||
+            !FoundationCheckedAdd(&candidate_distinct_peak,
+                                  key_workspace_bound)) {
+          return false;
+        }
+        expected->peak_distinct_memory_bytes = std::max(
+            expected->peak_distinct_memory_bytes,
+            candidate_distinct_peak);
+
+        std::string distinct_key;
+        distinct_key.reserve(key_allocation_bound);
+        for (std::size_t value = 0;
+             value < request.value_columns.size(); ++value) {
+          const auto identity = MakeCanonicalDescriptorEqualityKey(
+              input_batch.rows[row]
+                  .values[request.value_columns[value]],
+              request.aggregate_equality_terms[value]);
+          if (!identity.diagnostic.ok) return false;
+          const auto size = static_cast<std::uint64_t>(
+              identity.equality_key.size());
+          for (unsigned shift = 0; shift < 64; shift += 8) {
+            distinct_key.push_back(static_cast<char>(size >> shift));
+          }
+          distinct_key.append(identity.equality_key);
+          ++expected->equality_key_generation_count;
+        }
+        bool present = false;
+        for (const auto& candidate : distinct_keys) {
+          ++expected->equality_comparison_count;
+          if (candidate == distinct_key) {
+            present = true;
+            break;
+          }
+        }
+        if (present) continue;
+        if (!FoundationCheckedAdd(&retained_distinct_key_bytes,
+                                  distinct_key.capacity())) {
+          return false;
+        }
+        distinct_keys.push_back(std::move(distinct_key));
+        std::size_t retained_distinct_memory = distinct_container_bytes;
+        if (!FoundationCheckedAdd(&retained_distinct_memory,
+                                  retained_distinct_key_bytes)) {
+          return false;
+        }
+        expected->peak_distinct_memory_bytes = std::max(
+            expected->peak_distinct_memory_bytes,
+            retained_distinct_memory);
+      }
+      expected->row_indices.push_back(row);
+    }
+    expected->distinct_tuple_count =
+        request.distinct ? distinct_keys.size() : 0;
+
+    for (std::size_t index = 1;
+         index < expected->row_indices.size(); ++index) {
+      const auto moving_row = expected->row_indices[index];
+      std::size_t insertion = index;
+      while (insertion != 0) {
+        int comparison = 0;
+        for (const auto& term : request.aggregate_order_terms) {
+          if (term.column >= input_batch.columns.size()) return false;
+          const auto compared = CompareCanonicalDescriptorOrderValues(
+              input_batch.rows[moving_row].values[term.column],
+              input_batch.rows[expected->row_indices[insertion - 1]]
+                  .values[term.column],
+              term);
+          ++expected->order_comparison_count;
+          if (!compared.diagnostic.ok) return false;
+          comparison = compared.comparison;
+          if (comparison != 0) break;
+        }
+        if (comparison >= 0) break;
+        expected->row_indices[insertion] =
+            expected->row_indices[insertion - 1];
+        --insertion;
+      }
+      expected->row_indices[insertion] = moving_row;
+    }
+
+    const auto function = request.descriptor.function;
+    const bool core_uses_frequency_identity =
+        function == CanonicalAggregateFunction::mode ||
+        function == CanonicalAggregateFunction::approx_top_k ||
+        function == CanonicalAggregateFunction::approx_count_distinct;
+    if (core_uses_frequency_identity) {
+      if (request.value_columns.size() != 1 ||
+          request.aggregate_equality_terms.size() != 1) {
+        return false;
+      }
+      const auto make_frequency_key = [&](const std::size_t row,
+                                          std::string* key) {
+        if (key == nullptr) return false;
+        const auto column = request.value_columns.front();
+        if (column >= input_batch.columns.size()) return false;
+        const auto& value = input_batch.rows[row].values[column];
+        if (value.state == api::EngineValueState::sql_null) {
+          key->clear();
+          return true;
+        }
+        const auto identity = MakeCanonicalDescriptorEqualityKey(
+            value, request.aggregate_equality_terms.front());
+        if (!identity.diagnostic.ok ||
+            expected->equality_key_generation_count ==
+                std::numeric_limits<std::size_t>::max()) {
+          return false;
+        }
+        const auto identity_size = static_cast<std::uint64_t>(
+            identity.equality_key.size());
+        for (unsigned shift = 0; shift < 64; shift += 8) {
+          key->push_back(static_cast<char>(identity_size >> shift));
+        }
+        key->append(identity.equality_key);
+        ++expected->equality_key_generation_count;
+        return true;
+      };
+      const auto replay_partition = [&] (
+          const std::size_t begin, const std::size_t end,
+          std::vector<std::string>* keys) {
+        if (keys == nullptr || begin > end ||
+            end > expected->row_indices.size()) {
+          return false;
+        }
+        keys->reserve(end - begin);
+        for (std::size_t index = begin; index < end; ++index) {
+          std::string frequency_key;
+          if (!make_frequency_key(expected->row_indices[index],
+                                  &frequency_key)) {
+            return false;
+          }
+          if (frequency_key.empty()) continue;
+          bool present = false;
+          for (const auto& candidate : *keys) {
+            if (expected->equality_comparison_count ==
+                std::numeric_limits<std::size_t>::max()) {
+              return false;
+            }
+            ++expected->equality_comparison_count;
+            if (candidate == frequency_key) {
+              present = true;
+              break;
+            }
+          }
+          if (!present) keys->push_back(std::move(frequency_key));
+        }
+        return true;
+      };
+
+      std::vector<std::string> left_frequency_keys;
+      if (request.forced_strategy ==
+          CanonicalAggregateExecutionStrategy::serial) {
+        if (!replay_partition(0, expected->row_indices.size(),
+                              &left_frequency_keys)) {
+          return false;
+        }
+      } else if (request.forced_strategy ==
+                 CanonicalAggregateExecutionStrategy::partitioned_combine) {
+        const auto split = expected->row_indices.size() / 2;
+        std::vector<std::string> right_frequency_keys;
+        if (!replay_partition(0, split, &left_frequency_keys) ||
+            !replay_partition(split, expected->row_indices.size(),
+                              &right_frequency_keys)) {
+          return false;
+        }
+        for (auto& frequency_key : right_frequency_keys) {
+          bool present = false;
+          for (const auto& candidate : left_frequency_keys) {
+            if (expected->equality_comparison_count ==
+                std::numeric_limits<std::size_t>::max()) {
+              return false;
+            }
+            ++expected->equality_comparison_count;
+            if (candidate == frequency_key) {
+              present = true;
+              break;
+            }
+          }
+          if (!present) {
+            left_frequency_keys.push_back(std::move(frequency_key));
+          }
+        }
+      } else {
+        return false;
+      }
+    }
+  } catch (const std::bad_alloc&) {
+    return false;
+  } catch (const std::length_error&) {
+    return false;
+  }
+  return true;
+}
+
+static bool CanonicalPivotAggregateResultReceiptMatches(
+    const CanonicalAggregateRuntimeRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const DescriptorBatch& input_batch,
+    const std::size_t exact_final_output_ceiling,
+    const CanonicalAggregateRuntimeResult& result) {
+  const PhysicalNodeRecord* aggregate_node = nullptr;
+  for (const auto& node : execution_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      aggregate_node = &node;
+      break;
+    }
+  }
+  const auto node_memory_grant = FoundationNodeMemoryGrant(
+      execution_dag, request.selected_physical_node_id);
+  const auto expected_modifier_count =
+      (request.filter_truth_values.has_value() ? 1U : 0U) +
+      (request.distinct ? 1U : 0U) +
+      (!request.aggregate_order_terms.empty() ? 1U : 0U);
+  if (aggregate_node == nullptr || !node_memory_grant.has_value() ||
+      result.descriptor.abi_version != request.descriptor.abi_version ||
+      result.descriptor.function != request.descriptor.function ||
+      result.descriptor.builtin_id != request.descriptor.builtin_id ||
+      result.descriptor.function_uuid != request.descriptor.function_uuid ||
+      result.descriptor.count_star != request.descriptor.count_star ||
+      result.executed_strategy != request.forced_strategy ||
+      result.input_row_count != input_batch.rows.size() ||
+      result.filtered_row_count > result.input_row_count ||
+      result.transition_count > result.filtered_row_count ||
+      result.transition_count > request.maximum_transition_count ||
+      result.non_null_transition_count > result.transition_count ||
+      result.distinct_tuple_count >
+          request.maximum_distinct_value_count ||
+      result.equality_key_generation_count >
+          request.maximum_equality_key_generation_count ||
+      result.equality_comparison_count >
+          request.maximum_equality_comparison_count ||
+      result.direct_argument_count != request.direct_arguments.size() ||
+      result.modifier_count != expected_modifier_count ||
+      result.aggregate_order_term_count !=
+          request.aggregate_order_terms.size() ||
+      result.aggregate_order_term_count >
+          request.maximum_aggregate_order_term_count ||
+      result.order_comparison_count >
+          request.maximum_order_comparison_count ||
+      result.transition_row_indices.size() != result.transition_count ||
+      !result.every_descriptor_field_consumed ||
+      !result.modifier_pipeline_validated ||
+      result.filter_modifier_applied !=
+          request.filter_truth_values.has_value() ||
+      result.distinct_modifier_applied != request.distinct ||
+      !result.filter_applied_before_distinct ||
+      !result.distinct_applied_before_order ||
+      result.aggregate_order_applied !=
+          !request.aggregate_order_terms.empty() ||
+      !result.shared_state_authority_used ||
+      !result.authority.engine_mga_snapshot_bound ||
+      result.authority.owns_transaction_finality ||
+      result.authority.owns_recovery ||
+      result.authority.owns_parser_execution ||
+      result.authority.owns_visibility_outside_engine_mga ||
+      result.authority.wal_is_transaction_or_recovery_authority ||
+      result.selected_plan_uuid != execution_dag.selected_plan_uuid ||
+      result.executed_physical_node_id != aggregate_node->physical_node_id ||
+      result.causal_counter_id != aggregate_node->causal_counter_id ||
+      !PhysicalMgaStatementContextEqual(
+          result.mga_statement_context,
+          request.mga_authority.statement_context) ||
+      result.output_batch.rows.size() != 1 ||
+      result.output_batch.rows.front().values.size() != 1) {
+    return false;
+  }
+
+  CanonicalPivotExpectedAggregateTransitions expected_transitions;
+  if (!BuildCanonicalPivotExpectedAggregateTransitions(
+          request, input_batch, &expected_transitions) ||
+      result.filtered_row_count !=
+          expected_transitions.filtered_row_count ||
+      result.transition_count != expected_transitions.row_indices.size() ||
+      result.distinct_tuple_count !=
+          expected_transitions.distinct_tuple_count ||
+      result.equality_key_generation_count !=
+          expected_transitions.equality_key_generation_count ||
+      result.equality_comparison_count !=
+          expected_transitions.equality_comparison_count ||
+      result.order_comparison_count !=
+          expected_transitions.order_comparison_count ||
+      result.transition_row_indices != expected_transitions.row_indices ||
+      result.transition_workspace_bytes !=
+          expected_transitions.transition_workspace_bytes ||
+      result.peak_distinct_memory_bytes !=
+          expected_transitions.peak_distinct_memory_bytes) {
+    return false;
+  }
+
+  std::size_t input_payload_bytes = 0;
+  std::size_t filter_memory_bytes = 0;
+  std::size_t expected_fixed_retained_memory_bytes =
+      request.retained_memory_bytes;
+  std::size_t current_memory_bytes = 0;
+  if (!FoundationBatchPayloadBytes(input_batch, &input_payload_bytes) ||
+      (request.filter_truth_values.has_value() &&
+       !FoundationFilterBytes(request.filter_truth_values->size(),
+                              &filter_memory_bytes)) ||
+      !FoundationCheckedAdd(&expected_fixed_retained_memory_bytes,
+                            filter_memory_bytes) ||
+      !FoundationBatchPayloadBytes(result.output_batch,
+                                   &current_memory_bytes) ||
+      result.input_payload_bytes != input_payload_bytes ||
+      result.fixed_retained_memory_bytes !=
+          expected_fixed_retained_memory_bytes ||
+      result.current_memory_bytes != current_memory_bytes ||
+      result.final_output_bytes ==
+          std::numeric_limits<std::size_t>::max() ||
+      result.current_memory_bytes != result.final_output_bytes + 1 ||
+      request.retained_memory_bytes > *node_memory_grant ||
+      input_payload_bytes >
+          *node_memory_grant - request.retained_memory_bytes ||
+      filter_memory_bytes >
+          *node_memory_grant - request.retained_memory_bytes -
+              input_payload_bytes ||
+      result.current_memory_bytes > result.peak_memory_bytes ||
+      result.peak_memory_bytes > *node_memory_grant ||
+      result.transition_workspace_bytes > *node_memory_grant ||
+      result.peak_distinct_memory_bytes > *node_memory_grant ||
+      result.peak_core_transition_memory_bytes > *node_memory_grant) {
+    return false;
+  }
+  const auto memory_after_fixed_inputs =
+      *node_memory_grant - request.retained_memory_bytes -
+      input_payload_bytes - filter_memory_bytes;
+  if (result.transition_workspace_bytes > memory_after_fixed_inputs) {
+    return false;
+  }
+  const auto memory_after_transition =
+      memory_after_fixed_inputs - result.transition_workspace_bytes;
+  const auto maximum_state_bytes =
+      std::min(request.maximum_state_bytes, memory_after_transition);
+  auto maximum_final_output_bytes =
+      request.maximum_final_output_bytes == 0
+          ? *node_memory_grant
+          : std::min(request.maximum_final_output_bytes,
+                     *node_memory_grant);
+  maximum_final_output_bytes =
+      std::min(maximum_final_output_bytes, exact_final_output_ceiling);
+  const auto maximum_finalization_workspace_bytes =
+      request.maximum_finalization_workspace_bytes == 0
+          ? *node_memory_grant
+          : std::min(request.maximum_finalization_workspace_bytes,
+                     *node_memory_grant);
+  if (result.state_bytes > maximum_state_bytes ||
+      result.planned_final_output_bytes > maximum_final_output_bytes ||
+      result.final_output_bytes > result.planned_final_output_bytes ||
+      result.state_bytes > memory_after_transition) {
+    return false;
+  }
+  const auto live_finalization_bytes =
+      memory_after_transition - result.state_bytes;
+  if (result.peak_finalization_workspace_bytes >
+      std::min(maximum_finalization_workspace_bytes,
+               live_finalization_bytes)) {
+    return false;
+  }
+  std::size_t expected_state_finalization_phase_bytes = result.state_bytes;
+  std::size_t expected_peak_memory_bytes = input_payload_bytes;
+  if (!FoundationCheckedAdd(&expected_state_finalization_phase_bytes, 1) ||
+      !FoundationCheckedAdd(&expected_state_finalization_phase_bytes,
+                            result.planned_final_output_bytes) ||
+      !FoundationCheckedAdd(&expected_state_finalization_phase_bytes,
+                            result.peak_finalization_workspace_bytes) ||
+      !FoundationCheckedAdd(&expected_peak_memory_bytes,
+                            result.fixed_retained_memory_bytes) ||
+      !FoundationCheckedAdd(&expected_peak_memory_bytes,
+                            result.transition_workspace_bytes) ||
+      !FoundationCheckedAdd(
+          &expected_peak_memory_bytes,
+          std::max({result.peak_distinct_memory_bytes,
+                    result.peak_core_transition_memory_bytes,
+                    expected_state_finalization_phase_bytes})) ||
+      result.peak_memory_bytes != expected_peak_memory_bytes) {
+    return false;
+  }
+  const auto output_validation = ValidateCanonicalDescriptorBatch(
+      result.output_batch, aggregate_node->output_descriptor_ids);
+  return output_validation.ok;
+}
+
 // QOW-SOURCE-QRY-019-PIVOT-V1
 // Reshape one optimizer-selected typed input only after grouping/FOR equality,
 // aggregate descriptors, fixed IN keys, result descriptors, resource bounds,
@@ -6506,16 +6983,15 @@ CanonicalPivotResult ExecuteCanonicalPivot(
             ExecuteCanonicalAggregateRuntimeWithFinalOutputCeiling(
                 aggregate_request, aggregate_dag, aggregate_input,
                 remaining_finalization_bytes);
-        if (!aggregated.diagnostic.ok ||
-            aggregated.output_batch.rows.size() != 1 ||
-            aggregated.output_batch.rows.front().values.size() != 1) {
-          return refuse(
-              aggregated.diagnostic.ok
-                  ? "QOW-DIAG-QRY-019-PIVOT-AGGREGATE-V1"
-                  : aggregated.diagnostic.diagnostic_code,
-              aggregated.diagnostic.ok
-                  ? "PIVOT aggregate did not publish one canonical value"
-                  : aggregated.diagnostic.detail);
+        if (!aggregated.diagnostic.ok) {
+          return refuse(aggregated.diagnostic.diagnostic_code,
+                        aggregated.diagnostic.detail);
+        }
+        if (!CanonicalPivotAggregateResultReceiptMatches(
+                aggregate_request, aggregate_dag, aggregate_input,
+                remaining_finalization_bytes, aggregated)) {
+          return refuse("QOW-DIAG-QRY-019-PIVOT-AGGREGATE-V1",
+                        "PIVOT aggregate execution receipt changed");
         }
         if (aggregated.transition_count >
                 request.maximum_total_aggregate_transition_count -

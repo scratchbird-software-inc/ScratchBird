@@ -11373,6 +11373,347 @@ bool EvaluateCanonicalQuantifiedSubqueryTruth(
   return true;
 }
 
+bool CanonicalPivotCausalStructureExactlyMatches(
+    const exec::CanonicalPivotRequest& request,
+    const exec::CanonicalPivotResult& result) {
+  std::vector<std::size_t> representative_rows;
+  std::size_t matched_input_row_count = 0;
+  std::size_t key_comparison_count = 0;
+  try {
+    representative_rows.reserve(request.input_batch.rows.size());
+    const auto terms_equal = [&](const exec::DescriptorTuple& left,
+                                 const exec::DescriptorTuple& right,
+                                 const auto& terms,
+                                 bool* equal) {
+      if (equal == nullptr) return false;
+      *equal = true;
+      for (const auto& term : terms) {
+        if (term.column >= left.values.size() ||
+            term.column >= right.values.size() ||
+            key_comparison_count ==
+                request.maximum_key_comparison_count) {
+          return false;
+        }
+        ++key_comparison_count;
+        const auto compared = exec::CompareCanonicalDescriptorOrderValues(
+            left.values[term.column], right.values[term.column], term);
+        if (!compared.diagnostic.ok) return false;
+        if (compared.comparison != 0) {
+          *equal = false;
+          return true;
+        }
+      }
+      return true;
+    };
+    for (std::size_t row = 0; row < request.input_batch.rows.size(); ++row) {
+      bool found_group = false;
+      for (const auto representative : representative_rows) {
+        bool equal = false;
+        if (!terms_equal(request.input_batch.rows[row],
+                         request.input_batch.rows[representative],
+                         request.group_key_terms, &equal)) {
+          return false;
+        }
+        if (equal) {
+          found_group = true;
+          break;
+        }
+      }
+      if (!found_group) representative_rows.push_back(row);
+
+      std::optional<std::size_t> matched_item;
+      for (std::size_t item = 0; item < request.in_items.size(); ++item) {
+        if (request.in_items[item].values.size() !=
+            request.for_key_terms.size()) {
+          return false;
+        }
+        bool matches = true;
+        for (std::size_t key = 0;
+             key < request.for_key_terms.size(); ++key) {
+          const auto& term = request.for_key_terms[key];
+          if (term.column >= request.input_batch.rows[row].values.size()) {
+            return false;
+          }
+          const auto& value =
+              request.input_batch.rows[row].values[term.column];
+          if (request.null_policy ==
+                  exec::CanonicalPivotNullPolicy::kExclude &&
+              value.state == api::EngineValueState::sql_null) {
+            matches = false;
+            break;
+          }
+          if (key_comparison_count ==
+              request.maximum_key_comparison_count) {
+            return false;
+          }
+          ++key_comparison_count;
+          const auto compared = exec::CompareCanonicalDescriptorOrderValues(
+              value, request.in_items[item].values[key], term);
+          if (!compared.diagnostic.ok) return false;
+          if (compared.comparison != 0) {
+            matches = false;
+            break;
+          }
+        }
+        if (!matches) continue;
+        if (matched_item.has_value()) return false;
+        matched_item = item;
+      }
+      if (matched_item.has_value()) ++matched_input_row_count;
+    }
+  } catch (const std::bad_alloc&) {
+    return false;
+  } catch (const std::length_error&) {
+    return false;
+  }
+  if (representative_rows.size() != result.output_batch.rows.size() ||
+      representative_rows.size() != result.group_count ||
+      matched_input_row_count != result.matched_input_row_count ||
+      key_comparison_count != result.key_comparison_count) {
+    return false;
+  }
+  for (std::size_t group = 0; group < representative_rows.size(); ++group) {
+    const auto& source =
+        request.input_batch.rows[representative_rows[group]];
+    const auto& output = result.output_batch.rows[group];
+    if (output.values.size() != request.result_columns.size()) return false;
+    for (std::size_t key = 0;
+         key < request.group_key_terms.size(); ++key) {
+      const auto source_column = request.group_key_terms[key].column;
+      if (source_column >= source.values.size() ||
+          !CanonicalQueryEngineDescriptorExactlyEqual(
+              output.values[key].descriptor,
+              request.result_columns[key].descriptor) ||
+          !CanonicalQueryTypedValuePayloadExactlyEqual(
+              output.values[key], source.values[source_column])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool CanonicalPivotExecutionReceiptMatches(
+    const exec::CanonicalPivotRequest& request,
+    const exec::PhysicalNodeRecord& node,
+    const exec::CanonicalPivotResult& result) {
+  if (!CanonicalOperatorExecutionReceiptMatches(
+          result, request.physical_dag, node,
+          request.mga_authority.statement_context) ||
+      node.memory_bytes_required == 0 ||
+      node.memory_bytes_required >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max()) ||
+      result.input_row_count != request.input_batch.rows.size() ||
+      result.group_count != result.output_batch.rows.size() ||
+      result.group_count > request.maximum_output_row_count ||
+      result.group_count > result.input_row_count ||
+      result.in_item_count != request.in_items.size() ||
+      result.aggregate_count != request.aggregates.size() ||
+      result.matched_input_row_count > result.input_row_count ||
+      result.key_comparison_count >
+          request.maximum_key_comparison_count ||
+      result.aggregate_transition_count >
+          request.maximum_total_aggregate_transition_count ||
+      (request.maximum_combined_final_output_bytes != 0 &&
+       result.combined_final_output_bytes >
+           request.maximum_combined_final_output_bytes) ||
+      result.output_batch.rows.size() >
+          request.maximum_output_row_count ||
+      result.output_batch.rows.size() != result.group_count) {
+    return false;
+  }
+  if (result.matched_input_row_count != 0 &&
+      result.aggregate_count >
+          std::numeric_limits<std::size_t>::max() /
+              result.matched_input_row_count) {
+    return false;
+  }
+  if (result.aggregate_transition_count >
+      result.matched_input_row_count * result.aggregate_count) {
+    return false;
+  }
+  if (result.output_batch.rows.size() != 0 &&
+      request.result_columns.size() >
+          std::numeric_limits<std::size_t>::max() /
+              result.output_batch.rows.size()) {
+    return false;
+  }
+  const auto output_cell_count =
+      result.output_batch.rows.size() * request.result_columns.size();
+  if (output_cell_count > request.maximum_output_cell_count) return false;
+  std::size_t maximum_finalization_workspace_bytes = 0;
+  for (const auto& binding : request.aggregates) {
+    const auto bound =
+        binding.aggregate_template.maximum_finalization_workspace_bytes == 0
+            ? node.memory_bytes_required
+            : std::min<std::uint64_t>(
+                  binding.aggregate_template
+                      .maximum_finalization_workspace_bytes,
+                  node.memory_bytes_required);
+    maximum_finalization_workspace_bytes = std::max<std::size_t>(
+        maximum_finalization_workspace_bytes,
+        static_cast<std::size_t>(bound));
+  }
+  if (result.peak_finalization_workspace_bytes >
+      maximum_finalization_workspace_bytes) {
+    return false;
+  }
+  const auto output_validation = exec::ValidateCanonicalDescriptorBatch(
+      result.output_batch, node.output_descriptor_ids);
+  return output_validation.ok &&
+         CanonicalPivotCausalStructureExactlyMatches(request, result);
+}
+
+bool CanonicalUnpivotOutputExactlyMatches(
+    const exec::CanonicalUnpivotRequest& request,
+    const exec::DescriptorBatch& output_batch) {
+  const auto value_column_count = request.in_items.empty()
+                                      ? 0
+                                      : request.in_items.front()
+                                            .source_columns.size();
+  const auto expected_width =
+      request.group_columns.size() + 1 + value_column_count;
+  if (value_column_count == 0 ||
+      request.result_columns.size() != expected_width) {
+    return false;
+  }
+  std::size_t output_row = 0;
+  for (const auto& input_row : request.input_batch.rows) {
+    for (const auto& item : request.in_items) {
+      if (item.source_columns.size() != value_column_count) return false;
+      const bool all_null = std::ranges::all_of(
+          item.source_columns, [&](const auto column) {
+            return column < input_row.values.size() &&
+                   input_row.values[column].state ==
+                       api::EngineValueState::sql_null;
+          });
+      if (request.null_policy == exec::CanonicalPivotNullPolicy::kExclude &&
+          all_null) {
+        continue;
+      }
+      if (output_row >= output_batch.rows.size() ||
+          output_batch.rows[output_row].values.size() != expected_width) {
+        return false;
+      }
+      const auto& actual = output_batch.rows[output_row];
+      for (std::size_t group = 0;
+           group < request.group_columns.size(); ++group) {
+        if (request.group_columns[group] >= input_row.values.size()) {
+          return false;
+        }
+        exec::DescriptorRuntimeDiagnostic diagnostic;
+        const auto expected = exec::CastDescriptorValue(
+            input_row.values[request.group_columns[group]],
+            request.result_columns[group].descriptor, &diagnostic);
+        if (!diagnostic.ok ||
+            !CanonicalQueryEngineDescriptorExactlyEqual(
+                expected.descriptor, actual.values[group].descriptor) ||
+            !CanonicalQueryTypedValuePayloadExactlyEqual(
+                expected, actual.values[group])) {
+          return false;
+        }
+      }
+      exec::DescriptorRuntimeDiagnostic label_diagnostic;
+      const auto label_column = request.group_columns.size();
+      const auto expected_label = exec::CastDescriptorValue(
+          item.pivot_value,
+          request.result_columns[label_column].descriptor,
+          &label_diagnostic);
+      if (!label_diagnostic.ok ||
+          !CanonicalQueryEngineDescriptorExactlyEqual(
+              expected_label.descriptor,
+              actual.values[label_column].descriptor) ||
+          !CanonicalQueryTypedValuePayloadExactlyEqual(
+              expected_label, actual.values[label_column])) {
+        return false;
+      }
+      for (std::size_t value = 0; value < value_column_count; ++value) {
+        if (item.source_columns[value] >= input_row.values.size()) {
+          return false;
+        }
+        const auto result_column = label_column + 1 + value;
+        exec::DescriptorRuntimeDiagnostic diagnostic;
+        const auto expected = exec::CastDescriptorValue(
+            input_row.values[item.source_columns[value]],
+            request.result_columns[result_column].descriptor,
+            &diagnostic);
+        if (!diagnostic.ok ||
+            !CanonicalQueryEngineDescriptorExactlyEqual(
+                expected.descriptor,
+                actual.values[result_column].descriptor) ||
+            !CanonicalQueryTypedValuePayloadExactlyEqual(
+                expected, actual.values[result_column])) {
+          return false;
+        }
+      }
+      ++output_row;
+    }
+  }
+  return output_row == output_batch.rows.size();
+}
+
+bool CanonicalUnpivotExecutionReceiptMatches(
+    const exec::CanonicalUnpivotRequest& request,
+    const exec::PhysicalNodeRecord& node,
+    const exec::CanonicalUnpivotResult& result) {
+  if (!CanonicalOperatorExecutionReceiptMatches(
+          result, request.physical_dag, node,
+          request.mga_authority.statement_context) ||
+      result.input_row_count != request.input_batch.rows.size() ||
+      result.in_item_count != request.in_items.size() ||
+      result.emitted_row_count != result.output_batch.rows.size() ||
+      result.emitted_row_count > request.maximum_output_row_count) {
+    return false;
+  }
+  if (result.input_row_count != 0 &&
+      result.in_item_count >
+          std::numeric_limits<std::size_t>::max() /
+              result.input_row_count) {
+    return false;
+  }
+  const auto candidate_row_count =
+      result.input_row_count * result.in_item_count;
+  std::size_t expected_null_excluded_row_count = 0;
+  if (request.null_policy == exec::CanonicalPivotNullPolicy::kExclude) {
+    for (const auto& input_row : request.input_batch.rows) {
+      for (const auto& item : request.in_items) {
+        if (std::ranges::all_of(
+                item.source_columns, [&](const auto column) {
+                  return column < input_row.values.size() &&
+                         input_row.values[column].state ==
+                             api::EngineValueState::sql_null;
+                })) {
+          ++expected_null_excluded_row_count;
+        }
+      }
+    }
+  }
+  if (result.emitted_row_count > candidate_row_count ||
+      result.null_excluded_row_count >
+          candidate_row_count - result.emitted_row_count ||
+      result.emitted_row_count + result.null_excluded_row_count !=
+          candidate_row_count ||
+      result.null_excluded_row_count !=
+          expected_null_excluded_row_count) {
+    return false;
+  }
+  if (result.output_batch.rows.size() != 0 &&
+      request.result_columns.size() >
+          std::numeric_limits<std::size_t>::max() /
+              result.output_batch.rows.size()) {
+    return false;
+  }
+  const auto output_cell_count =
+      result.output_batch.rows.size() * request.result_columns.size();
+  if (output_cell_count > request.maximum_output_cell_count) return false;
+  const auto output_validation = exec::ValidateCanonicalDescriptorBatch(
+      result.output_batch, node.output_descriptor_ids);
+  return output_validation.ok &&
+         CanonicalUnpivotOutputExactlyMatches(request,
+                                              result.output_batch);
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
     const PreparedProjectRoot& prepared_root,
     std::string implementation_id,
@@ -29451,6 +29792,14 @@ ExecuteCanonicalObjectFreePivotQuery(
           step.diagnostic = std::move(pivot.diagnostic);
           return step;
         }
+        if (!CanonicalPivotExecutionReceiptMatches(
+                pivot_request, node, pivot)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-PIVOT-EXECUTION-V1";
+          step.diagnostic.detail = "PIVOT execution receipt changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_row_count;
         step.rows_examined = input_row_count;
@@ -30013,6 +30362,14 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
         auto unpivot = exec::ExecuteCanonicalUnpivot(unpivot_request);
         if (!unpivot.diagnostic.ok) {
           step.diagnostic = std::move(unpivot.diagnostic);
+          return step;
+        }
+        if (!CanonicalUnpivotExecutionReceiptMatches(
+                unpivot_request, node, unpivot)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-EXECUTION-V1";
+          step.diagnostic.detail = "UNPIVOT execution receipt changed";
           return step;
         }
         step.result_handle_id = node.physical_node_id;
