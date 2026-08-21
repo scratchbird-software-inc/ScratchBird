@@ -10,11 +10,13 @@
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "nosql/nosql_batch_point_lookup_support.hpp"
 #include "nosql/nosql_surface_support.hpp"
 #include "query/expression_api.hpp"
 #include "security/security_model.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1158,20 +1160,81 @@ TagParseStatus CanonicalizeTimeSeriesTags(const std::string_view input,
   return TagParseStatus::kOk;
 }
 
-bool ExactTimeSeriesStorageDescriptor(
+bool ExactTimeSeriesValueDescriptor(
+    const EngineDescriptor& descriptor, const std::string_view expected_type,
+    const std::string_view expected_type_uuid) {
+  if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
+      descriptor.descriptor_kind != "canonical_type_descriptor" ||
+      descriptor.canonical_type_name != expected_type) {
+    return false;
+  }
+  std::map<std::string_view, std::string_view> fields;
+  const auto encoded = std::string_view(descriptor.encoded_descriptor);
+  std::size_t offset = 0;
+  while (offset <= encoded.size()) {
+    const auto end = encoded.find(';', offset);
+    const auto field = encoded.substr(
+        offset, end == std::string_view::npos ? std::string_view::npos
+                                              : end - offset);
+    const auto equal = field.find('=');
+    if (field.empty() || equal == std::string_view::npos || equal == 0 ||
+        equal + 1 == field.size() ||
+        !fields.emplace(field.substr(0, equal), field.substr(equal + 1)).second) {
+      return false;
+    }
+    if (end == std::string_view::npos) break;
+    offset = end + 1;
+  }
+  if (fields.size() < 3 || fields.size() > 4 ||
+      !fields.contains("canonical") || !fields.contains("type_uuid") ||
+      !fields.contains("nullable") ||
+      fields.at("canonical") != expected_type ||
+      fields.at("type_uuid") != expected_type_uuid ||
+      fields.at("nullable") != "false") {
+    return false;
+  }
+  const auto timezone = fields.find("timezone_profile_id");
+  if (expected_type == "timestamp_tz") {
+    return fields.size() == 3 ||
+           (fields.size() == 4 && timezone != fields.end() &&
+            timezone->second == "UTC");
+  }
+  return fields.size() == 3 && timezone == fields.end();
+}
+
+bool ExactTimeSeriesStorageDescriptorImpl(
     const MgaRelationStorageDescriptor& descriptor) {
   static constexpr std::array<std::string_view, 4> kNames{
       "metric_uuid", "point_timestamp", "tags", "value"};
   static constexpr std::array<std::string_view, 4> kTypes{
       "uuid", "timestamp_tz", "text", "real64"};
   if (descriptor.columns.size() != kNames.size()) return false;
+  const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return false;
   std::unordered_set<std::string> column_uuids;
   std::unordered_set<std::string> descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = descriptor.columns[ordinal];
+    const auto type_id =
+        kTypes[ordinal] == "timestamp_tz"
+            ? scratchbird::core::datatypes::CanonicalTypeId::timestamp
+            : scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+                  std::string(kTypes[ordinal]));
+    const auto type_row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+        manifest.manifest, type_id);
+    if (!type_row.ok() || type_row.manifest.descriptor_rows.size() != 1 ||
+        !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
+      return false;
+    }
+    const auto expected_type_uuid = scratchbird::core::uuid::UuidToString(
+        type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
     if (column.ordinal != ordinal ||
         column.canonical_name_key != kNames[ordinal] || column.nullable ||
         column.generated || column.identity_column ||
+        column.storage_class != "inline_row_value" ||
+        column.max_inline_bytes != 4096 ||
+        column.overflow_policy != "mga_large_value_locator" ||
         column.value_descriptor.canonical_type_name != kTypes[ordinal] ||
         !CanonicalTimeSeriesUuid(column.column_uuid.canonical) ||
         !CanonicalTimeSeriesUuid(
@@ -1179,7 +1242,12 @@ bool ExactTimeSeriesStorageDescriptor(
         !column_uuids.insert(column.column_uuid.canonical).second ||
         !descriptor_uuids
              .insert(column.value_descriptor.descriptor_uuid.canonical)
-             .second) {
+             .second ||
+        !column.charset_uuid.empty() || !column.collation_uuid.empty() ||
+        column.character_length != 0 ||
+        !ExactTimeSeriesValueDescriptor(column.value_descriptor,
+                                        kTypes[ordinal],
+                                        expected_type_uuid)) {
       return false;
     }
   }
@@ -1241,6 +1309,11 @@ MgaVisibleHeapRelationReadResult ReadExactTimeSeriesBucketStoreFallbackV1(
 }
 
 }  // namespace
+
+bool ExactTimeSeriesStorageDescriptorV1(
+    const MgaRelationStorageDescriptor& descriptor) {
+  return ExactTimeSeriesStorageDescriptorImpl(descriptor);
+}
 
 bool EngineExactTimeSeriesBucketStartV1(
     const EngineApiI64 timestamp_ns, const EngineApiI64 interval_ns,
@@ -1385,7 +1458,7 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
     return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
                   "time-series relation descriptor generation changed");
   }
-  if (!ExactTimeSeriesStorageDescriptor(current_descriptor.descriptor)) {
+  if (!ExactTimeSeriesStorageDescriptorV1(current_descriptor.descriptor)) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "time-series storage descriptor is not the exact four-field raw layout");
   }

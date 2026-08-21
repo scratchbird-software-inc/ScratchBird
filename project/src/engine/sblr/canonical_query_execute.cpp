@@ -32305,11 +32305,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                                      : std::string_view("real64"))
             : bucket_operation ? std::string_view("timestamp_tz")
                                : kRawTypes[ordinal];
+    const auto expected_timezone =
+        expected_type == "timestamp_tz"
+            ? std::optional<std::string>("UTC")
+            : std::optional<std::string>{};
     if (descriptor == dag.descriptors.end() || !outputs[ordinal]->visible ||
         outputs[ordinal]->ordinal != ordinal ||
         outputs[ordinal]->output_name_utf8 != expected_name ||
         outputs[ordinal]->descriptor_id != source->output_descriptor_ids[ordinal] ||
-        descriptor->nullability != api::RelationalNullability::kNonNull) {
+        descriptor->nullability != api::RelationalNullability::kNonNull ||
+        descriptor->collation_uuid.has_value() ||
+        descriptor->timezone_profile_id != expected_timezone ||
+        descriptor->width.has_value() || descriptor->precision.has_value() ||
+        descriptor->scale.has_value()) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "time-series public output descriptor was substituted");
     }
@@ -32360,21 +32368,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                       : loaded_relation.diagnostic.detail);
   }
   const auto& persisted = loaded_relation.descriptor;
-  static constexpr std::array<std::string_view, 4> kStorageNames{
-      "metric_uuid", "point_timestamp", "tags", "value"};
-  static constexpr std::array<std::string_view, 4> kStorageTypes{
-      "uuid", "timestamp_tz", "text", "real64"};
-  bool exact_storage = persisted.columns.size() == kStorageNames.size();
-  for (std::size_t ordinal = 0;
-       exact_storage && ordinal < persisted.columns.size(); ++ordinal) {
-    exact_storage = persisted.columns[ordinal].ordinal == ordinal &&
-                    persisted.columns[ordinal].canonical_name_key ==
-                        kStorageNames[ordinal] &&
-                    persisted.columns[ordinal].value_descriptor
-                            .canonical_type_name == kStorageTypes[ordinal] &&
-                    !persisted.columns[ordinal].nullable;
-  }
-  if (!exact_storage || persisted.relation_uuid.canonical != object_uuid ||
+  if (persisted.relation_uuid.canonical != object_uuid ||
       persisted.database_uuid.canonical != input.context.database_uuid.canonical ||
       persisted.schema_uuid.canonical.empty() ||
       persisted.relation_kind != "table" ||
@@ -32384,20 +32378,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent time-series descriptor is invalid");
   }
-  const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-  if (!core_manifest.ok()) {
+  if (!api::ExactTimeSeriesStorageDescriptorV1(persisted)) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                  "current core datatype catalog is unavailable");
+                  "persistent time-series descriptor type binding is not exact");
   }
   const auto core_type_uuid = [&](const std::string_view stable_name) {
-    const auto found = std::ranges::find_if(
-        core_manifest.manifest.descriptor_rows, [&](const auto& row) {
-          return row.stable_name == stable_name;
-        });
-    return found == core_manifest.manifest.descriptor_rows.end()
-               ? std::string{}
-               : scratchbird::core::uuid::UuidToString(
-                     found->descriptor_uuid.value);
+    return ExactCanonicalCoreDatatypeUuidV1(stable_name);
   };
   const auto alias_expression = expression_for(range->child_expression_ids[0]);
   const auto exact_range_descriptor = [&](const auto descriptor) {
@@ -32607,7 +32593,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         descriptor != dag.descriptors.end() &&
         descriptor->descriptor_uuid == expected_public_descriptor_uuids[ordinal] &&
         descriptor->type_uuid ==
-            core_type_uuid(expected_public_core_types[ordinal]);
+            core_type_uuid(expected_public_core_types[ordinal]) &&
+        !descriptor->collation_uuid.has_value() &&
+        descriptor->timezone_profile_id ==
+            (expected_public_core_types[ordinal] == "timestamp"
+                 ? std::optional<std::string>("UTC")
+                 : std::optional<std::string>{}) &&
+        !descriptor->width.has_value() && !descriptor->precision.has_value() &&
+        !descriptor->scale.has_value();
   }
   if (!exact_public_cohort) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
