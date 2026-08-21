@@ -1863,16 +1863,19 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
   }
   if (code == 1554 && operation_id == "engine.op.ddl_create_procedure" && opcode == "SBLR_DDL_CREATE_PROCEDURE") {
     result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_PROCEDURE"); result.ok = result.entry != nullptr;
+    return result;
   }
   if (code == 1555 && operation_id == "engine.op.ddl_alter_procedure" && opcode == "SBLR_DDL_ALTER_PROCEDURE") {
     result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_PROCEDURE"); result.ok = result.entry != nullptr;
+    return result;
   }
   if (code == 1556 && operation_id == "engine.op.ddl_drop_procedure" && opcode == "SBLR_DDL_DROP_PROCEDURE") {
     result.entry = LookupSblrOpcode("SBLR_DDL_DROP_PROCEDURE"); result.ok = result.entry != nullptr;
+    return result;
   }
-  if (code == 1557 && operation_id == "engine.op.ddl_create_function" && opcode == "SBLR_DDL_CREATE_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_FUNCTION"); result.ok = result.entry != nullptr; }
-  if (code == 1558 && operation_id == "engine.op.ddl_alter_function" && opcode == "SBLR_DDL_ALTER_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_FUNCTION"); result.ok = result.entry != nullptr; }
-  if (code == 1559 && operation_id == "engine.op.ddl_drop_function" && opcode == "SBLR_DDL_DROP_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_FUNCTION"); result.ok = result.entry != nullptr; }
+  if (code == 1557 && operation_id == "engine.op.ddl_create_function" && opcode == "SBLR_DDL_CREATE_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_FUNCTION"); result.ok = result.entry != nullptr; return result; }
+  if (code == 1558 && operation_id == "engine.op.ddl_alter_function" && opcode == "SBLR_DDL_ALTER_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_FUNCTION"); result.ok = result.entry != nullptr; return result; }
+  if (code == 1559 && operation_id == "engine.op.ddl_drop_function" && opcode == "SBLR_DDL_DROP_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_FUNCTION"); result.ok = result.entry != nullptr; return result; }
   if (code == 1560 && operation_id == "engine.op.ddl_create_package" && opcode == "SBLR_DDL_CREATE_PACKAGE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_PACKAGE"); result.ok = result.entry != nullptr; }
   if (code == 1561 && operation_id == "engine.op.ddl_create_temporary_table" && opcode == "SBLR_DDL_CREATE_TEMPORARY_TABLE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_TEMPORARY_TABLE"); result.ok = result.entry != nullptr; }
   if (code == 1562 && operation_id == "engine.op.ddl_drop_temporary_table" && opcode == "SBLR_DDL_DROP_TEMPORARY_TABLE") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_TEMPORARY_TABLE"); result.ok = result.entry != nullptr; }
@@ -1952,16 +1955,19 @@ SblrOpcodeValidationResult ValidateSblrOpcodeForEnvelope(const SblrOperationEnve
   }
   if (envelope.opcode_code == 1554 && envelope.operation_id == "engine.op.ddl_create_procedure" && envelope.opcode == "SBLR_DDL_CREATE_PROCEDURE") {
     result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_PROCEDURE"); result.ok = result.entry != nullptr;
+ return result;
   }
   if (envelope.opcode_code == 1555 && envelope.operation_id == "engine.op.ddl_alter_procedure" && envelope.opcode == "SBLR_DDL_ALTER_PROCEDURE") {
     result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_PROCEDURE"); result.ok = result.entry != nullptr;
+ return result;
   }
   if (envelope.opcode_code == 1556 && envelope.operation_id == "engine.op.ddl_drop_procedure" && envelope.opcode == "SBLR_DDL_DROP_PROCEDURE") {
     result.entry = LookupSblrOpcode("SBLR_DDL_DROP_PROCEDURE"); result.ok = result.entry != nullptr;
+ return result;
   }
-  if (envelope.opcode_code == 1557 && envelope.operation_id == "engine.op.ddl_create_function" && envelope.opcode == "SBLR_DDL_CREATE_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_FUNCTION"); result.ok = result.entry != nullptr; }
-  if (envelope.opcode_code == 1558 && envelope.operation_id == "engine.op.ddl_alter_function" && envelope.opcode == "SBLR_DDL_ALTER_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_FUNCTION"); result.ok = result.entry != nullptr; }
-  if (envelope.opcode_code == 1559 && envelope.operation_id == "engine.op.ddl_drop_function" && envelope.opcode == "SBLR_DDL_DROP_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_FUNCTION"); result.ok = result.entry != nullptr; }
+  if (envelope.opcode_code == 1557 && envelope.operation_id == "engine.op.ddl_create_function" && envelope.opcode == "SBLR_DDL_CREATE_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_FUNCTION"); result.ok = result.entry != nullptr; return result; }
+  if (envelope.opcode_code == 1558 && envelope.operation_id == "engine.op.ddl_alter_function" && envelope.opcode == "SBLR_DDL_ALTER_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_ALTER_FUNCTION"); result.ok = result.entry != nullptr; return result; }
+  if (envelope.opcode_code == 1559 && envelope.operation_id == "engine.op.ddl_drop_function" && envelope.opcode == "SBLR_DDL_DROP_FUNCTION") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_FUNCTION"); result.ok = result.entry != nullptr; return result; }
   if (envelope.opcode_code == 1560 && envelope.operation_id == "engine.op.ddl_create_package" && envelope.opcode == "SBLR_DDL_CREATE_PACKAGE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_PACKAGE"); result.ok = result.entry != nullptr; }
   if (envelope.opcode_code == 1561 && envelope.operation_id == "engine.op.ddl_create_temporary_table" && envelope.opcode == "SBLR_DDL_CREATE_TEMPORARY_TABLE") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_TEMPORARY_TABLE"); result.ok = result.entry != nullptr; }
   if (envelope.opcode_code == 1562 && envelope.operation_id == "engine.op.ddl_drop_temporary_table" && envelope.opcode == "SBLR_DDL_DROP_TEMPORARY_TABLE") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_TEMPORARY_TABLE"); result.ok = result.entry != nullptr; }
