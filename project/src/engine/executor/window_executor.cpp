@@ -1964,6 +1964,9 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
         (count_star_window ||
          (value_column_in_range && source_type_uuid.has_value())) &&
         !request.result_column.nullable &&
+        request.result_column.descriptor.encoded_descriptor ==
+            "type_uuid=" + canonical_int64_type_uuid +
+                ";nullability=non_null" &&
         !has_auxiliary_type_fields(request.result_column.descriptor);
   } else if (value_column_in_range && source_type_uuid.has_value() &&
              boolean_window) {
