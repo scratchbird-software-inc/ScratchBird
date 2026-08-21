@@ -32303,6 +32303,20 @@ exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(
                                       cancellation_policy, &step);
           return step;
         }
+        if (executed.selected_plan_uuid != selected_dag.selected_plan_uuid ||
+            executed.executed_physical_node_id !=
+                selected_node.physical_node_id ||
+            executed.causal_counter_id != selected_node.causal_counter_id ||
+            !exec::PhysicalMgaStatementContextEqual(
+                executed.mga_statement_context,
+                selected_dag.mga_statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1";
+          step.diagnostic.detail =
+              "captured model-family ASOF execution receipt changed";
+          return step;
+        }
         step.result_handle_id = selected_node.physical_node_id;
         step.input_row_count = request.left_batch.rows.size() +
                                request.right_batch.rows.size();
