@@ -11,6 +11,7 @@
 #include "api_types.hpp"
 #include "nosql/nosql_physical_provider_contract.hpp"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -61,6 +62,10 @@ struct EngineDocumentInsertResult : EngineApiResult {};
 EngineDocumentInsertResult EngineDocumentInsert(const EngineDocumentInsertRequest& request);
 
 struct EngineDocumentFindRequest : EngineApiRequest {
+  // Exact relation authority captured by canonical planning.  The document
+  // provider must revalidate it before inspecting any current MGA row.
+  std::string expected_descriptor_uuid;
+  std::uint64_t expected_descriptor_generation = 0;
   std::string path;
   std::string equals_value;
   std::string comparison_operator{"="};
@@ -69,11 +74,22 @@ struct EngineDocumentFindRequest : EngineApiRequest {
   bool wildcard_path = false;
   bool require_benchmark_clean_index_runtime = false;
   bool exact_collection_fallback = false;
+  bool typed_rows_only = false;
   bool explicit_nullable_missing_projection = false;
   std::size_t maximum_rows = 65536;
   std::size_t maximum_cells = 16777216;
   std::uint64_t maximum_memory_bytes = 67108864;
+  std::uint64_t maximum_scanned_row_versions = 1048576;
+  std::uint64_t maximum_decoded_bytes = 67108864;
+  // Canonical coordination installs this companion probe when it must turn a
+  // throwing cancellation callback into a non-throwing executor callback.
+  // The provider observes the failure and returns the coordinator diagnostic
+  // before reading or retaining another MGA row.
+  std::function<bool()> cancellation_probe_failed;
   std::vector<std::string> projected_paths;
+  // Empty only for a deliberately missing/dynamic document path.  Otherwise
+  // this is the exact current MGA relation column bound by planning.
+  std::vector<std::string> projected_column_uuids;
   std::vector<bool> projected_path_nullable;
   EngineDocumentPhysicalProof physical_proof;
 };
@@ -88,6 +104,9 @@ struct EngineDocumentTypedRow {
 };
 struct EngineDocumentFindResult : EngineApiResult {
   std::vector<EngineDocumentTypedRow> typed_rows;
+  bool data_access_observed = false;
+  std::uint64_t scanned_row_versions = 0;
+  std::uint64_t decoded_bytes = 0;
   bool exact_collection_fallback_used = false;
   bool residual_recheck_complete = false;
   bool base_row_mga_recheck_complete = false;

@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <cctype>
 #include <cmath>
@@ -46,6 +47,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <new>
 #include <numeric>
 #include <optional>
@@ -47151,20 +47153,59 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
       }
       const auto runtime_descriptor =
           build_descriptor(*descriptor, type_name->second);
-      if (!api::QowCanonicalDescriptorIdentityV1(runtime_descriptor) ||
-          dependency_by_descriptor.contains(descriptor->descriptor_id)) {
+      if (!api::QowCanonicalDescriptorIdentityV1(runtime_descriptor)) {
         return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                       "document path output descriptor is ambiguous");
       }
+      const auto path = unquote(*path_expression->literal_or_parameter_ref);
+      const auto matching_column_count = std::ranges::count_if(
+          persisted_relation.columns, [&](const auto& column) {
+            return column.canonical_name_key == path;
+          });
+      const auto persisted_column = std::ranges::find_if(
+          persisted_relation.columns, [&](const auto& column) {
+            return column.canonical_name_key == path;
+          });
+      if (matching_column_count > 1 ||
+          (matching_column_count == 1 &&
+           !exact_persisted_binding(*persisted_column, *descriptor)) ||
+          (matching_column_count == 0 &&
+           descriptor->nullability !=
+               api::RelationalNullability::kNullable)) {
+        return refuse(
+            "SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+            "document path is not an exact persisted or nullable-missing binding");
+      }
       prepared.direct_document_path = true;
-      prepared.direct_dependency_ordinal = dependencies.size();
-      dependency_by_descriptor.emplace(descriptor->descriptor_id,
-                                       dependencies.size());
-      dependencies.push_back(
-          {{}, unquote(*path_expression->literal_or_parameter_ref),
-           descriptor->descriptor_id, runtime_descriptor,
-           descriptor->nullability ==
-               api::RelationalNullability::kNullable});
+      const auto existing_dependency =
+          dependency_by_descriptor.find(descriptor->descriptor_id);
+      if (existing_dependency != dependency_by_descriptor.end()) {
+        const auto& existing = dependencies[existing_dependency->second];
+        if (existing.path != path ||
+            existing.column_uuid !=
+                (persisted_column == persisted_relation.columns.end()
+                     ? std::string{}
+                     : persisted_column->column_uuid.canonical) ||
+            existing.descriptor.descriptor_uuid.canonical !=
+                runtime_descriptor.descriptor_uuid.canonical ||
+            existing.descriptor.encoded_descriptor !=
+                runtime_descriptor.encoded_descriptor) {
+          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "document path descriptor identity is ambiguous");
+        }
+        prepared.direct_dependency_ordinal = existing_dependency->second;
+      } else {
+        prepared.direct_dependency_ordinal = dependencies.size();
+        dependency_by_descriptor.emplace(descriptor->descriptor_id,
+                                         dependencies.size());
+        dependencies.push_back(
+            {persisted_column == persisted_relation.columns.end()
+                 ? std::string{}
+                 : persisted_column->column_uuid.canonical,
+             path, descriptor->descriptor_id, runtime_descriptor,
+             descriptor->nullability ==
+                 api::RelationalNullability::kNullable});
+      }
       prepared.column =
           {output.output_name_utf8, runtime_descriptor,
            descriptor->nullability ==
@@ -47270,16 +47311,55 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
 
   api::EngineDocumentFindRequest document_request;
   document_request.context = input.context;
+  const auto document_cancellation_probe_failed =
+      std::make_shared<std::atomic_bool>(false);
+  const auto raw_document_cancellation =
+      input.context.query_cancellation_requested;
+  const std::function<bool()> document_cancellation_requested =
+      [raw_document_cancellation,
+       document_cancellation_probe_failed]() noexcept {
+        if (!raw_document_cancellation) return false;
+        try {
+          return raw_document_cancellation();
+        } catch (...) {
+          document_cancellation_probe_failed->store(
+              true, std::memory_order_relaxed);
+          // The provider reads the companion flag and reports coordinator
+          // failure.  If the first exception occurs at a later coordinator
+          // checkpoint, returning true still prevents result publication.
+          return true;
+        }
+      };
+  document_request.context.query_cancellation_requested =
+      document_cancellation_requested;
+  document_request.cancellation_probe_failed =
+      [document_cancellation_probe_failed]() noexcept {
+        return document_cancellation_probe_failed->load(
+            std::memory_order_relaxed);
+      };
   document_request.target_object.uuid.canonical = planning.object_uuid;
+  document_request.expected_descriptor_uuid =
+      persisted_relation.descriptor_uuid.canonical;
+  document_request.expected_descriptor_generation =
+      persisted_relation.descriptor_generation;
   document_request.exact_collection_fallback = true;
+  document_request.typed_rows_only = true;
+  const auto document_decode_memory = planning.memory_budget_bytes / 2;
+  const auto document_result_memory =
+      planning.memory_budget_bytes - document_decode_memory;
   const auto bounded_document_memory = static_cast<std::size_t>(
-      std::min<std::uint64_t>(planning.memory_budget_bytes,
+      std::min<std::uint64_t>(document_result_memory,
                               std::numeric_limits<std::size_t>::max()));
-  if (bounded_document_memory < sizeof(api::EngineDocumentTypedPathValue)) {
+  if (document_decode_memory == 0 ||
+      bounded_document_memory < sizeof(api::EngineDocumentTypedPathValue) ||
+      input.context.optimizer_maximum_search_steps == 0) {
     return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                   "document provider memory budget is too small");
   }
-  document_request.maximum_memory_bytes = planning.memory_budget_bytes;
+  document_request.maximum_memory_bytes = document_result_memory;
+  document_request.maximum_scanned_row_versions =
+      input.context.optimizer_maximum_search_steps;
+  document_request.maximum_decoded_bytes = document_decode_memory;
   document_request.maximum_cells =
       bounded_document_memory / sizeof(api::EngineDocumentTypedPathValue);
   document_request.maximum_rows = std::min<std::size_t>(
@@ -47292,6 +47372,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   }
   for (const auto& dependency : dependencies) {
     document_request.projected_paths.push_back(dependency.path);
+    document_request.projected_column_uuids.push_back(
+        dependency.column_uuid);
     document_request.projected_path_nullable.push_back(dependency.nullable);
     document_request.descriptors.push_back(dependency.descriptor);
   }
@@ -47453,9 +47535,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   execution_request.capability.base_row_mga_recheck_supported = true;
   execution_request.capability.security_recheck_supported = true;
   execution_request.cancellation_requested =
-      input.context.query_cancellation_requested
-          ? input.context.query_cancellation_requested
-          : std::function<bool()>([] { return false; });
+      document_cancellation_requested;
   execution_request.cleanup_provider = [] {};
   execution_request.exact_fallback_selected = true;
   execution_request.security_admitted = planning.security_admitted;
@@ -47508,8 +47588,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
           return provider;
         }
         const auto found = api::EngineDocumentFind(document_request);
-        provider.data_access_observed = true;
-        provider.rows_examined = found.dml_summary.visible_rows_scanned;
+        provider.data_access_observed = found.data_access_observed;
+        provider.rows_examined = found.scanned_row_versions;
         if (!found.ok) {
           provider.diagnostic_id =
               found.diagnostics.empty()
@@ -47602,7 +47682,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
           for (const auto& output : projection_outputs) {
             if (output.direct_document_path || output.direct_identifier) {
               output_row.values.push_back(
-                  dependency_row.values[output.direct_dependency_ordinal]);
+                  evaluation_values[output.direct_dependency_ordinal]);
               continue;
             }
             api::EngineTypedValue value;

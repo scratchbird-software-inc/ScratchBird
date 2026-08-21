@@ -31,6 +31,8 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -819,17 +821,19 @@ bool AddProjectedDocumentRow(EngineDocumentFindResult* result,
     return false;
   }
   *resource_refused = false;
-  std::vector<std::pair<std::string, std::string>> fields = {
-      {"surface", "document"},
-      {"document_uuid", candidate.document_uuid},
-      {"row_uuid", candidate.row_uuid},
-      {"version_uuid", candidate.version_uuid},
-      {"row_mga_recheck_required", "true"},
-      {"row_security_recheck_required", "true"},
-  };
-
-  for (const auto& value : candidate.projected_values) {
-    fields.push_back({"path:" + value.path, value.value.encoded_value});
+  std::vector<std::pair<std::string, std::string>> fields;
+  if (!request.typed_rows_only) {
+    fields = {
+        {"surface", "document"},
+        {"document_uuid", candidate.document_uuid},
+        {"row_uuid", candidate.row_uuid},
+        {"version_uuid", candidate.version_uuid},
+        {"row_mga_recheck_required", "true"},
+        {"row_security_recheck_required", "true"},
+    };
+    for (const auto& value : candidate.projected_values) {
+      fields.push_back({"path:" + value.path, value.value.encoded_value});
+    }
   }
 
   EngineDocumentTypedRow typed_row;
@@ -884,7 +888,9 @@ bool AddProjectedDocumentRow(EngineDocumentFindResult* result,
     *resource_refused = true;
     return false;
   }
-  std::uint64_t row_bytes = sizeof(EngineDocumentTypedRow);
+  // Count one retained row plus a second row-sized slot for vector capacity
+  // growth. This keeps the bound conservative across allocator strategies.
+  std::uint64_t row_bytes = 2 * sizeof(EngineDocumentTypedRow);
   const auto add_bytes = [&](const std::size_t amount) {
     if (amount > std::numeric_limits<std::uint64_t>::max() - row_bytes) {
       return false;
@@ -911,6 +917,31 @@ bool AddProjectedDocumentRow(EngineDocumentFindResult* result,
       return false;
     }
   }
+  if (typed_row.values.capacity() > typed_row.values.size() &&
+      !add_bytes((typed_row.values.capacity() - typed_row.values.size()) *
+                 sizeof(EngineDocumentTypedPathValue))) {
+    *resource_refused = true;
+    return false;
+  }
+  if (!request.typed_rows_only) {
+    if (!add_bytes(sizeof(EngineRowValue)) ||
+        !add_bytes(36) ||
+        !add_bytes(fields.capacity() *
+                   sizeof(std::pair<std::string, std::string>)) ||
+        !add_bytes(fields.size() *
+                   sizeof(std::pair<std::string, EngineTypedValue>))) {
+      *resource_refused = true;
+      return false;
+    }
+    for (const auto& [name, encoded] : fields) {
+      if (!add_bytes(name.size()) || !add_bytes(encoded.size()) ||
+          !add_bytes(sizeof("scalar") - 1) ||
+          !add_bytes(sizeof("text") - 1)) {
+        *resource_refused = true;
+        return false;
+      }
+    }
+  }
   if (row_bytes >
           std::numeric_limits<std::uint64_t>::max() -
               *retained_memory_bytes ||
@@ -921,17 +952,22 @@ bool AddProjectedDocumentRow(EngineDocumentFindResult* result,
   *retained_cells += typed_row.values.size();
   *retained_memory_bytes += row_bytes;
   result->typed_rows.push_back(std::move(typed_row));
-  AddApiBehaviorRow(result, std::move(fields));
-  if (!candidate.shape_id.empty()) {
-    AddApiBehaviorEvidence(result, "document_shape_dictionary", candidate.shape_id);
+  if (!request.typed_rows_only) {
+    AddApiBehaviorRow(result, std::move(fields));
+  }
+  if (!request.typed_rows_only) {
+    if (!candidate.shape_id.empty()) {
+      AddApiBehaviorEvidence(result, "document_shape_dictionary",
+                             candidate.shape_id);
+      AddApiBehaviorEvidence(result,
+                             "document_structural_sharing",
+                             "shape_ref_count=" +
+                                 std::to_string(candidate.shape_ref_count));
+    }
     AddApiBehaviorEvidence(result,
                            "document_structural_sharing",
-                           "shape_ref_count=" +
-                               std::to_string(candidate.shape_ref_count));
+                           "shape_dictionary_membership_reopened");
   }
-  AddApiBehaviorEvidence(result,
-                         "document_structural_sharing",
-                         "shape_dictionary_membership_reopened");
   return true;
 }
 
@@ -939,15 +975,24 @@ std::vector<DocumentPathProviderProjectedValue> ProjectValuesFromSource(
     const PhysicalDocumentRecord& record,
     const EngineDocumentFindRequest& request) {
   std::vector<DocumentPathProviderProjectedValue> projected;
-  std::set<std::string> wanted(request.projected_paths.begin(),
-                               request.projected_paths.end());
+  const auto requested_path = [&](const std::string& path) {
+    return !request.projected_paths.empty() &&
+           std::ranges::find(request.projected_paths, path) !=
+               request.projected_paths.end();
+  };
+  const auto matched_probe = [&](const std::string& path) {
+    return request.projected_paths.empty() &&
+           ((request.wildcard_path &&
+             WildcardPathMatches(request.path, path)) ||
+            (!request.wildcard_path && request.path == path));
+  };
+  const auto projected_count = std::ranges::count_if(
+      record.fragments, [&](const auto& fragment) {
+        return requested_path(fragment.first) || matched_probe(fragment.first);
+      });
+  projected.reserve(static_cast<std::size_t>(projected_count));
   for (const auto& [path, value] : record.fragments) {
-    const bool requested = !wanted.empty() && wanted.count(path) != 0;
-    const bool matched_probe =
-        wanted.empty() &&
-        ((request.wildcard_path && WildcardPathMatches(request.path, path)) ||
-         (!request.wildcard_path && request.path == path));
-    if (!requested && !matched_probe) { continue; }
+    if (!requested_path(path) && !matched_probe(path)) continue;
     DocumentPathProviderProjectedValue projected_value;
     projected_value.path = path;
     projected_value.value.scalar_type = "string";
@@ -1021,26 +1066,328 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
       request.comparison_operator == ">" ||
       request.comparison_operator == ">=";
   if (!comparison_supported || request.maximum_rows == 0 ||
-      request.maximum_cells == 0 || request.maximum_memory_bytes == 0) {
+      request.maximum_cells == 0 || request.maximum_memory_bytes == 0 ||
+      request.maximum_scanned_row_versions == 0 ||
+      request.maximum_decoded_bytes == 0 ||
+      request.projected_paths.size() !=
+          request.projected_column_uuids.size() ||
+      request.projected_paths.size() !=
+          request.projected_path_nullable.size() ||
+      request.projected_paths.size() != request.descriptors.size()) {
     return DiagnosticResult<EngineDocumentFindResult>(
         request.context, operation_id,
         "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1");
   }
 
-  auto result =
-      MakeApiBehaviorSuccess<EngineDocumentFindResult>(request.context,
-                                                       operation_id);
-  std::lock_guard<std::mutex> guard(DocumentStoresMutex());
-  auto& state = DocumentStores()[StoreKey(request.context)];
-  LoadDocumentProviderLocked(request.context, &state);
   const auto requested_collection =
       request.target_object.uuid.canonical.empty()
           ? DocumentCollectionUuid(request.context)
           : request.target_object.uuid.canonical;
-  std::size_t collection_rows_scanned = 0;
+  if (!IsEngineUuidText(requested_collection) ||
+      !IsEngineUuidText(request.expected_descriptor_uuid) ||
+      request.expected_descriptor_generation == 0) {
+    return DiagnosticResult<EngineDocumentFindResult>(
+        request.context, operation_id,
+        "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1");
+  }
+  bool cancellation_probe_failed = false;
+  const auto cancellation_requested = [&] {
+    try {
+      const bool requested =
+          request.context.query_cancellation_requested &&
+          request.context.query_cancellation_requested();
+      if (request.cancellation_probe_failed &&
+          request.cancellation_probe_failed()) {
+        cancellation_probe_failed = true;
+        return true;
+      }
+      return requested;
+    } catch (...) {
+      cancellation_probe_failed = true;
+      return true;
+    }
+  };
+  if (cancellation_requested()) {
+    return DiagnosticResult<EngineDocumentFindResult>(
+        request.context, operation_id,
+        cancellation_probe_failed ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                                  : "SB_MODEL_EXECUTION_CANCELLED_V1");
+  }
+
+  const auto descriptor_fields = [](const EngineDescriptor& descriptor)
+      -> std::optional<std::map<std::string_view, std::string_view>> {
+    std::map<std::string_view, std::string_view> fields;
+    const auto encoded = std::string_view(descriptor.encoded_descriptor);
+    std::size_t offset = 0;
+    while (offset <= encoded.size()) {
+      const auto end = encoded.find(';', offset);
+      const auto field = encoded.substr(
+          offset, end == std::string_view::npos ? std::string_view::npos
+                                                : end - offset);
+      const auto equal = field.find('=');
+      if (field.empty() || equal == std::string_view::npos || equal == 0 ||
+          equal + 1 == field.size() ||
+          !fields.emplace(field.substr(0, equal), field.substr(equal + 1))
+               .second) {
+        return std::nullopt;
+      }
+      if (end == std::string_view::npos) break;
+      offset = end + 1;
+    }
+    return fields;
+  };
+  const auto exact_projection_binding = [&](const auto& relation) {
+    if (relation.relation_uuid.canonical != requested_collection ||
+        relation.database_uuid.canonical !=
+            request.context.database_uuid.canonical ||
+        !IsEngineUuidText(relation.schema_uuid.canonical) ||
+        relation.relation_kind != "table" ||
+        relation.storage_profile != "local_mga_rowstore_v1" ||
+        relation.descriptor_uuid.canonical !=
+            request.expected_descriptor_uuid ||
+        relation.descriptor_generation !=
+            request.expected_descriptor_generation ||
+        (relation.descriptor_status != "production_descriptor" &&
+         relation.descriptor_status !=
+             "metadata_bridge_vetted_descriptor") ||
+        relation.columns.empty()) {
+      return false;
+    }
+    std::unordered_set<std::string> column_uuids;
+    std::unordered_set<std::string> descriptor_uuids;
+    for (std::size_t ordinal = 0; ordinal < relation.columns.size();
+         ++ordinal) {
+      const auto& column = relation.columns[ordinal];
+      if (column.ordinal != ordinal ||
+          !IsEngineUuidText(column.column_uuid.canonical) ||
+          !column_uuids.insert(column.column_uuid.canonical).second ||
+          !QowCanonicalDescriptorIdentityV1(column.value_descriptor) ||
+          column.value_descriptor.descriptor_kind !=
+              "canonical_type_descriptor" ||
+          !descriptor_uuids
+               .insert(column.value_descriptor.descriptor_uuid.canonical)
+               .second ||
+          !descriptor_fields(column.value_descriptor).has_value()) {
+        return false;
+      }
+    }
+    for (std::size_t ordinal = 0; ordinal < request.projected_paths.size();
+         ++ordinal) {
+      const auto& path = request.projected_paths[ordinal];
+      const auto& column_uuid = request.projected_column_uuids[ordinal];
+      const auto& runtime = request.descriptors[ordinal];
+      const auto runtime_fields = descriptor_fields(runtime);
+      if (path.empty() || !QowCanonicalDescriptorIdentityV1(runtime) ||
+          runtime.descriptor_kind != "scalar" ||
+          !runtime_fields.has_value()) {
+        return false;
+      }
+      const auto type_uuid = runtime_fields->find("type_uuid");
+      const auto nullability = runtime_fields->find("nullability");
+      static const std::unordered_set<std::string_view> kRuntimeFields{
+          "type_uuid", "nullability", "collation_uuid",
+          "timezone_profile_id", "width", "precision", "scale"};
+      if (type_uuid == runtime_fields->end() ||
+          nullability == runtime_fields->end() ||
+          !IsEngineUuidText(std::string(type_uuid->second)) ||
+          std::ranges::any_of(*runtime_fields, [&](const auto& field) {
+            return !kRuntimeFields.contains(field.first);
+          }) ||
+          (nullability->second != "nullable" &&
+           nullability->second != "non_null") ||
+          (nullability->second == "nullable") !=
+              request.projected_path_nullable[ordinal]) {
+        return false;
+      }
+      const auto matching_name = std::ranges::count_if(
+          relation.columns, [&](const auto& column) {
+            return column.canonical_name_key == path;
+          });
+      if (column_uuid.empty()) {
+        if (matching_name != 0 ||
+            !request.projected_path_nullable[ordinal]) {
+          return false;
+        }
+        continue;
+      }
+      if (!IsEngineUuidText(column_uuid) || matching_name != 1) {
+        return false;
+      }
+      const auto column = std::ranges::find_if(
+          relation.columns, [&](const auto& candidate) {
+            return candidate.column_uuid.canonical == column_uuid;
+          });
+      if (column == relation.columns.end() ||
+          column->canonical_name_key != path ||
+          column->value_descriptor.descriptor_uuid.canonical !=
+              runtime.descriptor_uuid.canonical ||
+          column->value_descriptor.canonical_type_name !=
+              runtime.canonical_type_name ||
+          column->nullable != request.projected_path_nullable[ordinal]) {
+        return false;
+      }
+      const auto storage_fields = descriptor_fields(column->value_descriptor);
+      if (!storage_fields.has_value()) return false;
+      const auto storage_type = storage_fields->find("type_uuid");
+      if (storage_type == storage_fields->end() ||
+          storage_type->second != type_uuid->second) {
+        return false;
+      }
+      const auto field = [](const auto& fields,
+                            const std::string_view name)
+          -> std::optional<std::string_view> {
+        const auto found = fields.find(name);
+        return found == fields.end()
+                   ? std::optional<std::string_view>{}
+                   : std::optional<std::string_view>{found->second};
+      };
+      std::optional<bool> storage_nullable;
+      const auto canonical_nullability = field(*storage_fields, "nullability");
+      const auto storage_nullability = field(*storage_fields, "nullable");
+      if (canonical_nullability.has_value()) {
+        if (*canonical_nullability == "nullable") {
+          storage_nullable = true;
+        } else if (*canonical_nullability == "non_null") {
+          storage_nullable = false;
+        } else {
+          return false;
+        }
+      }
+      if (storage_nullability.has_value()) {
+        std::optional<bool> parsed;
+        if (*storage_nullability == "true") {
+          parsed = true;
+        } else if (*storage_nullability == "false") {
+          parsed = false;
+        } else {
+          return false;
+        }
+        if (storage_nullable.has_value() && storage_nullable != parsed) {
+          return false;
+        }
+        storage_nullable = parsed;
+      }
+      auto persisted_width = field(*storage_fields, "width");
+      const auto character_length = std::to_string(column->character_length);
+      if (!persisted_width.has_value() && column->character_length != 0) {
+        persisted_width = character_length;
+      }
+      const auto persisted_collation =
+          column->collation_uuid.empty()
+              ? field(*storage_fields, "collation_uuid")
+              : std::optional<std::string_view>{column->collation_uuid};
+      if (!storage_nullable.has_value() ||
+          *storage_nullable != request.projected_path_nullable[ordinal] ||
+          (!column->collation_uuid.empty() &&
+           field(*storage_fields, "collation_uuid") !=
+               persisted_collation) ||
+          field(*runtime_fields, "collation_uuid") != persisted_collation ||
+          field(*runtime_fields, "timezone_profile_id") !=
+              field(*storage_fields, "timezone_profile_id") ||
+          field(*runtime_fields, "width") != persisted_width ||
+          field(*runtime_fields, "precision") !=
+              field(*storage_fields, "precision") ||
+          field(*runtime_fields, "scale") !=
+              field(*storage_fields, "scale")) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const auto authorization = EvaluateMaterializedAuthorization(
+      request.context, request.context.authorization_context, "SELECT",
+      requested_collection);
+  if (!authorization.authorized || authorization.denied ||
+      authorization.policy_recheck_required ||
+      !authorization.diagnostics.empty()) {
+    return DiagnosticResult<EngineDocumentFindResult>(
+        request.context, operation_id,
+        "SB_MODEL_SECURITY_ADMISSION_REFUSED_V1");
+  }
+  const auto preflight = LoadMgaRelationStorageDescriptor(
+      request.context, requested_collection);
+  if (!preflight.ok || !exact_projection_binding(preflight.descriptor)) {
+    return DiagnosticResult<EngineDocumentFindResult>(
+        request.context, operation_id,
+        "SB_MODEL_CATALOG_GENERATION_STALE_V1");
+  }
+
+  auto result =
+      MakeApiBehaviorSuccess<EngineDocumentFindResult>(request.context,
+                                                       operation_id);
+  MgaVisibleHeapRelationReadRequest read_request;
+  read_request.relation_uuid = requested_collection;
+  read_request.maximum_scanned_row_versions =
+      request.maximum_scanned_row_versions;
+  read_request.maximum_decoded_bytes = request.maximum_decoded_bytes;
+  read_request.maximum_output_rows = request.maximum_scanned_row_versions;
+  read_request.cancellation_requested = cancellation_requested;
+  const auto read = ReadVisibleMgaHeapRelation(request.context, read_request);
+  const bool data_access_observed =
+      read.ok || read.scanned_row_version_count != 0 ||
+      read.decoded_byte_count != 0;
+  result.data_access_observed = data_access_observed;
+  result.scanned_row_versions = read.scanned_row_version_count;
+  result.decoded_bytes = read.decoded_byte_count;
+  const auto access_failure = [&](const char* diagnostic,
+                                  const std::string_view detail) {
+    auto failure = DiagnosticResult<EngineDocumentFindResult>(
+        request.context, operation_id, diagnostic);
+    failure.data_access_observed = data_access_observed;
+    failure.scanned_row_versions = read.scanned_row_version_count;
+    failure.decoded_bytes = read.decoded_byte_count;
+    if (!detail.empty()) {
+      AddApiBehaviorEvidence(&failure, "document_exact_source_refusal",
+                             std::string(detail));
+    }
+    return failure;
+  };
+  if (!read.ok) {
+    const char* diagnostic = "SB_MODEL_MGA_CONTEXT_MISMATCH_V1";
+    if (cancellation_probe_failed) {
+      diagnostic = "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+    } else if (read.cancellation_observed) {
+      diagnostic = "SB_MODEL_EXECUTION_CANCELLED_V1";
+    } else if (read.diagnostic.detail.find("bound") != std::string::npos ||
+               read.diagnostic.detail.find("maximum") != std::string::npos ||
+               read.diagnostic.detail.find("overflow") != std::string::npos) {
+      diagnostic = "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+    }
+    return access_failure(diagnostic, read.diagnostic.detail);
+  }
+  if (!exact_projection_binding(read.descriptor) ||
+      read.descriptor.descriptor_uuid.canonical !=
+          preflight.descriptor.descriptor_uuid.canonical ||
+      read.descriptor.descriptor_generation !=
+          preflight.descriptor.descriptor_generation ||
+      read.current_relation_base_generation == 0) {
+    return access_failure(
+        "SB_MODEL_CATALOG_GENERATION_STALE_V1",
+        "document relation descriptor changed during the MGA read");
+  }
+  if (cancellation_requested()) {
+    return access_failure(
+        cancellation_probe_failed ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                                  : "SB_MODEL_EXECUTION_CANCELLED_V1",
+        cancellation_probe_failed
+            ? "document cancellation probe raised an exception"
+            : "document execution was cancelled after the MGA read");
+  }
+  const auto post_authorization = EvaluateMaterializedAuthorization(
+      request.context, request.context.authorization_context, "SELECT",
+      requested_collection);
+  if (!post_authorization.authorized || post_authorization.denied ||
+      post_authorization.policy_recheck_required ||
+      !post_authorization.diagnostics.empty()) {
+    return access_failure("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                          "document SELECT authorization changed");
+  }
+
   std::size_t retained_cells = 0;
   std::uint64_t retained_memory_bytes = 0;
   const auto preflight_row = [&](const PhysicalDocumentRecord& record,
+                                 const std::uint64_t record_transient_bytes,
                                  std::size_t* cells,
                                  std::uint64_t* retained_row_bytes,
                                  std::uint64_t* transient_bytes) {
@@ -1049,7 +1396,7 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
       return false;
     }
     *cells = 0;
-    *retained_row_bytes = sizeof(EngineDocumentTypedRow);
+    *retained_row_bytes = 2 * sizeof(EngineDocumentTypedRow);
     *transient_bytes = sizeof(DocumentPathProviderCandidate);
     const auto checked_add = [](std::uint64_t* total,
                                 const std::size_t amount) {
@@ -1060,7 +1407,8 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
       *total += static_cast<std::uint64_t>(amount);
       return true;
     };
-    if (!checked_add(retained_row_bytes, record.document_uuid.size()) ||
+    if (!checked_add(transient_bytes, record_transient_bytes) ||
+        !checked_add(retained_row_bytes, record.document_uuid.size()) ||
         !checked_add(retained_row_bytes, record.row_uuid.size()) ||
         !checked_add(transient_bytes, record.document_uuid.size()) ||
         !checked_add(transient_bytes, record.row_uuid.size()) ||
@@ -1079,7 +1427,7 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
       if (*cells == std::numeric_limits<std::size_t>::max()) return false;
       ++*cells;
       return checked_add(retained_row_bytes,
-                         sizeof(EngineDocumentTypedPathValue)) &&
+                         2 * sizeof(EngineDocumentTypedPathValue)) &&
              checked_add(retained_row_bytes, path.size()) &&
              checked_add(retained_row_bytes,
                          descriptor.descriptor_uuid.canonical.size()) &&
@@ -1123,45 +1471,139 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
     }
     return true;
   };
-  for (const auto& [uuid, record] : state.documents) {
-    (void)uuid;
-    if (record.collection_uuid != requested_collection) { continue; }
-    ++collection_rows_scanned;
-    try {
-      if (request.context.query_cancellation_requested &&
-          request.context.query_cancellation_requested()) {
-        return DiagnosticResult<EngineDocumentFindResult>(
-            request.context, operation_id,
-            "SB_MODEL_EXECUTION_CANCELLED_V1");
+  for (const auto& row : read.visible_rows) {
+    if (cancellation_requested()) {
+      return access_failure(
+          cancellation_probe_failed ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                                    : "SB_MODEL_EXECUTION_CANCELLED_V1",
+          cancellation_probe_failed
+              ? "document cancellation probe raised an exception"
+              : "document reconstruction was cancelled");
+    }
+    if (row.table_uuid != requested_collection ||
+        !IsEngineUuidText(row.row_uuid) ||
+        !IsEngineUuidText(row.version_uuid)) {
+      return access_failure("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
+                            "visible document row identity is invalid");
+    }
+    const auto retain_path = [&](const std::string& path) {
+      return path == "document_uuid" ||
+             std::ranges::find(request.projected_paths, path) !=
+                 request.projected_paths.end() ||
+             (!request.path.empty() &&
+              (request.wildcard_path
+                   ? WildcardPathMatches(request.path, path)
+                   : request.path == path));
+    };
+    std::uint64_t record_transient_bytes = sizeof(PhysicalDocumentRecord);
+    const auto account_record_bytes = [&](const std::size_t bytes) {
+      if (bytes > std::numeric_limits<std::uint64_t>::max() -
+                      record_transient_bytes) {
+        return false;
       }
-    } catch (...) {
-      return DiagnosticResult<EngineDocumentFindResult>(
-          request.context, operation_id,
-          "SB_MODEL_COORDINATOR_LEG_FAILED_V1");
+      record_transient_bytes += static_cast<std::uint64_t>(bytes);
+      return true;
+    };
+    if (!account_record_bytes(requested_collection.size()) ||
+        !account_record_bytes(3 * row.row_uuid.size())) {
+      return access_failure("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                            "document reconstruction size overflowed");
+    }
+    for (const auto& [path, encoded] : row.values) {
+      const auto column = std::ranges::find_if(
+          read.descriptor.columns, [&](const auto& column) {
+            return column.canonical_name_key == path;
+          });
+      const auto column_count = std::ranges::count_if(
+          read.descriptor.columns, [&](const auto& candidate) {
+            return candidate.canonical_name_key == path;
+          });
+      if (path.empty() || column == read.descriptor.columns.end() ||
+          column_count != 1 ||
+          std::ranges::count_if(row.values, [&](const auto& value) {
+            return value.first == path;
+          }) != 1) {
+        return access_failure(
+            "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+            "visible document row field binding is ambiguous");
+      }
+      if (encoded == "<NULL>") {
+        if (!column->nullable) {
+          return access_failure(
+              "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+              "visible document row contains a null non-null column");
+        }
+      }
+      if (retain_path(path) &&
+          (!account_record_bytes(
+               sizeof(std::pair<const std::string, std::string>) +
+               3 * sizeof(void*) + path.size() + encoded.size()) ||
+           (encoded == "<NULL>" &&
+            !account_record_bytes(sizeof(std::string) +
+                                  3 * sizeof(void*) + path.size())))) {
+        return access_failure("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                              "document reconstruction size overflowed");
+      }
+    }
+    if (std::ranges::any_of(read.descriptor.columns, [&](const auto& column) {
+          return !column.nullable && std::ranges::none_of(
+              row.values, [&](const auto& value) {
+                return value.first == column.canonical_name_key;
+              });
+        })) {
+      return access_failure(
+          "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+          "visible document row omits a non-null persisted column");
+    }
+    if (retained_memory_bytes > request.maximum_memory_bytes ||
+        record_transient_bytes >
+            request.maximum_memory_bytes - retained_memory_bytes) {
+      return access_failure("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                            "document reconstruction memory bound was exceeded");
+    }
+    PhysicalDocumentRecord record;
+    record.collection_uuid = requested_collection;
+    record.document_uuid = row.row_uuid;
+    record.row_uuid = row.row_uuid;
+    record.name = row.row_uuid;
+    record.creator_tx = row.creator_tx;
+    for (const auto& [path, encoded] : row.values) {
+      if (!retain_path(path)) continue;
+      if (encoded == "<NULL>") {
+        record.fragments.emplace(path, std::string{});
+        record.null_paths.insert(path);
+      } else {
+        record.fragments.emplace(path, encoded);
+      }
+    }
+    const auto document_uuid = record.fragments.find("document_uuid");
+    if (document_uuid != record.fragments.end()) {
+      if (record.null_paths.contains("document_uuid") ||
+          !IsEngineUuidText(document_uuid->second)) {
+        return access_failure("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                              "document UUID column is invalid");
+      }
+      record.document_uuid = document_uuid->second;
     }
     const auto matched = PathMatches(request, record);
     if (!matched.valid) {
-      auto failure = DiagnosticResult<EngineDocumentFindResult>(
-          request.context, operation_id,
-          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1");
+      auto failure = access_failure(
+          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", matched.detail);
       AddApiBehaviorEvidence(&failure, "document_comparison_refusal",
                              matched.detail);
       return failure;
     }
-    if (!matched.matches ||
-        !SourceRecordVisibleToRequest(request.context, record)) {
-      continue;
-    }
+    if (!matched.matches) continue;
     if (result.typed_rows.size() >= request.maximum_rows) {
-      return DiagnosticResult<EngineDocumentFindResult>(
-          request.context, operation_id,
-          "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1");
+      return access_failure("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                            "document output row bound was exceeded");
     }
     std::size_t row_cells = 0;
     std::uint64_t retained_row_bytes = 0;
     std::uint64_t transient_bytes = 0;
     std::uint64_t peak_bytes = 0;
-    if (!preflight_row(record, &row_cells, &retained_row_bytes,
+    if (!preflight_row(record, record_transient_bytes, &row_cells,
+                       &retained_row_bytes,
                        &transient_bytes) ||
         row_cells > std::numeric_limits<std::size_t>::max() -
                         retained_cells ||
@@ -1176,14 +1618,13 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
         }()) ||
         (peak_bytes += transient_bytes,
          peak_bytes > request.maximum_memory_bytes)) {
-      return DiagnosticResult<EngineDocumentFindResult>(
-          request.context, operation_id,
-          "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1");
+      return access_failure("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                            "document output memory bound was exceeded");
     }
     DocumentPathProviderCandidate candidate;
     candidate.document_uuid = record.document_uuid;
     candidate.row_uuid = record.row_uuid;
-    candidate.version_uuid = GenerateCrudEngineUuid("row");
+    candidate.version_uuid = row.version_uuid;
     candidate.row_ordinal = record.creator_tx;
     candidate.shape_id = record.shape_id;
     candidate.shape_ref_count = record.shape_ref_count;
@@ -1193,17 +1634,27 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
                                  &retained_cells,
                                  &retained_memory_bytes,
                                  &resource_refused)) {
-      return DiagnosticResult<EngineDocumentFindResult>(
-          request.context, operation_id,
+      return access_failure(
           resource_refused ? "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1"
-                           : kModelDocumentMissingBindingRefusedApi);
+                           : kModelDocumentMissingBindingRefusedApi,
+          resource_refused
+              ? "document projected result exceeded its resource bound"
+              : "document projected result violated nullability");
+    }
+    if (cancellation_requested()) {
+      return access_failure(
+          cancellation_probe_failed ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                                    : "SB_MODEL_EXECUTION_CANCELLED_V1",
+          cancellation_probe_failed
+              ? "document cancellation probe raised an exception"
+              : "document projection was cancelled");
     }
   }
   result.exact_collection_fallback_used = true;
   result.residual_recheck_complete = true;
   result.base_row_mga_recheck_complete = true;
   result.security_recheck_complete = true;
-  result.dml_summary.visible_rows_scanned = collection_rows_scanned;
+  result.dml_summary.visible_rows_scanned = read.visible_rows.size();
   result.dml_summary.benchmark_clean = true;
   AddApiBehaviorEvidence(&result, "document_exact_fallback",
                          "DOCUMENT_COLLECTION_SCAN_EXACT_V1");
@@ -1211,6 +1662,8 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
                          "mga_visibility_security_and_value_passed");
   AddApiBehaviorEvidence(&result, "descriptor_scan_selected", "false");
   AddApiBehaviorEvidence(&result, "behavior_store_scan_selected", "false");
+  AddApiBehaviorEvidence(&result, "document_sidecar_candidate_selected",
+                         "false");
   AddApiBehaviorEvidence(&result, "mga_finality_authority",
                          "engine_transaction_inventory");
   return result;
