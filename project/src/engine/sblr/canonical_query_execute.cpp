@@ -11153,6 +11153,19 @@ bool BuildOperatorLocalPhysicalDag(
     exec::TypedPhysicalNodeDag* operator_dag,
     std::string* detail);
 
+template <typename ExecutionReceipt>
+bool CanonicalOperatorExecutionReceiptMatches(
+    const ExecutionReceipt& receipt,
+    const exec::TypedPhysicalNodeDag& execution_dag,
+    const exec::PhysicalNodeRecord& node,
+    const exec::PhysicalMgaStatementContext& expected_mga_context) {
+  return receipt.selected_plan_uuid == execution_dag.selected_plan_uuid &&
+         receipt.executed_physical_node_id == node.physical_node_id &&
+         receipt.causal_counter_id == node.causal_counter_id &&
+         exec::PhysicalMgaStatementContextEqual(
+             receipt.mga_statement_context, expected_mga_context);
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
     const PreparedProjectRoot& prepared_root,
     std::string implementation_id,
@@ -11319,6 +11332,15 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
           step.diagnostic = std::move(project_result.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                project_result, *execution_dag, node,
+                project_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-PROJECT-EXECUTION-V1";
+          step.diagnostic.detail = "PROJECT execution receipt changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
@@ -11415,6 +11437,15 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
           step.diagnostic = std::move(filter_result.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                filter_result, *execution_dag, node,
+                mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-FILTER-EXECUTION-V1";
+          step.diagnostic.detail = "FILTER execution receipt changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
@@ -11500,6 +11531,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
             project_request, *execution_dag, input_batch, projected_columns);
         if (!project_result.diagnostic.ok) {
           step.diagnostic = std::move(project_result.diagnostic);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                project_result, *execution_dag, node,
+                project_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-EXECUTION-V1";
+          step.diagnostic.detail =
+              "object-backed PROJECT execution receipt changed";
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -11602,6 +11643,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
           step.diagnostic = std::move(filtered.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                filtered, *execution_dag, node,
+                mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1";
+          step.diagnostic.detail =
+              "object-backed FILTER execution receipt changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
@@ -11612,19 +11663,6 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
         return step;
       };
   return registration;
-}
-
-template <typename ExecutionReceipt>
-bool CanonicalOperatorExecutionReceiptMatches(
-    const ExecutionReceipt& receipt,
-    const exec::TypedPhysicalNodeDag& execution_dag,
-    const exec::PhysicalNodeRecord& node,
-    const exec::PhysicalMgaStatementContext& expected_mga_context) {
-  return receipt.selected_plan_uuid == execution_dag.selected_plan_uuid &&
-         receipt.executed_physical_node_id == node.physical_node_id &&
-         receipt.causal_counter_id == node.causal_counter_id &&
-         exec::PhysicalMgaStatementContextEqual(
-             receipt.mga_statement_context, expected_mga_context);
 }
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
@@ -28248,6 +28286,16 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
                   maximum_output_rows, mga_authority);
           if (!filter_result.diagnostic.ok) {
             step.diagnostic = std::move(filter_result.diagnostic);
+            return step;
+          }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  filter_result, dag, node,
+                  mga_authority.statement_context)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-FILTER-EXECUTION-V1";
+            step.diagnostic.detail =
+                "HAVING FILTER execution receipt changed";
             return step;
           }
           step.result_handle_id = node.physical_node_id;
