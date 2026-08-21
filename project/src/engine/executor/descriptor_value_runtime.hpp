@@ -898,6 +898,11 @@ struct CanonicalDescriptorCountRequest {
 struct CanonicalDescriptorCountResult {
   DescriptorRuntimeDiagnostic diagnostic;
   DescriptorBatch output_batch;
+  std::size_t input_payload_bytes = 0;
+  std::size_t state_bytes = 0;
+  std::size_t output_payload_bytes = 0;
+  std::size_t current_memory_bytes = 0;
+  std::size_t peak_memory_bytes = 0;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;

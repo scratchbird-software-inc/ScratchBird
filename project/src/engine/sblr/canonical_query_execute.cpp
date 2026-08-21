@@ -13622,6 +13622,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 = true;
   registration.execute =
       [result_column = std::move(result_column), maximum_input_row_count,
        mga_context = std::move(mga_context)](
@@ -13678,12 +13679,40 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
           step.diagnostic = std::move(aggregate_result.diagnostic);
           return step;
         }
+        std::uint64_t input_memory_bytes = 0;
+        std::uint64_t output_memory_bytes = 0;
+        std::uint64_t expected_peak_memory_bytes = 0;
+        if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
+                                                 &input_memory_bytes) ||
+            !RuntimeMaterializedBatchMemoryBytes(
+                aggregate_result.output_batch, &output_memory_bytes) ||
+            !CheckedAdd(input_memory_bytes, sizeof(std::int64_t),
+                        &expected_peak_memory_bytes) ||
+            !CheckedAdd(expected_peak_memory_bytes, output_memory_bytes,
+                        &expected_peak_memory_bytes) ||
+            aggregate_result.input_payload_bytes != input_memory_bytes ||
+            aggregate_result.state_bytes != sizeof(std::int64_t) ||
+            aggregate_result.output_payload_bytes != output_memory_bytes ||
+            aggregate_result.current_memory_bytes != output_memory_bytes ||
+            aggregate_result.current_memory_bytes >
+                aggregate_result.peak_memory_bytes ||
+            aggregate_result.peak_memory_bytes !=
+                expected_peak_memory_bytes ||
+            aggregate_result.peak_memory_bytes > node.memory_bytes_required) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "COUNT(*) runtime phase memory receipt is inconsistent";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = step.input_row_count;
         step.output_row_count = aggregate_result.output_batch.rows.size();
         step.materialized_output_batch =
             std::move(aggregate_result.output_batch);
+        PublishRuntimeMemoryObservation(
+            &step, output_memory_bytes, aggregate_result.peak_memory_bytes);
         step.mga_statement_context =
             aggregate_request.mga_authority.statement_context;
         return step;
@@ -29146,6 +29175,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   aggregate_registration.executor_capability_abi_version = 1;
   aggregate_registration.engine_owned = true;
   aggregate_registration.accepts_optimizer_publication_v2 = true;
+  aggregate_registration.publishes_runtime_observation_v1 = count_star;
   aggregate_registration.execute =
       [aggregate_descriptor = prepared_root.aggregate_descriptor,
        result_column = prepared_root.result_column,
@@ -29267,6 +29297,31 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
             step.diagnostic = std::move(aggregate_result.diagnostic);
             return step;
           }
+          std::uint64_t output_memory_bytes = 0;
+          std::uint64_t expected_peak_memory_bytes = 0;
+          if (!RuntimeMaterializedBatchMemoryBytes(
+                  aggregate_result.output_batch, &output_memory_bytes) ||
+              !CheckedAdd(input_memory_bytes, sizeof(std::int64_t),
+                          &expected_peak_memory_bytes) ||
+              !CheckedAdd(expected_peak_memory_bytes, output_memory_bytes,
+                          &expected_peak_memory_bytes) ||
+              aggregate_result.input_payload_bytes != input_memory_bytes ||
+              aggregate_result.state_bytes != sizeof(std::int64_t) ||
+              aggregate_result.output_payload_bytes != output_memory_bytes ||
+              aggregate_result.current_memory_bytes != output_memory_bytes ||
+              aggregate_result.current_memory_bytes >
+                  aggregate_result.peak_memory_bytes ||
+              aggregate_result.peak_memory_bytes !=
+                  expected_peak_memory_bytes ||
+              aggregate_result.peak_memory_bytes > *aggregate_memory_bound) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code = "QOW-DIAG-OPT-017-REFUSAL-V1";
+            step.diagnostic.detail =
+                "global COUNT(*) runtime phase memory receipt is inconsistent";
+            return step;
+          }
+          PublishRuntimeMemoryObservation(
+              &step, output_memory_bytes, aggregate_result.peak_memory_bytes);
           output_batch = std::move(aggregate_result.output_batch);
         } else {
           exec::CanonicalAggregateRuntimeRequest aggregate_request;

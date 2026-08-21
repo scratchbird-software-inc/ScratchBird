@@ -4648,6 +4648,11 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStarBound(
   if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
+  result.input_payload_bytes = input_payload_bytes;
+  result.state_bytes = sizeof(std::int64_t);
+  result.output_payload_bytes = output_payload_bytes;
+  result.current_memory_bytes = output_payload_bytes;
+  result.peak_memory_bytes = peak_live_payload_bytes;
   result.selected_plan_uuid = execution_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
