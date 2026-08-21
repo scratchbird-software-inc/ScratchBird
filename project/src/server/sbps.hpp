@@ -278,6 +278,8 @@ constexpr std::uint32_t kSchemaCoordinateDdlDropMacroRequestV1 = 7253;
 constexpr std::uint32_t kSchemaCoordinateDdlDropMacroResultV1 = 7254;
 constexpr std::uint32_t kSchemaCoordinateAdminRegisterExternalRelationResolverRequestV1 = 7255;
 constexpr std::uint32_t kSchemaCoordinateAdminRegisterExternalRelationResolverResultV1 = 7256;
+constexpr std::uint32_t kSchemaCoordinateAdminUnregisterExternalRelationResolverRequestV1 = 7257;
+constexpr std::uint32_t kSchemaCoordinateAdminUnregisterExternalRelationResolverResultV1 = 7258;
 constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectVectorRequestV1 = 7213;
 constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectVectorResultV1 = 7214;
 constexpr std::uint32_t kSchemaCoordinateAggregateRequestV1 = 7145;
@@ -535,6 +537,8 @@ enum class MessageType : std::uint16_t {
   kCoordinateDdlDropMacroResult = 259,
   kCoordinateAdminRegisterExternalRelationResolverRequest = 260,
   kCoordinateAdminRegisterExternalRelationResolverResult = 261,
+  kCoordinateAdminUnregisterExternalRelationResolverRequest = 262,
+  kCoordinateAdminUnregisterExternalRelationResolverResult = 263,
   kCoordinateDdlRenameObjectVectorRequest = 218,
   kCoordinateDdlRenameObjectVectorResult = 219,
   kCoordinateAggregateRequest = 150,

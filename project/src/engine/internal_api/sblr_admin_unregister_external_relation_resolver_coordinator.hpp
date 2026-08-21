@@ -1,0 +1,4 @@
+#pragma once
+#include "api_types.hpp"
+#include "engine/sblr/sblr_admin_unregister_external_relation_resolver_runtime.hpp"
+namespace scratchbird::engine::internal_api { struct SblrAdminUnregisterExternalRelationResolverCoordinationResult{bool ok=false;scratchbird::engine::sblr::SblrAdminUnregisterExternalRelationResolverDescriptorV1 descriptor{};EngineApiDiagnostic diagnostic;}; SblrAdminUnregisterExternalRelationResolverCoordinationResult CompileSblrAdminUnregisterExternalRelationResolverDescriptor(const EngineRequestContext&,const std::string&,std::uint64_t,std::uint32_t,std::uint64_t); SblrAdminUnregisterExternalRelationResolverCoordinationResult ConsumeSblrAdminUnregisterExternalRelationResolverDescriptor(const EngineRequestContext&,const scratchbird::engine::sblr::SblrAdminUnregisterExternalRelationResolverDescriptorV1&); }

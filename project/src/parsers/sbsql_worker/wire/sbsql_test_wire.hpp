@@ -199,6 +199,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlCreateMacroForWire();
   PipelineResult RunDdlDropMacroForWire();
   PipelineResult RunAdminRegisterExternalRelationResolverForWire();
+  PipelineResult RunAdminUnregisterExternalRelationResolverForWire();
   PipelineResult RunDdlCreateSchemaForWire();
   PipelineResult RunDdlCreateTableForWire();
   PipelineResult RunDdlCreateIndexForWire();

@@ -311,6 +311,8 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropMacroForWire():begun; }()
                     : operation == "admin-register-external-relation-resolver"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunAdminRegisterExternalRelationResolverForWire():begun; }()
+                    : operation == "admin-unregister-external-relation-resolver"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunAdminUnregisterExternalRelationResolverForWire():begun; }()
                     : operation == "ddl-alter-aggregate"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterAggregateForWire():begun; }()
                     : operation == "ddl-drop-aggregate"

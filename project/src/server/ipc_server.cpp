@@ -3438,6 +3438,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateMacroRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropMacroRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateAdminRegisterExternalRelationResolverRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateAdminUnregisterExternalRelationResolverRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kManagementRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kEventSubscribeRequest) ||
@@ -4028,6 +4029,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==256&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlCreateMacroRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlCreateMacro(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==258&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDdlDropMacroRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDdlDropMacro(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==260&&frame.header.payload_schema_id==sbps::kSchemaCoordinateAdminRegisterExternalRelationResolverRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateAdminRegisterExternalRelationResolver(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==262&&frame.header.payload_schema_id==sbps::kSchemaCoordinateAdminUnregisterExternalRelationResolverRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateAdminUnregisterExternalRelationResolver(session_registry,engine_state,frame)));return true;}
   if (frame.header.message_type == 44 &&
       frame.header.payload_schema_id ==
           sbps::kSchemaFinalizeParameterBindingRequestV1) {
