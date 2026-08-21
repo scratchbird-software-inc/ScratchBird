@@ -274,6 +274,8 @@ constexpr std::uint32_t kSchemaCoordinateDatabaseDeserializeLogicalSnapshotReque
 constexpr std::uint32_t kSchemaCoordinateDatabaseDeserializeLogicalSnapshotResultV1 = 7250;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateMacroRequestV1 = 7251;
 constexpr std::uint32_t kSchemaCoordinateDdlCreateMacroResultV1 = 7252;
+constexpr std::uint32_t kSchemaCoordinateDdlDropMacroRequestV1 = 7253;
+constexpr std::uint32_t kSchemaCoordinateDdlDropMacroResultV1 = 7254;
 constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectVectorRequestV1 = 7213;
 constexpr std::uint32_t kSchemaCoordinateDdlRenameObjectVectorResultV1 = 7214;
 constexpr std::uint32_t kSchemaCoordinateAggregateRequestV1 = 7145;
@@ -527,6 +529,8 @@ enum class MessageType : std::uint16_t {
   kCoordinateDatabaseDeserializeLogicalSnapshotResult = 255,
   kCoordinateDdlCreateMacroRequest = 256,
   kCoordinateDdlCreateMacroResult = 257,
+  kCoordinateDdlDropMacroRequest = 258,
+  kCoordinateDdlDropMacroResult = 259,
   kCoordinateDdlRenameObjectVectorRequest = 218,
   kCoordinateDdlRenameObjectVectorResult = 219,
   kCoordinateAggregateRequest = 150,
