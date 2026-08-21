@@ -17,6 +17,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -1958,6 +1959,23 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
         "bound order terms and deterministic tie evidence are required");
   }
 
+  std::unordered_set<std::string> forbidden_tie_identities;
+  forbidden_tie_identities.insert(physical_dag->selected_plan_uuid);
+  forbidden_tie_identities.insert(selected_node->selected_alternative_uuid);
+  forbidden_tie_identities.insert(selected_node->executor_capability_uuid);
+  forbidden_tie_identities.insert(selected_node->cost_vector_uuid);
+  forbidden_tie_identities.insert(
+      selected_node->retained_cost.cost_vector_uuid);
+  forbidden_tie_identities.insert(selected_node->transformation_uuid);
+  forbidden_tie_identities.insert(
+      selected_node->required_property_uuids.begin(),
+      selected_node->required_property_uuids.end());
+  forbidden_tie_identities.insert(
+      selected_node->delivered_property_uuids.begin(),
+      selected_node->delivered_property_uuids.end());
+  forbidden_tie_identities.insert(
+      selected_node->enforced_property_uuids.begin(),
+      selected_node->enforced_property_uuids.end());
   for (const auto& term : *order_terms) {
     if (term.column >= order_batch->columns.size()) {
       return order_refusal("order term column is outside the input schema");
@@ -1968,6 +1986,22 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
     if (!validation.ok) {
       return order_refusal(validation.detail);
     }
+    const auto type_uuid =
+        DescriptorField(column.descriptor.encoded_descriptor, "type_uuid");
+    if (!IsCanonicalUuid(type_uuid)) {
+      return order_refusal("ordered column type identity is unresolved");
+    }
+    forbidden_tie_identities.insert(
+        column.descriptor.descriptor_uuid.canonical);
+    forbidden_tie_identities.insert(type_uuid);
+    if (!term.collation_uuid.empty()) {
+      forbidden_tie_identities.insert(term.collation_uuid);
+    }
+  }
+  if (forbidden_tie_identities.contains(
+          *deterministic_tie_evidence_uuid)) {
+    return order_refusal(
+        "deterministic tie evidence aliases an ordering authority identity");
   }
 
   const auto row_count = input_batch->rows.size();

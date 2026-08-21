@@ -9244,6 +9244,13 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       result.diagnostic = before;
       return result;
     }
+    if (!CanonicalUuidText(ordering_property_uuid) ||
+        !CanonicalUuidText(deterministic_tie_evidence_uuid) ||
+        ordering_property_uuid == deterministic_tie_evidence_uuid) {
+      return refuse(
+          "expression ordering property and deterministic tie evidence are "
+          "not independent");
+    }
 
     const auto selected_node = std::ranges::find_if(
         physical_dag.nodes, [&](const auto& node) {
@@ -9369,6 +9376,9 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       const auto& property_term = property->ordering_terms[ordinal];
       const auto& order_term = order_terms[ordinal];
       const auto key_column = input_batch.columns.size() + ordinal;
+      const auto materialized_type_uuid = ExactEncodedDescriptorField(
+          expression.materialized_column.descriptor.encoded_descriptor,
+          "type_uuid");
       const bool ascending =
           property_term.direction ==
           api::RelationalPropertySortDirection::kAscending;
@@ -9388,7 +9398,19 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
               nulls_first ||
           order_term.column != key_column ||
           order_term.expression_descriptor_id !=
-              expression.materialized_column.descriptor_id) {
+              expression.materialized_column.descriptor_id ||
+          !materialized_type_uuid.has_value() ||
+          !CanonicalUuidText(
+              expression.materialized_column.descriptor.descriptor_uuid
+                  .canonical) ||
+          !CanonicalUuidText(*materialized_type_uuid) ||
+          deterministic_tie_evidence_uuid ==
+              expression.materialized_column.descriptor.descriptor_uuid
+                  .canonical ||
+          deterministic_tie_evidence_uuid == *materialized_type_uuid ||
+          (!property_term.collation_uuid.empty() &&
+           deterministic_tie_evidence_uuid ==
+               property_term.collation_uuid)) {
         return refuse(
             "expression order-key term differs from its typed relational "
             "property");
