@@ -249,9 +249,43 @@ bool DecodeSpatialPoint2dV1(const std::vector<std::uint8_t>& bytes,
       std::bit_cast<double>(GetU64Be(bytes, 8)),
       std::bit_cast<double>(GetU64Be(bytes, 16))};
   if (!std::isfinite(decoded.x) || !std::isfinite(decoded.y)) return false;
+  if ((decoded.x == 0.0 && std::signbit(decoded.x)) ||
+      (decoded.y == 0.0 && std::signbit(decoded.y))) {
+    return false;
+  }
   if (decoded.x == 0.0) decoded.x = 0.0;
   if (decoded.y == 0.0) decoded.y = 0.0;
-  if (bytes != EncodeSpatialPoint2dV1(decoded)) return false;
+  *point = decoded;
+  return true;
+}
+
+bool DecodeSpatialPoint2dV1(const std::string_view bytes,
+                            SpatialPoint2dV1* point) {
+  if (point == nullptr || bytes.size() != 24 || bytes[0] != 'S' ||
+      bytes[1] != 'B' || bytes[2] != 'P' || bytes[3] != '1' ||
+      static_cast<std::uint8_t>(bytes[4]) != 1 ||
+      static_cast<std::uint8_t>(bytes[5]) != 2 || bytes[6] != 0 ||
+      bytes[7] != 0) {
+    return false;
+  }
+  const auto get_u64_be = [&](const std::size_t offset) {
+    std::uint64_t value = 0;
+    for (std::size_t index = 0; index < sizeof(value); ++index) {
+      value = (value << 8) |
+              static_cast<std::uint8_t>(bytes[offset + index]);
+    }
+    return value;
+  };
+  SpatialPoint2dV1 decoded{
+      std::bit_cast<double>(get_u64_be(8)),
+      std::bit_cast<double>(get_u64_be(16))};
+  if (!std::isfinite(decoded.x) || !std::isfinite(decoded.y) ||
+      (decoded.x == 0.0 && std::signbit(decoded.x)) ||
+      (decoded.y == 0.0 && std::signbit(decoded.y))) {
+    return false;
+  }
+  if (decoded.x == 0.0) decoded.x = 0.0;
+  if (decoded.y == 0.0) decoded.y = 0.0;
   *point = decoded;
   return true;
 }

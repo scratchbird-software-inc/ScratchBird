@@ -147,6 +147,8 @@ std::vector<std::uint8_t> EncodeSpatialPoint2dV1(SpatialPoint2dV1 point);
 
 bool DecodeSpatialPoint2dV1(const std::vector<std::uint8_t>& bytes,
                             SpatialPoint2dV1* point);
+bool DecodeSpatialPoint2dV1(std::string_view bytes,
+                            SpatialPoint2dV1* point);
 
 SpatialExecutionResultV1 ExecuteSpatialNativeV1(
     const SpatialExecutionRequestV1& request);

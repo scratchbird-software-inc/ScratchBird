@@ -15,6 +15,7 @@
 #include <ranges>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -481,6 +482,11 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
   } catch (const std::bad_alloc&) {
     refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
            "model-family exchange allocation was refused");
+    cleanup_once();
+    return result;
+  } catch (const std::length_error&) {
+    refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+           "model-family exchange allocation length was refused");
     cleanup_once();
     return result;
   } catch (...) {
