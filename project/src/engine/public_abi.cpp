@@ -196,6 +196,8 @@
 #include "sblr_ddl_drop_macro_runtime.hpp"
 #include "sblr_admin_register_external_relation_resolver_runtime.hpp"
 #include "sblr_admin_unregister_external_relation_resolver_runtime.hpp"
+#include "sblr_ddl_create_dictionary_runtime.hpp"
+#include "sblr_ddl_create_dictionary_coordinator.hpp"
 #include "sblr_ddl_alter_aggregate_runtime.hpp"
 #include "sblr_ddl_alter_aggregate_coordinator.hpp"
 #include "sblr_ddl_drop_aggregate_runtime.hpp"
@@ -6635,6 +6637,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
   bool ddl_drop_macro_root = false;
   bool admin_register_external_relation_resolver_root = false;
   bool admin_unregister_external_relation_resolver_root = false;
+  bool ddl_create_dictionary_root = false;
   bool ddl_alter_aggregate_root = false;
   bool ddl_drop_aggregate_root = false;
   bool ddl_purge_system_history_root = false;
@@ -6709,6 +6712,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
   scratchbird::engine::sblr::SblrDdlDropMacroDescriptorV1 ddl_drop_macro_descriptor{}; std::uint64_t ddl_drop_macro_availability_generation=0; std::vector<std::uint8_t> ddl_drop_macro_result_bytes;
   scratchbird::engine::sblr::SblrAdminRegisterExternalRelationResolverDescriptorV1 admin_register_external_relation_resolver_descriptor{}; std::uint64_t admin_register_external_relation_resolver_availability_generation=0;
   scratchbird::engine::sblr::SblrAdminUnregisterExternalRelationResolverDescriptorV1 admin_unregister_external_relation_resolver_descriptor{}; std::uint64_t admin_unregister_external_relation_resolver_availability_generation=0;
+  scratchbird::engine::sblr::SblrDdlCreateDictionaryDescriptorV1 ddl_create_dictionary_descriptor{}; std::uint64_t ddl_create_dictionary_availability_generation=0; std::vector<std::uint8_t> ddl_create_dictionary_result_bytes;
   scratchbird::engine::sblr::SblrDdlAlterAggregateDescriptorV1 ddl_alter_aggregate_descriptor{}; std::uint64_t ddl_alter_aggregate_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlDropAggregateDescriptorV1 ddl_drop_aggregate_descriptor{}; std::uint64_t ddl_drop_aggregate_availability_generation=0;
   scratchbird::engine::sblr::SblrDdlPurgeSystemHistoryDescriptorV1 ddl_purge_system_history_descriptor{}; std::uint64_t ddl_purge_system_history_availability_generation=0;
@@ -6924,6 +6928,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
     ddl_drop_macro_root = member.operation_id == "engine.op.ddl_drop_macro" && member.opcode == "SBLR_DDL_DROP_MACRO" && member.opcode_code == 1634;
     admin_register_external_relation_resolver_root = member.operation_id == "engine.op.admin_register_external_relation_resolver" && member.opcode == "SBLR_ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER" && member.opcode_code == 1635;
     admin_unregister_external_relation_resolver_root = member.operation_id == "engine.op.admin_unregister_external_relation_resolver" && member.opcode == "SBLR_ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER" && member.opcode_code == 1636;
+    ddl_create_dictionary_root = member.operation_id == "engine.op.ddl_create_dictionary" && member.opcode == "SBLR_DDL_CREATE_DICTIONARY" && (member.opcode_code == 1637 || member.opcode_code == 1608);
     ddl_alter_aggregate_root = member.operation_id == "engine.op.ddl_alter_aggregate" && member.opcode == "SBLR_DDL_ALTER_AGGREGATE" && member.opcode_code == 1626;
     ddl_drop_aggregate_root = member.operation_id == "engine.op.ddl_drop_aggregate" && member.opcode == "SBLR_DDL_DROP_AGGREGATE" && member.opcode_code == 1627;
     ddl_purge_system_history_root = member.operation_id == "engine.op.ddl_purge_system_history" && member.opcode == "SBLR_DDL_PURGE_SYSTEM_HISTORY" && member.opcode_code == 1628;
@@ -6942,6 +6947,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
       if (member.opcode_code == 1634 && member.operation_id == "engine.op.ddl_drop_macro") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_DROP_MACRO");
       if (member.opcode_code == 1635 && member.operation_id == "engine.op.admin_register_external_relation_resolver") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER");
       if (member.opcode_code == 1636 && member.operation_id == "engine.op.admin_unregister_external_relation_resolver") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER");
+      if (member.opcode_code == 1637 && member.operation_id == "engine.op.ddl_create_dictionary") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_CREATE_DICTIONARY");
       if (member.opcode_code == 1626 && member.operation_id == "engine.op.ddl_alter_aggregate") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_ALTER_AGGREGATE");
       if (member.opcode_code == 1627 && member.operation_id == "engine.op.ddl_drop_aggregate") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_DROP_AGGREGATE");
       if (member.opcode_code == 1628 && member.operation_id == "engine.op.ddl_purge_system_history") member_entry = scratchbird::engine::sblr::LookupSblrOpcode("SBLR_DDL_PURGE_SYSTEM_HISTORY");

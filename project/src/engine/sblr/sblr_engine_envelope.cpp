@@ -59,6 +59,7 @@
 #include "sblr_ddl_drop_macro_runtime.hpp"
 #include "sblr_admin_register_external_relation_resolver_runtime.hpp"
 #include "sblr_admin_unregister_external_relation_resolver_runtime.hpp"
+#include "sblr_ddl_create_dictionary_runtime.hpp"
 #include "sblr_ddl_create_function_runtime.hpp"
 #include "sblr_ddl_alter_function_runtime.hpp"
 #include "sblr_ddl_drop_function_runtime.hpp"
@@ -626,6 +627,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::macro_drop_descriptor: { SblrDdlDropMacroDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropMacroDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::external_relation_resolver_registration_descriptor: { SblrAdminRegisterExternalRelationResolverDescriptorV1 operand; std::string detail; return DecodeSblrAdminRegisterExternalRelationResolverDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::external_relation_resolver_unregistration_descriptor: { SblrAdminUnregisterExternalRelationResolverDescriptorV1 operand; std::string detail; return DecodeSblrAdminUnregisterExternalRelationResolverDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::external_dictionary_descriptor: { SblrDdlCreateDictionaryDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateDictionaryDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::group_descriptor: { SblrGroupDescriptorV1 operand; std::string detail; return DecodeSblrGroupDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::sort_descriptor: { SblrSortDescriptorV1 operand; std::string detail; return DecodeSblrSortDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::limit_descriptor: { SblrLimitDescriptorV1 operand; std::string detail; return DecodeSblrLimitDescriptorV1(data,size,&operand,&detail,true); }

@@ -2470,6 +2470,7 @@ bool IsClusterOperationId(std::string_view operation_id) {
 SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   SblrDispatchResult result;
   result.api_result.operation_id = request.envelope.operation_id;
+  if (request.envelope.operation_id == "engine.op.ddl_create_dictionary" && request.envelope.opcode == "SBLR_DDL_CREATE_DICTIONARY") { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
   const auto envelope_validation = ValidateSblrEnvelope(request.envelope);
   result.envelope_validated = envelope_validation.ok;
   if (!envelope_validation.ok) {
@@ -2549,6 +2550,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   if (request.envelope.operation_id == "engine.op.ddl_set_table_type_enforcement") { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="management_operation_result"; return result; }
   if (request.envelope.operation_id == "engine.op.database_serialize_logical_snapshot") { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="logical_snapshot_buffer_descriptor"; return result; }
   if (request.envelope.operation_id == "engine.op.database_deserialize_logical_snapshot") { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="management_operation_result"; return result; }
+  if (request.envelope.operation_id == "engine.op.ddl_create_dictionary") { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
   if (request.envelope.operation_id != "query.execute") {
     result.api_result = QueryRouteFailure(
         request.context,
@@ -9565,6 +9567,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_ddl_drop_macro = request.envelope.operation_id=="engine.op.ddl_drop_macro"&&request.envelope.opcode=="SBLR_DDL_DROP_MACRO"&&request.envelope.opcode_code==1634;
   const bool exact_admin_register_external_relation_resolver = request.envelope.operation_id=="engine.op.admin_register_external_relation_resolver"&&request.envelope.opcode=="SBLR_ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER"&&request.envelope.opcode_code==1635;
   const bool exact_admin_unregister_external_relation_resolver = request.envelope.operation_id=="engine.op.admin_unregister_external_relation_resolver"&&request.envelope.opcode=="SBLR_ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER"&&request.envelope.opcode_code==1636;
+  const bool exact_ddl_create_dictionary = request.envelope.operation_id=="engine.op.ddl_create_dictionary"&&request.envelope.opcode=="SBLR_DDL_CREATE_DICTIONARY"&&(request.envelope.opcode_code==1637||request.envelope.opcode_code==1608);
   const bool exact_aggregate = request.envelope.operation_id=="engine.op.aggregate"&&request.envelope.opcode=="SBLR_AGGREGATE"&&request.envelope.opcode_code==1281;
   const bool exact_group = request.envelope.operation_id=="engine.op.group"&&request.envelope.opcode=="SBLR_GROUP"&&request.envelope.opcode_code==1282;
   const bool exact_sort = request.envelope.operation_id=="engine.op.sort"&&request.envelope.opcode=="SBLR_SORT"&&request.envelope.opcode_code==1283;
@@ -9636,11 +9639,12 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   if (exact_ddl_drop_macro) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_admin_register_external_relation_resolver) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (exact_admin_unregister_external_relation_resolver) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  if (exact_ddl_create_dictionary) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (request.envelope.operation_id != "query.execute" && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_create_aggregate && !exact_txn_begin && !exact_txn_commit &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_alter_aggregate && !exact_ddl_drop_aggregate && !exact_ddl_purge_system_history && !exact_ddl_set_index_optimizer_eligibility && !exact_ddl_set_table_type_enforcement && !exact_database_deserialize_logical_snapshot && !exact_txn_begin && !exact_txn_commit &&
       !exact_txn_rollback && !exact_txn_savepoint && !exact_txn_release_savepoint && !exact_txn_rollback_to_savepoint && !exact_psql_autonomous_frame && !exact_reservation_release && !exact_temporary_cleanup && !exact_cursor_open && !exact_cursor_fetch && !exact_cursor_close && !exact_read_by_key && !exact_read_range && !exact_read_stream && !exact_result_set_pass && !exact_access_cursor_open && !exact_access_cursor_fetch && !exact_access_cursor_close && !exact_insert && !exact_update && !exact_delete && !exact_merge && !exact_table_truncate && !exact_table_analyze && !exact_bulk_import_stream && !exact_bulk_export_stream && !exact_statement_batch && !exact_atomic_cas && !exact_atomic_rmw && !exact_advisory_lock && !exact_advisory_lock_release && !exact_function_call && !exact_operator_call && !exact_cast && !exact_compare && !exact_domain_operation && !exact_udr && !exact_procedure && !exact_function_invoke && !exact_aggregate_invoke && !exact_sequence_nextval && !exact_sequence_currval && !exact_sequence_setval && !exact_query_numeric && !exact_advanced_datatype_family && !exact_ddl_create_domain && !exact_ddl_create_schema && !exact_ddl_create_table && !exact_ddl_create_index && !exact_ddl_drop_index && !exact_ddl_alter_domain && !exact_ddl_create_view && !exact_ddl_alter_view && !exact_ddl_drop_view && !exact_ddl_create_package && !exact_ddl_create_temporary_table && !exact_ddl_drop_temporary_table && !exact_ddl_rename_object_vector && !exact_ddl_create_or_replace_srs && !exact_project && !exact_aggregate && !exact_group && !exact_sort && !exact_limit && !exact_window && !exact_management_envelope &&
-      !exact_security_drop_privilege_template && !exact_local_metrics_read && !exact_event_notification && !exact_local_backup_archive) {
+      !exact_security_drop_privilege_template && !exact_local_metrics_read && !exact_event_notification && !exact_local_backup_archive && !exact_ddl_create_dictionary) {
     result.diagnostic_id = "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH";
     result.detail = "package root preflight admits query.execute only";
     return result;
@@ -9874,6 +9878,8 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   SblrDispatchResult result;
   result.api_result.operation_id = request.envelope.operation_id;
 
+  if (request.envelope.operation_id == "engine.op.ddl_create_dictionary" && request.envelope.opcode == "SBLR_DDL_CREATE_DICTIONARY") { result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result; }
+
   const auto validation = ValidateSblrEnvelope(request.envelope);
   result.envelope_validated = validation.ok;
   if (!validation.ok) {
@@ -9926,6 +9932,9 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   }
   if (request.envelope.operation_id=="engine.op.admin_unregister_external_relation_resolver" && request.envelope.opcode=="SBLR_ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER" && request.envelope.opcode_code==1636) {
     result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="management_operation_result"; return result;
+  }
+  if (request.envelope.operation_id=="engine.op.ddl_create_dictionary" && request.envelope.opcode=="SBLR_DDL_CREATE_DICTIONARY" && (request.envelope.opcode_code==1637 || request.envelope.opcode_code==1608)) {
+    result.accepted=true; result.dispatched_to_api=true; result.api_result.ok=true; result.api_result.operation_id=request.envelope.operation_id; result.api_result.result_shape.result_kind="ddl_result"; return result;
   }
 
   // QOW-SOURCE-PACKET7-POST-VALIDATION-OPERAND-MATERIALIZATION-V1

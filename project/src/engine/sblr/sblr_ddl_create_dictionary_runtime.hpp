@@ -1,0 +1,6 @@
+#pragma once
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+namespace scratchbird::engine::sblr { struct SblrDdlCreateDictionaryRequestV1{std::array<std::uint8_t,16> receipt{};std::uint64_t occurrence=0;std::uint32_t dictionary_occurrence=0;}; struct SblrDdlCreateDictionaryDescriptorV1{std::array<std::uint8_t,400> body{};std::array<std::uint8_t,32> evidence{};std::uint64_t availability=0;}; struct SblrDdlCreateDictionaryResultV1{std::array<std::uint8_t,248> body{};std::array<std::uint8_t,32> evidence{};std::uint64_t availability=0;std::array<std::uint8_t,16> publication_barrier{};}; std::vector<std::uint8_t> EncodeSblrDdlCreateDictionaryRequestV1(const SblrDdlCreateDictionaryRequestV1&); bool DecodeSblrDdlCreateDictionaryRequestV1(const std::uint8_t*,std::size_t,SblrDdlCreateDictionaryRequestV1*,std::string*); std::vector<std::uint8_t> EncodeSblrDdlCreateDictionaryDescriptorV1(const SblrDdlCreateDictionaryDescriptorV1&,bool); bool DecodeSblrDdlCreateDictionaryDescriptorV1(const std::uint8_t*,std::size_t,SblrDdlCreateDictionaryDescriptorV1*,std::string*,bool); std::vector<std::uint8_t> EncodeSblrDdlCreateDictionaryResultV1(const SblrDdlCreateDictionaryResultV1&); bool DecodeSblrDdlCreateDictionaryResultV1(const std::uint8_t*,std::size_t,SblrDdlCreateDictionaryResultV1*,std::string*); }

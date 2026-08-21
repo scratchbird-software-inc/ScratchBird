@@ -307,6 +307,8 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateAggregateForWire():begun; }()
                     : operation == "ddl-create-macro"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateMacroForWire():begun; }()
+                    : operation == "ddl-create-dictionary"
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateDictionaryForWire():begun; }()
                     : operation == "ddl-drop-macro"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropMacroForWire():begun; }()
                     : operation == "admin-register-external-relation-resolver"

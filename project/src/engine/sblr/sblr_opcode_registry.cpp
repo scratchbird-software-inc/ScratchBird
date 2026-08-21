@@ -359,7 +359,7 @@ constexpr std::array<CanonicalOpcodeCodeRow, 395> kCanonicalOpcodeCodes{{
     {"SBLR_CLUSTER_DECLARE_REGION", 0x0B0Au},
     {"SBLR_CLUSTER_DECLARE_AVAILABILITY_ZONE", 0x0B0Bu},
     {"SBLR_CLUSTER_DECLARE_DATA_PLACEMENT", 0x0B0Cu},
-    {"SBLR_DDL_CREATE_DICTIONARY", 0x0648u},
+    {"SBLR_DDL_CREATE_DICTIONARY", 0x0665u},
     {"SBLR_DDL_DROP_DICTIONARY", 0x0649u},
     {"SBLR_DDL_CREATE_NAMED_COLLECTION", 0x064Au},
     {"SBLR_DDL_DROP_NAMED_COLLECTION", 0x064Bu},
@@ -680,6 +680,7 @@ void ApplyDdlCreateMacroContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DDL_CREA
 void ApplyDdlDropMacroContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DDL_DROP_MACRO")return;e->operation_id="engine.op.ddl_drop_macro";e->operand_contract="macro_drop_descriptor";e->result_contract="ddl_result";e->executor_id="engine.op.ddl_drop_macro";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
 void ApplyAdminRegisterExternalRelationResolverContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER")return;e->operation_id="engine.op.admin_register_external_relation_resolver";e->operand_contract="external_relation_resolver_registration_descriptor";e->result_contract="management_operation_result";e->executor_id="engine.op.admin_register_external_relation_resolver";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
 void ApplyAdminUnregisterExternalRelationResolverContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER")return;e->operation_id="engine.op.admin_unregister_external_relation_resolver";e->operand_contract="external_relation_resolver_unregistration_descriptor";e->result_contract="management_operation_result";e->executor_id="engine.op.admin_unregister_external_relation_resolver";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
+void ApplyDdlCreateDictionaryContract(SblrOpcodeEntry*e){if(e->opcode!="SBLR_DDL_CREATE_DICTIONARY")return;e->operation_id="engine.op.ddl_create_dictionary";e->operand_contract="external_dictionary_descriptor";e->result_contract="ddl_result";e->executor_id="engine.op.ddl_create_dictionary";e->executor_evidence_required=e->executor_evidence_accepted=true;e->missing_executor_evidence_diagnostic="SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING";}
 
 // IA10B-LOCAL-METRICS-READ-WIRE-V1.  This is the one local observation
 // reader admitted by the Core closure; it is deliberately distinct from all
@@ -778,6 +779,7 @@ SblrOpcodeEntry CanonicalEntry(std::string operation_id,
   ApplyDdlDropMacroContract(&entry);
   ApplyAdminRegisterExternalRelationResolverContract(&entry);
   ApplyAdminUnregisterExternalRelationResolverContract(&entry);
+  ApplyDdlCreateDictionaryContract(&entry);
   ApplyStatementBatchContract(&entry);
   ApplyAtomicCasContract(&entry);
   ApplyAtomicRmwContract(&entry);
@@ -1169,6 +1171,7 @@ CanonicalEntry("engine.op.ddl_create_or_replace_srs", "SBLR_DDL_CREATE_OR_REPLAC
       CanonicalEntry("engine.op.ddl_drop_macro", "SBLR_DDL_DROP_MACRO", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("engine.op.admin_register_external_relation_resolver", "SBLR_ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.admin_unregister_external_relation_resolver", "SBLR_ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
+      CanonicalEntry("engine.op.ddl_create_dictionary", "SBLR_DDL_CREATE_DICTIONARY", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_trigger", "SBLR_DDL_DROP_TRIGGER", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("engine.op.ddl_drop_index", "SBLR_DDL_DROP_INDEX", "catalog-ddl", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("kv.structured.stream_read", "SBLR_KV_STRUCTURED_STREAM_READ", "kv-structured-execution", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
@@ -1211,7 +1214,6 @@ CanonicalEntry("engine.op.ddl_create_or_replace_srs", "SBLR_DDL_CREATE_OR_REPLAC
       CanonicalEntry("cluster.region.declare", "SBLR_CLUSTER_DECLARE_REGION", "cluster-management", SblrOpcodeCategory::cluster, SblrOpcodeSupport::cluster_refusal, SblrOpcodeTransactionEffect::management, SblrOpcodeSecurityClass::sysarch_authorized, true, true, "SB_DIAG_CLUSTER_TXN_UNAVAILABLE"),
       CanonicalEntry("cluster.availability_zone.declare", "SBLR_CLUSTER_DECLARE_AVAILABILITY_ZONE", "cluster-management", SblrOpcodeCategory::cluster, SblrOpcodeSupport::cluster_refusal, SblrOpcodeTransactionEffect::management, SblrOpcodeSecurityClass::sysarch_authorized, true, true, "SB_DIAG_CLUSTER_TXN_UNAVAILABLE"),
       CanonicalEntry("cluster.data_placement.declare", "SBLR_CLUSTER_DECLARE_DATA_PLACEMENT", "cluster-management", SblrOpcodeCategory::cluster, SblrOpcodeSupport::cluster_refusal, SblrOpcodeTransactionEffect::management, SblrOpcodeSecurityClass::sysarch_authorized, true, true, "SB_DIAG_CLUSTER_TXN_UNAVAILABLE"),
-      CanonicalEntry("ddl.dictionary.create", "SBLR_DDL_CREATE_DICTIONARY", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.dictionary.drop", "SBLR_DDL_DROP_DICTIONARY", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.named_collection.create", "SBLR_DDL_CREATE_NAMED_COLLECTION", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
       CanonicalEntry("ddl.named_collection.drop", "SBLR_DDL_DROP_NAMED_COLLECTION", "catalog-ddl", SblrOpcodeCategory::ddl, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::local_or_cluster_write, SblrOpcodeSecurityClass::admin_authorized, true),
@@ -1789,6 +1791,7 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
   if (code == 1634 && operation_id == "engine.op.ddl_drop_macro" && opcode == "SBLR_DDL_DROP_MACRO") { result.entry = LookupSblrOpcode("SBLR_DDL_DROP_MACRO"); result.ok = result.entry != nullptr; return result; }
   if (code == 1635 && operation_id == "engine.op.admin_register_external_relation_resolver" && opcode == "SBLR_ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER") { result.entry = LookupSblrOpcode("SBLR_ADMIN_REGISTER_EXTERNAL_RELATION_RESOLVER"); result.ok = result.entry != nullptr; return result; }
   if (code == 1636 && operation_id == "engine.op.admin_unregister_external_relation_resolver" && opcode == "SBLR_ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER") { result.entry = LookupSblrOpcode("SBLR_ADMIN_UNREGISTER_EXTERNAL_RELATION_RESOLVER"); result.ok = result.entry != nullptr; return result; }
+  if (code == 1637 && operation_id == "engine.op.ddl_create_dictionary" && opcode == "SBLR_DDL_CREATE_DICTIONARY") { result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_DICTIONARY"); result.ok = result.entry != nullptr; return result; }
   if (code == 1029 && operation_id == "engine.op.udr_invoke" &&
       opcode == "SBLR_UDR_INVOKE") {
     result.entry = LookupSblrOpcode("SBLR_UDR_INVOKE");
@@ -1969,6 +1972,9 @@ SblrOpcodeValidationResult ValidateSblrOpcodeForEnvelope(const SblrOperationEnve
   if (envelope.opcode_code == 8194 && envelope.operation_id == "engine.op.kv_structured_scan" && envelope.opcode == "SBLR_KV_STRUCTURED_SCAN") {
     result.entry = LookupSblrOpcode("SBLR_KV_STRUCTURED_SCAN"); result.ok = result.entry != nullptr;
     return result;
+  }
+  if ((envelope.opcode_code == 1637 || envelope.opcode_code == 1608) && envelope.operation_id == "engine.op.ddl_create_dictionary" && envelope.opcode == "SBLR_DDL_CREATE_DICTIONARY") {
+    result.entry = LookupSblrOpcode("SBLR_DDL_CREATE_DICTIONARY"); result.ok = result.entry != nullptr; return result;
   }
   if (envelope.opcode_code == 8195 && envelope.operation_id == "engine.op.kv_structured_stream_read" && envelope.opcode == "SBLR_KV_STRUCTURED_STREAM_READ") {
     result.entry = LookupSblrOpcode("SBLR_KV_STRUCTURED_STREAM_READ"); result.ok = result.entry != nullptr;

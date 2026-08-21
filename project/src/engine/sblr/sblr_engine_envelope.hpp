@@ -114,6 +114,7 @@ enum class SblrValueKind : std::uint16_t {
   macro_drop_descriptor = 123,
   external_relation_resolver_registration_descriptor = 124,
   external_relation_resolver_unregistration_descriptor = 125,
+  external_dictionary_descriptor = 126,
   sequence_setval_descriptor = 65,
   numeric_operation_descriptor = 66,
   advanced_datatype_family_descriptor = 67,

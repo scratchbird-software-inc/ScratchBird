@@ -197,6 +197,7 @@ class SbsqlTestWireSession {
   PipelineResult RunDatabaseSerializeLogicalSnapshotForWire();
   PipelineResult RunDatabaseDeserializeLogicalSnapshotForWire();
   PipelineResult RunDdlCreateMacroForWire();
+  PipelineResult RunDdlCreateDictionaryForWire();
   PipelineResult RunDdlDropMacroForWire();
   PipelineResult RunAdminRegisterExternalRelationResolverForWire();
   PipelineResult RunAdminUnregisterExternalRelationResolverForWire();
