@@ -577,11 +577,35 @@ CanonicalDocumentWildcardExpansion ExpandCanonicalDocumentWildcard(
 }
 
 bool RuntimeMaterializedBatchMemoryBytes(const exec::DescriptorBatch& batch,
-                                         std::uint64_t* bytes) {
+                                         std::uint64_t* bytes,
+                                         const exec::DescriptorCancellationProbe
+                                             cancellation_requested = nullptr,
+                                         const void* cancellation_context = nullptr,
+                                         bool* cancellation_observed = nullptr,
+                                         bool* cancellation_probe_failed = nullptr) {
   if (bytes == nullptr) return false;
+  if (cancellation_observed != nullptr) *cancellation_observed = false;
+  if (cancellation_probe_failed != nullptr) {
+    *cancellation_probe_failed = false;
+  }
+  const auto stopped = [&] {
+    if (cancellation_requested == nullptr) return false;
+    try {
+      if (!cancellation_requested(cancellation_context)) return false;
+      if (cancellation_observed != nullptr) *cancellation_observed = true;
+      return true;
+    } catch (...) {
+      if (cancellation_probe_failed != nullptr) {
+        *cancellation_probe_failed = true;
+      }
+      return true;
+    }
+  };
   *bytes = 1;
   for (const auto& row : batch.rows) {
+    if (stopped()) return false;
     for (const auto& value : row.values) {
+      if (stopped()) return false;
       if (value.encoded_value.size() >
           std::numeric_limits<std::uint64_t>::max() - *bytes) {
         return false;
@@ -6770,7 +6794,38 @@ bool MaterializeExpressionSortBatch(
     exec::DescriptorBatch* sort_batch,
     std::string* detail,
     const std::uint64_t maximum_batch_bytes =
-        std::numeric_limits<std::uint64_t>::max()) {
+        std::numeric_limits<std::uint64_t>::max(),
+    const exec::DescriptorCancellationProbe cancellation_requested = nullptr,
+    const void* cancellation_context = nullptr,
+    bool* cancellation_observed = nullptr,
+    bool* cancellation_probe_failed = nullptr) {
+  if (cancellation_observed != nullptr) *cancellation_observed = false;
+  if (cancellation_probe_failed != nullptr) {
+    *cancellation_probe_failed = false;
+  }
+  const auto poll_cancellation = [&](const char* phase) {
+    if (cancellation_requested == nullptr) return false;
+    try {
+      if (!cancellation_requested(cancellation_context)) return false;
+      if (cancellation_observed != nullptr) *cancellation_observed = true;
+      *detail = std::string("expression SORT cancellation observed ") + phase;
+      return true;
+    } catch (const std::exception& exception) {
+      if (cancellation_probe_failed != nullptr) {
+        *cancellation_probe_failed = true;
+      }
+      *detail = std::string("expression SORT cancellation probe threw: ") +
+                exception.what();
+      return true;
+    } catch (...) {
+      if (cancellation_probe_failed != nullptr) {
+        *cancellation_probe_failed = true;
+      }
+      *detail =
+          "expression SORT cancellation probe threw a non-standard exception";
+      return true;
+    }
+  };
   if (sort_batch == nullptr || detail == nullptr || expressions.empty() ||
       input_batch.columns.empty()) {
     if (detail != nullptr) {
@@ -6778,26 +6833,57 @@ bool MaterializeExpressionSortBatch(
     }
     return false;
   }
+  if (poll_cancellation("before materialization")) return false;
   std::uint64_t materialized_bytes = 0;
-  if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
-                                           &materialized_bytes) ||
-      materialized_bytes > maximum_batch_bytes) {
+  if (!RuntimeMaterializedBatchMemoryBytes(
+          input_batch, &materialized_bytes, cancellation_requested,
+          cancellation_context, cancellation_observed,
+          cancellation_probe_failed)) {
+    if ((cancellation_observed != nullptr && *cancellation_observed) ||
+        (cancellation_probe_failed != nullptr &&
+         *cancellation_probe_failed)) {
+      *detail = cancellation_probe_failed != nullptr &&
+                        *cancellation_probe_failed
+                    ? "expression SORT cancellation probe threw while accounting input memory"
+                    : "expression SORT cancellation observed while accounting input memory";
+      return false;
+    }
+    *detail = "expression SORT input memory accounting overflowed";
+    return false;
+  }
+  if (materialized_bytes > maximum_batch_bytes) {
     *detail = "expression SORT input exceeds its materialization ceiling";
     return false;
   }
   *sort_batch = input_batch;
+  if (poll_cancellation("after input materialization")) {
+    *sort_batch = {};
+    return false;
+  }
   detail->clear();
   for (const auto& expression : expressions) {
+    if (poll_cancellation("while materializing key columns")) {
+      *sort_batch = {};
+      return false;
+    }
     sort_batch->columns.push_back(expression.materialized_column);
   }
 
   CanonicalRelationalExpressionRuntime runtime(dag, expression_services);
   for (std::size_t row_ordinal = 0;
        row_ordinal < input_batch.rows.size(); ++row_ordinal) {
+    if (poll_cancellation("while materializing key rows")) {
+      *sort_batch = {};
+      return false;
+    }
     auto& sort_row = sort_batch->rows[row_ordinal];
     const auto& input_row = input_batch.rows[row_ordinal];
     sort_row.values.reserve(input_row.values.size() + expressions.size());
     for (const auto& expression : expressions) {
+      if (poll_cancellation("while evaluating a key expression")) {
+        *sort_batch = {};
+        return false;
+      }
       api::EngineTypedValue value;
       if (expression.row_independent_value.has_value()) {
         value = *expression.row_independent_value;
@@ -6818,9 +6904,16 @@ bool MaterializeExpressionSortBatch(
       expression_value_row.values.push_back(std::move(value));
       expression_value_batch.rows.push_back(
           std::move(expression_value_row));
-      const auto value_validation =
-          exec::ValidateDescriptorBatch(expression_value_batch);
+      const auto value_validation = exec::ValidateDescriptorBatch(
+          expression_value_batch, cancellation_requested,
+          cancellation_context, cancellation_observed);
       if (!value_validation.ok) {
+        if (value_validation.diagnostic_code ==
+            "SB_MODEL_COORDINATOR_LEG_FAILED_V1") {
+          if (cancellation_probe_failed != nullptr) {
+            *cancellation_probe_failed = true;
+          }
+        }
         *detail = value_validation.diagnostic_code + ":" +
                   value_validation.detail;
         *sort_batch = {};
@@ -6846,12 +6939,31 @@ bool MaterializeExpressionSortBatch(
   std::vector<std::uint32_t> descriptor_ids;
   descriptor_ids.reserve(sort_batch->columns.size());
   for (const auto& column : sort_batch->columns) {
+    if (poll_cancellation("while validating key descriptors")) {
+      *sort_batch = {};
+      return false;
+    }
     descriptor_ids.push_back(column.descriptor_id);
   }
-  const auto canonical =
-      exec::ValidateCanonicalDescriptorBatch(*sort_batch, descriptor_ids);
+  if (poll_cancellation("before validating the key batch")) {
+    *sort_batch = {};
+    return false;
+  }
+  const auto canonical = exec::ValidateCanonicalDescriptorBatch(
+      *sort_batch, descriptor_ids, cancellation_requested,
+      cancellation_context, cancellation_observed);
   if (!canonical.ok) {
+    if (canonical.diagnostic_code ==
+        "SB_MODEL_COORDINATOR_LEG_FAILED_V1") {
+      if (cancellation_probe_failed != nullptr) {
+        *cancellation_probe_failed = true;
+      }
+    }
     *detail = canonical.diagnostic_code + ":" + canonical.detail;
+    *sort_batch = {};
+    return false;
+  }
+  if (poll_cancellation("after validating the key batch")) {
     *sort_batch = {};
     return false;
   }
@@ -8997,10 +9109,34 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
 }
 
 bool AddBatchMemoryBytes(const exec::DescriptorBatch& batch,
-                         std::uint64_t* memory_bytes) {
+                         std::uint64_t* memory_bytes,
+                         const exec::DescriptorCancellationProbe
+                             cancellation_requested = nullptr,
+                         const void* cancellation_context = nullptr,
+                         bool* cancellation_observed = nullptr,
+                         bool* cancellation_probe_failed = nullptr) {
   if (memory_bytes == nullptr) return false;
+  if (cancellation_observed != nullptr) *cancellation_observed = false;
+  if (cancellation_probe_failed != nullptr) {
+    *cancellation_probe_failed = false;
+  }
+  const auto stopped = [&] {
+    if (cancellation_requested == nullptr) return false;
+    try {
+      if (!cancellation_requested(cancellation_context)) return false;
+      if (cancellation_observed != nullptr) *cancellation_observed = true;
+      return true;
+    } catch (...) {
+      if (cancellation_probe_failed != nullptr) {
+        *cancellation_probe_failed = true;
+      }
+      return true;
+    }
+  };
   for (const auto& row : batch.rows) {
+    if (stopped()) return false;
     for (const auto& value : row.values) {
+      if (stopped()) return false;
       if (value.encoded_value.size() >
           std::numeric_limits<std::uint64_t>::max() - *memory_bytes) {
         return false;
@@ -9769,7 +9905,7 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
         physical_dag, selected_physical_node_id, order_terms,
         ordering_property_uuid, deterministic_tie_evidence_uuid,
         maximum_pair_comparisons, maximum_order_key_batch_bytes,
-        mga_authority, false);
+        mga_authority, false, nullptr, nullptr);
   }
 
   static exec::CanonicalDescriptorSortResult IssueAndExecuteBorrowed(
@@ -9785,7 +9921,9 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       const std::size_t maximum_pair_comparisons,
       const std::uint64_t maximum_order_key_batch_bytes,
       const exec::CanonicalExecutionMgaAuthority& mga_authority,
-      std::uint64_t* actual_order_key_batch_bytes = nullptr) {
+      std::uint64_t* actual_order_key_batch_bytes = nullptr,
+      const exec::DescriptorCancellationProbe cancellation_requested = nullptr,
+      const void* cancellation_context = nullptr) {
     if (actual_order_key_batch_bytes != nullptr) {
       *actual_order_key_batch_bytes = 0;
     }
@@ -9794,7 +9932,7 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
         physical_dag, selected_physical_node_id, order_terms,
         ordering_property_uuid, deterministic_tie_evidence_uuid,
         maximum_pair_comparisons, maximum_order_key_batch_bytes,
-        mga_authority, true);
+        mga_authority, true, cancellation_requested, cancellation_context);
     if (!issued.diagnostic.ok || issued.receipt == nullptr) {
       exec::CanonicalDescriptorSortResult result;
       result.diagnostic = std::move(issued.diagnostic);
@@ -9806,7 +9944,8 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     exec::CanonicalDescriptorSortRequest request;
     request.order_key_receipt = std::move(issued.receipt);
     return exec::ExecuteCanonicalDescriptorSort(
-        request, physical_dag, input_batch);
+        request, physical_dag, input_batch, cancellation_requested,
+        cancellation_context);
   }
 
  private:
@@ -9823,7 +9962,9 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       const std::size_t maximum_pair_comparisons,
       const std::uint64_t maximum_order_key_batch_bytes,
       const exec::CanonicalExecutionMgaAuthority& mga_authority,
-      const bool borrowed_execution_carriers) {
+      const bool borrowed_execution_carriers,
+      const exec::DescriptorCancellationProbe cancellation_requested,
+      const void* cancellation_context) {
     ExpressionSortKeyReceiptIssueResult result;
     const auto refuse = [&](std::string detail) {
       result.diagnostic.ok = false;
@@ -9834,7 +9975,35 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       result.actual_order_key_batch_bytes = 0;
       return result;
     };
+    const auto poll_cancellation = [&](const char* phase) {
+      if (cancellation_requested == nullptr) return false;
+      try {
+        if (!cancellation_requested(cancellation_context)) return false;
+        result.diagnostic.ok = false;
+        result.diagnostic.diagnostic_code =
+            "SB_MODEL_EXECUTION_CANCELLED_V1";
+        result.diagnostic.detail =
+            std::string("expression sort-key cancellation observed ") + phase;
+      } catch (const std::exception& exception) {
+        result.diagnostic.ok = false;
+        result.diagnostic.diagnostic_code =
+            "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+        result.diagnostic.detail =
+            std::string("expression sort-key cancellation probe threw: ") +
+            exception.what();
+      } catch (...) {
+        result.diagnostic.ok = false;
+        result.diagnostic.diagnostic_code =
+            "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+        result.diagnostic.detail =
+            "expression sort-key cancellation probe threw a non-standard exception";
+      }
+      result.receipt.reset();
+      result.actual_order_key_batch_bytes = 0;
+      return true;
+    };
 
+    if (poll_cancellation("before authority validation")) return result;
     const auto before = exec::RevalidateCanonicalExecutionMgaAuthority(
         mga_authority, physical_dag);
     if (!before.ok) {
@@ -9887,7 +10056,8 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       return refuse("expression order-key physical schema is not preserved");
     }
     auto validation = exec::ValidateCanonicalDescriptorBatch(
-        input_batch, input_node->output_descriptor_ids);
+        input_batch, input_node->output_descriptor_ids,
+        cancellation_requested, cancellation_context, nullptr);
     if (!validation.ok) {
       result.diagnostic = std::move(validation);
       return result;
@@ -9897,9 +10067,27 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     std::uint64_t comparison_memory_bytes = 0;
     std::uint64_t row_order_memory_bytes = 0;
     std::uint64_t fixed_memory_bytes = 0;
-    if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
-                                             &input_memory_bytes) ||
-        !CheckedMultiply(input_batch.rows.size(), input_batch.rows.size(),
+    bool input_memory_cancelled = false;
+    bool input_memory_probe_failed = false;
+    if (!RuntimeMaterializedBatchMemoryBytes(
+            input_batch, &input_memory_bytes, cancellation_requested,
+            cancellation_context, &input_memory_cancelled,
+            &input_memory_probe_failed)) {
+      if (input_memory_cancelled || input_memory_probe_failed) {
+        result.diagnostic.ok = false;
+        result.diagnostic.diagnostic_code =
+            input_memory_probe_failed
+                ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                : "SB_MODEL_EXECUTION_CANCELLED_V1";
+        result.diagnostic.detail = input_memory_probe_failed
+            ? "expression sort-key cancellation probe threw while accounting input memory"
+            : "expression sort-key cancellation observed while accounting input memory";
+        return result;
+      }
+      return refuse(
+          "expression order-key input memory accounting overflowed");
+    }
+    if (!CheckedMultiply(input_batch.rows.size(), input_batch.rows.size(),
                          &comparison_memory_bytes) ||
         !CheckedMultiply(input_batch.rows.size(), sizeof(std::size_t),
                          &row_order_memory_bytes) ||
@@ -9941,6 +10129,9 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     expression_ids.reserve(expressions.size());
     result_descriptor_ids.reserve(expressions.size());
     for (const auto& expression : expressions) {
+      if (poll_cancellation("while binding expression identities")) {
+        return result;
+      }
       expression_ids.push_back(expression.expression_id);
       result_descriptor_ids.push_back(
           expression.materialized_column.descriptor_id);
@@ -9965,6 +10156,9 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     }
 
     for (std::size_t ordinal = 0; ordinal < expressions.size(); ++ordinal) {
+      if (poll_cancellation("while validating expression order terms")) {
+        return result;
+      }
       const auto& expression = expressions[ordinal];
       const auto expression_record = std::ranges::find_if(
           relational_dag.expressions, [&](const auto& candidate) {
@@ -10016,18 +10210,49 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
 
     exec::DescriptorBatch order_key_batch;
     std::string materialization_detail;
+    bool materialization_cancelled = false;
+    bool materialization_probe_failed = false;
     if (!MaterializeExpressionSortBatch(
             relational_dag, expressions, input_batch, expression_services,
             &order_key_batch, &materialization_detail,
-            selected_order_key_batch_bytes)) {
+            selected_order_key_batch_bytes, cancellation_requested,
+            cancellation_context, &materialization_cancelled,
+            &materialization_probe_failed)) {
+      if (materialization_cancelled || materialization_probe_failed) {
+        result.diagnostic.ok = false;
+        result.diagnostic.diagnostic_code =
+            materialization_probe_failed
+                ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                : "SB_MODEL_EXECUTION_CANCELLED_V1";
+        result.diagnostic.detail = std::move(materialization_detail);
+        return result;
+      }
       return refuse("expression order-key materialization: " +
                     materialization_detail);
     }
     std::uint64_t actual_order_key_batch_bytes = 1;
     std::uint64_t pair_comparisons = 0;
-    if (!AddBatchMemoryBytes(order_key_batch,
-                             &actual_order_key_batch_bytes) ||
-        actual_order_key_batch_bytes > selected_order_key_batch_bytes ||
+    bool key_memory_cancelled = false;
+    bool key_memory_probe_failed = false;
+    if (!AddBatchMemoryBytes(
+            order_key_batch, &actual_order_key_batch_bytes,
+            cancellation_requested, cancellation_context,
+            &key_memory_cancelled, &key_memory_probe_failed)) {
+      if (key_memory_cancelled || key_memory_probe_failed) {
+        result.diagnostic.ok = false;
+        result.diagnostic.diagnostic_code =
+            key_memory_probe_failed
+                ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                : "SB_MODEL_EXECUTION_CANCELLED_V1";
+        result.diagnostic.detail = key_memory_probe_failed
+            ? "expression sort-key cancellation probe threw while accounting key memory"
+            : "expression sort-key cancellation observed while accounting key memory";
+        return result;
+      }
+      return refuse(
+          "expression order-key payload memory accounting overflowed");
+    }
+    if (actual_order_key_batch_bytes > selected_order_key_batch_bytes ||
         !CheckedMultiply(input_batch.rows.size(), input_batch.rows.size(),
                          &pair_comparisons) ||
         pair_comparisons > maximum_pair_comparisons) {
@@ -10042,6 +10267,7 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       result.diagnostic = after;
       return result;
     }
+    if (poll_cancellation("before receipt publication")) return result;
 
     try {
       auto receipt =
@@ -10071,6 +10297,7 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     } catch (const std::bad_alloc&) {
       return refuse("expression order-key receipt allocation failed");
     }
+    if (poll_cancellation("after receipt publication")) return result;
     result.actual_order_key_batch_bytes = actual_order_key_batch_bytes;
     result.diagnostic = {};
     return result;
@@ -14487,6 +14714,48 @@ MakeLiveGroupedCountSumRegistration(
   return registration;
 }
 
+bool InvokeLiveSortCancellationProbe(const void* context) {
+  if (context == nullptr) return false;
+  return (*static_cast<const std::function<bool()>*>(context))();
+}
+
+const exec::PhysicalAdmissionEvidence* FindLiveSortCancellationPolicy(
+    const exec::TypedPhysicalNodeDag& dag) {
+  const exec::PhysicalAdmissionEvidence* policy = nullptr;
+  for (const auto& evidence : dag.admission_evidence) {
+    if (evidence.stage != exec::PhysicalAdmissionStage::kPolicyCapability) {
+      continue;
+    }
+    if (policy != nullptr || evidence.evidence_uuid.empty()) return nullptr;
+    policy = &evidence;
+  }
+  return policy;
+}
+
+void BindLiveSortFailure(
+    exec::DescriptorRuntimeDiagnostic diagnostic,
+    const exec::PhysicalAdmissionEvidence* cancellation_policy,
+    exec::CanonicalPhysicalDispatchStepResult* step) {
+  if (step == nullptr) return;
+  step->diagnostic = std::move(diagnostic);
+  if (step->diagnostic.diagnostic_code ==
+      "SB_MODEL_EXECUTION_CANCELLED_V1") {
+    step->diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1";
+    step->cancellation_observed = true;
+    step->transient_state_cleanup_proven = true;
+    step->cancellation_evidence_uuid =
+        cancellation_policy == nullptr
+            ? std::string{}
+            : cancellation_policy->evidence_uuid;
+  } else if (step->diagnostic.diagnostic_code ==
+             "SB_MODEL_COORDINATOR_LEG_FAILED_V1") {
+    step->diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+    step->transient_state_cleanup_proven = true;
+  }
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
     std::vector<exec::CanonicalDescriptorOrderTerm> order_terms,
     std::string deterministic_tie_evidence_uuid,
@@ -14517,6 +14786,24 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
+        const auto* cancellation_policy =
+            FindLiveSortCancellationPolicy(dag);
+        const void* cancellation_context =
+            mga_context.query_cancellation_requested
+                ? &mga_context.query_cancellation_requested
+                : nullptr;
+        const exec::DescriptorCancellationProbe cancellation_probe =
+            cancellation_context == nullptr
+                ? nullptr
+                : &InvokeLiveSortCancellationProbe;
+        if (cancellation_policy == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SORT-CANCELLATION-POLICY-V1";
+          step.diagnostic.detail =
+              "SORT requires one exact cancellation policy evidence row";
+          return step;
+        }
         if (inputs.size() != 1 ||
             node.input_physical_node_ids.size() != 1 ||
             inputs.front().physical_node_id !=
@@ -14555,9 +14842,11 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         auto sort_result = exec::ExecuteCanonicalDescriptorSort(
             sort_request, *execution_dag, input_batch, order_terms,
-            deterministic_tie_evidence_uuid);
+            deterministic_tie_evidence_uuid, cancellation_probe,
+            cancellation_context);
         if (!sort_result.diagnostic.ok) {
-          step.diagnostic = std::move(sort_result.diagnostic);
+          BindLiveSortFailure(std::move(sort_result.diagnostic),
+                              cancellation_policy, &step);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -14602,6 +14891,24 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
+        const auto* cancellation_policy =
+            FindLiveSortCancellationPolicy(dag);
+        const void* cancellation_context =
+            mga_context.query_cancellation_requested
+                ? &mga_context.query_cancellation_requested
+                : nullptr;
+        const exec::DescriptorCancellationProbe cancellation_probe =
+            cancellation_context == nullptr
+                ? nullptr
+                : &InvokeLiveSortCancellationProbe;
+        if (cancellation_policy == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-CANCELLATION-POLICY-V1";
+          step.diagnostic.detail =
+              "object-backed SORT requires one exact cancellation policy evidence row";
+          return step;
+        }
         if (inputs.size() != 1 ||
             node.input_physical_node_ids.size() != 1 ||
             inputs.front().physical_node_id !=
@@ -14642,9 +14949,11 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         auto sorted = exec::ExecuteCanonicalDescriptorSort(
             sort_request, *execution_dag, input_batch, order_terms,
-            deterministic_tie_evidence_uuid);
+            deterministic_tie_evidence_uuid, cancellation_probe,
+            cancellation_context);
         if (!sorted.diagnostic.ok) {
-          step.diagnostic = std::move(sorted.diagnostic);
+          BindLiveSortFailure(std::move(sorted.diagnostic),
+                              cancellation_policy, &step);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -14703,6 +15012,24 @@ MakeLiveExpressionSortRegistration(
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
+        const auto* cancellation_policy =
+            FindLiveSortCancellationPolicy(dag);
+        const void* cancellation_context =
+            mga_context.query_cancellation_requested
+                ? &mga_context.query_cancellation_requested
+                : nullptr;
+        const exec::DescriptorCancellationProbe cancellation_probe =
+            cancellation_context == nullptr
+                ? nullptr
+                : &InvokeLiveSortCancellationProbe;
+        if (cancellation_policy == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SORT-CANCELLATION-POLICY-V1";
+          step.diagnostic.detail =
+              "expression SORT requires one exact cancellation policy evidence row";
+          return step;
+        }
         if (!prepared_expression_ordering || inputs.size() != 1 ||
             node.input_physical_node_ids.size() != 1 ||
             inputs.front().physical_node_id !=
@@ -14719,10 +15046,12 @@ MakeLiveExpressionSortRegistration(
           return step;
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
-        const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
-            input_batch, inputs.front().output_descriptor_ids);
+        auto input_validation = exec::ValidateCanonicalDescriptorBatch(
+            input_batch, inputs.front().output_descriptor_ids,
+            cancellation_probe, cancellation_context, nullptr);
         if (!input_validation.ok) {
-          step.diagnostic = input_validation;
+          BindLiveSortFailure(std::move(input_validation),
+                              cancellation_policy, &step);
           return step;
         }
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
@@ -14752,16 +15081,19 @@ MakeLiveExpressionSortRegistration(
                 order_terms, ordering_property_uuid,
                 deterministic_tie_evidence_uuid, maximum_pair_comparisons,
                 execution_dag->memory_budget_bytes, mga_authority,
-                &actual_order_key_batch_bytes);
+                &actual_order_key_batch_bytes, cancellation_probe,
+                cancellation_context);
         if (!sorted.diagnostic.ok) {
-          step.diagnostic = std::move(sorted.diagnostic);
+          BindLiveSortFailure(std::move(sorted.diagnostic),
+                              cancellation_policy, &step);
           return step;
         }
-        const auto output_validation =
-            exec::ValidateCanonicalDescriptorBatch(
-                sorted.output_batch, node.output_descriptor_ids);
+        auto output_validation = exec::ValidateCanonicalDescriptorBatch(
+            sorted.output_batch, node.output_descriptor_ids,
+            cancellation_probe, cancellation_context, nullptr);
         if (!output_validation.ok) {
-          step.diagnostic = output_validation;
+          BindLiveSortFailure(std::move(output_validation),
+                              cancellation_policy, &step);
           return step;
         }
         std::uint64_t input_memory_bytes = 0;
@@ -14769,11 +15101,41 @@ MakeLiveExpressionSortRegistration(
         std::uint64_t comparison_memory_bytes = 0;
         std::uint64_t row_order_memory_bytes = 0;
         std::uint64_t peak_memory_bytes = 0;
-        if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
-                                                 &input_memory_bytes) ||
-            !RuntimeMaterializedBatchMemoryBytes(sorted.output_batch,
-                                                 &current_memory_bytes) ||
-            !CheckedMultiply(input_batch.rows.size(),
+        bool memory_cancelled = false;
+        bool memory_probe_failed = false;
+        const auto account_batch_memory =
+            [&](const exec::DescriptorBatch& batch,
+                std::uint64_t* memory_bytes) {
+              return RuntimeMaterializedBatchMemoryBytes(
+                  batch, memory_bytes, cancellation_probe,
+                  cancellation_context, &memory_cancelled,
+                  &memory_probe_failed);
+            };
+        if (!account_batch_memory(input_batch, &input_memory_bytes) ||
+            !account_batch_memory(sorted.output_batch,
+                                  &current_memory_bytes)) {
+          if (memory_cancelled || memory_probe_failed) {
+            exec::DescriptorRuntimeDiagnostic diagnostic;
+            diagnostic.ok = false;
+            diagnostic.diagnostic_code =
+                memory_probe_failed
+                    ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                    : "SB_MODEL_EXECUTION_CANCELLED_V1";
+            diagnostic.detail = memory_probe_failed
+                ? "expression SORT cancellation probe threw while accounting runtime memory"
+                : "expression SORT cancellation observed while accounting runtime memory";
+            BindLiveSortFailure(std::move(diagnostic), cancellation_policy,
+                                &step);
+            return step;
+          }
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "expression SORT runtime memory observation overflowed";
+          return step;
+        }
+        if (!CheckedMultiply(input_batch.rows.size(),
                              input_batch.rows.size(),
                              &comparison_memory_bytes) ||
             !CheckedMultiply(input_batch.rows.size(), sizeof(std::size_t),

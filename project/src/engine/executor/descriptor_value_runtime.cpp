@@ -862,28 +862,29 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     const DescriptorBatch& batch,
     const std::vector<std::uint32_t>& output_descriptor_ids,
-    const std::function<bool()>& cancellation_requested,
+    const DescriptorCancellationProbe cancellation_requested,
+    const void* cancellation_context,
     bool* cancellation_observed) {
   if (cancellation_observed != nullptr) *cancellation_observed = false;
   const auto poll_cancellation = [&](const std::size_t row,
                                      const std::size_t column)
       -> std::optional<DescriptorRuntimeDiagnostic> {
-    if (!cancellation_requested) return std::nullopt;
+    if (cancellation_requested == nullptr) return std::nullopt;
     try {
-      if (!cancellation_requested()) return std::nullopt;
+      if (!cancellation_requested(cancellation_context)) return std::nullopt;
       if (cancellation_observed != nullptr) *cancellation_observed = true;
-      return ErrorDiagnostic("QOW-DIAG-QRY-012-JOIN-CANCELLED-V1",
+      return ErrorDiagnostic("SB_MODEL_EXECUTION_CANCELLED_V1",
                              "descriptor-batch validation was cancelled",
                              row, column);
     } catch (const std::exception& exception) {
       return ErrorDiagnostic(
-          "QOW-DIAG-QRY-012-CANCELLATION-PROBE-V1",
+          "SB_MODEL_COORDINATOR_LEG_FAILED_V1",
           std::string("descriptor-batch cancellation probe threw: ") +
               exception.what(),
           row, column);
     } catch (...) {
       return ErrorDiagnostic(
-          "QOW-DIAG-QRY-012-CANCELLATION-PROBE-V1",
+          "SB_MODEL_COORDINATOR_LEG_FAILED_V1",
           "descriptor-batch cancellation probe threw a non-standard exception",
           row, column);
     }
@@ -966,6 +967,29 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     }
   }
   return OkDiagnostic();
+}
+
+DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
+    const DescriptorBatch& batch,
+    const std::vector<std::uint32_t>& output_descriptor_ids,
+    const std::function<bool()>& cancellation_requested,
+    bool* cancellation_observed) {
+  const auto probe = [](const void* context) {
+    return (*static_cast<const std::function<bool()>*>(context))();
+  };
+  auto diagnostic = ValidateCanonicalDescriptorBatch(
+      batch, output_descriptor_ids,
+      cancellation_requested ? +probe : nullptr,
+      cancellation_requested ? &cancellation_requested : nullptr,
+      cancellation_observed);
+  if (diagnostic.diagnostic_code == "SB_MODEL_EXECUTION_CANCELLED_V1") {
+    diagnostic.diagnostic_code = "QOW-DIAG-QRY-012-JOIN-CANCELLED-V1";
+  } else if (diagnostic.diagnostic_code ==
+             "SB_MODEL_COORDINATOR_LEG_FAILED_V1") {
+    diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-012-CANCELLATION-PROBE-V1";
+  }
+  return diagnostic;
 }
 
 std::optional<std::size_t> FindColumnByStableName(const DescriptorBatch& batch, const std::string& stable_name) {

@@ -98,11 +98,35 @@ bool SortReceiptRequestCarriersAreExactDefault(
 }
 
 bool CanonicalDescriptorBatchMemoryBytes(const DescriptorBatch& batch,
-                                         std::uint64_t* bytes) {
+                                         std::uint64_t* bytes,
+                                         const DescriptorCancellationProbe
+                                             cancellation_requested = nullptr,
+                                         const void* cancellation_context = nullptr,
+                                         bool* cancellation_observed = nullptr,
+                                         bool* cancellation_probe_failed = nullptr) {
   if (bytes == nullptr) return false;
+  if (cancellation_observed != nullptr) *cancellation_observed = false;
+  if (cancellation_probe_failed != nullptr) {
+    *cancellation_probe_failed = false;
+  }
+  const auto stopped = [&] {
+    if (cancellation_requested == nullptr) return false;
+    try {
+      if (!cancellation_requested(cancellation_context)) return false;
+      if (cancellation_observed != nullptr) *cancellation_observed = true;
+      return true;
+    } catch (...) {
+      if (cancellation_probe_failed != nullptr) {
+        *cancellation_probe_failed = true;
+      }
+      return true;
+    }
+  };
   *bytes = 1;
   for (const auto& row : batch.rows) {
+    if (stopped()) return false;
     for (const auto& value : row.values) {
+      if (stopped()) return false;
       if (value.encoded_value.size() >
           std::numeric_limits<std::uint64_t>::max() - *bytes) {
         return false;
@@ -1873,7 +1897,9 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
     const DescriptorBatch& execution_order_batch,
     const std::vector<CanonicalDescriptorOrderTerm>& execution_order_terms,
     const std::string& execution_deterministic_tie_evidence_uuid,
-    const bool separate_order_key_batch) {
+    const bool separate_order_key_batch,
+    const DescriptorCancellationProbe cancellation_requested,
+    const void* cancellation_context) {
   CanonicalDescriptorSortResult result;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
     result.diagnostic = std::move(diagnostic);
@@ -1883,6 +1909,28 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
   const auto order_refusal = [&](std::string detail) {
     return refuse(Refusal("QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
                           std::move(detail)));
+  };
+  const auto poll_cancellation = [&](const char* phase)
+      -> std::optional<CanonicalDescriptorSortResult> {
+    if (cancellation_requested == nullptr) return std::nullopt;
+    try {
+      if (!cancellation_requested(cancellation_context)) {
+        return std::nullopt;
+      }
+      return refuse(Refusal(
+          "SB_MODEL_EXECUTION_CANCELLED_V1",
+          std::string("canonical descriptor sort cancellation observed ") +
+              phase));
+    } catch (const std::exception& exception) {
+      return refuse(Refusal(
+          "SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+          std::string("canonical descriptor sort cancellation probe threw: ") +
+              exception.what()));
+    } catch (...) {
+      return refuse(Refusal(
+          "SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+          "canonical descriptor sort cancellation probe threw a non-standard exception"));
+    }
   };
 
   const TypedPhysicalNodeDag* physical_dag = &execution_dag;
@@ -1895,6 +1943,10 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
   const std::string* deterministic_tie_evidence_uuid =
       &execution_deterministic_tie_evidence_uuid;
 
+  if (const auto stopped = poll_cancellation("before validation");
+      stopped.has_value()) {
+    return *stopped;
+  }
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
       *mga_authority, *physical_dag);
   if (!authority_validation.ok) {
@@ -1907,6 +1959,10 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
       separate_order_key_batch ? "sort.typed.expression-row.v1"
                                : "sort.typed.terms.v1";
   for (const auto& node : physical_dag->nodes) {
+    if (const auto stopped = poll_cancellation("while resolving the selected node");
+        stopped.has_value()) {
+      return *stopped;
+    }
     if (node.physical_node_id == selected_physical_node_id) {
       selected_node = &node;
     }
@@ -1922,6 +1978,10 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
         "implementation");
   }
   for (const auto& node : physical_dag->nodes) {
+    if (const auto stopped = poll_cancellation("while resolving the input node");
+        stopped.has_value()) {
+      return *stopped;
+    }
     if (node.physical_node_id ==
         selected_node->input_physical_node_ids.front()) {
       input_node = &node;
@@ -1935,7 +1995,8 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
                           "sort schema does not preserve input handles"));
   }
   auto input_validation = ValidateCanonicalDescriptorBatch(
-      *input_batch, input_node->output_descriptor_ids);
+      *input_batch, input_node->output_descriptor_ids,
+      cancellation_requested, cancellation_context, nullptr);
   if (!input_validation.ok) return refuse(std::move(input_validation));
   if (separate_order_key_batch) {
     if (order_batch->rows.size() != input_batch->rows.size()) {
@@ -1948,7 +2009,8 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
       order_descriptor_ids.push_back(column.descriptor_id);
     }
     auto order_validation = ValidateCanonicalDescriptorBatch(
-        *order_batch, order_descriptor_ids);
+        *order_batch, order_descriptor_ids, cancellation_requested,
+        cancellation_context, nullptr);
     if (!order_validation.ok) return refuse(std::move(order_validation));
   }
   if (order_terms->empty() ||
@@ -1977,6 +2039,10 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
       selected_node->enforced_property_uuids.begin(),
       selected_node->enforced_property_uuids.end());
   for (const auto& term : *order_terms) {
+    if (const auto stopped = poll_cancellation("while validating order terms");
+        stopped.has_value()) {
+      return *stopped;
+    }
     if (term.column >= order_batch->columns.size()) {
       return order_refusal("order term column is outside the input schema");
     }
@@ -2018,12 +2084,32 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
 
   std::uint64_t input_memory_bytes = 0;
   std::uint64_t order_memory_bytes = 0;
-  if (!CanonicalDescriptorBatchMemoryBytes(*input_batch,
-                                           &input_memory_bytes) ||
+  bool memory_cancelled = false;
+  bool memory_probe_failed = false;
+  if (!CanonicalDescriptorBatchMemoryBytes(
+          *input_batch, &input_memory_bytes, cancellation_requested,
+          cancellation_context, &memory_cancelled,
+          &memory_probe_failed) ||
       (separate_order_key_batch &&
-       !CanonicalDescriptorBatchMemoryBytes(*order_batch,
-                                            &order_memory_bytes)) ||
-      selected_node->memory_bytes_required == 0 ||
+       !CanonicalDescriptorBatchMemoryBytes(
+           *order_batch, &order_memory_bytes, cancellation_requested,
+           cancellation_context, &memory_cancelled,
+           &memory_probe_failed))) {
+    if (memory_cancelled) {
+      return refuse(Refusal(
+          "SB_MODEL_EXECUTION_CANCELLED_V1",
+          "canonical descriptor sort cancellation observed while accounting runtime memory"));
+    }
+    if (memory_probe_failed) {
+      return refuse(Refusal(
+          "SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+          "canonical descriptor sort cancellation probe threw while accounting runtime memory"));
+    }
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "sort runtime payload memory accounting overflowed"));
+  }
+  if (selected_node->memory_bytes_required == 0 ||
       selected_node->memory_bytes_required > physical_dag->memory_budget_bytes ||
       selected_node->memory_bytes_required >
           static_cast<std::uint64_t>(
@@ -2051,9 +2137,25 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
         "sort runtime materialization exceeds the selected node memory grant"));
   }
 
+  if (const auto stopped = poll_cancellation("before comparison allocation");
+      stopped.has_value()) {
+    return *stopped;
+  }
   std::vector<std::int8_t> comparisons(matrix_size, 0);
+  if (const auto stopped = poll_cancellation("after comparison allocation");
+      stopped.has_value()) {
+    return *stopped;
+  }
   for (std::size_t row = 0; row < row_count; ++row) {
+    if (const auto stopped = poll_cancellation("while validating order operands");
+        stopped.has_value()) {
+      return *stopped;
+    }
     for (const auto& term : *order_terms) {
+      if (const auto stopped = poll_cancellation("while validating an order operand");
+          stopped.has_value()) {
+        return *stopped;
+      }
       const auto& value = order_batch->rows[row].values[term.column];
       const auto compared =
           CompareCanonicalDescriptorOrderValues(value, value, term);
@@ -2064,9 +2166,21 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
     }
   }
   for (std::size_t left = 0; left < row_count; ++left) {
+    if (const auto stopped = poll_cancellation("while building comparisons");
+        stopped.has_value()) {
+      return *stopped;
+    }
     for (std::size_t right = left + 1; right < row_count; ++right) {
+      if (const auto stopped = poll_cancellation("while building a row comparison");
+          stopped.has_value()) {
+        return *stopped;
+      }
       int comparison = 0;
       for (const auto& term : *order_terms) {
+        if (const auto stopped = poll_cancellation("while comparing order terms");
+            stopped.has_value()) {
+          return *stopped;
+        }
         const auto& left_value =
             order_batch->rows[left].values[term.column];
         const auto& right_value =
@@ -2087,26 +2201,73 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
     }
   }
 
+  if (const auto stopped = poll_cancellation("before row-order allocation");
+      stopped.has_value()) {
+    return *stopped;
+  }
   std::vector<std::size_t> row_order(row_count);
   std::iota(row_order.begin(), row_order.end(), 0);
-  std::sort(row_order.begin(), row_order.end(),
-            [&](const std::size_t left, const std::size_t right) {
-              const auto comparison =
-                  comparisons[left * row_count + right];
-              return comparison < 0 || (comparison == 0 && left < right);
-            });
+  if (const auto stopped = poll_cancellation("after row-order allocation");
+      stopped.has_value()) {
+    return *stopped;
+  }
+  // The admitted comparison matrix makes a deterministic insertion order
+  // bounded by the same O(N^2) ceiling while allowing cancellation between
+  // every ordering step. A standard-library sort comparator cannot report a
+  // probe failure without violating its strict-weak-ordering contract.
+  for (std::size_t index = 1; index < row_order.size(); ++index) {
+    if (const auto stopped = poll_cancellation("while ordering rows");
+        stopped.has_value()) {
+      return *stopped;
+    }
+    const auto candidate = row_order[index];
+    auto insertion = index;
+    while (insertion > 0) {
+      if (const auto stopped = poll_cancellation("while ordering a row");
+          stopped.has_value()) {
+        return *stopped;
+      }
+      const auto predecessor = row_order[insertion - 1];
+      const auto comparison =
+          comparisons[candidate * row_count + predecessor];
+      if (comparison > 0 ||
+          (comparison == 0 && candidate > predecessor)) {
+        break;
+      }
+      row_order[insertion] = predecessor;
+      --insertion;
+    }
+    row_order[insertion] = candidate;
+  }
 
+  if (const auto stopped = poll_cancellation("before output allocation");
+      stopped.has_value()) {
+    return *stopped;
+  }
   result.output_batch.columns = input_batch->columns;
   result.output_batch.rows.reserve(row_count);
+  if (const auto stopped = poll_cancellation("after output allocation");
+      stopped.has_value()) {
+    return *stopped;
+  }
   for (const auto row : row_order) {
+    if (const auto stopped = poll_cancellation("while materializing output rows");
+        stopped.has_value()) {
+      return *stopped;
+    }
     result.output_batch.rows.push_back(input_batch->rows[row]);
   }
   auto output_validation = ValidateCanonicalDescriptorBatch(
-      result.output_batch, selected_node->output_descriptor_ids);
+      result.output_batch, selected_node->output_descriptor_ids,
+      cancellation_requested, cancellation_context, nullptr);
   if (!output_validation.ok) return refuse(std::move(output_validation));
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       *mga_authority, *physical_dag);
   if (!result_authority.ok) return refuse(result_authority);
+  if (const auto stopped = poll_cancellation("before result publication");
+      stopped.has_value()) {
+    return *stopped;
+  }
 
   result.diagnostic = {};
   result.selected_plan_uuid = physical_dag->selected_plan_uuid;
@@ -2163,13 +2324,25 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
   return ExecuteCanonicalDescriptorSortBound(
       *physical_dag, *mga_authority, selected_physical_node_id,
       maximum_pair_comparisons, *input_batch, *order_batch, *order_terms,
-      *deterministic_tie_evidence_uuid, separate_order_key_batch);
+      *deterministic_tie_evidence_uuid, separate_order_key_batch, nullptr,
+      nullptr);
 }
 
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalDescriptorSort(
+      request, borrowed_execution_dag, borrowed_input_batch, nullptr,
+      nullptr);
+}
+
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const DescriptorCancellationProbe cancellation_requested,
+    const void* cancellation_context) {
   if (request.order_key_receipt != nullptr) {
     const auto& receipt = *request.order_key_receipt;
     if (!SortReceiptRequestCarriersAreExactDefault(request) ||
@@ -2192,7 +2365,8 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
         receipt.selected_physical_node_id_,
         receipt.maximum_pair_comparisons_, borrowed_input_batch,
         receipt.order_key_batch_, receipt.order_terms_,
-        receipt.deterministic_tie_evidence_uuid_, true);
+        receipt.deterministic_tie_evidence_uuid_, true,
+        cancellation_requested, cancellation_context);
   }
   if (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
       !DescriptorBatchCarrierIsExactDefault(request.input_batch) ||
@@ -2207,7 +2381,8 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
       borrowed_execution_dag, request.mga_authority,
       request.selected_physical_node_id, request.maximum_pair_comparisons,
       borrowed_input_batch, borrowed_input_batch, request.order_terms,
-      request.deterministic_tie_evidence_uuid, false);
+      request.deterministic_tie_evidence_uuid, false,
+      cancellation_requested, cancellation_context);
 }
 
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
@@ -2216,6 +2391,20 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const DescriptorBatch& borrowed_input_batch,
     const std::vector<CanonicalDescriptorOrderTerm>& borrowed_order_terms,
     const std::string& borrowed_deterministic_tie_evidence_uuid) {
+  return ExecuteCanonicalDescriptorSort(
+      request, borrowed_execution_dag, borrowed_input_batch,
+      borrowed_order_terms, borrowed_deterministic_tie_evidence_uuid, nullptr,
+      nullptr);
+}
+
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::vector<CanonicalDescriptorOrderTerm>& borrowed_order_terms,
+    const std::string& borrowed_deterministic_tie_evidence_uuid,
+    const DescriptorCancellationProbe cancellation_requested,
+    const void* cancellation_context) {
   if (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
       !DescriptorBatchCarrierIsExactDefault(request.input_batch) ||
       !DescriptorOrderTermsCarrierIsExactDefault(request.order_terms) ||
@@ -2232,7 +2421,8 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
       borrowed_execution_dag, request.mga_authority,
       request.selected_physical_node_id, request.maximum_pair_comparisons,
       borrowed_input_batch, borrowed_input_batch, borrowed_order_terms,
-      borrowed_deterministic_tie_evidence_uuid, false);
+      borrowed_deterministic_tie_evidence_uuid, false,
+      cancellation_requested, cancellation_context);
 }
 
 }  // namespace scratchbird::engine::executor

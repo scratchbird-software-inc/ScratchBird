@@ -2572,6 +2572,7 @@ struct CanonicalDescriptorDistinctResult {
 
 struct CanonicalDescriptorSortRequest;
 struct CanonicalDescriptorSortResult;
+using DescriptorCancellationProbe = bool (*)(const void* context);
 
 // An expression ORDER BY key batch is executable authority only after the
 // canonical query route has bound the exact payload/key pair to the selected
@@ -2593,6 +2594,12 @@ class CanonicalDescriptorSortKeyReceipt {
       const CanonicalDescriptorSortRequest& request,
       const TypedPhysicalNodeDag& borrowed_execution_dag,
       const DescriptorBatch& borrowed_input_batch);
+  friend CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+      const CanonicalDescriptorSortRequest& request,
+      const TypedPhysicalNodeDag& borrowed_execution_dag,
+      const DescriptorBatch& borrowed_input_batch,
+      DescriptorCancellationProbe cancellation_requested,
+      const void* cancellation_context);
 
   CanonicalDescriptorSortKeyReceipt() = default;
 
@@ -2948,7 +2955,6 @@ bool CanonicalDerivedDescriptorTypeMatches(
 bool DeriveCanonicalNullableDescriptorEncoding(
     scratchbird::engine::internal_api::EngineDescriptor* descriptor);
 DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch);
-using DescriptorCancellationProbe = bool (*)(const void* context);
 DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
     const DescriptorBatch& batch,
     DescriptorCancellationProbe cancellation_requested,
@@ -2963,6 +2969,12 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     const std::vector<std::uint32_t>& output_descriptor_ids,
     const std::function<bool()>& cancellation_requested = {},
     bool* cancellation_observed = nullptr);
+DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
+    const DescriptorBatch& batch,
+    const std::vector<std::uint32_t>& output_descriptor_ids,
+    DescriptorCancellationProbe cancellation_requested,
+    const void* cancellation_context,
+    bool* cancellation_observed);
 DescriptorRuntimeDiagnostic ValidateCanonicalJoinDescriptorRoleDomains(
     const DescriptorBatch& left_batch,
     const DescriptorBatch& right_batch);
@@ -3304,6 +3316,15 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch);
+// Cancellation-aware borrowed expression-order execution. The callback and
+// context are consumed synchronously and never retained by the receipt or
+// executor.
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    DescriptorCancellationProbe cancellation_requested,
+    const void* cancellation_context);
 // Ordinary input-column ordering may additionally borrow its immutable order
 // terms and deterministic tie receipt. All owned execution and semantic
 // carriers in the request must remain exact-default, and no expression
@@ -3314,6 +3335,16 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const DescriptorBatch& borrowed_input_batch,
     const std::vector<CanonicalDescriptorOrderTerm>& borrowed_order_terms,
     const std::string& borrowed_deterministic_tie_evidence_uuid);
+// Cancellation-aware borrowed ordinary/heap ordering. The callback and
+// context are consumed synchronously and never retained.
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::vector<CanonicalDescriptorOrderTerm>& borrowed_order_terms,
+    const std::string& borrowed_deterministic_tie_evidence_uuid,
+    DescriptorCancellationProbe cancellation_requested,
+    const void* cancellation_context);
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
     const CanonicalDescriptorOrderTerm& term,
     const ExecutorColumnDescriptor& column);
