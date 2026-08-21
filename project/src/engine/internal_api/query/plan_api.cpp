@@ -2889,6 +2889,19 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
                     "cte_output_records");
     }
+    const bool outputless_subquery =
+        node.node_kind == RelationalDagNodeKind::kSubquery &&
+        (node.semantic_variant_id == "subquery.table.v1" ||
+         node.semantic_variant_id == "subquery.scalar.v1" ||
+         node.semantic_variant_id == "subquery.row.v1" ||
+         node.semantic_variant_id ==
+             "subquery.correlated-int64-equality.v1" ||
+         node.semantic_variant_id ==
+             "subquery.correlated-typed-equality.v1");
+    if (!node_outputs.empty() && outputless_subquery) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                    "subquery_output_records");
+    }
     if (!node_outputs.empty()) {
       if (node_outputs.size() != node.output_descriptor_ids.size()) {
         return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
