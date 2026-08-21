@@ -3933,6 +3933,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   return result;
 }
 
+std::string ExactCanonicalCoreDatatypeUuidV1(
+    std::string_view stable_name);
+
 PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalRelationalNode& root,
@@ -4179,6 +4182,13 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
   result.result_bindings.push_back(result.sum.result_bindings.front());
 
   if (profile.projects_grouping_metadata) {
+    const auto grouping_int64_type_uuid =
+        ExactCanonicalCoreDatatypeUuidV1("int64");
+    if (!CanonicalUuidText(grouping_int64_type_uuid)) {
+      result.detail = "GROUPING metadata core int64 identity is not exact";
+      return result;
+    }
+    std::unordered_set<std::string_view> grouping_descriptor_uuids;
     const auto prepare_projection =
         [&](const std::size_t projection_ordinal,
             const api::RelationalExpressionKind expected_kind,
@@ -4213,6 +4223,12 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
               expression->literal_kind.has_value() ||
               expression->operator_name != expected_operator ||
               expression->literal_or_parameter_ref.has_value() ||
+              descriptor->type_uuid != grouping_int64_type_uuid ||
+              !CanonicalUuidText(descriptor->descriptor_uuid) ||
+              descriptor->descriptor_uuid == grouping_int64_type_uuid ||
+              !grouping_descriptor_uuids
+                   .insert(descriptor->descriptor_uuid)
+                   .second ||
               descriptor->nullability !=
                   api::RelationalNullability::kNonNull ||
               descriptor->collation_uuid.has_value() ||
