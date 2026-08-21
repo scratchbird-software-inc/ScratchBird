@@ -4727,11 +4727,39 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     }
     return value;
   };
+  std::unordered_set<std::string_view> set_operation_type_uuids;
+  const auto collect_type_uuid = [&](const ExecutorColumnDescriptor& column) {
+    const auto type_uuid = descriptor_field(column.descriptor, "type_uuid");
+    if (!type_uuid.has_value() || !IsCanonicalUuid(*type_uuid)) {
+      return false;
+    }
+    set_operation_type_uuids.insert(*type_uuid);
+    return true;
+  };
+  for (const auto& left_column : left_batch.columns) {
+    if (!collect_type_uuid(left_column)) {
+      return refuse(
+          "set-operation input or result type identity is unresolved",
+          "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1");
+    }
+  }
+  for (const auto& right_column : right_batch.columns) {
+    if (!collect_type_uuid(right_column)) {
+      return refuse(
+          "set-operation input or result type identity is unresolved",
+          "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1");
+    }
+  }
   for (const auto& result_column : request.result_columns) {
-    const auto type_uuid =
-        descriptor_field(result_column.descriptor, "type_uuid");
-    if (!type_uuid.has_value() || !IsCanonicalUuid(*type_uuid) ||
-        result_column.descriptor.descriptor_uuid.canonical == *type_uuid) {
+    if (!collect_type_uuid(result_column)) {
+      return refuse(
+          "set-operation input or result type identity is unresolved",
+          "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1");
+    }
+  }
+  for (const auto& result_column : request.result_columns) {
+    if (set_operation_type_uuids.contains(
+            result_column.descriptor.descriptor_uuid.canonical)) {
       return refuse(
           "set-operation result descriptor/type identities are not independent",
           "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1");

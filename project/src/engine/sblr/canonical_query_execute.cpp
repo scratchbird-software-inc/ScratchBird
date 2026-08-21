@@ -8160,6 +8160,34 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
   for (const auto& descriptor : dag.descriptors) {
     descriptors.emplace(descriptor.descriptor_id, &descriptor);
   }
+  std::unordered_set<std::string_view> set_operation_type_uuids;
+  const auto collect_type_uuid = [&](const std::uint32_t descriptor_id) {
+    const auto descriptor = descriptors.find(descriptor_id);
+    if (descriptor == descriptors.end() ||
+        descriptor->second->type_uuid.empty()) {
+      return false;
+    }
+    set_operation_type_uuids.insert(descriptor->second->type_uuid);
+    return true;
+  };
+  for (const auto descriptor_id : root.output_descriptor_ids) {
+    if (!collect_type_uuid(descriptor_id)) {
+      result.detail = "set-operation result type identity is unresolved";
+      return result;
+    }
+  }
+  for (const auto& column : left.batch.columns) {
+    if (!collect_type_uuid(column.descriptor_id)) {
+      result.detail = "set-operation left type identity is unresolved";
+      return result;
+    }
+  }
+  for (const auto& column : right.batch.columns) {
+    if (!collect_type_uuid(column.descriptor_id)) {
+      result.detail = "set-operation right type identity is unresolved";
+      return result;
+    }
+  }
 
   std::unordered_map<std::string, std::size_t> right_name_ordinals;
   if (profile.alignment == exec::CanonicalSetOperationAlignment::kByName) {
@@ -8210,8 +8238,8 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
     }
     const auto& right_column = right.batch.columns[right_column_ordinal];
     if (descriptor == descriptors.end() ||
-        descriptor->second->descriptor_uuid ==
-            descriptor->second->type_uuid ||
+        set_operation_type_uuids.contains(
+            descriptor->second->descriptor_uuid) ||
         descriptor->second->nullability ==
             api::RelationalNullability::kUnknown ||
         left_column.descriptor.canonical_type_name.empty() ||
