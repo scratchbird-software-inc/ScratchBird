@@ -11209,6 +11209,170 @@ bool CanonicalSetOperationExecutionReceiptMatches(
   return false;
 }
 
+bool CanonicalQueryEngineDescriptorExactlyEqual(
+    const api::EngineDescriptor& left,
+    const api::EngineDescriptor& right) {
+  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
+         left.descriptor_kind == right.descriptor_kind &&
+         left.canonical_type_name == right.canonical_type_name &&
+         left.encoded_descriptor == right.encoded_descriptor;
+}
+
+bool CanonicalQueryTypedValuePayloadExactlyEqual(
+    const api::EngineTypedValue& left,
+    const api::EngineTypedValue& right) {
+  return left.encoded_value == right.encoded_value &&
+         left.binary_value == right.binary_value &&
+         left.is_null == right.is_null && left.state == right.state;
+}
+
+bool CanonicalQueryDescriptorTuplePayloadExactlyEqual(
+    const exec::DescriptorTuple& left,
+    const exec::DescriptorTuple& right) {
+  if (left.values.size() != right.values.size()) return false;
+  for (std::size_t index = 0; index < left.values.size(); ++index) {
+    if (!CanonicalQueryTypedValuePayloadExactlyEqual(
+            left.values[index], right.values[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool CanonicalQueryDescriptorBatchesExactlyEqual(
+    const exec::DescriptorBatch& left,
+    const exec::DescriptorBatch& right) {
+  if (left.columns.size() != right.columns.size() ||
+      left.rows.size() != right.rows.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.columns.size(); ++index) {
+    const auto& left_column = left.columns[index];
+    const auto& right_column = right.columns[index];
+    if (left_column.stable_name != right_column.stable_name ||
+        left_column.nullable != right_column.nullable ||
+        left_column.descriptor_id != right_column.descriptor_id ||
+        !CanonicalQueryEngineDescriptorExactlyEqual(
+            left_column.descriptor, right_column.descriptor)) {
+      return false;
+    }
+  }
+  for (std::size_t row_index = 0; row_index < left.rows.size(); ++row_index) {
+    const auto& left_values = left.rows[row_index].values;
+    const auto& right_values = right.rows[row_index].values;
+    if (left_values.size() != right_values.size()) return false;
+    for (std::size_t value_index = 0; value_index < left_values.size();
+         ++value_index) {
+      if (!CanonicalQueryEngineDescriptorExactlyEqual(
+              left_values[value_index].descriptor,
+              right_values[value_index].descriptor) ||
+          !CanonicalQueryTypedValuePayloadExactlyEqual(
+              left_values[value_index], right_values[value_index])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool EvaluateCanonicalQuantifiedSubqueryTruth(
+    const exec::CanonicalQuantifiedSubqueryRequest& request,
+    const exec::DescriptorBatch& input_batch,
+    api::EngineSqlTruthValue* expected_truth) {
+  if (expected_truth == nullptr || input_batch.columns.size() != 1 ||
+      request.maximum_comparison_count < input_batch.rows.size()) {
+    return false;
+  }
+  const bool any = request.quantifier ==
+                   exec::CanonicalQuantifiedSubqueryQuantifier::kAny;
+  const bool all = request.quantifier ==
+                   exec::CanonicalQuantifiedSubqueryQuantifier::kAll;
+  if (!any && !all) return false;
+  auto operation = api::EngineCanonicalExpressionOperation::equal;
+  switch (request.comparison_operator) {
+    case api::EngineComparisonPredicateOperator::equal:
+      break;
+    case api::EngineComparisonPredicateOperator::not_equal:
+      operation = api::EngineCanonicalExpressionOperation::not_equal;
+      break;
+    case api::EngineComparisonPredicateOperator::less_than:
+      operation = api::EngineCanonicalExpressionOperation::less_than;
+      break;
+    case api::EngineComparisonPredicateOperator::less_than_or_equal:
+      operation = api::EngineCanonicalExpressionOperation::less_than_or_equal;
+      break;
+    case api::EngineComparisonPredicateOperator::greater_than:
+      operation = api::EngineCanonicalExpressionOperation::greater_than;
+      break;
+    case api::EngineComparisonPredicateOperator::greater_than_or_equal:
+      operation =
+          api::EngineCanonicalExpressionOperation::greater_than_or_equal;
+      break;
+    default:
+      return false;
+  }
+  if ((request.comparison_authority_engine_owned &&
+       request.precomputed_comparisons.size() != input_batch.rows.size()) ||
+      (!request.comparison_authority_engine_owned &&
+       !request.precomputed_comparisons.empty())) {
+    return false;
+  }
+  auto truth = any ? api::EngineSqlTruthValue::false_value
+                   : api::EngineSqlTruthValue::true_value;
+  for (std::size_t row_index = 0; row_index < input_batch.rows.size();
+       ++row_index) {
+    const auto& row = input_batch.rows[row_index];
+    if (row.values.size() != 1) return false;
+    api::EngineCanonicalExpressionEvaluationRequest expression_request;
+    expression_request.consumer =
+        api::EngineCanonicalExpressionConsumer::subquery;
+    expression_request.operation = operation;
+    expression_request.left_value = request.left_value;
+    expression_request.right_value = row.values.front();
+    expression_request.result_descriptor =
+        request.result_column.descriptor;
+    if (request.comparison_authority_engine_owned) {
+      const auto& comparison =
+          request.precomputed_comparisons[row_index];
+      const bool null_comparison = request.left_value.isSqlNull() ||
+                                   row.values.front().isSqlNull();
+      if (comparison.has_value() == null_comparison ||
+          (comparison.has_value() &&
+           (*comparison < -1 || *comparison > 1))) {
+        return false;
+      }
+      expression_request.precomputed_comparison = comparison;
+    }
+    api::EngineCanonicalExpressionEvaluationResult expression_result;
+    std::string detail;
+    if (!api::QowEvaluateCanonicalTypedExpressionV1(
+            expression_request, &expression_result, &detail)) {
+      return false;
+    }
+    if (any) {
+      if (expression_result.truth ==
+          api::EngineSqlTruthValue::true_value) {
+        truth = api::EngineSqlTruthValue::true_value;
+      } else if (expression_result.truth ==
+                     api::EngineSqlTruthValue::unknown &&
+                 truth == api::EngineSqlTruthValue::false_value) {
+        truth = api::EngineSqlTruthValue::unknown;
+      }
+    } else {
+      if (expression_result.truth ==
+          api::EngineSqlTruthValue::false_value) {
+        truth = api::EngineSqlTruthValue::false_value;
+      } else if (expression_result.truth ==
+                     api::EngineSqlTruthValue::unknown &&
+                 truth == api::EngineSqlTruthValue::true_value) {
+        truth = api::EngineSqlTruthValue::unknown;
+      }
+    }
+  }
+  *expected_truth = truth;
+  return true;
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
     const PreparedProjectRoot& prepared_root,
     std::string implementation_id,
@@ -15657,6 +15821,37 @@ MakeLiveTableSubqueryRegistration(
           step.diagnostic = std::move(materialized.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                materialized, dag, node,
+                subquery_request.mga_authority.statement_context) ||
+            materialized.materialized_row_count != input_batch.rows.size() ||
+            materialized.output_batch.rows.size() !=
+                materialized.materialized_row_count ||
+            materialized.materialized_row_count >
+                subquery_request.maximum_materialized_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+          step.diagnostic.detail =
+              "table subquery execution receipt changed";
+          return step;
+        }
+        if (!CanonicalQueryDescriptorBatchesExactlyEqual(
+                materialized.output_batch, input_batch)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+          step.diagnostic.detail =
+              "table subquery materialized values changed";
+          return step;
+        }
+        const auto output_validation =
+            exec::ValidateCanonicalDescriptorBatch(
+                materialized.output_batch, node.output_descriptor_ids);
+        if (!output_validation.ok) {
+          step.diagnostic = output_validation;
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
@@ -15721,7 +15916,6 @@ MakeLiveCardinalitySubqueryRegistration(
                 mga_context, dag);
 
         exec::DescriptorBatch output;
-        exec::DescriptorRuntimeDiagnostic diagnostic;
         exec::PhysicalMgaStatementContext result_mga;
         if (prepared.kind == LiveCardinalitySubqueryKind::kScalar) {
           exec::CanonicalScalarSubqueryRequest scalar_request;
@@ -15731,7 +15925,43 @@ MakeLiveCardinalitySubqueryRegistration(
           scalar_request.result_column = prepared.result_columns.front();
           auto scalar = exec::ExecuteCanonicalScalarSubquery(
               scalar_request, dag, node.physical_node_id, input_batch);
-          diagnostic = std::move(scalar.diagnostic);
+          if (!scalar.diagnostic.ok) {
+            step.diagnostic = std::move(scalar.diagnostic);
+            return step;
+          }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  scalar, dag, node,
+                  scalar_request.table_request.mga_authority
+                      .statement_context) ||
+              scalar.source_row_count != input_batch.rows.size() ||
+              scalar.source_row_count > 1 ||
+              scalar.output_batch.rows.size() != 1) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "scalar subquery execution receipt changed";
+            return step;
+          }
+          const auto output_validation =
+              exec::ValidateCanonicalDescriptorBatch(
+                  scalar.output_batch, node.output_descriptor_ids);
+          const bool scalar_value_preserved =
+              scalar.source_row_count == 0
+                  ? std::ranges::all_of(
+                        scalar.output_batch.rows.front().values,
+                        [](const auto& value) { return value.isSqlNull(); })
+                  : CanonicalQueryDescriptorTuplePayloadExactlyEqual(
+                        scalar.output_batch.rows.front(),
+                        input_batch.rows.front());
+          if (!output_validation.ok || !scalar_value_preserved) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "scalar subquery result value changed";
+            return step;
+          }
           output = std::move(scalar.output_batch);
           result_mga = std::move(scalar.mga_statement_context);
         } else {
@@ -15744,13 +15974,45 @@ MakeLiveCardinalitySubqueryRegistration(
           }
           auto row = exec::ExecuteCanonicalRowSubquery(
               row_request, dag, node.physical_node_id, input_batch);
-          diagnostic = std::move(row.diagnostic);
+          if (!row.diagnostic.ok) {
+            step.diagnostic = std::move(row.diagnostic);
+            return step;
+          }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  row, dag, node,
+                  row_request.table_request.mga_authority
+                      .statement_context) ||
+              row.source_row_count != input_batch.rows.size() ||
+              row.source_row_count > 1 ||
+              row.output_batch.rows.size() != 1) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "row subquery execution receipt changed";
+            return step;
+          }
+          const auto output_validation =
+              exec::ValidateCanonicalDescriptorBatch(
+                  row.output_batch, node.output_descriptor_ids);
+          const bool row_value_preserved =
+              row.source_row_count == 0
+                  ? std::ranges::all_of(
+                        row.output_batch.rows.front().values,
+                        [](const auto& value) { return value.isSqlNull(); })
+                  : CanonicalQueryDescriptorTuplePayloadExactlyEqual(
+                        row.output_batch.rows.front(),
+                        input_batch.rows.front());
+          if (!output_validation.ok || !row_value_preserved) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "row subquery result value changed";
+            return step;
+          }
           output = std::move(row.output_batch);
           result_mga = std::move(row.mga_statement_context);
-        }
-        if (!diagnostic.ok) {
-          step.diagnostic = std::move(diagnostic);
-          return step;
         }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
@@ -15857,8 +16119,9 @@ MakeLivePredicateSubqueryRegistration(
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, operator_dag);
 
+        const auto& input_batch =
+            *inputs.front().materialized_output_batch;
         exec::DescriptorBatch output;
-        exec::DescriptorRuntimeDiagnostic diagnostic;
         exec::PhysicalMgaStatementContext result_mga;
         std::size_t comparison_count = 0;
         if (prepared.kind == LivePredicateSubqueryKind::kExists) {
@@ -15869,8 +16132,49 @@ MakeLivePredicateSubqueryRegistration(
           exists_request.result_column = prepared.result_column;
           auto exists = exec::ExecuteCanonicalExistsSubquery(
               exists_request, operator_dag, node.physical_node_id,
-              *inputs.front().materialized_output_batch);
-          diagnostic = std::move(exists.diagnostic);
+              input_batch);
+          if (!exists.diagnostic.ok) {
+            step.diagnostic = std::move(exists.diagnostic);
+            return step;
+          }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  exists, operator_dag, node,
+                  exists_request.table_request.mga_authority
+                      .statement_context) ||
+              exists.source_row_count != input_batch.rows.size() ||
+              exists.output_batch.rows.size() != 1 ||
+              exists.exists != !input_batch.rows.empty()) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "EXISTS subquery execution receipt changed";
+            return step;
+          }
+          const auto output_validation =
+              exec::ValidateCanonicalDescriptorBatch(
+                  exists.output_batch, node.output_descriptor_ids);
+          api::EngineSqlTruthValue output_truth =
+              api::EngineSqlTruthValue::unspecified;
+          std::string output_truth_detail;
+          const bool output_truth_bound =
+              output_validation.ok &&
+              exists.output_batch.rows.front().values.size() == 1 &&
+              api::QowCanonicalTruthFromTypedValueV1(
+                  exists.output_batch.rows.front().values.front(),
+                  &output_truth, &output_truth_detail);
+          if (!output_truth_bound ||
+              output_truth !=
+                  (exists.exists
+                       ? api::EngineSqlTruthValue::true_value
+                       : api::EngineSqlTruthValue::false_value)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "EXISTS subquery result truth changed";
+            return step;
+          }
           output = std::move(exists.output_batch);
           result_mga = std::move(exists.mga_statement_context);
         } else {
@@ -15920,19 +16224,75 @@ MakeLivePredicateSubqueryRegistration(
               std::max<std::size_t>(1, maximum_input_row_count);
           auto quantified = exec::ExecuteCanonicalQuantifiedSubquery(
               quantified_request, operator_dag, node.physical_node_id,
-              *inputs.front().materialized_output_batch);
-          diagnostic = std::move(quantified.diagnostic);
+              input_batch);
+          if (!quantified.diagnostic.ok) {
+            step.diagnostic = std::move(quantified.diagnostic);
+            return step;
+          }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  quantified, operator_dag, node,
+                  quantified_request.table_request.mga_authority
+                      .statement_context) ||
+              quantified.comparison_count != input_batch.rows.size() ||
+              quantified.comparison_count >
+                  quantified_request.maximum_comparison_count ||
+              quantified.truth_value ==
+                  api::EngineSqlTruthValue::unspecified ||
+              quantified.output_batch.rows.size() != 1) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "quantified subquery execution receipt changed";
+            return step;
+          }
+          api::EngineSqlTruthValue expected_truth =
+              api::EngineSqlTruthValue::unspecified;
+          if (!EvaluateCanonicalQuantifiedSubqueryTruth(
+                  quantified_request, input_batch, &expected_truth) ||
+              quantified.truth_value != expected_truth) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "quantified subquery causal truth changed";
+            return step;
+          }
+          const auto output_validation =
+              exec::ValidateCanonicalDescriptorBatch(
+                  quantified.output_batch, node.output_descriptor_ids);
+          api::EngineSqlTruthValue output_truth =
+              api::EngineSqlTruthValue::unspecified;
+          std::string output_truth_detail;
+          const bool output_truth_bound =
+              output_validation.ok &&
+              quantified.output_batch.rows.front().values.size() == 1 &&
+              api::QowCanonicalTruthFromTypedValueV1(
+                  quantified.output_batch.rows.front().values.front(),
+                  &output_truth, &output_truth_detail);
+          if (!output_truth_bound || output_truth != expected_truth) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "quantified subquery result truth changed";
+            return step;
+          }
           output = std::move(quantified.output_batch);
           result_mga = std::move(quantified.mga_statement_context);
           comparison_count = quantified.comparison_count;
         }
-        if (!diagnostic.ok) {
-          step.diagnostic = std::move(diagnostic);
+        if (input_batch.rows.size() >
+            std::numeric_limits<std::size_t>::max() - comparison_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+          step.diagnostic.detail =
+              "predicate subquery observation count overflowed";
           return step;
         }
         step.result_handle_id = node.physical_node_id;
-        step.input_row_count =
-            inputs.front().materialized_output_batch->rows.size();
+        step.input_row_count = input_batch.rows.size();
         step.rows_examined = step.input_row_count + comparison_count;
         step.output_row_count = output.rows.size();
         step.materialized_output_batch = std::move(output);

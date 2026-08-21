@@ -377,6 +377,85 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
   result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
+
+bool SubqueryEngineDescriptorExactlyEqual(
+    const scratchbird::engine::internal_api::EngineDescriptor& left,
+    const scratchbird::engine::internal_api::EngineDescriptor& right) {
+  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
+         left.descriptor_kind == right.descriptor_kind &&
+         left.canonical_type_name == right.canonical_type_name &&
+         left.encoded_descriptor == right.encoded_descriptor;
+}
+
+bool SubqueryDescriptorBatchesExactlyEqual(
+    const DescriptorBatch& left,
+    const DescriptorBatch& right) {
+  if (left.columns.size() != right.columns.size() ||
+      left.rows.size() != right.rows.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.columns.size(); ++index) {
+    const auto& left_column = left.columns[index];
+    const auto& right_column = right.columns[index];
+    if (left_column.stable_name != right_column.stable_name ||
+        left_column.nullable != right_column.nullable ||
+        left_column.descriptor_id != right_column.descriptor_id ||
+        !SubqueryEngineDescriptorExactlyEqual(
+            left_column.descriptor, right_column.descriptor)) {
+      return false;
+    }
+  }
+  for (std::size_t row_index = 0; row_index < left.rows.size(); ++row_index) {
+    const auto& left_values = left.rows[row_index].values;
+    const auto& right_values = right.rows[row_index].values;
+    if (left_values.size() != right_values.size()) return false;
+    for (std::size_t value_index = 0; value_index < left_values.size();
+         ++value_index) {
+      const auto& left_value = left_values[value_index];
+      const auto& right_value = right_values[value_index];
+      if (!SubqueryEngineDescriptorExactlyEqual(
+              left_value.descriptor, right_value.descriptor) ||
+          left_value.encoded_value != right_value.encoded_value ||
+          left_value.binary_value != right_value.binary_value ||
+          left_value.is_null != right_value.is_null ||
+          left_value.state != right_value.state) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool CanonicalTableSubqueryResultReceiptMatches(
+    const CanonicalTableSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& execution_input_batch,
+    const CanonicalTableSubqueryResult& result) {
+  const auto* selected_node =
+      FindPhysicalNode(execution_dag, scoped_root_physical_node_id);
+  if (selected_node == nullptr ||
+      request.selected_physical_node_id != scoped_root_physical_node_id ||
+      result.selected_plan_uuid != execution_dag.selected_plan_uuid ||
+      result.executed_physical_node_id != selected_node->physical_node_id ||
+      result.causal_counter_id != selected_node->causal_counter_id ||
+      !PhysicalMgaStatementContextEqual(
+          result.mga_statement_context,
+          request.mga_authority.statement_context) ||
+      result.materialized_row_count != execution_input_batch.rows.size() ||
+      result.output_batch.rows.size() != result.materialized_row_count ||
+      result.materialized_row_count >
+          request.maximum_materialized_row_count) {
+    return false;
+  }
+  if (!SubqueryDescriptorBatchesExactlyEqual(
+          result.output_batch, execution_input_batch)) {
+    return false;
+  }
+  const auto output_validation = ValidateCanonicalDescriptorBatch(
+      result.output_batch, selected_node->output_descriptor_ids);
+  return output_validation.ok;
+}
 }  // namespace
 
 CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
@@ -445,6 +524,11 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubqueryBound(
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
+  }
+  if (!CanonicalTableSubqueryResultReceiptMatches(
+          request.table_request, execution_dag,
+          scoped_root_physical_node_id, execution_input_batch, table)) {
+    return refuse("scalar table subquery execution receipt changed");
   }
   if (!PhysicalMgaStatementContextEqual(
           table.mga_statement_context,
@@ -569,6 +653,11 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubqueryBound(
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
+  }
+  if (!CanonicalTableSubqueryResultReceiptMatches(
+          request.table_request, execution_dag,
+          scoped_root_physical_node_id, execution_input_batch, table)) {
+    return refuse("row table subquery execution receipt changed");
   }
   if (!PhysicalMgaStatementContextEqual(
           table.mga_statement_context,
@@ -763,6 +852,11 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubqueryBound(
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
   }
+  if (!CanonicalTableSubqueryResultReceiptMatches(
+          request.table_request, execution_dag,
+          scoped_root_physical_node_id, execution_input_batch, table)) {
+    return refuse("EXISTS table subquery execution receipt changed");
+  }
   if (!PhysicalMgaStatementContextEqual(
           table.mga_statement_context,
           request.table_request.mga_authority.statement_context)) {
@@ -899,6 +993,11 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubqueryBound(
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
+  }
+  if (!CanonicalTableSubqueryResultReceiptMatches(
+          request.table_request, execution_dag,
+          scoped_root_physical_node_id, execution_input_batch, table)) {
+    return refuse("quantified table subquery execution receipt changed");
   }
   if (!PhysicalMgaStatementContextEqual(
           table.mga_statement_context,
