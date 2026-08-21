@@ -9631,6 +9631,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       request.envelope.operation_id.rfind("engine.op.", 0) == 0 &&
       request.envelope.opcode_code >= 0x0A00 && request.envelope.opcode_code <= 0x0A04;
   if (exact_ddl_create_macro) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
+  if (exact_ddl_drop_macro) { result.ok=true; result.materialized_envelope=request.envelope; return result; }
   if (request.envelope.operation_id != "query.execute" && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_create_aggregate && !exact_txn_begin && !exact_txn_commit &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_alter_aggregate && !exact_ddl_drop_aggregate && !exact_ddl_purge_system_history && !exact_ddl_set_index_optimizer_eligibility && !exact_ddl_set_table_type_enforcement && !exact_database_deserialize_logical_snapshot && !exact_txn_begin && !exact_txn_commit &&
