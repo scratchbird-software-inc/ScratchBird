@@ -3042,6 +3042,11 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool is_ordered_set =
       is_hypothetical || is_mode || is_exact_percentile ||
       is_approx_percentile;
+  const bool uses_exact_core_real64_result =
+      is_avg || is_statistical ||
+      (is_pair_statistical && !is_regr_count) || is_exact_percentile ||
+      is_approx_median || is_approx_percentile ||
+      is_hypothetical_percent_rank || is_hypothetical_cume_dist;
   const bool uses_exact_core_int64_result =
       uses_bounded_signed_value || is_count || is_regr_count ||
       is_approx_count_distinct || is_hypothetical_rank ||
@@ -3059,6 +3064,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   std::array<std::string, kBoundedSignedTypeNames.size()>
       bounded_signed_source_type_uuids;
   std::string core_int64_result_type_uuid;
+  std::string core_real64_result_type_uuid;
   std::string core_boolean_type_uuid;
   if (uses_exact_core_int64_result ||
       has_widened_independent_order_argument) {
@@ -3100,6 +3106,35 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     if (uses_exact_core_int64_result) {
       core_int64_result_type_uuid =
           bounded_signed_source_type_uuids.back();
+    }
+  }
+  if (uses_exact_core_real64_result) {
+    const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+    const auto real64_count =
+        core_manifest.ok()
+            ? std::ranges::count_if(
+                  core_manifest.manifest.descriptor_rows,
+                  [](const auto& row) { return row.stable_name == "real64"; })
+            : 0;
+    const auto real64_type =
+        core_manifest.ok()
+            ? std::ranges::find_if(
+                  core_manifest.manifest.descriptor_rows,
+                  [](const auto& row) { return row.stable_name == "real64"; })
+            : core_manifest.manifest.descriptor_rows.end();
+    if (!core_manifest.ok() || real64_count != 1 ||
+        real64_type == core_manifest.manifest.descriptor_rows.end() ||
+        !real64_type->descriptor_uuid.valid()) {
+      result.detail =
+          "global real64 aggregate result core datatype cohort is incomplete";
+      return result;
+    }
+    core_real64_result_type_uuid = scratchbird::core::uuid::UuidToString(
+        real64_type->descriptor_uuid.value);
+    if (core_real64_result_type_uuid.empty()) {
+      result.detail =
+          "global real64 aggregate result core datatype identity is unavailable";
+      return result;
     }
   }
   if (is_boolean || has_filter) {
@@ -3231,6 +3266,15 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
        descriptor->descriptor_uuid == aggregate->function_uuid)) {
     result.detail =
         "global int64 aggregate result does not bind the exact core int64 "
+        "type with a distinct result descriptor identity";
+    return result;
+  }
+  if (uses_exact_core_real64_result &&
+      (descriptor->type_uuid != core_real64_result_type_uuid ||
+       descriptor->descriptor_uuid == descriptor->type_uuid ||
+       descriptor->descriptor_uuid == aggregate->function_uuid)) {
+    result.detail =
+        "global real64 aggregate result does not bind the exact core real64 "
         "type with a distinct result descriptor identity";
     return result;
   }
