@@ -6623,16 +6623,16 @@ bool CanonicalDescriptorFieldEqualsV1(
   return expected.has_value() ? value == expected : !value.has_value();
 }
 
-bool ExactCanonicalScalarWindowSourceV1(
+bool ExactCanonicalScalarWindowOperandV1(
     const api::RelationalTypeDescriptor& relational_descriptor,
     const api::EngineDescriptor& runtime_descriptor,
     const bool runtime_nullable,
     const std::string_view function_uuid,
     const std::string_view result_descriptor_uuid,
     const std::string_view result_type_uuid,
-    const std::string_view order_descriptor_uuid,
-    const std::string_view order_type_uuid,
-    const bool same_order_ordinal,
+    const std::string_view counterpart_descriptor_uuid,
+    const std::string_view counterpart_type_uuid,
+    const bool same_operand_ordinal,
     const std::string_view ordering_property_uuid,
     const std::string_view window_property_uuid,
     const std::string_view window_frame_descriptor_uuid) {
@@ -6678,9 +6678,9 @@ bool ExactCanonicalScalarWindowSourceV1(
          relational_descriptor.descriptor_uuid !=
              relational_descriptor.type_uuid &&
          relational_descriptor.descriptor_uuid != result_type_uuid &&
-         (same_order_ordinal || relational_descriptor.descriptor_uuid !=
-                                    order_descriptor_uuid) &&
-         relational_descriptor.descriptor_uuid != order_type_uuid &&
+         (same_operand_ordinal || relational_descriptor.descriptor_uuid !=
+                                      counterpart_descriptor_uuid) &&
+         relational_descriptor.descriptor_uuid != counterpart_type_uuid &&
          relational_descriptor.descriptor_uuid != function_uuid &&
          relational_descriptor.descriptor_uuid != result_descriptor_uuid &&
          relational_descriptor.descriptor_uuid != ordering_property_uuid &&
@@ -6689,7 +6689,7 @@ bool ExactCanonicalScalarWindowSourceV1(
              window_frame_descriptor_uuid &&
          relational_descriptor.type_uuid != function_uuid &&
          relational_descriptor.type_uuid != result_descriptor_uuid &&
-         relational_descriptor.type_uuid != order_descriptor_uuid &&
+         relational_descriptor.type_uuid != counterpart_descriptor_uuid &&
          relational_descriptor.type_uuid != ordering_property_uuid &&
          relational_descriptor.type_uuid != window_property_uuid &&
          relational_descriptor.type_uuid != window_frame_descriptor_uuid &&
@@ -19385,7 +19385,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   request.relational_dag.descriptors.end() ||
               order_relational_descriptor ==
                   request.relational_dag.descriptors.end() ||
-              !ExactCanonicalScalarWindowSourceV1(
+              !ExactCanonicalScalarWindowOperandV1(
                   *source_relational_descriptor,
                   input_batch.columns[source_column].descriptor,
                   input_batch.columns[source_column].nullable,
@@ -19424,7 +19424,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   request.relational_dag.descriptors.end() ||
               order_relational_descriptor ==
                   request.relational_dag.descriptors.end() ||
-              !ExactCanonicalScalarWindowSourceV1(
+              !ExactCanonicalScalarWindowOperandV1(
                   *source_relational_descriptor,
                   input_batch.columns[source_column].descriptor,
                   input_batch.columns[source_column].nullable,
@@ -19436,11 +19436,24 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   source_column == order_column,
                   prepared_sort->ordering_property_uuid,
                   ranking.window_property_uuid,
+                  ranking.window_frame_descriptor_uuid) ||
+              !ExactCanonicalScalarWindowOperandV1(
+                  *order_relational_descriptor,
+                  input_batch.columns[order_column].descriptor,
+                  input_batch.columns[order_column].nullable,
+                  ranking_profile.function_uuid,
+                  output_descriptor->descriptor_uuid, result_type_uuid,
+                  input_batch.columns[source_column]
+                      .descriptor.descriptor_uuid.canonical,
+                  source_relational_descriptor->type_uuid,
+                  source_column == order_column,
+                  prepared_sort->ordering_property_uuid,
+                  ranking.window_property_uuid,
                   ranking.window_frame_descriptor_uuid)) {
             return refuse(
                 std::string(kPayloadDiagnostic),
                 "composition " + std::string(ranking_name) +
-                    " source descriptor is not exact");
+                    " source/order descriptors are not exact");
           }
         }
         if (aggregate_boolean_window || aggregate_bounded_signed_window) {
@@ -53265,7 +53278,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         if (order_column >=
                 admission.current_relation_projection_descriptors.size() ||
             order_relational_descriptor == dag.descriptors.end() ||
-            !ExactCanonicalScalarWindowSourceV1(
+            !ExactCanonicalScalarWindowOperandV1(
                 *source_relational_descriptor, source_descriptor,
                 source_relational_descriptor->nullability ==
                     api::RelationalNullability::kNullable,
@@ -53277,11 +53290,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                 *ranking.navigation_value_column == order_column,
                 heap_sort_binding.ordering_property_uuid,
                 ranking.window_property_uuid,
-                ranking.window_frame_descriptor_uuid)) {
+                ranking.window_frame_descriptor_uuid) ||
+            (!aggregate_window &&
+             !ExactCanonicalScalarWindowOperandV1(
+                 *order_relational_descriptor,
+                 admission.current_relation_projection_descriptors
+                     [order_column],
+                 order_relational_descriptor->nullability ==
+                     api::RelationalNullability::kNullable,
+                 ranking_profile.function_uuid,
+                 output_descriptor->descriptor_uuid, result_type_uuid,
+                 source_descriptor.descriptor_uuid.canonical,
+                 source_relational_descriptor->type_uuid,
+                 *ranking.navigation_value_column == order_column,
+                 heap_sort_binding.ordering_property_uuid,
+                 ranking.window_property_uuid,
+                 ranking.window_frame_descriptor_uuid))) {
           return refuse(
               "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
               "object-backed " + std::string(ranking_name) +
-                  " source descriptor is not exact");
+                  " source/order descriptors are not exact");
         }
       }
       if ((aggregate_boolean_window || aggregate_bounded_signed_window) &&
