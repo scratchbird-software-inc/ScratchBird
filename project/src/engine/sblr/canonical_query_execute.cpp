@@ -30148,13 +30148,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   const auto maximum_output_rows =
       bounded_size(input.context.optimizer_maximum_candidate_count);
   const auto maximum_output_columns = join->output_descriptor_ids.size();
+  std::uint64_t maximum_pair_count_u64 = 0;
   if (maximum_scanned_row_versions == 0 || maximum_decoded_bytes == 0 ||
       maximum_output_rows == 0 || maximum_output_columns == 0 ||
       maximum_output_rows >
-          std::numeric_limits<std::size_t>::max() / maximum_output_columns) {
+          std::numeric_limits<std::size_t>::max() / maximum_output_columns ||
+      !CheckedMultiply(maximum_output_rows, maximum_output_rows,
+                       &maximum_pair_count_u64) ||
+      maximum_pair_count_u64 >
+          std::numeric_limits<std::size_t>::max()) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                   "object-backed heap CROSS JOIN bounds are absent or overflow");
   }
+  const auto maximum_pair_count =
+      static_cast<std::size_t>(maximum_pair_count_u64);
 
   exec::CanonicalHeapPhysicalDagDispatchRequest heap_request;
   heap_request.context = &input.context;
@@ -30216,7 +30223,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   selected.available_executors.push_back(MakeLiveJoinRegistration(
       "join." + join_component + ".3vl.nested.v1",
       join_capability_uuid, {},
-      maximum_output_rows, maximum_output_rows,
+      maximum_pair_count, maximum_output_rows,
       join_kind, "object-backed heap " + join_operation,
       input.context, true,
       predicate_join ? join->bound_expression_ids.front() : 0,
