@@ -13439,13 +13439,40 @@ MakeLiveCorrelatedSubqueryRegistration(
           }
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                correlated, dag, node,
+                correlated_request.mga_authority.statement_context) ||
+            correlated.scope_execution_count != prepared.outer_row_count ||
+            correlated.scopes.size() !=
+                correlated.scope_execution_count ||
+            correlated.comparison_count > prepared.pair_count ||
+            correlated.result_row_count > prepared.output_row_bound ||
+            !correlated.transient_state_cleanup_proven ||
+            correlated.cancellation_observed) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-013-CORRELATED-REFUSAL-V1";
+          step.diagnostic.detail =
+              "correlated subquery execution receipt changed";
+          return step;
+        }
         exec::DescriptorBatch output;
         output.columns =
             inputs[1].materialized_output_batch->columns;
         output.rows.reserve(correlated.result_row_count);
         if (poll_cancellation("before result flattening")) return step;
-        for (auto& scope : correlated.scopes) {
+        for (std::size_t scope_index = 0;
+             scope_index < correlated.scopes.size(); ++scope_index) {
           if (poll_cancellation("while flattening a result scope")) {
+            return step;
+          }
+          auto& scope = correlated.scopes[scope_index];
+          if (scope.outer_row_index != scope_index) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-013-CORRELATED-REFUSAL-V1";
+            step.diagnostic.detail =
+                "correlated subquery scope order changed";
             return step;
           }
           for (auto& row : scope.output_batch.rows) {
