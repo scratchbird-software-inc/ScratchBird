@@ -1,0 +1,6 @@
+#pragma once
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+namespace scratchbird::engine::sblr { struct SblrDdlDropMacroRequestV1{std::array<std::uint8_t,16> receipt{};std::uint64_t occurrence=0;std::uint32_t macro_occurrence=0;}; struct SblrDdlDropMacroDescriptorV1{std::array<std::uint8_t,400> body{};std::array<std::uint8_t,32> evidence{};std::uint64_t availability=0;}; struct SblrDdlDropMacroResultV1{std::array<std::uint8_t,248> body{};std::array<std::uint8_t,32> evidence{};std::uint64_t availability=0;std::array<std::uint8_t,16> publication_barrier{};}; std::vector<std::uint8_t> EncodeSblrDdlDropMacroRequestV1(const SblrDdlDropMacroRequestV1&);bool DecodeSblrDdlDropMacroRequestV1(const std::uint8_t*,std::size_t,SblrDdlDropMacroRequestV1*,std::string*);std::vector<std::uint8_t> EncodeSblrDdlDropMacroDescriptorV1(const SblrDdlDropMacroDescriptorV1&,bool);bool DecodeSblrDdlDropMacroDescriptorV1(const std::uint8_t*,std::size_t,SblrDdlDropMacroDescriptorV1*,std::string*,bool);std::vector<std::uint8_t> EncodeSblrDdlDropMacroResultV1(const SblrDdlDropMacroResultV1&);bool DecodeSblrDdlDropMacroResultV1(const std::uint8_t*,std::size_t,SblrDdlDropMacroResultV1*,std::string*);}

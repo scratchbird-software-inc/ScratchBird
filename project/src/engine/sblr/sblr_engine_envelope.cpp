@@ -56,6 +56,7 @@
 #include "sblr_database_serialize_logical_snapshot_runtime.hpp"
 #include "sblr_database_deserialize_logical_snapshot_runtime.hpp"
 #include "sblr_ddl_create_macro_runtime.hpp"
+#include "sblr_ddl_drop_macro_runtime.hpp"
 #include "sblr_ddl_create_function_runtime.hpp"
 #include "sblr_ddl_alter_function_runtime.hpp"
 #include "sblr_ddl_drop_function_runtime.hpp"
@@ -620,6 +621,7 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::logical_snapshot_serialization_descriptor: { SblrDatabaseSerializeLogicalSnapshotDescriptorV1 operand; std::string detail; return DecodeSblrDatabaseSerializeLogicalSnapshotDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::logical_snapshot_deserialization_descriptor: { SblrDatabaseDeserializeLogicalSnapshotDescriptorV1 operand; std::string detail; return DecodeSblrDatabaseDeserializeLogicalSnapshotDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::macro_descriptor: { SblrDdlCreateMacroDescriptorV1 operand; std::string detail; return DecodeSblrDdlCreateMacroDescriptorV1(data,size,&operand,&detail,true); }
+    case SblrValueKind::macro_drop_descriptor: { SblrDdlDropMacroDescriptorV1 operand; std::string detail; return DecodeSblrDdlDropMacroDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::group_descriptor: { SblrGroupDescriptorV1 operand; std::string detail; return DecodeSblrGroupDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::sort_descriptor: { SblrSortDescriptorV1 operand; std::string detail; return DecodeSblrSortDescriptorV1(data,size,&operand,&detail,true); }
     case SblrValueKind::limit_descriptor: { SblrLimitDescriptorV1 operand; std::string detail; return DecodeSblrLimitDescriptorV1(data,size,&operand,&detail,true); }

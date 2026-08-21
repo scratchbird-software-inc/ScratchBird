@@ -1,0 +1,3 @@
+#include "engine/sblr/sblr_ddl_drop_macro_runtime.hpp"
+#include <cassert>
+using namespace scratchbird::engine::sblr; int main(){SblrDdlDropMacroRequestV1 q;q.receipt[0]=1;q.occurrence=1;q.macro_occurrence=1;auto b=EncodeSblrDdlDropMacroRequestV1(q);SblrDdlDropMacroRequestV1 q2;assert(DecodeSblrDdlDropMacroRequestV1(b.data(),b.size(),&q2,nullptr));SblrDdlDropMacroDescriptorV1 d;d.body[0]=1;d.availability=1;auto x=EncodeSblrDdlDropMacroDescriptorV1(d,false);assert(x.size()==488);SblrDdlDropMacroDescriptorV1 d2;assert(DecodeSblrDdlDropMacroDescriptorV1(x.data(),x.size(),&d2,nullptr,false));x[20]^=1;assert(!DecodeSblrDdlDropMacroDescriptorV1(x.data(),x.size(),&d2,nullptr,false));return 0;}
