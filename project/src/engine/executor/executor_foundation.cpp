@@ -4701,6 +4701,42 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       return refuse(validation.diagnostic_code + ":" + validation.detail);
     }
   }
+  const auto descriptor_field = [](
+                                    const internal_api::EngineDescriptor&
+                                        descriptor,
+                                    const std::string_view key)
+      -> std::optional<std::string_view> {
+    const auto prefix = std::string(key) + "=";
+    std::optional<std::string_view> value;
+    std::size_t begin = 0;
+    while (begin <= descriptor.encoded_descriptor.size()) {
+      const auto end = descriptor.encoded_descriptor.find(';', begin);
+      const auto field =
+          std::string_view(descriptor.encoded_descriptor)
+              .substr(begin, end == std::string::npos
+                                 ? std::string::npos
+                                 : end - begin);
+      if (field.starts_with(prefix)) {
+        if (value.has_value() || field.size() == prefix.size()) {
+          return std::nullopt;
+        }
+        value = field.substr(prefix.size());
+      }
+      if (end == std::string::npos) break;
+      begin = end + 1;
+    }
+    return value;
+  };
+  for (const auto& result_column : request.result_columns) {
+    const auto type_uuid =
+        descriptor_field(result_column.descriptor, "type_uuid");
+    if (!type_uuid.has_value() || !IsCanonicalUuid(*type_uuid) ||
+        result_column.descriptor.descriptor_uuid.canonical == *type_uuid) {
+      return refuse(
+          "set-operation result descriptor/type identities are not independent",
+          "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1");
+    }
+  }
 
   // QOW-SOURCE-QRY-016-ARITY-V1
   // Arity is decided from the three already-bound descriptor vectors, never

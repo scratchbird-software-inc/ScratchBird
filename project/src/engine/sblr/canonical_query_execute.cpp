@@ -8210,7 +8210,10 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
     }
     const auto& right_column = right.batch.columns[right_column_ordinal];
     if (descriptor == descriptors.end() ||
-        descriptor->second->nullability == api::RelationalNullability::kUnknown ||
+        descriptor->second->descriptor_uuid ==
+            descriptor->second->type_uuid ||
+        descriptor->second->nullability ==
+            api::RelationalNullability::kUnknown ||
         left_column.descriptor.canonical_type_name.empty() ||
         right_column.descriptor.canonical_type_name.empty()) {
       result.detail = "set-operation descriptor reconciliation is unresolved";
