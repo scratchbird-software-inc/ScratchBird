@@ -51435,8 +51435,8 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
             : "canonical.model-family.join." + join_component + ".v1";
   }
   join_profile.estimated_rows = asof_join ? maximum_rows : 1;
-  join_profile.memory_bytes_required = std::max<std::uint64_t>(
-      4096, input.context.optimizer_memory_budget_bytes / 4);
+  join_profile.memory_bytes_required =
+      input.context.optimizer_memory_budget_bytes;
   join_profile.minimum_input_count = 2;
   join_profile.maximum_input_count = 2;
   join_profile.runtime_peak_from_callback_batches = true;
