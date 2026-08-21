@@ -2802,18 +2802,19 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
         std::string(ranking_name) +
             " output or order descriptor is not bound"));
   }
-  const std::array<std::string_view, 8> ranking_identity_domain{
+  const std::array<std::string_view, 7> ranking_identity_domain{
       request.function_uuid,
       request.ranking_column.descriptor.descriptor_uuid.canonical,
       *result_type_uuid,
       ordering_property_uuid,
       *window_property,
       selected_node->executor_capability_uuid,
-      request.order_term_binding_evidence_uuid,
       request.deterministic_order_evidence_uuid};
   const std::unordered_set<std::string_view> distinct_ranking_identities(
       ranking_identity_domain.begin(), ranking_identity_domain.end());
-  if (distinct_ranking_identities.size() != ranking_identity_domain.size() ||
+  if (selected_node->executor_capability_uuid !=
+          request.order_term_binding_evidence_uuid ||
+      distinct_ranking_identities.size() != ranking_identity_domain.size() ||
       std::ranges::any_of(ranking_identity_domain, [](const auto identity) {
         return !IsCanonicalUuid(identity);
       })) {
@@ -2829,13 +2830,12 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
       CanonicalDescriptorField(order_descriptor, "type_uuid");
   const auto& order_descriptor_uuid =
       order_descriptor.descriptor_uuid.canonical;
-  const std::array<std::string_view, 7> forbidden_order_type_roles{
+  const std::array<std::string_view, 6> forbidden_order_type_roles{
       request.function_uuid,
       request.ranking_column.descriptor.descriptor_uuid.canonical,
       ordering_property_uuid,
       *window_property,
       selected_node->executor_capability_uuid,
-      request.order_term_binding_evidence_uuid,
       request.deterministic_order_evidence_uuid};
   if (!scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
           order_descriptor) ||
