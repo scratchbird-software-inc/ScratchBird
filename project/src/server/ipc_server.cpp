@@ -3437,6 +3437,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDatabaseDeserializeLogicalSnapshotRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateMacroRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropMacroRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateAdminRegisterExternalRelationResolverRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kManagementRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kEventSubscribeRequest) ||
