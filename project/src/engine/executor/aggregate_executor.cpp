@@ -9,9 +9,11 @@
 #include "descriptor_value_runtime.hpp"
 
 #include "aggregate_executor_internal.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "datatype_document.hpp"
 #include "datatype_operations.hpp"
 #include "temp_spill_executor.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <array>
@@ -204,6 +206,44 @@ bool IsType(const EngineTypedValue& value, const std::string_view type_name) {
 bool IsType(const ExecutorColumnDescriptor& column,
             const std::string_view type_name) {
   return column.descriptor.canonical_type_name == type_name;
+}
+
+std::optional<std::string_view> AggregateDescriptorField(
+    const internal_api::EngineDescriptor& descriptor,
+    const std::string_view key) {
+  const auto prefix = std::string(key) + "=";
+  std::optional<std::string_view> value;
+  std::size_t begin = 0;
+  while (begin <= descriptor.encoded_descriptor.size()) {
+    const auto end = descriptor.encoded_descriptor.find(';', begin);
+    const auto field =
+        std::string_view(descriptor.encoded_descriptor)
+            .substr(begin, end == std::string::npos ? std::string::npos
+                                                    : end - begin);
+    if (field.starts_with(prefix)) {
+      if (value.has_value() || field.size() == prefix.size()) {
+        return std::nullopt;
+      }
+      value = field.substr(prefix.size());
+    }
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return value;
+}
+
+std::string ExactCoreAggregateTypeUuid(const std::string_view stable_name) {
+  static const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  std::string type_uuid;
+  for (const auto& row : manifest.manifest.descriptor_rows) {
+    if (row.stable_name != stable_name) continue;
+    if (!type_uuid.empty()) return {};
+    type_uuid =
+        scratchbird::core::uuid::UuidToString(row.descriptor_uuid.value);
+  }
+  return type_uuid;
 }
 
 std::size_t CanonicalAggregateExpectedArity(
@@ -1633,6 +1673,49 @@ bool ValidateCanonicalAggregateResultType(
     const DescriptorBatch& input_batch,
     DescriptorRuntimeDiagnostic* diagnostic) {
   const auto function = request.descriptor.function;
+  const bool fixed_int64_result =
+      function == CanonicalAggregateFunction::count ||
+      function == CanonicalAggregateFunction::regr_count ||
+      function == CanonicalAggregateFunction::rank ||
+      function == CanonicalAggregateFunction::dense_rank ||
+      function == CanonicalAggregateFunction::approx_count_distinct;
+  const bool fixed_real64_result =
+      function == CanonicalAggregateFunction::avg ||
+      function == CanonicalAggregateFunction::percent_rank ||
+      function == CanonicalAggregateFunction::cume_dist ||
+      IsCanonicalQuantileFunction(function) ||
+      IsCanonicalUnivariateStatisticalFunction(function) ||
+      (IsCanonicalPairStatisticalFunction(function) &&
+       function != CanonicalAggregateFunction::regr_count);
+  const bool fixed_boolean_result =
+      function == CanonicalAggregateFunction::bool_and ||
+      function == CanonicalAggregateFunction::bool_or ||
+      function == CanonicalAggregateFunction::every;
+  const std::string_view fixed_type_name =
+      fixed_int64_result   ? "int64"
+      : fixed_real64_result ? "real64"
+      : fixed_boolean_result ? "boolean"
+                             : std::string_view{};
+  if (!fixed_type_name.empty()) {
+    const auto expected_type_uuid =
+        ExactCoreAggregateTypeUuid(fixed_type_name);
+    const auto actual_type_uuid = AggregateDescriptorField(
+        request.result_column.descriptor, "type_uuid");
+    const auto& result_descriptor_uuid =
+        request.result_column.descriptor.descriptor_uuid.canonical;
+    if (expected_type_uuid.empty() || !actual_type_uuid.has_value() ||
+        *actual_type_uuid != expected_type_uuid ||
+        !internal_api::QowCanonicalDescriptorIdentityV1(
+            request.result_column.descriptor) ||
+        request.result_column.descriptor.descriptor_kind != "scalar" ||
+        result_descriptor_uuid == expected_type_uuid ||
+        result_descriptor_uuid == request.descriptor.function_uuid) {
+      *diagnostic = Refusal(
+          "QOW-DIAG-QRY-011-REGISTRY-RESULT-TYPE-V1",
+          "aggregate fixed result identity is not canonical");
+      return false;
+    }
+  }
   if (function == CanonicalAggregateFunction::count) {
     if (IsType(request.result_column, "int64") &&
         !request.result_column.nullable) {
