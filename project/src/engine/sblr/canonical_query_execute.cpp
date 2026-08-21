@@ -51380,6 +51380,15 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
   }
   std::vector<LivePhysicalNodeProfile> profiles;
   for (const auto& leg : captured) {
+    const auto source_memory_grant =
+        leg.family_id == "relational"
+            ? input.context.optimizer_memory_budget_bytes
+            : leg.execution_request.input.maximum_memory_bytes;
+    if (source_memory_grant == 0 ||
+        source_memory_grant > input.context.optimizer_memory_budget_bytes) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "captured model-family source memory grant is invalid");
+    }
     LivePhysicalNodeProfile profile;
     profile.logical_node_id = leg.logical_node_id;
     profile.implementation_id = leg.implementation_id;
@@ -51388,8 +51397,7 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
     profile.physical_node_kind = leg.physical_node_kind;
     profile.transformation_rule_id = leg.transformation_rule_id;
     profile.estimated_rows = 1;
-    profile.memory_bytes_required = std::max<std::uint64_t>(
-        4096, input.context.optimizer_memory_budget_bytes / 8);
+    profile.memory_bytes_required = source_memory_grant;
     profile.page_read_sequential_units = 1;
     profile.mga_visibility_checks_expected = 1;
     profile.storage_read_capable = true;
