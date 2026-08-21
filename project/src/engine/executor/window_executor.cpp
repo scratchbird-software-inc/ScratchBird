@@ -2768,6 +2768,10 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
           expected_result_type ||
       !result_type_uuid.has_value() || expected_result_type_uuid.empty() ||
       *result_type_uuid != expected_result_type_uuid ||
+      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+          *result_type_uuid ||
+      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+          request.function_uuid ||
       request.order_term.column >=
           execution_ordered_input_batch.columns.size()) {
     return refuse(Refusal(
