@@ -52889,6 +52889,22 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent spatial/columnar relation descriptor is invalid");
   }
+  static constexpr std::array<std::string_view, 5> kSpatialNames{
+      "row_uuid", "spatial_value", "crs_uuid", "predicate_truth", "distance"};
+  static constexpr std::array<std::string_view, 5> kSpatialTypes{
+      "uuid", "geometry", "uuid", "boolean", "real64"};
+  std::array<std::string, 5> spatial_type_uuids;
+  if (spatial) {
+    for (std::size_t ordinal = 0; ordinal < kSpatialTypes.size(); ++ordinal) {
+      spatial_type_uuids[ordinal] =
+          ExactCanonicalCoreDatatypeUuidV1(kSpatialTypes[ordinal]);
+    }
+    if (std::ranges::any_of(spatial_type_uuids,
+                            [](const auto& uuid) { return uuid.empty(); })) {
+      return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                    "spatial core datatype registry is unavailable");
+    }
+  }
   if (spatial &&
       (persisted.columns.size() != 3 ||
        persisted.columns[0].canonical_name_key != "row_uuid" ||
@@ -52902,6 +52918,27 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
        persisted.columns[2].nullable)) {
     return refuse("SB_MODEL_SPATIAL_PROFILE_UNSUPPORTED_V1",
                   "persistent spatial relation is not the exact point cohort");
+  }
+  if (spatial) {
+    for (std::size_t ordinal = 0; ordinal < persisted.columns.size(); ++ordinal) {
+      const auto& column = persisted.columns[ordinal];
+      if (column.ordinal != ordinal ||
+          !CanonicalUuidText(column.column_uuid.canonical) ||
+          column.value_descriptor.descriptor_kind !=
+              "canonical_type_descriptor" ||
+          !api::QowCanonicalDescriptorIdentityV1(column.value_descriptor) ||
+          !CanonicalDescriptorFieldEqualsV1(
+              column.value_descriptor, "type_uuid",
+              std::string_view(spatial_type_uuids[ordinal])) ||
+          !column.collation_uuid.empty() ||
+          !CanonicalDescriptorFieldEqualsV1(column.value_descriptor,
+                                            "collation_uuid", std::nullopt) ||
+          !CanonicalDescriptorFieldEqualsV1(
+              column.value_descriptor, "timezone_profile_id", std::nullopt)) {
+        return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                      "spatial persisted type identity is not exact");
+      }
+    }
   }
 
   std::vector<const api::RelationalOutputRecord*> outputs;
@@ -52917,10 +52954,6 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
   public_columns.reserve(outputs.size());
   result_bindings.reserve(outputs.size());
-  static constexpr std::array<std::string_view, 5> kSpatialNames{
-      "row_uuid", "spatial_value", "crs_uuid", "predicate_truth", "distance"};
-  static constexpr std::array<std::string_view, 5> kSpatialTypes{
-      "uuid", "geometry", "uuid", "boolean", "real64"};
   for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
     const auto descriptor = descriptor_for(outputs[ordinal]->descriptor_id);
     const auto output_expression = expression_for(outputs[ordinal]->expression_id);
@@ -52928,6 +52961,9 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
         output_expression == dag.expressions.end() ||
         !outputs[ordinal]->visible || outputs[ordinal]->ordinal != ordinal ||
         outputs[ordinal]->descriptor_id != source->output_descriptor_ids[ordinal] ||
+        output_expression->expression_kind !=
+            api::RelationalExpressionKind::kIdentifier ||
+        output_expression->result_descriptor_id != descriptor->descriptor_id ||
         descriptor->nullability == api::RelationalNullability::kUnknown) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "spatial/columnar output binding was substituted");
@@ -52942,17 +52978,54 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       if (found != persisted.columns.end()) persisted_column = &*found;
     }
     api::EngineDescriptor engine_descriptor;
-    if (persisted_column != nullptr && !spatial) {
+    if (spatial && ordinal < persisted.columns.size()) {
+      const auto& column = persisted.columns[ordinal];
+      if (output_expression->bound_name_uuid !=
+              std::optional<std::string>(column.column_uuid.canonical) ||
+          outputs[ordinal]->output_name_utf8 != column.canonical_name_key ||
+          descriptor->descriptor_uuid !=
+              column.value_descriptor.descriptor_uuid.canonical ||
+          descriptor->type_uuid != spatial_type_uuids[ordinal] ||
+          descriptor->nullability != api::RelationalNullability::kNonNull ||
+          descriptor->collation_uuid.has_value() ||
+          descriptor->timezone_profile_id.has_value()) {
+        return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                      "spatial base output differs from persisted type authority");
+      }
+      engine_descriptor = column.value_descriptor;
+      engine_descriptor.descriptor_kind = "scalar";
+    } else if (persisted_column != nullptr && !spatial) {
+      const auto persisted_type_uuid = Rcp079DescriptorField(
+          persisted_column->value_descriptor.encoded_descriptor, "type_uuid");
+      const auto persisted_collation =
+          persisted_column->collation_uuid.empty()
+              ? std::optional<std::string_view>{}
+              : std::optional<std::string_view>{
+                    persisted_column->collation_uuid};
+      const auto dag_timezone = descriptor->timezone_profile_id.has_value()
+                                    ? std::optional<std::string_view>{
+                                          *descriptor->timezone_profile_id}
+                                    : std::optional<std::string_view>{};
       if (outputs[ordinal]->output_name_utf8 !=
               persisted_column->canonical_name_key ||
           descriptor->descriptor_uuid !=
               persisted_column->value_descriptor.descriptor_uuid.canonical ||
+          !persisted_type_uuid.has_value() ||
+          !CanonicalUuidText(*persisted_type_uuid) ||
+          descriptor->type_uuid != *persisted_type_uuid ||
           descriptor->nullability !=
               (persisted_column->nullable
                    ? api::RelationalNullability::kNullable
-                   : api::RelationalNullability::kNonNull)) {
-        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                      "persisted output descriptor differs from binding");
+                   : api::RelationalNullability::kNonNull) ||
+          descriptor->collation_uuid != persisted_collation ||
+          !CanonicalDescriptorFieldEqualsV1(
+              persisted_column->value_descriptor, "collation_uuid",
+              persisted_collation) ||
+          !CanonicalDescriptorFieldEqualsV1(
+              persisted_column->value_descriptor, "timezone_profile_id",
+              dag_timezone)) {
+        return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                      "columnar output differs from persisted type authority");
       }
       engine_descriptor = persisted_column->value_descriptor;
       engine_descriptor.descriptor_kind = "scalar";
@@ -52965,9 +53038,12 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                                      : std::string_view{};
       if (!spatial || expected_name.empty() ||
           outputs[ordinal]->output_name_utf8 != expected_name ||
-          descriptor->nullability != api::RelationalNullability::kNonNull) {
-        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                      "derived spatial output descriptor is invalid");
+          descriptor->type_uuid != spatial_type_uuids[ordinal] ||
+          descriptor->nullability != api::RelationalNullability::kNonNull ||
+          descriptor->collation_uuid.has_value() ||
+          descriptor->timezone_profile_id.has_value()) {
+        return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                      "derived spatial output type identity is invalid");
       }
       engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
       engine_descriptor.descriptor_kind = "scalar";
@@ -53405,7 +53481,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
     source_input.spatial_geometry_descriptor_uuid =
         persisted.columns[1].value_descriptor.descriptor_uuid.canonical;
     source_input.spatial_geometry_type_uuid =
-        descriptor_for(source->output_descriptor_ids[1])->type_uuid;
+        spatial_type_uuids[1];
     source_input.spatial_crs_uuid = spatial_crs_uuid;
     source_input.spatial_crs_generation = spatial_crs_generation;
   }
