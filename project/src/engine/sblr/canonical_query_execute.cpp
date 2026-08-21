@@ -2287,11 +2287,62 @@ struct PreparedGroupedCountSumRoot {
   std::vector<exec::ExecutorColumnDescriptor> key_result_columns;
   std::vector<exec::CanonicalAggregateGroupingSet> grouping_sets;
   std::vector<exec::ExecutorColumnDescriptor> grouping_projection_columns;
+  std::size_t maximum_grouping_key_comparison_count{0};
+  std::size_t maximum_combined_grouping_key_comparison_count{0};
   PreparedGlobalAggregateRoot count;
   PreparedGlobalAggregateRoot sum;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
   std::string detail;
 };
+
+bool BindPreparedGroupedComparisonCeilings(
+    PreparedGroupedCountSumRoot* prepared,
+    const std::uint64_t maximum_input_row_count) {
+  if (prepared == nullptr || !prepared->ok ||
+      prepared->grouping_sets.empty() || prepared->key_terms.empty()) {
+    return false;
+  }
+  std::uint64_t adjacent = maximum_input_row_count;
+  if (adjacent != 0) --adjacent;
+  std::uint64_t triangular = 0;
+  if ((maximum_input_row_count & 1U) == 0) {
+    if (!CheckedMultiply(maximum_input_row_count / 2, adjacent,
+                         &triangular)) {
+      return false;
+    }
+  } else if (!CheckedMultiply(maximum_input_row_count, adjacent / 2,
+                              &triangular)) {
+    return false;
+  }
+  std::uint64_t self_and_admission = 0;
+  if (!CheckedMultiply(maximum_input_row_count, 2,
+                       &self_and_admission) ||
+      !CheckedAdd(triangular, self_and_admission,
+                  &self_and_admission)) {
+    return false;
+  }
+  std::uint64_t per_aggregate = 0;
+  for (const auto& grouping_set : prepared->grouping_sets) {
+    std::uint64_t set_comparisons = 0;
+    if (!CheckedMultiply(grouping_set.key_term_ordinals.size(),
+                         self_and_admission, &set_comparisons) ||
+        !CheckedAdd(per_aggregate, set_comparisons, &per_aggregate)) {
+      return false;
+    }
+  }
+  per_aggregate = std::max<std::uint64_t>(1, per_aggregate);
+  std::uint64_t combined = 0;
+  if (!CheckedMultiply(per_aggregate, 2, &combined) ||
+      per_aggregate > std::numeric_limits<std::size_t>::max() ||
+      combined > std::numeric_limits<std::size_t>::max()) {
+    return false;
+  }
+  prepared->maximum_grouping_key_comparison_count =
+      static_cast<std::size_t>(per_aggregate);
+  prepared->maximum_combined_grouping_key_comparison_count =
+      static_cast<std::size_t>(combined);
+  return true;
+}
 
 bool RevalidatePreparedGroupedKeyBindings(
     const PreparedGroupedCountSumRoot& prepared,
@@ -13842,6 +13893,8 @@ MakeLiveGroupedCountSumRegistration(
         first.group_key_terms = prepared.key_terms;
         first.group_result_columns = prepared.key_result_columns;
         first.grouping_sets = prepared.grouping_sets;
+        first.maximum_grouping_key_comparison_count =
+            prepared.maximum_grouping_key_comparison_count;
         first.maximum_group_count = maximum_output_row_count;
         first.maximum_output_rows = maximum_output_row_count;
         first.maximum_combined_final_output_bytes =
@@ -13849,6 +13902,8 @@ MakeLiveGroupedCountSumRegistration(
         auto sum = make_aggregate(prepared.sum);
         sum.mga_authority = first.aggregate_request.mga_authority;
         grouped_request.additional_aggregates = {std::move(sum)};
+        grouped_request.maximum_combined_grouping_key_comparison_count =
+            prepared.maximum_combined_grouping_key_comparison_count;
         grouped_request.maximum_combined_final_output_bytes =
             *aggregate_memory_bound;
         auto grouped = exec::ExecuteCanonicalGroupedAggregateSetRuntime(
@@ -19261,6 +19316,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   expected_projection_count) {
             return refuse(std::string(kPayloadDiagnostic), prepared.detail);
           }
+          if (!BindPreparedGroupedComparisonCeilings(
+                  &prepared, input_row_count)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition grouped aggregate comparison bound overflowed");
+          }
           struct GroupPlanningState {
             std::size_t grouping_set_ordinal{0};
             std::vector<bool> grouping_indicators;
@@ -19395,18 +19456,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               group->has_sum = true;
             }
           }
-          std::uint64_t input_pairs = 0;
-          std::uint64_t comparison_work = 0;
+          const auto comparison_work = static_cast<std::uint64_t>(
+              prepared.maximum_combined_grouping_key_comparison_count);
           std::uint64_t transition_work = 0;
           std::uint64_t aggregate_work = 0;
-          if (!CheckedMultiply(input_row_count, input_row_count,
-                               &input_pairs) ||
-              !CheckedMultiply(input_pairs, prepared.key_terms.size(),
-                               &comparison_work) ||
-              !CheckedMultiply(comparison_work,
-                               prepared.grouping_sets.size(),
-                               &comparison_work) ||
-              !CheckedMultiply(input_row_count,
+          if (!CheckedMultiply(input_row_count,
                                prepared.grouping_sets.size(),
                                &transition_work) ||
               !CheckedAdd(comparison_work, transition_work,
@@ -26509,6 +26563,14 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   }
 
   const auto input_row_count = input.batch.rows.size();
+  if (!BindPreparedGroupedComparisonCeilings(
+          &prepared_root, input_row_count) ||
+      prepared_root.maximum_combined_grouping_key_comparison_count >
+          request.optimizer_request.resource.maximum_candidate_count) {
+    return refuse(
+        "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+        "live grouped COUNT/SUM comparison work exceeds the admitted bound");
+  }
   std::uint64_t input_memory = 1;
   std::uint64_t output_row_bound = 0;
   std::uint64_t per_group_memory = 0;
@@ -26799,6 +26861,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         first.group_key_terms = prepared_root.key_terms;
         first.group_result_columns = prepared_root.key_result_columns;
         first.grouping_sets = prepared_root.grouping_sets;
+        first.maximum_grouping_key_comparison_count =
+            prepared_root.maximum_grouping_key_comparison_count;
         first.maximum_group_count = maximum_output_rows;
         first.maximum_output_rows = maximum_output_rows;
         first.maximum_combined_final_output_bytes =
@@ -26809,6 +26873,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         // carries the same statement authority without shadow carriers.
         additional_sum.mga_authority = first.aggregate_request.mga_authority;
         grouped_request.additional_aggregates = {std::move(additional_sum)};
+        grouped_request.maximum_combined_grouping_key_comparison_count =
+            prepared_root.maximum_combined_grouping_key_comparison_count;
         grouped_request.maximum_combined_final_output_bytes =
             *aggregate_memory_bound;
 
@@ -37415,6 +37481,22 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
                         prepared.detail.empty()
                             ? "search grouped COUNT/SUM profile is not exact"
                             : prepared.detail);
+        }
+        const auto grouped_per_row_bytes = std::max<std::uint64_t>(
+            1, sizeof(api::EngineBoundSearchRowV1) +
+                   5 * sizeof(api::EngineTypedValue));
+        const auto grouped_input_row_bound = std::min<std::uint64_t>(
+            {65'536, input.context.optimizer_maximum_candidate_count,
+             (planning.memory_budget_bytes / 2) /
+                 grouped_per_row_bytes});
+        if (!BindPreparedGroupedComparisonCeilings(
+                &prepared, grouped_input_row_bound) ||
+            prepared.maximum_combined_grouping_key_comparison_count >
+                input.context.optimizer_maximum_candidate_count) {
+          return refuse(
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+              "search grouped COUNT/SUM comparison work exceeds the "
+              "admitted bound");
         }
         composition_state.batch.columns = prepared.key_result_columns;
         composition_state.batch.columns.push_back(
