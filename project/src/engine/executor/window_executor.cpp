@@ -1290,7 +1290,7 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
   const auto decoded_nth =
       nth_operand == nullptr ? Int64DecodeResult{}
                              : DecodeInt64Value(*nth_operand);
-  const std::array<std::string_view, 11> independent_identities{
+  std::vector<std::string_view> independent_identities{
       request.function_uuid,
       execution_ordered_input_batch.columns[request.value_column]
           .descriptor.descriptor_uuid.canonical,
@@ -1303,6 +1303,12 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       request.order_term_binding_evidence_uuid,
       request.deterministic_order_evidence_uuid,
       request.frame_property_binding_evidence_uuid};
+  if (request.value_column != request.order_term.column) {
+    independent_identities.insert(
+        independent_identities.begin() + 2,
+        execution_ordered_input_batch.columns[request.order_term.column]
+            .descriptor.descriptor_uuid.canonical);
+  }
   const bool exact_int64_value =
       source_type_uuid.has_value() && result_type_uuid.has_value() &&
       *source_type_uuid == canonical_int64_type_uuid &&
