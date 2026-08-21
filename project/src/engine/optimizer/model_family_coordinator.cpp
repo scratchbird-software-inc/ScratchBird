@@ -650,6 +650,13 @@ MultilegDescriptorAllocationResultV1 AllocateMultilegResultDescriptorsV1(
                     "multileg type pairs are absent, mismatched, or aliased");
     }
   }
+  for (const auto& descriptor_uuid : descriptor_uuids) {
+    if (distinct_type_uuids.contains(descriptor_uuid)) {
+      return refuse(
+          "SB_MODEL_RESULT_DESCRIPTOR_COHORT_INVALID_V1",
+          "multileg descriptor and type identity domains are not independent");
+    }
+  }
 
   std::vector<MultilegDescriptorDemandV1> ordered = demands;
   std::sort(ordered.begin(), ordered.end(), [](const auto& left,
@@ -679,7 +686,8 @@ MultilegDescriptorAllocationResultV1 AllocateMultilegResultDescriptorsV1(
     allocation.demand = demand;
     if (!demand.derived) {
       if (!CanonicalUuid(demand.persisted_descriptor_uuid) ||
-          !CanonicalUuid(demand.persisted_type_uuid)) {
+          !CanonicalUuid(demand.persisted_type_uuid) ||
+          demand.persisted_descriptor_uuid == demand.persisted_type_uuid) {
         return refuse("SB_MODEL_RESULT_DESCRIPTOR_DEMAND_INVALID_V1",
                       "persisted source field lacks catalog descriptor identity");
       }
@@ -715,6 +723,19 @@ MultilegDescriptorAllocationResultV1 AllocateMultilegResultDescriptorsV1(
     allocation.profile_kind = profile.profile_kind;
     allocation.slot = profile.slot;
     result.allocations.push_back(std::move(allocation));
+  }
+  std::set<std::string> allocated_descriptor_uuids;
+  std::set<std::string> allocated_type_uuids;
+  for (const auto& allocation : result.allocations) {
+    allocated_descriptor_uuids.insert(allocation.descriptor_uuid);
+    allocated_type_uuids.insert(allocation.type_uuid);
+  }
+  for (const auto& descriptor_uuid : allocated_descriptor_uuids) {
+    if (allocated_type_uuids.contains(descriptor_uuid)) {
+      return refuse(
+          "SB_MODEL_RESULT_DESCRIPTOR_DEMAND_INVALID_V1",
+          "allocated descriptor and type identity domains are not independent");
+    }
   }
   result.accepted = true;
   result.preflight_complete = true;
