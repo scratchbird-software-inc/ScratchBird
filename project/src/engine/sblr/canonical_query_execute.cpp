@@ -14109,6 +14109,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
           step.diagnostic = std::move(aggregate_result.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                aggregate_result, *execution_dag, node,
+                aggregate_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-EXECUTION-V1";
+          step.diagnostic.detail =
+              "COUNT(*) execution receipt changed";
+          return step;
+        }
         std::uint64_t input_memory_bytes = 0;
         std::uint64_t output_memory_bytes = 0;
         std::uint64_t expected_peak_memory_bytes = 0;
@@ -14368,6 +14378,16 @@ MakeLiveAggregateRegistryRegistration(
             aggregate_request, *execution_dag, input_batch);
         if (!aggregate_result.diagnostic.ok) {
           step.diagnostic = std::move(aggregate_result.diagnostic);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                aggregate_result, *execution_dag, node,
+                aggregate_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-EXECUTION-V1";
+          step.diagnostic.detail =
+              "aggregate registry execution receipt changed";
           return step;
         }
         std::uint64_t output_memory_bytes = 0;
@@ -30151,6 +30171,16 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
             step.diagnostic = std::move(aggregate_result.diagnostic);
             return step;
           }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  aggregate_result, dag, node,
+                  aggregate_request.mga_authority.statement_context)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-EXECUTION-V1";
+            step.diagnostic.detail =
+                "global COUNT(*) execution receipt changed";
+            return step;
+          }
           std::uint64_t output_memory_bytes = 0;
           std::uint64_t expected_peak_memory_bytes = 0;
           if (!RuntimeMaterializedBatchMemoryBytes(
@@ -30235,6 +30265,16 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
               aggregate_request, dag, input_batch);
           if (!aggregate_result.diagnostic.ok) {
             step.diagnostic = std::move(aggregate_result.diagnostic);
+            return step;
+          }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  aggregate_result, dag, node,
+                  aggregate_request.mga_authority.statement_context)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-EXECUTION-V1";
+            step.diagnostic.detail =
+                "global aggregate execution receipt changed";
             return step;
           }
           std::uint64_t output_memory_bytes = 0;
