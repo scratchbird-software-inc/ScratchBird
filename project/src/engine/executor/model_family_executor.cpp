@@ -1900,9 +1900,19 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
 
 CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
     const CanonicalTimeSeriesAsofJoinRequestV1& request) {
+  enum class CancellationProbeState : std::uint8_t {
+    kRunning = 0,
+    kCancelled,
+    kProbeFailed,
+  };
   CanonicalTimeSeriesAsofJoinResultV1 result;
+  auto cancellation_state = CancellationProbeState::kRunning;
   const auto refuse = [&](std::string code, std::string detail,
                           const std::size_t row = 0) {
+    if (cancellation_state == CancellationProbeState::kProbeFailed) {
+      code = "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+      detail = "ASOF cancellation probe failed";
+    }
     result.diagnostic.ok = false;
     result.diagnostic.diagnostic_code = std::move(code);
     result.diagnostic.detail = std::move(detail);
@@ -1911,12 +1921,21 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
     result.matched_right_ordinals.clear();
     return result;
   };
-  const auto cancelled = [&]() {
+  const std::function<bool()> guarded_cancellation_requested = [&]() noexcept {
+    if (cancellation_state != CancellationProbeState::kRunning) return true;
     try {
-      return request.cancellation_requested && request.cancellation_requested();
+      if (!request.cancellation_requested ||
+          !request.cancellation_requested()) {
+        return false;
+      }
+      cancellation_state = CancellationProbeState::kCancelled;
     } catch (...) {
-      return true;
+      cancellation_state = CancellationProbeState::kProbeFailed;
     }
+    return true;
+  };
+  const auto cancelled = [&]() {
+    return guarded_cancellation_requested();
   };
   if (request.physical_dag.abi_version != 2 ||
       !request.cancellation_requested || request.tolerance_ns < 0 ||
@@ -2197,7 +2216,7 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
               keys[ordinal].canonical_tags ||
           !CanonicalUuid(keys[ordinal].metric_uuid) ||
           !ValidateCanonicalTimeSeriesTagsV1(
-              keys[ordinal].canonical_tags, request.cancellation_requested,
+              keys[ordinal].canonical_tags, guarded_cancellation_requested,
               &tag_cancellation) ||
           tag_cancellation ||
           !ParseCanonicalTimeSeriesTimestampNsV1(
@@ -2222,7 +2241,7 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
                            request.left_keys, request.left_binding, false) ||
       !validate_bound_keys(request.right_batch, *right_node,
                            request.right_keys, request.right_binding, true)) {
-    if (cancelled()) {
+    if (cancellation_state != CancellationProbeState::kRunning) {
       return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
                     "ASOF join was cancelled during bound-key validation");
     }

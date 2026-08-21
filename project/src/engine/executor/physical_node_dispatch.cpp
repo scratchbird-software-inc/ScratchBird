@@ -535,9 +535,15 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
             "policy evidence, or atomic cleanup"));
       }
       cancellation_observed = true;
+      const auto cancellation_detail =
+          step.diagnostic.detail.empty()
+              ? std::string(
+                    "physical DAG cancellation observed inside a selected "
+                    "node")
+              : step.diagnostic.detail;
       return refuse(Refusal(
           "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1",
-          "physical DAG cancellation observed inside a selected node"));
+          cancellation_detail));
     }
     if (!step.diagnostic.ok) {
       return refuse(std::move(step.diagnostic));

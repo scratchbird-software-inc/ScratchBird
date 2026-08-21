@@ -14719,7 +14719,27 @@ bool InvokeLiveSortCancellationProbe(const void* context) {
   return (*static_cast<const std::function<bool()>*>(context))();
 }
 
-const exec::PhysicalAdmissionEvidence* FindLiveSortCancellationPolicy(
+enum class LiveCancellationProbeState : std::uint8_t {
+  kRunning = 0,
+  kCancelled,
+  kProbeFailed,
+};
+
+bool PollLiveCancellationProbe(
+    const std::function<bool()>& cancellation_requested,
+    LiveCancellationProbeState* state) noexcept {
+  if (state == nullptr) return true;
+  if (*state != LiveCancellationProbeState::kRunning) return true;
+  try {
+    if (!cancellation_requested || !cancellation_requested()) return false;
+    *state = LiveCancellationProbeState::kCancelled;
+  } catch (...) {
+    *state = LiveCancellationProbeState::kProbeFailed;
+  }
+  return true;
+}
+
+const exec::PhysicalAdmissionEvidence* FindLiveCancellationPolicy(
     const exec::TypedPhysicalNodeDag& dag) {
   const exec::PhysicalAdmissionEvidence* policy = nullptr;
   for (const auto& evidence : dag.admission_evidence) {
@@ -14732,7 +14752,7 @@ const exec::PhysicalAdmissionEvidence* FindLiveSortCancellationPolicy(
   return policy;
 }
 
-void BindLiveSortFailure(
+void BindLiveCancellationFailure(
     exec::DescriptorRuntimeDiagnostic diagnostic,
     const exec::PhysicalAdmissionEvidence* cancellation_policy,
     exec::CanonicalPhysicalDispatchStepResult* step) {
@@ -14787,7 +14807,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         const auto* cancellation_policy =
-            FindLiveSortCancellationPolicy(dag);
+            FindLiveCancellationPolicy(dag);
         const void* cancellation_context =
             mga_context.query_cancellation_requested
                 ? &mga_context.query_cancellation_requested
@@ -14845,8 +14865,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
             deterministic_tie_evidence_uuid, cancellation_probe,
             cancellation_context);
         if (!sort_result.diagnostic.ok) {
-          BindLiveSortFailure(std::move(sort_result.diagnostic),
-                              cancellation_policy, &step);
+          BindLiveCancellationFailure(std::move(sort_result.diagnostic),
+                                      cancellation_policy, &step);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -14892,7 +14912,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         const auto* cancellation_policy =
-            FindLiveSortCancellationPolicy(dag);
+            FindLiveCancellationPolicy(dag);
         const void* cancellation_context =
             mga_context.query_cancellation_requested
                 ? &mga_context.query_cancellation_requested
@@ -14952,8 +14972,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
             deterministic_tie_evidence_uuid, cancellation_probe,
             cancellation_context);
         if (!sorted.diagnostic.ok) {
-          BindLiveSortFailure(std::move(sorted.diagnostic),
-                              cancellation_policy, &step);
+          BindLiveCancellationFailure(std::move(sorted.diagnostic),
+                                      cancellation_policy, &step);
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -15013,7 +15033,7 @@ MakeLiveExpressionSortRegistration(
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
         const auto* cancellation_policy =
-            FindLiveSortCancellationPolicy(dag);
+            FindLiveCancellationPolicy(dag);
         const void* cancellation_context =
             mga_context.query_cancellation_requested
                 ? &mga_context.query_cancellation_requested
@@ -15050,8 +15070,8 @@ MakeLiveExpressionSortRegistration(
             input_batch, inputs.front().output_descriptor_ids,
             cancellation_probe, cancellation_context, nullptr);
         if (!input_validation.ok) {
-          BindLiveSortFailure(std::move(input_validation),
-                              cancellation_policy, &step);
+          BindLiveCancellationFailure(std::move(input_validation),
+                                      cancellation_policy, &step);
           return step;
         }
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
@@ -15084,16 +15104,16 @@ MakeLiveExpressionSortRegistration(
                 &actual_order_key_batch_bytes, cancellation_probe,
                 cancellation_context);
         if (!sorted.diagnostic.ok) {
-          BindLiveSortFailure(std::move(sorted.diagnostic),
-                              cancellation_policy, &step);
+          BindLiveCancellationFailure(std::move(sorted.diagnostic),
+                                      cancellation_policy, &step);
           return step;
         }
         auto output_validation = exec::ValidateCanonicalDescriptorBatch(
             sorted.output_batch, node.output_descriptor_ids,
             cancellation_probe, cancellation_context, nullptr);
         if (!output_validation.ok) {
-          BindLiveSortFailure(std::move(output_validation),
-                              cancellation_policy, &step);
+          BindLiveCancellationFailure(std::move(output_validation),
+                                      cancellation_policy, &step);
           return step;
         }
         std::uint64_t input_memory_bytes = 0;
@@ -15124,8 +15144,8 @@ MakeLiveExpressionSortRegistration(
             diagnostic.detail = memory_probe_failed
                 ? "expression SORT cancellation probe threw while accounting runtime memory"
                 : "expression SORT cancellation observed while accounting runtime memory";
-            BindLiveSortFailure(std::move(diagnostic), cancellation_policy,
-                                &step);
+            BindLiveCancellationFailure(std::move(diagnostic),
+                                        cancellation_policy, &step);
             return step;
           }
           step.diagnostic.ok = false;
@@ -32166,23 +32186,47 @@ exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(
               "captured model-family ASOF inputs changed";
           return step;
         }
+        const auto* cancellation_policy =
+            FindLiveCancellationPolicy(selected_dag);
+        if (cancellation_policy == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-ASOF-CANCELLATION-POLICY-V1";
+          step.diagnostic.detail =
+              "captured model-family ASOF requires one exact cancellation "
+              "policy evidence row";
+          return step;
+        }
         const auto cancellation_requested =
             execution_context.query_cancellation_requested
                 ? execution_context.query_cancellation_requested
                 : std::function<bool()>([] { return false; });
+        auto cancellation_state = LiveCancellationProbeState::kRunning;
+        const std::function<bool()> guarded_cancellation_requested =
+            [&]() noexcept {
+          return PollLiveCancellationProbe(cancellation_requested,
+                                           &cancellation_state);
+        };
         const auto cancelled = [&]() {
-          try {
-            return cancellation_requested();
-          } catch (...) {
-            return true;
-          }
+          return guarded_cancellation_requested();
+        };
+        const auto bind_cancellation = [&](const char* detail) {
+          exec::DescriptorRuntimeDiagnostic diagnostic;
+          diagnostic.ok = false;
+          diagnostic.diagnostic_code =
+              cancellation_state == LiveCancellationProbeState::kProbeFailed
+                  ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                  : "SB_MODEL_EXECUTION_CANCELLED_V1";
+          diagnostic.detail =
+              cancellation_state == LiveCancellationProbeState::kProbeFailed
+                  ? "captured model-family ASOF cancellation probe failed"
+                  : detail;
+          BindLiveCancellationFailure(std::move(diagnostic),
+                                      cancellation_policy, &step);
         };
         if (cancelled()) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "SB_MODEL_EXECUTION_CANCELLED_V1";
-          step.diagnostic.detail =
-              "captured model-family ASOF was cancelled before binding";
+          bind_cancellation(
+              "captured model-family ASOF was cancelled before binding");
           return step;
         }
         exec::CanonicalTimeSeriesAsofJoinRequestV1 request;
@@ -32240,17 +32284,23 @@ exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(
                          &request.left_keys) ||
             !append_keys(request.right_batch, request.right_binding, true,
                          &request.right_keys)) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code = cancelled()
-              ? "SB_MODEL_EXECUTION_CANCELLED_V1"
-              : "SB_MODEL_TIME_SERIES_IDENTITY_INVALID_V1";
-          step.diagnostic.detail =
-              "captured model-family ASOF keys are not canonical";
+          if (cancellation_state != LiveCancellationProbeState::kRunning) {
+            bind_cancellation(
+                "captured model-family ASOF was cancelled during key "
+                "construction");
+          } else {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_TIME_SERIES_IDENTITY_INVALID_V1";
+            step.diagnostic.detail =
+                "captured model-family ASOF keys are not canonical";
+          }
           return step;
         }
         auto executed = exec::ExecuteCanonicalTimeSeriesAsofJoinV1(request);
         if (!executed.diagnostic.ok) {
-          step.diagnostic = std::move(executed.diagnostic);
+          BindLiveCancellationFailure(std::move(executed.diagnostic),
+                                      cancellation_policy, &step);
           return step;
         }
         step.result_handle_id = selected_node.physical_node_id;
@@ -35708,23 +35758,49 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   "selected time-series ASOF input identity changed";
               return step;
             }
+            const auto* cancellation_policy =
+                FindLiveCancellationPolicy(selected_dag);
+            if (cancellation_policy == nullptr) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-ASOF-CANCELLATION-POLICY-V1";
+              step.diagnostic.detail =
+                  "time-series ASOF bridge requires one exact cancellation "
+                  "policy evidence row";
+              return step;
+            }
             const auto cancellation_requested =
                 execution_context.query_cancellation_requested
                     ? execution_context.query_cancellation_requested
                     : std::function<bool()>([] { return false; });
+            auto cancellation_state = LiveCancellationProbeState::kRunning;
+            const std::function<bool()> guarded_cancellation_requested =
+                [&]() noexcept {
+              return PollLiveCancellationProbe(cancellation_requested,
+                                               &cancellation_state);
+            };
             const auto cancelled = [&]() {
-              try {
-                return cancellation_requested();
-              } catch (...) {
-                return true;
-              }
+              return guarded_cancellation_requested();
+            };
+            const auto bind_cancellation = [&](const char* detail) {
+              exec::DescriptorRuntimeDiagnostic diagnostic;
+              diagnostic.ok = false;
+              diagnostic.diagnostic_code =
+                  cancellation_state ==
+                          LiveCancellationProbeState::kProbeFailed
+                      ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                      : "SB_MODEL_EXECUTION_CANCELLED_V1";
+              diagnostic.detail =
+                  cancellation_state ==
+                          LiveCancellationProbeState::kProbeFailed
+                      ? "time-series ASOF bridge cancellation probe failed"
+                      : detail;
+              BindLiveCancellationFailure(std::move(diagnostic),
+                                          cancellation_policy, &step);
             };
             if (cancelled()) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "SB_MODEL_EXECUTION_CANCELLED_V1";
-              step.diagnostic.detail =
-                  "time-series ASOF bridge was cancelled before preflight";
+              bind_cancellation(
+                  "time-series ASOF bridge was cancelled before preflight");
               return step;
             }
             std::uint64_t bridge_peak_bytes =
@@ -36040,14 +36116,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                 account_binding_keys(right_input_batch, right_binding, true) &&
                 account_output_peak();
             if (!bridge_preflight_ok) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  preflight_cancelled ? "SB_MODEL_EXECUTION_CANCELLED_V1"
-                                      : "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
-              step.diagnostic.detail =
-                  preflight_cancelled
-                      ? "time-series ASOF bridge was cancelled during preflight"
-                      : "time-series ASOF combined input/copy/key/result peak exceeded the selected memory bound";
+              if (preflight_cancelled) {
+                bind_cancellation(
+                    "time-series ASOF bridge was cancelled during preflight");
+              } else {
+                step.diagnostic.ok = false;
+                step.diagnostic.diagnostic_code =
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+                step.diagnostic.detail =
+                    "time-series ASOF combined input/copy/key/result peak "
+                    "exceeded the selected memory bound";
+              }
               return step;
             }
             exec::CanonicalTimeSeriesAsofJoinRequestV1 request;
@@ -36121,45 +36200,45 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                 !append_keys(request.right_batch, request.right_binding, true,
                              &request.right_keys,
                              &request.right_tie_break_row_uuids)) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "SB_MODEL_TIME_SERIES_IDENTITY_INVALID_V1";
-              step.diagnostic.detail =
-                  preflight_cancelled
-                      ? "time-series ASOF bridge was cancelled during key construction"
-                      : "selected time-series ASOF bound key could not be decoded";
               if (preflight_cancelled) {
+                bind_cancellation(
+                    "time-series ASOF bridge was cancelled during key "
+                    "construction");
+              } else {
+                step.diagnostic.ok = false;
                 step.diagnostic.diagnostic_code =
-                    "SB_MODEL_EXECUTION_CANCELLED_V1";
+                    "SB_MODEL_TIME_SERIES_IDENTITY_INVALID_V1";
+                step.diagnostic.detail =
+                    "selected time-series ASOF bound key could not be "
+                    "decoded";
               }
               return step;
             }
             if (cancelled()) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "SB_MODEL_EXECUTION_CANCELLED_V1";
-              step.diagnostic.detail =
-                  "time-series ASOF bridge was cancelled before execution";
+              bind_cancellation(
+                  "time-series ASOF bridge was cancelled before execution");
               return step;
             }
             auto executed =
                 exec::ExecuteCanonicalTimeSeriesAsofJoinV1(request);
-            if (!executed.diagnostic.ok ||
-                executed.selected_plan_uuid != selected_dag.selected_plan_uuid ||
+            if (!executed.diagnostic.ok) {
+              BindLiveCancellationFailure(std::move(executed.diagnostic),
+                                          cancellation_policy, &step);
+              return step;
+            }
+            if (executed.selected_plan_uuid !=
+                    selected_dag.selected_plan_uuid ||
                 executed.executed_physical_node_id !=
                     selected_node.physical_node_id ||
                 executed.causal_counter_id != selected_node.causal_counter_id ||
                 !exec::PhysicalMgaStatementContextEqual(
                     executed.mga_statement_context,
                     selected_dag.mga_statement_context)) {
-              step.diagnostic = std::move(executed.diagnostic);
-              if (step.diagnostic.ok) {
-                step.diagnostic.ok = false;
-                step.diagnostic.diagnostic_code =
-                    "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1";
-                step.diagnostic.detail =
-                    "time-series ASOF execution receipt changed";
-              }
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1";
+              step.diagnostic.detail =
+                  "time-series ASOF execution receipt changed";
               return step;
             }
             step.result_handle_id = selected_node.physical_node_id;
@@ -36296,31 +36375,38 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             composition_physical->physical_dag.selected_plan_uuid ||
         execution.result_publication.envelope.column_descriptors.size() !=
             composition_state.result_bindings.size()) {
-      refuse(execution.issues.empty()
-                 ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
-                 : execution.issues.front().diagnostic_id,
-             execution.issues.empty()
-                 ? "time-series combined physical execution did not complete"
-                 : execution.issues.front().field_id);
+      const bool cancellation_observed =
+          execution.cancellation_observed ||
+          execution.dispatch.diagnostic.diagnostic_code ==
+              "SB_MODEL_EXECUTION_CANCELLED_V1" ||
+          (!execution.issues.empty() &&
+           execution.issues.front().diagnostic_id ==
+               "SB_MODEL_EXECUTION_CANCELLED_V1");
+      const std::string cancellation_detail =
+          !execution.dispatch.diagnostic.detail.empty()
+              ? execution.dispatch.diagnostic.detail
+              : !execution.issues.empty()
+                    ? execution.issues.front().field_id
+                    : "time-series combined execution cancellation detail "
+                      "was absent";
+      refuse(cancellation_observed
+                 ? "SB_MODEL_EXECUTION_CANCELLED_V1"
+                 : execution.issues.empty()
+                       ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                       : execution.issues.front().diagnostic_id,
+             cancellation_observed
+                 ? cancellation_detail
+                 : execution.issues.empty()
+                       ? "time-series combined physical execution did not "
+                         "complete"
+                       : execution.issues.front().field_id);
       if (source_execution_receipt->execution_started) {
         replace_source_receipt(
             true, source_execution_receipt->data_access_observed,
             source_execution_receipt->cleanup_count,
             source_execution_receipt->cleanup_complete);
       }
-      if (execution.cancellation_observed ||
-          execution.dispatch.diagnostic.diagnostic_code ==
-              "SB_MODEL_EXECUTION_CANCELLED_V1" ||
-          (!execution.issues.empty() &&
-           execution.issues.front().diagnostic_id ==
-               "SB_MODEL_EXECUTION_CANCELLED_V1")) {
-        const auto& cancellation_detail =
-            !execution.dispatch.diagnostic.detail.empty()
-                ? execution.dispatch.diagnostic.detail
-                : !execution.issues.empty()
-                      ? execution.issues.front().field_id
-                      : std::string(
-                            "time-series combined execution cancellation detail was absent");
+      if (cancellation_observed) {
         result.api_result.evidence.push_back(
             {"canonical.time_series_cancellation_checkpoint",
              cancellation_detail});
@@ -52518,12 +52604,25 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
       !execution.runtime_actuals.accepted ||
       execution.dispatch.executed_steps.size() != 3 ||
       !execution.issues.empty()) {
-    return refuse(execution.issues.empty()
-                      ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
-                      : execution.issues.front().diagnostic_id,
-                  execution.issues.empty()
-                      ? "captured model-family execution did not complete"
-                      : execution.issues.front().field_id);
+    const bool cancellation_observed =
+        execution.cancellation_observed ||
+        execution.dispatch.diagnostic.diagnostic_code ==
+            "SB_MODEL_EXECUTION_CANCELLED_V1" ||
+        (!execution.issues.empty() &&
+         execution.issues.front().diagnostic_id ==
+             "SB_MODEL_EXECUTION_CANCELLED_V1");
+    return refuse(
+        cancellation_observed
+            ? "SB_MODEL_EXECUTION_CANCELLED_V1"
+            : execution.issues.empty()
+                  ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                  : execution.issues.front().diagnostic_id,
+        cancellation_observed &&
+                !execution.dispatch.diagnostic.detail.empty()
+            ? execution.dispatch.diagnostic.detail
+            : execution.issues.empty()
+                  ? "captured model-family execution did not complete"
+                  : execution.issues.front().field_id);
   }
   result.physical_dag_executed = true;
   result.runtime_actuals_attached = true;
