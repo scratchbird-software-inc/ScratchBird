@@ -2781,6 +2781,14 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
         std::string(ranking_name) +
             " output or order descriptor is not bound"));
   }
+  if (execution_ordered_input_batch.columns[request.order_term.column]
+          .descriptor.descriptor_uuid.canonical ==
+      request.ranking_column.descriptor.descriptor_uuid.canonical) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        std::string(ranking_name) +
+            " order/result descriptor identities are not independent"));
+  }
   const auto order_validation = ValidateCanonicalDescriptorOrderTerm(
       request.order_term,
       execution_ordered_input_batch.columns[request.order_term.column]);
