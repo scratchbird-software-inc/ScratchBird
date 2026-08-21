@@ -2883,6 +2883,12 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     std::ranges::sort(node_outputs, [](const auto* left, const auto* right) {
       return left->ordinal < right->ordinal;
     });
+    if (!node_outputs.empty() &&
+        (node.node_kind == RelationalDagNodeKind::kCte ||
+         node.node_kind == RelationalDagNodeKind::kRecursiveCte)) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                    "cte_output_records");
+    }
     if (!node_outputs.empty()) {
       if (node_outputs.size() != node.output_descriptor_ids.size()) {
         return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
