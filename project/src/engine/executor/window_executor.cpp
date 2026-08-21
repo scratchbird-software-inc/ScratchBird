@@ -2780,6 +2780,14 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
           *result_type_uuid ||
       request.ranking_column.descriptor.descriptor_uuid.canonical ==
           request.function_uuid ||
+      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+          ordering_property_uuid ||
+      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+          *window_property ||
+      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+          request.order_term_binding_evidence_uuid ||
+      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+          request.deterministic_order_evidence_uuid ||
       request.order_term.column >=
           execution_ordered_input_batch.columns.size()) {
     return refuse(Refusal(
