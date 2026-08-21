@@ -13689,6 +13689,26 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
           }
           return step;
         }
+        if (lateral.form != lateral_request.form ||
+            lateral.correlated_plan_uuid !=
+                lateral_request.correlated_request.physical_dag
+                    .selected_plan_uuid ||
+            lateral.selected_plan_uuid !=
+                lateral_request.physical_dag.selected_plan_uuid ||
+            lateral.executed_physical_node_id != node.physical_node_id ||
+            lateral.causal_counter_id != node.causal_counter_id ||
+            !exec::PhysicalMgaStatementContextEqual(
+                lateral.mga_statement_context,
+                lateral_request.mga_authority.statement_context) ||
+            lateral.output_row_count != lateral.output_batch.rows.size() ||
+            !lateral.transient_state_cleanup_proven) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-EXECUTION-V1";
+          step.diagnostic.detail =
+              "LATERAL/APPLY execution receipt changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = outer_row_count + inner_row_count;
         step.rows_examined = actual_pair_count;
