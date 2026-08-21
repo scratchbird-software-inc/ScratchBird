@@ -9,6 +9,7 @@
 #include "descriptor_value_runtime.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -55,16 +56,55 @@ std::string LowerAscii(std::string value) {
   return value;
 }
 
+bool AsciiEqualFold(const std::string_view left,
+                    const std::string_view lowercase_right) {
+  if (left.size() != lowercase_right.size()) return false;
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    if (static_cast<char>(std::tolower(
+            static_cast<unsigned char>(left[index]))) !=
+        lowercase_right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 CanonicalTypeId CanonicalDescriptorTypeId(const EngineDescriptor& descriptor) {
-  std::string type = LowerAscii(descriptor.canonical_type_name);
-  if (type.starts_with("sb.")) { type.erase(0, 3); }
+  std::string_view type = descriptor.canonical_type_name;
+  if (type.starts_with("sb.")) { type.remove_prefix(3); }
   if (type == "integer64") return CanonicalTypeId::int64;
   if (type == "bool") return CanonicalTypeId::boolean;
   if (type == "float8") return CanonicalTypeId::real64;
   if (type == "timestamp_tz") return CanonicalTypeId::timestamp;
   if (type == "blob" || type == "bytes") return CanonicalTypeId::binary;
   if (type == "uuidv7") return CanonicalTypeId::uuid;
-  return scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type);
+  if (AsciiEqualFold(type, "string") || AsciiEqualFold(type, "varchar") ||
+      AsciiEqualFold(type, "char") || AsciiEqualFold(type, "text")) {
+    return CanonicalTypeId::character;
+  }
+  if (AsciiEqualFold(type, "integer") || AsciiEqualFold(type, "int")) {
+    return CanonicalTypeId::int32;
+  }
+  if (AsciiEqualFold(type, "bigint")) return CanonicalTypeId::int64;
+  if (AsciiEqualFold(type, "smallint")) return CanonicalTypeId::int16;
+  if (AsciiEqualFold(type, "double") ||
+      AsciiEqualFold(type, "double_precision") ||
+      AsciiEqualFold(type, "double precision")) {
+    return CanonicalTypeId::real64;
+  }
+  if (AsciiEqualFold(type, "float")) return CanonicalTypeId::real32;
+  if (AsciiEqualFold(type, "set")) return CanonicalTypeId::set_value;
+  for (const auto& builtin :
+       scratchbird::core::datatypes::BuiltinDatatypeDescriptors()) {
+    if (AsciiEqualFold(type, builtin.stable_name) ||
+        AsciiEqualFold(
+            type,
+            scratchbird::core::datatypes::CanonicalTypeName(
+                builtin.type_id))) {
+      return builtin.type_id;
+    }
+  }
+  return CanonicalTypeId::unknown;
 }
 
 bool IsBoundedSignedIntegerTypeId(const CanonicalTypeId type_id) {
@@ -82,38 +122,48 @@ bool IsInt64Type(const EngineDescriptor& descriptor) {
 }
 
 bool IsBoolType(const EngineDescriptor& descriptor) {
-  const std::string type = LowerAscii(descriptor.canonical_type_name);
-  return type == "bool" || type == "boolean" || type == "sb.boolean";
+  const auto type = std::string_view(descriptor.canonical_type_name);
+  return AsciiEqualFold(type, "bool") || AsciiEqualFold(type, "boolean") ||
+         AsciiEqualFold(type, "sb.boolean");
 }
 
 bool IsReal64Type(const EngineDescriptor& descriptor) {
-  const std::string type = LowerAscii(descriptor.canonical_type_name);
-  return type == "real64" || type == "double" || type == "float8" || type == "sb.real64";
+  const auto type = std::string_view(descriptor.canonical_type_name);
+  return AsciiEqualFold(type, "real64") || AsciiEqualFold(type, "double") ||
+         AsciiEqualFold(type, "float8") ||
+         AsciiEqualFold(type, "sb.real64");
 }
 
 bool IsTextType(const EngineDescriptor& descriptor) {
-  const std::string type = LowerAscii(descriptor.canonical_type_name);
-  return type == "text" || type == "varchar" || type == "string" || type == "sb.text" ||
-         type == "timestamp" || type == "timestamp_tz" || type == "date" || type == "time";
+  const auto type = std::string_view(descriptor.canonical_type_name);
+  return AsciiEqualFold(type, "text") || AsciiEqualFold(type, "varchar") ||
+         AsciiEqualFold(type, "string") || AsciiEqualFold(type, "sb.text") ||
+         AsciiEqualFold(type, "timestamp") ||
+         AsciiEqualFold(type, "timestamp_tz") ||
+         AsciiEqualFold(type, "date") || AsciiEqualFold(type, "time");
 }
 
 bool IsBinaryType(const EngineDescriptor& descriptor) {
-  const std::string type = LowerAscii(descriptor.canonical_type_name);
-  return type == "blob" || type == "binary" || type == "bytes";
+  const auto type = std::string_view(descriptor.canonical_type_name);
+  return AsciiEqualFold(type, "blob") || AsciiEqualFold(type, "binary") ||
+         AsciiEqualFold(type, "bytes");
 }
 
 bool IsUuidType(const EngineDescriptor& descriptor) {
-  const std::string type = LowerAscii(descriptor.canonical_type_name);
-  return type == "uuid" || type == "uuidv7";
+  const auto type = std::string_view(descriptor.canonical_type_name);
+  return AsciiEqualFold(type, "uuid") || AsciiEqualFold(type, "uuidv7");
 }
 
 bool IsOpaqueEncodedType(const EngineDescriptor& descriptor) {
-  const std::string type = LowerAscii(descriptor.canonical_type_name);
+  const auto type = std::string_view(descriptor.canonical_type_name);
   return IsBinaryType(descriptor) || IsUuidType(descriptor) ||
-         type == "vector" || type == "document" || type == "json" ||
-         type == "graph" || type == "search" || type == "geometry" ||
-         type == "geography" || type == "point" || type == "shape" ||
-         type == "raster" || type == "columnar_segment";
+         AsciiEqualFold(type, "vector") ||
+         AsciiEqualFold(type, "document") || AsciiEqualFold(type, "json") ||
+         AsciiEqualFold(type, "graph") || AsciiEqualFold(type, "search") ||
+         AsciiEqualFold(type, "geometry") ||
+         AsciiEqualFold(type, "geography") || AsciiEqualFold(type, "point") ||
+         AsciiEqualFold(type, "shape") || AsciiEqualFold(type, "raster") ||
+         AsciiEqualFold(type, "columnar_segment");
 }
 
 bool IsKnownScalarType(const EngineDescriptor& descriptor) {
@@ -172,20 +222,18 @@ bool RequiresExpandedScalarValidation(const EngineDescriptor& descriptor) {
   }
 }
 
-std::string DescriptorField(const std::string& descriptor,
-                            const std::string& key) {
-  const std::string prefix = key + "=";
-  std::string value;
-  bool found = false;
+std::optional<std::string_view> DescriptorField(
+    const std::string_view descriptor,
+    const std::string_view key) {
+  std::optional<std::string_view> value;
   std::size_t start = 0;
   while (start <= descriptor.size()) {
     const auto end = descriptor.find(';', start);
-    const auto field = descriptor.substr(
-        start, end == std::string::npos ? std::string::npos : end - start);
-    if (field.rfind(prefix, 0) == 0) {
-      if (found) return {};
-      value = field.substr(prefix.size());
-      found = true;
+    const auto field = descriptor.substr(start, end - start);
+    if (field.size() > key.size() && field[key.size()] == '=' &&
+        field.substr(0, key.size()) == key) {
+      if (value.has_value()) return std::nullopt;
+      value = field.substr(key.size() + 1);
     }
     if (end == std::string::npos) break;
     start = end + 1;
@@ -194,15 +242,16 @@ std::string DescriptorField(const std::string& descriptor,
 }
 
 bool DescriptorU32(const EngineDescriptor& descriptor,
-                   const std::string& key,
+                   const std::string_view key,
                    std::uint32_t* value) {
   if (value == nullptr) return false;
   const auto field = DescriptorField(descriptor.encoded_descriptor, key);
-  if (field.empty() || (field.size() > 1 && field.front() == '0')) {
+  if (!field.has_value() || field->empty() ||
+      (field->size() > 1 && field->front() == '0')) {
     return false;
   }
   std::uint64_t parsed = 0;
-  for (const auto ch : field) {
+  for (const auto ch : *field) {
     if (ch < '0' || ch > '9') return false;
     parsed = parsed * 10u + static_cast<unsigned>(ch - '0');
     if (parsed > std::numeric_limits<std::uint32_t>::max()) return false;
@@ -288,15 +337,22 @@ bool SameCanonicalDescriptor(const EngineDescriptor& left,
 
 bool ParseInt64Strict(const std::string& text, std::int64_t* out) {
   if (out == nullptr || text.empty()) { return false; }
-  try {
-    std::size_t pos = 0;
-    const auto parsed = std::stoll(text, &pos, 10);
-    if (pos != text.size()) { return false; }
-    *out = static_cast<std::int64_t>(parsed);
-    return true;
-  } catch (...) {
+  const char* begin = text.data();
+  const char* end = begin + text.size();
+  bool explicit_positive = false;
+  if (*begin == '+') {
+    explicit_positive = true;
+    ++begin;
+    if (begin == end) return false;
+  }
+  std::int64_t parsed = 0;
+  const auto conversion = std::from_chars(begin, end, parsed, 10);
+  if (conversion.ec != std::errc{} || conversion.ptr != end ||
+      (explicit_positive && parsed < 0)) {
     return false;
   }
+  *out = parsed;
+  return true;
 }
 
 bool ParseBoundedSignedIntegerStrict(const EngineDescriptor& descriptor,
@@ -305,15 +361,34 @@ bool ParseBoundedSignedIntegerStrict(const EngineDescriptor& descriptor,
   const auto type_id = CanonicalDescriptorTypeId(descriptor);
   if (!IsBoundedSignedIntegerTypeId(type_id)) { return false; }
 
-  scratchbird::core::datatypes::DatatypeCastRequest request;
-  request.value.type_id = type_id;
-  request.value.encoded_value = text;
-  request.value.is_null = false;
-  request.target_type_id = type_id;
-  request.explicit_cast = true;
-  const auto validated = scratchbird::core::datatypes::CastDatatypeValue(request);
-  return validated.ok() &&
-         ParseInt64Strict(validated.value.encoded_value, out);
+  std::int64_t parsed = 0;
+  if (!ParseInt64Strict(text, &parsed)) return false;
+  switch (type_id) {
+    case CanonicalTypeId::int8:
+      if (parsed < std::numeric_limits<std::int8_t>::min() ||
+          parsed > std::numeric_limits<std::int8_t>::max()) {
+        return false;
+      }
+      break;
+    case CanonicalTypeId::int16:
+      if (parsed < std::numeric_limits<std::int16_t>::min() ||
+          parsed > std::numeric_limits<std::int16_t>::max()) {
+        return false;
+      }
+      break;
+    case CanonicalTypeId::int32:
+      if (parsed < std::numeric_limits<std::int32_t>::min() ||
+          parsed > std::numeric_limits<std::int32_t>::max()) {
+        return false;
+      }
+      break;
+    case CanonicalTypeId::int64:
+      break;
+    default:
+      return false;
+  }
+  *out = parsed;
+  return true;
 }
 
 bool ParseReal64Strict(const std::string& text, double* out) {
@@ -537,56 +612,66 @@ bool DescriptorValueGreaterThan(const EngineTypedValue& value,
   return false;
 }
 
-struct CanonicalDerivedDescriptorIdentity {
-  std::string shape_without_nullability;
-  bool nullable = false;
-};
-
-std::optional<CanonicalDerivedDescriptorIdentity>
-ParseCanonicalDerivedDescriptorIdentity(const std::string_view encoded) {
-  CanonicalDerivedDescriptorIdentity identity;
-  bool found_nullability = false;
-  std::size_t start = 0;
-  while (start <= encoded.size()) {
-    const auto end = encoded.find(';', start);
+bool CanonicalDerivedDescriptorShapesMatch(
+    const std::string_view left, const std::string_view right,
+    bool* left_nullable, bool* right_nullable) {
+  if (left_nullable == nullptr || right_nullable == nullptr) return false;
+  bool left_found = false;
+  bool right_found = false;
+  std::size_t left_offset = 0;
+  std::size_t right_offset = 0;
+  const auto next_field = [](const std::string_view encoded,
+                             std::size_t* offset, bool* found_nullable,
+                             bool* nullable, std::string_view* normalized,
+                             bool* done) {
+    if (*offset > encoded.size()) {
+      *done = true;
+      return true;
+    }
+    *done = false;
+    const auto end = encoded.find(';', *offset);
     auto field = encoded.substr(
-        start, end == std::string_view::npos ? std::string_view::npos
-                                             : end - start);
-    if (field.empty()) return std::nullopt;
-    if (field.starts_with("nullability=")) {
-      if (found_nullability) return std::nullopt;
-      found_nullability = true;
-      const auto value = field.substr(std::string_view("nullability=").size());
-      if (value == "nullable") {
-        identity.nullable = true;
-      } else if (value == "non_null") {
-        identity.nullable = false;
+        *offset, end == std::string_view::npos ? std::string_view::npos
+                                               : end - *offset);
+    *offset = end == std::string_view::npos ? encoded.size() + 1 : end + 1;
+    if (field.empty()) return false;
+    if (field.starts_with("nullability=") ||
+        field.starts_with("nullable=")) {
+      if (*found_nullable) return false;
+      *found_nullable = true;
+      const bool long_form = field.starts_with("nullability=");
+      const auto value = field.substr(
+          long_form ? std::string_view("nullability=").size()
+                    : std::string_view("nullable=").size());
+      if (value == (long_form ? "nullable" : "true")) {
+        *nullable = true;
+      } else if (value == (long_form ? "non_null" : "false")) {
+        *nullable = false;
       } else {
-        return std::nullopt;
+        return false;
       }
-      field = "nullability=*";
-    } else if (field.starts_with("nullable=")) {
-      if (found_nullability) return std::nullopt;
-      found_nullability = true;
-      const auto value = field.substr(std::string_view("nullable=").size());
-      if (value == "true") {
-        identity.nullable = true;
-      } else if (value == "false") {
-        identity.nullable = false;
-      } else {
-        return std::nullopt;
-      }
-      field = "nullability=*";
+      *normalized = "nullability=*";
+      return true;
     }
-    if (!identity.shape_without_nullability.empty()) {
-      identity.shape_without_nullability.push_back(';');
+    *normalized = field;
+    return true;
+  };
+  while (true) {
+    std::string_view left_field;
+    std::string_view right_field;
+    bool left_done = false;
+    bool right_done = false;
+    if (!next_field(left, &left_offset, &left_found, left_nullable,
+                    &left_field, &left_done) ||
+        !next_field(right, &right_offset, &right_found, right_nullable,
+                    &right_field, &right_done) ||
+        left_done != right_done) {
+      return false;
     }
-    identity.shape_without_nullability.append(field);
-    if (end == std::string_view::npos) break;
-    start = end + 1;
+    if (left_done) break;
+    if (left_field != right_field) return false;
   }
-  if (!found_nullability) return std::nullopt;
-  return identity;
+  return left_found && right_found;
 }
 
 }  // namespace
@@ -653,17 +738,15 @@ bool DescriptorMatches(const EngineDescriptor& expected, const EngineDescriptor&
 bool CanonicalDerivedDescriptorTypeMatches(
     const EngineDescriptor& input, const bool input_nullable,
     const EngineDescriptor& output, const bool expected_output_nullable) {
-  const auto input_identity = ParseCanonicalDerivedDescriptorIdentity(
-      input.encoded_descriptor);
-  const auto output_identity = ParseCanonicalDerivedDescriptorIdentity(
-      output.encoded_descriptor);
-  return input_identity.has_value() && output_identity.has_value() &&
-         input.descriptor_kind == output.descriptor_kind &&
+  bool encoded_input_nullable = false;
+  bool encoded_output_nullable = false;
+  return input.descriptor_kind == output.descriptor_kind &&
          input.canonical_type_name == output.canonical_type_name &&
-         input_identity->shape_without_nullability ==
-             output_identity->shape_without_nullability &&
-         input_nullable == input_identity->nullable &&
-         expected_output_nullable == output_identity->nullable;
+         CanonicalDerivedDescriptorShapesMatch(
+             input.encoded_descriptor, output.encoded_descriptor,
+             &encoded_input_nullable, &encoded_output_nullable) &&
+         input_nullable == encoded_input_nullable &&
+         expected_output_nullable == encoded_output_nullable;
 }
 
 bool DeriveCanonicalNullableDescriptorEncoding(
@@ -671,9 +754,10 @@ bool DeriveCanonicalNullableDescriptorEncoding(
   if (descriptor == nullptr || descriptor->encoded_descriptor.empty()) {
     return false;
   }
-  std::string derived;
-  derived.reserve(descriptor->encoded_descriptor.size());
   bool nullability_carrier_seen = false;
+  std::size_t nullable_value_offset = std::string::npos;
+  std::size_t nullable_value_width = 0;
+  std::string_view nullable_replacement;
   std::size_t offset = 0;
   while (offset <= descriptor->encoded_descriptor.size()) {
     const auto separator = descriptor->encoded_descriptor.find(';', offset);
@@ -683,14 +767,16 @@ bool DeriveCanonicalNullableDescriptorEncoding(
     const std::string_view field(
         descriptor->encoded_descriptor.data() + offset, end - offset);
     if (field.empty()) return false;
-    if (!derived.empty()) derived.push_back(';');
     if (field.starts_with("nullability=")) {
       const auto value = field.substr(std::string_view("nullability=").size());
       if (nullability_carrier_seen ||
           (value != "nullable" && value != "non_null")) {
         return false;
       }
-      derived.append("nullability=nullable");
+      nullable_value_offset =
+          offset + std::string_view("nullability=").size();
+      nullable_value_width = value.size();
+      nullable_replacement = "nullable";
       nullability_carrier_seen = true;
     } else if (field.starts_with("nullable=")) {
       const auto value = field.substr(std::string_view("nullable=").size());
@@ -698,16 +784,23 @@ bool DeriveCanonicalNullableDescriptorEncoding(
           (value != "true" && value != "false")) {
         return false;
       }
-      derived.append("nullable=true");
+      nullable_value_offset = offset + std::string_view("nullable=").size();
+      nullable_value_width = value.size();
+      nullable_replacement = "true";
       nullability_carrier_seen = true;
-    } else {
-      derived.append(field);
     }
     if (separator == std::string::npos) break;
     offset = separator + 1;
   }
-  if (!nullability_carrier_seen) return false;
-  descriptor->encoded_descriptor = std::move(derived);
+  if (!nullability_carrier_seen || nullable_value_offset == std::string::npos ||
+      nullable_replacement.size() > nullable_value_width) {
+    return false;
+  }
+  // Both canonical rewrites are same-size or shrinking. Rewriting the
+  // already-owned carrier in place avoids a second live descriptor encoding
+  // during outer-join NULL-extension.
+  descriptor->encoded_descriptor.replace(
+      nullable_value_offset, nullable_value_width, nullable_replacement);
   return true;
 }
 
@@ -727,11 +820,10 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
       return ErrorDiagnostic("SB_MODEL_EXECUTION_CANCELLED_V1",
                              "descriptor-batch validation was cancelled",
                              row, column);
-    } catch (const std::exception& exception) {
+    } catch (const std::exception&) {
       return ErrorDiagnostic(
           "SB_MODEL_COORDINATOR_LEG_FAILED_V1",
-          std::string("descriptor-batch cancellation probe threw: ") +
-              exception.what(),
+          "descriptor-batch cancellation probe threw a standard exception",
           row, column);
     } catch (...) {
       return ErrorDiagnostic(
@@ -815,8 +907,9 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
           return ErrorDiagnostic("SB_EXECUTOR_INT64_DECODE_FAILED", value.encoded_value, row, column);
         }
       } else if (IsBoolType(expected.descriptor)) {
-        const std::string text = LowerAscii(value.encoded_value);
-        if (text != "true" && text != "false" && text != "1" && text != "0") {
+        const auto text = std::string_view(value.encoded_value);
+        if (!AsciiEqualFold(text, "true") &&
+            !AsciiEqualFold(text, "false") && text != "1" && text != "0") {
           return ErrorDiagnostic("SB_EXECUTOR_BOOL_DECODE_FAILED", value.encoded_value, row, column);
         }
       } else if (IsReal64Type(expected.descriptor)) {
@@ -859,6 +952,233 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
   return ValidateDescriptorBatch(batch, nullptr, nullptr, nullptr);
 }
 
+std::optional<std::uint64_t> BoundDescriptorBatchValidationScratchMemoryBytes(
+    const DescriptorBatch& batch,
+    const std::function<bool()>& cancellation_requested,
+    bool* cancellation_observed,
+    bool* cancellation_probe_failed) {
+  if (cancellation_observed != nullptr) *cancellation_observed = false;
+  if (cancellation_probe_failed != nullptr) *cancellation_probe_failed = false;
+  const auto cancelled = [&]() {
+    if (!cancellation_requested) return false;
+    try {
+      if (!cancellation_requested()) return false;
+    } catch (...) {
+      if (cancellation_probe_failed != nullptr) {
+        *cancellation_probe_failed = true;
+      }
+      return true;
+    }
+    if (cancellation_observed != nullptr) *cancellation_observed = true;
+    return true;
+  };
+  // Expanded numeric validation passes through a finite chain of request,
+  // canonicalization, backend, result, and diagnostic carriers. At most 32
+  // simultaneous strings/cpp_int values can each own a source- or
+  // exponent-expanded payload; cpp_int limbs require less than one byte per
+  // decimal digit. The 128-byte-per-admitted-work-byte multiplier therefore
+  // dominates all such carriers plus allocator headers. The fixed 64 KiB
+  // covers carrier objects and all bounded diagnostic literals.
+  constexpr std::uint64_t kFixedScratchBytes = 64 * 1024;
+  constexpr std::uint64_t kDynamicExpansionFactor = 128;
+  std::uint64_t maximum = kFixedScratchBytes;
+  for (std::size_t column = 0; column < batch.columns.size(); ++column) {
+    if (cancelled()) return std::nullopt;
+    const auto& descriptor = batch.columns[column].descriptor;
+    const auto type_id = CanonicalDescriptorTypeId(descriptor);
+    std::uint64_t descriptor_bytes = 1;
+    for (const auto* carrier : {&batch.columns[column].stable_name,
+                                &descriptor.descriptor_uuid.canonical,
+                                &descriptor.descriptor_kind,
+                                &descriptor.canonical_type_name,
+                                &descriptor.encoded_descriptor}) {
+      if (carrier->size() >
+          std::numeric_limits<std::uint64_t>::max() - descriptor_bytes) {
+        return std::nullopt;
+      }
+      descriptor_bytes += static_cast<std::uint64_t>(carrier->size());
+    }
+    if (descriptor_bytes >
+        (std::numeric_limits<std::uint64_t>::max() - kFixedScratchBytes) /
+            kDynamicExpansionFactor) {
+      return std::nullopt;
+    }
+    maximum = std::max(
+        maximum, kFixedScratchBytes +
+                     descriptor_bytes * kDynamicExpansionFactor);
+    for (const auto& row : batch.rows) {
+      if (cancelled()) return std::nullopt;
+      if (column >= row.values.size()) continue;
+      const auto& value = row.values[column];
+      if (value.isSqlNull()) continue;
+      std::uint64_t source_bytes = 1;
+      const auto account_source = [&](const std::size_t size) {
+        if (size > std::numeric_limits<std::uint64_t>::max() - source_bytes) {
+          return false;
+        }
+        source_bytes += static_cast<std::uint64_t>(size);
+        return true;
+      };
+      if (!account_source(value.encoded_value.size()) ||
+          !account_source(value.binary_value.size()) ||
+          !account_source(batch.columns[column].stable_name.size()) ||
+          !account_source(descriptor.descriptor_uuid.canonical.size()) ||
+          !account_source(descriptor.descriptor_kind.size()) ||
+          !account_source(descriptor.canonical_type_name.size()) ||
+          !account_source(descriptor.encoded_descriptor.size())) {
+        return std::nullopt;
+      }
+      std::uint64_t admitted_work_bytes = source_bytes;
+      const bool decimal_type = type_id == CanonicalTypeId::decimal ||
+                                type_id == CanonicalTypeId::decimal_float;
+      const bool exponent_numeric = decimal_type ||
+                                    type_id == CanonicalTypeId::real128;
+      if (exponent_numeric) {
+        auto text = std::string_view(value.encoded_value);
+        while (!text.empty() &&
+               std::isspace(static_cast<unsigned char>(text.front()))) {
+          text.remove_prefix(1);
+        }
+        while (!text.empty() &&
+               std::isspace(static_cast<unsigned char>(text.back()))) {
+          text.remove_suffix(1);
+        }
+        const auto exponent_marker = text.find_first_of("eE");
+        if (exponent_marker != std::string_view::npos) {
+          auto exponent_text = text.substr(exponent_marker + 1);
+          bool negative_exponent = false;
+          if (!exponent_text.empty() &&
+              (exponent_text.front() == '+' ||
+               exponent_text.front() == '-')) {
+            negative_exponent = exponent_text.front() == '-';
+            exponent_text.remove_prefix(1);
+          }
+          std::uint64_t exponent = 0;
+          bool exponent_syntax_valid = !exponent_text.empty();
+          for (const auto ch : exponent_text) {
+            // Mirror sbl_numeric's finite exponent parser. Invalid syntax or
+            // an exponent rejected before Pow10 needs only the source-sized
+            // bound and must reach the typed validator for its diagnostic.
+            if (ch < '0' || ch > '9' || exponent > 100000) {
+              exponent_syntax_valid = false;
+              break;
+            }
+            exponent = exponent * 10 + static_cast<unsigned>(ch - '0');
+          }
+          if (exponent_syntax_valid && !negative_exponent) {
+            const auto mantissa = text.substr(0, exponent_marker);
+            std::uint64_t coefficient_digits = 0;
+            std::uint64_t fractional_digits = 0;
+            bool decimal_point = false;
+            bool nonzero_seen = false;
+            bool mantissa_syntax_valid = !mantissa.empty();
+            bool mantissa_digit_seen = false;
+            std::size_t mantissa_offset = 0;
+            if (mantissa_syntax_valid &&
+                (mantissa.front() == '+' || mantissa.front() == '-')) {
+              ++mantissa_offset;
+              if (mantissa_offset == mantissa.size()) {
+                mantissa_syntax_valid = false;
+              }
+            }
+            for (; mantissa_syntax_valid &&
+                   mantissa_offset < mantissa.size(); ++mantissa_offset) {
+              const auto ch = mantissa[mantissa_offset];
+              if (ch == '.') {
+                if (decimal_point) {
+                  mantissa_syntax_valid = false;
+                  break;
+                }
+                decimal_point = true;
+                continue;
+              }
+              if (ch < '0' || ch > '9') {
+                mantissa_syntax_valid = false;
+                break;
+              }
+              mantissa_digit_seen = true;
+              if (decimal_point) ++fractional_digits;
+              if (ch != '0') nonzero_seen = true;
+              if (nonzero_seen) ++coefficient_digits;
+            }
+            mantissa_syntax_valid =
+                mantissa_syntax_valid && mantissa_digit_seen;
+            if (mantissa_syntax_valid) {
+              if (coefficient_digits == 0) coefficient_digits = 1;
+              const auto parse_expansion =
+                  nonzero_seen && exponent >= fractional_digits
+                      ? exponent - fractional_digits
+                      : 0;
+              if (parse_expansion >
+                  std::numeric_limits<std::uint64_t>::max() -
+                      coefficient_digits) {
+                return std::nullopt;
+              }
+              const auto parsed_coefficient_digits =
+                  coefficient_digits + parse_expansion;
+              admitted_work_bytes = std::max(admitted_work_bytes,
+                                             parsed_coefficient_digits);
+              if (type_id == CanonicalTypeId::real128) {
+                // Real128 canonicalization parses the decimal for
+                // negative-zero detection. Only exponent beyond fractional
+                // scale expands its cpp_int; long zero spellings remain
+                // source-sized.
+              } else {
+                std::uint32_t precision = 0;
+                std::uint32_t scale = 0;
+                const bool descriptor_syntax_valid =
+                    DescriptorU32(descriptor, "precision", &precision) &&
+                    DescriptorU32(descriptor, "scale", &scale) &&
+                    precision != 0 && precision <= 38 && scale <= precision;
+                if (descriptor_syntax_valid) {
+                  const auto parsed_scale = exponent >= fractional_digits
+                                                ? 0
+                                                : fractional_digits - exponent;
+                  if (parsed_scale <= scale) {
+                    const auto round_expansion = scale - parsed_scale;
+                    if (round_expansion >
+                        std::numeric_limits<std::uint64_t>::max() -
+                            parsed_coefficient_digits) {
+                      return std::nullopt;
+                    }
+                    admitted_work_bytes = std::max(
+                        admitted_work_bytes,
+                        parsed_coefficient_digits + round_expansion);
+                  } else {
+                    const auto drop = parsed_scale - scale;
+                    // RoundToScale short-circuits when its divisor would be
+                    // wider than the coefficient. Otherwise account the
+                    // divisor, quotient, remainder, and a possible carry.
+                    if (drop <= parsed_coefficient_digits) {
+                      admitted_work_bytes = std::max(
+                          admitted_work_bytes,
+                          std::max(parsed_coefficient_digits, drop + 1));
+                    }
+                  }
+                } else {
+                  // Descriptor validation will provide the canonical error;
+                  // it cannot reach numeric expansion with invalid context.
+                }
+              }
+            }
+          }
+        }
+      }
+      if (admitted_work_bytes >
+              (std::numeric_limits<std::uint64_t>::max() -
+               kFixedScratchBytes) /
+                  kDynamicExpansionFactor) {
+        return std::nullopt;
+      }
+      const auto scratch =
+          kFixedScratchBytes +
+          admitted_work_bytes * kDynamicExpansionFactor;
+      maximum = std::max(maximum, scratch);
+    }
+  }
+  return maximum;
+}
+
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     const DescriptorBatch& batch,
     const std::vector<std::uint32_t>& output_descriptor_ids,
@@ -876,11 +1196,10 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
       return ErrorDiagnostic("SB_MODEL_EXECUTION_CANCELLED_V1",
                              "descriptor-batch validation was cancelled",
                              row, column);
-    } catch (const std::exception& exception) {
+    } catch (const std::exception&) {
       return ErrorDiagnostic(
           "SB_MODEL_COORDINATOR_LEG_FAILED_V1",
-          std::string("descriptor-batch cancellation probe threw: ") +
-              exception.what(),
+          "descriptor-batch cancellation probe threw a standard exception",
           row, column);
     } catch (...) {
       return ErrorDiagnostic(
@@ -898,7 +1217,6 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     return ErrorDiagnostic("SBLR.PLAN_TREE.INVALID_HANDLE",
                            "physical output descriptor width mismatch");
   }
-  std::unordered_set<std::uint32_t> descriptor_ids;
   for (std::size_t column = 0; column < batch.columns.size(); ++column) {
     if (const auto cancelled = poll_cancellation(0, column);
         cancelled.has_value()) {
@@ -906,9 +1224,17 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     }
     const auto& bound_column = batch.columns[column];
     const auto& descriptor = bound_column.descriptor;
+    bool duplicate_descriptor_id = false;
+    for (std::size_t prior = 0; prior < column; ++prior) {
+      if (batch.columns[prior].descriptor_id ==
+          bound_column.descriptor_id) {
+        duplicate_descriptor_id = true;
+        break;
+      }
+    }
     if (bound_column.descriptor_id == 0 ||
         bound_column.descriptor_id != output_descriptor_ids[column] ||
-        !descriptor_ids.insert(bound_column.descriptor_id).second ||
+        duplicate_descriptor_id ||
         bound_column.stable_name.empty() ||
         !IsCanonicalUuid(descriptor.descriptor_uuid.canonical) ||
         descriptor.descriptor_kind != "scalar" ||

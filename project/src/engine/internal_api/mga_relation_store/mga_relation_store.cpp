@@ -1133,7 +1133,7 @@ struct BoundedScopedRowReadControl {
   std::uint64_t retained_parent_memory_bytes = 0;
   std::uint64_t retained_decode_row_memory_bytes = 0;
   std::uint64_t peak_live_memory_bytes = 0;
-  std::function<bool()> cancellation_requested;
+  const std::function<bool()>* cancellation_requested = nullptr;
   std::uint64_t decoded_row_versions = 0;
   std::uint64_t decoded_bytes = 0;
   bool cancellation_observed = false;
@@ -1375,8 +1375,11 @@ bool AccountHeapStorageBytes(BoundedScopedRowReadControl* control,
 }
 
 bool BoundedScopedReadCancelled(BoundedScopedRowReadControl* control) {
-  if (control == nullptr || !control->cancellation_requested) { return false; }
-  if (!control->cancellation_requested()) { return false; }
+  if (control == nullptr || control->cancellation_requested == nullptr ||
+      !*control->cancellation_requested) {
+    return false;
+  }
+  if (!(*control->cancellation_requested)()) { return false; }
   control->cancellation_observed = true;
   control->failure_category = MgaHeapReadFailureCategoryV1::kCancellation;
   control->refusal_detail = "heap_read_cancelled";
@@ -4509,7 +4512,8 @@ bool LoadDecodedScopedRowsForTableBounded(
     bool* used_segment) {
   if (control == nullptr || rows == nullptr ||
       control->maximum_row_versions == 0 || control->maximum_bytes == 0 ||
-      !control->cancellation_requested) {
+      control->cancellation_requested == nullptr ||
+      !*control->cancellation_requested) {
     return false;
   }
   rows->clear();
@@ -7612,10 +7616,130 @@ std::optional<std::uint64_t> HeapReadVisibilityMapMemoryBytes(
   return bytes;
 }
 
+struct PreparedMgaHeapReadAuthority {
+  scratchbird::transaction::mga::SnapshotVectorDescriptor snapshot_vector;
+  MgaRelationStorageDescriptor descriptor;
+  std::map<std::uint64_t, std::string> transaction_states;
+  std::uint64_t current_relation_base_generation{0};
+  std::string relation_uuid;
+  std::string database_uuid;
+  std::string statement_uuid;
+  std::string transaction_uuid;
+  std::string statement_snapshot_uuid;
+  std::string statement_metadata_snapshot_uuid;
+  std::string catalog_epoch_uuid;
+  std::string authorization_authority_uuid;
+  std::uint64_t catalog_generation{0};
+  std::uint64_t security_epoch{0};
+  std::uint64_t policy_epoch{0};
+  std::uint64_t local_transaction_id{0};
+};
+
+struct PreparedMgaHeapReadAuthorityResult {
+  bool ok{false};
+  EngineApiDiagnostic diagnostic;
+  PreparedMgaHeapReadAuthority authority;
+};
+
+PreparedMgaHeapReadAuthorityResult PrepareMgaHeapReadAuthority(
+    const EngineRequestContext& context, const std::string& relation_uuid) {
+  PreparedMgaHeapReadAuthorityResult result;
+  const auto refuse = [&](EngineApiDiagnostic diagnostic) {
+    result = {};
+    result.diagnostic = std::move(diagnostic);
+    return result;
+  };
+  if (relation_uuid.empty() || context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty()) {
+    return refuse(MakeInvalidRequestDiagnostic(
+        "mga.heap_relation_read.prepare",
+        "exact_relation_transaction_and_snapshot_required"));
+  }
+  const auto inventory_guard =
+      AcquireTransactionInventoryGuard(context.database_path);
+  EngineResolveStatementSnapshotRequest snapshot_request;
+  snapshot_request.context = context;
+  auto snapshot = EngineResolveStatementSnapshot(snapshot_request);
+  if (!snapshot.ok || !snapshot.snapshot_vector.inventory_authoritative ||
+      !snapshot.snapshot_vector.complete) {
+    return refuse(MakeInvalidRequestDiagnostic(
+        "mga.heap_relation_read.prepare",
+        "exact_current_statement_snapshot_vector_required"));
+  }
+  auto descriptor = LoadMgaRelationStorageDescriptor(context, relation_uuid);
+  if (!descriptor.ok) return refuse(std::move(descriptor.diagnostic));
+  if (descriptor.descriptor.relation_uuid.canonical != relation_uuid ||
+      descriptor.descriptor.database_uuid.canonical !=
+          context.database_uuid.canonical ||
+      descriptor.descriptor.relation_kind != "table" ||
+      descriptor.descriptor.storage_profile != "local_mga_rowstore_v1" ||
+      descriptor.descriptor.descriptor_uuid.canonical.empty() ||
+      descriptor.descriptor.descriptor_generation == 0 ||
+      descriptor.descriptor.descriptor_status.empty()) {
+    return refuse(MakeInvalidRequestDiagnostic(
+        "mga.heap_relation_read.prepare",
+        "current_persisted_local_heap_descriptor_required"));
+  }
+  CrudState metadata;
+  const auto metadata_loaded = LoadMgaMetadata(&metadata, context);
+  if (metadata_loaded.error) return refuse(metadata_loaded);
+  metadata.transactions.clear();
+  metadata.max_transaction_id = 0;
+  const auto transaction_authority =
+      OverlayMgaTransactionAuthority(context, &metadata);
+  if (transaction_authority.error) return refuse(transaction_authority);
+  FilterVisibleRetiredTemporaryMetadata(context, &metadata);
+  FilterMgaTemporaryObjectsForSession(context, &metadata);
+  const auto table = FindVisibleCrudTable(
+      metadata, relation_uuid, context.local_transaction_id);
+  if (!table) {
+    return refuse(MakeInvalidRequestDiagnostic(
+        "mga.heap_relation_read.prepare", "heap_relation_not_visible"));
+  }
+  if (table->temporary) {
+    return refuse(MakeInvalidRequestDiagnostic(
+        "mga.heap_relation_read.prepare",
+        "temporary_relation_outside_local_heap_profile"));
+  }
+  const auto authorization = EvaluateMaterializedAuthorization(
+      context, context.authorization_context, "SELECT", relation_uuid);
+  if (!authorization.authorized || authorization.denied ||
+      authorization.policy_recheck_required ||
+      !authorization.diagnostics.empty()) {
+    return refuse(MakeInvalidRequestDiagnostic(
+        "mga.heap_relation_read.prepare",
+        authorization.diagnostics.empty()
+            ? "select_authorization_is_indeterminate"
+            : authorization.diagnostics.front().detail));
+  }
+  auto& prepared = result.authority;
+  prepared.snapshot_vector = std::move(snapshot.snapshot_vector);
+  prepared.descriptor = std::move(descriptor.descriptor);
+  prepared.transaction_states = std::move(metadata.transactions);
+  prepared.current_relation_base_generation = table->event_sequence;
+  prepared.relation_uuid = relation_uuid;
+  prepared.database_uuid = context.database_uuid.canonical;
+  prepared.statement_uuid = context.statement_uuid.canonical;
+  prepared.transaction_uuid = context.transaction_uuid.canonical;
+  prepared.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+  prepared.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  prepared.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  prepared.authorization_authority_uuid =
+      context.authorization_context.authority_uuid.canonical;
+  prepared.catalog_generation = context.catalog_generation_id;
+  prepared.security_epoch = context.authorization_context.security_epoch;
+  prepared.policy_epoch = context.authorization_context.policy_epoch;
+  prepared.local_transaction_id = context.local_transaction_id;
+  result.ok = true;
+  return result;
+}
+
 static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
     const EngineRequestContext& context,
     const MgaVisibleHeapRelationReadRequest& request,
-    HeapReadRuntimeObservation* runtime_observation) {
+    HeapReadRuntimeObservation* runtime_observation,
+    const PreparedMgaHeapReadAuthority* prepared_authority = nullptr) {
   MgaVisibleHeapRelationReadResult result;
   const auto refuse = [&](EngineApiDiagnostic diagnostic,
                           const BoundedScopedRowReadControl* control = nullptr,
@@ -7656,7 +7780,15 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
                   control, category);
   };
 
-  if (request.relation_uuid.empty()) {
+  const auto& cancellation_requested =
+      request.borrowed_cancellation_requested == nullptr
+          ? request.cancellation_requested
+          : *request.borrowed_cancellation_requested;
+  const auto& relation_uuid = request.borrowed_relation_uuid == nullptr
+                                  ? request.relation_uuid
+                                  : *request.borrowed_relation_uuid;
+
+  if (relation_uuid.empty()) {
     return invalid("relation_uuid_required");
   }
   if (context.local_transaction_id == 0 ||
@@ -7670,10 +7802,10 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
     return invalid("nonzero_heap_read_resource_bounds_required", nullptr,
                    MgaHeapReadFailureCategoryV1::kResource);
   }
-  if (!request.cancellation_requested) {
+  if (!cancellation_requested) {
     return invalid("engine_cancellation_probe_required");
   }
-  if (request.cancellation_requested()) {
+  if (cancellation_requested()) {
     result.cancellation_observed = true;
     return invalid("heap_read_cancelled_before_descriptor_load", nullptr,
                    MgaHeapReadFailureCategoryV1::kCancellation);
@@ -7681,8 +7813,50 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
 
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(context.database_path);
-  scratchbird::transaction::mga::SnapshotVectorDescriptor snapshot_vector;
-  {
+  BoundedScopedRowReadControl control;
+  control.maximum_row_versions = request.maximum_scanned_row_versions;
+  control.maximum_bytes = request.maximum_decoded_bytes;
+  control.maximum_memory_bytes = request.maximum_memory_bytes;
+  control.cancellation_requested = &cancellation_requested;
+  control.runtime_observation = runtime_observation;
+  scratchbird::transaction::mga::SnapshotVectorDescriptor owned_snapshot;
+  std::map<std::uint64_t, std::string> owned_transaction_states;
+  const scratchbird::transaction::mga::SnapshotVectorDescriptor*
+      snapshot_vector = nullptr;
+  const std::map<std::uint64_t, std::string>* transaction_states = nullptr;
+  std::uint64_t current_relation_base_generation = 0;
+  if (prepared_authority != nullptr) {
+    if (prepared_authority->relation_uuid != relation_uuid ||
+        prepared_authority->database_uuid != context.database_uuid.canonical ||
+        prepared_authority->statement_uuid != context.statement_uuid.canonical ||
+        prepared_authority->transaction_uuid !=
+            context.transaction_uuid.canonical ||
+        prepared_authority->statement_snapshot_uuid !=
+            context.statement_snapshot_uuid.canonical ||
+        prepared_authority->statement_metadata_snapshot_uuid !=
+            context.statement_metadata_snapshot_uuid.canonical ||
+        prepared_authority->catalog_epoch_uuid !=
+            context.catalog_epoch_uuid.canonical ||
+        prepared_authority->authorization_authority_uuid !=
+            context.authorization_context.authority_uuid.canonical ||
+        prepared_authority->catalog_generation !=
+            context.catalog_generation_id ||
+        prepared_authority->security_epoch !=
+            context.authorization_context.security_epoch ||
+        prepared_authority->policy_epoch !=
+            context.authorization_context.policy_epoch ||
+        prepared_authority->local_transaction_id !=
+            context.local_transaction_id ||
+        !prepared_authority->snapshot_vector.inventory_authoritative ||
+        !prepared_authority->snapshot_vector.complete) {
+      return invalid("prepared_heap_read_authority_is_stale", &control,
+                     MgaHeapReadFailureCategoryV1::kMgaContext);
+    }
+    snapshot_vector = &prepared_authority->snapshot_vector;
+    transaction_states = &prepared_authority->transaction_states;
+    current_relation_base_generation =
+        prepared_authority->current_relation_base_generation;
+  } else {
     EngineResolveStatementSnapshotRequest snapshot_request;
     snapshot_request.context = context;
     auto snapshot = EngineResolveStatementSnapshot(snapshot_request);
@@ -7694,18 +7868,16 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
     // Retain only the engine-issued visibility carrier.  Request/result
     // diagnostics and identity strings are catalog-authority transients and
     // must not remain live in the operator-local row-carrier phase.
-    snapshot_vector = std::move(snapshot.snapshot_vector);
-  }
-
-  {
+    owned_snapshot = std::move(snapshot.snapshot_vector);
+    snapshot_vector = &owned_snapshot;
     auto loaded_descriptor =
-        LoadMgaRelationStorageDescriptor(context, request.relation_uuid);
+        LoadMgaRelationStorageDescriptor(context, relation_uuid);
     if (!loaded_descriptor.ok) {
       return refuse(std::move(loaded_descriptor.diagnostic), nullptr,
                     MgaHeapReadFailureCategoryV1::kCatalog);
     }
     const auto& loaded = loaded_descriptor.descriptor;
-    if (loaded.relation_uuid.canonical != request.relation_uuid ||
+    if (loaded.relation_uuid.canonical != relation_uuid ||
         loaded.database_uuid.canonical != context.database_uuid.canonical ||
         loaded.relation_kind != "table" ||
         loaded.storage_profile != "local_mga_rowstore_v1" ||
@@ -7716,18 +7888,14 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
                      nullptr, MgaHeapReadFailureCategoryV1::kCatalog);
     }
     result.descriptor = std::move(loaded_descriptor.descriptor);
-  }
-  const auto& descriptor = result.descriptor;
-
-  std::map<std::uint64_t, std::string> transaction_states;
-  std::uint64_t current_relation_base_generation = 0;
-  {
     CrudState metadata;
     const auto metadata_loaded = LoadMgaMetadata(&metadata, context);
     if (metadata_loaded.error) {
       return refuse(metadata_loaded, nullptr,
                     MgaHeapReadFailureCategoryV1::kCatalog);
     }
+    metadata.transactions.clear();
+    metadata.max_transaction_id = 0;
     const auto authority = OverlayMgaTransactionAuthority(context, &metadata);
     if (authority.error) {
       return refuse(authority, nullptr,
@@ -7736,7 +7904,7 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
     FilterVisibleRetiredTemporaryMetadata(context, &metadata);
     FilterMgaTemporaryObjectsForSession(context, &metadata);
     const auto table = FindVisibleCrudTable(
-        metadata, request.relation_uuid, context.local_transaction_id);
+        metadata, relation_uuid, context.local_transaction_id);
     if (!table) {
       return invalid("heap_relation_not_visible", nullptr,
                      MgaHeapReadFailureCategoryV1::kCatalog);
@@ -7746,14 +7914,17 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
                      nullptr, MgaHeapReadFailureCategoryV1::kCatalog);
     }
     current_relation_base_generation = table->event_sequence;
-    transaction_states = std::move(metadata.transactions);
+    owned_transaction_states = std::move(metadata.transactions);
+    transaction_states = &owned_transaction_states;
   }
+  const auto& descriptor = prepared_authority == nullptr
+                               ? result.descriptor
+                               : prepared_authority->descriptor;
   const auto creator_visible = [&](const std::uint64_t creator) {
-    const auto& vector = snapshot_vector;
     if (creator == 0) return false;
-    const auto transaction = transaction_states.find(creator);
-    if (transaction == transaction_states.end()) return false;
-    if (creator == vector.owning_transaction.value) {
+    const auto transaction = transaction_states->find(creator);
+    if (transaction == transaction_states->end()) return false;
+    if (creator == snapshot_vector->owning_transaction.value) {
       return transaction->second == "active" ||
              transaction->second == "preparing" ||
              transaction->second == "prepared";
@@ -7762,40 +7933,42 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
         transaction->second != "archived") {
       return false;
     }
-    if (vector.visible_committed_high_watermark == 0 ||
-        creator > vector.visible_committed_high_watermark) {
+    if (snapshot_vector->visible_committed_high_watermark == 0 ||
+        creator > snapshot_vector->visible_committed_high_watermark) {
       return false;
     }
     return !std::binary_search(
-               vector.active_excluded_local_transaction_ids.begin(),
-               vector.active_excluded_local_transaction_ids.end(), creator) &&
+               snapshot_vector->active_excluded_local_transaction_ids.begin(),
+               snapshot_vector->active_excluded_local_transaction_ids.end(),
+               creator) &&
            !std::binary_search(
-               vector.in_doubt_excluded_local_transaction_ids.begin(),
-               vector.in_doubt_excluded_local_transaction_ids.end(), creator);
+               snapshot_vector->in_doubt_excluded_local_transaction_ids.begin(),
+               snapshot_vector->in_doubt_excluded_local_transaction_ids.end(),
+               creator);
   };
-  BoundedScopedRowReadControl control;
-  control.maximum_row_versions = request.maximum_scanned_row_versions;
-  control.maximum_bytes = request.maximum_decoded_bytes;
-  control.maximum_memory_bytes = request.maximum_memory_bytes;
-  control.cancellation_requested = request.cancellation_requested;
-  control.runtime_observation = runtime_observation;
   const auto descriptor_memory =
       HeapReadStorageDescriptorMemoryBytes(descriptor);
-  const auto transaction_memory =
-      HeapReadTransactionStateMemoryBytes(transaction_states);
-  std::uint64_t authority_memory = sizeof(result) + sizeof(snapshot_vector);
+  const auto transaction_memory = prepared_authority == nullptr
+                                      ? HeapReadTransactionStateMemoryBytes(
+                                            *transaction_states)
+                                      : std::optional<std::uint64_t>{0};
+  std::uint64_t authority_memory = sizeof(result);
   std::uint64_t snapshot_vector_bytes = 0;
   if (!descriptor_memory.has_value() || !transaction_memory.has_value() ||
       !CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(snapshot_vector
-                                         .active_excluded_local_transaction_ids
-                                         .capacity()),
+          static_cast<std::uint64_t>(prepared_authority == nullptr
+                                         ? snapshot_vector
+                                               ->active_excluded_local_transaction_ids
+                                               .capacity()
+                                         : 0),
           sizeof(std::uint64_t), &snapshot_vector_bytes) ||
       !CheckedHeapReadMemoryAdd(snapshot_vector_bytes, &authority_memory) ||
       !CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(snapshot_vector
-                                         .in_doubt_excluded_local_transaction_ids
-                                         .capacity()),
+          static_cast<std::uint64_t>(prepared_authority == nullptr
+                                         ? snapshot_vector
+                                               ->in_doubt_excluded_local_transaction_ids
+                                               .capacity()
+                                         : 0),
           sizeof(std::uint64_t), &snapshot_vector_bytes) ||
       !CheckedHeapReadMemoryAdd(snapshot_vector_bytes, &authority_memory) ||
       !CheckedHeapReadMemoryAdd(*descriptor_memory, &authority_memory) ||
@@ -7807,10 +7980,13 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
   if (!ObserveBoundedHeapReadMemory(&control, authority_memory)) {
     return invalid(control.refusal_detail, &control);
   }
+  if (prepared_authority != nullptr) {
+    result.descriptor = descriptor;
+  }
   std::vector<CrudRowVersionRecord> row_versions;
   bool used_segment = false;
   if (!LoadDecodedScopedRowsForTableBounded(context,
-                                            request.relation_uuid,
+                                            relation_uuid,
                                             &control,
                                             &row_versions,
                                             &used_segment)) {
@@ -7876,12 +8052,12 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
   }
   admitted_versions.reserve(row_versions.size());
   for (auto& row : row_versions) {
-    if (request.cancellation_requested()) {
+    if (cancellation_requested()) {
       control.cancellation_observed = true;
       control.refusal_detail = "heap_read_cancelled_during_visibility";
       return invalid(control.refusal_detail, &control);
     }
-    if (row.table_uuid != request.relation_uuid) {
+    if (row.table_uuid != relation_uuid) {
       return invalid("scoped_heap_row_relation_identity_mismatch", &control,
                      MgaHeapReadFailureCategoryV1::kCorruptStorage);
     }
@@ -7970,7 +8146,7 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
   }
   newest_visible_by_row.reserve(admitted_versions.size());
   for (std::size_t index = 0; index < admitted_versions.size(); ++index) {
-    if (request.cancellation_requested()) {
+    if (cancellation_requested()) {
       control.cancellation_observed = true;
       control.refusal_detail = "heap_read_cancelled_during_visibility";
       return invalid(control.refusal_detail, &control);
@@ -8065,7 +8241,7 @@ static MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationObserved(
   }
   visible_rows.reserve(static_cast<std::size_t>(visible_row_count));
   for (std::size_t index = 0; index < admitted_versions.size(); ++index) {
-    if (request.cancellation_requested()) {
+    if (cancellation_requested()) {
       control.cancellation_observed = true;
       control.refusal_detail = "heap_read_cancelled_during_publication";
       return invalid(control.refusal_detail, &control);
@@ -12317,6 +12493,18 @@ DescriptorRuntimeDiagnostic ValidateCurrentHeapPhysicalMgaAuthority(
   return {};
 }
 
+struct CurrentHeapMgaResolutionBinding {
+  scratchbird::engine::internal_api::EngineTrustMode trust_mode =
+      scratchbird::engine::internal_api::EngineTrustMode::server_isolated;
+  std::string database_path;
+  std::string transaction_uuid;
+  std::string statement_uuid;
+  std::string statement_snapshot_uuid;
+  std::string statement_metadata_snapshot_uuid;
+  std::uint64_t local_transaction_id{0};
+  std::uint64_t visible_committed_high_watermark{0};
+};
+
 CanonicalExecutionMgaAuthority BuildCurrentHeapExecutionMgaAuthority(
     const scratchbird::engine::internal_api::EngineRequestContext& context,
     const TypedPhysicalNodeDag& physical_dag) {
@@ -12324,8 +12512,31 @@ CanonicalExecutionMgaAuthority BuildCurrentHeapExecutionMgaAuthority(
   CanonicalExecutionMgaAuthority authority;
   authority.statement_context = physical_dag.mga_statement_context;
   authority.origin = CanonicalMgaAuthorityOrigin::kEngineTransactionInventory;
-  authority.resolve_current = [context]() {
+  CurrentHeapMgaResolutionBinding binding;
+  binding.trust_mode = context.trust_mode;
+  binding.database_path = context.database_path;
+  binding.transaction_uuid = context.transaction_uuid.canonical;
+  binding.statement_uuid = context.statement_uuid.canonical;
+  binding.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+  binding.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  binding.local_transaction_id = context.local_transaction_id;
+  binding.visible_committed_high_watermark =
+      context.snapshot_visible_through_local_transaction_id;
+  authority.resolve_current = [binding = std::move(binding)]() {
     CanonicalMgaCurrentResolution current;
+    api::EngineRequestContext context;
+    context.trust_mode = binding.trust_mode;
+    context.database_path = binding.database_path;
+    context.transaction_uuid.canonical = binding.transaction_uuid;
+    context.statement_uuid.canonical = binding.statement_uuid;
+    context.statement_snapshot_uuid.canonical =
+        binding.statement_snapshot_uuid;
+    context.statement_metadata_snapshot_uuid.canonical =
+        binding.statement_metadata_snapshot_uuid;
+    context.local_transaction_id = binding.local_transaction_id;
+    context.snapshot_visible_through_local_transaction_id =
+        binding.visible_committed_high_watermark;
     api::EngineResolveStatementSnapshotRequest resolve_request;
     resolve_request.context = context;
     const auto resolved = api::EngineResolveStatementSnapshot(resolve_request);
@@ -12355,21 +12566,21 @@ bool IsCanonicalHeapBindingUuid(const std::string_view value) {
   return true;
 }
 
-std::optional<std::string> ExactHeapDescriptorField(
+std::optional<std::string_view> ExactHeapDescriptorField(
     const std::string_view descriptor,
     const std::string_view field_name) {
-  const std::string prefix = std::string(field_name) + "=";
-  std::optional<std::string> value;
+  std::optional<std::string_view> value;
   std::size_t offset = 0;
   while (offset <= descriptor.size()) {
     const auto next = descriptor.find(';', offset);
     const auto end = next == std::string_view::npos ? descriptor.size() : next;
     const auto field = descriptor.substr(offset, end - offset);
-    if (field.rfind(prefix, 0) == 0) {
-      if (value.has_value() || field.size() == prefix.size()) {
+    if (field.size() > field_name.size() &&
+        field.starts_with(field_name) && field[field_name.size()] == '=') {
+      if (value.has_value() || field.size() == field_name.size() + 1) {
         return std::nullopt;
       }
-      value = std::string(field.substr(prefix.size()));
+      value = field.substr(field_name.size() + 1);
     }
     if (next == std::string_view::npos) { break; }
     offset = next + 1;
@@ -12405,7 +12616,6 @@ bool ExactOptionalHeapDescriptorFieldMatches(
     const std::string_view descriptor,
     const std::string_view field_name,
     const std::optional<std::string>& expected) {
-  const std::string prefix = std::string(field_name) + "=";
   std::size_t matches = 0;
   std::string_view actual;
   std::size_t offset = 0;
@@ -12413,9 +12623,10 @@ bool ExactOptionalHeapDescriptorFieldMatches(
     const auto next = descriptor.find(';', offset);
     const auto end = next == std::string_view::npos ? descriptor.size() : next;
     const auto field = descriptor.substr(offset, end - offset);
-    if (field.rfind(prefix, 0) == 0) {
+    if (field.size() > field_name.size() &&
+        field.starts_with(field_name) && field[field_name.size()] == '=') {
       ++matches;
-      actual = field.substr(prefix.size());
+      actual = field.substr(field_name.size() + 1);
     }
     if (next == std::string_view::npos) { break; }
     offset = next + 1;
@@ -12470,8 +12681,11 @@ bool ExactHeapNullabilityCarrierMatches(const std::string_view descriptor,
 }  // namespace
 
 // QOW-SOURCE-QRY-004-HEAP-MGA-V1
-CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
-    const CanonicalHeapRelationAcquisitionRequest& request) {
+static CanonicalHeapRelationAcquisitionResult
+ExecuteCanonicalHeapRelationAcquisitionPrepared(
+    const CanonicalHeapRelationAcquisitionRequest& request,
+    const scratchbird::engine::internal_api::PreparedMgaHeapReadAuthority*
+        prepared_read_authority) {
   namespace api = scratchbird::engine::internal_api;
 
   CanonicalHeapRelationAcquisitionResult result;
@@ -12498,41 +12712,56 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                    "engine context and typed relational DAG are required");
   }
   const auto& context = *request.context;
+  const auto& physical_dag = request.borrowed_physical_dag == nullptr
+                                 ? request.physical_dag
+                                 : *request.borrowed_physical_dag;
+  const auto& cancellation_requested =
+      request.borrowed_cancellation_requested == nullptr
+          ? request.cancellation_requested
+          : *request.borrowed_cancellation_requested;
+  const auto& mga_authority =
+      request.borrowed_mga_authority == nullptr
+          ? request.mga_authority
+          : *request.borrowed_mga_authority;
+  auto maximum_live_memory_bytes =
+      request.maximum_live_memory_bytes == 0
+          ? context.optimizer_memory_budget_bytes
+          : request.maximum_live_memory_bytes;
   const auto& relational = *request.relational_dag;
   const auto inventory_guard =
       api::AcquireTransactionInventoryGuard(context.database_path);
-  if (request.mga_authority.origin !=
+  if (mga_authority.origin !=
       CanonicalMgaAuthorityOrigin::kEngineTransactionInventory) {
     return invalid("QOW-DIAG-QRY-004-HEAP-MGA-VECTOR-V1",
                    "heap acquisition requires engine transaction-inventory authority");
   }
-  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
-  if (!entry_authority.ok) return refuse(entry_authority);
-  const auto relational_validation = api::ValidateTypedRelationalDag(relational);
-  if (!relational_validation.accepted) {
-    const auto& issue = relational_validation.issues.front();
-    return invalid(issue.diagnostic_id,
-                   issue.field_id + ":node_id=" +
-                       std::to_string(issue.node_id));
-  }
-  const auto physical_validation =
-      ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!physical_validation.accepted) {
-    const auto& issue = physical_validation.issues.front();
-    return invalid(issue.diagnostic_id, issue.field_id);
-  }
-  const auto current_mga =
-      ValidateCurrentHeapPhysicalMgaAuthority(context, request.physical_dag);
-  if (!current_mga.ok) {
-    return refuse(current_mga);
+  if (prepared_read_authority == nullptr) {
+    const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+        mga_authority, physical_dag);
+    if (!entry_authority.ok) return refuse(entry_authority);
+    const auto relational_validation =
+        api::ValidateTypedRelationalDag(relational);
+    if (!relational_validation.accepted) {
+      const auto& issue = relational_validation.issues.front();
+      return invalid(issue.diagnostic_id,
+                     issue.field_id + ":node_id=" +
+                         std::to_string(issue.node_id));
+    }
+    const auto physical_validation = ValidateTypedPhysicalNodeDag(physical_dag);
+    if (!physical_validation.accepted) {
+      const auto& issue = physical_validation.issues.front();
+      return invalid(issue.diagnostic_id, issue.field_id);
+    }
+    const auto current_mga =
+        ValidateCurrentHeapPhysicalMgaAuthority(context, physical_dag);
+    if (!current_mga.ok) return refuse(current_mga);
   }
   if (relational.wire_version != 2 ||
-      request.physical_dag.abi_version != 2 ||
-      !request.physical_dag.optimizer_published ||
-      !request.physical_dag.immutable_node_identity_validated ||
-      !request.physical_dag.capability_validated_before_access ||
-      request.physical_dag.data_access_observed) {
+      physical_dag.abi_version != 2 ||
+      !physical_dag.optimizer_published ||
+      !physical_dag.immutable_node_identity_validated ||
+      !physical_dag.capability_validated_before_access ||
+      physical_dag.data_access_observed) {
     return invalid("QOW-DIAG-QRY-004-HEAP-DIRECT-SCOPE-V1",
                    "wire-v2 direct optimizer publication is required");
   }
@@ -12542,7 +12771,7 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
     return invalid("QOW-DIAG-QRY-004-HEAP-DIRECT-SCOPE-V1",
                    "prepared or cached descriptor execution is outside this profile");
   }
-  if (!request.cancellation_requested ||
+  if (!cancellation_requested ||
       request.maximum_scanned_row_versions == 0 ||
       request.maximum_decoded_bytes == 0 ||
       request.maximum_output_rows == 0 ||
@@ -12553,7 +12782,7 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                    "valid nonzero heap row, column, cell, byte, scan, and "
                    "cancellation bounds are required");
   }
-  if (request.cancellation_requested()) {
+  if (cancellation_requested()) {
     return invalid("QOW-DIAG-QRY-004-HEAP-CANCELLED-V1",
                    "heap relation acquisition cancelled before admission",
                    false,
@@ -12561,9 +12790,9 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   }
   if (context.local_transaction_id == 0 ||
       context.transaction_uuid.canonical.empty() ||
-      request.physical_dag.local_transaction_id !=
+      physical_dag.local_transaction_id !=
           context.local_transaction_id ||
-      request.physical_dag.statement_snapshot_id !=
+      physical_dag.statement_snapshot_id !=
           context.snapshot_visible_through_local_transaction_id) {
     return invalid("SB_DIAG_MGA_READ_SNAPSHOT_MISSING",
                    "physical scan does not match the active MGA transaction snapshot");
@@ -12572,7 +12801,7 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   if (!context.statement_metadata_snapshot_engine_owned ||
       !context.security_context_present || !authorization.present ||
       relational.bound_sblr_tree_uuid !=
-          request.physical_dag.bound_sblr_tree_uuid ||
+          physical_dag.bound_sblr_tree_uuid ||
       relational.statement_uuid != context.statement_uuid.canonical ||
       relational.owning_transaction_uuid !=
           context.transaction_uuid.canonical ||
@@ -12585,30 +12814,30 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
           context.snapshot_visible_through_local_transaction_id ||
       relational.bound_catalog_epoch_uuid !=
           context.catalog_epoch_uuid.canonical ||
-      request.physical_dag.catalog_epoch_uuid !=
+      physical_dag.catalog_epoch_uuid !=
           context.catalog_epoch_uuid.canonical ||
       relational.bound_security_context_uuid !=
           authorization.authority_uuid.canonical ||
-      request.physical_dag.security_context_uuid !=
+      physical_dag.security_context_uuid !=
           authorization.authority_uuid.canonical ||
-      request.physical_dag.catalog_generation !=
+      physical_dag.catalog_generation !=
           context.catalog_generation_id ||
       context.catalog_generation_id !=
           authorization.catalog_generation_id ||
-      request.physical_dag.security_epoch != context.security_epoch ||
+      physical_dag.security_epoch != context.security_epoch ||
       context.security_epoch != authorization.security_epoch ||
-      request.physical_dag.policy_epoch != authorization.policy_epoch ||
-      request.physical_dag.resource_epoch != context.resource_epoch ||
-      request.physical_dag.capability_snapshot_uuid !=
+      physical_dag.policy_epoch != authorization.policy_epoch ||
+      physical_dag.resource_epoch != context.resource_epoch ||
+      physical_dag.capability_snapshot_uuid !=
           context.optimizer_capability_snapshot_uuid.canonical ||
-      request.physical_dag.resource_snapshot_uuid !=
+      physical_dag.resource_snapshot_uuid !=
           context.optimizer_resource_snapshot_uuid.canonical ||
-      request.physical_dag.route_snapshot_uuid !=
+      physical_dag.route_snapshot_uuid !=
           context.optimizer_route_snapshot_uuid.canonical ||
-      request.physical_dag.route_epoch != context.optimizer_route_epoch ||
-      request.physical_dag.route_generation !=
+      physical_dag.route_epoch != context.optimizer_route_epoch ||
+      physical_dag.route_generation !=
           context.optimizer_route_generation ||
-      request.physical_dag.memory_budget_bytes !=
+      physical_dag.memory_budget_bytes !=
           context.optimizer_memory_budget_bytes) {
     return invalid("QOW-DIAG-QRY-004-HEAP-AUTHORITY-SCOPE-V1",
                    "catalog, security, resource, or MGA scope is stale or mismatched");
@@ -12616,6 +12845,8 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   if (context.optimizer_memory_budget_bytes == 0 ||
       context.optimizer_maximum_candidate_count == 0 ||
       request.maximum_decoded_bytes > context.optimizer_memory_budget_bytes ||
+      request.maximum_decoded_bytes > maximum_live_memory_bytes ||
+      maximum_live_memory_bytes > context.optimizer_memory_budget_bytes ||
       request.maximum_scanned_row_versions >
           context.optimizer_maximum_candidate_count ||
       request.maximum_output_rows >
@@ -12625,26 +12856,60 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   }
 
   const auto physical = std::ranges::find_if(
-      request.physical_dag.nodes, [&](const auto& node) {
+      physical_dag.nodes, [&](const auto& node) {
         return node.physical_node_id == request.selected_physical_node_id;
       });
   if (request.selected_physical_node_id == 0 ||
-      physical == request.physical_dag.nodes.end() ||
+      physical == physical_dag.nodes.end() ||
       physical->node_kind != PhysicalNodeKind::kScan ||
-      physical->implementation_id != "scan.heap.v1" ||
+      (physical->implementation_id != "scan.heap.v1" &&
+       physical->implementation_id !=
+           "scan.heap.tablesample.bernoulli.v1" &&
+       physical->implementation_id !=
+           "scan.heap.tablesample.system.v1") ||
       !physical->input_physical_node_ids.empty() ||
       !physical->engine_capability_validated) {
     return invalid("QOW-DIAG-QRY-004-SCAN-IMPLEMENTATION-UNAVAILABLE-V1",
                    "selected physical node is not an admitted leaf heap scan");
   }
+  if (physical->memory_bytes_required == 0) {
+    return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "selected heap node has no live-memory grant");
+  }
+  // The selected physical node is always the operator-local ceiling. A zero
+  // request inherits the statement budget, but never bypasses the node grant.
+  maximum_live_memory_bytes =
+      std::min(maximum_live_memory_bytes, physical->memory_bytes_required);
+  const auto maximum_decoded_bytes =
+      std::min(request.maximum_decoded_bytes, maximum_live_memory_bytes);
+  if (maximum_decoded_bytes == 0) {
+    return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "selected heap node has no decoded-memory allowance");
+  }
   const auto relation_node = std::ranges::find_if(
       relational.nodes, [&](const auto& node) {
         return node.node_id == physical->relational_node_id;
       });
+  const bool base_heap_source =
+      relation_node != relational.nodes.end() &&
+      relation_node->semantic_variant_id == "relation.source.v1" &&
+      physical->implementation_id == "scan.heap.v1";
+  const bool bernoulli_heap_source =
+      relation_node != relational.nodes.end() &&
+      relation_node->semantic_variant_id ==
+          "relation.source.tablesample.bernoulli.v1" &&
+      physical->implementation_id ==
+          "scan.heap.tablesample.bernoulli.v1";
+  const bool system_heap_source =
+      relation_node != relational.nodes.end() &&
+      relation_node->semantic_variant_id ==
+          "relation.source.tablesample.system.v1" &&
+      physical->implementation_id ==
+          "scan.heap.tablesample.system.v1";
   if (relation_node == relational.nodes.end() ||
       relation_node->node_kind != api::RelationalDagNodeKind::kScan ||
       !relation_node->input_node_ids.empty() ||
-      relation_node->semantic_variant_id != "relation.source.v1" ||
+      (!base_heap_source && !bernoulli_heap_source && !system_heap_source) ||
       relation_node->required_object_uuids.size() != 1 ||
       relation_node->output_descriptor_ids.empty() ||
       relation_node->output_descriptor_ids.size() !=
@@ -12664,20 +12929,7 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                    "bound relation UUID is not canonical");
   }
 
-  std::vector<const api::RelationalOutputRecord*> outputs;
-  for (const auto& output : relational.outputs) {
-    if (output.relation_node_id == relation_node->node_id) {
-      outputs.push_back(&output);
-    }
-  }
   const auto output_width = relation_node->output_descriptor_ids.size();
-  if (outputs.size() != output_width ||
-      relational.outputs.size() != output_width ||
-      relational.expressions.size() != output_width ||
-      relational.descriptors.size() != output_width) {
-    return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
-                   "relation source must cover its complete visible width");
-  }
   std::size_t admitted_shape_cells = 0;
   if (!CheckedHeapCellCount(request.maximum_output_rows, output_width,
                             &admitted_shape_cells)) {
@@ -12690,35 +12942,73 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   // order from optimizer outputs through identifier bindings and descriptors.
   // Persisted column UUIDs select a bounded subset; aliases, hidden outputs,
   // and duplicate bindings remain outside this profile.
-  std::vector<const api::RelationalExpressionRecord*> expressions;
-  std::vector<const api::RelationalTypeDescriptor*> relational_descriptors;
-  expressions.reserve(output_width);
-  relational_descriptors.reserve(output_width);
-  std::unordered_set<std::uint32_t> output_ids;
-  std::unordered_set<std::uint32_t> expression_ids;
-  std::unordered_set<std::uint32_t> descriptor_ids;
-  std::unordered_set<std::string> bound_column_uuids;
   for (std::size_t ordinal = 0; ordinal < output_width; ++ordinal) {
-    const auto& output = *outputs[ordinal];
-    const auto expression = relational.expressions.begin() + ordinal;
-    const auto descriptor = relational.descriptors.begin() + ordinal;
-    if (!output.visible || output.ordinal != ordinal || output.output_id == 0 ||
-        !output_ids.insert(output.output_id).second ||
-        output.output_name_utf8.empty() ||
-        output.descriptor_id != relation_node->output_descriptor_ids[ordinal] ||
-        expression->expression_id != output.expression_id ||
-        !expression_ids.insert(expression->expression_id).second ||
+    const auto output = std::ranges::find_if(
+        relational.outputs, [&](const auto& candidate) {
+          return candidate.relation_node_id == relation_node->node_id &&
+                 candidate.ordinal == ordinal;
+        });
+    const auto expression = std::ranges::find_if(
+        relational.expressions, [&](const auto& candidate) {
+          return candidate.expression_id ==
+                 relation_node->bound_expression_ids[ordinal];
+        });
+    const auto descriptor = std::ranges::find_if(
+        relational.descriptors, [&](const auto& candidate) {
+          return candidate.descriptor_id ==
+                 relation_node->output_descriptor_ids[ordinal];
+        });
+    if (output == relational.outputs.end() ||
+        expression == relational.expressions.end() ||
+        descriptor == relational.descriptors.end()) {
+      return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
+                     "relation source output binding is incomplete");
+    }
+    bool duplicate_identity = false;
+    for (std::size_t prior = 0; prior < ordinal; ++prior) {
+      const auto prior_output = std::ranges::find_if(
+          relational.outputs, [&](const auto& candidate) {
+            return candidate.relation_node_id == relation_node->node_id &&
+                   candidate.ordinal == prior;
+          });
+      const auto prior_expression = std::ranges::find_if(
+          relational.expressions, [&](const auto& candidate) {
+            return candidate.expression_id ==
+                   relation_node->bound_expression_ids[prior];
+          });
+      const auto prior_descriptor = std::ranges::find_if(
+          relational.descriptors, [&](const auto& candidate) {
+            return candidate.descriptor_id ==
+                   relation_node->output_descriptor_ids[prior];
+          });
+      if (prior_output == relational.outputs.end() ||
+          prior_expression == relational.expressions.end() ||
+          prior_descriptor == relational.descriptors.end() ||
+          prior_output->output_id == output->output_id ||
+          prior_expression->expression_id == expression->expression_id ||
+          prior_descriptor->descriptor_id == descriptor->descriptor_id ||
+          (prior_expression->bound_name_uuid.has_value() &&
+           expression->bound_name_uuid.has_value() &&
+           *prior_expression->bound_name_uuid ==
+               *expression->bound_name_uuid)) {
+        duplicate_identity = true;
+        break;
+      }
+    }
+    if (!output->visible || output->output_id == 0 ||
+        duplicate_identity ||
+        output->output_name_utf8.empty() ||
+        output->descriptor_id != relation_node->output_descriptor_ids[ordinal] ||
+        expression->expression_id != output->expression_id ||
         expression->expression_kind !=
             api::RelationalExpressionKind::kIdentifier ||
         !expression->child_expression_ids.empty() ||
         !expression->bound_name_uuid.has_value() ||
         !IsCanonicalHeapBindingUuid(*expression->bound_name_uuid) ||
-        !bound_column_uuids.insert(*expression->bound_name_uuid).second ||
-        expression->result_descriptor_id != output.descriptor_id ||
+        expression->result_descriptor_id != output->descriptor_id ||
         relation_node->bound_expression_ids[ordinal] !=
             expression->expression_id ||
-        descriptor->descriptor_id != output.descriptor_id ||
-        !descriptor_ids.insert(descriptor->descriptor_id).second ||
+        descriptor->descriptor_id != output->descriptor_id ||
         !IsCanonicalHeapBindingUuid(descriptor->descriptor_uuid) ||
         !IsCanonicalHeapBindingUuid(descriptor->type_uuid) ||
         descriptor->nullability == api::RelationalNullability::kUnknown ||
@@ -12729,19 +13019,19 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
       return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
                      "relation output binding is incomplete or not bijective");
     }
-    expressions.push_back(&*expression);
-    relational_descriptors.push_back(&*descriptor);
   }
 
-  const auto authorization_decision = api::EvaluateMaterializedAuthorization(
-      context, authorization, "SELECT", relation_uuid);
-  if (!authorization_decision.authorized || authorization_decision.denied ||
-      authorization_decision.policy_recheck_required ||
-      !authorization_decision.diagnostics.empty()) {
-    const std::string detail = authorization_decision.diagnostics.empty()
-                                   ? "SELECT authorization is indeterminate"
-                                   : authorization_decision.diagnostics.front().detail;
-    return invalid("QOW-DIAG-QRY-004-SCAN-SECURITY-DECISION-V1", detail);
+  if (prepared_read_authority == nullptr) {
+    const auto authorization_decision = api::EvaluateMaterializedAuthorization(
+        context, authorization, "SELECT", relation_uuid);
+    if (!authorization_decision.authorized || authorization_decision.denied ||
+        authorization_decision.policy_recheck_required ||
+        !authorization_decision.diagnostics.empty()) {
+      const std::string detail = authorization_decision.diagnostics.empty()
+                                     ? "SELECT authorization is indeterminate"
+                                     : authorization_decision.diagnostics.front().detail;
+      return invalid("QOW-DIAG-QRY-004-SCAN-SECURITY-DECISION-V1", detail);
+    }
   }
 
   std::uint64_t maximum_scanned = 0;
@@ -12749,20 +13039,21 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   std::uint64_t maximum_output = 0;
   if (!CheckedHeapBoundToU64(request.maximum_scanned_row_versions,
                              &maximum_scanned) ||
-      !CheckedHeapBoundToU64(request.maximum_decoded_bytes, &maximum_bytes) ||
+      !CheckedHeapBoundToU64(maximum_decoded_bytes, &maximum_bytes) ||
       !CheckedHeapBoundToU64(request.maximum_output_rows, &maximum_output)) {
     return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                    "heap scan bound conversion overflowed");
   }
   api::MgaVisibleHeapRelationReadRequest read_request;
-  read_request.relation_uuid = relation_uuid;
+  read_request.borrowed_relation_uuid = &relation_uuid;
   read_request.maximum_scanned_row_versions = maximum_scanned;
   read_request.maximum_decoded_bytes = maximum_bytes;
   read_request.maximum_output_rows = maximum_output;
-  read_request.cancellation_requested = request.cancellation_requested;
+  read_request.maximum_memory_bytes = maximum_live_memory_bytes;
+  read_request.borrowed_cancellation_requested = &cancellation_requested;
   api::HeapReadRuntimeObservation runtime_observation;
   const auto read = api::ReadVisibleMgaHeapRelationObserved(
-      context, read_request, &runtime_observation);
+      context, read_request, &runtime_observation, prepared_read_authority);
   if (!read.ok) {
     return invalid(read.diagnostic.code.empty()
                        ? "QOW-DIAG-QRY-004-HEAP-READ-V1"
@@ -12772,6 +13063,14 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                        read.decoded_byte_count != 0,
                    read.cancellation_observed);
   }
+  if (!read.memory_receipt_complete ||
+      read.memory_grant_bytes != maximum_live_memory_bytes ||
+      read.current_live_memory_bytes > read.peak_live_memory_bytes ||
+      read.peak_live_memory_bytes > maximum_live_memory_bytes) {
+    return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "heap reader did not return a complete bounded memory receipt",
+                   true);
+  }
 
   if (read.descriptor.columns.empty() ||
       read.descriptor.columns.size() < output_width ||
@@ -12780,6 +13079,25 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                    "persisted relation width cannot satisfy the projected binding",
                    true);
   }
+  if (read.current_live_memory_bytes >= maximum_live_memory_bytes) {
+    return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "heap reader retained state exhausts the callback memory allowance",
+                   true);
+  }
+  std::uint64_t materialization_live_bytes =
+      read.current_live_memory_bytes + 1;
+  std::uint64_t materialization_peak_bytes =
+      std::max(read.peak_live_memory_bytes, materialization_live_bytes);
+  const auto account_materialization = [&](const std::uint64_t additional) {
+    if (additional >
+        maximum_live_memory_bytes - materialization_live_bytes) {
+      return false;
+    }
+    materialization_live_bytes += additional;
+    materialization_peak_bytes =
+        std::max(materialization_peak_bytes, materialization_live_bytes);
+    return true;
+  };
   std::size_t materialized_cell_count = 0;
   if (!CheckedHeapCellCount(read.visible_rows.size(), output_width,
                             &materialized_cell_count) ||
@@ -12789,22 +13107,53 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                    true);
   }
 
+  std::uint64_t materialization_structure_bytes = sizeof(DescriptorBatch);
+  std::uint64_t allocation_bytes = 0;
+  const auto account_array = [&](const std::size_t count,
+                                 const std::size_t element_size) {
+    return api::CheckedHeapReadMemoryMultiply(
+               static_cast<std::uint64_t>(count), element_size,
+               &allocation_bytes) &&
+           api::CheckedHeapReadMemoryAdd(
+               allocation_bytes, &materialization_structure_bytes);
+  };
+  if (!account_array(output_width, sizeof(api::EngineDescriptor)) ||
+      !account_array(output_width, sizeof(std::string)) ||
+      !account_array(output_width,
+                     sizeof(const api::MgaRelationColumnStorageDescriptor*)) ||
+      !account_array(output_width, sizeof(ExecutorColumnDescriptor)) ||
+      !account_array(read.visible_rows.size(), sizeof(DescriptorTuple)) ||
+      !account_array(read.visible_rows.size(), sizeof(std::string)) ||
+      !account_array(read.visible_rows.size(), sizeof(std::string)) ||
+      !account_array(materialized_cell_count,
+                     sizeof(api::EngineTypedValue)) ||
+      !account_materialization(materialization_structure_bytes)) {
+    return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "heap output structures exceed the callback memory allowance",
+                   true);
+  }
+
   DescriptorBatch batch;
   std::vector<api::EngineDescriptor> output_descriptors;
   std::vector<std::string> column_uuids;
-  std::unordered_set<std::string> persisted_column_uuids;
-  std::unordered_set<std::string> persisted_column_names;
   std::vector<const api::MgaRelationColumnStorageDescriptor*>
       projected_columns;
   for (std::size_t persisted_ordinal = 0;
        persisted_ordinal < read.descriptor.columns.size();
        ++persisted_ordinal) {
     const auto& column = read.descriptor.columns[persisted_ordinal];
+    bool duplicate_identity = false;
+    for (std::size_t prior = 0; prior < persisted_ordinal; ++prior) {
+      const auto& prior_column = read.descriptor.columns[prior];
+      if (prior_column.column_uuid.canonical == column.column_uuid.canonical ||
+          prior_column.canonical_name_key == column.canonical_name_key) {
+        duplicate_identity = true;
+        break;
+      }
+    }
     if (column.ordinal != persisted_ordinal ||
         !IsCanonicalHeapBindingUuid(column.column_uuid.canonical) ||
-        !persisted_column_uuids.insert(column.column_uuid.canonical).second ||
-        column.canonical_name_key.empty() ||
-        !persisted_column_names.insert(column.canonical_name_key).second) {
+        column.canonical_name_key.empty() || duplicate_identity) {
       return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
                      "persisted relation column identities are incomplete",
                      true);
@@ -12815,13 +13164,31 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   projected_columns.reserve(output_width);
   batch.columns.reserve(output_width);
   for (std::size_t ordinal = 0; ordinal < output_width; ++ordinal) {
-    const auto& output = *outputs[ordinal];
-    const auto& expression = *expressions[ordinal];
-    const auto& relational_descriptor = *relational_descriptors[ordinal];
+    const auto output = std::ranges::find_if(
+        relational.outputs, [&](const auto& candidate) {
+          return candidate.relation_node_id == relation_node->node_id &&
+                 candidate.ordinal == ordinal;
+        });
+    const auto expression = std::ranges::find_if(
+        relational.expressions, [&](const auto& candidate) {
+          return candidate.expression_id ==
+                 relation_node->bound_expression_ids[ordinal];
+        });
+    const auto relational_descriptor = std::ranges::find_if(
+        relational.descriptors, [&](const auto& candidate) {
+          return candidate.descriptor_id ==
+                 relation_node->output_descriptor_ids[ordinal];
+        });
+    if (output == relational.outputs.end() ||
+        expression == relational.expressions.end() ||
+        relational_descriptor == relational.descriptors.end()) {
+      return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
+                     "projected relation binding disappeared", true);
+    }
     const auto persisted_column = std::ranges::find_if(
         read.descriptor.columns, [&](const auto& candidate) {
           return candidate.column_uuid.canonical ==
-                 *expression.bound_name_uuid;
+                 *expression->bound_name_uuid;
         });
     if (persisted_column == read.descriptor.columns.end()) {
       return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
@@ -12831,34 +13198,49 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
     const auto& column = *persisted_column;
     const auto persisted_type_uuid = ExactHeapDescriptorField(
         column.value_descriptor.encoded_descriptor, "type_uuid");
-    const bool nullable = relational_descriptor.nullability ==
+    const bool nullable = relational_descriptor->nullability ==
                           api::RelationalNullability::kNullable;
-    if (column.column_uuid.canonical != *expression.bound_name_uuid ||
-        output.output_name_utf8 != column.canonical_name_key ||
+    if (column.column_uuid.canonical != *expression->bound_name_uuid ||
+        output->output_name_utf8 != column.canonical_name_key ||
         column.value_descriptor.descriptor_uuid.canonical !=
-            relational_descriptor.descriptor_uuid ||
+            relational_descriptor->descriptor_uuid ||
         column.value_descriptor.encoded_descriptor.empty() ||
         column.value_descriptor.canonical_type_name.empty() ||
         !persisted_type_uuid.has_value() ||
         !IsCanonicalHeapBindingUuid(*persisted_type_uuid) ||
-        *persisted_type_uuid != relational_descriptor.type_uuid ||
+        *persisted_type_uuid != relational_descriptor->type_uuid ||
         nullable != column.nullable ||
         !ExactHeapNullabilityCarrierMatches(
             column.value_descriptor.encoded_descriptor, nullable) ||
-        (relational_descriptor.collation_uuid.has_value()
+        (relational_descriptor->collation_uuid.has_value()
              ? column.collation_uuid !=
-                   *relational_descriptor.collation_uuid
+                   *relational_descriptor->collation_uuid
              : !column.collation_uuid.empty()) ||
         !ExactOptionalHeapDescriptorFieldMatches(
             column.value_descriptor.encoded_descriptor,
-            "collation_uuid", relational_descriptor.collation_uuid) ||
+            "collation_uuid", relational_descriptor->collation_uuid) ||
         !ExactOptionalHeapDescriptorFieldMatches(
             column.value_descriptor.encoded_descriptor,
             "timezone_profile_id",
-            relational_descriptor.timezone_profile_id)) {
+            relational_descriptor->timezone_profile_id)) {
       return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
                      "persisted ordinal column descriptor differs from binding",
                      true);
+    }
+    std::uint64_t projected_descriptor_bytes = 0;
+    if (!api::AccountHeapReadOwnedString(column.canonical_name_key,
+                                         &projected_descriptor_bytes) ||
+        !api::AccountHeapReadEngineDescriptorMemory(
+            column.value_descriptor, &projected_descriptor_bytes) ||
+        !api::AccountHeapReadEngineDescriptorMemory(
+            column.value_descriptor, &projected_descriptor_bytes) ||
+        !api::AccountHeapReadOwnedString(column.column_uuid.canonical,
+                                         &projected_descriptor_bytes) ||
+        !account_materialization(projected_descriptor_bytes)) {
+      return invalid(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "heap projected descriptors exceed the callback memory allowance",
+          true);
     }
     projected_columns.push_back(&column);
     auto output_descriptor = column.value_descriptor;
@@ -12866,7 +13248,7 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
     batch.columns.push_back({column.canonical_name_key,
                              output_descriptor,
                              column.nullable,
-                             output.descriptor_id});
+                             output->descriptor_id});
     output_descriptors.push_back(std::move(output_descriptor));
     column_uuids.push_back(column.column_uuid.canonical);
   }
@@ -12877,7 +13259,7 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   version_uuids.reserve(read.visible_rows.size());
   for (std::size_t row_index = 0; row_index < read.visible_rows.size();
        ++row_index) {
-    if (request.cancellation_requested()) {
+    if (cancellation_requested()) {
       return invalid("QOW-DIAG-QRY-004-HEAP-CANCELLED-V1",
                      "heap relation acquisition cancelled during materialization",
                      true,
@@ -12909,36 +13291,136 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                        true);
       }
       api::EngineTypedValue value;
+      std::uint64_t value_descriptor_bytes = 0;
+      if (!api::AccountHeapReadEngineDescriptorMemory(
+              output_descriptors[ordinal], &value_descriptor_bytes) ||
+          !account_materialization(value_descriptor_bytes)) {
+        return invalid(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "heap value descriptors exceed the callback memory allowance",
+            true);
+      }
       value.descriptor = output_descriptors[ordinal];
       if (*encoded_value == "<NULL>") {
         value.is_null = true;
         value.state = api::EngineValueState::sql_null;
       } else {
+        std::uint64_t encoded_allocation_bytes = 0;
+        if (!api::AccountHeapReadOwnedString(
+                *encoded_value, &encoded_allocation_bytes) ||
+            !account_materialization(encoded_allocation_bytes)) {
+          return invalid(
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+              "heap value materialization exceeds the callback memory allowance",
+              true);
+        }
         value.encoded_value = *encoded_value;
         value.state = api::EngineValueState::value;
       }
       tuple.values.push_back(std::move(value));
     }
+    std::uint64_t identity_allocation_bytes = 0;
+    if (!api::AccountHeapReadOwnedString(
+            stored_row.row_uuid, &identity_allocation_bytes) ||
+        !api::AccountHeapReadOwnedString(
+            stored_row.version_uuid, &identity_allocation_bytes) ||
+        !account_materialization(identity_allocation_bytes)) {
+      return invalid(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "heap row identity materialization exceeds the callback memory allowance",
+          true);
+    }
     batch.rows.push_back(std::move(tuple));
     record_uuids.push_back(stored_row.row_uuid);
     version_uuids.push_back(stored_row.version_uuid);
   }
-  const auto batch_validation =
-      ValidateCanonicalDescriptorBatch(batch, physical->output_descriptor_ids);
+  bool validation_bound_cancellation_observed = false;
+  bool validation_bound_probe_failed = false;
+  const auto validation_scratch =
+      BoundDescriptorBatchValidationScratchMemoryBytes(
+          batch, cancellation_requested,
+          &validation_bound_cancellation_observed,
+          &validation_bound_probe_failed);
+  if (validation_bound_probe_failed) {
+    return invalid(
+        "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1",
+        "heap descriptor-validation cancellation probe threw",
+        true);
+  }
+  if (validation_bound_cancellation_observed) {
+    return invalid("QOW-DIAG-QRY-004-HEAP-CANCELLED-V1",
+                   "heap relation acquisition cancelled before validation",
+                   true, true);
+  }
+  if (!validation_scratch.has_value() ||
+      *validation_scratch >
+          maximum_live_memory_bytes - materialization_live_bytes) {
+    return invalid(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "heap descriptor-validation scratch exceeds the callback memory allowance",
+        true);
+  }
+  materialization_peak_bytes = std::max(
+      materialization_peak_bytes,
+      materialization_live_bytes + *validation_scratch);
+  bool validation_cancellation_observed = false;
+  const auto batch_validation = ValidateCanonicalDescriptorBatch(
+      batch, physical->output_descriptor_ids, cancellation_requested,
+      &validation_cancellation_observed);
   if (!batch_validation.ok) {
     return invalid(batch_validation.diagnostic_code,
                    batch_validation.detail,
-                   true);
+                   true, validation_cancellation_observed);
   }
-  const auto value_validation = ValidateDescriptorBatch(batch);
+  const auto value_validation = ValidateDescriptorBatch(
+      batch, cancellation_requested, &validation_cancellation_observed);
   if (!value_validation.ok) {
     return invalid(value_validation.diagnostic_code,
                    value_validation.detail,
+                   true, validation_cancellation_observed);
+  }
+  if (prepared_read_authority == nullptr) {
+    const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+        mga_authority, physical_dag);
+    if (!result_authority.ok) return refuse(result_authority, true);
+  }
+
+  // These fields are copied into the returned acquisition receipt after the
+  // materialized batch is frozen. Charge their exact dynamic carriers before
+  // publishing the final current/peak values.
+  std::uint64_t result_metadata_bytes = 0;
+  std::uint64_t result_metadata_array_bytes = 0;
+  const auto account_result_string = [&](const std::string& value) {
+    return api::AccountHeapReadOwnedString(value, &result_metadata_bytes);
+  };
+  const auto account_result_u64_vector =
+      [&](const std::vector<std::uint64_t>& values) {
+        return api::CheckedHeapReadMemoryMultiply(
+                   static_cast<std::uint64_t>(values.size()),
+                   sizeof(std::uint64_t), &result_metadata_array_bytes) &&
+               api::CheckedHeapReadMemoryAdd(result_metadata_array_bytes,
+                                             &result_metadata_bytes);
+      };
+  const auto& result_mga_context = mga_authority.statement_context;
+  if (!account_result_string(relation_uuid) ||
+      !account_result_string(read.descriptor.descriptor_uuid.canonical) ||
+      !account_result_string(physical_dag.selected_plan_uuid) ||
+      !account_result_string(result_mga_context.statement_uuid) ||
+      !account_result_string(result_mga_context.owning_transaction_uuid) ||
+      !account_result_string(result_mga_context.statement_snapshot_uuid) ||
+      !account_result_string(
+          result_mga_context.statement_metadata_snapshot_uuid) ||
+      !account_result_u64_vector(
+          result_mga_context.active_excluded_local_transaction_ids) ||
+      !account_result_u64_vector(
+          result_mga_context.in_doubt_excluded_local_transaction_ids) ||
+      !account_result_string(result_mga_context.snapshot_kind) ||
+      !account_result_string(result_mga_context.statement_timestamp) ||
+      !account_materialization(result_metadata_bytes)) {
+    return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "heap result metadata exceeds the callback memory allowance",
                    true);
   }
-  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
-  if (!result_authority.ok) return refuse(result_authority, true);
 
   result.diagnostic = {};
   result.output_batch = std::move(batch);
@@ -12951,6 +13433,13 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   result.runtime_storage_bytes_read =
       runtime_observation.storage_bytes_read;
   result.runtime_decoded_bytes = runtime_observation.decoded_bytes;
+  result.runtime_current_memory_bytes =
+      materialization_live_bytes - read.current_live_memory_bytes;
+  result.runtime_peak_memory_bytes = materialization_peak_bytes;
+  result.runtime_memory_grant_bytes = maximum_live_memory_bytes;
+  result.runtime_memory_receipt_complete =
+      result.runtime_current_memory_bytes <= result.runtime_peak_memory_bytes &&
+      result.runtime_peak_memory_bytes <= result.runtime_memory_grant_bytes;
   result.runtime_observation_complete = runtime_observation.complete;
   result.counters.visibility_recheck_count = read.visibility_recheck_count;
   result.counters.invisible_row_version_count =
@@ -12970,11 +13459,16 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
       read.descriptor.descriptor_uuid.canonical;
   result.current_relation_descriptor_generation =
       read.descriptor.descriptor_generation;
-  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.selected_plan_uuid = physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = physical->physical_node_id;
   result.causal_counter_id = physical->causal_counter_id;
-  result.mga_statement_context = request.mga_authority.statement_context;
+  result.mga_statement_context = mga_authority.statement_context;
   return result;
+}
+
+CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
+    const CanonicalHeapRelationAcquisitionRequest& request) {
+  return ExecuteCanonicalHeapRelationAcquisitionPrepared(request, nullptr);
 }
 
 namespace {
@@ -12985,45 +13479,336 @@ struct HeapPhysicalDispatchObservation {
   bool cancellation_observed = false;
 };
 
+struct HeapAcquisitionLeafBinding {
+  std::uint64_t physical_node_id{0};
+  std::shared_ptr<const
+      scratchbird::engine::internal_api::PreparedMgaHeapReadAuthority>
+      read_authority;
+};
+
 struct HeapPhysicalExecutorState {
-  scratchbird::engine::internal_api::EngineRequestContext context;
-  scratchbird::engine::internal_api::TypedRelationalDag relational_dag;
-  TypedPhysicalNodeDag physical_dag;
+  std::optional<scratchbird::engine::internal_api::EngineRequestContext>
+      owned_context;
+  std::optional<scratchbird::engine::internal_api::TypedRelationalDag>
+      owned_relational_dag;
+  std::optional<TypedPhysicalNodeDag> owned_physical_dag;
+  const scratchbird::engine::internal_api::EngineRequestContext* context =
+      nullptr;
+  const scratchbird::engine::internal_api::TypedRelationalDag* relational_dag =
+      nullptr;
+  const TypedPhysicalNodeDag* physical_dag = nullptr;
   std::size_t maximum_scanned_row_versions = 0;
   std::size_t maximum_decoded_bytes = 0;
   std::size_t maximum_output_rows = 0;
   std::size_t maximum_output_columns = 0;
   std::size_t maximum_output_cells = 0;
-  std::function<bool()> cancellation_requested;
-  CanonicalExecutionMgaAuthority mga_authority;
+  std::function<bool()> owned_cancellation_requested;
+  const std::function<bool()>* cancellation_requested = nullptr;
+  std::optional<CanonicalExecutionMgaAuthority> owned_mga_authority;
+  std::shared_ptr<const CanonicalExecutionMgaAuthority> shared_mga_authority;
+  const CanonicalExecutionMgaAuthority* mga_authority = nullptr;
   std::optional<CanonicalHeapTableSampleProfile> table_sample_profile;
+  std::vector<HeapAcquisitionLeafBinding> acquisition_leaf_bindings;
 };
 
-bool HeapRuntimeBatchPayloadBytes(const DescriptorBatch& batch,
-                                  std::uint64_t* bytes) {
-  if (bytes == nullptr) return false;
-  for (const auto& row : batch.rows) {
-    for (const auto& value : row.values) {
-      if (value.encoded_value.size() >
-          std::numeric_limits<std::uint64_t>::max() - *bytes) {
+bool AccountHeapRegistrationString(const std::string& value,
+                                   std::uint64_t* bytes) {
+  return scratchbird::engine::internal_api::AccountHeapReadOwnedString(
+      value, bytes);
+}
+
+bool AccountHeapRegistrationDescriptor(
+    const scratchbird::engine::internal_api::MgaRelationStorageDescriptor&
+        descriptor,
+    std::uint64_t* bytes) {
+  namespace api = scratchbird::engine::internal_api;
+  std::uint64_t allocation_bytes = 0;
+  const auto account_uuid = [&](const api::EngineUuid& uuid) {
+    return AccountHeapRegistrationString(uuid.canonical, bytes);
+  };
+  if (!account_uuid(descriptor.descriptor_uuid) ||
+      !account_uuid(descriptor.database_uuid) ||
+      !account_uuid(descriptor.schema_uuid) ||
+      !account_uuid(descriptor.relation_uuid) ||
+      !account_uuid(descriptor.primary_filespace_uuid) ||
+      !AccountHeapRegistrationString(descriptor.relation_kind, bytes) ||
+      !AccountHeapRegistrationString(descriptor.storage_profile, bytes) ||
+      !AccountHeapRegistrationString(descriptor.row_identity_rule, bytes) ||
+      !AccountHeapRegistrationString(descriptor.version_identity_rule, bytes) ||
+      !AccountHeapRegistrationString(descriptor.mutation_rule, bytes) ||
+      !AccountHeapRegistrationString(descriptor.visibility_rule, bytes) ||
+      !AccountHeapRegistrationString(descriptor.cleanup_rule, bytes) ||
+      !AccountHeapRegistrationString(descriptor.recovery_rule, bytes) ||
+      !AccountHeapRegistrationString(descriptor.descriptor_status, bytes) ||
+      !api::CheckedHeapReadMemoryMultiply(
+          descriptor.columns.capacity(),
+          sizeof(api::MgaRelationColumnStorageDescriptor),
+          &allocation_bytes) ||
+      !api::CheckedHeapReadMemoryAdd(allocation_bytes, bytes) ||
+      !api::CheckedHeapReadMemoryMultiply(
+          descriptor.indexes.capacity(),
+          sizeof(api::MgaRelationIndexStorageDescriptor),
+          &allocation_bytes) ||
+      !api::CheckedHeapReadMemoryAdd(allocation_bytes, bytes) ||
+      !api::CheckedHeapReadMemoryMultiply(
+          descriptor.required_evidence_kinds.capacity(), sizeof(std::string),
+          &allocation_bytes) ||
+      !api::CheckedHeapReadMemoryAdd(allocation_bytes, bytes)) {
+    return false;
+  }
+  for (const auto& column : descriptor.columns) {
+    if (!account_uuid(column.column_uuid) ||
+        !AccountHeapRegistrationString(column.canonical_name_key, bytes) ||
+        !api::AccountHeapReadEngineDescriptorMemory(column.value_descriptor,
+                                                    bytes) ||
+        !AccountHeapRegistrationString(column.storage_class, bytes) ||
+        !AccountHeapRegistrationString(column.charset_uuid, bytes) ||
+        !AccountHeapRegistrationString(column.collation_uuid, bytes) ||
+        !AccountHeapRegistrationString(column.overflow_policy, bytes)) {
+      return false;
+    }
+  }
+  for (const auto& index : descriptor.indexes) {
+    if (!account_uuid(index.index_uuid) ||
+        !AccountHeapRegistrationString(index.family, bytes) ||
+        !AccountHeapRegistrationString(index.profile, bytes) ||
+        !AccountHeapRegistrationString(index.predicate_kind, bytes) ||
+        !AccountHeapRegistrationString(index.predicate_column, bytes) ||
+        !AccountHeapRegistrationString(index.predicate_value, bytes) ||
+        !AccountHeapRegistrationString(index.residency_policy, bytes)) {
+      return false;
+    }
+    for (const auto* values : {&index.key_envelopes,
+                               &index.include_columns}) {
+      if (!api::CheckedHeapReadMemoryMultiply(
+              values->capacity(), sizeof(std::string), &allocation_bytes) ||
+          !api::CheckedHeapReadMemoryAdd(allocation_bytes, bytes)) {
         return false;
       }
-      *bytes += value.encoded_value.size();
+      for (const auto& value : *values) {
+        if (!AccountHeapRegistrationString(value, bytes)) return false;
+      }
+    }
+  }
+  for (const auto& evidence : descriptor.required_evidence_kinds) {
+    if (!AccountHeapRegistrationString(evidence, bytes)) return false;
+  }
+  return true;
+}
+
+bool AccountHeapRegistrationMgaContext(
+    const PhysicalMgaStatementContext& context,
+    std::uint64_t* bytes) {
+  namespace api = scratchbird::engine::internal_api;
+  std::uint64_t allocation_bytes = 0;
+  return AccountHeapRegistrationString(context.statement_uuid, bytes) &&
+         AccountHeapRegistrationString(context.owning_transaction_uuid,
+                                       bytes) &&
+         AccountHeapRegistrationString(context.statement_snapshot_uuid,
+                                       bytes) &&
+         AccountHeapRegistrationString(
+             context.statement_metadata_snapshot_uuid, bytes) &&
+         api::CheckedHeapReadMemoryMultiply(
+             context.active_excluded_local_transaction_ids.capacity(),
+             sizeof(std::uint64_t), &allocation_bytes) &&
+         api::CheckedHeapReadMemoryAdd(allocation_bytes, bytes) &&
+         api::CheckedHeapReadMemoryMultiply(
+             context.in_doubt_excluded_local_transaction_ids.capacity(),
+             sizeof(std::uint64_t), &allocation_bytes) &&
+         api::CheckedHeapReadMemoryAdd(allocation_bytes, bytes) &&
+         AccountHeapRegistrationString(context.snapshot_kind, bytes) &&
+         AccountHeapRegistrationString(context.statement_timestamp, bytes);
+}
+
+std::optional<std::uint64_t> HeapPhysicalRegistrationRetainedMemoryBytes(
+    const HeapPhysicalExecutorState& state,
+    const HeapPhysicalDispatchObservation& observation) {
+  namespace api = scratchbird::engine::internal_api;
+  constexpr std::uint64_t kTreeNodeOverhead = 4 * sizeof(void*);
+  constexpr std::uint64_t kSharedAllocationOverhead = 4 * sizeof(void*);
+  std::uint64_t bytes = sizeof(state) + sizeof(observation) +
+                        2 * sizeof(std::shared_ptr<void>) +
+                        3 * kSharedAllocationOverhead;
+  std::uint64_t allocation_bytes = 0;
+  if (state.mga_authority == nullptr ||
+      !AccountHeapRegistrationMgaContext(
+          state.mga_authority->statement_context, &bytes) ||
+      !api::CheckedHeapReadMemoryAdd(
+          sizeof(CanonicalExecutionMgaAuthority) +
+              kSharedAllocationOverhead,
+          &bytes) ||
+      !api::CheckedHeapReadMemoryAdd(
+          sizeof(CurrentHeapMgaResolutionBinding) +
+              kSharedAllocationOverhead,
+          &bytes) ||
+      !AccountHeapRegistrationString(state.context->database_path, &bytes) ||
+      !AccountHeapRegistrationString(
+          state.context->transaction_uuid.canonical, &bytes) ||
+      !AccountHeapRegistrationString(
+          state.context->statement_uuid.canonical, &bytes) ||
+      !AccountHeapRegistrationString(
+          state.context->statement_snapshot_uuid.canonical, &bytes) ||
+      !AccountHeapRegistrationString(
+          state.context->statement_metadata_snapshot_uuid.canonical, &bytes) ||
+      !api::CheckedHeapReadMemoryMultiply(
+          state.acquisition_leaf_bindings.capacity(),
+          sizeof(HeapAcquisitionLeafBinding), &allocation_bytes) ||
+      !api::CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
+    return std::nullopt;
+  }
+  for (std::size_t binding_index = 0;
+       binding_index < state.acquisition_leaf_bindings.size();
+       ++binding_index) {
+    const auto& binding = state.acquisition_leaf_bindings[binding_index];
+    const auto* authority = binding.read_authority.get();
+    bool already_accounted = false;
+    for (std::size_t prior = 0; prior < binding_index; ++prior) {
+      if (state.acquisition_leaf_bindings[prior].read_authority.get() ==
+          authority) {
+        already_accounted = true;
+        break;
+      }
+    }
+    if (authority == nullptr || already_accounted) {
+      continue;
+    }
+    if (!api::CheckedHeapReadMemoryAdd(
+            sizeof(api::PreparedMgaHeapReadAuthority) +
+                kSharedAllocationOverhead,
+            &bytes) ||
+        !api::CheckedHeapReadMemoryMultiply(
+            authority->snapshot_vector
+                .active_excluded_local_transaction_ids.capacity(),
+            sizeof(std::uint64_t), &allocation_bytes) ||
+        !api::CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
+        !api::CheckedHeapReadMemoryMultiply(
+            authority->snapshot_vector
+                .in_doubt_excluded_local_transaction_ids.capacity(),
+            sizeof(std::uint64_t), &allocation_bytes) ||
+        !api::CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
+        !AccountHeapRegistrationDescriptor(authority->descriptor, &bytes) ||
+        !api::CheckedHeapReadMemoryMultiply(
+            authority->transaction_states.size(),
+            sizeof(std::pair<const std::uint64_t, std::string>) +
+                kTreeNodeOverhead,
+            &allocation_bytes) ||
+        !api::CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
+      return std::nullopt;
+    }
+    for (const auto& [transaction_id, state_name] :
+         authority->transaction_states) {
+      (void)transaction_id;
+      if (!AccountHeapRegistrationString(state_name, &bytes)) {
+        return std::nullopt;
+      }
+    }
+    for (const auto* value : {
+             &authority->relation_uuid,
+             &authority->database_uuid,
+             &authority->statement_uuid,
+             &authority->transaction_uuid,
+             &authority->statement_snapshot_uuid,
+             &authority->statement_metadata_snapshot_uuid,
+             &authority->catalog_epoch_uuid,
+             &authority->authorization_authority_uuid}) {
+      if (!AccountHeapRegistrationString(*value, &bytes)) {
+        return std::nullopt;
+      }
+    }
+  }
+  return bytes;
+}
+
+bool HeapRuntimeBatchLiveBytes(const DescriptorBatch& batch,
+                               std::uint64_t* bytes) {
+  namespace api = scratchbird::engine::internal_api;
+  if (bytes == nullptr) return false;
+  *bytes = sizeof(DescriptorBatch);
+  std::uint64_t allocation_bytes = 0;
+  if (!api::CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(batch.columns.capacity()),
+          sizeof(ExecutorColumnDescriptor), &allocation_bytes) ||
+      !api::CheckedHeapReadMemoryAdd(allocation_bytes, bytes) ||
+      !api::CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(batch.rows.capacity()),
+          sizeof(DescriptorTuple), &allocation_bytes) ||
+      !api::CheckedHeapReadMemoryAdd(allocation_bytes, bytes)) {
+    return false;
+  }
+  for (const auto& column : batch.columns) {
+    if (!api::AccountHeapReadOwnedString(column.stable_name, bytes) ||
+        !api::AccountHeapReadEngineDescriptorMemory(column.descriptor,
+                                                    bytes)) {
+      return false;
+    }
+  }
+  for (const auto& row : batch.rows) {
+    if (!api::CheckedHeapReadMemoryMultiply(
+            static_cast<std::uint64_t>(row.values.capacity()),
+            sizeof(api::EngineTypedValue), &allocation_bytes) ||
+        !api::CheckedHeapReadMemoryAdd(allocation_bytes, bytes)) {
+      return false;
+    }
+    for (const auto& value : row.values) {
+      if (!api::AccountHeapReadEngineDescriptorMemory(value.descriptor,
+                                                      bytes) ||
+          !api::AccountHeapReadOwnedString(value.encoded_value, bytes) ||
+          !api::CheckedHeapReadMemoryAdd(
+              static_cast<std::uint64_t>(value.binary_value.capacity()),
+              bytes)) {
+        return false;
+      }
     }
   }
   return true;
 }
 
-bool HeapRuntimeStringPayloadBytes(const std::vector<std::string>& values,
-                                   std::uint64_t* bytes) {
+bool HeapRuntimeStringVectorLiveBytes(
+    const std::vector<std::string>& values,
+    std::uint64_t* bytes) {
+  namespace api = scratchbird::engine::internal_api;
   if (bytes == nullptr) return false;
+  *bytes = sizeof(values);
+  std::uint64_t allocation_bytes = 0;
+  if (!api::CheckedHeapReadMemoryMultiply(
+          static_cast<std::uint64_t>(values.capacity()),
+          sizeof(std::string), &allocation_bytes) ||
+      !api::CheckedHeapReadMemoryAdd(allocation_bytes, bytes)) {
+    return false;
+  }
   for (const auto& value : values) {
-    if (value.size() > std::numeric_limits<std::uint64_t>::max() - *bytes) {
+    if (!api::AccountHeapReadOwnedString(value, bytes)) {
       return false;
     }
-    *bytes += value.size();
   }
   return true;
+}
+
+bool HeapRuntimeMgaContextDynamicBytes(
+    const PhysicalMgaStatementContext& context,
+    std::uint64_t* bytes) {
+  namespace api = scratchbird::engine::internal_api;
+  std::uint64_t allocation_bytes = 0;
+  return bytes != nullptr &&
+         api::AccountHeapReadOwnedString(context.statement_uuid, bytes) &&
+         api::AccountHeapReadOwnedString(context.owning_transaction_uuid,
+                                         bytes) &&
+         api::AccountHeapReadOwnedString(context.statement_snapshot_uuid,
+                                         bytes) &&
+         api::AccountHeapReadOwnedString(
+             context.statement_metadata_snapshot_uuid, bytes) &&
+         api::CheckedHeapReadMemoryMultiply(
+             static_cast<std::uint64_t>(
+                 context.active_excluded_local_transaction_ids.capacity()),
+             sizeof(std::uint64_t), &allocation_bytes) &&
+         api::CheckedHeapReadMemoryAdd(allocation_bytes, bytes) &&
+         api::CheckedHeapReadMemoryMultiply(
+             static_cast<std::uint64_t>(
+                 context.in_doubt_excluded_local_transaction_ids.capacity()),
+             sizeof(std::uint64_t), &allocation_bytes) &&
+         api::CheckedHeapReadMemoryAdd(allocation_bytes, bytes) &&
+         api::AccountHeapReadOwnedString(context.snapshot_kind, bytes) &&
+         api::AccountHeapReadOwnedString(context.statement_timestamp, bytes);
 }
 
 struct HeapPhysicalRegistrationBuildResult {
@@ -13135,6 +13920,9 @@ HeapSeededSampleRequest(const CanonicalHeapTableSampleProfile& profile,
 DescriptorRuntimeDiagnostic ValidateHeapTableSampleProfile(
     const CanonicalHeapPhysicalDagDispatchRequest& request) {
   namespace api = scratchbird::engine::internal_api;
+  const auto& physical = request.borrowed_physical_dag == nullptr
+                             ? request.physical_dag
+                             : *request.borrowed_physical_dag;
   if (!request.table_sample_profile.has_value()) return {};
   const auto& profile = *request.table_sample_profile;
   if (profile.method != CanonicalHeapTableSampleMethod::kBernoulli &&
@@ -13145,7 +13933,7 @@ DescriptorRuntimeDiagnostic ValidateHeapTableSampleProfile(
   }
   if (request.relational_dag == nullptr ||
       request.relational_dag->nodes.size() != 1 ||
-      request.physical_dag.nodes.size() != 1) {
+      physical.nodes.size() != 1) {
     return HeapAcquisitionRefusal(
         "QOW-DIAG-QRY-015-HEAP-PROFILE-V1",
         "TABLESAMPLE requires one optimizer-selected heap scan");
@@ -13168,7 +13956,7 @@ DescriptorRuntimeDiagnostic ValidateHeapTableSampleProfile(
   const auto descriptor_uuid =
       api::CanonicalSeededSampleDescriptorUuid(seeded);
   const auto& relational_node = request.relational_dag->nodes.front();
-  const auto& physical_node = request.physical_dag.nodes.front();
+  const auto& physical_node = physical.nodes.front();
   if (descriptor_uuid.empty() ||
       relational_node.semantic_variant_id !=
           HeapTableSampleSemanticId(profile) ||
@@ -13198,16 +13986,26 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
   }
   const auto& context = *request.context;
   const auto& relational = *request.relational_dag;
+  const auto& physical = request.borrowed_physical_dag == nullptr
+                             ? request.physical_dag
+                             : *request.borrowed_physical_dag;
+  const auto& mga_authority = request.borrowed_mga_authority == nullptr
+                                  ? request.mga_authority
+                                  : *request.borrowed_mga_authority;
+  const auto& cancellation_requested =
+      request.borrowed_cancellation_requested == nullptr
+          ? request.cancellation_requested
+          : *request.borrowed_cancellation_requested;
   const auto inventory_guard =
       api::AcquireTransactionInventoryGuard(context.database_path);
-  if (request.mga_authority.origin !=
+  if (mga_authority.origin !=
       CanonicalMgaAuthorityOrigin::kEngineTransactionInventory) {
     return HeapAcquisitionRefusal(
         "QOW-DIAG-QRY-004-HEAP-MGA-VECTOR-V1",
         "heap registration requires engine transaction-inventory authority");
   }
   const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
-      request.mga_authority, request.physical_dag);
+      mga_authority, physical);
   if (!entry_authority.ok) return entry_authority;
   const auto relational_validation = api::ValidateTypedRelationalDag(relational);
   if (!relational_validation.accepted) {
@@ -13215,27 +14013,27 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
     return HeapAcquisitionRefusal(issue.diagnostic_id, issue.field_id);
   }
   const auto physical_validation =
-      ValidateTypedPhysicalNodeDag(request.physical_dag);
+      ValidateTypedPhysicalNodeDag(physical);
   if (!physical_validation.accepted) {
     const auto& issue = physical_validation.issues.front();
     return HeapAcquisitionRefusal(issue.diagnostic_id, issue.field_id);
   }
   const auto current_mga =
-      ValidateCurrentHeapPhysicalMgaAuthority(context, request.physical_dag);
+      ValidateCurrentHeapPhysicalMgaAuthority(context, physical);
   if (!current_mga.ok) {
     return current_mga;
   }
   if (relational.wire_version != 2 ||
-      request.physical_dag.abi_version != 2 ||
-      !request.physical_dag.optimizer_published ||
-      !request.physical_dag.immutable_node_identity_validated ||
-      !request.physical_dag.capability_validated_before_access ||
-      request.physical_dag.data_access_observed) {
+      physical.abi_version != 2 ||
+      !physical.optimizer_published ||
+      !physical.immutable_node_identity_validated ||
+      !physical.capability_validated_before_access ||
+      physical.data_access_observed) {
     return HeapAcquisitionRefusal(
         "QOW-DIAG-QRY-004-HEAP-DISPATCH-SCOPE-V1",
         "wire-v2 optimizer-published physical authority is required");
   }
-  if (!request.cancellation_requested ||
+  if (!cancellation_requested ||
       request.maximum_scanned_row_versions == 0 ||
       request.maximum_decoded_bytes == 0 ||
       request.maximum_output_rows == 0 ||
@@ -13247,7 +14045,7 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
         "valid nonzero heap dispatch shape bounds and cancellation probe are "
         "required");
   }
-  if (request.cancellation_requested()) {
+  if (cancellation_requested()) {
     return HeapAcquisitionRefusal(
         "QOW-DIAG-QRY-004-HEAP-CANCELLED-V1",
         "heap physical dispatch cancelled before registration");
@@ -13255,14 +14053,14 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
   const auto& authorization = context.authorization_context;
   if (context.local_transaction_id == 0 ||
       context.transaction_uuid.canonical.empty() ||
-      request.physical_dag.local_transaction_id !=
+      physical.local_transaction_id !=
           context.local_transaction_id ||
-      request.physical_dag.statement_snapshot_id !=
+      physical.statement_snapshot_id !=
           context.snapshot_visible_through_local_transaction_id ||
       !context.statement_metadata_snapshot_engine_owned ||
       !context.security_context_present || !authorization.present ||
       relational.bound_sblr_tree_uuid !=
-          request.physical_dag.bound_sblr_tree_uuid ||
+          physical.bound_sblr_tree_uuid ||
       relational.statement_uuid != context.statement_uuid.canonical ||
       relational.owning_transaction_uuid !=
           context.transaction_uuid.canonical ||
@@ -13275,30 +14073,30 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
           context.snapshot_visible_through_local_transaction_id ||
       relational.bound_catalog_epoch_uuid !=
           context.catalog_epoch_uuid.canonical ||
-      request.physical_dag.catalog_epoch_uuid !=
+      physical.catalog_epoch_uuid !=
           context.catalog_epoch_uuid.canonical ||
       relational.bound_security_context_uuid !=
           authorization.authority_uuid.canonical ||
-      request.physical_dag.security_context_uuid !=
+      physical.security_context_uuid !=
           authorization.authority_uuid.canonical ||
-      request.physical_dag.catalog_generation !=
+      physical.catalog_generation !=
           context.catalog_generation_id ||
       context.catalog_generation_id !=
           authorization.catalog_generation_id ||
-      request.physical_dag.security_epoch != context.security_epoch ||
+      physical.security_epoch != context.security_epoch ||
       context.security_epoch != authorization.security_epoch ||
-      request.physical_dag.policy_epoch != authorization.policy_epoch ||
-      request.physical_dag.resource_epoch != context.resource_epoch ||
-      request.physical_dag.capability_snapshot_uuid !=
+      physical.policy_epoch != authorization.policy_epoch ||
+      physical.resource_epoch != context.resource_epoch ||
+      physical.capability_snapshot_uuid !=
           context.optimizer_capability_snapshot_uuid.canonical ||
-      request.physical_dag.resource_snapshot_uuid !=
+      physical.resource_snapshot_uuid !=
           context.optimizer_resource_snapshot_uuid.canonical ||
-      request.physical_dag.route_snapshot_uuid !=
+      physical.route_snapshot_uuid !=
           context.optimizer_route_snapshot_uuid.canonical ||
-      request.physical_dag.route_epoch != context.optimizer_route_epoch ||
-      request.physical_dag.route_generation !=
+      physical.route_epoch != context.optimizer_route_epoch ||
+      physical.route_generation !=
           context.optimizer_route_generation ||
-      request.physical_dag.memory_budget_bytes !=
+      physical.memory_budget_bytes !=
           context.optimizer_memory_budget_bytes ||
       context.optimizer_memory_budget_bytes == 0 ||
       context.optimizer_maximum_candidate_count == 0 ||
@@ -13328,7 +14126,7 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
           : std::string_view{"scan.heap.v1"};
   std::string capability_uuid;
   std::uint32_t capability_abi = 0;
-  for (const auto& node : request.physical_dag.nodes) {
+  for (const auto& node : physical.nodes) {
     if (node.implementation_id != expected_implementation) { continue; }
     if (node.node_kind != PhysicalNodeKind::kScan ||
         !node.input_physical_node_ids.empty() ||
@@ -13369,20 +14167,93 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
   result.diagnostic =
       ValidateHeapPhysicalRegistrationRequest(request, &heap_nodes);
   if (!result.diagnostic.ok) { return result; }
+  const auto& physical = request.borrowed_physical_dag == nullptr
+                             ? request.physical_dag
+                             : *request.borrowed_physical_dag;
+  const auto& mga_authority = request.borrowed_mga_authority == nullptr
+                                  ? request.mga_authority
+                                  : *request.borrowed_mga_authority;
 
   auto state = std::make_shared<HeapPhysicalExecutorState>();
-  state->context = *request.context;
-  state->relational_dag = *request.relational_dag;
-  state->physical_dag = request.physical_dag;
+  if (request.borrowed_physical_dag != nullptr) {
+    state->context = request.context;
+    state->relational_dag = request.relational_dag;
+    state->physical_dag = &physical;
+  } else {
+    state->owned_context = *request.context;
+    state->owned_relational_dag = *request.relational_dag;
+    state->owned_physical_dag = physical;
+    state->context = &*state->owned_context;
+    state->relational_dag = &*state->owned_relational_dag;
+    state->physical_dag = &*state->owned_physical_dag;
+  }
   state->maximum_scanned_row_versions =
       request.maximum_scanned_row_versions;
   state->maximum_decoded_bytes = request.maximum_decoded_bytes;
   state->maximum_output_rows = request.maximum_output_rows;
   state->maximum_output_columns = request.maximum_output_columns;
   state->maximum_output_cells = request.maximum_output_cells;
-  state->cancellation_requested = request.cancellation_requested;
-  state->mga_authority = request.mga_authority;
+  if (request.borrowed_cancellation_requested != nullptr) {
+    state->cancellation_requested = request.borrowed_cancellation_requested;
+  } else {
+    state->owned_cancellation_requested = request.cancellation_requested;
+    state->cancellation_requested = &state->owned_cancellation_requested;
+  }
+  if (request.shared_mga_authority != nullptr) {
+    state->shared_mga_authority = request.shared_mga_authority;
+    state->mga_authority = state->shared_mga_authority.get();
+  } else {
+    state->owned_mga_authority = mga_authority;
+    state->mga_authority = &*state->owned_mga_authority;
+  }
   state->table_sample_profile = request.table_sample_profile;
+  state->acquisition_leaf_bindings.reserve(heap_nodes.size());
+  for (const auto* heap_node : heap_nodes) {
+    HeapAcquisitionLeafBinding binding;
+    binding.physical_node_id = heap_node->physical_node_id;
+    const auto prepared_relation_node = std::ranges::find_if(
+        state->relational_dag->nodes, [&](const auto& candidate) {
+          return candidate.node_id == heap_node->relational_node_id;
+        });
+    if (prepared_relation_node == state->relational_dag->nodes.end()) {
+      result.diagnostic = HeapAcquisitionRefusal(
+          "QOW-DIAG-QRY-004-HEAP-DISPATCH-IDENTITY-V1",
+          "heap acquisition leaf is unresolved in the relational DAG");
+      return result;
+    }
+    if (prepared_relation_node->required_object_uuids.size() != 1) {
+      result.diagnostic = HeapAcquisitionRefusal(
+          "QOW-DIAG-QRY-004-HEAP-DISPATCH-IDENTITY-V1",
+          "heap acquisition leaf has no exact relation identity");
+      return result;
+    }
+    const auto& relation_uuid =
+        prepared_relation_node->required_object_uuids.front();
+    const auto shared_authority = std::ranges::find_if(
+        state->acquisition_leaf_bindings, [&](const auto& candidate) {
+          return candidate.read_authority != nullptr &&
+                 candidate.read_authority->relation_uuid == relation_uuid;
+        });
+    if (shared_authority != state->acquisition_leaf_bindings.end()) {
+      binding.read_authority = shared_authority->read_authority;
+    } else {
+      auto prepared_read_authority =
+          scratchbird::engine::internal_api::PrepareMgaHeapReadAuthority(
+              *state->context, relation_uuid);
+      if (!prepared_read_authority.ok) {
+        result.diagnostic = HeapAcquisitionRefusal(
+            prepared_read_authority.diagnostic.code.empty()
+                ? "QOW-DIAG-QRY-004-HEAP-READ-PREPARATION-V1"
+                : prepared_read_authority.diagnostic.code,
+            prepared_read_authority.diagnostic.detail);
+        return result;
+      }
+      binding.read_authority = std::make_shared<
+          const scratchbird::engine::internal_api::PreparedMgaHeapReadAuthority>(
+          std::move(prepared_read_authority.authority));
+    }
+    state->acquisition_leaf_bindings.push_back(std::move(binding));
+  }
   result.observation = std::make_shared<HeapPhysicalDispatchObservation>();
 
   CanonicalPhysicalExecutorRegistration registration;
@@ -13395,6 +14266,17 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
   registration.publishes_runtime_observation_v1 = true;
+  registration.honors_dispatcher_memory_limit_v1 =
+      !state->table_sample_profile.has_value();
+  const auto retained_memory =
+      HeapPhysicalRegistrationRetainedMemoryBytes(*state, *result.observation);
+  if (!retained_memory.has_value() || *retained_memory == 0) {
+    result.diagnostic = HeapAcquisitionRefusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "heap executor retained-memory receipt is absent or overflows");
+    return result;
+  }
+  registration.retained_live_memory_bytes_v1 = *retained_memory;
   registration.execute =
       [state, observation = result.observation](
           const TypedPhysicalNodeDag& dispatched_dag,
@@ -13414,14 +14296,27 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
               "leaf heap executor does not accept input batches");
           return step;
         }
+        const auto callback_memory_limit = std::min(
+            dispatched_node.memory_bytes_required,
+            dispatched_node.dispatcher_callback_memory_limit_bytes);
+        if (dispatched_node.dispatcher_callback_memory_limit_bytes == 0 ||
+            callback_memory_limit == 0 ||
+            callback_memory_limit > dispatched_dag.memory_budget_bytes ||
+            callback_memory_limit >
+                std::numeric_limits<std::size_t>::max()) {
+          step.diagnostic = HeapAcquisitionRefusal(
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+              "heap executor callback memory allowance is absent or invalid");
+          return step;
+        }
         const auto expected_node = std::ranges::find_if(
-            state->physical_dag.nodes, [&](const auto& candidate) {
+            state->physical_dag->nodes, [&](const auto& candidate) {
               return candidate.physical_node_id ==
                      dispatched_node.physical_node_id;
             });
         if (!SameHeapPhysicalDagAuthority(dispatched_dag,
-                                          state->physical_dag) ||
-            expected_node == state->physical_dag.nodes.end() ||
+                                          *state->physical_dag) ||
+            expected_node == state->physical_dag->nodes.end() ||
             !SameHeapPhysicalNodeIdentity(dispatched_node, *expected_node) ||
             dispatched_node.node_kind != PhysicalNodeKind::kScan ||
             dispatched_node.implementation_id !=
@@ -13435,81 +14330,29 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
               "dispatched heap node differs from captured optimizer authority");
           return step;
         }
-        const auto callback_entry = RevalidateCanonicalExecutionMgaAuthority(
-            state->mga_authority, dispatched_dag);
-        if (!callback_entry.ok) {
-          step.diagnostic = callback_entry;
-          return step;
-        }
-
-        auto acquisition_relational_dag = state->relational_dag;
-        auto acquisition_physical_dag = state->physical_dag;
-        std::erase_if(acquisition_relational_dag.nodes,
-                      [&](const auto& candidate) {
-                        return candidate.node_id !=
-                               dispatched_node.relational_node_id;
-                      });
-        if (acquisition_relational_dag.nodes.size() != 1) {
+        const auto acquisition_binding = std::ranges::find_if(
+            state->acquisition_leaf_bindings, [&](const auto& candidate) {
+              return candidate.physical_node_id ==
+                     dispatched_node.physical_node_id;
+            });
+        if (acquisition_binding == state->acquisition_leaf_bindings.end() ||
+            acquisition_binding->read_authority == nullptr) {
           step.diagnostic = HeapAcquisitionRefusal(
               "QOW-DIAG-QRY-004-HEAP-DISPATCH-IDENTITY-V1",
               "heap acquisition leaf is unresolved in the relational DAG");
           return step;
         }
-        acquisition_relational_dag.root_node_id =
-            dispatched_node.relational_node_id;
-        const auto& acquisition_node =
-            acquisition_relational_dag.nodes.front();
-        const std::unordered_set<std::uint32_t> acquisition_expressions(
-            acquisition_node.bound_expression_ids.begin(),
-            acquisition_node.bound_expression_ids.end());
-        const std::unordered_set<std::uint32_t> acquisition_descriptors(
-            acquisition_node.output_descriptor_ids.begin(),
-            acquisition_node.output_descriptor_ids.end());
-        std::erase_if(acquisition_relational_dag.expressions,
-                      [&](const auto& expression) {
-                        return !acquisition_expressions.contains(
-                            expression.expression_id);
-                      });
-        std::erase_if(acquisition_relational_dag.descriptors,
-                      [&](const auto& descriptor) {
-                        return !acquisition_descriptors.contains(
-                            descriptor.descriptor_id);
-                      });
-        std::erase_if(acquisition_relational_dag.outputs,
-                      [&](const auto& output) {
-                        return output.relation_node_id !=
-                               acquisition_node.node_id;
-                      });
-        acquisition_relational_dag.values_rows.clear();
-        acquisition_relational_dag.grouping_sets.clear();
-        acquisition_relational_dag.properties.clear();
-        std::erase_if(acquisition_physical_dag.nodes,
-                      [&](const auto& candidate) {
-                        return candidate.physical_node_id !=
-                               dispatched_node.physical_node_id;
-                      });
-        acquisition_physical_dag.root_physical_node_id =
-            dispatched_node.physical_node_id;
-        if (state->table_sample_profile.has_value()) {
-          // The sample executor owns the selected sample node. Its private
-          // acquisition child is a plain heap scan that returns only the
-          // statement-MGA-visible population; no public sample-shaped direct
-          // acquisition route can return an unsampled rowset.
-          acquisition_relational_dag.nodes.front().semantic_variant_id =
-              "relation.source.v1";
-          acquisition_physical_dag.nodes.front().implementation_id =
-              "scan.heap.v1";
-        }
         CanonicalHeapRelationAcquisitionRequest acquisition_request;
-        acquisition_request.context = &state->context;
-        acquisition_request.relational_dag = &acquisition_relational_dag;
-        acquisition_request.physical_dag = acquisition_physical_dag;
+        acquisition_request.context = state->context;
+        acquisition_request.relational_dag = state->relational_dag;
+        acquisition_request.borrowed_physical_dag = state->physical_dag;
         acquisition_request.selected_physical_node_id =
             dispatched_node.physical_node_id;
         acquisition_request.maximum_scanned_row_versions =
             state->maximum_scanned_row_versions;
         acquisition_request.maximum_decoded_bytes =
-            state->maximum_decoded_bytes;
+            std::min<std::size_t>(state->maximum_decoded_bytes,
+                                  callback_memory_limit);
         acquisition_request.maximum_output_rows =
             state->table_sample_profile.has_value()
                 ? state->maximum_scanned_row_versions
@@ -13517,6 +14360,7 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
         acquisition_request.maximum_output_columns =
             state->maximum_output_columns;
         acquisition_request.maximum_output_cells = state->maximum_output_cells;
+        acquisition_request.maximum_live_memory_bytes = callback_memory_limit;
         if (state->table_sample_profile.has_value() &&
             !CheckedHeapCellCount(
                 state->maximum_scanned_row_versions,
@@ -13527,51 +14371,78 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
               "TABLESAMPLE visible-population cell bound overflows size_t");
           return step;
         }
-        acquisition_request.cancellation_requested =
+        acquisition_request.borrowed_cancellation_requested =
             state->cancellation_requested;
-        acquisition_request.mga_authority = state->mga_authority;
-        auto acquisition =
-            ExecuteCanonicalHeapRelationAcquisition(acquisition_request);
+        acquisition_request.borrowed_mga_authority = state->mga_authority;
+        auto acquisition = ExecuteCanonicalHeapRelationAcquisitionPrepared(
+            acquisition_request, acquisition_binding->read_authority.get());
         observation->data_access_observed = acquisition.data_access_observed;
         observation->cancellation_observed = acquisition.cancellation_observed;
         step.data_access_observed = acquisition.data_access_observed;
         if (!acquisition.diagnostic.ok) {
           step.diagnostic = std::move(acquisition.diagnostic);
+          if (acquisition.cancellation_observed) {
+            const PhysicalAdmissionEvidence* cancellation_policy = nullptr;
+            bool duplicate_policy = false;
+            for (const auto& evidence : dispatched_dag.admission_evidence) {
+              if (evidence.stage !=
+                  PhysicalAdmissionStage::kPolicyCapability) {
+                continue;
+              }
+              if (cancellation_policy != nullptr) {
+                duplicate_policy = true;
+                break;
+              }
+              cancellation_policy = &evidence;
+            }
+            if (cancellation_policy == nullptr || duplicate_policy) {
+              step.diagnostic = HeapAcquisitionRefusal(
+                  "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-RECEIPT-V1",
+                  "heap cancellation policy identity is ambiguous");
+              return step;
+            }
+            step.selected_plan_uuid = dispatched_dag.selected_plan_uuid;
+            step.executed_physical_node_id =
+                dispatched_node.physical_node_id;
+            step.causal_counter_id = dispatched_node.causal_counter_id;
+            step.output_descriptor_ids =
+                dispatched_node.output_descriptor_ids;
+            step.authority.engine_mga_snapshot_bound = true;
+            step.mga_statement_context =
+                state->mga_authority->statement_context;
+            step.cancellation_observed = true;
+            step.transient_state_cleanup_proven = true;
+            step.cancellation_evidence_uuid =
+                cancellation_policy->evidence_uuid;
+          }
           return step;
         }
-        if (!acquisition.runtime_observation_complete) {
+        if (!acquisition.runtime_observation_complete ||
+            !acquisition.runtime_memory_receipt_complete ||
+            acquisition.runtime_memory_grant_bytes != callback_memory_limit ||
+            acquisition.runtime_current_memory_bytes >
+                acquisition.runtime_peak_memory_bytes ||
+            acquisition.runtime_peak_memory_bytes > callback_memory_limit) {
           step.diagnostic = HeapAcquisitionRefusal(
               "QOW-DIAG-OPT-017-REFUSAL-V1",
-              "heap_runtime_observation_incomplete");
+              "heap_runtime_observation_or_memory_receipt_incomplete");
           return step;
         }
         if (!PhysicalMgaStatementContextEqual(
                 acquisition.mga_statement_context,
-                state->mga_authority.statement_context)) {
+                state->mga_authority->statement_context)) {
           step.diagnostic = HeapAcquisitionRefusal(
               "QOW-DIAG-QRY-004-HEAP-MGA-VECTOR-V1",
               "heap acquisition returned a different MGA statement context");
           return step;
         }
-        const auto callback_result = RevalidateCanonicalExecutionMgaAuthority(
-            state->mga_authority, dispatched_dag);
-        if (!callback_result.ok) {
-          step.diagnostic = callback_result;
-          return step;
-        }
-
-        std::uint64_t pre_sample_resident_bytes = 1;
-        if (!HeapRuntimeBatchPayloadBytes(acquisition.output_batch,
-                                          &pre_sample_resident_bytes) ||
-            !HeapRuntimeStringPayloadBytes(
-                acquisition.emitted_record_uuids,
-                &pre_sample_resident_bytes) ||
-            !HeapRuntimeStringPayloadBytes(
-                acquisition.emitted_row_version_uuids,
-                &pre_sample_resident_bytes)) {
+        const std::uint64_t pre_sample_resident_bytes =
+            acquisition.runtime_current_memory_bytes;
+        if (pre_sample_resident_bytes == 0 ||
+            pre_sample_resident_bytes > callback_memory_limit) {
           step.diagnostic = HeapAcquisitionRefusal(
               "QOW-DIAG-OPT-017-REFUSAL-V1",
-              "heap_runtime_observation_resident_overflow");
+              "heap_runtime_observation_resident_invalid");
           return step;
         }
         std::uint64_t sample_auxiliary_bytes = 0;
@@ -13593,6 +14464,47 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
           auto sample_request = HeapSeededSampleRequest(
               *state->table_sample_profile, visible_input_row_count,
               state->maximum_scanned_row_versions);
+          std::uint64_t maximum_sample_batch_bytes = 0;
+          std::uint64_t maximum_sample_record_bytes = 0;
+          std::uint64_t maximum_sample_version_bytes = 0;
+          std::uint64_t maximum_sample_index_bytes = 0;
+          std::uint64_t maximum_sampling_live_bytes =
+              pre_sample_resident_bytes;
+          bool sample_preflight_ok =
+              HeapRuntimeBatchLiveBytes(acquisition.output_batch,
+                                        &maximum_sample_batch_bytes) &&
+              HeapRuntimeStringVectorLiveBytes(
+                  acquisition.emitted_record_uuids,
+                  &maximum_sample_record_bytes) &&
+              HeapRuntimeStringVectorLiveBytes(
+                  acquisition.emitted_row_version_uuids,
+                  &maximum_sample_version_bytes) &&
+              api::CheckedHeapReadMemoryMultiply(
+                  static_cast<std::uint64_t>(visible_input_row_count),
+                  sizeof(std::size_t), &maximum_sample_index_bytes) &&
+              api::CheckedHeapReadMemoryAdd(
+                  maximum_sample_batch_bytes,
+                  &maximum_sampling_live_bytes) &&
+              api::CheckedHeapReadMemoryAdd(
+                  maximum_sample_record_bytes,
+                  &maximum_sampling_live_bytes) &&
+              api::CheckedHeapReadMemoryAdd(
+                  maximum_sample_version_bytes,
+                  &maximum_sampling_live_bytes) &&
+              api::CheckedHeapReadMemoryAdd(
+                  maximum_sample_index_bytes,
+                  &maximum_sampling_live_bytes) &&
+              // Fixed formatter/method/actuals envelope; UUID output itself
+              // is exactly 36 bytes and both method identifiers are fixed.
+              api::CheckedHeapReadMemoryAdd(2048,
+                                            &maximum_sampling_live_bytes);
+          if (!sample_preflight_ok ||
+              maximum_sampling_live_bytes > callback_memory_limit) {
+            step.diagnostic = HeapAcquisitionRefusal(
+                "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                "TABLESAMPLE transient output exceeds the callback memory allowance");
+            return step;
+          }
           const auto sampled = api::ExecuteCanonicalSeededSample(
               sample_request);
           if (!sampled.accepted) {
@@ -13600,7 +14512,7 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
                 sampled.diagnostic_code, sampled.detail);
             return step;
           }
-          if (sampled.selected_row_indices.size() >
+          if (sampled.selected_row_indices.capacity() >
               std::numeric_limits<std::uint64_t>::max() /
                   sizeof(std::size_t)) {
             step.diagnostic = HeapAcquisitionRefusal(
@@ -13609,7 +14521,7 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
             return step;
           }
           sample_auxiliary_bytes =
-              sampled.selected_row_indices.size() * sizeof(std::size_t);
+              sampled.selected_row_indices.capacity() * sizeof(std::size_t);
           std::size_t sampled_output_cell_count = 0;
           if (sampled.selected_row_indices.size() >
                   state->maximum_output_rows ||
@@ -13664,6 +14576,52 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
           sample_actuals = std::move(actuals);
         }
 
+        // Admit all step-owned dynamic carriers before copying them. The
+        // acquisition receipt remains live until the callback returns, so the
+        // prospective step metadata must fit beside that complete resident
+        // result rather than being checked only after allocation.
+        namespace api = scratchbird::engine::internal_api;
+        std::uint64_t prospective_step_metadata_bytes = 0;
+        std::uint64_t prospective_step_array_bytes = 0;
+        const auto account_prospective_string = [&](const std::string& value) {
+          return api::AccountHeapReadOwnedString(
+              value, &prospective_step_metadata_bytes);
+        };
+        bool prospective_step_bounded =
+            account_prospective_string(acquisition.selected_plan_uuid) &&
+            api::CheckedHeapReadMemoryMultiply(
+                static_cast<std::uint64_t>(
+                    dispatched_node.output_descriptor_ids.size()),
+                sizeof(std::uint32_t), &prospective_step_array_bytes) &&
+            api::CheckedHeapReadMemoryAdd(
+                prospective_step_array_bytes,
+                &prospective_step_metadata_bytes) &&
+            account_prospective_string(
+                acquisition.current_relation_descriptor_uuid) &&
+            HeapRuntimeMgaContextDynamicBytes(
+                state->mga_authority->statement_context,
+                &prospective_step_metadata_bytes);
+        if (prospective_step_bounded && sample_actuals.has_value()) {
+          prospective_step_bounded =
+              account_prospective_string(
+                  sample_actuals->sample_descriptor_uuid) &&
+              account_prospective_string(sample_actuals->method_id);
+        }
+        std::uint64_t prospective_callback_live_bytes =
+            acquisition.runtime_current_memory_bytes;
+        prospective_step_bounded =
+            prospective_step_bounded &&
+            api::CheckedHeapReadMemoryAdd(
+                prospective_step_metadata_bytes,
+                &prospective_callback_live_bytes);
+        if (!prospective_step_bounded ||
+            prospective_callback_live_bytes > callback_memory_limit) {
+          step.diagnostic = HeapAcquisitionRefusal(
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+              "heap step metadata exceeds the callback memory allowance");
+          return step;
+        }
+
         step.diagnostic = {};
         step.selected_plan_uuid = acquisition.selected_plan_uuid;
         step.executed_physical_node_id =
@@ -13685,6 +14643,7 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
             acquisition.current_relation_descriptor_uuid;
         step.current_relation_descriptor_generation =
             acquisition.current_relation_descriptor_generation;
+        step.mga_statement_context = state->mga_authority->statement_context;
         const auto observed = [](const std::uint64_t value) {
           return CanonicalObservedUint64{
               CanonicalRuntimeMetricState::kObserved, value};
@@ -13693,53 +14652,97 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
           return CanonicalObservedUint64{
               CanonicalRuntimeMetricState::kNotApplicable, 0};
         };
-        std::uint64_t current_memory_bytes = 1;
-        std::uint64_t peak_memory_bytes = pre_sample_resident_bytes;
-        std::uint64_t sampled_transient_bytes = 1;
-        if (!HeapRuntimeBatchPayloadBytes(acquisition.output_batch,
-                                          &current_memory_bytes) ||
-            (state->table_sample_profile.has_value() &&
-             (!HeapRuntimeBatchPayloadBytes(acquisition.output_batch,
-                                            &sampled_transient_bytes) ||
-              !HeapRuntimeStringPayloadBytes(
+        std::uint64_t output_batch_live_bytes = 0;
+        std::uint64_t step_metadata_bytes = 0;
+        std::uint64_t allocation_bytes = 0;
+        const auto account_step_string = [&](const std::string& value) {
+          return api::AccountHeapReadOwnedString(value,
+                                                 &step_metadata_bytes);
+        };
+        bool memory_accounting_ok =
+            HeapRuntimeBatchLiveBytes(acquisition.output_batch,
+                                      &output_batch_live_bytes) &&
+            account_step_string(step.selected_plan_uuid) &&
+            api::CheckedHeapReadMemoryMultiply(
+                static_cast<std::uint64_t>(
+                    step.output_descriptor_ids.capacity()),
+                sizeof(std::uint32_t), &allocation_bytes) &&
+            api::CheckedHeapReadMemoryAdd(allocation_bytes,
+                                          &step_metadata_bytes) &&
+            account_step_string(step.current_relation_descriptor_uuid) &&
+            HeapRuntimeMgaContextDynamicBytes(step.mga_statement_context,
+                                              &step_metadata_bytes);
+        if (memory_accounting_ok && step.table_sample_actuals.has_value()) {
+          memory_accounting_ok =
+              account_step_string(
+                  step.table_sample_actuals->sample_descriptor_uuid) &&
+              account_step_string(step.table_sample_actuals->method_id);
+        }
+        std::uint64_t current_memory_bytes = output_batch_live_bytes;
+        memory_accounting_ok =
+            memory_accounting_ok &&
+            api::CheckedHeapReadMemoryAdd(step_metadata_bytes,
+                                          &current_memory_bytes);
+        std::uint64_t peak_memory_bytes =
+            acquisition.runtime_peak_memory_bytes;
+        std::uint64_t callback_coexistence_bytes =
+            acquisition.runtime_current_memory_bytes;
+        memory_accounting_ok =
+            memory_accounting_ok &&
+            api::CheckedHeapReadMemoryAdd(step_metadata_bytes,
+                                          &callback_coexistence_bytes);
+        std::uint64_t sampled_transient_bytes = 0;
+        if (memory_accounting_ok &&
+            state->table_sample_profile.has_value()) {
+          std::uint64_t sampled_records_bytes = 0;
+          std::uint64_t sampled_versions_bytes = 0;
+          memory_accounting_ok =
+              HeapRuntimeStringVectorLiveBytes(
                   acquisition.emitted_record_uuids,
-                  &sampled_transient_bytes) ||
-              !HeapRuntimeStringPayloadBytes(
+                  &sampled_records_bytes) &&
+              HeapRuntimeStringVectorLiveBytes(
                   acquisition.emitted_row_version_uuids,
-                  &sampled_transient_bytes))) ||
-            acquisition.runtime_decoded_bytes >
-                std::numeric_limits<std::uint64_t>::max() -
-                    peak_memory_bytes ||
-            (state->table_sample_profile.has_value() &&
-             sampled_transient_bytes >
-                std::numeric_limits<std::uint64_t>::max() -
-                    peak_memory_bytes -
-                    acquisition.runtime_decoded_bytes) ||
-            sample_auxiliary_bytes >
-                std::numeric_limits<std::uint64_t>::max() -
-                    peak_memory_bytes -
-                    acquisition.runtime_decoded_bytes -
-                    (state->table_sample_profile.has_value()
-                         ? sampled_transient_bytes
-                         : 0)) {
+                  &sampled_versions_bytes) &&
+              api::CheckedHeapReadMemoryAdd(output_batch_live_bytes,
+                                            &sampled_transient_bytes) &&
+              api::CheckedHeapReadMemoryAdd(sampled_records_bytes,
+                                            &sampled_transient_bytes) &&
+              api::CheckedHeapReadMemoryAdd(sampled_versions_bytes,
+                                            &sampled_transient_bytes);
+        }
+        if (!memory_accounting_ok) {
           step.diagnostic = HeapAcquisitionRefusal(
               "QOW-DIAG-OPT-017-REFUSAL-V1",
               "heap_runtime_observation_memory_overflow");
           return step;
         }
-        // Decoded payload is a separately allocated acquisition buffer that
-        // remains resident while the returned typed batch and identity
-        // carriers are assembled; it is therefore peak-only, not a second
-        // accounting of the batch's encoded values.
-        peak_memory_bytes += acquisition.runtime_decoded_bytes;
         if (state->table_sample_profile.has_value()) {
           // The source visible batch, the growing sampled batch, and the
           // sampled identity/index vectors coexist until source replacement.
-          peak_memory_bytes += sampled_transient_bytes;
+          std::uint64_t sampling_peak_bytes = pre_sample_resident_bytes;
+          if (!api::CheckedHeapReadMemoryAdd(sampled_transient_bytes,
+                                             &sampling_peak_bytes) ||
+              !api::CheckedHeapReadMemoryAdd(sample_auxiliary_bytes,
+                                             &sampling_peak_bytes) ||
+              !api::CheckedHeapReadMemoryAdd(step_metadata_bytes,
+                                             &sampling_peak_bytes)) {
+            step.diagnostic = HeapAcquisitionRefusal(
+                "QOW-DIAG-OPT-017-REFUSAL-V1",
+                "heap_runtime_observation_memory_overflow");
+            return step;
+          }
+          peak_memory_bytes =
+              std::max(peak_memory_bytes, sampling_peak_bytes);
         }
-        peak_memory_bytes += sample_auxiliary_bytes;
-        peak_memory_bytes =
-            std::max(peak_memory_bytes, current_memory_bytes);
+        peak_memory_bytes = std::max(
+            peak_memory_bytes,
+            std::max(current_memory_bytes, callback_coexistence_bytes));
+        if (peak_memory_bytes > callback_memory_limit) {
+          step.diagnostic = HeapAcquisitionRefusal(
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+              "heap runtime peak exceeds the callback memory allowance");
+          return step;
+        }
         auto& runtime = step.runtime_observation;
         runtime.abi_version = 1;
         runtime.operator_wait_ns =
@@ -13774,7 +14777,6 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
         runtime.authority.engine_execution_observation = true;
         runtime.producer_receipt_complete = true;
         step.materialized_output_batch = std::move(acquisition.output_batch);
-        step.mga_statement_context = state->mga_authority.statement_context;
         return step;
       };
   result.registration = std::move(registration);
@@ -13804,13 +14806,18 @@ BuildCanonicalHeapPhysicalRegistration(
         "engine context is required");
     return result;
   }
+  const auto& physical = request.borrowed_physical_dag == nullptr
+                             ? request.physical_dag
+                             : *request.borrowed_physical_dag;
+  auto authority = std::make_shared<const CanonicalExecutionMgaAuthority>(
+      BuildCurrentHeapExecutionMgaAuthority(*request.context, physical));
   auto owned = request;
-  owned.mga_authority = BuildCurrentHeapExecutionMgaAuthority(
-      *request.context, request.physical_dag);
+  owned.shared_mga_authority = authority;
+  owned.borrowed_mga_authority = authority.get();
   auto built = BuildHeapPhysicalRegistration(owned);
   result.diagnostic = std::move(built.diagnostic);
   result.registration = std::move(built.registration);
-  result.mga_authority = std::move(owned.mga_authority);
+  result.mga_authority = std::move(authority);
   return result;
 }
 

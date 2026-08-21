@@ -1096,7 +1096,14 @@ struct CanonicalCompositeJoinKeyRequest {
   // inputs to avoid duplicating both batches while the node executes.
   const DescriptorBatch* borrowed_left_batch = nullptr;
   const DescriptorBatch* borrowed_right_batch = nullptr;
+  // Set only by the physical-dispatch callback after the generic dispatcher
+  // has completed its inventory-backed entry revalidation. The dispatcher
+  // performs the matching result revalidation after callback return, so the
+  // nested join core must not repeat allocation-bearing snapshot resolution
+  // inside the callback memory domain.
+  bool dispatcher_mga_boundary_active = false;
   CanonicalExecutionMgaAuthority mga_authority;
+  const CanonicalExecutionMgaAuthority* borrowed_mga_authority = nullptr;
 };
 
 struct CanonicalCompositeJoinKeyResult {
@@ -1167,6 +1174,7 @@ struct CanonicalJoinKindRequest {
       borrowed_bound_pair_truth_values = nullptr;
   std::size_t maximum_output_rows = 1048576;
   std::function<bool()> cancellation_requested;
+  const std::function<bool()>* borrowed_cancellation_requested = nullptr;
 };
 
 struct CanonicalJoinKindResult {
@@ -1360,6 +1368,10 @@ struct CanonicalHeapRelationAcquisitionRequest {
   const scratchbird::engine::internal_api::TypedRelationalDag*
       relational_dag = nullptr;
   TypedPhysicalNodeDag physical_dag;
+  // Executor callbacks may borrow a registration-owned leaf DAG so dispatch
+  // does not deep-copy the complete selected plan inside the callback memory
+  // domain. Direct callers continue to use physical_dag.
+  const TypedPhysicalNodeDag* borrowed_physical_dag = nullptr;
   std::uint64_t selected_physical_node_id = 0;
   std::size_t maximum_scanned_row_versions = 0;
   std::size_t maximum_decoded_bytes = 0;
@@ -1369,8 +1381,14 @@ struct CanonicalHeapRelationAcquisitionRequest {
   // neither is inferred from the persisted catalog ceiling or the row limit.
   std::size_t maximum_output_columns = 0;
   std::size_t maximum_output_cells = 0;
+  std::uint64_t maximum_live_memory_bytes = 0;
   std::function<bool()> cancellation_requested;
+  // Prepared physical executors borrow registration-owned immutable control
+  // state so callback admission does not hide std::function or MGA-vector
+  // deep copies. Direct callers retain the owned fields above and below.
+  const std::function<bool()>* borrowed_cancellation_requested = nullptr;
   CanonicalExecutionMgaAuthority mga_authority;
+  const CanonicalExecutionMgaAuthority* borrowed_mga_authority = nullptr;
 };
 
 struct CanonicalHeapRelationAcquisitionCounters {
@@ -1405,6 +1423,10 @@ struct CanonicalHeapRelationAcquisitionResult {
   std::uint64_t runtime_operator_wait_ns = 0;
   std::uint64_t runtime_storage_bytes_read = 0;
   std::uint64_t runtime_decoded_bytes = 0;
+  std::uint64_t runtime_current_memory_bytes = 0;
+  std::uint64_t runtime_peak_memory_bytes = 0;
+  std::uint64_t runtime_memory_grant_bytes = 0;
+  bool runtime_memory_receipt_complete = false;
   bool runtime_observation_complete = false;
   CanonicalHeapRelationAcquisitionAuthorityEvidence authority;
   bool data_access_observed = false;
@@ -1463,13 +1485,17 @@ struct CanonicalHeapPhysicalDagDispatchRequest {
   const scratchbird::engine::internal_api::TypedRelationalDag*
       relational_dag = nullptr;
   TypedPhysicalNodeDag physical_dag;
+  const TypedPhysicalNodeDag* borrowed_physical_dag = nullptr;
   std::size_t maximum_scanned_row_versions = 0;
   std::size_t maximum_decoded_bytes = 0;
   std::size_t maximum_output_rows = 0;
   std::size_t maximum_output_columns = 0;
   std::size_t maximum_output_cells = 0;
   std::function<bool()> cancellation_requested;
+  const std::function<bool()>* borrowed_cancellation_requested = nullptr;
   CanonicalExecutionMgaAuthority mga_authority;
+  const CanonicalExecutionMgaAuthority* borrowed_mga_authority = nullptr;
+  std::shared_ptr<const CanonicalExecutionMgaAuthority> shared_mga_authority;
   std::optional<CanonicalHeapTableSampleProfile> table_sample_profile;
 };
 
@@ -1609,12 +1635,16 @@ struct CanonicalPhysicalExecutorRegistration {
   bool engine_owned = false;
   bool accepts_optimizer_publication_v2 = false;
   bool publishes_runtime_observation_v1 = false;
+  bool honors_dispatcher_memory_limit_v1 = false;
+  // Complete registration-owned live memory retained across dispatch, not
+  // including this registration's slot in the caller-owned registry vector.
+  std::uint64_t retained_live_memory_bytes_v1 = 0;
 };
 
 struct CanonicalHeapPhysicalRegistrationResult {
   DescriptorRuntimeDiagnostic diagnostic;
   std::optional<CanonicalPhysicalExecutorRegistration> registration;
-  CanonicalExecutionMgaAuthority mga_authority;
+  std::shared_ptr<const CanonicalExecutionMgaAuthority> mga_authority;
 };
 
 struct CanonicalPhysicalDagRuntimeLimits {
@@ -1635,6 +1665,17 @@ struct CanonicalPhysicalDagDispatchRequest {
   // after every selected node and before root publication.
   std::function<bool()> cancellation_requested;
   std::vector<CanonicalPhysicalExecutorRegistration> available_executors;
+  // Synchronous selected execution may borrow the already-retained immutable
+  // carriers. This avoids duplicating a complete physical DAG, MGA vector, and
+  // executor registry immediately before bounded dispatch.
+  const TypedPhysicalNodeDag* borrowed_physical_dag = nullptr;
+  const CanonicalExecutionMgaAuthority* borrowed_mga_authority = nullptr;
+  const std::vector<CanonicalPhysicalExecutorRegistration>*
+      borrowed_available_executors = nullptr;
+  // Memory retained by executor registrations before dispatch. The
+  // dispatcher subtracts this from every callback allowance together with its
+  // own control carriers and prior node results.
+  std::uint64_t preexisting_live_memory_bytes = 0;
 };
 
 struct CanonicalPhysicalDagDispatchResult {
@@ -2964,6 +3005,14 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
     const DescriptorBatch& batch,
     const std::function<bool()>& cancellation_requested,
     bool* cancellation_observed);
+// Maximum transient heap required by one sequential value-validation call.
+// Batch validation does not retain scratch between cells, so callers combine
+// this bound with the already-materialized batch to prove the live peak.
+std::optional<std::uint64_t> BoundDescriptorBatchValidationScratchMemoryBytes(
+    const DescriptorBatch& batch,
+    const std::function<bool()>& cancellation_requested,
+    bool* cancellation_observed,
+    bool* cancellation_probe_failed);
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     const DescriptorBatch& batch,
     const std::vector<std::uint32_t>& output_descriptor_ids,

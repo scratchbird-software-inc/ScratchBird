@@ -427,7 +427,9 @@ bool SameDescriptor(const api::EngineDescriptor& left,
 
 bool SamePersistedRowDescriptor(
     const api::RelationalTypeDescriptor& bound,
-    const api::EngineDescriptor& actual) {
+    const api::EngineDescriptor& actual,
+    const std::optional<api::RelationalNullability>
+        effective_nullability = std::nullopt) {
   if (!api::QowCanonicalDescriptorIdentityV1(actual) ||
       actual.descriptor_uuid.canonical != bound.descriptor_uuid ||
       actual.descriptor_kind != "scalar") {
@@ -442,6 +444,8 @@ bool SamePersistedRowDescriptor(
   bool width_seen = false;
   bool precision_seen = false;
   bool scale_seen = false;
+  const auto expected_nullability =
+      effective_nullability.value_or(bound.nullability);
 
   const auto exact_string_optional = [](const std::string_view value,
                                         const std::optional<std::string>& bound_value,
@@ -491,15 +495,17 @@ bool SamePersistedRowDescriptor(
     } else if (key == "nullability" || key == "nullable") {
       if (nullability_seen) return false;
       if (key == "nullability") {
-        if ((bound.nullability == api::RelationalNullability::kNullable &&
+        if ((expected_nullability == api::RelationalNullability::kNullable &&
              value != "nullable") ||
-            (bound.nullability == api::RelationalNullability::kNonNull &&
+            (expected_nullability == api::RelationalNullability::kNonNull &&
              value != "non_null")) {
           return false;
         }
-      } else if ((bound.nullability == api::RelationalNullability::kNullable &&
+      } else if ((expected_nullability ==
+                      api::RelationalNullability::kNullable &&
                   value != "true") ||
-                 (bound.nullability == api::RelationalNullability::kNonNull &&
+                 (expected_nullability ==
+                      api::RelationalNullability::kNonNull &&
                   value != "false")) {
         return false;
       }
@@ -636,7 +642,10 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
   }
   if (!expressions.contains(root_expression_id) ||
       row_binding.row_descriptor_ids.empty() ||
-      row_binding.row_descriptor_ids.size() != row_values.size()) {
+      row_binding.row_descriptor_ids.size() != row_values.size() ||
+      (!row_binding.row_nullable.empty() &&
+       row_binding.row_nullable.size() !=
+           row_binding.row_descriptor_ids.size())) {
     result.detail =
         "predicate root or descriptor-exact row envelope is absent";
     return result;
@@ -651,6 +660,7 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
 
   const auto build_expected_descriptor = [&](
       const api::RelationalTypeDescriptor& source,
+      const api::RelationalNullability effective_nullability,
       const std::string_view type_name, api::EngineDescriptor* descriptor) {
     if (descriptor == nullptr || type_name.empty() || type_name == "null") {
       return false;
@@ -659,9 +669,10 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
     descriptor->descriptor_kind = "scalar";
     descriptor->canonical_type_name = type_name;
     const char* nullability = "unknown";
-    if (source.nullability == api::RelationalNullability::kNonNull) {
+    if (effective_nullability == api::RelationalNullability::kNonNull) {
       nullability = "non_null";
-    } else if (source.nullability == api::RelationalNullability::kNullable) {
+    } else if (effective_nullability ==
+               api::RelationalNullability::kNullable) {
       nullability = "nullable";
     }
     descriptor->encoded_descriptor =
@@ -712,19 +723,31 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
     std::uint64_t expected_descriptor_bytes = 0;
     const auto descriptor = descriptors.find(descriptor_id);
     api::EngineDescriptor expected_descriptor;
-    if (descriptor_id == 0 || !descriptors.contains(descriptor_id) ||
+    if (descriptor_id == 0 || descriptor == descriptors.end() ||
         !row_descriptor_ids.insert(descriptor_id).second ||
         descriptor->second->nullability ==
-            api::RelationalNullability::kUnknown ||
+            api::RelationalNullability::kUnknown) {
+      result.detail =
+          "predicate row descriptor envelope is unresolved or ambiguous";
+      return result;
+    }
+    const auto effective_nullability =
+        row_binding.row_nullable.empty()
+            ? descriptor->second->nullability
+            : (row_binding.row_nullable[ordinal]
+                   ? api::RelationalNullability::kNullable
+                   : api::RelationalNullability::kNonNull);
+    if (
         row_values[ordinal].descriptor.canonical_type_name.empty() ||
         !build_expected_descriptor(
-            *descriptor->second,
+            *descriptor->second, effective_nullability,
             row_values[ordinal].descriptor.canonical_type_name,
             &expected_descriptor) ||
         (!SameDescriptor(expected_descriptor,
                          row_values[ordinal].descriptor) &&
          !SamePersistedRowDescriptor(*descriptor->second,
-                                     row_values[ordinal].descriptor)) ||
+                                     row_values[ordinal].descriptor,
+                                     effective_nullability)) ||
         !descriptor_dynamic_bytes(row_values[ordinal].descriptor,
                                   &descriptor_bytes) ||
         !descriptor_dynamic_bytes(expected_descriptor,
@@ -852,7 +875,9 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
     }
     descriptor_type_names.emplace(descriptor_id, type_name);
     api::EngineDescriptor built;
-    if (!build_expected_descriptor(*descriptor->second, type_name, &built)) {
+    if (!build_expected_descriptor(*descriptor->second,
+                                   descriptor->second->nullability,
+                                   type_name, &built)) {
       return false;
     }
     std::uint64_t dynamic = 0;
@@ -1386,6 +1411,7 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
       transient_descriptor = slot->second->descriptor;
     } else if (!build_expected_descriptor(
                    *descriptors.at(record.result_descriptor_id),
+                   descriptors.at(record.result_descriptor_id)->nullability,
                    memo.at(expression_id).canonical_type_name,
                    &transient_descriptor)) {
       result.detail = "predicate transient descriptor is unresolved";
@@ -1519,88 +1545,112 @@ CanonicalRelationalExpressionRuntime::CanonicalRelationalExpressionRuntime(
 bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
     const std::uint32_t root_expression_id,
     const CanonicalRelationalExpressionRowBinding& row_binding,
-    const std::vector<api::EngineTypedValue>& row_values,
+    const CanonicalRelationalExpressionRowView row_values,
     const api::EngineCanonicalExpressionConsumer consumer,
     ActiveRowBinding* prepared,
     std::string* refusal_detail) const {
   if (prepared == nullptr || refusal_detail == nullptr) return false;
-  prepared->values_by_expression.clear();
+  *prepared = {};
   if (!expressions_.contains(root_expression_id)) {
     *refusal_detail =
         "materialized row expression root is absent from the bound graph";
     return false;
   }
   if (row_binding.row_descriptor_ids.empty() ||
-      row_binding.row_descriptor_ids.size() != row_values.size()) {
+      row_binding.row_descriptor_ids.size() != row_values.size() ||
+      (!row_binding.row_nullable.empty() &&
+       row_binding.row_nullable.size() !=
+           row_binding.row_descriptor_ids.size())) {
     *refusal_detail =
         "materialized row width differs from its bound descriptor width";
     return false;
   }
-
-  std::unordered_set<std::uint32_t> row_descriptor_ids;
+  const auto row_value_at = [&](const std::size_t ordinal)
+      -> const api::EngineTypedValue* {
+    if (ordinal < row_values.first.size()) {
+      return &row_values.first[ordinal];
+    }
+    const auto second_ordinal = ordinal - row_values.first.size();
+    return second_ordinal < row_values.second.size()
+               ? &row_values.second[second_ordinal]
+               : nullptr;
+  };
   for (std::size_t ordinal = 0;
        ordinal < row_binding.row_descriptor_ids.size(); ++ordinal) {
     const auto descriptor_id = row_binding.row_descriptor_ids[ordinal];
     const auto descriptor = descriptors_.find(descriptor_id);
+    bool duplicate_descriptor = false;
+    for (std::size_t prior = 0; prior < ordinal; ++prior) {
+      if (row_binding.row_descriptor_ids[prior] == descriptor_id) {
+        duplicate_descriptor = true;
+        break;
+      }
+    }
     if (descriptor_id == 0 || descriptor == descriptors_.end() ||
-        !row_descriptor_ids.insert(descriptor_id).second ||
+        duplicate_descriptor ||
         descriptor->second->nullability == api::RelationalNullability::kUnknown) {
       *refusal_detail =
           "materialized row descriptor identity is unresolved or ambiguous";
       return false;
     }
 
-    const auto& value = row_values[ordinal];
-    if (value.descriptor.canonical_type_name.empty()) {
+    const auto* value = row_value_at(ordinal);
+    if (value == nullptr) {
+      *refusal_detail = "materialized row value ordinal is absent";
+      return false;
+    }
+    if (value->descriptor.canonical_type_name.empty()) {
       *refusal_detail = "materialized row value type is unresolved";
       return false;
     }
-    api::EngineDescriptor expected_descriptor;
-    std::string descriptor_detail;
-    if (!BuildDescriptor(descriptor_id,
-                         value.descriptor.canonical_type_name,
-                         &expected_descriptor, &descriptor_detail) ||
-        (!SameDescriptor(expected_descriptor, value.descriptor) &&
-         !SamePersistedRowDescriptor(*descriptor->second,
-                                     value.descriptor))) {
+    const auto effective_nullability =
+        row_binding.row_nullable.empty()
+            ? descriptor->second->nullability
+            : (row_binding.row_nullable[ordinal]
+                   ? api::RelationalNullability::kNullable
+                   : api::RelationalNullability::kNonNull);
+    if (!SamePersistedRowDescriptor(*descriptor->second, value->descriptor,
+                                    effective_nullability)) {
       *refusal_detail =
           "materialized row value lost its full canonical descriptor identity";
       return false;
     }
-    if (value.state == api::EngineValueState::sql_null) {
-      if (!value.is_null || !value.encoded_value.empty() ||
-          !value.binary_value.empty() ||
-          descriptor->second->nullability !=
-              api::RelationalNullability::kNullable) {
+    if (value->state == api::EngineValueState::sql_null) {
+      if (!value->is_null || !value->encoded_value.empty() ||
+          !value->binary_value.empty() ||
+          effective_nullability != api::RelationalNullability::kNullable) {
         *refusal_detail =
             "materialized row SQL NULL is malformed or non-nullable";
         return false;
       }
-    } else if (value.state != api::EngineValueState::value || value.is_null) {
+    } else if (value->state != api::EngineValueState::value || value->is_null) {
       *refusal_detail =
           "materialized row contains a non-value runtime sentinel";
       return false;
     }
   }
-
-  std::unordered_map<std::size_t,
-                     CanonicalRelationalExpressionRowSlotKind>
-      bound_ordinals;
-  std::unordered_set<std::uint32_t> bound_expression_ids;
-  for (const auto& slot : row_binding.slots) {
-    if (!bound_expression_ids.insert(slot.expression_id).second) {
-      prepared->values_by_expression.clear();
+  for (std::size_t slot_ordinal = 0;
+       slot_ordinal < row_binding.slots.size(); ++slot_ordinal) {
+    const auto& slot = row_binding.slots[slot_ordinal];
+    bool duplicate_expression = false;
+    bool incompatible_duplicate_ordinal = false;
+    for (std::size_t prior = 0; prior < slot_ordinal; ++prior) {
+      const auto& prior_slot = row_binding.slots[prior];
+      duplicate_expression = duplicate_expression ||
+                             prior_slot.expression_id == slot.expression_id;
+      if (prior_slot.row_ordinal == slot.row_ordinal &&
+          (prior_slot.slot_kind !=
+               CanonicalRelationalExpressionRowSlotKind::input_identifier ||
+           slot.slot_kind !=
+               CanonicalRelationalExpressionRowSlotKind::input_identifier)) {
+        incompatible_duplicate_ordinal = true;
+      }
+    }
+    if (duplicate_expression) {
       *refusal_detail = "materialized row slot expression is duplicated";
       return false;
     }
-    const auto [bound_ordinal, inserted_ordinal] =
-        bound_ordinals.emplace(slot.row_ordinal, slot.slot_kind);
-    if (!inserted_ordinal &&
-        (bound_ordinal->second !=
-             CanonicalRelationalExpressionRowSlotKind::input_identifier ||
-         slot.slot_kind !=
-             CanonicalRelationalExpressionRowSlotKind::input_identifier)) {
-      prepared->values_by_expression.clear();
+    if (incompatible_duplicate_ordinal) {
       *refusal_detail = "materialized row slot ordinal is duplicated";
       return false;
     }
@@ -1611,7 +1661,6 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
         slot.row_ordinal >= row_values.size() ||
         row_binding.row_descriptor_ids[slot.row_ordinal] !=
             slot.descriptor_id) {
-      prepared->values_by_expression.clear();
       *refusal_detail =
           "materialized row slot identity, descriptor, or ordinal is invalid";
       return false;
@@ -1661,43 +1710,57 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
              CanonicalRelationalExpressionRowSlotKind::input_identifier &&
          exact_input_identifier);
     if (!exact_slot_kind) {
-      prepared->values_by_expression.clear();
       *refusal_detail =
           "materialized row slot kind does not match its exact bound expression";
       return false;
     }
-    prepared->values_by_expression.emplace(slot.expression_id,
-                                           &row_values[slot.row_ordinal]);
   }
-
-  std::unordered_set<std::uint32_t> reachable;
-  std::vector<std::uint32_t> pending{root_expression_id};
-  while (!pending.empty()) {
-    const auto expression_id = pending.back();
-    pending.pop_back();
-    if (!reachable.insert(expression_id).second) continue;
+  const auto bound_slot = [&](const std::uint32_t expression_id) {
+    return std::ranges::find_if(row_binding.slots, [&](const auto& slot) {
+      return slot.expression_id == expression_id;
+    });
+  };
+  std::size_t graph_visits = 0;
+  std::size_t maximum_graph_visits = 0;
+  if (expressions_.empty() ||
+      expressions_.size() >
+          std::numeric_limits<std::size_t>::max() / expressions_.size()) {
+    *refusal_detail = "materialized row expression graph bound overflowed";
+    return false;
+  }
+  maximum_graph_visits = expressions_.size() * expressions_.size();
+  const auto validate_reachable = [&](auto&& self,
+                                      const std::uint32_t expression_id,
+                                      const std::size_t depth) -> bool {
+    if (depth > expressions_.size() ||
+        ++graph_visits > maximum_graph_visits) {
+      *refusal_detail =
+          "materialized row expression graph is cyclic or exceeds its "
+          "finite visit ceiling";
+      return false;
+    }
     const auto expression = expressions_.find(expression_id);
     if (expression == expressions_.end()) {
-      prepared->values_by_expression.clear();
       *refusal_detail =
           "materialized row expression has a dangling expression child";
       return false;
     }
-    if (prepared->values_by_expression.contains(expression_id)) continue;
+    if (bound_slot(expression_id) != row_binding.slots.end()) return true;
     const auto& record = *expression->second;
     const bool has_function = record.function_uuid.has_value();
     const bool has_name = record.bound_name_uuid.has_value();
     const bool has_literal = record.literal_kind.has_value();
     const bool has_operator = record.operator_name.has_value();
     const bool has_payload = record.literal_or_parameter_ref.has_value();
-    const bool has_typed_literal=record.literal_typed_value_v1.has_value();
-    const bool has_typed_parameter=record.parameter_typed_value_v1.has_value();
+    const bool has_typed_literal = record.literal_typed_value_v1.has_value();
+    const bool has_typed_parameter =
+        record.parameter_typed_value_v1.has_value();
     bool exact_shape = false;
     switch (record.expression_kind) {
       case api::RelationalExpressionKind::kLiteral:
         exact_shape = record.child_expression_ids.empty() && has_literal &&
-                      (has_payload!=has_typed_literal) && !has_function && !has_name &&
-                      !has_operator;
+                      (has_payload != has_typed_literal) && !has_function &&
+                      !has_name && !has_operator;
         break;
       case api::RelationalExpressionKind::kParenthesized:
         exact_shape = record.child_expression_ids.size() == 1 &&
@@ -1725,26 +1788,69 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
         break;
     }
     if (!exact_shape) {
-      prepared->values_by_expression.clear();
       *refusal_detail =
           "reachable row expression is malformed or lacks a prepared slot";
       return false;
     }
-    pending.insert(pending.end(),
-                   record.child_expression_ids.begin(),
-                   record.child_expression_ids.end());
+    for (const auto child : record.child_expression_ids) {
+      if (!self(self, child, depth + 1)) return false;
+    }
+    return true;
+  };
+  if (!validate_reachable(validate_reachable, root_expression_id, 1)) {
+    return false;
   }
-  for (const auto& [expression_id, ignored] :
-       prepared->values_by_expression) {
-    (void)ignored;
-    if (!reachable.contains(expression_id)) {
-      prepared->values_by_expression.clear();
+  const auto reaches_slot = [&](auto&& self,
+                                const std::uint32_t expression_id,
+                                const std::uint32_t target,
+                                const std::size_t depth,
+                                std::size_t* visits) -> bool {
+    if (depth > expressions_.size() ||
+        ++*visits > maximum_graph_visits) {
+      return false;
+    }
+    if (expression_id == target) return true;
+    const auto expression = expressions_.find(expression_id);
+    if (expression == expressions_.end()) return false;
+    for (const auto child : expression->second->child_expression_ids) {
+      if (self(self, child, target, depth + 1, visits)) return true;
+    }
+    return false;
+  };
+  for (const auto& slot : row_binding.slots) {
+    std::size_t visits = 0;
+    if (!reaches_slot(reaches_slot, root_expression_id, slot.expression_id,
+                      1, &visits)) {
       *refusal_detail =
           "materialized row slot is outside the expression graph";
       return false;
     }
   }
+  prepared->binding = &row_binding;
+  prepared->values = row_values;
   return true;
+}
+
+const api::EngineTypedValue*
+CanonicalRelationalExpressionRuntime::ActiveRowValue(
+    const std::uint32_t expression_id) const {
+  if (active_row_binding_ == nullptr ||
+      active_row_binding_->binding == nullptr) {
+    return nullptr;
+  }
+  const auto slot = std::ranges::find_if(
+      active_row_binding_->binding->slots, [&](const auto& candidate) {
+        return candidate.expression_id == expression_id;
+      });
+  if (slot == active_row_binding_->binding->slots.end()) return nullptr;
+  if (slot->row_ordinal < active_row_binding_->values.first.size()) {
+    return &active_row_binding_->values.first[slot->row_ordinal];
+  }
+  const auto second_ordinal =
+      slot->row_ordinal - active_row_binding_->values.first.size();
+  return second_ordinal < active_row_binding_->values.second.size()
+             ? &active_row_binding_->values.second[second_ordinal]
+             : nullptr;
 }
 
 bool CanonicalRelationalExpressionRuntime::BindDescriptorType(
@@ -1864,12 +1970,9 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
   };
 
   if (active_row_binding_ != nullptr) {
-    const auto materialized =
-        active_row_binding_->values_by_expression.find(expression_id);
-    if (materialized !=
-        active_row_binding_->values_by_expression.end()) {
-      return finish_type(
-          materialized->second->descriptor.canonical_type_name);
+    const auto* materialized = ActiveRowValue(expression_id);
+    if (materialized != nullptr) {
+      return finish_type(materialized->descriptor.canonical_type_name);
     }
   }
 
@@ -2331,7 +2434,9 @@ bool CanonicalRelationalExpressionRuntime::InferTypeForConsumer(
     return false;
   }
   ActiveRowBinding prepared;
-  if (!PrepareRowBinding(expression_id, row_binding, row_values, consumer,
+  if (!PrepareRowBinding(expression_id, row_binding,
+                         CanonicalRelationalExpressionRowView{row_values, {}},
+                         consumer,
                          &prepared, refusal_detail)) {
     return false;
   }
@@ -2350,6 +2455,20 @@ bool CanonicalRelationalExpressionRuntime::EvaluateForConsumer(
     const std::string_view expected_type,
     const CanonicalRelationalExpressionRowBinding& row_binding,
     const std::vector<api::EngineTypedValue>& row_values,
+    const api::EngineCanonicalExpressionConsumer consumer,
+    api::EngineTypedValue* value,
+    std::string* refusal_detail) {
+  return EvaluateForConsumer(
+      expression_id, expected_type, row_binding,
+      CanonicalRelationalExpressionRowView{row_values, {}}, consumer, value,
+      refusal_detail);
+}
+
+bool CanonicalRelationalExpressionRuntime::EvaluateForConsumer(
+    const std::uint32_t expression_id,
+    const std::string_view expected_type,
+    const CanonicalRelationalExpressionRowBinding& row_binding,
+    const CanonicalRelationalExpressionRowView row_values,
     const api::EngineCanonicalExpressionConsumer consumer,
     api::EngineTypedValue* value,
     std::string* refusal_detail) {
@@ -2413,6 +2532,19 @@ bool CanonicalRelationalExpressionRuntime::EvaluatePredicateForConsumer(
     const api::EngineCanonicalExpressionConsumer consumer,
     api::EngineSqlTruthValue* truth,
     std::string* refusal_detail) {
+  return EvaluatePredicateForConsumer(
+      expression_id, row_binding,
+      CanonicalRelationalExpressionRowView{row_values, {}}, consumer, truth,
+      refusal_detail);
+}
+
+bool CanonicalRelationalExpressionRuntime::EvaluatePredicateForConsumer(
+    const std::uint32_t expression_id,
+    const CanonicalRelationalExpressionRowBinding& row_binding,
+    const CanonicalRelationalExpressionRowView row_values,
+    const api::EngineCanonicalExpressionConsumer consumer,
+    api::EngineSqlTruthValue* truth,
+    std::string* refusal_detail) {
   if (truth == nullptr || refusal_detail == nullptr) return false;
   api::EngineTypedValue value;
   if (!EvaluateForConsumer(expression_id, "boolean", row_binding, row_values,
@@ -2457,11 +2589,9 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
   };
 
   if (active_row_binding_ != nullptr) {
-    const auto materialized =
-        active_row_binding_->values_by_expression.find(expression_id);
-    if (materialized !=
-        active_row_binding_->values_by_expression.end()) {
-      return finish(*materialized->second);
+    const auto* materialized = ActiveRowValue(expression_id);
+    if (materialized != nullptr) {
+      return finish(*materialized);
     }
   }
 

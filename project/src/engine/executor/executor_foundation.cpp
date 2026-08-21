@@ -1955,13 +1955,43 @@ bool BoundCanonicalJoinRetainedStateBytes(
     return false;
   }
   const auto pair_state_bytes = pair_count * bytes_per_pair;
-  if (right_rows >
-          std::numeric_limits<std::uint64_t>::max() - left_rows ||
-      left_rows + right_rows >
-          std::numeric_limits<std::uint64_t>::max() - pair_state_bytes) {
+  constexpr std::uint64_t container_state_bytes =
+      sizeof(std::vector<internal_api::EngineSqlTruthValue>) +
+      sizeof(std::vector<std::size_t>) + 2 * sizeof(std::vector<bool>);
+  constexpr auto bits_per_word = sizeof(std::uint64_t) * 8;
+  const auto packed_boolean_bytes = [=](const std::uint64_t rows,
+                                        std::uint64_t* bytes) {
+    if (bytes == nullptr ||
+        rows > std::numeric_limits<std::uint64_t>::max() -
+                   (bits_per_word - 1)) {
+      return false;
+    }
+    const auto words = (rows + bits_per_word - 1) / bits_per_word;
+    if (words > std::numeric_limits<std::uint64_t>::max() /
+                    sizeof(std::uint64_t)) {
+      return false;
+    }
+    *bytes = words * sizeof(std::uint64_t);
+    return true;
+  };
+  std::uint64_t left_match_bytes = 0;
+  std::uint64_t right_match_bytes = 0;
+  if (!packed_boolean_bytes(left_rows, &left_match_bytes) ||
+      !packed_boolean_bytes(right_rows, &right_match_bytes) ||
+      right_match_bytes >
+          std::numeric_limits<std::uint64_t>::max() - left_match_bytes ||
+      left_match_bytes + right_match_bytes >
+          std::numeric_limits<std::uint64_t>::max() - pair_state_bytes ||
+      pair_state_bytes + left_match_bytes + right_match_bytes >
+          std::numeric_limits<std::uint64_t>::max() -
+              container_state_bytes) {
     return false;
   }
-  *retained_state_bytes = pair_state_bytes + left_rows + right_rows;
+  // vector<bool> uses packed word storage. Include the word-rounded allocation
+  // for each match vector, including the one-word allocation for a nonempty
+  // side smaller than the implementation word width.
+  *retained_state_bytes = pair_state_bytes + left_match_bytes +
+                          right_match_bytes + container_state_bytes;
   return true;
 }
 
@@ -1995,7 +2025,9 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     return result;
   };
   const auto& cancellation_requested =
-      request.cancellation_requested;
+      request.borrowed_cancellation_requested == nullptr
+          ? request.cancellation_requested
+          : *request.borrowed_cancellation_requested;
   const auto poll_cancellation = [&](const char* phase,
                                      const std::size_t row = 0) {
     bool observed = false;
@@ -2080,6 +2112,10 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     return refuse("join-kind output resource contract is invalid");
   }
   const auto& key_request = request.residual_request.key_request;
+  const auto& mga_authority =
+      key_request.borrowed_mga_authority == nullptr
+          ? key_request.mga_authority
+          : *key_request.borrowed_mga_authority;
   const bool borrowed_left = key_request.borrowed_left_batch != nullptr;
   const bool borrowed_right = key_request.borrowed_right_batch != nullptr;
   if (borrowed_left != borrowed_right ||
@@ -2095,11 +2131,18 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
                                          : key_request.left_batch;
   const auto& right_batch = borrowed_right ? *key_request.borrowed_right_batch
                                            : key_request.right_batch;
-  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
-      key_request.mga_authority, key_request.physical_dag);
-  if (!entry_authority.ok)
-    return refuse(entry_authority.diagnostic_code + ":" +
-                  entry_authority.detail);
+  if (!key_request.dispatcher_mga_boundary_active) {
+    const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+        mga_authority, key_request.physical_dag);
+    if (!entry_authority.ok) {
+      return refuse(entry_authority.diagnostic_code + ":" +
+                    entry_authority.detail);
+    }
+  } else if (!borrowed_left || !borrowed_right ||
+             mga_authority.origin !=
+                 CanonicalMgaAuthorityOrigin::kEngineTransactionInventory) {
+    return refuse("dispatcher MGA boundary requires borrowed engine inputs");
+  }
   const auto role_validation =
       ValidateCanonicalJoinDescriptorRoleDomains(left_batch, right_batch);
   if (!role_validation.ok) {
@@ -2335,7 +2378,7 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
           api::EngineSqlTruthValue::true_value);
     }
     conditionless.maximum_output_rows = request.maximum_output_rows;
-    conditionless.mga_authority = key_request.mga_authority;
+    conditionless.mga_authority = mga_authority;
     auto joined = ExecuteCanonicalDescriptorInnerJoin(conditionless);
     if (!joined.diagnostic.ok) {
       return refuse(joined.diagnostic.diagnostic_code + ":" +
@@ -2343,7 +2386,7 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     }
     if (!PhysicalMgaStatementContextEqual(
             joined.mga_statement_context,
-            key_request.mga_authority.statement_context)) {
+            mga_authority.statement_context)) {
       return refuse("conditionless join returned a different MGA statement context");
     }
     accepted_pair_indices.reserve(pair_count);
@@ -2372,7 +2415,7 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
           api::EngineSqlTruthValue::true_value);
     }
     cross.maximum_output_rows = request.maximum_output_rows;
-    cross.mga_authority = key_request.mga_authority;
+    cross.mga_authority = mga_authority;
     auto crossed = ExecuteCanonicalDescriptorInnerJoin(cross);
     if (!crossed.diagnostic.ok) {
       return refuse(crossed.diagnostic.diagnostic_code + ":" +
@@ -2380,7 +2423,7 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     }
     if (!PhysicalMgaStatementContextEqual(
             crossed.mga_statement_context,
-            key_request.mga_authority.statement_context)) {
+            mga_authority.statement_context)) {
       return refuse("cross join returned a different MGA statement context");
     }
     accepted_pair_indices.reserve(pair_count);
@@ -2401,7 +2444,7 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     }
     if (!PhysicalMgaStatementContextEqual(
             residual.mga_statement_context,
-            key_request.mga_authority.statement_context)) {
+            mga_authority.statement_context)) {
       return refuse("join residual returned a different MGA statement context");
     }
     if (residual.accepted_pair_indices.size() !=
@@ -2843,11 +2886,14 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     return refuse(validation.diagnostic_code + ":" + validation.detail);
   }
   if (poll_cancellation("after join-kind output validation")) return result;
-  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
-      key_request.mga_authority, key_request.physical_dag);
-  if (!result_authority.ok)
-    return refuse(result_authority.diagnostic_code + ":" +
-                  result_authority.detail);
+  if (!key_request.dispatcher_mga_boundary_active) {
+    const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+        mga_authority, key_request.physical_dag);
+    if (!result_authority.ok) {
+      return refuse(result_authority.diagnostic_code + ":" +
+                    result_authority.detail);
+    }
+  }
   if (poll_cancellation("before join-kind publication")) return result;
 
   result.diagnostic = {};
@@ -2868,7 +2914,7 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
   result.selected_plan_uuid = std::move(selected_plan_uuid);
   result.executed_physical_node_id = executed_physical_node_id;
   result.causal_counter_id = causal_counter_id;
-  result.mga_statement_context = key_request.mga_authority.statement_context;
+  result.mga_statement_context = mga_authority.statement_context;
   return result;
 }
 

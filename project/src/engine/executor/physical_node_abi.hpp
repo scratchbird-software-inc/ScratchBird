@@ -227,6 +227,10 @@ struct PhysicalNodeRecord {
   std::string transformation_rule_id;
   std::vector<std::string> enforced_property_uuids;
   PhysicalCostVectorReceipt retained_cost;
+  // Dispatcher-owned, callback-local resource allowance. Optimizer-published
+  // DAG records keep zero; the dispatcher sets it only on the transient node
+  // copy passed to an executor after accounting unrelated retained payloads.
+  std::uint64_t dispatcher_callback_memory_limit_bytes{0};
 };
 
 struct TypedPhysicalNodeDag {
@@ -541,6 +545,7 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
         !known_kind(node.node_kind) ||
         !valid_implementation_id(node.implementation_id) ||
         node.causal_counter_id == 0 ||
+        node.dispatcher_callback_memory_limit_bytes != 0 ||
         !causal_counter_ids.insert(node.causal_counter_id).second ||
         !nodes_by_id.emplace(node.physical_node_id, &node).second) {
       return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.physical_node_id,

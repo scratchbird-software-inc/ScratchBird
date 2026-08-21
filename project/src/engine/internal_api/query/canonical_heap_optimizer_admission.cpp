@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <functional>
 #include <optional>
 #include <ranges>
 #include <string_view>
@@ -209,52 +210,36 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   const auto& context = request.context;
   const auto& relational = request.relational_dag;
   std::vector<const RelationalDagNode*> scans;
-  const RelationalDagNode* join = nullptr;
+  std::vector<const RelationalDagNode*> joins;
   for (const auto& node : relational.nodes) {
     if (node.node_kind == RelationalDagNodeKind::kScan) {
       scans.push_back(&node);
-    } else if (node.node_kind == RelationalDagNodeKind::kJoin &&
-               join == nullptr) {
-      join = &node;
+    } else if (node.node_kind == RelationalDagNodeKind::kJoin) {
+      joins.push_back(&node);
     } else {
       return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
-                    "two_heap_scans_one_cross_join");
+                    "bounded_heap_scan_join_tree");
     }
   }
-  const bool accepted_join =
-      join != nullptr &&
-      (join->semantic_variant_id == "join.cross.v1" ||
-       join->semantic_variant_id == "join.inner.v1" ||
-       join->semantic_variant_id == "join.left-outer.v1" ||
-       join->semantic_variant_id == "join.right-outer.v1" ||
-       join->semantic_variant_id == "join.full-outer.v1" ||
-       join->semantic_variant_id == "join.left-semi.v1" ||
-       join->semantic_variant_id == "join.left-anti.v1");
-  const bool predicate_join =
-      accepted_join && join->semantic_variant_id != "join.cross.v1";
-  const bool left_only_join =
-      accepted_join &&
-      (join->semantic_variant_id == "join.left-semi.v1" ||
-       join->semantic_variant_id == "join.left-anti.v1");
-  if (scans.size() != 2 || join == nullptr || relational.nodes.size() != 3 ||
-      relational.root_node_id != join->node_id ||
-      !accepted_join ||
-      join->input_node_ids !=
-          std::vector<std::uint32_t>{scans[0]->node_id, scans[1]->node_id} ||
-      join->bound_expression_ids.size() !=
-          static_cast<std::size_t>(predicate_join) ||
-      !join->required_object_uuids.empty() || !join->values_row_ids.empty() ||
-      !join->required_property_uuids.empty() ||
-      !join->delivered_property_uuids.empty() ||
+  const auto root_join = std::ranges::find_if(joins, [&](const auto* node) {
+    return node->node_id == relational.root_node_id;
+  });
+  if (scans.size() < 2 || scans.size() > 9 ||
+      joins.size() != scans.size() - 1 || root_join == joins.end() ||
+      relational.nodes.size() != scans.size() + joins.size() ||
       !relational.values_rows.empty() || !relational.grouping_sets.empty() ||
       !relational.properties.empty()) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
-                  "two_heap_scans_one_cross_join");
+                  "bounded_heap_scan_join_tree");
   }
-  std::vector<std::uint32_t> expected_join_descriptors;
-  for (std::size_t scan_ordinal = 0; scan_ordinal < scans.size();
-       ++scan_ordinal) {
-    const auto* scan = scans[scan_ordinal];
+  std::unordered_map<std::uint32_t, const RelationalDagNode*> nodes_by_id;
+  for (const auto& node : relational.nodes) {
+    if (node.node_id == 0 || !nodes_by_id.emplace(node.node_id, &node).second) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "unique_join_tree_node_identity");
+    }
+  }
+  for (const auto* scan : scans) {
     if (scan->semantic_variant_id != "relation.source.v1" ||
         !scan->input_node_ids.empty() || scan->shareable ||
         scan->required_object_uuids.size() != 1 ||
@@ -268,17 +253,61 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
       return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
                     "relation_source_leaf");
     }
-    if (!left_only_join || scan_ordinal == 0) {
-      expected_join_descriptors.insert(expected_join_descriptors.end(),
-                                       scan->output_descriptor_ids.begin(),
-                                       scan->output_descriptor_ids.end());
-    }
   }
-  if (scans[0]->required_object_uuids.front() ==
-          scans[1]->required_object_uuids.front() ||
-      join->output_descriptor_ids != expected_join_descriptors) {
+  std::unordered_set<std::uint32_t> visiting;
+  std::unordered_set<std::uint32_t> completed;
+  std::function<bool(std::uint32_t)> validate_tree =
+      [&](const std::uint32_t node_id) {
+        const auto found = nodes_by_id.find(node_id);
+        if (found == nodes_by_id.end()) return false;
+        const auto& node = *found->second;
+        if (node.node_kind == RelationalDagNodeKind::kScan) {
+          return completed.insert(node_id).second;
+        }
+        const bool accepted_join =
+            node.node_kind == RelationalDagNodeKind::kJoin &&
+            (node.semantic_variant_id == "join.cross.v1" ||
+             node.semantic_variant_id == "join.inner.v1" ||
+             node.semantic_variant_id == "join.left-outer.v1" ||
+             node.semantic_variant_id == "join.right-outer.v1" ||
+             node.semantic_variant_id == "join.full-outer.v1" ||
+             node.semantic_variant_id == "join.left-semi.v1" ||
+             node.semantic_variant_id == "join.left-anti.v1");
+        const bool predicate_join =
+            accepted_join && node.semantic_variant_id != "join.cross.v1";
+        const bool left_only_join =
+            accepted_join &&
+            (node.semantic_variant_id == "join.left-semi.v1" ||
+             node.semantic_variant_id == "join.left-anti.v1");
+        if (!accepted_join || node.input_node_ids.size() != 2 ||
+            node.input_node_ids[0] == node.input_node_ids[1] ||
+            node.bound_expression_ids.size() !=
+                static_cast<std::size_t>(predicate_join) ||
+            !node.required_object_uuids.empty() ||
+            !node.values_row_ids.empty() ||
+            !node.required_property_uuids.empty() ||
+            !node.delivered_property_uuids.empty() ||
+            completed.contains(node_id) || !visiting.insert(node_id).second ||
+            !validate_tree(node.input_node_ids[0]) ||
+            !validate_tree(node.input_node_ids[1])) {
+          return false;
+        }
+        const auto* left = nodes_by_id.at(node.input_node_ids[0]);
+        const auto* right = nodes_by_id.at(node.input_node_ids[1]);
+        std::vector<std::uint32_t> expected = left->output_descriptor_ids;
+        if (!left_only_join) {
+          expected.insert(expected.end(), right->output_descriptor_ids.begin(),
+                          right->output_descriptor_ids.end());
+        }
+        if (node.output_descriptor_ids != expected) return false;
+        visiting.erase(node_id);
+        completed.insert(node_id);
+        return true;
+      };
+  if (!validate_tree((*root_join)->node_id) ||
+      completed.size() != relational.nodes.size()) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
-                  "exact_distinct_source_and_join_output_lineage");
+                  "connected_acyclic_join_output_lineage");
   }
 
   CanonicalRelationalPlanningScope planning_scope;
@@ -461,6 +490,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
     }
   }
 
+  std::ranges::sort(relation_uuids);
+  relation_uuids.erase(
+      std::unique(relation_uuids.begin(), relation_uuids.end()),
+      relation_uuids.end());
+
   opt::CanonicalNativeObjectAdmissionContext admission_context;
   admission_context.statement_uuid = context.statement_uuid.canonical;
   admission_context.catalog_snapshot_uuid =
@@ -606,13 +640,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                       std::to_string(issue.node_id));
   }
   if (relational.wire_version != 2 || relational.nodes.empty() ||
-      relational.nodes.size() > 6) {
+      relational.nodes.size() > 17) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
                   "bounded_heap_scan_composition");
   }
   if (std::ranges::count_if(relational.nodes, [](const auto& node) {
         return node.node_kind == RelationalDagNodeKind::kScan;
-      }) == 2) {
+      }) >= 2) {
     return BuildCanonicalCrossJoinHeapAdmission(
         request, canonical_mga, admitted_at_monotonic_ns);
   }

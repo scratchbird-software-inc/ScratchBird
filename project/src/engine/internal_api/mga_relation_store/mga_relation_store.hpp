@@ -132,6 +132,7 @@ struct MgaRelationStorageDescriptorLoadResult {
 
 struct MgaVisibleHeapRelationReadRequest {
   std::string relation_uuid;
+  const std::string* borrowed_relation_uuid = nullptr;
   std::uint64_t maximum_scanned_row_versions = 0;
   std::uint64_t maximum_decoded_bytes = 0;
   std::uint64_t maximum_output_rows = 0;
@@ -140,6 +141,7 @@ struct MgaVisibleHeapRelationReadRequest {
   // preserves the legacy caller contract and produces no complete receipt.
   std::uint64_t maximum_memory_bytes = 0;
   std::function<bool()> cancellation_requested;
+  const std::function<bool()>* borrowed_cancellation_requested = nullptr;
 };
 
 enum class MgaHeapReadFailureCategoryV1 : std::uint8_t {

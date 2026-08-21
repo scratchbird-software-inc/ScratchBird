@@ -365,8 +365,18 @@ struct CanonicalOptimizerSelectedExecutionRequest {
   std::vector<
       scratchbird::engine::executor::CanonicalPhysicalExecutorRegistration>
       available_executors;
+  std::uint64_t executor_registration_live_memory_bytes{0};
   scratchbird::engine::executor::CanonicalResultPublicationRequest
       result_publication_request;
+  const scratchbird::engine::executor::TypedPhysicalNodeDag*
+      borrowed_selected_physical_dag{nullptr};
+  const scratchbird::engine::executor::CanonicalExecutionMgaAuthority*
+      borrowed_mga_authority{nullptr};
+  const std::vector<scratchbird::engine::executor::
+                        CanonicalPhysicalExecutorRegistration>*
+      borrowed_available_executors{nullptr};
+  const scratchbird::engine::executor::CanonicalResultPublicationRequest*
+      borrowed_result_publication_request{nullptr};
   bool engine_execution_authorized{false};
   bool parser_execution_authority_claimed{false};
   bool transaction_finality_claimed{false};
