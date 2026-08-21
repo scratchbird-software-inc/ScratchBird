@@ -1952,6 +1952,7 @@ struct CanonicalAggregateFinalizationPlan {
 };
 
 struct CanonicalAggregateFinalizationReceipt {
+  std::size_t planned_output_bytes = 0;
   std::size_t output_bytes = 0;
   std::size_t peak_workspace_bytes = 0;
 };
@@ -2926,6 +2927,7 @@ EngineTypedValue FinalizeCanonicalAggregateCore(
     return {};
   }
   receipt->output_bytes = actual_output_bytes;
+  receipt->planned_output_bytes = plan.output_bytes;
   receipt->peak_workspace_bytes = plan.peak_workspace_bytes;
   return value;
 }
@@ -3110,6 +3112,7 @@ bool AggregateDistinctKey(const AggregateTransitionValuesView& values,
 struct PreparedAggregateTransitions {
   std::vector<std::size_t> transitions;
   std::size_t retained_bytes = 0;
+  std::size_t peak_distinct_memory_bytes = 0;
   std::size_t input_row_count = 0;
   std::size_t filtered_row_count = 0;
   std::size_t distinct_tuple_count = 0;
@@ -3235,6 +3238,7 @@ bool PrepareCanonicalAggregateTransitions(
           "aggregate DISTINCT key-container capacity exceeds the selected-node grant");
       return false;
     }
+    prepared->peak_distinct_memory_bytes = distinct_container_bytes;
   }
   std::size_t retained_distinct_key_bytes = 0;
   for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
@@ -3271,6 +3275,18 @@ bool PrepareCanonicalAggregateTransitions(
             "aggregate DISTINCT key exceeded the selected-node grant");
         return false;
       }
+      std::size_t candidate_distinct_peak = distinct_container_bytes;
+      if (!CheckedAggregateFinalizationAdd(
+              &candidate_distinct_peak, retained_distinct_key_bytes) ||
+          !CheckedAggregateFinalizationAdd(
+              &candidate_distinct_peak, key_workspace_bound)) {
+        *diagnostic = Refusal(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "aggregate DISTINCT peak memory overflowed");
+        return false;
+      }
+      prepared->peak_distinct_memory_bytes = std::max(
+          prepared->peak_distinct_memory_bytes, candidate_distinct_peak);
       std::string distinct_key;
       if (!AggregateDistinctKey(values, request.aggregate_equality_terms,
                                 &distinct_key, diagnostic)) {
@@ -3316,6 +3332,16 @@ bool PrepareCanonicalAggregateTransitions(
       }
       retained_distinct_key_bytes += distinct_key.capacity();
       distinct_keys.push_back(std::move(distinct_key));
+      std::size_t retained_distinct_memory = distinct_container_bytes;
+      if (!CheckedAggregateFinalizationAdd(
+              &retained_distinct_memory, retained_distinct_key_bytes)) {
+        *diagnostic = Refusal(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "aggregate DISTINCT retained memory overflowed");
+        return false;
+      }
+      prepared->peak_distinct_memory_bytes = std::max(
+          prepared->peak_distinct_memory_bytes, retained_distinct_memory);
       if (distinct_keys.size() > request.maximum_distinct_value_count) {
         *diagnostic = Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                               "aggregate DISTINCT bound is exceeded");
@@ -3380,10 +3406,16 @@ bool BuildCanonicalAggregateCoreState(
     const std::vector<std::size_t>& transitions,
     const std::size_t maximum_state_bytes,
     CanonicalAggregateCoreState* state,
+    std::size_t* peak_transition_memory_bytes,
     DescriptorRuntimeDiagnostic* diagnostic) {
-  if (state == nullptr || diagnostic == nullptr) return false;
+  if (state == nullptr || peak_transition_memory_bytes == nullptr ||
+      diagnostic == nullptr) {
+    return false;
+  }
   *state = {};
-  if (EstimateCanonicalAggregateStateBytes(*state) > maximum_state_bytes) {
+  *peak_transition_memory_bytes =
+      EstimateCanonicalAggregateStateBytes(*state);
+  if (*peak_transition_memory_bytes > maximum_state_bytes) {
     *diagnostic = Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                           "aggregate base state byte bound is exceeded");
     return false;
@@ -3398,13 +3430,34 @@ bool BuildCanonicalAggregateCoreState(
             state, diagnostic)) {
       return false;
     }
+    *peak_transition_memory_bytes = std::max(
+        *peak_transition_memory_bytes,
+        EstimateCanonicalAggregateStateBytes(*state));
     for (const auto input_row : transitions) {
+      const auto values =
+          BindAggregateTransitionValues(request, input_batch, input_row);
+      std::size_t allocation_bound = 0;
+      std::size_t transition_peak =
+          EstimateCanonicalAggregateStateBytes(*state);
+      if (!AggregateTransitionAllocationBound(
+              request, values, &allocation_bound) ||
+          !CheckedAggregateFinalizationAdd(
+              &transition_peak, allocation_bound)) {
+        *diagnostic = Refusal(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "aggregate transition peak memory overflowed");
+        return false;
+      }
+      *peak_transition_memory_bytes =
+          std::max(*peak_transition_memory_bytes, transition_peak);
       if (!TransitionCanonicalAggregateCoreBounded(
-          request,
-              BindAggregateTransitionValues(request, input_batch, input_row),
+              request, values,
               maximum_state_bytes, state, diagnostic)) {
         return false;
       }
+      *peak_transition_memory_bytes = std::max(
+          *peak_transition_memory_bytes,
+          EstimateCanonicalAggregateStateBytes(*state));
       if (!state_within_bound(*state)) {
         *diagnostic = Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                               "aggregate state byte bound is exceeded");
@@ -3430,16 +3483,43 @@ bool BuildCanonicalAggregateCoreState(
           diagnostic)) {
     return false;
   }
+  const auto right_reserved_bytes =
+      EstimateCanonicalAggregateStateBytes(right);
+  if (right_reserved_bytes > maximum_state_bytes - left_reserved_bytes) {
+    *diagnostic = Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "aggregate reserved partial-state peak exceeded its bound");
+    return false;
+  }
+  *peak_transition_memory_bytes = std::max(
+      *peak_transition_memory_bytes,
+      left_reserved_bytes + right_reserved_bytes);
   for (std::size_t index = 0; index < transitions.size(); ++index) {
     auto* partition = index < split ? &left : &right;
     const auto* other = index < split ? &right : &left;
     const auto other_state_bytes =
         EstimateCanonicalAggregateStateBytes(*other);
+    const auto values = BindAggregateTransitionValues(
+        request, input_batch, transitions[index]);
+    std::size_t allocation_bound = 0;
+    std::size_t transition_peak =
+        EstimateCanonicalAggregateStateBytes(*partition);
+    if (!AggregateTransitionAllocationBound(
+            request, values, &allocation_bound) ||
+        !CheckedAggregateFinalizationAdd(
+            &transition_peak, allocation_bound) ||
+        !CheckedAggregateFinalizationAdd(
+            &transition_peak, other_state_bytes)) {
+      *diagnostic = Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "aggregate partial transition peak memory overflowed");
+      return false;
+    }
+    *peak_transition_memory_bytes =
+        std::max(*peak_transition_memory_bytes, transition_peak);
     if (other_state_bytes > maximum_state_bytes ||
         !TransitionCanonicalAggregateCoreBounded(
-            request,
-            BindAggregateTransitionValues(
-                request, input_batch, transitions[index]),
+            request, values,
             maximum_state_bytes - other_state_bytes, partition,
             diagnostic)) {
       return false;
@@ -3453,6 +3533,8 @@ bool BuildCanonicalAggregateCoreState(
                             "aggregate live partial-state byte bound is exceeded");
       return false;
     }
+    *peak_transition_memory_bytes = std::max(
+        *peak_transition_memory_bytes, left_bytes + right_bytes);
   }
   *state = std::move(left);
   left = {};
@@ -3466,6 +3548,9 @@ bool BuildCanonicalAggregateCoreState(
                           "aggregate merged-state byte bound is exceeded");
     return false;
   }
+  *peak_transition_memory_bytes = std::max(
+      *peak_transition_memory_bytes,
+      EstimateCanonicalAggregateStateBytes(*state));
   return true;
 }
 
@@ -5182,6 +5267,9 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   result.input_row_count = prepared.input_row_count;
   result.filtered_row_count = prepared.filtered_row_count;
   result.distinct_tuple_count = prepared.distinct_tuple_count;
+  result.transition_workspace_bytes = prepared.retained_bytes;
+  result.peak_distinct_memory_bytes =
+      prepared.peak_distinct_memory_bytes;
   result.order_comparison_count = prepared.order_comparison_count;
   result.aggregate_order_applied = prepared.aggregate_order_applied;
   result.modifier_count =
@@ -5196,6 +5284,7 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   result.distinct_applied_before_order = true;
 
   CanonicalAggregateCoreState state;
+  std::size_t peak_core_transition_memory_bytes = 0;
   if (prepared.retained_bytes > memory_after_fixed_inputs) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
@@ -5206,7 +5295,7 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
       memory_after_fixed_inputs - prepared.retained_bytes);
   if (!BuildCanonicalAggregateCoreState(
           request, execution_input_batch, prepared.transitions,
-          live_state_limit, &state,
+          live_state_limit, &state, &peak_core_transition_memory_bytes,
           &state_diagnostic)) {
     return refuse(std::move(state_diagnostic));
   }
@@ -5263,9 +5352,52 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
       prepared.equality_comparison_count +
       state.equality_comparison_count;
   result.state_bytes = state_bytes;
+  result.peak_core_transition_memory_bytes =
+      peak_core_transition_memory_bytes;
+  result.planned_final_output_bytes =
+      finalization_receipt.planned_output_bytes;
   result.final_output_bytes = finalization_receipt.output_bytes;
   result.peak_finalization_workspace_bytes =
       finalization_receipt.peak_workspace_bytes;
+  std::size_t current_memory_bytes = 0;
+  std::size_t fixed_retained_memory_bytes = retained_memory_bytes;
+  std::size_t planned_output_batch_bytes = 1;
+  std::size_t state_finalization_phase_bytes = state_bytes;
+  std::size_t peak_memory_bytes = input_payload_bytes;
+  if (!AggregateBatchPayloadBytes(result.output_batch,
+                                  &current_memory_bytes) ||
+      !CheckedAggregateFinalizationAdd(
+          &fixed_retained_memory_bytes, filter_memory_bytes) ||
+      !CheckedAggregateFinalizationAdd(
+          &planned_output_batch_bytes,
+          finalization_receipt.planned_output_bytes) ||
+      finalization_receipt.output_bytes ==
+          std::numeric_limits<std::size_t>::max() ||
+      current_memory_bytes != finalization_receipt.output_bytes + 1 ||
+      !CheckedAggregateFinalizationAdd(
+          &state_finalization_phase_bytes,
+          planned_output_batch_bytes) ||
+      !CheckedAggregateFinalizationAdd(
+          &state_finalization_phase_bytes,
+          finalization_receipt.peak_workspace_bytes) ||
+      !CheckedAggregateFinalizationAdd(
+          &peak_memory_bytes, fixed_retained_memory_bytes) ||
+      !CheckedAggregateFinalizationAdd(
+          &peak_memory_bytes, prepared.retained_bytes) ||
+      !CheckedAggregateFinalizationAdd(
+          &peak_memory_bytes,
+          std::max({prepared.peak_distinct_memory_bytes,
+                    peak_core_transition_memory_bytes,
+                    state_finalization_phase_bytes})) ||
+      peak_memory_bytes > *node_memory_grant) {
+    return refuse(Refusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "aggregate runtime memory receipt overflowed its selected-node grant"));
+  }
+  result.input_payload_bytes = input_payload_bytes;
+  result.fixed_retained_memory_bytes = fixed_retained_memory_bytes;
+  result.current_memory_bytes = current_memory_bytes;
+  result.peak_memory_bytes = peak_memory_bytes;
   result.direct_argument_count = request.direct_arguments.size();
   result.every_descriptor_field_consumed = true;
   result.shared_state_authority_used = true;
@@ -5593,11 +5725,13 @@ ExecuteCanonicalAggregateStateSpillSelected(
     return refuse(state_diagnostic.diagnostic_code, state_diagnostic.detail);
   }
   CanonicalAggregateCoreState state;
+  std::size_t peak_core_transition_memory_bytes = 0;
   if (prepared.retained_bytes > replay_state_limit ||
       !BuildCanonicalAggregateCoreState(
           request.aggregate_request, execution_input_batch,
           prepared.transitions,
           replay_state_limit - prepared.retained_bytes, &state,
+          &peak_core_transition_memory_bytes,
           &state_diagnostic)) {
     return refuse(state_diagnostic.diagnostic_code, state_diagnostic.detail);
   }

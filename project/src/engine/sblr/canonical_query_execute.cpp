@@ -13705,6 +13705,7 @@ MakeLiveAggregateRegistryRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 = true;
   registration.execute =
       [prepared = std::move(prepared), maximum_input_row_count,
        maximum_filter_truth_memory_bytes,
@@ -13808,6 +13809,32 @@ MakeLiveAggregateRegistryRegistration(
           }
           filter_truth_values = std::move(materialized_filter);
         }
+        const auto admitted_row_count =
+            filter_truth_values.has_value()
+                ? static_cast<std::size_t>(std::ranges::count(
+                      *filter_truth_values,
+                      api::EngineSqlTruthValue::true_value))
+                : input_batch.rows.size();
+        std::uint64_t maximum_order_comparison_count = 0;
+        if ((admitted_row_count > 1 &&
+             !CheckedMultiply(admitted_row_count,
+                              admitted_row_count - 1,
+                              &maximum_order_comparison_count)) ||
+            (maximum_order_comparison_count /= 2,
+             !CheckedMultiply(maximum_order_comparison_count,
+                              prepared.aggregate_order_terms.size(),
+                              &maximum_order_comparison_count)) ||
+            *aggregate_memory_bound >
+                std::numeric_limits<std::size_t>::max() ||
+            maximum_order_comparison_count >
+                std::numeric_limits<std::size_t>::max()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "aggregate runtime resource ceilings overflowed";
+          return step;
+        }
         exec::CanonicalAggregateRuntimeRequest aggregate_request;
         aggregate_request.selected_physical_node_id = node.physical_node_id;
         aggregate_request.descriptor = prepared.aggregate_descriptor;
@@ -13849,10 +13876,22 @@ MakeLiveAggregateRegistryRegistration(
             prepared.listagg_with_count;
         aggregate_request.forced_strategy =
             exec::CanonicalAggregateExecutionStrategy::serial;
+        aggregate_request.maximum_transition_count =
+            std::max<std::size_t>(1, input_batch.rows.size());
+        aggregate_request.maximum_distinct_value_count =
+            std::max<std::size_t>(1, admitted_row_count);
+        aggregate_request.maximum_aggregate_order_term_count =
+            std::max<std::size_t>(
+                1, prepared.aggregate_order_terms.size());
+        aggregate_request.maximum_order_comparison_count =
+            static_cast<std::size_t>(std::max<std::uint64_t>(
+                1, maximum_order_comparison_count));
+        aggregate_request.maximum_state_bytes =
+            static_cast<std::size_t>(*aggregate_memory_bound);
         aggregate_request.maximum_final_output_bytes =
-            *aggregate_memory_bound;
+            static_cast<std::size_t>(*aggregate_memory_bound);
         aggregate_request.maximum_finalization_workspace_bytes =
-            *aggregate_memory_bound;
+            static_cast<std::size_t>(*aggregate_memory_bound);
         aggregate_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, *execution_dag);
@@ -13872,6 +13911,26 @@ MakeLiveAggregateRegistryRegistration(
           step.diagnostic = std::move(aggregate_result.diagnostic);
           return step;
         }
+        std::uint64_t output_memory_bytes = 0;
+        if (!RuntimeMaterializedBatchMemoryBytes(
+                aggregate_result.output_batch, &output_memory_bytes) ||
+            aggregate_result.executed_strategy !=
+                exec::CanonicalAggregateExecutionStrategy::serial ||
+            aggregate_result.input_payload_bytes != input_memory_bytes ||
+            aggregate_result.fixed_retained_memory_bytes !=
+                retained_filter_truth_bytes ||
+            aggregate_result.current_memory_bytes != output_memory_bytes ||
+            aggregate_result.current_memory_bytes >
+                aggregate_result.peak_memory_bytes ||
+            aggregate_result.peak_memory_bytes >
+                *aggregate_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "aggregate runtime phase memory receipt is inconsistent";
+          return step;
+        }
         step.authority = aggregate_result.authority;
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
@@ -13879,6 +13938,9 @@ MakeLiveAggregateRegistryRegistration(
         step.output_row_count = aggregate_result.output_batch.rows.size();
         step.materialized_output_batch =
             std::move(aggregate_result.output_batch);
+        PublishRuntimeMemoryObservation(
+            &step, output_memory_bytes,
+            aggregate_result.peak_memory_bytes);
         step.mga_statement_context =
             aggregate_request.mga_authority.statement_context;
         return step;
@@ -17986,38 +18048,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         break;
       }
       case plan::CanonicalLogicalRelationalNodeKind::kAggregate: {
-        const auto materialize_filter_truth_values =
-            [&](const PreparedGlobalAggregateRoot& prepared,
-                std::optional<std::vector<api::EngineSqlTruthValue>>*
-                    filter_truth_values,
-                std::uint64_t* filter_truth_memory_bytes,
-                std::string* detail) {
-              if (filter_truth_values == nullptr ||
-                  filter_truth_memory_bytes == nullptr || detail == nullptr) {
-                return false;
-              }
-              filter_truth_values->reset();
-              *filter_truth_memory_bytes = 0;
-              if (!prepared.filter_column.has_value()) return true;
-              const auto memory_budget =
-                  request.optimizer_request.resource.memory_budget_bytes;
-              if (input_memory > memory_budget) {
-                *detail =
-                    "composition aggregate FILTER input exceeds its "
-                    "admitted memory bound";
-                return false;
-              }
-              std::vector<api::EngineSqlTruthValue> materialized_filter;
-              if (!MaterializeAggregateFilterTruthValues(
-                      input_batch, *prepared.filter_column,
-                      prepared.filter_descriptor_id,
-                      memory_budget - input_memory, &materialized_filter,
-                      filter_truth_memory_bytes, detail)) {
-                return false;
-              }
-              *filter_truth_values = std::move(materialized_filter);
-              return true;
-            };
         if (node.semantic_variant_id ==
             "aggregate.global-count-star.v1") {
           auto prepared = PrepareGlobalAggregateRoot(
@@ -19329,27 +19359,41 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!prepared.ok) {
             return refuse(std::string(kPayloadDiagnostic), prepared.detail);
           }
-          std::optional<std::vector<api::EngineSqlTruthValue>>
-              filter_truth_values;
-          std::uint64_t filter_truth_memory_bytes = 0;
-          std::string filter_detail;
-          if (!materialize_filter_truth_values(
-                  prepared, &filter_truth_values,
-                  &filter_truth_memory_bytes, &filter_detail)) {
+          PlanningAggregateModifierState modifiers;
+          std::string modifier_detail;
+          if (!InitializePlanningAggregateModifierState(
+                  input_batch, prepared, input_memory,
+                  request.optimizer_request.resource.memory_budget_bytes,
+                  &modifiers, &modifier_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
-                          std::move(filter_detail));
+                          "composition complex aggregate modifiers: " +
+                              modifier_detail);
           }
-          std::uint64_t aggregate_work = input_row_count;
+          std::uint64_t aggregate_work = modifiers.admitted_row_count;
+          if (prepared.distinct &&
+              (!CheckedAdd(aggregate_work,
+                           modifiers.distinct_generation_bound,
+                           &aggregate_work) ||
+               !CheckedAdd(aggregate_work,
+                           modifiers.distinct_comparison_bound,
+                           &aggregate_work))) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition complex aggregate DISTINCT work overflowed");
+          }
           if (comparison_sensitive || prepared.distinct ||
               !prepared.aggregate_order_terms.empty()) {
             std::uint64_t comparison_work = 0;
-            if (!CheckedMultiply(input_row_count, input_row_count,
-                                 &comparison_work) ||
+            if ((modifiers.admitted_row_count > 1 &&
+                 !CheckedMultiply(modifiers.admitted_row_count,
+                                  modifiers.admitted_row_count - 1,
+                                  &comparison_work)) ||
+                (comparison_work /= 2,
                 !CheckedMultiply(
                     comparison_work,
                     std::max<std::size_t>(1,
                         prepared.value_columns.size()),
-                    &comparison_work) ||
+                    &comparison_work)) ||
                 !CheckedAdd(aggregate_work, comparison_work,
                             &aggregate_work)) {
               return refuse(
@@ -19361,7 +19405,44 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                 "composition complex aggregate work exceeds the admitted "
-                "bound");
+                  "bound");
+          }
+          if (prepared.distinct) {
+            PlanningAggregateDistinctState distinct_state;
+            if (!InitializePlanningAggregateDistinctState(
+                    request.context, input_batch, prepared,
+                    modifiers.distinct_memory_bound, &distinct_state,
+                    &modifier_detail, modifiers.admitted_row_count)) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition complex aggregate DISTINCT: " +
+                                modifier_detail);
+            }
+            for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+              if (modifiers.filter_truth_values.has_value() &&
+                  (*modifiers.filter_truth_values)[row] !=
+                      api::EngineSqlTruthValue::true_value) {
+                continue;
+              }
+              std::array<const api::EngineTypedValue*, 2> values{};
+              for (std::size_t value = 0;
+                   value < prepared.value_columns.size(); ++value) {
+                values[value] = &input_batch.rows[row].values[
+                    prepared.value_columns[value]];
+              }
+              bool admitted = false;
+              if (!AdmitPlanningAggregateDistinctTuple(
+                      values, prepared.value_columns.size(),
+                      modifiers.distinct_generation_bound,
+                      modifiers.distinct_comparison_bound,
+                      modifiers.distinct_memory_bound, &distinct_state,
+                      &admitted, &modifier_detail)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition complex aggregate DISTINCT: " +
+                                  modifier_detail);
+              }
+            }
+            registry_aggregate_distinct_peak_memory =
+                distinct_state.peak_memory_bytes;
           }
           exec::DescriptorBatch output;
           output.columns.push_back(prepared.result_column);
@@ -19413,14 +19494,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           capability_uuid = registry_aggregate_capability_uuid;
           transformation_rule = transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          if (!CheckedAdd(aggregate_work, filter_truth_memory_bytes,
+          if (!CheckedAdd(modifiers.filter_truth_memory_bytes,
+                          modifiers.transition_memory_bytes,
                           &auxiliary_memory)) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition complex aggregate FILTER memory overflowed");
+                "composition complex aggregate modifier memory overflowed");
           }
           registry_aggregate_filter_truth_memory_bytes =
-              filter_truth_memory_bytes;
+              modifiers.filter_truth_memory_bytes;
           planning_values_exact = false;
           break;
         }
@@ -21674,8 +21756,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     const bool exact_registry_aggregate =
         implementation_id == "aggregate.registry-core.v1" &&
         planning_values_exact;
+    const bool dynamic_registry_aggregate =
+        implementation_id == "aggregate.registry-core.v1" &&
+        !planning_values_exact;
     if (physical_kind == exec::PhysicalNodeKind::kAggregate &&
         !query_distinct && !exact_registry_aggregate &&
+        !dynamic_registry_aggregate &&
         (!CheckedMultiply(
              input_row_count,
              sizeof(std::size_t), &aggregate_workspace_memory) ||
@@ -21689,7 +21775,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                     "composition output memory overflowed");
     }
-    if (exact_registry_aggregate) {
+    if (dynamic_registry_aggregate) {
+      operator_memory =
+          request.optimizer_request.resource.memory_budget_bytes;
+    } else if (exact_registry_aggregate) {
       std::uint64_t aggregate_output_phase_memory = 0;
       if (!CheckedAdd(output_memory,
                       kCanonicalAggregateKernelBaseMemoryBytes,
@@ -21720,7 +21809,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     }
     std::uint64_t runtime_accounted_auxiliary_memory = auxiliary_memory;
     if (implementation_id == "aggregate.registry-core.v1" &&
-        !exact_registry_aggregate &&
+        !exact_registry_aggregate && !dynamic_registry_aggregate &&
         !CheckedAdd(runtime_accounted_auxiliary_memory,
                     aggregate_workspace_memory,
                     &runtime_accounted_auxiliary_memory)) {

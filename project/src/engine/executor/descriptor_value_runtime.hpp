@@ -2073,9 +2073,17 @@ struct CanonicalAggregateRuntimeResult {
   std::size_t modifier_count = 0;
   std::size_t aggregate_order_term_count = 0;
   std::size_t order_comparison_count = 0;
+  std::size_t input_payload_bytes = 0;
+  std::size_t fixed_retained_memory_bytes = 0;
+  std::size_t transition_workspace_bytes = 0;
+  std::size_t peak_distinct_memory_bytes = 0;
+  std::size_t peak_core_transition_memory_bytes = 0;
   std::size_t state_bytes = 0;
+  std::size_t planned_final_output_bytes = 0;
   std::size_t final_output_bytes = 0;
   std::size_t peak_finalization_workspace_bytes = 0;
+  std::size_t current_memory_bytes = 0;
+  std::size_t peak_memory_bytes = 0;
   // Input-row ordinals that reached the canonical transition pipeline after
   // FILTER, DISTINCT, and aggregate ORDER BY were applied.
   std::vector<std::size_t> transition_row_indices;
