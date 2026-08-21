@@ -288,6 +288,12 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request);
 struct EngineCompareScalarValuesRequest : EngineApiRequest {
   EngineTypedValue left_value;
   EngineTypedValue right_value;
+  // Synchronous engine-internal execution may borrow immutable operands and
+  // context so a bounded predicate callback does not deep-copy the complete
+  // statement carrier for every candidate pair.
+  const EngineRequestContext* borrowed_context = nullptr;
+  const EngineTypedValue* borrowed_left_value = nullptr;
+  const EngineTypedValue* borrowed_right_value = nullptr;
 };
 struct EngineCompareScalarValuesResult : EngineApiResult {
   int comparison = 0;
@@ -299,6 +305,8 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
 
 struct EngineNormalizeTimezoneScalarRequest : EngineApiRequest {
   EngineTypedValue input_value;
+  const EngineRequestContext* borrowed_context = nullptr;
+  const EngineTypedValue* borrowed_input_value = nullptr;
 };
 struct EngineNormalizeTimezoneScalarResult : EngineApiResult {
   EngineTypedValue value;
@@ -320,6 +328,9 @@ EngineNormalizeTimezoneScalarResult EngineNormalizeTimezoneScalar(
 struct EngineCompareCanonicalScalarValuesRequest : EngineApiRequest {
   EngineTypedValue left_value;
   EngineTypedValue right_value;
+  const EngineRequestContext* borrowed_context = nullptr;
+  const EngineTypedValue* borrowed_left_value = nullptr;
+  const EngineTypedValue* borrowed_right_value = nullptr;
 };
 struct EngineCompareCanonicalScalarValuesResult : EngineApiResult {
   int comparison = 0;

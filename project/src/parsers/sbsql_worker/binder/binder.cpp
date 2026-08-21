@@ -4731,11 +4731,31 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                 (aggregate_function_ast->operator_name == "SUM" ||
                  aggregate_function_ast->operator_name == "MIN" ||
                  aggregate_function_ast->operator_name == "MAX" ||
-                 aggregate_function_ast->operator_name == "COUNT")
+                 aggregate_function_ast->operator_name == "COUNT" ||
+                 aggregate_function_ast->operator_name == "COUNT_STAR" ||
+                 aggregate_function_ast->operator_name == "BOOL_AND" ||
+                 aggregate_function_ast->operator_name == "BOOL_OR" ||
+                 aggregate_function_ast->operator_name == "EVERY")
             ? aggregate_function_ast->operator_name
             : std::string_view{};
+    const bool aggregate_count_star_window =
+        aggregate_window && aggregate_operator == "COUNT_STAR";
     const bool aggregate_count_window =
-        aggregate_window && aggregate_operator == "COUNT";
+        aggregate_window &&
+        (aggregate_operator == "COUNT" || aggregate_count_star_window);
+    const bool value_operand_window =
+        value_window && !aggregate_count_star_window;
+    const bool aggregate_boolean_window =
+        aggregate_window &&
+        (aggregate_operator == "BOOL_AND" || aggregate_operator == "BOOL_OR" ||
+         aggregate_operator == "EVERY");
+    const bool aggregate_bounded_signed_window =
+        aggregate_window && !aggregate_count_window &&
+        !aggregate_boolean_window;
+    const auto is_bounded_signed_type = [](const std::string_view type_name) {
+      return type_name == "int8" || type_name == "int16" ||
+             type_name == "int32" || type_name == "int64";
+    };
     const std::string_view expected_operator =
         aggregate_window
             ? aggregate_operator
@@ -4761,8 +4781,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             ? (aggregate_operator == "SUM"
                    ? "sb.aggregate.sum"
                    : (aggregate_operator == "MIN" ? "sb.aggregate.min"
-                      : (aggregate_operator == "MAX" ? "sb.aggregate.max"
-                                                     : "sb.aggregate.count")))
+                      : (aggregate_operator == "MAX"
+                             ? "sb.aggregate.max"
+                             : (aggregate_count_window
+                                    ? "sb.aggregate.count"
+                                    : (aggregate_operator == "BOOL_AND"
+                                           ? "sb.aggregate.bool_and"
+                                           : (aggregate_operator == "BOOL_OR"
+                                                  ? "sb.aggregate.bool_or"
+                                                  : "sb.aggregate.every"))))))
             : (value_window
             ? (first_value_window
                    ? "sb.window.first_value"
@@ -4958,7 +4985,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           return candidate.expression_id == invocation.function_expression_id;
         });
     std::vector<std::uint32_t> expected_strict_source_expression_ids;
-    if (value_window && strict_function_ast != ast.expressions.end() &&
+    if (value_operand_window && strict_function_ast != ast.expressions.end() &&
         strict_function_ast->child_expression_ids.size() ==
             (nth_value_window ? 2U : 1U)) {
       expected_strict_source_expression_ids.push_back(
@@ -5227,7 +5254,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     std::optional<std::uint32_t> bound_lag_operand_id;
     const NativeDescriptorBindingInput* lag_operand_descriptor = nullptr;
-    if (value_window) {
+    if (value_operand_window) {
       const NativeExpressionAstNode* operand_ast = nullptr;
       if (function_ast != ast.expressions.end() &&
           function_ast->child_expression_ids.size() ==
@@ -5279,8 +5306,22 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const auto& result_output = context.outputs[source_count];
     const auto function_descriptor =
         descriptor_by_id.find(function_binding.descriptor_id);
+    const auto mapped_order_expression =
+        selected_window_definition.ordering_terms.size() == 1
+            ? ast_to_bound.find(
+                  selected_window_definition.ordering_terms.front().expression_id)
+            : ast_to_bound.end();
+    const NativeDescriptorBindingInput* order_descriptor = nullptr;
+    if (mapped_order_expression != ast_to_bound.end() &&
+        mapped_order_expression->second != 0 &&
+        mapped_order_expression->second <= context.expressions.size()) {
+      const auto& order_binding =
+          context.expressions[mapped_order_expression->second - 1];
+      const auto found = descriptor_by_id.find(order_binding.descriptor_id);
+      if (found != descriptor_by_id.end()) order_descriptor = found->second;
+    }
     std::vector<std::uint32_t> expected_function_ast_children;
-    if (value_window && bound_lag_operand_id.has_value()) {
+    if (value_operand_window && bound_lag_operand_id.has_value()) {
       expected_function_ast_children.push_back(
           function_ast->child_expression_ids.front());
     } else if (ntile_window && bound_numeric_window_operand_id.has_value()) {
@@ -5317,13 +5358,29 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         function_descriptor->second->descriptor_uuid ==
             expected_function_uuid ||
         function_descriptor->second->type_uuid == expected_function_uuid ||
+        (aggregate_window &&
+         (order_descriptor == nullptr ||
+          !is_bounded_signed_type(order_descriptor->canonical_type_name) ||
+          order_descriptor->collation_uuid.has_value() ||
+          order_descriptor->timezone_profile_id.has_value() ||
+          order_descriptor->width_precision_scale.width.has_value() ||
+          order_descriptor->width_precision_scale.precision.has_value() ||
+          order_descriptor->width_precision_scale.scale.has_value() ||
+          !order_descriptor->element_profile.empty())) ||
+        (aggregate_window &&
+         function_descriptor->second->canonical_type_name !=
+             (aggregate_boolean_window ? "boolean" : "int64")) ||
         function_descriptor->second->nullability !=
             (value_window && !aggregate_count_window
                  ? BoundNullability::kNullable
                  : BoundNullability::kNonNull) ||
-        ((!value_window || aggregate_count_window) &&
+        ((!value_window || aggregate_window) &&
          (function_descriptor->second->collation_uuid.has_value() ||
-          function_descriptor->second->timezone_profile_id.has_value())) ||
+          function_descriptor->second->timezone_profile_id.has_value() ||
+          function_descriptor->second->width_precision_scale.width.has_value() ||
+          function_descriptor->second->width_precision_scale.precision
+              .has_value() ||
+          function_descriptor->second->width_precision_scale.scale.has_value())) ||
         (ntile_window &&
          (numeric_window_operand_descriptor == nullptr ||
           numeric_window_operand_descriptor->descriptor_id ==
@@ -5332,7 +5389,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               function_descriptor->second->descriptor_uuid ||
           numeric_window_operand_descriptor->type_uuid !=
               function_descriptor->second->type_uuid)) ||
-        (value_window &&
+        (value_operand_window &&
          (lag_operand_descriptor == nullptr ||
           lag_operand_descriptor->descriptor_id ==
               function_descriptor->second->descriptor_id ||
@@ -5340,33 +5397,62 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               function_descriptor->second->descriptor_uuid ||
           lag_operand_descriptor->descriptor_uuid ==
               expected_function_uuid ||
-          lag_operand_descriptor->type_uuid !=
-              function_descriptor->second->type_uuid ||
-          lag_operand_descriptor->collation_uuid !=
-              function_descriptor->second->collation_uuid ||
-          lag_operand_descriptor->timezone_profile_id !=
-              function_descriptor->second->timezone_profile_id ||
-          lag_operand_descriptor->width_precision_scale.width !=
-              function_descriptor->second->width_precision_scale.width ||
-          lag_operand_descriptor->width_precision_scale.precision !=
-              function_descriptor->second->width_precision_scale.precision ||
-          lag_operand_descriptor->width_precision_scale.scale !=
-              function_descriptor->second->width_precision_scale.scale)) ||
+          (!aggregate_count_window &&
+           !aggregate_bounded_signed_window &&
+           (lag_operand_descriptor->type_uuid !=
+                function_descriptor->second->type_uuid ||
+            lag_operand_descriptor->collation_uuid !=
+                function_descriptor->second->collation_uuid ||
+            lag_operand_descriptor->timezone_profile_id !=
+                function_descriptor->second->timezone_profile_id ||
+            lag_operand_descriptor->width_precision_scale.width !=
+                function_descriptor->second->width_precision_scale.width ||
+            lag_operand_descriptor->width_precision_scale.precision !=
+                function_descriptor->second->width_precision_scale.precision ||
+            lag_operand_descriptor->width_precision_scale.scale !=
+                function_descriptor->second->width_precision_scale.scale ||
+            lag_operand_descriptor->canonical_type_name !=
+                function_descriptor->second->canonical_type_name ||
+            lag_operand_descriptor->element_profile !=
+                function_descriptor->second->element_profile)) ||
+          (aggregate_bounded_signed_window &&
+           (!is_bounded_signed_type(
+                lag_operand_descriptor->canonical_type_name) ||
+            lag_operand_descriptor->collation_uuid.has_value() ||
+            lag_operand_descriptor->timezone_profile_id.has_value() ||
+            lag_operand_descriptor->width_precision_scale.width.has_value() ||
+            lag_operand_descriptor->width_precision_scale.precision
+                .has_value() ||
+            lag_operand_descriptor->width_precision_scale.scale.has_value() ||
+            !lag_operand_descriptor->element_profile.empty())))) ||
         (nth_value_window &&
-         (numeric_window_operand_descriptor == nullptr ||
+         (order_descriptor == nullptr ||
+          order_descriptor->canonical_type_name != "int64" ||
+          order_descriptor->collation_uuid.has_value() ||
+          order_descriptor->timezone_profile_id.has_value() ||
+          order_descriptor->width_precision_scale.width.has_value() ||
+          order_descriptor->width_precision_scale.precision.has_value() ||
+          order_descriptor->width_precision_scale.scale.has_value() ||
+          !order_descriptor->element_profile.empty() ||
+          numeric_window_operand_descriptor == nullptr ||
           lag_operand_descriptor == nullptr ||
           numeric_window_operand_descriptor->descriptor_id ==
               lag_operand_descriptor->descriptor_id ||
           numeric_window_operand_descriptor->descriptor_id ==
               function_descriptor->second->descriptor_id ||
+          numeric_window_operand_descriptor->descriptor_id ==
+              order_descriptor->descriptor_id ||
           numeric_window_operand_descriptor->descriptor_uuid ==
               lag_operand_descriptor->descriptor_uuid ||
           numeric_window_operand_descriptor->descriptor_uuid ==
               function_descriptor->second->descriptor_uuid ||
           numeric_window_operand_descriptor->descriptor_uuid ==
+              order_descriptor->descriptor_uuid ||
+          numeric_window_operand_descriptor->descriptor_uuid ==
               expected_function_uuid ||
           numeric_window_operand_descriptor->type_uuid !=
-              function_descriptor->second->type_uuid ||
+              order_descriptor->type_uuid ||
+          numeric_window_operand_descriptor->canonical_type_name != "int64" ||
           numeric_window_operand_descriptor->nullability !=
               BoundNullability::kNonNull ||
           numeric_window_operand_descriptor->collation_uuid.has_value() ||
@@ -5376,7 +5462,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           numeric_window_operand_descriptor->width_precision_scale.precision
               .has_value() ||
           numeric_window_operand_descriptor->width_precision_scale.scale
-              .has_value())) ||
+              .has_value() ||
+          !numeric_window_operand_descriptor->element_profile.empty())) ||
         result_output.output_id != source_count + 1 ||
         result_output.expression_id != function_binding.expression_id ||
         result_output.descriptor_id != function_binding.descriptor_id ||
@@ -5647,7 +5734,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           {descriptor.descriptor_id, descriptor.descriptor_uuid,
            descriptor.type_uuid, descriptor.nullability,
            descriptor.collation_uuid, descriptor.timezone_profile_id,
-           descriptor.width_precision_scale});
+           descriptor.width_precision_scale, descriptor.canonical_type_name,
+           descriptor.element_profile});
     }
     std::ranges::sort(bound.descriptors, {},
                       &BoundDescriptorAstRecord::descriptor_id);

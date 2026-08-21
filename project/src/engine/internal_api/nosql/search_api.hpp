@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -89,6 +90,8 @@ struct EngineBoundSearchFilterV1 {
 struct EngineBoundSearchReadRequestV1 {
   EngineRequestContext context;
   std::string collection_uuid;
+  std::string expected_descriptor_uuid;
+  std::uint64_t expected_descriptor_generation = 0;
   std::string selected_alternative_uuid;
   std::string selected_provider_uuid;
   std::string selected_capability_uuid;
@@ -151,6 +154,13 @@ struct EngineBoundSearchReadResultV1 {
   std::uint64_t cleanup_count = 0;
   std::vector<EngineEvidenceReference> evidence;
 };
+
+// Exact persisted search-storage admission shared by canonical planning and
+// the provider boundary. It is catalog-only and owns no MGA row visibility or
+// transaction-finality decisions.
+bool ExactBoundSearchStorageDescriptorV1(
+    const MgaRelationStorageDescriptor& descriptor,
+    std::string_view collection_uuid);
 
 EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
     const EngineBoundSearchReadRequestV1& request);

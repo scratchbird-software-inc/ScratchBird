@@ -10,11 +10,13 @@
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "nosql/nosql_batch_point_lookup_support.hpp"
 #include "nosql/nosql_provider_generation_store.hpp"
 #include "nosql/nosql_surface_support.hpp"
 #include "security/security_model.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <array>
@@ -23,6 +25,7 @@
 #include <cctype>
 #include <cmath>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
 #include <map>
 #include <optional>
@@ -654,10 +657,59 @@ std::string BoundSearchTypeUuid(const EngineDescriptor& descriptor) {
                                     "type_uuid");
 }
 
-bool ExactBoundSearchStorageDescriptor(
+std::string ExactBoundSearchCoreTypeUuid(const std::string_view stable_name) {
+  static const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  return count == 1 && found != manifest.manifest.descriptor_rows.end() &&
+                 found->descriptor_uuid.valid()
+             ? scratchbird::core::uuid::UuidToString(
+                   found->descriptor_uuid.value)
+             : std::string{};
+}
+
+bool ExactBoundSearchDescriptorFields(
+    const EngineDescriptor& descriptor,
+    const std::initializer_list<std::pair<std::string_view, std::string_view>>&
+        expected) {
+  std::map<std::string_view, std::string_view> fields;
+  const auto encoded = std::string_view(descriptor.encoded_descriptor);
+  std::size_t offset = 0;
+  while (offset <= encoded.size()) {
+    const auto end = encoded.find(';', offset);
+    const auto field = encoded.substr(
+        offset, end == std::string_view::npos ? std::string_view::npos
+                                              : end - offset);
+    const auto equal = field.find('=');
+    if (field.empty() || equal == std::string_view::npos || equal == 0 ||
+        equal + 1 == field.size() ||
+        !fields.emplace(field.substr(0, equal), field.substr(equal + 1)).second) {
+      return false;
+    }
+    if (end == std::string_view::npos) break;
+    offset = end + 1;
+  }
+  if (fields.size() != expected.size()) return false;
+  return std::ranges::all_of(expected, [&](const auto& field) {
+    const auto found = fields.find(field.first);
+    return found != fields.end() && found->second == field.second;
+  });
+}
+
+bool ExactBoundSearchStorageDescriptorImpl(
     const MgaRelationStorageDescriptor& descriptor,
     const std::string_view collection_uuid) {
+  const auto text_type_uuid = ExactBoundSearchCoreTypeUuid("character");
   if (descriptor.relation_uuid.canonical != collection_uuid ||
+      text_type_uuid.empty() ||
+      !CanonicalBoundSearchUuid(descriptor.database_uuid.canonical) ||
+      !CanonicalBoundSearchUuid(descriptor.schema_uuid.canonical) ||
       descriptor.relation_kind != "table" ||
       descriptor.storage_profile != "local_mga_rowstore_v1" ||
       descriptor.descriptor_generation == 0 ||
@@ -667,18 +719,33 @@ bool ExactBoundSearchStorageDescriptor(
   }
   const auto exact_text = [](const auto& column,
                              const std::uint32_t ordinal,
-                             const std::string_view name) {
+                             const std::string_view name,
+                             const std::string_view text_type_uuid) {
     return column.ordinal == ordinal && column.canonical_name_key == name &&
-           !column.nullable &&
+           !column.nullable && !column.generated && !column.identity_column &&
+           column.storage_class == "inline_row_value" &&
+           column.max_inline_bytes == 4096 &&
+           column.overflow_policy == "mga_large_value_locator" &&
+           column.charset_uuid.empty() && column.collation_uuid.empty() &&
+           column.character_length == 0 &&
+           column.value_descriptor.descriptor_kind ==
+               "canonical_type_descriptor" &&
            column.value_descriptor.canonical_type_name == "text" &&
            CanonicalBoundSearchUuid(column.column_uuid.canonical) &&
            CanonicalBoundSearchUuid(
                column.value_descriptor.descriptor_uuid.canonical) &&
-           CanonicalBoundSearchUuid(
-               BoundSearchTypeUuid(column.value_descriptor));
+           ExactBoundSearchDescriptorFields(
+               column.value_descriptor,
+               {{"canonical", "text"},
+                {"type_uuid", text_type_uuid},
+                {"nullable", "false"}});
   };
-  return exact_text(descriptor.columns[0], 0, "body") &&
-         exact_text(descriptor.columns[1], 1, "category");
+  return descriptor.columns[0].column_uuid.canonical !=
+             descriptor.columns[1].column_uuid.canonical &&
+         descriptor.columns[0].value_descriptor.descriptor_uuid.canonical !=
+             descriptor.columns[1].value_descriptor.descriptor_uuid.canonical &&
+         exact_text(descriptor.columns[0], 0, "body", text_type_uuid) &&
+         exact_text(descriptor.columns[1], 1, "category", text_type_uuid);
 }
 
 bool ExactBoundSearchOutputDescriptors(
@@ -686,20 +753,17 @@ bool ExactBoundSearchOutputDescriptors(
   if (descriptors.size() != 5) return false;
   static constexpr std::array<std::string_view, 5> kTypes{
       "uuid", "uuid", "uint64", "real64", "uint64"};
+  std::unordered_set<std::string> descriptor_uuids;
   for (std::size_t index = 0; index < descriptors.size(); ++index) {
     const auto& descriptor = descriptors[index];
+    const auto type_uuid = ExactBoundSearchCoreTypeUuid(kTypes[index]);
     if (!CanonicalBoundSearchUuid(descriptor.descriptor_uuid.canonical) ||
-        descriptor.descriptor_kind.empty() ||
+        !descriptor_uuids.insert(descriptor.descriptor_uuid.canonical).second ||
+        descriptor.descriptor_kind != "scalar" || type_uuid.empty() ||
         descriptor.canonical_type_name != kTypes[index] ||
-        !CanonicalBoundSearchUuid(BoundSearchTypeUuid(descriptor))) {
-      return false;
-    }
-    const auto nullability = BoundSearchDescriptorField(
-        descriptor.encoded_descriptor, "nullability");
-    const auto nullable = BoundSearchDescriptorField(
-        descriptor.encoded_descriptor, "nullable");
-    if (nullability != "non_null" && nullability != "not_null" &&
-        nullable != "false" && nullable != "0") {
+        !ExactBoundSearchDescriptorFields(
+            descriptor,
+            {{"type_uuid", type_uuid}, {"nullability", "non_null"}})) {
       return false;
     }
   }
@@ -827,6 +891,12 @@ bool BoundSearchCarrierDescriptorMatches(
 
 }  // namespace
 
+bool ExactBoundSearchStorageDescriptorV1(
+    const MgaRelationStorageDescriptor& descriptor,
+    const std::string_view collection_uuid) {
+  return ExactBoundSearchStorageDescriptorImpl(descriptor, collection_uuid);
+}
+
 EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
     const EngineBoundSearchReadRequestV1& request) {
   bool resource_acquired = false;
@@ -860,6 +930,8 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
                   "search execution cancelled before access");
   }
   if (!CanonicalBoundSearchUuid(request.collection_uuid) ||
+      !CanonicalBoundSearchUuid(request.expected_descriptor_uuid) ||
+      request.expected_descriptor_generation == 0 ||
       !CanonicalBoundSearchUuid(request.selected_alternative_uuid) ||
       !CanonicalBoundSearchUuid(request.selected_provider_uuid) ||
       !CanonicalBoundSearchUuid(request.selected_capability_uuid) ||
@@ -949,6 +1021,23 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
                   "current materialized search SELECT authorization is stale");
   }
 
+  // Catalog/type admission is metadata-only. Bind the exact current relation
+  // before any segment provider or MGA heap row may be inspected.
+  const auto preflight = LoadMgaRelationStorageDescriptor(
+      request.context, request.collection_uuid);
+  if (!preflight.ok ||
+      preflight.descriptor.database_uuid.canonical !=
+          request.context.database_uuid.canonical ||
+      preflight.descriptor.descriptor_uuid.canonical !=
+          request.expected_descriptor_uuid ||
+      preflight.descriptor.descriptor_generation !=
+          request.expected_descriptor_generation ||
+      !ExactBoundSearchStorageDescriptorV1(preflight.descriptor,
+                                           request.collection_uuid)) {
+    return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                  "current search storage descriptor is outside the exact v1 profile");
+  }
+
   bool segment_carrier_loaded = false;
   bool exact_fallback_selected = false;
   EngineNoSqlProviderGenerationMetadata carrier;
@@ -967,7 +1056,9 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
                       "search segment carrier is corrupt, partial, or duplicated");
       }
     } else if (!ValidateSearchSegmentCapabilityBindingV1(loaded.metadata) ||
-               !BoundSearchCarrierContextMatches(request, loaded.metadata)) {
+               !BoundSearchCarrierContextMatches(request, loaded.metadata) ||
+               !BoundSearchCarrierDescriptorMatches(loaded.metadata,
+                                                    preflight.descriptor)) {
       return refuse("SB_MODEL_PROVIDER_GENERATION_STALE_V1",
                     "search segment identity or statement cohort is stale");
     } else {
@@ -1001,8 +1092,12 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
     return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
                   "current MGA-visible search base relation is unavailable");
   }
-  if (!ExactBoundSearchStorageDescriptor(read.descriptor,
-                                         request.collection_uuid) ||
+  if (!ExactBoundSearchStorageDescriptorV1(read.descriptor,
+                                           request.collection_uuid) ||
+      read.descriptor.descriptor_uuid.canonical !=
+          preflight.descriptor.descriptor_uuid.canonical ||
+      read.descriptor.descriptor_generation !=
+          preflight.descriptor.descriptor_generation ||
       read.current_relation_base_generation == 0) {
     return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
                   "current search storage descriptor/generation is stale");

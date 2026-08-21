@@ -220,11 +220,10 @@ bool UnsignedUtf8Less(const std::string_view left,
 
 bool ExchangeCancellationRequested(
     const std::function<bool()>& cancellation_requested) {
-  try {
-    return cancellation_requested && cancellation_requested();
-  } catch (...) {
-    return true;
-  }
+  // Probe failure is not user cancellation.  Let it cross this pure exchange
+  // helper so the model-family executor can publish the canonical
+  // coordinator-leg failure and still run its cleanup path exactly once.
+  return cancellation_requested && cancellation_requested();
 }
 
 bool ParseCanonicalTagJsonString(
@@ -638,6 +637,9 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     return Refuse(input_validation.diagnostic_id.c_str(),
                   input_validation.detail);
   }
+  const auto descriptor_cancellation_probe = [](const void* context) {
+    return (*static_cast<const std::function<bool()>*>(context))();
+  };
   if (ExchangeCancellationRequested(cancellation_requested)) {
     return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
                   "model-family exchange was cancelled before validation");
@@ -1656,12 +1658,22 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
   }
 
   if (time_series_family) {
+    bool descriptor_cancellation_observed = false;
     const auto validation = ValidateCanonicalDescriptorBatch(
-        provider_batch.batch, input.output_descriptor_ids);
+        provider_batch.batch, input.output_descriptor_ids,
+        cancellation_requested ? +descriptor_cancellation_probe : nullptr,
+        cancellation_requested ? &cancellation_requested : nullptr,
+        &descriptor_cancellation_observed);
     const bool raw = input.operation_id == "TIME_SERIES_RANGE_READ";
     const bool bucket = input.operation_id == "TIME_SERIES_BUCKET";
     const std::size_t expected_width = raw ? 6 : (bucket ? 1 : 7);
     if (!validation.ok || provider_batch.batch.columns.size() != expected_width) {
+      if (!validation.ok &&
+          (validation.diagnostic_code == "SB_MODEL_EXECUTION_CANCELLED_V1" ||
+           validation.diagnostic_code ==
+               "SB_MODEL_COORDINATOR_LEG_FAILED_V1")) {
+        return Refuse(validation.diagnostic_code.c_str(), validation.detail);
+      }
       return Refuse(kModelTypedExchangeInvalid,
                     validation.ok
                         ? "time-series public descriptor width is invalid"
@@ -1700,6 +1712,10 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
     }
     for (std::size_t ordinal = 0;
          ordinal < provider_batch.batch.rows.size(); ++ordinal) {
+      if (ExchangeCancellationRequested(cancellation_requested)) {
+        return Refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                      "time-series exchange row validation was cancelled");
+      }
       const auto& row = provider_batch.batch.rows[ordinal];
       const auto& identity = provider_batch.ordered_row_identities[ordinal];
       if (row.values.size() != expected_width ||
@@ -1917,9 +1933,18 @@ ModelExchangeResultV1 PublishModelFamilyExchangeV1(
       }
     }
   }
+  bool normalized_cancellation_observed = false;
   const auto validation = ValidateCanonicalDescriptorBatch(
-      normalized, input.output_descriptor_ids);
+      normalized, input.output_descriptor_ids,
+      cancellation_requested ? +descriptor_cancellation_probe : nullptr,
+      cancellation_requested ? &cancellation_requested : nullptr,
+      &normalized_cancellation_observed);
   if (!validation.ok) {
+    if (validation.diagnostic_code == "SB_MODEL_EXECUTION_CANCELLED_V1" ||
+        validation.diagnostic_code ==
+            "SB_MODEL_COORDINATOR_LEG_FAILED_V1") {
+      return Refuse(validation.diagnostic_code.c_str(), validation.detail);
+    }
     return Refuse(kModelTypedExchangeInvalid, validation.detail);
   }
 

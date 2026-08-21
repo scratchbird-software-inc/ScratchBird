@@ -10,11 +10,13 @@
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "nosql/nosql_batch_point_lookup_support.hpp"
 #include "nosql/nosql_surface_support.hpp"
 #include "query/expression_api.hpp"
 #include "security/security_model.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <array>
@@ -25,8 +27,10 @@
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <new>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -595,11 +599,176 @@ bool AccountTimeSeriesMemory(const std::uint64_t bytes,
   return CheckedTimeSeriesAdd(bytes, retained) && *retained <= limit;
 }
 
-bool CheckedTimeSeriesStringBytes(const std::string_view value,
-                                  std::uint64_t* total) {
-  return value.size() != std::numeric_limits<std::size_t>::max() &&
-         CheckedTimeSeriesAdd(static_cast<std::uint64_t>(value.size()) + 1,
-                              total);
+bool CheckedTimeSeriesOwnedStringBytes(const std::string& value,
+                                       std::uint64_t* total) {
+  return value.capacity() < std::numeric_limits<std::uint64_t>::max() &&
+         CheckedTimeSeriesAdd(
+             static_cast<std::uint64_t>(value.capacity()) + 1, total);
+}
+
+bool AccountTimeSeriesDiagnosticMemoryV1(
+    const EngineApiDiagnostic& diagnostic, std::uint64_t* total) {
+  std::uint64_t field_bytes = 0;
+  if (!CheckedTimeSeriesMultiply(
+          static_cast<std::uint64_t>(diagnostic.fields.capacity()),
+          sizeof(EngineApiDiagnosticField), &field_bytes) ||
+      !CheckedTimeSeriesAdd(field_bytes, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(diagnostic.code, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(diagnostic.message_key, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(diagnostic.detail, total)) {
+    return false;
+  }
+  for (const auto& field : diagnostic.fields) {
+    if (!CheckedTimeSeriesOwnedStringBytes(field.key, total) ||
+        !CheckedTimeSeriesOwnedStringBytes(field.value, total)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool AccountTimeSeriesEngineDescriptorMemoryV1(
+    const EngineDescriptor& descriptor, std::uint64_t* total) {
+  return CheckedTimeSeriesOwnedStringBytes(
+             descriptor.descriptor_uuid.canonical, total) &&
+         CheckedTimeSeriesOwnedStringBytes(descriptor.descriptor_kind,
+                                           total) &&
+         CheckedTimeSeriesOwnedStringBytes(descriptor.canonical_type_name,
+                                           total) &&
+         CheckedTimeSeriesOwnedStringBytes(descriptor.encoded_descriptor,
+                                           total);
+}
+
+bool AccountTimeSeriesStorageDescriptorMemoryV1(
+    const MgaRelationStorageDescriptor& descriptor, std::uint64_t* total) {
+  const auto account_uuid = [&](const EngineUuid& uuid) {
+    return CheckedTimeSeriesOwnedStringBytes(uuid.canonical, total);
+  };
+  if (!account_uuid(descriptor.descriptor_uuid) ||
+      !account_uuid(descriptor.database_uuid) ||
+      !account_uuid(descriptor.schema_uuid) ||
+      !account_uuid(descriptor.relation_uuid) ||
+      !account_uuid(descriptor.primary_filespace_uuid) ||
+      !CheckedTimeSeriesOwnedStringBytes(descriptor.relation_kind, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(descriptor.storage_profile, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(descriptor.row_identity_rule, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(descriptor.version_identity_rule,
+                                         total) ||
+      !CheckedTimeSeriesOwnedStringBytes(descriptor.mutation_rule, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(descriptor.visibility_rule, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(descriptor.cleanup_rule, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(descriptor.recovery_rule, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(descriptor.descriptor_status, total)) {
+    return false;
+  }
+  std::uint64_t allocation_bytes = 0;
+  if (!CheckedTimeSeriesMultiply(
+          static_cast<std::uint64_t>(descriptor.columns.capacity()),
+          sizeof(MgaRelationColumnStorageDescriptor), &allocation_bytes) ||
+      !CheckedTimeSeriesAdd(allocation_bytes, total) ||
+      !CheckedTimeSeriesMultiply(
+          static_cast<std::uint64_t>(descriptor.indexes.capacity()),
+          sizeof(MgaRelationIndexStorageDescriptor), &allocation_bytes) ||
+      !CheckedTimeSeriesAdd(allocation_bytes, total) ||
+      !CheckedTimeSeriesMultiply(
+          static_cast<std::uint64_t>(
+              descriptor.required_evidence_kinds.capacity()),
+          sizeof(std::string), &allocation_bytes) ||
+      !CheckedTimeSeriesAdd(allocation_bytes, total)) {
+    return false;
+  }
+  for (const auto& column : descriptor.columns) {
+    if (!account_uuid(column.column_uuid) ||
+        !CheckedTimeSeriesOwnedStringBytes(column.canonical_name_key, total) ||
+        !AccountTimeSeriesEngineDescriptorMemoryV1(column.value_descriptor,
+                                                   total) ||
+        !CheckedTimeSeriesOwnedStringBytes(column.storage_class, total) ||
+        !CheckedTimeSeriesOwnedStringBytes(column.charset_uuid, total) ||
+        !CheckedTimeSeriesOwnedStringBytes(column.collation_uuid, total) ||
+        !CheckedTimeSeriesOwnedStringBytes(column.overflow_policy, total)) {
+      return false;
+    }
+  }
+  for (const auto& index : descriptor.indexes) {
+    if (!account_uuid(index.index_uuid) ||
+        !CheckedTimeSeriesOwnedStringBytes(index.family, total) ||
+        !CheckedTimeSeriesOwnedStringBytes(index.profile, total) ||
+        !CheckedTimeSeriesOwnedStringBytes(index.predicate_kind, total) ||
+        !CheckedTimeSeriesOwnedStringBytes(index.predicate_column, total) ||
+        !CheckedTimeSeriesOwnedStringBytes(index.predicate_value, total) ||
+        !CheckedTimeSeriesOwnedStringBytes(index.residency_policy, total) ||
+        !CheckedTimeSeriesMultiply(
+            static_cast<std::uint64_t>(index.key_envelopes.capacity()),
+            sizeof(std::string), &allocation_bytes) ||
+        !CheckedTimeSeriesAdd(allocation_bytes, total) ||
+        !CheckedTimeSeriesMultiply(
+            static_cast<std::uint64_t>(index.include_columns.capacity()),
+            sizeof(std::string), &allocation_bytes) ||
+        !CheckedTimeSeriesAdd(allocation_bytes, total)) {
+      return false;
+    }
+    for (const auto& value : index.key_envelopes) {
+      if (!CheckedTimeSeriesOwnedStringBytes(value, total)) return false;
+    }
+    for (const auto& value : index.include_columns) {
+      if (!CheckedTimeSeriesOwnedStringBytes(value, total)) return false;
+    }
+  }
+  for (const auto& evidence : descriptor.required_evidence_kinds) {
+    if (!CheckedTimeSeriesOwnedStringBytes(evidence, total)) return false;
+  }
+  return true;
+}
+
+bool AccountTimeSeriesCrudRowMemoryV1(const CrudRowVersionRecord& row,
+                                     std::uint64_t* total) {
+  std::uint64_t value_bytes = 0;
+  if (!CheckedTimeSeriesMultiply(
+          static_cast<std::uint64_t>(row.values.capacity()),
+          sizeof(std::pair<std::string, std::string>), &value_bytes) ||
+      !CheckedTimeSeriesAdd(value_bytes, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(row.table_uuid, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(row.row_uuid, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(row.version_uuid, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(row.temporary_session_uuid, total) ||
+      !CheckedTimeSeriesOwnedStringBytes(row.previous_version_uuid, total)) {
+    return false;
+  }
+  for (const auto& [key, value] : row.values) {
+    if (!CheckedTimeSeriesOwnedStringBytes(key, total) ||
+        !CheckedTimeSeriesOwnedStringBytes(value, total)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::optional<std::uint64_t> TimeSeriesMgaReadCarrierMemoryBytesV1(
+    const MgaVisibleHeapRelationReadResult& read) {
+  std::uint64_t bytes = sizeof(read);
+  std::uint64_t allocation_bytes = 0;
+  if (!AccountTimeSeriesDiagnosticMemoryV1(read.diagnostic, &bytes) ||
+      !AccountTimeSeriesStorageDescriptorMemoryV1(read.descriptor, &bytes) ||
+      !CheckedTimeSeriesMultiply(
+          static_cast<std::uint64_t>(read.visible_rows.capacity()),
+          sizeof(CrudRowVersionRecord), &allocation_bytes) ||
+      !CheckedTimeSeriesAdd(allocation_bytes, &bytes) ||
+      !CheckedTimeSeriesMultiply(
+          static_cast<std::uint64_t>(read.evidence.capacity()),
+          sizeof(EngineEvidenceReference), &allocation_bytes) ||
+      !CheckedTimeSeriesAdd(allocation_bytes, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& row : read.visible_rows) {
+    if (!AccountTimeSeriesCrudRowMemoryV1(row, &bytes)) return std::nullopt;
+  }
+  for (const auto& evidence : read.evidence) {
+    if (!CheckedTimeSeriesOwnedStringBytes(evidence.evidence_kind, &bytes) ||
+        !CheckedTimeSeriesOwnedStringBytes(evidence.evidence_id, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
 }
 
 class ScopedTimeSeriesNearestRounding {
@@ -1047,10 +1216,13 @@ TagParseStatus CanonicalizeTimeSeriesTags(const std::string_view input,
                                           const std::uint64_t maximum_memory_bytes,
                                           const std::function<bool()>&
                                               cancellation_requested,
-                                          std::string* canonical) {
-  if (canonical == nullptr || input.empty() || input.front() != '{') {
+                                          std::string* canonical,
+                                          std::uint64_t* working_memory_bytes) {
+  if (canonical == nullptr || working_memory_bytes == nullptr ||
+      input.empty() || input.front() != '{') {
     return TagParseStatus::kInvalid;
   }
+  *working_memory_bytes = 0;
   if (input.size() > maximum_tag_bytes) {
     return TagParseStatus::kResourceRefused;
   }
@@ -1070,6 +1242,7 @@ TagParseStatus CanonicalizeTimeSeriesTags(const std::string_view input,
       working_bytes > maximum_memory_bytes) {
     return TagParseStatus::kResourceRefused;
   }
+  *working_memory_bytes = working_bytes;
   std::size_t offset = 1;
   std::vector<std::pair<std::string, std::string>> tags;
   tags.reserve(static_cast<std::size_t>(maximum_tag_count));
@@ -1158,20 +1331,81 @@ TagParseStatus CanonicalizeTimeSeriesTags(const std::string_view input,
   return TagParseStatus::kOk;
 }
 
-bool ExactTimeSeriesStorageDescriptor(
+bool ExactTimeSeriesValueDescriptor(
+    const EngineDescriptor& descriptor, const std::string_view expected_type,
+    const std::string_view expected_type_uuid) {
+  if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
+      descriptor.descriptor_kind != "canonical_type_descriptor" ||
+      descriptor.canonical_type_name != expected_type) {
+    return false;
+  }
+  std::map<std::string_view, std::string_view> fields;
+  const auto encoded = std::string_view(descriptor.encoded_descriptor);
+  std::size_t offset = 0;
+  while (offset <= encoded.size()) {
+    const auto end = encoded.find(';', offset);
+    const auto field = encoded.substr(
+        offset, end == std::string_view::npos ? std::string_view::npos
+                                              : end - offset);
+    const auto equal = field.find('=');
+    if (field.empty() || equal == std::string_view::npos || equal == 0 ||
+        equal + 1 == field.size() ||
+        !fields.emplace(field.substr(0, equal), field.substr(equal + 1)).second) {
+      return false;
+    }
+    if (end == std::string_view::npos) break;
+    offset = end + 1;
+  }
+  if (fields.size() < 3 || fields.size() > 4 ||
+      !fields.contains("canonical") || !fields.contains("type_uuid") ||
+      !fields.contains("nullable") ||
+      fields.at("canonical") != expected_type ||
+      fields.at("type_uuid") != expected_type_uuid ||
+      fields.at("nullable") != "false") {
+    return false;
+  }
+  const auto timezone = fields.find("timezone_profile_id");
+  if (expected_type == "timestamp_tz") {
+    return fields.size() == 3 ||
+           (fields.size() == 4 && timezone != fields.end() &&
+            timezone->second == "UTC");
+  }
+  return fields.size() == 3 && timezone == fields.end();
+}
+
+bool ExactTimeSeriesStorageDescriptorImpl(
     const MgaRelationStorageDescriptor& descriptor) {
   static constexpr std::array<std::string_view, 4> kNames{
       "metric_uuid", "point_timestamp", "tags", "value"};
   static constexpr std::array<std::string_view, 4> kTypes{
       "uuid", "timestamp_tz", "text", "real64"};
   if (descriptor.columns.size() != kNames.size()) return false;
+  const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return false;
   std::unordered_set<std::string> column_uuids;
   std::unordered_set<std::string> descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = descriptor.columns[ordinal];
+    const auto type_id =
+        kTypes[ordinal] == "timestamp_tz"
+            ? scratchbird::core::datatypes::CanonicalTypeId::timestamp
+            : scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+                  std::string(kTypes[ordinal]));
+    const auto type_row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+        manifest.manifest, type_id);
+    if (!type_row.ok() || type_row.manifest.descriptor_rows.size() != 1 ||
+        !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
+      return false;
+    }
+    const auto expected_type_uuid = scratchbird::core::uuid::UuidToString(
+        type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
     if (column.ordinal != ordinal ||
         column.canonical_name_key != kNames[ordinal] || column.nullable ||
         column.generated || column.identity_column ||
+        column.storage_class != "inline_row_value" ||
+        column.max_inline_bytes != 4096 ||
+        column.overflow_policy != "mga_large_value_locator" ||
         column.value_descriptor.canonical_type_name != kTypes[ordinal] ||
         !CanonicalTimeSeriesUuid(column.column_uuid.canonical) ||
         !CanonicalTimeSeriesUuid(
@@ -1179,7 +1413,12 @@ bool ExactTimeSeriesStorageDescriptor(
         !column_uuids.insert(column.column_uuid.canonical).second ||
         !descriptor_uuids
              .insert(column.value_descriptor.descriptor_uuid.canonical)
-             .second) {
+             .second ||
+        !column.charset_uuid.empty() || !column.collation_uuid.empty() ||
+        column.character_length != 0 ||
+        !ExactTimeSeriesValueDescriptor(column.value_descriptor,
+                                        kTypes[ordinal],
+                                        expected_type_uuid)) {
       return false;
     }
   }
@@ -1240,7 +1479,73 @@ MgaVisibleHeapRelationReadResult ReadExactTimeSeriesBucketStoreFallbackV1(
   return ReadVisibleMgaHeapRelation(context, request);
 }
 
+std::optional<std::uint64_t> BoundTimeSeriesResultLogicalMemoryBytesV1(
+    const EngineBoundTimeSeriesReadResultV1& result) {
+  std::uint64_t bytes = sizeof(result);
+  const auto account = [&](const std::uint64_t amount) {
+    return CheckedTimeSeriesAdd(amount, &bytes);
+  };
+  const auto account_string = [&](const std::string& value) {
+    return CheckedTimeSeriesOwnedStringBytes(value, &bytes);
+  };
+  const auto account_array = [&](const std::size_t count,
+                                 const std::uint64_t width) {
+    std::uint64_t amount = 0;
+    return CheckedTimeSeriesMultiply(count, width, &amount) &&
+           account(amount);
+  };
+  if (!account_string(result.operation_id) ||
+      !account_string(result.selected_access_path_id) ||
+      !account_string(result.ordering_id) ||
+      !account_string(result.descriptor_uuid) ||
+      !account_string(result.selected_alternative_uuid) ||
+      !account_string(result.capability_uuid) ||
+      !account_string(result.provider_uuid) ||
+      !account_array(result.diagnostics.capacity(),
+                     sizeof(EngineApiDiagnostic)) ||
+      !account_array(result.evidence.capacity(),
+                     sizeof(EngineEvidenceReference)) ||
+      !account_array(result.rows.capacity(),
+                     sizeof(EngineBoundTimeSeriesPointRowV1)) ||
+      !account_array(result.downsample_rows.capacity(),
+                     sizeof(EngineBoundTimeSeriesDownsampleRowV1))) {
+    return std::nullopt;
+  }
+  for (const auto& diagnostic : result.diagnostics) {
+    if (!AccountTimeSeriesDiagnosticMemoryV1(diagnostic, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  for (const auto& evidence : result.evidence) {
+    if (!account_string(evidence.evidence_kind) ||
+        !account_string(evidence.evidence_id)) {
+      return std::nullopt;
+    }
+  }
+  for (const auto& row : result.rows) {
+    if (!account_string(row.row_uuid) || !account_string(row.series_uuid) ||
+        !account_string(row.metric_uuid) ||
+        !account_string(row.point_timestamp) || !account_string(row.tags)) {
+      return std::nullopt;
+    }
+  }
+  for (const auto& row : result.downsample_rows) {
+    if (!account_string(row.series_uuid) ||
+        !account_string(row.metric_uuid) ||
+        !account_string(row.bucket_start) ||
+        !account_string(row.bucket_end) || !account_string(row.tags)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
 }  // namespace
+
+bool ExactTimeSeriesStorageDescriptorV1(
+    const MgaRelationStorageDescriptor& descriptor) {
+  return ExactTimeSeriesStorageDescriptorImpl(descriptor);
+}
 
 bool EngineExactTimeSeriesBucketStartV1(
     const EngineApiI64 timestamp_ns, const EngineApiI64 interval_ns,
@@ -1255,16 +1560,34 @@ bool EngineExactTimeSeriesBucketStartV1(
   return !bucket_start->empty();
 }
 
-EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
+static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
     const EngineBoundTimeSeriesReadRequestV1& request) {
   bool data_access_observed = false;
+  bool cancellation_observed = false;
+  bool cancellation_probe_failed = false;
+  std::uint64_t api_peak_live_memory_bytes = 0;
   std::uint64_t preferred_access_invocation_count = 0;
   std::uint64_t exact_fallback_access_invocation_count = 0;
   std::string selected_access_path_id;
   const auto refuse = [&](const char* diagnostic, std::string detail) {
-    auto result = BoundTimeSeriesRefusal(request, diagnostic,
-                                         std::move(detail));
+    const bool probe_failure = cancellation_probe_failed;
+    auto result = BoundTimeSeriesRefusal(
+        request,
+        probe_failure &&
+                std::string_view(diagnostic) ==
+                    "SB_MODEL_EXECUTION_CANCELLED_V1"
+            ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+            : diagnostic,
+        probe_failure &&
+                std::string_view(diagnostic) ==
+                    "SB_MODEL_EXECUTION_CANCELLED_V1"
+            ? "time-series cancellation probe failed"
+            : std::move(detail));
     result.data_access_observed = data_access_observed;
+    result.cancellation_observed = cancellation_observed;
+    result.cancellation_probe_failed = cancellation_probe_failed;
+    result.peak_live_memory_bytes = api_peak_live_memory_bytes;
+    result.memory_grant_bytes = request.maximum_memory_bytes;
     result.preferred_access_invocation_count =
         preferred_access_invocation_count;
     result.exact_fallback_access_invocation_count =
@@ -1272,13 +1595,18 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
     result.selected_access_path_id = selected_access_path_id;
     return result;
   };
-  const auto cancelled = [&]() {
+  const auto cancelled = [&]() noexcept {
+    if (!request.cancellation_requested) return false;
     try {
-      return request.cancellation_requested && request.cancellation_requested();
+      if (!request.cancellation_requested()) return false;
+      cancellation_observed = true;
+      return true;
     } catch (...) {
+      cancellation_probe_failed = true;
       return true;
     }
   };
+  try {
   const bool range_read =
       request.operation == EngineBoundTimeSeriesReadOperationV1::kRangeRead;
   const bool downsample = request.operation ==
@@ -1375,19 +1703,23 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
   // Descriptor generation and the exact storage shape are catalog authority,
   // not row-access observations. Refuse a stale/substituted binding before the
   // provider is allowed to inspect an MGA heap version.
-  const auto current_descriptor =
-      LoadMgaRelationStorageDescriptor(request.context, request.object_uuid);
-  if (!current_descriptor.ok ||
-      current_descriptor.descriptor.descriptor_uuid.canonical !=
-          request.expected_descriptor_uuid ||
-      current_descriptor.descriptor.descriptor_generation !=
-          request.expected_descriptor_generation) {
-    return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
-                  "time-series relation descriptor generation changed");
-  }
-  if (!ExactTimeSeriesStorageDescriptor(current_descriptor.descriptor)) {
-    return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                  "time-series storage descriptor is not the exact four-field raw layout");
+  {
+    const auto current_descriptor =
+        LoadMgaRelationStorageDescriptor(request.context,
+                                         request.object_uuid);
+    if (!current_descriptor.ok ||
+        current_descriptor.descriptor.descriptor_uuid.canonical !=
+            request.expected_descriptor_uuid ||
+        current_descriptor.descriptor.descriptor_generation !=
+            request.expected_descriptor_generation) {
+      return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                    "time-series relation descriptor generation changed");
+    }
+    if (!ExactTimeSeriesStorageDescriptorV1(current_descriptor.descriptor)) {
+      return refuse(
+          "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+          "time-series storage descriptor is not the exact four-field raw layout");
+    }
   }
 
   MgaVisibleHeapRelationReadRequest read_request;
@@ -1400,7 +1732,8 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
   // the requested output-row bound is enforced only after [start,end)
   // selection and grouping below.
   read_request.maximum_output_rows = request.maximum_scanned_row_versions;
-  read_request.cancellation_requested = request.cancellation_requested;
+  read_request.maximum_memory_bytes = request.maximum_memory_bytes;
+  read_request.cancellation_requested = cancelled;
   data_access_observed = true;
   MgaVisibleHeapRelationReadResult read;
   if (request.exact_fallback_selected) {
@@ -1413,6 +1746,7 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
     ++preferred_access_invocation_count;
     read = ReadPreferredTimeSeriesRawStoreV1(request.context, read_request);
   }
+  api_peak_live_memory_bytes = read.peak_live_memory_bytes;
   if (!read.ok) {
     if (read.cancellation_observed || cancelled()) {
       return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
@@ -1421,49 +1755,70 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
     const auto detail = read.diagnostic.detail.empty()
                             ? std::string("bounded time-series MGA row read failed")
                             : read.diagnostic.detail;
-    const bool resource_failure =
-        detail.find("maximum") != std::string::npos ||
-        detail.find("resource") != std::string::npos ||
-        detail.find("bound") != std::string::npos ||
-        detail.find("decoded") != std::string::npos ||
-        detail.find("overflow") != std::string::npos;
-    const bool mga_failure =
-        detail.find("transaction") != std::string::npos ||
-        detail.find("snapshot") != std::string::npos ||
-        detail.find("visibility") != std::string::npos;
-    return refuse(resource_failure
-                      ? "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1"
-                      : mga_failure ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
-                                    : "SB_MODEL_CATALOG_GENERATION_STALE_V1",
-                  detail);
+    const char* diagnostic = "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+    switch (read.failure_category) {
+      case MgaHeapReadFailureCategoryV1::kResource:
+        diagnostic = "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+        break;
+      case MgaHeapReadFailureCategoryV1::kCancellation:
+        diagnostic = "SB_MODEL_EXECUTION_CANCELLED_V1";
+        break;
+      case MgaHeapReadFailureCategoryV1::kMgaContext:
+        diagnostic = "SB_MODEL_MGA_CONTEXT_MISMATCH_V1";
+        break;
+      case MgaHeapReadFailureCategoryV1::kCatalog:
+        diagnostic = "SB_MODEL_CATALOG_GENERATION_STALE_V1";
+        break;
+      case MgaHeapReadFailureCategoryV1::kCorruptStorage:
+        diagnostic = "SB_MODEL_TYPED_EXCHANGE_INVALID_V1";
+        break;
+      case MgaHeapReadFailureCategoryV1::kInvalidRequest:
+        diagnostic = "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1";
+        break;
+      case MgaHeapReadFailureCategoryV1::kStorage:
+      case MgaHeapReadFailureCategoryV1::kNone:
+        break;
+    }
+    return refuse(diagnostic, detail);
+  }
+  if (!read.memory_receipt_complete ||
+      read.memory_grant_bytes != request.maximum_memory_bytes ||
+      read.current_live_memory_bytes > read.peak_live_memory_bytes ||
+      read.peak_live_memory_bytes > read.memory_grant_bytes) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "time-series MGA read memory receipt is incomplete");
   }
 
+  const auto read_carrier_memory =
+      TimeSeriesMgaReadCarrierMemoryBytesV1(read);
   std::uint64_t working_memory_bytes =
-      sizeof(EngineBoundTimeSeriesReadResultV1) + sizeof(read);
+      sizeof(EngineBoundTimeSeriesReadResultV1);
+  api_peak_live_memory_bytes =
+      std::max(api_peak_live_memory_bytes, working_memory_bytes);
   std::uint64_t retained_vector_bytes = 0;
   const auto account_working = [&](const std::uint64_t bytes) {
-    return AccountTimeSeriesMemory(bytes, request.maximum_memory_bytes,
-                                   &working_memory_bytes);
+    const bool accounted =
+        AccountTimeSeriesMemory(bytes, request.maximum_memory_bytes,
+                                &working_memory_bytes);
+    if (accounted) {
+      api_peak_live_memory_bytes =
+          std::max(api_peak_live_memory_bytes, working_memory_bytes);
+    }
+    return accounted;
   };
-  const auto account_working_string = [&](const std::string_view value) {
-    return value.size() != std::numeric_limits<std::size_t>::max() &&
-           account_working(static_cast<std::uint64_t>(value.size()) + 1);
+  const auto account_working_string = [&](const std::string& value) {
+    std::uint64_t bytes = 0;
+    return CheckedTimeSeriesOwnedStringBytes(value, &bytes) &&
+           account_working(bytes);
   };
-  if (!CheckedTimeSeriesMultiply(
-          static_cast<std::uint64_t>(read.visible_rows.size()),
-          sizeof(CrudRowVersionRecord), &retained_vector_bytes) ||
-      !account_working(retained_vector_bytes) ||
-      !account_working(read.decoded_byte_count) ||
-      !CheckedTimeSeriesMultiply(
-          static_cast<std::uint64_t>(read.visible_rows.size()),
-          sizeof(EngineBoundTimeSeriesPointRowV1), &retained_vector_bytes) ||
-      !account_working(retained_vector_bytes) ||
+  if (!read_carrier_memory.has_value() ||
+      !account_working(*read_carrier_memory) ||
       !account_working_string(selected_access_path_id) ||
       !account_working_string(read.descriptor.descriptor_uuid.canonical) ||
       !account_working_string(request.selected_alternative_uuid) ||
       !account_working_string(request.capability_uuid) ||
       !account_working_string(request.provider_uuid) ||
-      !account_working(512)) {
+      !account_working(4096)) {
     return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                   "time-series retained read/result preflight exceeded its memory bound");
   }
@@ -1483,22 +1838,32 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
       exact_fallback_access_invocation_count;
   result.selected_access_path_id = selected_access_path_id;
   result.scanned_row_version_count = read.scanned_row_version_count;
-  result.selected_visible_row_count = read.visible_rows.size();
   result.descriptor_uuid = read.descriptor.descriptor_uuid.canonical;
   result.descriptor_generation = read.descriptor.descriptor_generation;
   result.selected_alternative_uuid = request.selected_alternative_uuid;
   result.capability_uuid = request.capability_uuid;
   result.provider_uuid = request.provider_uuid;
   result.provider_generation = request.provider_generation;
-  if (result.descriptor_uuid != current_descriptor.descriptor.descriptor_uuid.canonical ||
+  if (result.descriptor_uuid != request.expected_descriptor_uuid ||
       result.descriptor_generation !=
-          current_descriptor.descriptor.descriptor_generation) {
+          request.expected_descriptor_generation) {
     return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
                   "time-series relation descriptor generation changed");
   }
 
   std::vector<EngineBoundTimeSeriesPointRowV1> selected;
-  selected.reserve(read.visible_rows.size());
+  const std::size_t selected_capacity =
+      downsample
+          ? read.visible_rows.size()
+          : std::min(read.visible_rows.size(), request.maximum_output_rows);
+  if (!CheckedTimeSeriesMultiply(
+          static_cast<std::uint64_t>(selected_capacity),
+          sizeof(EngineBoundTimeSeriesPointRowV1), &retained_vector_bytes) ||
+      !account_working(retained_vector_bytes)) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "time-series selected-row vector exceeded its memory bound");
+  }
+  selected.reserve(selected_capacity);
   std::uint64_t tag_bytes = 0;
   for (const auto& row : read.visible_rows) {
     if (cancelled()) {
@@ -1548,11 +1913,12 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
         working_memory_bytes <= request.maximum_memory_bytes
             ? request.maximum_memory_bytes - working_memory_bytes
             : 0;
+    std::uint64_t tag_working_memory_bytes = 0;
     const auto tag_status =
         CanonicalizeTimeSeriesTags(*tags, remaining_tag_bytes,
-                                   remaining_memory_bytes,
-                                   request.cancellation_requested,
-                                   &canonical_tags);
+                                   remaining_memory_bytes, cancelled,
+                                   &canonical_tags,
+                                   &tag_working_memory_bytes);
     if (tag_status == TagParseStatus::kCancelled) {
       return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
                     "time-series tag canonicalization was cancelled");
@@ -1569,6 +1935,14 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
       return refuse("SB_MODEL_TIME_SERIES_TAG_INVALID_V1",
                     "time-series selected point tags are invalid");
     }
+    std::uint64_t tag_phase_memory_bytes = working_memory_bytes;
+    if (!CheckedTimeSeriesAdd(tag_working_memory_bytes,
+                              &tag_phase_memory_bytes)) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "time-series tag working-memory receipt overflowed");
+    }
+    api_peak_live_memory_bytes =
+        std::max(api_peak_live_memory_bytes, tag_phase_memory_bytes);
     double numeric_value = 0.0;
     if (!ParseFiniteReal64(*stored_value, &numeric_value)) {
       return refuse("SB_MODEL_TIME_SERIES_VALUE_INVALID_V1",
@@ -1580,13 +1954,19 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
                     "time-series tag bytes exceeded their bound");
     }
     if (point_ns >= range_start_ns && point_ns < range_end_ns) {
+      if (range_read && selected.size() >= request.maximum_output_rows) {
+        return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "time-series raw output row count exceeded its bound");
+      }
       std::uint64_t retained_strings = 0;
-      if (!CheckedTimeSeriesStringBytes(row.row_uuid, &retained_strings) ||
-          !CheckedTimeSeriesStringBytes(request.object_uuid,
-                                        &retained_strings) ||
-          !CheckedTimeSeriesStringBytes(*metric, &retained_strings) ||
+      if (!CheckedTimeSeriesOwnedStringBytes(row.row_uuid,
+                                             &retained_strings) ||
+          !CheckedTimeSeriesOwnedStringBytes(request.object_uuid,
+                                             &retained_strings) ||
+          !CheckedTimeSeriesOwnedStringBytes(*metric, &retained_strings) ||
           !CheckedTimeSeriesAdd(31, &retained_strings) ||
-          !CheckedTimeSeriesStringBytes(canonical_tags, &retained_strings) ||
+          !CheckedTimeSeriesOwnedStringBytes(canonical_tags,
+                                             &retained_strings) ||
           !account_working(retained_strings)) {
         return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                       "time-series selected-row retained memory exceeded its bound");
@@ -1600,6 +1980,7 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
                           numeric_value});
     }
   }
+  result.selected_visible_row_count = selected.size();
   bool row_sort_cancelled = false;
   std::ranges::sort(selected, [&](const auto& left, const auto& right) {
     if (!row_sort_cancelled && cancelled()) row_sort_cancelled = true;
@@ -1684,19 +2065,25 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
         return refuse("SB_MODEL_TIME_SERIES_INTERVAL_INVALID_V1",
                       "time-series bucket boundary overflowed");
       }
-      bool group_lookup_cancelled = false;
-      auto group_entry = std::ranges::find_if(
-          groups, [&](const auto& candidate) {
-            if (cancelled()) {
-              group_lookup_cancelled = true;
-              return true;
-            }
-            return std::get<0>(candidate.first) == row.series_uuid &&
-                   std::get<1>(candidate.first) == row.metric_uuid &&
-                   std::get<2>(candidate.first) == row.tags &&
-                   std::get<3>(candidate.first) == bucket_start_ns;
-          });
-      if (group_lookup_cancelled) {
+      std::uint64_t group_lookup_projection = working_memory_bytes;
+      if (!CheckedTimeSeriesAdd(sizeof(GroupKey),
+                                &group_lookup_projection) ||
+          !CheckedTimeSeriesOwnedStringBytes(row.series_uuid,
+                                             &group_lookup_projection) ||
+          !CheckedTimeSeriesOwnedStringBytes(row.metric_uuid,
+                                             &group_lookup_projection) ||
+          !CheckedTimeSeriesOwnedStringBytes(row.tags,
+                                             &group_lookup_projection) ||
+          group_lookup_projection > request.maximum_memory_bytes) {
+        return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "time-series downsample lookup key exceeded its memory bound");
+      }
+      api_peak_live_memory_bytes =
+          std::max(api_peak_live_memory_bytes, group_lookup_projection);
+      GroupKey group_key{row.series_uuid, row.metric_uuid, row.tags,
+                         bucket_start_ns};
+      auto group_entry = groups.find(group_key);
+      if (cancelled()) {
         return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
                       "time-series downsample group search was cancelled");
       }
@@ -1710,10 +2097,10 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
             sizeof(GroupKey) + sizeof(GroupState) + 5 * sizeof(void*);
         const auto duplicated_string_bytes = [&]() {
           std::uint64_t bytes = 0;
-          return CheckedTimeSeriesStringBytes(row.series_uuid, &bytes) &&
-                         CheckedTimeSeriesStringBytes(row.metric_uuid,
-                                                      &bytes) &&
-                         CheckedTimeSeriesStringBytes(row.tags, &bytes)
+          return CheckedTimeSeriesOwnedStringBytes(row.series_uuid, &bytes) &&
+                         CheckedTimeSeriesOwnedStringBytes(row.metric_uuid,
+                                                           &bytes) &&
+                         CheckedTimeSeriesOwnedStringBytes(row.tags, &bytes)
                      ? std::optional<std::uint64_t>(bytes)
                      : std::nullopt;
         }();
@@ -1726,10 +2113,8 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
           return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                         "time-series downsample working group memory exceeded its bound");
         }
-        group_entry = groups.emplace(
-            GroupKey{row.series_uuid, row.metric_uuid, row.tags,
-                     bucket_start_ns},
-            GroupState{}).first;
+        group_entry =
+            groups.emplace(std::move(group_key), GroupState{}).first;
       }
       auto& group = group_entry->second;
       if (!group.initialized) {
@@ -1774,12 +2159,12 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
     for (const auto& [key, group] : groups) {
       (void)key;
       std::uint64_t output_dynamic_bytes = 0;
-      if (!CheckedTimeSeriesStringBytes(group.series_uuid,
-                                        &output_dynamic_bytes) ||
-          !CheckedTimeSeriesStringBytes(group.metric_uuid,
-                                        &output_dynamic_bytes) ||
-          !CheckedTimeSeriesStringBytes(group.tags,
-                                        &output_dynamic_bytes) ||
+      if (!CheckedTimeSeriesOwnedStringBytes(group.series_uuid,
+                                             &output_dynamic_bytes) ||
+          !CheckedTimeSeriesOwnedStringBytes(group.metric_uuid,
+                                             &output_dynamic_bytes) ||
+          !CheckedTimeSeriesOwnedStringBytes(group.tags,
+                                             &output_dynamic_bytes) ||
           !CheckedTimeSeriesAdd(62, &output_dynamic_bytes) ||
           !account_working(output_dynamic_bytes)) {
         return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
@@ -1840,6 +2225,13 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
   result.residual_recheck_complete = true;
   result.base_row_mga_recheck_complete = true;
   result.security_recheck_complete = true;
+  constexpr std::uint64_t kPublicationEvidenceCarrierBytes =
+      4 * sizeof(EngineEvidenceReference) + 1024;
+  if (!account_working(kPublicationEvidenceCarrierBytes)) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "time-series evidence publication exceeded its memory grant");
+  }
+  result.evidence.reserve(result.evidence.size() + 4);
   AddApiBehaviorEvidence(&result, "time_series_visibility_authority",
                          "engine_mga_statement_snapshot_first");
   AddApiBehaviorEvidence(&result, "time_series_range",
@@ -1849,11 +2241,104 @@ EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
       &result, "time_series_access_route",
       result.selected_access_path_id);
   AddApiBehaviorEvidence(&result, "time_series_ordering", result.ordering_id);
+  std::uint64_t evidence_memory_bytes = 0;
+  if (!CheckedTimeSeriesOwnedStringBytes(result.operation_id,
+                                         &evidence_memory_bytes)) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "time-series result metadata memory receipt overflowed");
+  }
+  if (!CheckedTimeSeriesMultiply(
+          result.evidence.capacity(), sizeof(EngineEvidenceReference),
+          &retained_vector_bytes) ||
+      !CheckedTimeSeriesAdd(retained_vector_bytes,
+                            &evidence_memory_bytes)) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "time-series evidence memory receipt overflowed");
+  }
+  for (const auto& evidence : result.evidence) {
+    std::uint64_t item_bytes = 0;
+    if (!CheckedTimeSeriesOwnedStringBytes(evidence.evidence_kind,
+                                           &item_bytes) ||
+        !CheckedTimeSeriesOwnedStringBytes(evidence.evidence_id,
+                                           &item_bytes) ||
+        !CheckedTimeSeriesAdd(item_bytes, &evidence_memory_bytes)) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "time-series evidence memory receipt overflowed");
+    }
+  }
+  if (!account_working(evidence_memory_bytes)) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "time-series evidence exceeded its memory grant");
+  }
   if (cancelled()) {
     return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
                   "time-series execution was cancelled at final publication");
   }
+  const auto current_memory =
+      BoundTimeSeriesResultLogicalMemoryBytesV1(result);
+  if (!current_memory.has_value()) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "time-series result memory receipt overflowed");
+  }
+  result.current_live_memory_bytes = *current_memory;
+  result.peak_live_memory_bytes =
+      std::max(api_peak_live_memory_bytes, *current_memory);
+  result.memory_grant_bytes = request.maximum_memory_bytes;
+  result.memory_receipt_complete =
+      result.current_live_memory_bytes <= result.peak_live_memory_bytes &&
+      result.peak_live_memory_bytes <= result.memory_grant_bytes;
+  result.cancellation_observed = cancellation_observed;
+  result.cancellation_probe_failed = cancellation_probe_failed;
+  if (!result.memory_receipt_complete) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "time-series API live-memory receipt exceeded its grant");
+  }
   return result;
+  } catch (const std::bad_alloc&) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "time-series execution allocation was refused");
+  } catch (const std::length_error&) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "time-series execution allocation length was refused");
+  } catch (const std::exception& exception) {
+    return refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+                  std::string("time-series execution threw: ") +
+                      exception.what());
+  } catch (...) {
+    return refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+                  "time-series execution threw a non-standard exception");
+  }
+}
+
+EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
+    const EngineBoundTimeSeriesReadRequestV1& request) {
+  try {
+    return EngineBoundTimeSeriesReadV1Impl(request);
+  } catch (const std::bad_alloc&) {
+    auto result = BoundTimeSeriesRefusal(
+        request, "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+        "time-series execution allocation was refused");
+    result.memory_grant_bytes = request.maximum_memory_bytes;
+    return result;
+  } catch (const std::length_error&) {
+    auto result = BoundTimeSeriesRefusal(
+        request, "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+        "time-series execution allocation length was refused");
+    result.memory_grant_bytes = request.maximum_memory_bytes;
+    return result;
+  } catch (const std::exception& exception) {
+    auto result = BoundTimeSeriesRefusal(
+        request, "SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+        std::string("time-series execution threw: ") + exception.what());
+    result.memory_grant_bytes = request.maximum_memory_bytes;
+    return result;
+  } catch (...) {
+    auto result = BoundTimeSeriesRefusal(
+        request, "SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+        "time-series execution threw a non-standard exception");
+    result.memory_grant_bytes = request.maximum_memory_bytes;
+    return result;
+  }
 }
 
 }  // namespace scratchbird::engine::internal_api

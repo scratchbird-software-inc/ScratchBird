@@ -132,10 +132,27 @@ struct MgaRelationStorageDescriptorLoadResult {
 
 struct MgaVisibleHeapRelationReadRequest {
   std::string relation_uuid;
+  const std::string* borrowed_relation_uuid = nullptr;
   std::uint64_t maximum_scanned_row_versions = 0;
   std::uint64_t maximum_decoded_bytes = 0;
   std::uint64_t maximum_output_rows = 0;
+  // Optional operator-local grant for the bounded row-carrier work performed
+  // after engine snapshot/catalog authority has been resolved. A zero value
+  // preserves the legacy caller contract and produces no complete receipt.
+  std::uint64_t maximum_memory_bytes = 0;
   std::function<bool()> cancellation_requested;
+  const std::function<bool()>* borrowed_cancellation_requested = nullptr;
+};
+
+enum class MgaHeapReadFailureCategoryV1 : std::uint8_t {
+  kNone = 0,
+  kInvalidRequest,
+  kResource,
+  kCancellation,
+  kMgaContext,
+  kCatalog,
+  kStorage,
+  kCorruptStorage,
 };
 
 struct MgaVisibleHeapRelationReadResult {
@@ -154,6 +171,12 @@ struct MgaVisibleHeapRelationReadResult {
   std::uint64_t tombstone_row_count = 0;
   bool scoped_physical_segment_used = false;
   bool cancellation_observed = false;
+  MgaHeapReadFailureCategoryV1 failure_category =
+      MgaHeapReadFailureCategoryV1::kNone;
+  std::uint64_t current_live_memory_bytes = 0;
+  std::uint64_t peak_live_memory_bytes = 0;
+  std::uint64_t memory_grant_bytes = 0;
+  bool memory_receipt_complete = false;
   std::vector<EngineEvidenceReference> evidence;
 };
 

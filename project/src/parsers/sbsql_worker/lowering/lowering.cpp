@@ -36367,17 +36367,36 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const bool strict_ordered_window =
         peer_ranking_window || ntile_window || value_window;
     const auto& invocation = native.window_invocations.front();
-    const bool exact_int64_aggregate_builtin =
+    const bool exact_unary_aggregate_builtin =
         invocation.builtin_id == "sb.aggregate.sum" ||
         invocation.builtin_id == "sb.aggregate.min" ||
         invocation.builtin_id == "sb.aggregate.max" ||
-        invocation.builtin_id == "sb.aggregate.count";
+        invocation.builtin_id == "sb.aggregate.count" ||
+        invocation.builtin_id == "sb.aggregate.bool_and" ||
+        invocation.builtin_id == "sb.aggregate.bool_or" ||
+        invocation.builtin_id == "sb.aggregate.every";
     const bool aggregate_count_window =
         aggregate_window &&
         invocation.builtin_id == "sb.aggregate.count";
+    const bool aggregate_count_star_window =
+        aggregate_count_window && invocation.argument_expression_ids.empty();
+    const bool value_operand_window =
+        value_window && !aggregate_count_star_window;
+    const bool aggregate_boolean_window =
+        aggregate_window &&
+        (invocation.builtin_id == "sb.aggregate.bool_and" ||
+         invocation.builtin_id == "sb.aggregate.bool_or" ||
+         invocation.builtin_id == "sb.aggregate.every");
+    const bool aggregate_bounded_signed_window =
+        aggregate_window && !aggregate_count_window &&
+        !aggregate_boolean_window;
+    const auto is_bounded_signed_type = [](const std::string_view type_name) {
+      return type_name == "int8" || type_name == "int16" ||
+             type_name == "int32" || type_name == "int64";
+    };
     const std::string_view expected_window_builtin =
         aggregate_window
-            ? (exact_int64_aggregate_builtin
+            ? (exact_unary_aggregate_builtin
                    ? std::string_view{invocation.builtin_id}
                    : std::string_view{})
             : (value_window
@@ -36555,11 +36574,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const bool exact_argument_arity =
         nth_value_window
             ? invocation.argument_expression_ids.size() == 2
-            : ((ntile_window || value_window)
+            : aggregate_count_star_window
+            ? invocation.argument_expression_ids.empty()
+            : ((ntile_window || value_operand_window)
                    ? invocation.argument_expression_ids.size() == 1
                    : invocation.argument_expression_ids.empty());
     const auto window_argument =
-        (ntile_window || value_window) && exact_argument_arity
+        (ntile_window || value_operand_window) && exact_argument_arity
             ? expressions_by_id.find(
                   invocation.argument_expression_ids.front())
             : expressions_by_id.end();
@@ -36585,6 +36606,24 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         nth_value_window ? nth_position_argument : window_argument;
     const auto numeric_window_argument_descriptor =
         nth_value_window ? nth_position_descriptor : window_argument_descriptor;
+    const auto selected_order_expression =
+        selected_definition != definition_by_id.end() &&
+                native.window_definitions[selected_definition->second]
+                        .ordering_terms.size() == 1
+            ? expressions_by_id.find(
+                  native.window_definitions[selected_definition->second]
+                      .ordering_terms.front()
+                      .expression_id)
+            : expressions_by_id.end();
+    const auto selected_order_descriptor =
+        selected_order_expression == expressions_by_id.end()
+            ? native.descriptors.end()
+            : std::ranges::find_if(
+                  native.descriptors, [&](const auto& descriptor) {
+                    return descriptor.descriptor_id ==
+                           selected_order_expression->second
+                               ->result_descriptor_id;
+                  });
     std::uint64_t numeric_window_argument_value = 0;
     const char* numeric_window_argument_end = nullptr;
     std::errc numeric_window_argument_error = std::errc::invalid_argument;
@@ -36633,7 +36672,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           invocation.window_definition_id != definition.window_id ||
           catalog_relation->output_expression_ids != [&] {
             std::vector<std::uint32_t> expected;
-            if (value_window && exact_argument_arity) {
+            if (value_operand_window && exact_argument_arity) {
               expected.push_back(invocation.argument_expression_ids.front());
             }
             const auto order_expression_id =
@@ -36662,13 +36701,17 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                  NativeExpressionAstKind::kIdentifier &&
              (!aggregate_window ||
               (order_descriptor != native.descriptors.end() &&
-               result_descriptor != native.descriptors.end() &&
-               order_descriptor->type_uuid == result_descriptor->type_uuid &&
+               is_bounded_signed_type(
+                   order_descriptor->canonical_type_name) &&
                !order_descriptor->collation_uuid.has_value() &&
-               !order_descriptor->timezone_profile_id.has_value()));
+               !order_descriptor->timezone_profile_id.has_value() &&
+               !order_descriptor->width_precision_scale.width.has_value() &&
+               !order_descriptor->width_precision_scale.precision.has_value() &&
+               !order_descriptor->width_precision_scale.scale.has_value() &&
+               order_descriptor->element_profile.empty()));
     }();
     if (!references_exact || !strict_ordered_shape_exact ||
-        (aggregate_window && !exact_int64_aggregate_builtin) ||
+        (aggregate_window && !exact_unary_aggregate_builtin) ||
         function == expressions_by_id.end() ||
         function->second->expression_kind !=
             NativeExpressionAstKind::kFunctionCall ||
@@ -36687,13 +36730,19 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         result_descriptor->descriptor_uuid ==
             expected_window_function_uuid ||
         result_descriptor->type_uuid == expected_window_function_uuid ||
+        (aggregate_window &&
+         result_descriptor->canonical_type_name !=
+             (aggregate_boolean_window ? "boolean" : "int64")) ||
         result_descriptor->nullability !=
             (value_window && !aggregate_count_window
                  ? BoundNullability::kNullable
                  : BoundNullability::kNonNull) ||
-        ((!value_window || aggregate_count_window) &&
+        ((!value_window || aggregate_window) &&
          (result_descriptor->collation_uuid.has_value() ||
-          result_descriptor->timezone_profile_id.has_value())) ||
+          result_descriptor->timezone_profile_id.has_value() ||
+          result_descriptor->width_precision_scale.width.has_value() ||
+          result_descriptor->width_precision_scale.precision.has_value() ||
+          result_descriptor->width_precision_scale.scale.has_value())) ||
         ((ntile_window || nth_value_window) &&
          (numeric_window_argument == expressions_by_id.end() ||
           numeric_window_argument->second->expression_kind !=
@@ -36727,8 +36776,28 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               result_descriptor->descriptor_uuid ||
           numeric_window_argument_descriptor->descriptor_uuid ==
               expected_window_function_uuid ||
-          numeric_window_argument_descriptor->type_uuid !=
-              result_descriptor->type_uuid ||
+          (ntile_window &&
+           numeric_window_argument_descriptor->type_uuid !=
+               result_descriptor->type_uuid) ||
+          (nth_value_window &&
+           (selected_order_descriptor == native.descriptors.end() ||
+            selected_order_descriptor->canonical_type_name != "int64" ||
+            selected_order_descriptor->collation_uuid.has_value() ||
+            selected_order_descriptor->timezone_profile_id.has_value() ||
+            selected_order_descriptor->width_precision_scale.width
+                .has_value() ||
+            selected_order_descriptor->width_precision_scale.precision
+                .has_value() ||
+            selected_order_descriptor->width_precision_scale.scale
+                .has_value() ||
+            !selected_order_descriptor->element_profile.empty() ||
+            numeric_window_argument_descriptor->descriptor_id ==
+                selected_order_descriptor->descriptor_id ||
+            numeric_window_argument_descriptor->descriptor_uuid ==
+                selected_order_descriptor->descriptor_uuid ||
+            numeric_window_argument_descriptor->type_uuid !=
+                selected_order_descriptor->type_uuid)) ||
+          numeric_window_argument_descriptor->canonical_type_name != "int64" ||
           numeric_window_argument_descriptor->nullability !=
               BoundNullability::kNonNull ||
           numeric_window_argument_descriptor->collation_uuid.has_value() ||
@@ -36739,13 +36808,14 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               .has_value() ||
           numeric_window_argument_descriptor->width_precision_scale.scale
               .has_value() ||
+          !numeric_window_argument_descriptor->element_profile.empty() ||
           (nth_value_window &&
            (window_argument_descriptor == native.descriptors.end() ||
             numeric_window_argument_descriptor->descriptor_id ==
                 window_argument_descriptor->descriptor_id ||
             numeric_window_argument_descriptor->descriptor_uuid ==
                 window_argument_descriptor->descriptor_uuid)))) ||
-        (value_window &&
+        (value_operand_window &&
          (window_argument == expressions_by_id.end() ||
           window_argument->second->expression_kind !=
               NativeExpressionAstKind::kIdentifier ||
@@ -36761,18 +36831,36 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               result_descriptor->descriptor_uuid ||
           window_argument_descriptor->descriptor_uuid ==
               expected_window_function_uuid ||
-          window_argument_descriptor->type_uuid !=
-              result_descriptor->type_uuid ||
-          window_argument_descriptor->collation_uuid !=
-              result_descriptor->collation_uuid ||
-          window_argument_descriptor->timezone_profile_id !=
-              result_descriptor->timezone_profile_id ||
-          window_argument_descriptor->width_precision_scale.width !=
-              result_descriptor->width_precision_scale.width ||
-          window_argument_descriptor->width_precision_scale.precision !=
-              result_descriptor->width_precision_scale.precision ||
-          window_argument_descriptor->width_precision_scale.scale !=
-              result_descriptor->width_precision_scale.scale))) {
+          (!aggregate_count_window &&
+           !aggregate_bounded_signed_window &&
+           (window_argument_descriptor->type_uuid !=
+                result_descriptor->type_uuid ||
+            window_argument_descriptor->collation_uuid !=
+                result_descriptor->collation_uuid ||
+            window_argument_descriptor->timezone_profile_id !=
+                result_descriptor->timezone_profile_id ||
+            window_argument_descriptor->width_precision_scale.width !=
+                result_descriptor->width_precision_scale.width ||
+            window_argument_descriptor->width_precision_scale.precision !=
+                result_descriptor->width_precision_scale.precision ||
+            window_argument_descriptor->width_precision_scale.scale !=
+                result_descriptor->width_precision_scale.scale ||
+            window_argument_descriptor->canonical_type_name !=
+                result_descriptor->canonical_type_name ||
+            window_argument_descriptor->element_profile !=
+                result_descriptor->element_profile)) ||
+          (aggregate_bounded_signed_window &&
+           (!is_bounded_signed_type(
+                window_argument_descriptor->canonical_type_name) ||
+            window_argument_descriptor->collation_uuid.has_value() ||
+            window_argument_descriptor->timezone_profile_id.has_value() ||
+            window_argument_descriptor->width_precision_scale.width
+                .has_value() ||
+            window_argument_descriptor->width_precision_scale.precision
+                .has_value() ||
+            window_argument_descriptor->width_precision_scale.scale
+                .has_value() ||
+            !window_argument_descriptor->element_profile.empty()))))) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed window definition and registry receipt are not exact");
@@ -39640,8 +39728,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   // and synthesize only an emission view with a root Project for the exact
   // executable ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK/CUME_DIST/NTILE/LAG/
   // LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE and exact aggregate
-  // SUM/MIN/MAX/COUNT(identifier)
-  // cohort.
+  // SUM/MIN/MAX/COUNT(identifier) and COUNT(*) cohort.
   constexpr std::string_view kCatalogOrderingPropertyUuid =
       "019f0000-0000-7200-8000-00000000c701";
   constexpr std::string_view kRowNumberFunctionUuid =
@@ -39718,15 +39805,22 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               native.window_invocations.size() == 1
           ? &native.window_invocations.front()
           : nullptr;
-  const bool normalized_int64_aggregate_builtin =
+  const bool normalized_unary_aggregate_builtin =
       normalized_aggregate_invocation != nullptr &&
       (normalized_aggregate_invocation->builtin_id == "sb.aggregate.sum" ||
        normalized_aggregate_invocation->builtin_id == "sb.aggregate.min" ||
        normalized_aggregate_invocation->builtin_id == "sb.aggregate.max" ||
-       normalized_aggregate_invocation->builtin_id == "sb.aggregate.count");
+       normalized_aggregate_invocation->builtin_id == "sb.aggregate.count" ||
+       normalized_aggregate_invocation->builtin_id == "sb.aggregate.bool_and" ||
+       normalized_aggregate_invocation->builtin_id == "sb.aggregate.bool_or" ||
+       normalized_aggregate_invocation->builtin_id == "sb.aggregate.every");
+  const bool normalize_count_star_semantic =
+      normalized_aggregate_invocation != nullptr &&
+      normalized_aggregate_invocation->builtin_id == "sb.aggregate.count" &&
+      normalized_aggregate_invocation->argument_expression_ids.empty();
   const std::string_view normalized_ranking_builtin =
       normalize_aggregate_window_semantic
-          ? (normalized_int64_aggregate_builtin
+          ? (normalized_unary_aggregate_builtin
                  ? std::string_view{
                        normalized_aggregate_invocation->builtin_id}
                  : std::string_view{})
@@ -39751,7 +39845,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                                    : "sb.window.row_number"))))));
   const std::string_view normalized_ranking_function_uuid =
       normalize_aggregate_window_semantic
-          ? (normalized_int64_aggregate_builtin
+          ? (normalized_unary_aggregate_builtin
                  ? std::string_view{
                        normalized_aggregate_invocation->bound_function_uuid}
                  : std::string_view{})
@@ -39797,7 +39891,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           NativeWindowFrameExclusion::kNoOthers &&
       native.window_invocations.front().function_abi_version == 1 &&
       (!normalize_aggregate_window_semantic ||
-       normalized_int64_aggregate_builtin) &&
+       normalized_unary_aggregate_builtin) &&
       native.window_invocations.front().builtin_id ==
           normalized_ranking_builtin &&
       native.window_invocations.front().bound_function_uuid ==
@@ -39805,6 +39899,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       (normalize_nth_value_semantic
            ? native.window_invocations.front().argument_expression_ids.size() ==
                  2
+           : normalize_count_star_semantic
+           ? native.window_invocations.front().argument_expression_ids.empty()
            : ((normalize_ntile_semantic || normalize_value_semantic)
                   ? native.window_invocations.front()
                             .argument_expression_ids.size() == 1
@@ -39812,7 +39908,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                         .argument_expression_ids.empty())) &&
       catalog_relation->output_expression_ids == [&] {
         std::vector<std::uint32_t> expected;
-        if (normalize_value_semantic &&
+        if (normalize_value_semantic && !normalize_count_star_semantic &&
             native.window_invocations.front().argument_expression_ids.size() ==
                 (normalize_nth_value_semantic ? 2U : 1U)) {
           expected.push_back(native.window_invocations.front()

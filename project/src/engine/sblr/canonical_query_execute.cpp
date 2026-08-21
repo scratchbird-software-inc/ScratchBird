@@ -12,6 +12,7 @@
 
 #include "catalog/name_resolution_api.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
 #include "engine/executor/executor_foundation.hpp"
 #include "engine/executor/model_family_executor.hpp"
 #include "engine/optimizer/model_family_coordinator.hpp"
@@ -37,6 +38,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <cctype>
 #include <cmath>
@@ -46,6 +48,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <new>
 #include <numeric>
 #include <optional>
@@ -239,9 +242,9 @@ bool CompareCanonicalQueryScalarsV1(
   diagnostic_id->clear();
   refusal_detail->clear();
   api::EngineCompareCanonicalScalarValuesRequest request;
-  request.context = context;
-  request.left_value = left;
-  request.right_value = right;
+  request.borrowed_context = &context;
+  request.borrowed_left_value = &left;
+  request.borrowed_right_value = &right;
   const auto compared = api::EngineCompareCanonicalScalarValues(request);
   if (!compared.ok) {
     if (!compared.diagnostics.empty()) {
@@ -574,11 +577,35 @@ CanonicalDocumentWildcardExpansion ExpandCanonicalDocumentWildcard(
 }
 
 bool RuntimeMaterializedBatchMemoryBytes(const exec::DescriptorBatch& batch,
-                                         std::uint64_t* bytes) {
+                                         std::uint64_t* bytes,
+                                         const exec::DescriptorCancellationProbe
+                                             cancellation_requested = nullptr,
+                                         const void* cancellation_context = nullptr,
+                                         bool* cancellation_observed = nullptr,
+                                         bool* cancellation_probe_failed = nullptr) {
   if (bytes == nullptr) return false;
+  if (cancellation_observed != nullptr) *cancellation_observed = false;
+  if (cancellation_probe_failed != nullptr) {
+    *cancellation_probe_failed = false;
+  }
+  const auto stopped = [&] {
+    if (cancellation_requested == nullptr) return false;
+    try {
+      if (!cancellation_requested(cancellation_context)) return false;
+      if (cancellation_observed != nullptr) *cancellation_observed = true;
+      return true;
+    } catch (...) {
+      if (cancellation_probe_failed != nullptr) {
+        *cancellation_probe_failed = true;
+      }
+      return true;
+    }
+  };
   *bytes = 1;
   for (const auto& row : batch.rows) {
+    if (stopped()) return false;
     for (const auto& value : row.values) {
+      if (stopped()) return false;
       if (value.encoded_value.size() >
           std::numeric_limits<std::uint64_t>::max() - *bytes) {
         return false;
@@ -731,6 +758,14 @@ void PublishOrdinaryRuntimeObservations(
         registration.publishes_runtime_observation_v1) {
       continue;
     }
+    // Memory-limited live joins perform complete conservative admission in
+    // their callback, but do not yet carry an allocator-observed exact peak.
+    // Do not relabel a reconstructed batch/pair estimate as an exact producer
+    // receipt; runtime feedback remains unavailable for this node instead.
+    if (registration.node_kind == exec::PhysicalNodeKind::kJoin &&
+        registration.honors_dispatcher_memory_limit_v1) {
+      continue;
+    }
     const bool has_producer_receipt = std::ranges::any_of(
         memory_receipts, [&](const auto& item) {
           return item.second.implementation_id ==
@@ -829,6 +864,21 @@ void PublishOrdinaryRuntimeObservations(
                       "join.cross-apply.correlated.typed.v1" ||
                   node.implementation_id ==
                       "join.outer-apply.correlated.typed.v1";
+              static constexpr std::array<std::string_view, 7>
+                  kOrdinaryJoinImplementationIds = {{
+                      "join.cross.3vl.nested.v1",
+                      "join.inner.3vl.nested.v1",
+                      "join.left-outer.3vl.nested.v1",
+                      "join.right-outer.3vl.nested.v1",
+                      "join.full-outer.3vl.nested.v1",
+                      "join.left-semi.3vl.nested.v1",
+                      "join.left-anti.3vl.nested.v1",
+                  }};
+              const bool ordinary_join = std::ranges::any_of(
+                  kOrdinaryJoinImplementationIds,
+                  [&](const auto implementation_id) {
+                    return node.implementation_id == implementation_id;
+                  });
               const bool descriptor_bound_correlation =
                   correlated_equality &&
                   !inputs[0].materialized_output_batch->columns.empty() &&
@@ -840,17 +890,39 @@ void PublishOrdinaryRuntimeObservations(
                       inputs[1]
                           .materialized_output_batch->columns.front()
                           .descriptor);
-              const std::uint64_t pair_memory_bytes =
-                  descriptor_bound_correlation
-                      ? sizeof(std::optional<int>)
-                      : sizeof(api::EngineSqlTruthValue);
-              if (!CheckedMultiply(
-                      inputs[0].materialized_output_batch->rows.size(),
-                      inputs[1].materialized_output_batch->rows.size(),
-                      &pairs) ||
-                  !CheckedMultiply(pairs, pair_memory_bytes,
-                                   &runtime_work_bytes)) {
+              const bool pair_count_valid = CheckedMultiply(
+                  inputs[0].materialized_output_batch->rows.size(),
+                  inputs[1].materialized_output_batch->rows.size(), &pairs);
+              if (!pair_count_valid) {
                 step.diagnostic.ok = false;
+              } else if (correlated_equality) {
+                // Descriptor-bound correlation retains one comparison result
+                // per candidate pair. Scalar equality is evaluated directly
+                // and retains no pair buffer.
+                if (descriptor_bound_correlation &&
+                    !CheckedMultiply(pairs, sizeof(std::optional<int>),
+                                     &runtime_work_bytes)) {
+                  step.diagnostic.ok = false;
+                }
+              } else if (ordinary_join &&
+                         !exec::BoundCanonicalJoinRetainedStateBytes(
+                             inputs[0]
+                                 .materialized_output_batch->rows.size(),
+                             inputs[1]
+                                 .materialized_output_batch->rows.size(),
+                             &runtime_work_bytes)) {
+                step.diagnostic.ok = false;
+              } else if (!ordinary_join &&
+                         !CheckedMultiply(
+                             pairs, sizeof(api::EngineSqlTruthValue),
+                             &runtime_work_bytes)) {
+                // Preserve the existing conservative pair-truth fallback for
+                // custom JOIN implementations (for example ASOF).
+                step.diagnostic.ok = false;
+              }
+              if (step.diagnostic.ok &&
+                  (correlated_equality || ordinary_join)) {
+                accounted_auxiliary_memory_bytes = runtime_work_bytes;
               }
             } else if (
                 node.node_kind == exec::PhysicalNodeKind::kAggregate &&
@@ -874,6 +946,30 @@ void PublishOrdinaryRuntimeObservations(
               runtime_work_bytes = std::max<std::uint64_t>(
                   sizeof(std::int64_t),
                   memory->second.accounted_auxiliary_memory_bytes);
+            } else if (node.node_kind ==
+                       exec::PhysicalNodeKind::kSubquery) {
+              // Predicate and cardinality subqueries retain one canonical
+              // table-result copy (and, when applicable, a descriptor-bound
+              // comparison carrier) while constructing their callback output.
+              runtime_work_bytes =
+                  memory->second.accounted_auxiliary_memory_bytes;
+              if (memory->second
+                      .accounted_auxiliary_from_first_input_batch) {
+                std::uint64_t intermediate_table_bytes = 0;
+                if (inputs.size() != 1 ||
+                    !inputs.front().materialized_output_batch.has_value() ||
+                    !RuntimeMaterializedBatchMemoryBytes(
+                        *inputs.front().materialized_output_batch,
+                        &intermediate_table_bytes) ||
+                    !CheckedAdd(runtime_work_bytes,
+                                intermediate_table_bytes,
+                                &runtime_work_bytes)) {
+                  step.diagnostic.ok = false;
+                }
+              }
+              if (step.diagnostic.ok) {
+                accounted_auxiliary_memory_bytes = runtime_work_bytes;
+              }
             } else if (
                 node.node_kind == exec::PhysicalNodeKind::kCte &&
                 memory->second.accounted_auxiliary_from_first_input_batch &&
@@ -951,12 +1047,31 @@ void PublishOrdinaryRuntimeObservations(
   }
 }
 
+bool HasOrdinaryRuntimeObservationWrapperTarget(
+    const std::vector<exec::CanonicalPhysicalExecutorRegistration>&
+        registrations,
+    const OrdinaryRuntimeMemoryReceipts& memory_receipts) {
+  return std::ranges::any_of(registrations, [&](const auto& registration) {
+    if (!registration.engine_owned || !registration.execute ||
+        registration.implementation_id.starts_with("scan.heap") ||
+        registration.publishes_runtime_observation_v1 ||
+        (registration.node_kind == exec::PhysicalNodeKind::kJoin &&
+         registration.honors_dispatcher_memory_limit_v1)) {
+      return false;
+    }
+    return std::ranges::any_of(memory_receipts, [&](const auto& item) {
+      return item.second.implementation_id == registration.implementation_id &&
+             item.second.producer_peak_memory_exact;
+    });
+  });
+}
+
 api::CanonicalOptimizerSelectedExecutionResult ExecuteSelectedWithMgaGuard(
     const api::EngineRequestContext& context,
     const api::CanonicalOptimizerSelectedExecutionRequest& request,
     const OrdinaryRuntimeMemoryReceipts& memory_receipts = {}) {
-  auto bounded_request = request;
 #if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+  auto bounded_request = request;
   // Deterministic closure seams model a selected plan becoming stale between
   // publication and execution. Production has no mutable selected-plan seam.
   if (g_contract_security_boundary_drift_armed) {
@@ -967,6 +1082,46 @@ api::CanonicalOptimizerSelectedExecutionResult ExecuteSelectedWithMgaGuard(
     ++bounded_request.selected_physical_dag.resource_epoch;
     g_contract_resource_boundary_drift_armed = false;
   }
+#else
+  api::CanonicalOptimizerSelectedExecutionRequest bounded_request;
+  bounded_request.abi_version = request.abi_version;
+  bounded_request.pre_access_statistics_snapshot_uuid =
+      request.pre_access_statistics_snapshot_uuid;
+  bounded_request.limits = request.limits;
+  bounded_request.runtime_limits = request.runtime_limits;
+  bounded_request.executor_registration_live_memory_bytes =
+      request.executor_registration_live_memory_bytes;
+  bounded_request.engine_execution_authorized =
+      request.engine_execution_authorized;
+  bounded_request.parser_execution_authority_claimed =
+      request.parser_execution_authority_claimed;
+  bounded_request.transaction_finality_claimed =
+      request.transaction_finality_claimed;
+  bounded_request.recovery_authority_claimed =
+      request.recovery_authority_claimed;
+  bounded_request.borrowed_selected_physical_dag =
+      request.borrowed_selected_physical_dag == nullptr
+          ? &request.selected_physical_dag
+          : request.borrowed_selected_physical_dag;
+  bounded_request.borrowed_mga_authority =
+      request.borrowed_mga_authority == nullptr
+          ? &request.mga_authority
+          : request.borrowed_mga_authority;
+  bounded_request.borrowed_result_publication_request =
+      request.borrowed_result_publication_request == nullptr
+          ? &request.result_publication_request
+          : request.borrowed_result_publication_request;
+  const auto& source_executors =
+      request.borrowed_available_executors == nullptr
+          ? request.available_executors
+          : *request.borrowed_available_executors;
+  if (!HasOrdinaryRuntimeObservationWrapperTarget(source_executors,
+                                                  memory_receipts)) {
+    bounded_request.borrowed_available_executors =
+        &source_executors;
+  } else {
+    bounded_request.available_executors = source_executors;
+  }
 #endif
 
   const auto refuse_boundary = [](std::string field_id) {
@@ -976,7 +1131,9 @@ api::CanonicalOptimizerSelectedExecutionResult ExecuteSelectedWithMgaGuard(
          std::move(field_id)});
     return result;
   };
-  const auto& dag = bounded_request.selected_physical_dag;
+  const auto& dag = bounded_request.borrowed_selected_physical_dag == nullptr
+                        ? bounded_request.selected_physical_dag
+                        : *bounded_request.borrowed_selected_physical_dag;
   const auto& authorization = context.authorization_context;
   if (!context.security_context_present || !authorization.present ||
       authorization.authority_uuid.canonical.empty() ||
@@ -1037,8 +1194,10 @@ api::CanonicalOptimizerSelectedExecutionResult ExecuteSelectedWithMgaGuard(
       context.query_cancellation_requested
           ? context.query_cancellation_requested
           : std::function<bool()>([] { return false; });
-  PublishOrdinaryRuntimeObservations(&bounded_request.available_executors,
-                                     memory_receipts);
+  if (!memory_receipts.empty()) {
+    PublishOrdinaryRuntimeObservations(&bounded_request.available_executors,
+                                       memory_receipts);
+  }
 #if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
   return api::ExecuteCanonicalOptimizerSelectedDag(bounded_request);
 #else
@@ -1162,12 +1321,56 @@ bool CheckedAdd(std::uint64_t left, std::uint64_t right,
 bool CheckedMultiply(std::uint64_t left, std::uint64_t right,
                      std::uint64_t* result);
 
+bool BoundSetOperationEqualityComparisons(
+    const PreparedSetOperationRoot& prepared,
+    const LiveSetOperationProfile& profile,
+    const std::uint64_t maximum_input_row_count,
+    std::uint64_t* comparison_bound,
+    std::uint64_t* collation_comparison_count) {
+  if (comparison_bound == nullptr ||
+      collation_comparison_count == nullptr || !prepared.ok ||
+      !profile.matched ||
+      !CheckedMultiply(maximum_input_row_count, maximum_input_row_count,
+                       comparison_bound)) {
+    return false;
+  }
+  *collation_comparison_count = 0;
+  if (profile.equality_profile !=
+      exec::CanonicalSetOperationEqualityProfile::kNullEqualBoundCollation) {
+    return true;
+  }
+  if (prepared.collation_bindings.size() >
+      prepared.result_columns.size()) {
+    return false;
+  }
+  std::uint64_t adjacent = maximum_input_row_count;
+  std::uint64_t triangular = 0;
+  if (adjacent != 0) --adjacent;
+  if ((maximum_input_row_count & 1U) == 0) {
+    if (!CheckedMultiply(maximum_input_row_count / 2, adjacent,
+                         &triangular)) {
+      return false;
+    }
+  } else if (!CheckedMultiply(maximum_input_row_count, adjacent / 2,
+                              &triangular)) {
+    return false;
+  }
+  if (!CheckedMultiply(prepared.collation_bindings.size(), triangular,
+                       collation_comparison_count)) {
+    return false;
+  }
+  *comparison_bound =
+      std::max(*comparison_bound, *collation_comparison_count);
+  return true;
+}
+
 MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(
     const PreparedSetOperationRoot& prepared,
     const LiveSetOperationProfile& profile,
     const MaterializedValues& left,
     const MaterializedValues& right) {
   MaterializedSetOperationPlanningState result;
+  std::uint64_t collation_comparison_count = 0;
   if (!prepared.ok || !left.ok || !right.ok ||
       (profile.alignment != exec::CanonicalSetOperationAlignment::kOrdinal &&
        profile.alignment !=
@@ -1183,18 +1386,28 @@ MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(
                kNullEqualBoundCollation) ||
       !CheckedAdd(left.batch.rows.size(), right.batch.rows.size(),
                   &result.output_bound) ||
-      !CheckedMultiply(result.output_bound, result.output_bound,
-                       &result.comparison_bound)) {
+      !BoundSetOperationEqualityComparisons(
+          prepared, profile, result.output_bound,
+          &result.comparison_bound, &collation_comparison_count)) {
     result.values.detail =
         "set-operation planning-state contract or bound is invalid";
     return result;
   }
-  result.work_bound =
-      profile.operation == exec::CanonicalSetOperationKind::kUnion &&
-              profile.quantifier ==
-                  exec::CanonicalSetOperationQuantifier::kAll
-          ? result.output_bound
-          : result.comparison_bound;
+  std::uint64_t base_work = result.output_bound;
+  if ((profile.operation != exec::CanonicalSetOperationKind::kUnion ||
+       profile.quantifier !=
+           exec::CanonicalSetOperationQuantifier::kAll) &&
+      !CheckedMultiply(result.output_bound, result.output_bound,
+                       &base_work)) {
+    result.values.detail = "set-operation base work bound overflowed";
+    return result;
+  }
+  if (!CheckedAdd(base_work, collation_comparison_count,
+                  &result.work_bound)) {
+    result.values.detail =
+        "set-operation collation work bound overflowed";
+    return result;
+  }
 
   result.values.ok = true;
   result.values.batch.columns = prepared.result_columns;
@@ -1992,6 +2205,7 @@ struct PreparedRecursiveCteRoot {
   std::size_t maximum_working_row_count{0};
   std::size_t maximum_term_output_row_count{0};
   std::size_t maximum_result_row_count{0};
+  std::size_t maximum_value_comparison_count{0};
   std::size_t rows_examined{0};
   std::size_t planned_peak_payload_bytes{0};
   std::size_t planned_resident_structural_bytes{0};
@@ -2002,7 +2216,6 @@ bool BoundPreparedRecursiveCtePeakPayload(
     const PreparedRecursiveCteRoot& prepared,
     std::size_t* peak_payload_bytes) {
   if (peak_payload_bytes == nullptr ||
-      prepared.maximum_anchor_row_count == 0 ||
       prepared.anchor_columns.empty() ||
       prepared.maximum_working_row_count == 0 ||
       prepared.maximum_term_output_row_count == 0 ||
@@ -2141,12 +2354,24 @@ bool BindPreparedRecursiveCtePeakMemory(
   return prepared->planned_peak_memory_bytes <= memory_budget_bytes;
 }
 
+struct PreparedAggregateValueBindingReceipt {
+  std::size_t value_column{0};
+  std::uint32_t descriptor_id{0};
+  std::string descriptor_uuid;
+  std::string type_uuid;
+  bool nullable{false};
+  std::string canonical_type_name;
+  std::string encoded_descriptor;
+};
+
 struct PreparedGlobalAggregateRoot {
   bool ok{false};
   bool count_star{false};
   bool distinct{false};
   std::vector<std::size_t> value_columns;
   std::vector<std::uint32_t> value_descriptor_ids;
+  std::vector<PreparedAggregateValueBindingReceipt>
+      exact_value_binding_receipts;
   std::vector<api::EngineTypedValue> direct_arguments;
   std::optional<std::size_t> filter_column;
   std::uint32_t filter_descriptor_id{0};
@@ -2163,17 +2388,187 @@ struct PreparedGlobalAggregateRoot {
   std::string detail;
 };
 
+std::string ExactCanonicalCoreDatatypeUuidV1(
+    std::string_view stable_name);
+
+std::optional<std::string> Rcp079DescriptorField(
+    const std::string_view encoded, const std::string_view key) {
+  const std::string prefix = std::string(key) + "=";
+  std::optional<std::string> value;
+  std::size_t offset = 0;
+  while (offset <= encoded.size()) {
+    const auto separator = encoded.find(';', offset);
+    const auto end = separator == std::string_view::npos
+                         ? encoded.size()
+                         : separator;
+    const auto field = encoded.substr(offset, end - offset);
+    if (field.starts_with(prefix)) {
+      if (value.has_value()) return std::nullopt;
+      value = std::string(field.substr(prefix.size()));
+    }
+    if (separator == std::string_view::npos) break;
+    offset = separator + 1;
+  }
+  return value;
+}
+
+bool RevalidatePreparedAggregateValueBindings(
+    const std::vector<std::size_t>& value_columns,
+    const std::vector<std::uint32_t>& value_descriptor_ids,
+    const std::vector<PreparedAggregateValueBindingReceipt>& receipts,
+    const exec::DescriptorBatch& input_batch,
+    std::string* detail) {
+  if (detail == nullptr) return false;
+  detail->clear();
+  if (receipts.empty()) return true;
+  if (receipts.size() != value_columns.size() ||
+      receipts.size() != value_descriptor_ids.size()) {
+    *detail = "aggregate exact value-binding receipt arity drifted";
+    return false;
+  }
+  for (std::size_t index = 0; index < receipts.size(); ++index) {
+    const auto& receipt = receipts[index];
+    if (receipt.value_column != value_columns[index] ||
+        receipt.descriptor_id != value_descriptor_ids[index] ||
+        receipt.value_column >= input_batch.columns.size()) {
+      *detail = "aggregate exact value-binding receipt is unresolved";
+      return false;
+    }
+    const auto& column = input_batch.columns[receipt.value_column];
+    const auto expected_nullability =
+        receipt.nullable ? std::string_view("nullable")
+                         : std::string_view("non_null");
+    if (receipt.canonical_type_name != "int64" ||
+        receipt.descriptor_uuid.empty() || receipt.type_uuid.empty() ||
+        receipt.encoded_descriptor !=
+            "type_uuid=" + receipt.type_uuid +
+                ";nullability=" + std::string(expected_nullability) ||
+        column.descriptor_id != receipt.descriptor_id ||
+        column.nullable != receipt.nullable ||
+        column.descriptor.descriptor_uuid.canonical !=
+            receipt.descriptor_uuid ||
+        column.descriptor.descriptor_kind != "scalar" ||
+        column.descriptor.canonical_type_name !=
+            receipt.canonical_type_name ||
+        column.descriptor.encoded_descriptor !=
+            receipt.encoded_descriptor ||
+        !api::QowCanonicalDescriptorIdentityV1(column.descriptor)) {
+      *detail = "aggregate exact int64 value binding drifted";
+      return false;
+    }
+  }
+  return true;
+}
+
 struct PreparedGroupedCountSumRoot {
   bool ok{false};
   std::vector<exec::CanonicalDescriptorOrderTerm> key_terms;
+  std::vector<PreparedAggregateValueBindingReceipt> key_binding_receipts;
   std::vector<exec::ExecutorColumnDescriptor> key_result_columns;
   std::vector<exec::CanonicalAggregateGroupingSet> grouping_sets;
   std::vector<exec::ExecutorColumnDescriptor> grouping_projection_columns;
+  std::size_t maximum_grouping_key_comparison_count{0};
+  std::size_t maximum_combined_grouping_key_comparison_count{0};
   PreparedGlobalAggregateRoot count;
   PreparedGlobalAggregateRoot sum;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
   std::string detail;
 };
+
+bool BindPreparedGroupedComparisonCeilings(
+    PreparedGroupedCountSumRoot* prepared,
+    const std::uint64_t maximum_input_row_count) {
+  if (prepared == nullptr || !prepared->ok ||
+      prepared->grouping_sets.empty() || prepared->key_terms.empty()) {
+    return false;
+  }
+  std::uint64_t adjacent = maximum_input_row_count;
+  if (adjacent != 0) --adjacent;
+  std::uint64_t triangular = 0;
+  if ((maximum_input_row_count & 1U) == 0) {
+    if (!CheckedMultiply(maximum_input_row_count / 2, adjacent,
+                         &triangular)) {
+      return false;
+    }
+  } else if (!CheckedMultiply(maximum_input_row_count, adjacent / 2,
+                              &triangular)) {
+    return false;
+  }
+  std::uint64_t self_and_admission = 0;
+  if (!CheckedMultiply(maximum_input_row_count, 2,
+                       &self_and_admission) ||
+      !CheckedAdd(triangular, self_and_admission,
+                  &self_and_admission)) {
+    return false;
+  }
+  std::uint64_t per_aggregate = 0;
+  for (const auto& grouping_set : prepared->grouping_sets) {
+    std::uint64_t set_comparisons = 0;
+    if (!CheckedMultiply(grouping_set.key_term_ordinals.size(),
+                         self_and_admission, &set_comparisons) ||
+        !CheckedAdd(per_aggregate, set_comparisons, &per_aggregate)) {
+      return false;
+    }
+  }
+  per_aggregate = std::max<std::uint64_t>(1, per_aggregate);
+  std::uint64_t combined = 0;
+  if (!CheckedMultiply(per_aggregate, 2, &combined) ||
+      per_aggregate > std::numeric_limits<std::size_t>::max() ||
+      combined > std::numeric_limits<std::size_t>::max()) {
+    return false;
+  }
+  prepared->maximum_grouping_key_comparison_count =
+      static_cast<std::size_t>(per_aggregate);
+  prepared->maximum_combined_grouping_key_comparison_count =
+      static_cast<std::size_t>(combined);
+  return true;
+}
+
+bool RevalidatePreparedGroupedKeyBindings(
+    const PreparedGroupedCountSumRoot& prepared,
+    const exec::DescriptorBatch& input_batch,
+    std::string* detail) {
+  if (detail == nullptr) return false;
+  detail->clear();
+  if (prepared.key_terms.empty() ||
+      prepared.key_binding_receipts.size() != prepared.key_terms.size()) {
+    *detail = "grouped aggregate exact key-binding receipt arity drifted";
+    return false;
+  }
+  for (std::size_t index = 0; index < prepared.key_terms.size(); ++index) {
+    const auto& term = prepared.key_terms[index];
+    const auto& receipt = prepared.key_binding_receipts[index];
+    if (receipt.value_column != term.column ||
+        receipt.descriptor_id != term.expression_descriptor_id ||
+        receipt.value_column >= input_batch.columns.size()) {
+      *detail = "grouped aggregate exact key-binding receipt is unresolved";
+      return false;
+    }
+    const auto& column = input_batch.columns[receipt.value_column];
+    const auto expected_nullability =
+        receipt.nullable ? std::string_view("nullable")
+                         : std::string_view("non_null");
+    if (receipt.canonical_type_name != "int64" ||
+        receipt.descriptor_uuid.empty() || receipt.type_uuid.empty() ||
+        receipt.encoded_descriptor !=
+            "type_uuid=" + receipt.type_uuid +
+                ";nullability=" + std::string(expected_nullability) ||
+        column.descriptor_id != receipt.descriptor_id ||
+        column.nullable != receipt.nullable ||
+        column.descriptor.descriptor_uuid.canonical !=
+            receipt.descriptor_uuid ||
+        column.descriptor.descriptor_kind != "scalar" ||
+        column.descriptor.canonical_type_name !=
+            receipt.canonical_type_name ||
+        column.descriptor.encoded_descriptor !=
+            receipt.encoded_descriptor ||
+        !api::QowCanonicalDescriptorIdentityV1(column.descriptor)) {
+      *detail = "grouped aggregate exact int64 key binding drifted";
+      return false;
+    }
+  }
+  return true;
+}
 
 struct PreparedGroupedHavingRoot {
   bool ok{false};
@@ -2934,6 +3329,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool is_avg = function == exec::CanonicalAggregateFunction::avg;
   const bool is_min = function == exec::CanonicalAggregateFunction::min;
   const bool is_max = function == exec::CanonicalAggregateFunction::max;
+  const bool is_bounded_signed_integer_aggregate =
+      is_sum || is_min || is_max;
   const bool is_bool_and =
       function == exec::CanonicalAggregateFunction::bool_and;
   const bool is_bool_or =
@@ -2970,6 +3367,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       function == exec::CanonicalAggregateFunction::regr_sxx ||
       function == exec::CanonicalAggregateFunction::regr_sxy ||
       function == exec::CanonicalAggregateFunction::regr_syy;
+  const bool requires_exact_core_int64_input =
+      is_avg || is_statistical || is_pair_statistical;
   const bool is_string_agg =
       function == exec::CanonicalAggregateFunction::string_agg;
   const auto string_aggregate_profile =
@@ -3002,6 +3401,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool is_ordered_single_collection = is_array_agg || is_json_agg;
   const bool is_ordered_collection =
       is_ordered_single_collection || is_json_object_agg;
+  const bool has_widened_independent_order_argument =
+      is_listagg_profile || is_ordered_collection;
   const bool is_hypothetical_rank =
       function == exec::CanonicalAggregateFunction::rank;
   const bool is_hypothetical_dense_rank =
@@ -3014,6 +3415,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       is_hypothetical_rank || is_hypothetical_dense_rank ||
       is_hypothetical_percent_rank || is_hypothetical_cume_dist;
   const bool is_mode = function == exec::CanonicalAggregateFunction::mode;
+  const bool uses_bounded_signed_value =
+      is_bounded_signed_integer_aggregate || is_mode;
   const bool is_percentile_cont =
       function == exec::CanonicalAggregateFunction::percentile_cont;
   const bool is_percentile_disc =
@@ -3037,6 +3440,15 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool is_ordered_set =
       is_hypothetical || is_mode || is_exact_percentile ||
       is_approx_percentile;
+  const bool uses_exact_core_real64_result =
+      is_avg || is_statistical ||
+      (is_pair_statistical && !is_regr_count) || is_exact_percentile ||
+      is_approx_median || is_approx_percentile ||
+      is_hypothetical_percent_rank || is_hypothetical_cume_dist;
+  const bool uses_exact_core_int64_result =
+      uses_bounded_signed_value || is_count || is_regr_count ||
+      is_approx_count_distinct || is_hypothetical_rank ||
+      is_hypothetical_dense_rank;
   if ((!is_count && !is_sum && !is_avg && !is_min && !is_max &&
        !is_boolean && !is_statistical && !is_pair_statistical &&
        !is_string_agg && !is_listagg_profile && !is_ordered_collection &&
@@ -3044,6 +3456,118 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       (count_star && !is_count)) {
     result.detail = "global aggregate function profile is not admitted";
     return result;
+  }
+  constexpr std::array<std::string_view, 4> kBoundedSignedTypeNames = {
+      "int8", "int16", "int32", "int64"};
+  std::array<std::string, kBoundedSignedTypeNames.size()>
+      bounded_signed_source_type_uuids;
+  std::string core_int64_type_uuid;
+  std::string core_real64_result_type_uuid;
+  std::string core_boolean_type_uuid;
+  if (uses_exact_core_int64_result ||
+      has_widened_independent_order_argument) {
+    const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!core_manifest.ok()) {
+      result.detail =
+          "global bounded-signed aggregate/order core datatype catalog is "
+          "unavailable";
+      return result;
+    }
+    for (std::size_t index = 0; index < kBoundedSignedTypeNames.size();
+         ++index) {
+      const auto stable_name = kBoundedSignedTypeNames[index];
+      const auto count = std::ranges::count_if(
+          core_manifest.manifest.descriptor_rows, [&](const auto& row) {
+            return row.stable_name == stable_name;
+          });
+      const auto row = std::ranges::find_if(
+          core_manifest.manifest.descriptor_rows, [&](const auto& candidate) {
+            return candidate.stable_name == stable_name;
+          });
+      if (count != 1 ||
+          row == core_manifest.manifest.descriptor_rows.end() ||
+          !row->descriptor_uuid.valid()) {
+        result.detail =
+            "global bounded-signed aggregate/order core datatype cohort is "
+            "incomplete";
+        return result;
+      }
+      bounded_signed_source_type_uuids[index] =
+          scratchbird::core::uuid::UuidToString(row->descriptor_uuid.value);
+      if (bounded_signed_source_type_uuids[index].empty()) {
+        result.detail =
+            "global bounded-signed aggregate/order core datatype identity is "
+            "unavailable";
+        return result;
+      }
+    }
+  }
+  if (uses_exact_core_int64_result ||
+      requires_exact_core_int64_input) {
+    core_int64_type_uuid = ExactCanonicalCoreDatatypeUuidV1("int64");
+    if (core_int64_type_uuid.empty()) {
+      result.detail =
+          "global aggregate core int64 datatype identity is unavailable";
+      return result;
+    }
+  }
+  if (uses_exact_core_real64_result) {
+    const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+    const auto real64_count =
+        core_manifest.ok()
+            ? std::ranges::count_if(
+                  core_manifest.manifest.descriptor_rows,
+                  [](const auto& row) { return row.stable_name == "real64"; })
+            : 0;
+    const auto real64_type =
+        core_manifest.ok()
+            ? std::ranges::find_if(
+                  core_manifest.manifest.descriptor_rows,
+                  [](const auto& row) { return row.stable_name == "real64"; })
+            : core_manifest.manifest.descriptor_rows.end();
+    if (!core_manifest.ok() || real64_count != 1 ||
+        real64_type == core_manifest.manifest.descriptor_rows.end() ||
+        !real64_type->descriptor_uuid.valid()) {
+      result.detail =
+          "global real64 aggregate result core datatype cohort is incomplete";
+      return result;
+    }
+    core_real64_result_type_uuid = scratchbird::core::uuid::UuidToString(
+        real64_type->descriptor_uuid.value);
+    if (core_real64_result_type_uuid.empty()) {
+      result.detail =
+          "global real64 aggregate result core datatype identity is unavailable";
+      return result;
+    }
+  }
+  if (is_boolean || has_filter) {
+    const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+    const auto boolean_count =
+        core_manifest.ok()
+            ? std::ranges::count_if(
+                  core_manifest.manifest.descriptor_rows,
+                  [](const auto& row) { return row.stable_name == "boolean"; })
+            : 0;
+    const auto boolean_type =
+        core_manifest.ok()
+            ? std::ranges::find_if(
+                  core_manifest.manifest.descriptor_rows,
+                  [](const auto& row) { return row.stable_name == "boolean"; })
+            : core_manifest.manifest.descriptor_rows.end();
+    if (!core_manifest.ok() || boolean_count != 1 ||
+        boolean_type == core_manifest.manifest.descriptor_rows.end() ||
+        !boolean_type->descriptor_uuid.valid()) {
+      result.detail =
+          "global aggregate boolean-input core datatype cohort is incomplete";
+      return result;
+    }
+    core_boolean_type_uuid = scratchbird::core::uuid::UuidToString(
+        boolean_type->descriptor_uuid.value);
+    if (core_boolean_type_uuid.empty()) {
+      result.detail =
+          "global aggregate boolean-input core datatype identity is unavailable";
+      return result;
+    }
   }
   if (root.output_descriptor_ids.size() != 1 ||
       root.bound_expression_ids.size() != 1 ||
@@ -3139,9 +3663,176 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         "global aggregate function identity or argument binding is invalid";
     return result;
   }
+  if (uses_exact_core_int64_result &&
+      (descriptor->type_uuid != core_int64_type_uuid ||
+       descriptor->descriptor_uuid == descriptor->type_uuid ||
+       descriptor->descriptor_uuid == aggregate->function_uuid)) {
+    result.detail =
+        "global int64 aggregate result does not bind the exact core int64 "
+        "type with a distinct result descriptor identity";
+    return result;
+  }
+  if (uses_exact_core_real64_result &&
+      (descriptor->type_uuid != core_real64_result_type_uuid ||
+       descriptor->descriptor_uuid == descriptor->type_uuid ||
+       descriptor->descriptor_uuid == aggregate->function_uuid)) {
+    result.detail =
+        "global real64 aggregate result does not bind the exact core real64 "
+        "type with a distinct result descriptor identity";
+    return result;
+  }
+  if (is_boolean &&
+      (descriptor->type_uuid != core_boolean_type_uuid ||
+       descriptor->descriptor_uuid == descriptor->type_uuid ||
+       descriptor->descriptor_uuid == aggregate->function_uuid)) {
+    result.detail =
+        "global boolean aggregate result does not bind the exact core "
+        "boolean type with a distinct result descriptor identity";
+    return result;
+  }
 
   if (!count_star) {
     CanonicalRelationalExpressionRuntime expression_runtime(dag);
+    const auto exact_bounded_signed_input =
+        [&](const std::uint32_t expression_descriptor_id,
+            const std::size_t value_column,
+            const std::string_view input_type) {
+          const auto source_type =
+              std::ranges::find(kBoundedSignedTypeNames, input_type);
+          const auto source_descriptor = std::ranges::find_if(
+              dag.descriptors, [&](const auto& candidate) {
+                return candidate.descriptor_id == expression_descriptor_id;
+              });
+          const auto& source_column = input.batch.columns[value_column];
+          const auto source_index = static_cast<std::size_t>(std::distance(
+              kBoundedSignedTypeNames.begin(), source_type));
+          return source_type != kBoundedSignedTypeNames.end() &&
+                 source_descriptor != dag.descriptors.end() &&
+                 source_index < bounded_signed_source_type_uuids.size() &&
+                 source_descriptor->descriptor_uuid ==
+                     source_column.descriptor.descriptor_uuid.canonical &&
+                 source_descriptor->descriptor_uuid !=
+                     source_descriptor->type_uuid &&
+                 source_descriptor->descriptor_uuid !=
+                     aggregate->function_uuid &&
+                 source_descriptor->descriptor_uuid !=
+                     descriptor->descriptor_uuid &&
+                 source_descriptor->type_uuid ==
+                     bounded_signed_source_type_uuids[source_index] &&
+                 source_descriptor->nullability ==
+                     (source_column.nullable
+                          ? api::RelationalNullability::kNullable
+                          : api::RelationalNullability::kNonNull) &&
+                 !source_descriptor->collation_uuid.has_value() &&
+                 !source_descriptor->timezone_profile_id.has_value() &&
+                 !source_descriptor->width.has_value() &&
+                 !source_descriptor->precision.has_value() &&
+                 !source_descriptor->scale.has_value() &&
+                 source_column.descriptor.descriptor_kind == "scalar" &&
+                 exec::IsCanonicalBoundedSignedIntegerDescriptor(
+                     source_column.descriptor) &&
+                 api::QowCanonicalDescriptorIdentityV1(
+                     source_column.descriptor) &&
+                 source_column.descriptor.encoded_descriptor ==
+                     "type_uuid=" +
+                         bounded_signed_source_type_uuids[source_index] +
+                         ";nullability=" +
+                         (source_column.nullable ? "nullable" : "non_null");
+        };
+    const auto exact_core_int64_input =
+        [&](const std::uint32_t expression_descriptor_id,
+            const std::size_t value_column,
+            PreparedAggregateValueBindingReceipt* receipt) {
+          if (receipt == nullptr || core_int64_type_uuid.empty() ||
+              value_column >= input.batch.columns.size()) {
+            return false;
+          }
+          const auto source_descriptor = std::ranges::find_if(
+              dag.descriptors, [&](const auto& candidate) {
+                return candidate.descriptor_id == expression_descriptor_id;
+              });
+          const auto& source_column = input.batch.columns[value_column];
+          const auto expected_nullability =
+              source_column.nullable ? std::string_view("nullable")
+                                     : std::string_view("non_null");
+          if (source_descriptor == dag.descriptors.end() ||
+              source_descriptor->descriptor_uuid !=
+                  source_column.descriptor.descriptor_uuid.canonical ||
+              source_descriptor->descriptor_uuid ==
+                  source_descriptor->type_uuid ||
+              source_descriptor->descriptor_uuid ==
+                  aggregate->function_uuid ||
+              source_descriptor->descriptor_uuid ==
+                  descriptor->descriptor_uuid ||
+              source_descriptor->type_uuid != core_int64_type_uuid ||
+              source_descriptor->nullability !=
+                  (source_column.nullable
+                       ? api::RelationalNullability::kNullable
+                       : api::RelationalNullability::kNonNull) ||
+              source_descriptor->collation_uuid.has_value() ||
+              source_descriptor->timezone_profile_id.has_value() ||
+              source_descriptor->width.has_value() ||
+              source_descriptor->precision.has_value() ||
+              source_descriptor->scale.has_value() ||
+              source_column.descriptor.descriptor_kind != "scalar" ||
+              source_column.descriptor.canonical_type_name != "int64" ||
+              !api::QowCanonicalDescriptorIdentityV1(
+                  source_column.descriptor) ||
+              source_column.descriptor.encoded_descriptor !=
+                  "type_uuid=" + core_int64_type_uuid +
+                      ";nullability=" +
+                      std::string(expected_nullability)) {
+            return false;
+          }
+          *receipt = PreparedAggregateValueBindingReceipt{
+              value_column,
+              expression_descriptor_id,
+              source_descriptor->descriptor_uuid,
+              source_descriptor->type_uuid,
+              source_column.nullable,
+              source_column.descriptor.canonical_type_name,
+              source_column.descriptor.encoded_descriptor};
+          return true;
+        };
+    const auto exact_boolean_input =
+        [&](const std::uint32_t expression_descriptor_id,
+            const std::size_t value_column,
+            const std::string_view input_type) {
+          const auto source_descriptor = std::ranges::find_if(
+              dag.descriptors, [&](const auto& candidate) {
+                return candidate.descriptor_id == expression_descriptor_id;
+              });
+          const auto& source_column = input.batch.columns[value_column];
+          return input_type == "boolean" &&
+                 !core_boolean_type_uuid.empty() &&
+                 source_descriptor != dag.descriptors.end() &&
+                 source_descriptor->descriptor_uuid ==
+                     source_column.descriptor.descriptor_uuid.canonical &&
+                 source_descriptor->descriptor_uuid !=
+                     source_descriptor->type_uuid &&
+                 source_descriptor->descriptor_uuid !=
+                     aggregate->function_uuid &&
+                 source_descriptor->descriptor_uuid !=
+                     descriptor->descriptor_uuid &&
+                 source_descriptor->type_uuid == core_boolean_type_uuid &&
+                 source_descriptor->nullability ==
+                     (source_column.nullable
+                          ? api::RelationalNullability::kNullable
+                          : api::RelationalNullability::kNonNull) &&
+                 !source_descriptor->collation_uuid.has_value() &&
+                 !source_descriptor->timezone_profile_id.has_value() &&
+                 !source_descriptor->width.has_value() &&
+                 !source_descriptor->precision.has_value() &&
+                 !source_descriptor->scale.has_value() &&
+                 source_column.descriptor.descriptor_kind == "scalar" &&
+                 source_column.descriptor.canonical_type_name == "boolean" &&
+                 api::QowCanonicalDescriptorIdentityV1(
+                     source_column.descriptor) &&
+                 source_column.descriptor.encoded_descriptor ==
+                     "type_uuid=" + core_boolean_type_uuid +
+                         ";nullability=" +
+                         (source_column.nullable ? "nullable" : "non_null");
+        };
     for (std::size_t argument_ordinal = 0;
          argument_ordinal < expression->child_expression_ids.size();
          ++argument_ordinal) {
@@ -3430,9 +4121,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       const bool is_filter_argument =
           has_filter && argument_ordinal == filter_argument_ordinal;
       if (is_filter_argument) {
-        if (input_type != "boolean") {
+        if (!exact_boolean_input(argument->result_descriptor_id, value_column,
+                                 input_type)) {
           result.detail =
-              "global aggregate FILTER input must be a canonical boolean "
+              "global aggregate FILTER input is not one exact core boolean "
               "column";
           return result;
         }
@@ -3445,6 +4137,16 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         result.filter_descriptor_id = argument->result_descriptor_id;
         continue;
       }
+      const bool exact_bounded_signed_argument =
+          exact_bounded_signed_input(argument->result_descriptor_id,
+                                     value_column, input_type);
+      if (uses_bounded_signed_value &&
+          !exact_bounded_signed_argument) {
+        result.detail =
+            "global bounded-signed aggregate input is not one exact core "
+            "bounded-signed column";
+        return result;
+      }
       const bool is_order_argument =
           (is_ordered_string_agg && argument_ordinal == 2) ||
           (is_listagg_profile && argument_ordinal == 2) ||
@@ -3455,12 +4157,22 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             is_approx_percentile) &&
            argument_ordinal == 1);
       if (is_order_argument) {
-        if (input_type != "int64") {
-          result.detail = is_ordered_set
-                              ? "global ordered-set value/order input must be "
-                                "a canonical int64 column"
-                              : "global aggregate order input must be a "
-                                "canonical int64 column";
+        const bool int64_coupled_order =
+            (is_ordered_set && !is_mode) || is_ordered_string_agg;
+        if ((int64_coupled_order && input_type != "int64") ||
+            (!int64_coupled_order && !exact_bounded_signed_argument)) {
+          result.detail =
+              is_mode
+                  ? "global mode value/order input must be one exact core "
+                    "bounded-signed column"
+                  : is_ordered_set
+                  ? "global ordered-set value/order input must be a canonical "
+                    "int64 column"
+                  : (is_ordered_string_agg
+                         ? "global aggregate order input must be a canonical "
+                           "int64 column"
+                         : "global aggregate order input must be one exact "
+                           "core bounded-signed column");
           return result;
         }
         exec::CanonicalDescriptorOrderTerm order_term;
@@ -3484,33 +4196,34 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         }
         continue;
       }
+      if (requires_exact_core_int64_input) {
+        PreparedAggregateValueBindingReceipt receipt;
+        if (!exact_core_int64_input(argument->result_descriptor_id,
+                                    value_column, &receipt)) {
+          if (is_avg) {
+            result.detail =
+                "global AVG input must be one exact core int64 column";
+          } else if (is_statistical) {
+            result.detail =
+                "global unary statistical input must be one exact core int64 "
+                "column";
+          } else if (is_pair_statistical) {
+            result.detail =
+                "global pair statistical inputs must each be exact core int64 "
+                "columns";
+          }
+          return result;
+        }
+        result.exact_value_binding_receipts.push_back(std::move(receipt));
+      }
       result.value_columns.push_back(value_column);
       result.value_descriptor_ids.push_back(argument->result_descriptor_id);
-      if ((is_sum || is_avg || is_min || is_max || is_statistical ||
-           is_pair_statistical) &&
-          input_type != "int64") {
-        if (is_sum) {
-          result.detail = "global SUM input must be a canonical int64 column";
-        } else if (is_avg) {
-          result.detail = "global AVG input must be a canonical int64 column";
-        } else if (is_statistical) {
-          result.detail =
-              "global unary statistical input must be a canonical int64 "
-              "column";
-        } else if (is_pair_statistical) {
-          result.detail =
-              "global pair statistical inputs must be canonical int64 "
-              "columns";
-        } else {
-          result.detail =
-              "global MIN/MAX input must be a canonical int64 column";
-        }
-        return result;
-      }
-      if (is_boolean && input_type != "boolean") {
+      if (is_boolean &&
+          !exact_boolean_input(argument->result_descriptor_id, value_column,
+                               input_type)) {
         result.detail =
-            "global BOOL_AND/BOOL_OR/EVERY input must be a canonical boolean "
-            "column; actual=" + input_type;
+            "global BOOL_AND/BOOL_OR/EVERY input is not one exact core "
+            "boolean column";
         return result;
       }
       if (is_string_agg && input_type != "text") {
@@ -3523,9 +4236,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             "global LISTAGG input must be a canonical text column";
         return result;
       }
-      if (is_ordered_single_collection && input_type != "text") {
+      if (is_array_agg && input_type != "text") {
         result.detail =
-            "global ARRAY_AGG/JSON_AGG input must be a canonical text column";
+            "global ARRAY_AGG input must be a canonical text column";
         return result;
       }
       if (is_json_object_agg && argument_ordinal == 0 &&
@@ -3534,22 +4247,14 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             "global JSON_OBJECT_AGG key must be a canonical text column";
         return result;
       }
-      if (is_json_object_agg && argument_ordinal == 1 &&
-          input_type != "int64") {
-        result.detail =
-            "global JSON_OBJECT_AGG value must be a canonical int64 column";
-        return result;
-      }
       if (is_approx_median && input_type != "int64") {
         result.detail =
             "global APPROX_MEDIAN input must be a canonical int64 column";
         return result;
       }
-      if ((is_approx_count_distinct || is_approx_top_k) &&
-          input_type != "text") {
+      if (is_approx_top_k && input_type != "text") {
         result.detail =
-            "global APPROX_COUNT_DISTINCT/APPROX_TOP_K input must be a "
-            "canonical text column";
+            "global APPROX_TOP_K input must be a canonical text column";
         return result;
       }
     }
@@ -3799,6 +4504,13 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
         "grouped COUNT/SUM grouping-set expansion has an unused key";
     return result;
   }
+  const auto core_int64_key_type_uuid =
+      ExactCanonicalCoreDatatypeUuidV1("int64");
+  if (!CanonicalUuidText(core_int64_key_type_uuid)) {
+    result.detail =
+        "grouped COUNT/SUM core int64 key identity is unavailable";
+    return result;
+  }
   for (std::size_t key_ordinal = 0; key_ordinal < profile.key_count;
        ++key_ordinal) {
     const auto key_expression = std::ranges::find_if(
@@ -3855,11 +4567,36 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
         input_node.output_descriptor_ids.begin(), supplied_key));
     if (key_column >= input.batch.columns.size() ||
         input.batch.columns[key_column].descriptor_id !=
-            key_expression->result_descriptor_id ||
-        input.batch.columns[key_column].descriptor.canonical_type_name !=
-            "int64") {
+            key_expression->result_descriptor_id) {
       result.detail =
           "grouped COUNT/SUM key must be a descriptor-exact int64 column";
+      return result;
+    }
+    const auto& runtime_key = input.batch.columns[key_column];
+    const auto expected_nullability =
+        runtime_key.nullable ? std::string_view("nullable")
+                             : std::string_view("non_null");
+    if (key_descriptor->type_uuid != core_int64_key_type_uuid ||
+        key_descriptor->descriptor_uuid !=
+            runtime_key.descriptor.descriptor_uuid.canonical ||
+        key_descriptor->descriptor_uuid == key_descriptor->type_uuid ||
+        key_descriptor->nullability !=
+            (runtime_key.nullable
+                 ? api::RelationalNullability::kNullable
+                 : api::RelationalNullability::kNonNull) ||
+        key_descriptor->collation_uuid.has_value() ||
+        key_descriptor->timezone_profile_id.has_value() ||
+        key_descriptor->width.has_value() ||
+        key_descriptor->precision.has_value() ||
+        key_descriptor->scale.has_value() ||
+        runtime_key.descriptor.descriptor_kind != "scalar" ||
+        runtime_key.descriptor.canonical_type_name != "int64" ||
+        !api::QowCanonicalDescriptorIdentityV1(runtime_key.descriptor) ||
+        runtime_key.descriptor.encoded_descriptor !=
+            "type_uuid=" + core_int64_key_type_uuid +
+                ";nullability=" + std::string(expected_nullability)) {
+      result.detail =
+          "grouped COUNT/SUM key must bind the exact core int64 type";
       return result;
     }
 
@@ -3875,6 +4612,15 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
       return result;
     }
     result.key_terms.push_back(std::move(key_term));
+    result.key_binding_receipts.push_back(
+        PreparedAggregateValueBindingReceipt{
+            key_column,
+            key_expression->result_descriptor_id,
+            key_descriptor->descriptor_uuid,
+            key_descriptor->type_uuid,
+            runtime_key.nullable,
+            runtime_key.descriptor.canonical_type_name,
+            runtime_key.descriptor.encoded_descriptor});
 
     auto key_result_column = input.batch.columns[key_column];
     key_result_column.stable_name = key_output->output_name_utf8;
@@ -3937,6 +4683,13 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
   result.result_bindings.push_back(result.sum.result_bindings.front());
 
   if (profile.projects_grouping_metadata) {
+    const auto grouping_int64_type_uuid =
+        ExactCanonicalCoreDatatypeUuidV1("int64");
+    if (!CanonicalUuidText(grouping_int64_type_uuid)) {
+      result.detail = "GROUPING metadata core int64 identity is not exact";
+      return result;
+    }
+    std::unordered_set<std::string_view> grouping_descriptor_uuids;
     const auto prepare_projection =
         [&](const std::size_t projection_ordinal,
             const api::RelationalExpressionKind expected_kind,
@@ -3971,6 +4724,12 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
               expression->literal_kind.has_value() ||
               expression->operator_name != expected_operator ||
               expression->literal_or_parameter_ref.has_value() ||
+              descriptor->type_uuid != grouping_int64_type_uuid ||
+              !CanonicalUuidText(descriptor->descriptor_uuid) ||
+              descriptor->descriptor_uuid == grouping_int64_type_uuid ||
+              !grouping_descriptor_uuids
+                   .insert(descriptor->descriptor_uuid)
+                   .second ||
               descriptor->nullability !=
                   api::RelationalNullability::kNonNull ||
               descriptor->collation_uuid.has_value() ||
@@ -5324,13 +6083,25 @@ struct PlanningAggregateDistinctState {
   std::uint64_t equality_comparison_count{0};
 };
 
+struct PlanningAggregateModifierState {
+  std::optional<std::vector<api::EngineSqlTruthValue>> filter_truth_values;
+  std::vector<std::size_t> transition_ordinals;
+  std::size_t admitted_row_count{0};
+  std::uint64_t filter_truth_memory_bytes{0};
+  std::uint64_t transition_memory_bytes{0};
+  std::uint64_t distinct_generation_bound{0};
+  std::uint64_t distinct_comparison_bound{0};
+  std::uint64_t distinct_memory_bound{0};
+};
+
 bool InitializePlanningAggregateDistinctState(
     const api::EngineRequestContext& context,
     const exec::DescriptorBatch& input_batch,
     const PreparedGlobalAggregateRoot& prepared,
     const std::uint64_t maximum_auxiliary_memory_bytes,
     PlanningAggregateDistinctState* state,
-    std::string* detail) {
+    std::string* detail,
+    const std::optional<std::size_t> admitted_row_count = std::nullopt) {
   if (state == nullptr || detail == nullptr) return false;
   *state = {};
   detail->clear();
@@ -5341,8 +6112,14 @@ bool InitializePlanningAggregateDistinctState(
     *detail = "aggregate DISTINCT planning arity is not exact";
     return false;
   }
+  const auto planned_row_count =
+      admitted_row_count.value_or(input_batch.rows.size());
+  if (planned_row_count > input_batch.rows.size()) {
+    *detail = "aggregate DISTINCT admitted-row count exceeds its input";
+    return false;
+  }
   std::uint64_t planned_container_bytes = 0;
-  if (!CheckedMultiply(input_batch.rows.size(), sizeof(std::string),
+  if (!CheckedMultiply(planned_row_count, sizeof(std::string),
                        &planned_container_bytes) ||
       planned_container_bytes > maximum_auxiliary_memory_bytes) {
     *detail = "aggregate DISTINCT planning container exceeds its memory bound";
@@ -5365,7 +6142,7 @@ bool InitializePlanningAggregateDistinctState(
       }
       state->equality_terms.push_back(std::move(term));
     }
-    state->keys.reserve(input_batch.rows.size());
+    state->keys.reserve(planned_row_count);
   } catch (const std::bad_alloc&) {
     *detail = "aggregate DISTINCT planning allocation was refused";
     return false;
@@ -5380,6 +6157,76 @@ bool InitializePlanningAggregateDistinctState(
     return false;
   }
   state->peak_memory_bytes = state->retained_memory_bytes;
+  return true;
+}
+
+bool InitializePlanningAggregateModifierState(
+    const exec::DescriptorBatch& input_batch,
+    const PreparedGlobalAggregateRoot& prepared,
+    const std::uint64_t input_memory_bytes,
+    const std::uint64_t memory_budget_bytes,
+    PlanningAggregateModifierState* state,
+    std::string* detail) {
+  if (state == nullptr || detail == nullptr) return false;
+  *state = {};
+  detail->clear();
+  if (input_memory_bytes > memory_budget_bytes) {
+    *detail = "aggregate modifier input exceeds its admitted memory bound";
+    return false;
+  }
+  if (prepared.filter_column.has_value()) {
+    std::vector<api::EngineSqlTruthValue> filter_truth_values;
+    if (!MaterializeAggregateFilterTruthValues(
+            input_batch, *prepared.filter_column,
+            prepared.filter_descriptor_id,
+            memory_budget_bytes - input_memory_bytes,
+            &filter_truth_values, &state->filter_truth_memory_bytes,
+            detail)) {
+      return false;
+    }
+    state->filter_truth_values = std::move(filter_truth_values);
+  }
+  state->admitted_row_count =
+      state->filter_truth_values.has_value()
+          ? static_cast<std::size_t>(std::ranges::count(
+                *state->filter_truth_values,
+                api::EngineSqlTruthValue::true_value))
+          : input_batch.rows.size();
+  try {
+    state->transition_ordinals.reserve(state->admitted_row_count);
+  } catch (const std::bad_alloc&) {
+    *detail = "aggregate transition workspace allocation was refused";
+    return false;
+  } catch (const std::length_error&) {
+    *detail = "aggregate transition workspace capacity overflowed";
+    return false;
+  }
+  if (!CheckedMultiply(state->transition_ordinals.capacity(),
+                       sizeof(std::size_t),
+                       &state->transition_memory_bytes) ||
+      state->filter_truth_memory_bytes >
+          memory_budget_bytes - input_memory_bytes ||
+      state->transition_memory_bytes >
+          memory_budget_bytes - input_memory_bytes -
+              state->filter_truth_memory_bytes) {
+    *detail = "aggregate modifier workspace exceeds its admitted memory bound";
+    return false;
+  }
+  state->distinct_memory_bound =
+      memory_budget_bytes - input_memory_bytes -
+      state->filter_truth_memory_bytes - state->transition_memory_bytes;
+  if (prepared.distinct &&
+      (!CheckedMultiply(state->admitted_row_count,
+                        prepared.value_columns.size(),
+                        &state->distinct_generation_bound) ||
+       (state->admitted_row_count > 1 &&
+        !CheckedMultiply(state->admitted_row_count,
+                         state->admitted_row_count - 1,
+                         &state->distinct_comparison_bound)))) {
+    *detail = "aggregate DISTINCT work bound overflowed";
+    return false;
+  }
+  state->distinct_comparison_bound /= 2;
   return true;
 }
 
@@ -5533,7 +6380,9 @@ bool PrepareCanonicalSortOrderTerm(
           : exec::CanonicalDescriptorNullPlacement::last;
   term->collation_uuid = logical_term.collation_uuid;
 
-  if (column.descriptor.canonical_type_name == "text") {
+  if (dt::CanonicalTypeIdFromStableName(
+          column.descriptor.canonical_type_name) ==
+      dt::CanonicalTypeId::character) {
 #if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
     *term = {};
     *detail =
@@ -5753,7 +6602,9 @@ PreparedDistinctRoot PrepareQueryDistinctRoot(
     term.expression_descriptor_id = descriptor_id;
     term.direction = exec::CanonicalDescriptorOrderDirection::ascending;
     term.null_placement = exec::CanonicalDescriptorNullPlacement::first;
-    if (input.batch.columns[column].descriptor.canonical_type_name == "text") {
+    if (dt::CanonicalTypeIdFromStableName(
+            input.batch.columns[column].descriptor.canonical_type_name) ==
+        dt::CanonicalTypeId::character) {
       if (!descriptor->second->collation_uuid.has_value()) {
         result.equality_terms.clear();
         result.detail =
@@ -5907,7 +6758,11 @@ bool PrepareInputRowBinding(
     const std::uint32_t root_expression_id,
     const std::vector<std::uint32_t>& input_descriptor_ids,
     CanonicalRelationalExpressionRowBinding* row_binding,
-    std::string* detail) {
+    std::string* detail,
+    std::uint64_t* preparation_peak_structural_bytes = nullptr) {
+  if (preparation_peak_structural_bytes != nullptr) {
+    *preparation_peak_structural_bytes = 0;
+  }
   if (row_binding == nullptr || detail == nullptr ||
       root_expression_id == 0 || input_descriptor_ids.empty()) {
     if (detail != nullptr) {
@@ -5964,6 +6819,41 @@ bool PrepareInputRowBinding(
                    expression->second->child_expression_ids.begin(),
                    expression->second->child_expression_ids.end());
   }
+  if (preparation_peak_structural_bytes != nullptr) {
+    std::uint64_t bytes = sizeof(*row_binding);
+    std::uint64_t allocation = 0;
+    const auto add_array = [&](const std::uint64_t count,
+                               const std::uint64_t element_bytes) {
+      return CheckedMultiply(count, element_bytes, &allocation) &&
+             CheckedAdd(bytes, allocation, &bytes);
+    };
+    // This is the exact live container cohort retained by this implementation
+    // under the engine logical-memory convention: bucket arrays, conservative
+    // node/link storage, vector capacities, and the surviving row binding.
+    constexpr std::uint64_t kNodeLinks = 6 * sizeof(void*);
+    if (!add_array(row_binding->row_descriptor_ids.capacity(),
+                   sizeof(std::uint32_t)) ||
+        !add_array(row_binding->slots.capacity(),
+                   sizeof(CanonicalRelationalExpressionRowSlotBinding)) ||
+        !add_array(input_ordinals.bucket_count(), sizeof(void*)) ||
+        !add_array(input_ordinals.size(),
+                   sizeof(std::pair<const std::uint32_t, std::size_t>) +
+                       kNodeLinks) ||
+        !add_array(expressions.bucket_count(), sizeof(void*)) ||
+        !add_array(
+            expressions.size(),
+            sizeof(std::pair<
+                const std::uint32_t,
+                const api::RelationalExpressionRecord*>) + kNodeLinks) ||
+        !add_array(reachable.bucket_count(), sizeof(void*)) ||
+        !add_array(reachable.size(), sizeof(std::uint32_t) + kNodeLinks) ||
+        !add_array(pending.capacity(), sizeof(std::uint32_t))) {
+      *row_binding = {};
+      *detail = "row expression binding memory receipt overflowed";
+      return false;
+    }
+    *preparation_peak_structural_bytes = bytes;
+  }
   return true;
 }
 
@@ -5975,7 +6865,38 @@ bool MaterializeExpressionSortBatch(
     exec::DescriptorBatch* sort_batch,
     std::string* detail,
     const std::uint64_t maximum_batch_bytes =
-        std::numeric_limits<std::uint64_t>::max()) {
+        std::numeric_limits<std::uint64_t>::max(),
+    const exec::DescriptorCancellationProbe cancellation_requested = nullptr,
+    const void* cancellation_context = nullptr,
+    bool* cancellation_observed = nullptr,
+    bool* cancellation_probe_failed = nullptr) {
+  if (cancellation_observed != nullptr) *cancellation_observed = false;
+  if (cancellation_probe_failed != nullptr) {
+    *cancellation_probe_failed = false;
+  }
+  const auto poll_cancellation = [&](const char* phase) {
+    if (cancellation_requested == nullptr) return false;
+    try {
+      if (!cancellation_requested(cancellation_context)) return false;
+      if (cancellation_observed != nullptr) *cancellation_observed = true;
+      *detail = std::string("expression SORT cancellation observed ") + phase;
+      return true;
+    } catch (const std::exception& exception) {
+      if (cancellation_probe_failed != nullptr) {
+        *cancellation_probe_failed = true;
+      }
+      *detail = std::string("expression SORT cancellation probe threw: ") +
+                exception.what();
+      return true;
+    } catch (...) {
+      if (cancellation_probe_failed != nullptr) {
+        *cancellation_probe_failed = true;
+      }
+      *detail =
+          "expression SORT cancellation probe threw a non-standard exception";
+      return true;
+    }
+  };
   if (sort_batch == nullptr || detail == nullptr || expressions.empty() ||
       input_batch.columns.empty()) {
     if (detail != nullptr) {
@@ -5983,26 +6904,57 @@ bool MaterializeExpressionSortBatch(
     }
     return false;
   }
+  if (poll_cancellation("before materialization")) return false;
   std::uint64_t materialized_bytes = 0;
-  if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
-                                           &materialized_bytes) ||
-      materialized_bytes > maximum_batch_bytes) {
+  if (!RuntimeMaterializedBatchMemoryBytes(
+          input_batch, &materialized_bytes, cancellation_requested,
+          cancellation_context, cancellation_observed,
+          cancellation_probe_failed)) {
+    if ((cancellation_observed != nullptr && *cancellation_observed) ||
+        (cancellation_probe_failed != nullptr &&
+         *cancellation_probe_failed)) {
+      *detail = cancellation_probe_failed != nullptr &&
+                        *cancellation_probe_failed
+                    ? "expression SORT cancellation probe threw while accounting input memory"
+                    : "expression SORT cancellation observed while accounting input memory";
+      return false;
+    }
+    *detail = "expression SORT input memory accounting overflowed";
+    return false;
+  }
+  if (materialized_bytes > maximum_batch_bytes) {
     *detail = "expression SORT input exceeds its materialization ceiling";
     return false;
   }
   *sort_batch = input_batch;
+  if (poll_cancellation("after input materialization")) {
+    *sort_batch = {};
+    return false;
+  }
   detail->clear();
   for (const auto& expression : expressions) {
+    if (poll_cancellation("while materializing key columns")) {
+      *sort_batch = {};
+      return false;
+    }
     sort_batch->columns.push_back(expression.materialized_column);
   }
 
   CanonicalRelationalExpressionRuntime runtime(dag, expression_services);
   for (std::size_t row_ordinal = 0;
        row_ordinal < input_batch.rows.size(); ++row_ordinal) {
+    if (poll_cancellation("while materializing key rows")) {
+      *sort_batch = {};
+      return false;
+    }
     auto& sort_row = sort_batch->rows[row_ordinal];
     const auto& input_row = input_batch.rows[row_ordinal];
     sort_row.values.reserve(input_row.values.size() + expressions.size());
     for (const auto& expression : expressions) {
+      if (poll_cancellation("while evaluating a key expression")) {
+        *sort_batch = {};
+        return false;
+      }
       api::EngineTypedValue value;
       if (expression.row_independent_value.has_value()) {
         value = *expression.row_independent_value;
@@ -6023,9 +6975,16 @@ bool MaterializeExpressionSortBatch(
       expression_value_row.values.push_back(std::move(value));
       expression_value_batch.rows.push_back(
           std::move(expression_value_row));
-      const auto value_validation =
-          exec::ValidateDescriptorBatch(expression_value_batch);
+      const auto value_validation = exec::ValidateDescriptorBatch(
+          expression_value_batch, cancellation_requested,
+          cancellation_context, cancellation_observed);
       if (!value_validation.ok) {
+        if (value_validation.diagnostic_code ==
+            "SB_MODEL_COORDINATOR_LEG_FAILED_V1") {
+          if (cancellation_probe_failed != nullptr) {
+            *cancellation_probe_failed = true;
+          }
+        }
         *detail = value_validation.diagnostic_code + ":" +
                   value_validation.detail;
         *sort_batch = {};
@@ -6051,12 +7010,31 @@ bool MaterializeExpressionSortBatch(
   std::vector<std::uint32_t> descriptor_ids;
   descriptor_ids.reserve(sort_batch->columns.size());
   for (const auto& column : sort_batch->columns) {
+    if (poll_cancellation("while validating key descriptors")) {
+      *sort_batch = {};
+      return false;
+    }
     descriptor_ids.push_back(column.descriptor_id);
   }
-  const auto canonical =
-      exec::ValidateCanonicalDescriptorBatch(*sort_batch, descriptor_ids);
+  if (poll_cancellation("before validating the key batch")) {
+    *sort_batch = {};
+    return false;
+  }
+  const auto canonical = exec::ValidateCanonicalDescriptorBatch(
+      *sort_batch, descriptor_ids, cancellation_requested,
+      cancellation_context, cancellation_observed);
   if (!canonical.ok) {
+    if (canonical.diagnostic_code ==
+        "SB_MODEL_COORDINATOR_LEG_FAILED_V1") {
+      if (cancellation_probe_failed != nullptr) {
+        *cancellation_probe_failed = true;
+      }
+    }
     *detail = canonical.diagnostic_code + ":" + canonical.detail;
+    *sort_batch = {};
+    return false;
+  }
+  if (poll_cancellation("after validating the key batch")) {
     *sort_batch = {};
     return false;
   }
@@ -6274,6 +7252,7 @@ struct PreparedGlobalRowNumberWindowBinding {
   std::optional<api::EngineTypedValue> ntile_bucket_count_operand;
   std::optional<std::size_t> navigation_value_column;
   std::optional<api::EngineTypedValue> nth_value_position_operand;
+  bool aggregate_count_star{false};
   std::string window_property_uuid;
   std::string window_frame_descriptor_uuid;
 };
@@ -6319,7 +7298,341 @@ constexpr GlobalRankingWindowProfile kGlobalLastValueProfile{
 constexpr GlobalRankingWindowProfile kGlobalNthValueProfile{
     "window.nth-value.v1", "sb.window.nth_value",
     "019de5fc-2400-7dc9-80e6-9f2ccf08076f", "NTH_VALUE", "int64"};
-GlobalRankingWindowProfile GlobalAggregateInt64WindowProfileV1(
+bool DirectValueWindowUsesExactTypeV1(
+    const api::TypedRelationalDag& dag,
+    const std::uint32_t relation_node_id,
+    const std::string_view expected_builtin_id,
+    const std::string_view type_uuid) {
+  if (type_uuid.empty() ||
+      (expected_builtin_id != "sb.window.lag" &&
+       expected_builtin_id != "sb.window.lead" &&
+       expected_builtin_id != "sb.window.first_value" &&
+       expected_builtin_id != "sb.window.last_value" &&
+       expected_builtin_id != "sb.window.nth_value")) {
+    return false;
+  }
+  const api::RelationalWindowInvocationRecord* exact_invocation = nullptr;
+  for (const auto& invocation : dag.window_invocations) {
+    if (invocation.relation_node_id != relation_node_id) continue;
+    if (exact_invocation != nullptr) return false;
+    exact_invocation = &invocation;
+  }
+  const std::size_t expected_argument_count =
+      expected_builtin_id == "sb.window.nth_value" ? 2U : 1U;
+  if (exact_invocation == nullptr ||
+      exact_invocation->builtin_id != expected_builtin_id ||
+      exact_invocation->argument_expression_ids.size() !=
+          expected_argument_count) {
+    return false;
+  }
+  const auto argument = std::ranges::find_if(
+      dag.expressions, [&](const auto& expression) {
+        return expression.expression_id ==
+               exact_invocation->argument_expression_ids.front();
+      });
+  const auto descriptor = std::ranges::find_if(
+      dag.descriptors, [&](const auto& candidate) {
+        return argument != dag.expressions.end() &&
+               candidate.descriptor_id == argument->result_descriptor_id;
+      });
+  return argument != dag.expressions.end() &&
+         argument->expression_kind ==
+             api::RelationalExpressionKind::kIdentifier &&
+         descriptor != dag.descriptors.end() &&
+         descriptor->type_uuid == type_uuid;
+}
+
+bool ExactCanonicalBooleanWindowSourceV1(
+    const api::RelationalTypeDescriptor& relational_descriptor,
+    const api::EngineDescriptor& runtime_descriptor,
+    const bool runtime_nullable,
+    const std::string_view boolean_type_uuid,
+    const std::string_view function_uuid,
+    const std::string_view result_descriptor_uuid,
+    const std::string_view ordering_property_uuid,
+    const std::string_view window_property_uuid,
+    const std::string_view window_frame_descriptor_uuid) {
+  return !boolean_type_uuid.empty() &&
+         relational_descriptor.descriptor_uuid ==
+             runtime_descriptor.descriptor_uuid.canonical &&
+         relational_descriptor.descriptor_uuid !=
+             relational_descriptor.type_uuid &&
+         relational_descriptor.descriptor_uuid != function_uuid &&
+         relational_descriptor.descriptor_uuid != result_descriptor_uuid &&
+         relational_descriptor.descriptor_uuid != ordering_property_uuid &&
+         relational_descriptor.descriptor_uuid != window_property_uuid &&
+         relational_descriptor.descriptor_uuid !=
+             window_frame_descriptor_uuid &&
+         relational_descriptor.type_uuid == boolean_type_uuid &&
+         relational_descriptor.nullability ==
+             (runtime_nullable ? api::RelationalNullability::kNullable
+                               : api::RelationalNullability::kNonNull) &&
+         !relational_descriptor.collation_uuid.has_value() &&
+         !relational_descriptor.timezone_profile_id.has_value() &&
+         !relational_descriptor.width.has_value() &&
+         !relational_descriptor.precision.has_value() &&
+         !relational_descriptor.scale.has_value() &&
+         runtime_descriptor.descriptor_kind == "scalar" &&
+         runtime_descriptor.canonical_type_name == "boolean" &&
+         api::QowCanonicalDescriptorIdentityV1(runtime_descriptor) &&
+         runtime_descriptor.encoded_descriptor ==
+             "type_uuid=" + std::string(boolean_type_uuid) +
+                 ";nullability=" +
+                 (runtime_nullable ? "nullable" : "non_null");
+}
+
+bool CanonicalDescriptorFieldEqualsV1(
+    const api::EngineDescriptor& descriptor,
+    const std::string_view key,
+    const std::optional<std::string_view> expected) {
+  const auto prefix = std::string(key) + "=";
+  std::optional<std::string_view> value;
+  std::size_t begin = 0;
+  while (begin <= descriptor.encoded_descriptor.size()) {
+    const auto end = descriptor.encoded_descriptor.find(';', begin);
+    const auto field = std::string_view(descriptor.encoded_descriptor).substr(
+        begin, end == std::string::npos ? std::string::npos : end - begin);
+    if (field.starts_with(prefix)) {
+      if (value.has_value()) return false;
+      value = field.substr(prefix.size());
+    }
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return expected.has_value() ? value == expected : !value.has_value();
+}
+
+std::string ExactCanonicalCoreDatatypeUuidV1(
+    const std::string_view stable_name) {
+  static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  return count == 1 && found != manifest.manifest.descriptor_rows.end() &&
+                 found->descriptor_uuid.valid()
+             ? scratchbird::core::uuid::UuidToString(
+                   found->descriptor_uuid.value)
+             : std::string{};
+}
+
+bool ExactCanonicalScalarWindowOperandV1(
+    const api::RelationalTypeDescriptor& relational_descriptor,
+    const api::EngineDescriptor& runtime_descriptor,
+    const bool runtime_nullable,
+    const std::string_view function_uuid,
+    const std::string_view result_descriptor_uuid,
+    const std::string_view result_type_uuid,
+    const std::string_view counterpart_descriptor_uuid,
+    const std::string_view counterpart_type_uuid,
+    const bool same_operand_ordinal,
+    const std::string_view ordering_property_uuid,
+    const std::string_view window_property_uuid,
+    const std::string_view window_frame_descriptor_uuid) {
+  const auto expected_nullability =
+      runtime_nullable ? std::string_view("nullable")
+                       : std::string_view("non_null");
+  const auto expected_legacy_nullability =
+      runtime_nullable ? std::string_view("true") : std::string_view("false");
+  const bool exact_nullability =
+      (CanonicalDescriptorFieldEqualsV1(
+           runtime_descriptor, "nullability", expected_nullability) &&
+       CanonicalDescriptorFieldEqualsV1(runtime_descriptor, "nullable",
+                                        std::nullopt)) ||
+      (CanonicalDescriptorFieldEqualsV1(runtime_descriptor, "nullability",
+                                        std::nullopt) &&
+       CanonicalDescriptorFieldEqualsV1(
+           runtime_descriptor, "nullable", expected_legacy_nullability));
+  const auto width = relational_descriptor.width.has_value()
+                         ? std::optional<std::string>(
+                               std::to_string(*relational_descriptor.width))
+                         : std::nullopt;
+  const auto precision =
+      relational_descriptor.precision.has_value()
+          ? std::optional<std::string>(
+                std::to_string(*relational_descriptor.precision))
+          : std::nullopt;
+  const auto scale = relational_descriptor.scale.has_value()
+                         ? std::optional<std::string>(
+                               std::to_string(*relational_descriptor.scale))
+                         : std::nullopt;
+  const auto field_matches = [&](const std::string_view key,
+                                 const std::optional<std::string>& value) {
+    return CanonicalDescriptorFieldEqualsV1(
+        runtime_descriptor, key,
+        value.has_value()
+            ? std::optional<std::string_view>(*value)
+            : std::optional<std::string_view>{});
+  };
+  return CanonicalUuidText(relational_descriptor.type_uuid) &&
+         !result_type_uuid.empty() &&
+         relational_descriptor.descriptor_uuid ==
+             runtime_descriptor.descriptor_uuid.canonical &&
+         relational_descriptor.descriptor_uuid !=
+             relational_descriptor.type_uuid &&
+         relational_descriptor.descriptor_uuid != result_type_uuid &&
+         (same_operand_ordinal || relational_descriptor.descriptor_uuid !=
+                                      counterpart_descriptor_uuid) &&
+         relational_descriptor.descriptor_uuid != counterpart_type_uuid &&
+         relational_descriptor.descriptor_uuid != function_uuid &&
+         relational_descriptor.descriptor_uuid != result_descriptor_uuid &&
+         relational_descriptor.descriptor_uuid != ordering_property_uuid &&
+         relational_descriptor.descriptor_uuid != window_property_uuid &&
+         relational_descriptor.descriptor_uuid !=
+             window_frame_descriptor_uuid &&
+         relational_descriptor.type_uuid != function_uuid &&
+         relational_descriptor.type_uuid != result_descriptor_uuid &&
+         relational_descriptor.type_uuid != counterpart_descriptor_uuid &&
+         relational_descriptor.type_uuid != ordering_property_uuid &&
+         relational_descriptor.type_uuid != window_property_uuid &&
+         relational_descriptor.type_uuid != window_frame_descriptor_uuid &&
+         relational_descriptor.nullability ==
+             (runtime_nullable ? api::RelationalNullability::kNullable
+                               : api::RelationalNullability::kNonNull) &&
+         runtime_descriptor.descriptor_kind == "scalar" &&
+         !runtime_descriptor.canonical_type_name.empty() &&
+         api::QowCanonicalDescriptorIdentityV1(runtime_descriptor) &&
+         exec::CanonicalDerivedDescriptorTypeMatches(
+             runtime_descriptor, runtime_nullable, runtime_descriptor,
+             runtime_nullable) &&
+         CanonicalDescriptorFieldEqualsV1(runtime_descriptor, "type_uuid",
+                                          relational_descriptor.type_uuid) &&
+         exact_nullability &&
+         CanonicalDescriptorFieldEqualsV1(
+             runtime_descriptor, "collation_uuid",
+             relational_descriptor.collation_uuid.has_value()
+                 ? std::optional<std::string_view>(
+                       *relational_descriptor.collation_uuid)
+                 : std::optional<std::string_view>{}) &&
+         (!relational_descriptor.collation_uuid.has_value() ||
+          CanonicalUuidText(*relational_descriptor.collation_uuid)) &&
+         CanonicalDescriptorFieldEqualsV1(
+             runtime_descriptor, "timezone_profile_id",
+             relational_descriptor.timezone_profile_id.has_value()
+                 ? std::optional<std::string_view>(
+                       *relational_descriptor.timezone_profile_id)
+                 : std::optional<std::string_view>{}) &&
+         field_matches("width", width) &&
+         field_matches("precision", precision) &&
+         field_matches("scale", scale);
+}
+
+bool ExactCanonicalBoundedSignedWindowSourceV1(
+    const api::RelationalTypeDescriptor& relational_descriptor,
+    const api::EngineDescriptor& runtime_descriptor,
+    const bool runtime_nullable,
+    const std::array<std::string, 4>& bounded_signed_type_uuids,
+    const std::string_view function_uuid,
+    const std::string_view result_descriptor_uuid,
+    const std::string_view ordering_property_uuid,
+    const std::string_view window_property_uuid,
+    const std::string_view window_frame_descriptor_uuid) {
+  constexpr std::array<std::string_view, 4> kBoundedSignedTypeNames = {
+      "int8", "int16", "int32", "int64"};
+  const auto type_uuid = std::ranges::find(
+      bounded_signed_type_uuids, relational_descriptor.type_uuid);
+  const auto type_index = static_cast<std::size_t>(
+      std::distance(bounded_signed_type_uuids.begin(), type_uuid));
+  const auto& result_type_uuid = bounded_signed_type_uuids.back();
+  return type_uuid != bounded_signed_type_uuids.end() &&
+         !type_uuid->empty() && type_index < kBoundedSignedTypeNames.size() &&
+         !result_type_uuid.empty() &&
+         relational_descriptor.descriptor_uuid ==
+             runtime_descriptor.descriptor_uuid.canonical &&
+         relational_descriptor.descriptor_uuid !=
+             relational_descriptor.type_uuid &&
+         relational_descriptor.descriptor_uuid != result_type_uuid &&
+         relational_descriptor.descriptor_uuid != function_uuid &&
+         relational_descriptor.descriptor_uuid != result_descriptor_uuid &&
+         relational_descriptor.descriptor_uuid != ordering_property_uuid &&
+         relational_descriptor.descriptor_uuid != window_property_uuid &&
+         relational_descriptor.descriptor_uuid !=
+             window_frame_descriptor_uuid &&
+         *type_uuid != function_uuid &&
+         *type_uuid != result_descriptor_uuid &&
+         *type_uuid != ordering_property_uuid &&
+         *type_uuid != window_property_uuid &&
+         *type_uuid != window_frame_descriptor_uuid &&
+         (type_index == kBoundedSignedTypeNames.size() - 1 ||
+          *type_uuid != result_type_uuid) &&
+         relational_descriptor.nullability ==
+             (runtime_nullable ? api::RelationalNullability::kNullable
+                               : api::RelationalNullability::kNonNull) &&
+         !relational_descriptor.collation_uuid.has_value() &&
+         !relational_descriptor.timezone_profile_id.has_value() &&
+         !relational_descriptor.width.has_value() &&
+         !relational_descriptor.precision.has_value() &&
+         !relational_descriptor.scale.has_value() &&
+         runtime_descriptor.descriptor_kind == "scalar" &&
+         runtime_descriptor.canonical_type_name ==
+             kBoundedSignedTypeNames[type_index] &&
+         exec::IsCanonicalBoundedSignedIntegerDescriptor(
+             runtime_descriptor) &&
+         api::QowCanonicalDescriptorIdentityV1(runtime_descriptor) &&
+         runtime_descriptor.encoded_descriptor ==
+             "type_uuid=" + *type_uuid + ";nullability=" +
+                 (runtime_nullable ? "nullable" : "non_null");
+}
+
+bool ExactCanonicalBoundedSignedWindowOrderV1(
+    const api::RelationalTypeDescriptor& relational_descriptor,
+    const api::EngineDescriptor& runtime_descriptor,
+    const bool runtime_nullable,
+    const std::array<std::string, 4>& bounded_signed_type_uuids,
+    const std::string_view function_uuid,
+    const std::string_view result_descriptor_uuid,
+    const std::string_view result_type_uuid,
+    const std::string_view ordering_property_uuid,
+    const std::string_view window_property_uuid,
+    const std::string_view window_frame_descriptor_uuid) {
+  constexpr std::array<std::string_view, 4> kBoundedSignedTypeNames = {
+      "int8", "int16", "int32", "int64"};
+  const auto type_uuid = std::ranges::find(
+      bounded_signed_type_uuids, relational_descriptor.type_uuid);
+  const auto type_index = static_cast<std::size_t>(
+      std::distance(bounded_signed_type_uuids.begin(), type_uuid));
+  return type_uuid != bounded_signed_type_uuids.end() &&
+         !type_uuid->empty() && type_index < kBoundedSignedTypeNames.size() &&
+         !result_type_uuid.empty() &&
+         relational_descriptor.descriptor_uuid ==
+             runtime_descriptor.descriptor_uuid.canonical &&
+         relational_descriptor.descriptor_uuid !=
+             relational_descriptor.type_uuid &&
+         relational_descriptor.descriptor_uuid != result_type_uuid &&
+         relational_descriptor.descriptor_uuid != function_uuid &&
+         relational_descriptor.descriptor_uuid != result_descriptor_uuid &&
+         relational_descriptor.descriptor_uuid != ordering_property_uuid &&
+         relational_descriptor.descriptor_uuid != window_property_uuid &&
+         relational_descriptor.descriptor_uuid !=
+             window_frame_descriptor_uuid &&
+         *type_uuid != function_uuid &&
+         *type_uuid != result_descriptor_uuid &&
+         *type_uuid != ordering_property_uuid &&
+         *type_uuid != window_property_uuid &&
+         *type_uuid != window_frame_descriptor_uuid &&
+         relational_descriptor.nullability ==
+             (runtime_nullable ? api::RelationalNullability::kNullable
+                               : api::RelationalNullability::kNonNull) &&
+         !relational_descriptor.collation_uuid.has_value() &&
+         !relational_descriptor.timezone_profile_id.has_value() &&
+         !relational_descriptor.width.has_value() &&
+         !relational_descriptor.precision.has_value() &&
+         !relational_descriptor.scale.has_value() &&
+         runtime_descriptor.descriptor_kind == "scalar" &&
+         runtime_descriptor.canonical_type_name ==
+             kBoundedSignedTypeNames[type_index] &&
+         exec::IsCanonicalBoundedSignedIntegerDescriptor(
+             runtime_descriptor) &&
+         api::QowCanonicalDescriptorIdentityV1(runtime_descriptor) &&
+         runtime_descriptor.encoded_descriptor ==
+             "type_uuid=" + *type_uuid + ";nullability=" +
+                 (runtime_nullable ? "nullable" : "non_null");
+}
+
+GlobalRankingWindowProfile GlobalAggregateWindowProfileV1(
     const api::TypedRelationalDag& dag,
     const std::uint32_t relation_node_id) {
   const api::RelationalWindowInvocationRecord* exact_invocation = nullptr;
@@ -6337,6 +7650,7 @@ GlobalRankingWindowProfile GlobalAggregateInt64WindowProfileV1(
     return {};
   }
   std::string_view display_name;
+  std::string_view result_type_name = "int64";
   switch (row->function) {
     case exec::CanonicalAggregateFunction::sum:
       display_name = "SUM";
@@ -6350,11 +7664,23 @@ GlobalRankingWindowProfile GlobalAggregateInt64WindowProfileV1(
     case exec::CanonicalAggregateFunction::count:
       display_name = "COUNT";
       break;
+    case exec::CanonicalAggregateFunction::bool_and:
+      display_name = "BOOL_AND";
+      result_type_name = "boolean";
+      break;
+    case exec::CanonicalAggregateFunction::bool_or:
+      display_name = "BOOL_OR";
+      result_type_name = "boolean";
+      break;
+    case exec::CanonicalAggregateFunction::every:
+      display_name = "EVERY";
+      result_type_name = "boolean";
+      break;
     default:
       return {};
   }
   return {"window.aggregate-bridge.v1", row->builtin_id,
-          row->function_uuid, display_name, "int64"};
+          row->function_uuid, display_name, result_type_name};
 }
 constexpr std::uint64_t kRealRankingRatioTextMaximumBytes = 36;
 constexpr std::uint64_t kRealRankingConversionWorkspaceMaximumBytes =
@@ -6372,6 +7698,9 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
     const std::size_t materialized_column_count,
     const std::size_t result_binding_count,
     const std::string& result_type_uuid,
+    const std::string& order_type_uuid,
+    const std::string& boolean_type_uuid,
+    const std::array<std::string, 4>& bounded_signed_type_uuids,
     const std::string_view family_label,
     const GlobalRankingWindowProfile& profile,
     const bool allow_project_root = false) {
@@ -6414,6 +7743,21 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       dag.nodes, [&](const auto& node) {
         return node.node_id == previous_logical.logical_node_id;
       });
+  const auto typed_order_expression =
+      typed_sort != dag.nodes.end() &&
+              typed_sort->bound_expression_ids.size() == 1
+          ? std::ranges::find_if(dag.expressions, [&](const auto& expression) {
+              return expression.expression_id ==
+                     typed_sort->bound_expression_ids.front();
+            })
+          : dag.expressions.end();
+  const auto typed_order_descriptor =
+      typed_order_expression == dag.expressions.end()
+          ? dag.descriptors.end()
+          : std::ranges::find_if(dag.descriptors, [&](const auto& descriptor) {
+              return descriptor.descriptor_id ==
+                     typed_order_expression->result_descriptor_id;
+            });
   const auto function =
       invocations.size() == 1
           ? std::ranges::find_if(dag.expressions, [&](const auto& expression) {
@@ -6438,18 +7782,43 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       profile.builtin_id == "sb.window.last_value";
   const bool nth_value_window =
       profile.builtin_id == "sb.window.nth_value";
+  const bool navigation_value_window =
+      navigation_window || first_value_window || last_value_window ||
+      nth_value_window;
   const bool aggregate_window =
       profile.semantic_variant_id == "window.aggregate-bridge.v1";
   const bool aggregate_count_window =
       aggregate_window && profile.builtin_id == "sb.aggregate.count";
+  const bool aggregate_boolean_window =
+      aggregate_window &&
+      (profile.builtin_id == "sb.aggregate.bool_and" ||
+       profile.builtin_id == "sb.aggregate.bool_or" ||
+       profile.builtin_id == "sb.aggregate.every");
+  const bool aggregate_bounded_signed_window =
+      aggregate_window && !aggregate_count_window &&
+      !aggregate_boolean_window;
+  const bool fixed_unqualified_ranking_result_window =
+      profile.builtin_id == "sb.window.row_number" ||
+      profile.builtin_id == "sb.window.rank" ||
+      profile.builtin_id == "sb.window.dense_rank" ||
+      profile.builtin_id == "sb.window.percent_rank" ||
+      profile.builtin_id == "sb.window.cume_dist" ||
+      profile.builtin_id == "sb.window.ntile";
+  const bool aggregate_count_star_window =
+      aggregate_count_window && invocations.size() == 1 &&
+      invocations.front()->argument_expression_ids.empty();
   const bool value_window =
       navigation_window || first_value_window || last_value_window ||
       nth_value_window || aggregate_window;
+  const bool value_operand_window =
+      value_window && !aggregate_count_star_window;
   const bool exact_argument_arity =
       invocations.size() == 1 &&
       (nth_value_window
            ? invocations.front()->argument_expression_ids.size() == 2
-           : ((ntile_window || value_window)
+           : aggregate_count_star_window
+           ? invocations.front()->argument_expression_ids.empty()
+           : ((ntile_window || value_operand_window)
                   ? invocations.front()->argument_expression_ids.size() == 1
                   : invocations.front()->argument_expression_ids.empty()));
   std::vector<std::uint32_t> expected_bound_expression_ids;
@@ -6600,6 +7969,12 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           (value_window && !aggregate_count_window
                ? api::RelationalNullability::kNullable
                : api::RelationalNullability::kNonNull) ||
+      ((aggregate_window || fixed_unqualified_ranking_result_window) &&
+       (result_descriptor->collation_uuid.has_value() ||
+        result_descriptor->timezone_profile_id.has_value() ||
+        result_descriptor->width.has_value() ||
+        result_descriptor->precision.has_value() ||
+        result_descriptor->scale.has_value())) ||
       consumer.output_descriptor_ids.size() !=
           previous_logical.output_descriptor_ids.size() + 1 ||
       !std::equal(previous_logical.output_descriptor_ids.begin(),
@@ -6641,6 +8016,39 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
     result.detail = std::string(family_label) + " " +
                     std::string(profile.display_name) +
                     " property binding is not exact";
+    return result;
+  }
+  if (fixed_unqualified_ranking_result_window) {
+    const std::array<std::string_view, 6> ranking_identity_domain{
+        result_descriptor->descriptor_uuid,
+        result_type_uuid,
+        profile.function_uuid,
+        prepared_sort.ordering_property_uuid,
+        *window_property_uuid,
+        window_property->window_frame_descriptor_uuid};
+    const std::unordered_set<std::string_view> distinct_ranking_identities(
+        ranking_identity_domain.begin(), ranking_identity_domain.end());
+    if (distinct_ranking_identities.size() != ranking_identity_domain.size() ||
+        std::ranges::any_of(ranking_identity_domain, [](const auto identity) {
+          return !CanonicalUuidText(identity);
+        })) {
+      result.detail = std::string(family_label) + " " +
+                      std::string(profile.display_name) +
+                      " result identity domain is not independent";
+      return result;
+    }
+  }
+  if (aggregate_window &&
+      (result_descriptor->descriptor_uuid == result_type_uuid ||
+       result_descriptor->descriptor_uuid == profile.function_uuid ||
+       result_descriptor->descriptor_uuid ==
+           prepared_sort.ordering_property_uuid ||
+       result_descriptor->descriptor_uuid == *window_property_uuid ||
+       result_descriptor->descriptor_uuid ==
+           window_property->window_frame_descriptor_uuid)) {
+    result.detail = std::string(family_label) + " " +
+                    std::string(profile.display_name) +
+                    " result descriptor identity is not independent";
     return result;
   }
 
@@ -6711,7 +8119,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
       return result;
     }
     result.ntile_bucket_count_operand = std::move(operand);
-  } else if (value_window) {
+  } else if (value_operand_window) {
     const auto argument_expression_id =
         invocations.front()->argument_expression_ids.front();
     const auto argument = std::ranges::find_if(
@@ -6728,6 +8136,15 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
             ? previous_logical.output_descriptor_ids.end()
             : std::ranges::find(previous_logical.output_descriptor_ids,
                                 argument_descriptor->descriptor_id);
+    const bool exact_aggregate_argument_type =
+        argument_descriptor != dag.descriptors.end() &&
+        (!aggregate_window || aggregate_count_window ||
+         (aggregate_bounded_signed_window &&
+          std::ranges::find(bounded_signed_type_uuids,
+                            argument_descriptor->type_uuid) !=
+              bounded_signed_type_uuids.end()) ||
+         (aggregate_boolean_window && !boolean_type_uuid.empty() &&
+          argument_descriptor->type_uuid == boolean_type_uuid));
     if (argument == dag.expressions.end() ||
         argument->expression_kind !=
             api::RelationalExpressionKind::kIdentifier ||
@@ -6744,16 +8161,35 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         argument_descriptor->descriptor_uuid ==
             result_descriptor->descriptor_uuid ||
         argument_descriptor->descriptor_uuid == profile.function_uuid ||
-        (aggregate_count_window &&
+        (aggregate_window &&
+         (!exact_aggregate_argument_type ||
+          (!aggregate_count_window &&
+           (argument_descriptor->collation_uuid.has_value() ||
+            argument_descriptor->timezone_profile_id.has_value() ||
+            argument_descriptor->width.has_value() ||
+            argument_descriptor->precision.has_value() ||
+            argument_descriptor->scale.has_value())) ||
+          result_descriptor->collation_uuid.has_value() ||
+          result_descriptor->timezone_profile_id.has_value() ||
+          result_descriptor->width.has_value() ||
+          result_descriptor->precision.has_value() ||
+          result_descriptor->scale.has_value())) ||
+        (!aggregate_window &&
          (argument_descriptor->type_uuid != result_type_uuid ||
+          (argument_descriptor->type_uuid != order_type_uuid &&
+           (!navigation_value_window || boolean_type_uuid.empty() ||
+            argument_descriptor->type_uuid != boolean_type_uuid)) ||
+          result_descriptor->type_uuid != argument_descriptor->type_uuid ||
           argument_descriptor->collation_uuid.has_value() ||
           argument_descriptor->timezone_profile_id.has_value() ||
           argument_descriptor->width.has_value() ||
           argument_descriptor->precision.has_value() ||
-          argument_descriptor->scale.has_value())) ||
-        (!aggregate_count_window &&
-         (argument_descriptor->type_uuid != result_type_uuid ||
-          result_descriptor->type_uuid != argument_descriptor->type_uuid ||
+          argument_descriptor->scale.has_value() ||
+          result_descriptor->collation_uuid.has_value() ||
+          result_descriptor->timezone_profile_id.has_value() ||
+          result_descriptor->width.has_value() ||
+          result_descriptor->precision.has_value() ||
+          result_descriptor->scale.has_value() ||
           result_descriptor->collation_uuid !=
               argument_descriptor->collation_uuid ||
           result_descriptor->timezone_profile_id !=
@@ -6763,8 +8199,12 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           result_descriptor->scale != argument_descriptor->scale))) {
       result.detail = std::string(family_label) +
                       " " + std::string(profile.display_name) +
-                      " value is not one direct canonical int64 column "
-                      "with a distinct nullable result descriptor";
+                      " value is not one direct canonical " +
+                      std::string(aggregate_count_window
+                                      ? "engine-bound"
+                                      : profile.result_type_name) +
+                      " column "
+                      "with an exact distinct result descriptor";
       return result;
     }
     result.navigation_value_column = static_cast<std::size_t>(
@@ -6792,19 +8232,28 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           position->operator_name.has_value() ||
           !position->literal_or_parameter_ref.has_value() ||
           position_descriptor == dag.descriptors.end() ||
+          typed_order_expression == dag.expressions.end() ||
+          typed_order_expression->expression_kind !=
+              api::RelationalExpressionKind::kIdentifier ||
+          typed_order_descriptor == dag.descriptors.end() ||
+          typed_order_descriptor->type_uuid != order_type_uuid ||
           position_descriptor->descriptor_id ==
               argument_descriptor->descriptor_id ||
           position_descriptor->descriptor_id ==
               result_descriptor->descriptor_id ||
+          position_descriptor->descriptor_id ==
+              typed_order_descriptor->descriptor_id ||
           position_descriptor->descriptor_uuid ==
               argument_descriptor->descriptor_uuid ||
           position_descriptor->descriptor_uuid ==
               result_descriptor->descriptor_uuid ||
+          position_descriptor->descriptor_uuid ==
+              typed_order_descriptor->descriptor_uuid ||
           position_descriptor->descriptor_uuid == profile.function_uuid ||
           position_descriptor->descriptor_uuid ==
               prepared_sort.ordering_property_uuid ||
           position_descriptor->descriptor_uuid == *window_property_uuid ||
-          position_descriptor->type_uuid != result_type_uuid ||
+          position_descriptor->type_uuid != order_type_uuid ||
           position_descriptor->nullability !=
               api::RelationalNullability::kNonNull ||
           position_descriptor->collation_uuid.has_value() ||
@@ -6858,6 +8307,11 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
                  descriptor.descriptor_id ==
                      order_expression->result_descriptor_id;
         });
+    const bool exact_bounded_signed_order =
+        order_descriptor != dag.descriptors.end() &&
+        std::ranges::find(bounded_signed_type_uuids,
+                          order_descriptor->type_uuid) !=
+            bounded_signed_type_uuids.end();
     if (prepared_sort.order_terms.size() != 1 ||
         order_expression == dag.expressions.end() ||
         order_expression->expression_kind !=
@@ -6869,7 +8323,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         order_expression->literal_or_parameter_ref.has_value() ||
         order_expression->operator_name.has_value() ||
         order_descriptor == dag.descriptors.end() ||
-        order_descriptor->type_uuid != result_type_uuid ||
+        !exact_bounded_signed_order ||
         order_descriptor->collation_uuid.has_value() ||
         order_descriptor->timezone_profile_id.has_value() ||
         order_descriptor->width.has_value() ||
@@ -6880,7 +8334,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
             previous_logical.output_descriptor_ids.end()) {
       result.detail = std::string(family_label) +
                       " " + std::string(profile.display_name) +
-                      " order key is not one direct canonical int64 column";
+                      " order key is not one direct canonical bounded-signed "
+                      "column";
       return result;
     }
   }
@@ -6889,6 +8344,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
   result.invocation = invocations.front();
   result.function = &*function;
   result.result_descriptor = &*result_descriptor;
+  result.aggregate_count_star = aggregate_count_star_window;
   result.window_property_uuid = *window_property_uuid;
   result.window_frame_descriptor_uuid =
       window_property->window_frame_descriptor_uuid;
@@ -6910,7 +8366,8 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(
   return PrepareGlobalRankingWindowBinding(
       dag, logical_properties, consumer, logical_consumer, previous_logical,
       prepared_sort, materialized_column_count, result_binding_count,
-      int64_type_uuid, family_label, kGlobalRowNumberProfile,
+      int64_type_uuid, int64_type_uuid, int64_type_uuid,
+      std::array<std::string, 4>{}, family_label, kGlobalRowNumberProfile,
       allow_project_root);
 }
 
@@ -7252,6 +8709,32 @@ PreparedJoinRoot PrepareJoinRoot(
     result.detail = "join root output lineage is not admitted by this profile";
     return result;
   }
+  std::unordered_map<std::uint32_t, const api::RelationalTypeDescriptor*>
+      descriptors;
+  for (const auto& descriptor : dag.descriptors) {
+    descriptors.emplace(descriptor.descriptor_id, &descriptor);
+  }
+  std::unordered_set<std::string_view> join_descriptor_uuids;
+  std::unordered_set<std::string_view> join_type_uuids;
+  for (const auto descriptor_id : predicate_descriptors) {
+    const auto descriptor = descriptors.find(descriptor_id);
+    if (descriptor == descriptors.end() ||
+        descriptor->second->descriptor_uuid.empty() ||
+        descriptor->second->type_uuid.empty()) {
+      result.detail = "join input descriptor or type identity is unresolved";
+      return result;
+    }
+    join_descriptor_uuids.insert(descriptor->second->descriptor_uuid);
+    join_type_uuids.insert(descriptor->second->type_uuid);
+  }
+  if (std::ranges::any_of(join_descriptor_uuids,
+                          [&](const auto descriptor_uuid) {
+                            return join_type_uuids.contains(descriptor_uuid);
+                          })) {
+    result.detail =
+        "join descriptor and type identity domains are not independent";
+    return result;
+  }
   const bool left_null_extended =
       join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
       join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter;
@@ -7461,6 +8944,34 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
   for (const auto& descriptor : dag.descriptors) {
     descriptors.emplace(descriptor.descriptor_id, &descriptor);
   }
+  std::unordered_set<std::string_view> set_operation_type_uuids;
+  const auto collect_type_uuid = [&](const std::uint32_t descriptor_id) {
+    const auto descriptor = descriptors.find(descriptor_id);
+    if (descriptor == descriptors.end() ||
+        descriptor->second->type_uuid.empty()) {
+      return false;
+    }
+    set_operation_type_uuids.insert(descriptor->second->type_uuid);
+    return true;
+  };
+  for (const auto descriptor_id : root.output_descriptor_ids) {
+    if (!collect_type_uuid(descriptor_id)) {
+      result.detail = "set-operation result type identity is unresolved";
+      return result;
+    }
+  }
+  for (const auto& column : left.batch.columns) {
+    if (!collect_type_uuid(column.descriptor_id)) {
+      result.detail = "set-operation left type identity is unresolved";
+      return result;
+    }
+  }
+  for (const auto& column : right.batch.columns) {
+    if (!collect_type_uuid(column.descriptor_id)) {
+      result.detail = "set-operation right type identity is unresolved";
+      return result;
+    }
+  }
 
   std::unordered_map<std::string, std::size_t> right_name_ordinals;
   if (profile.alignment == exec::CanonicalSetOperationAlignment::kByName) {
@@ -7511,7 +9022,10 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
     }
     const auto& right_column = right.batch.columns[right_column_ordinal];
     if (descriptor == descriptors.end() ||
-        descriptor->second->nullability == api::RelationalNullability::kUnknown ||
+        set_operation_type_uuids.contains(
+            descriptor->second->descriptor_uuid) ||
+        descriptor->second->nullability ==
+            api::RelationalNullability::kUnknown ||
         left_column.descriptor.canonical_type_name.empty() ||
         right_column.descriptor.canonical_type_name.empty()) {
       result.detail = "set-operation descriptor reconciliation is unresolved";
@@ -7587,7 +9101,10 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
       return result;
     }
 
-    if (result_type_name == "text" &&
+    const bool character_result_type =
+        dt::CanonicalTypeIdFromStableName(result_type_name) ==
+        dt::CanonicalTypeId::character;
+    if (character_result_type &&
         profile.equality_profile ==
             exec::CanonicalSetOperationEqualityProfile::kNullEqualBoundCollation) {
       if (!descriptor->second->collation_uuid.has_value()) {
@@ -7636,7 +9153,7 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
       result.collation_bindings.push_back(std::move(binding));
 #endif
     } else if (descriptor->second->collation_uuid.has_value() &&
-               result_type_name != "text") {
+               !character_result_type) {
       result.detail = "set-operation collation targets a non-character type";
       return result;
     }
@@ -7653,8 +9170,8 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
           descriptor->second->descriptor_uuid,
           descriptor->second->type_uuid,
           ResultNullability(descriptor->second->nullability),
-          std::nullopt,
-          std::nullopt};
+          descriptor->second->collation_uuid,
+          descriptor->second->timezone_profile_id};
     }
     result.result_bindings.push_back(std::move(binding));
   }
@@ -7663,20 +9180,121 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
 }
 
 bool AddBatchMemoryBytes(const exec::DescriptorBatch& batch,
-                         std::uint64_t* memory_bytes) {
+                         std::uint64_t* memory_bytes,
+                         const exec::DescriptorCancellationProbe
+                             cancellation_requested = nullptr,
+                         const void* cancellation_context = nullptr,
+                         bool* cancellation_observed = nullptr,
+                         bool* cancellation_probe_failed = nullptr) {
   if (memory_bytes == nullptr) return false;
+  if (cancellation_observed != nullptr) *cancellation_observed = false;
+  if (cancellation_probe_failed != nullptr) {
+    *cancellation_probe_failed = false;
+  }
+  const auto stopped = [&] {
+    if (cancellation_requested == nullptr) return false;
+    try {
+      if (!cancellation_requested(cancellation_context)) return false;
+      if (cancellation_observed != nullptr) *cancellation_observed = true;
+      return true;
+    } catch (...) {
+      if (cancellation_probe_failed != nullptr) {
+        *cancellation_probe_failed = true;
+      }
+      return true;
+    }
+  };
+  const auto add = [&](const std::uint64_t amount) {
+    return CheckedAdd(*memory_bytes, amount, memory_bytes);
+  };
+  const auto add_array = [&](const std::size_t count,
+                             const std::size_t element_size) {
+    std::uint64_t amount = 0;
+    return CheckedMultiply(count, element_size, &amount) && add(amount);
+  };
+  const auto add_string = [&](const std::string& value) {
+    return value.capacity() != std::numeric_limits<std::size_t>::max() &&
+           add(static_cast<std::uint64_t>(value.capacity()) + 1);
+  };
+  const auto add_descriptor = [&](const api::EngineDescriptor& descriptor) {
+    return add_string(descriptor.descriptor_uuid.canonical) &&
+           add_string(descriptor.descriptor_kind) &&
+           add_string(descriptor.canonical_type_name) &&
+           add_string(descriptor.encoded_descriptor);
+  };
+  if (!add(sizeof(batch)) ||
+      !add_array(batch.columns.capacity(),
+                 sizeof(exec::ExecutorColumnDescriptor)) ||
+      !add_array(batch.rows.capacity(), sizeof(exec::DescriptorTuple))) {
+    return false;
+  }
+  for (const auto& column : batch.columns) {
+    if (stopped() || !add_string(column.stable_name) ||
+        !add_descriptor(column.descriptor)) {
+      return false;
+    }
+  }
   for (const auto& row : batch.rows) {
+    if (stopped() ||
+        !add_array(row.values.capacity(), sizeof(api::EngineTypedValue))) {
+      return false;
+    }
     for (const auto& value : row.values) {
-      if (value.encoded_value.size() >
-          std::numeric_limits<std::uint64_t>::max() - *memory_bytes) {
+      if (stopped() || !add_descriptor(value.descriptor) ||
+          !add_string(value.encoded_value) ||
+          !add(static_cast<std::uint64_t>(value.binary_value.capacity()))) {
         return false;
       }
-      *memory_bytes += value.encoded_value.size();
-      if (value.binary_value.size() >
-          std::numeric_limits<std::uint64_t>::max() - *memory_bytes) {
+    }
+  }
+  return true;
+}
+
+bool BoundDescriptorBatchLiveMemoryBytes(
+    const exec::DescriptorBatch& batch,
+    std::uint64_t* memory_bytes) {
+  if (memory_bytes == nullptr) return false;
+  *memory_bytes = sizeof(batch);
+  const auto add = [&](const std::uint64_t amount) {
+    return CheckedAdd(*memory_bytes, amount, memory_bytes);
+  };
+  const auto add_array = [&](const std::size_t count,
+                             const std::size_t element_size) {
+    std::uint64_t allocation = 0;
+    return CheckedMultiply(count, element_size, &allocation) &&
+           add(allocation);
+  };
+  const auto add_string = [&](const std::string& value) {
+    return value.capacity() != std::numeric_limits<std::uint64_t>::max() &&
+           add(static_cast<std::uint64_t>(value.capacity()) + 1);
+  };
+  const auto add_descriptor = [&](const api::EngineDescriptor& descriptor) {
+    return add_string(descriptor.descriptor_uuid.canonical) &&
+           add_string(descriptor.descriptor_kind) &&
+           add_string(descriptor.canonical_type_name) &&
+           add_string(descriptor.encoded_descriptor);
+  };
+  if (!add_array(batch.columns.capacity(),
+                 sizeof(exec::ExecutorColumnDescriptor)) ||
+      !add_array(batch.rows.capacity(), sizeof(exec::DescriptorTuple))) {
+    return false;
+  }
+  for (const auto& column : batch.columns) {
+    if (!add_string(column.stable_name) ||
+        !add_descriptor(column.descriptor)) {
+      return false;
+    }
+  }
+  for (const auto& row : batch.rows) {
+    if (!add_array(row.values.capacity(), sizeof(api::EngineTypedValue))) {
+      return false;
+    }
+    for (const auto& value : row.values) {
+      if (!add_descriptor(value.descriptor) ||
+          !add_string(value.encoded_value) ||
+          !add(static_cast<std::uint64_t>(value.binary_value.capacity()))) {
         return false;
       }
-      *memory_bytes += value.binary_value.size();
     }
   }
   return true;
@@ -7836,90 +9454,100 @@ bool CheckedMultiply(const std::uint64_t left, const std::uint64_t right,
   return true;
 }
 
+bool LogicalBitVectorPayloadBytes(const std::size_t bit_count,
+                                  std::uint64_t* bytes) {
+  if (bytes == nullptr) return false;
+  *bytes = static_cast<std::uint64_t>(bit_count / 8);
+  if (bit_count % 8 != 0) {
+    return CheckedAdd(*bytes, 1, bytes);
+  }
+  return true;
+}
+
+std::uint64_t CanonicalUnsignedDecimalWidth(std::uint64_t value) {
+  std::uint64_t width = 1;
+  while (value >= 10) {
+    value /= 10;
+    ++width;
+  }
+  return width;
+}
+
 struct LiveJoinPredicateScratchBound {
   bool ok = false;
   bool cancelled = false;
   std::uint64_t maximum_payload_bytes = 0;
+  std::uint64_t maximum_structural_bytes = 0;
   std::string detail;
 };
 
 LiveJoinPredicateScratchBound BoundLiveJoinPredicateScratchBytes(
     const api::TypedRelationalDag& dag, const std::uint32_t root_expression_id,
+    const CanonicalRelationalExpressionRowBinding& row_binding,
     const std::uint64_t pair_payload_bytes,
     const std::function<bool()>& abort_requested) {
   LiveJoinPredicateScratchBound result;
-  std::unordered_map<std::uint32_t,
-                     const api::RelationalExpressionRecord*>
-      expressions;
-  expressions.reserve(dag.expressions.size());
-  for (const auto& expression : dag.expressions) {
-    if (abort_requested && abort_requested()) {
-      result.cancelled = true;
-      return result;
-    }
-    if (expression.expression_id == 0 ||
-        !expressions.emplace(expression.expression_id, &expression).second) {
-      result.detail = "join predicate expression identity is not unique";
-      return result;
-    }
-  }
-  std::unordered_map<std::uint32_t,
-                     const api::RelationalTypeDescriptor*>
-      descriptors;
-  descriptors.reserve(dag.descriptors.size());
-  for (const auto& descriptor : dag.descriptors) {
-    if (abort_requested && abort_requested()) {
-      result.cancelled = true;
-      return result;
-    }
-    if (descriptor.descriptor_id == 0 ||
-        !descriptors.emplace(descriptor.descriptor_id, &descriptor).second) {
-      result.detail = "join predicate descriptor identity is not unique";
-      return result;
-    }
-  }
-  const auto upper_ascii = [](std::string value) {
-    std::ranges::transform(value, value.begin(), [](const unsigned char ch) {
-      return static_cast<char>(std::toupper(ch));
+  const auto expression_for = [&](const std::uint32_t expression_id) {
+    return std::ranges::find_if(dag.expressions, [&](const auto& candidate) {
+      return candidate.expression_id == expression_id;
     });
-    return value;
+  };
+  const auto descriptor_for = [&](const std::uint32_t descriptor_id) {
+    return std::ranges::find_if(dag.descriptors, [&](const auto& candidate) {
+      return candidate.descriptor_id == descriptor_id;
+    });
+  };
+  const auto ascii_equal = [](const std::string_view value,
+                              const std::string_view uppercase) {
+    if (value.size() != uppercase.size()) return false;
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      if (static_cast<char>(std::toupper(
+              static_cast<unsigned char>(value[index]))) != uppercase[index]) {
+        return false;
+      }
+    }
+    return true;
   };
   struct EvaluationBound {
     std::uint64_t output_payload_bytes = 0;
     std::uint64_t peak_scratch_bytes = 0;
   };
-  std::unordered_map<std::uint32_t, EvaluationBound> memo;
-  std::unordered_set<std::uint32_t> visiting;
-  std::function<bool(std::uint32_t, EvaluationBound*)> bound_expression;
-  bound_expression = [&](const std::uint32_t expression_id,
-                         EvaluationBound* bound) {
+  std::size_t visited_expression_count = 0;
+  std::size_t maximum_expression_visits = 0;
+  if (dag.expressions.empty() ||
+      dag.expressions.size() >
+          std::numeric_limits<std::size_t>::max() / dag.expressions.size()) {
+    result.detail = "join predicate expression visit bound overflowed";
+    return result;
+  }
+  maximum_expression_visits = dag.expressions.size() * dag.expressions.size();
+  const auto bound_expression = [&](auto&& self,
+                                    const std::uint32_t expression_id,
+                                    EvaluationBound* bound,
+                                    const std::size_t depth) -> bool {
     if (abort_requested && abort_requested()) {
       result.cancelled = true;
       return false;
     }
-    const auto cached = memo.find(expression_id);
-    if (cached != memo.end()) {
-      *bound = cached->second;
-      return true;
-    }
-    if (!visiting.insert(expression_id).second) {
-      result.detail = "join predicate expression graph is cyclic";
+    if (depth > dag.expressions.size() ||
+        ++visited_expression_count > maximum_expression_visits) {
+      result.detail =
+          "join predicate expression graph is cyclic or exceeds its finite "
+          "visit ceiling";
       return false;
     }
-    const auto expression = expressions.find(expression_id);
-    if (expression == expressions.end()) {
+    const auto expression = expression_for(expression_id);
+    if (expression == dag.expressions.end()) {
       result.detail = "join predicate references an absent expression";
-      visiting.erase(expression_id);
       return false;
     }
-    const auto& record = *expression->second;
-    const auto descriptor = descriptors.find(record.result_descriptor_id);
-    if (descriptor == descriptors.end()) {
+    const auto& record = *expression;
+    const auto descriptor = descriptor_for(record.result_descriptor_id);
+    if (descriptor == dag.descriptors.end()) {
       result.detail = "join predicate result descriptor is absent";
-      visiting.erase(expression_id);
       return false;
     }
-    const auto& type = *descriptor->second;
+    const auto& type = *descriptor;
     const std::uint64_t declared_extent =
         static_cast<std::uint64_t>(type.width.value_or(0)) +
         static_cast<std::uint64_t>(type.precision.value_or(0)) +
@@ -7989,50 +9617,55 @@ LiveJoinPredicateScratchBound BoundLiveJoinPredicateScratchBytes(
         if (record.child_expression_ids.size() != 1) break;
         EvaluationBound child;
         std::uint64_t output = 0;
-        bounded = bound_expression(record.child_expression_ids.front(),
-                                   &child) &&
+        bounded = self(self, record.child_expression_ids.front(), &child,
+                       depth + 1) &&
                   CheckedAdd(child.output_payload_bytes, declared_extent,
                              &output) &&
                   finish_unary(child, output, 3);
         break;
       }
       case api::RelationalExpressionKind::kUnary: {
-        const auto operation =
+        const std::string_view operation =
             record.operator_name.has_value()
-                ? upper_ascii(*record.operator_name)
-                : std::string{};
+                ? std::string_view(*record.operator_name)
+                : std::string_view{};
         if (record.child_expression_ids.size() != 1 ||
-            (operation != "+" && operation != "-" &&
-             operation != "NOT")) {
+            (!ascii_equal(operation, "+") &&
+             !ascii_equal(operation, "-") &&
+             !ascii_equal(operation, "NOT"))) {
           break;
         }
         EvaluationBound child;
         std::uint64_t output = 0;
-        bounded = bound_expression(record.child_expression_ids.front(),
-                                   &child) &&
+        bounded = self(self, record.child_expression_ids.front(), &child,
+                       depth + 1) &&
                   CheckedAdd(child.output_payload_bytes, declared_extent,
                              &output) &&
                   finish_unary(child, output, 4);
         break;
       }
       case api::RelationalExpressionKind::kBinary: {
-        const auto operation =
+        const std::string_view operation =
             record.operator_name.has_value()
-                ? upper_ascii(*record.operator_name)
-                : std::string{};
+                ? std::string_view(*record.operator_name)
+                : std::string_view{};
         const bool arithmetic =
-            operation == "+" || operation == "-" || operation == "*" ||
-            operation == "/" || operation == "%";
-        const bool logical = operation == "AND" || operation == "OR" ||
-                             operation == "XOR";
-        const bool text_concat = operation == "||";
-        const bool text_match = operation == "LIKE" || operation == "ILIKE";
+            ascii_equal(operation, "+") || ascii_equal(operation, "-") ||
+            ascii_equal(operation, "*") || ascii_equal(operation, "/") ||
+            ascii_equal(operation, "%");
+        const bool logical = ascii_equal(operation, "AND") ||
+                             ascii_equal(operation, "OR") ||
+                             ascii_equal(operation, "XOR");
+        const bool text_concat = ascii_equal(operation, "||");
+        const bool text_match = ascii_equal(operation, "LIKE") ||
+                                ascii_equal(operation, "ILIKE");
         const bool comparison =
-            operation == "IS" || operation == "=" || operation == "<>" ||
-            operation == "!=" || operation == "<" || operation == "<=" ||
-            operation == ">" || operation == ">=" ||
-            operation == "IS DISTINCT FROM" ||
-            operation == "IS NOT DISTINCT FROM";
+            ascii_equal(operation, "IS") || ascii_equal(operation, "=") ||
+            ascii_equal(operation, "<>") || ascii_equal(operation, "!=") ||
+            ascii_equal(operation, "<") || ascii_equal(operation, "<=") ||
+            ascii_equal(operation, ">") || ascii_equal(operation, ">=") ||
+            ascii_equal(operation, "IS DISTINCT FROM") ||
+            ascii_equal(operation, "IS NOT DISTINCT FROM");
         if (record.child_expression_ids.size() != 2 ||
             (!arithmetic && !logical && !text_concat && !text_match &&
              !comparison)) {
@@ -8042,8 +9675,8 @@ LiveJoinPredicateScratchBound BoundLiveJoinPredicateScratchBytes(
         EvaluationBound right;
         std::uint64_t child_payload = 0;
         std::uint64_t output = 0;
-        if (!bound_expression(record.child_expression_ids[0], &left) ||
-            !bound_expression(record.child_expression_ids[1], &right) ||
+        if (!self(self, record.child_expression_ids[0], &left, depth + 1) ||
+            !self(self, record.child_expression_ids[1], &right, depth + 1) ||
             !CheckedAdd(left.output_payload_bytes,
                         right.output_payload_bytes, &child_payload)) {
           break;
@@ -8070,16 +9703,55 @@ LiveJoinPredicateScratchBound BoundLiveJoinPredicateScratchBytes(
         EvaluationBound left;
         EvaluationBound right;
         std::uint64_t output = 0;
-        bounded = bound_expression(record.child_expression_ids[0], &left) &&
-                  bound_expression(record.child_expression_ids[1], &right) &&
+        bounded = self(self, record.child_expression_ids[0], &left,
+                       depth + 1) &&
+                  self(self, record.child_expression_ids[1], &right,
+                       depth + 1) &&
                   CheckedAdd(24, declared_extent, &output) &&
                   finish_binary(left, right, output, 4);
         break;
       }
-      case api::RelationalExpressionKind::kParameter:
+      case api::RelationalExpressionKind::kParameter: {
+        if (!record.child_expression_ids.empty() ||
+            !record.parameter_typed_value_v1.has_value() ||
+            record.literal_or_parameter_ref.has_value() ||
+            record.literal_typed_value_v1.has_value() ||
+            record.function_uuid.has_value() ||
+            record.bound_name_uuid.has_value() ||
+            record.literal_kind.has_value() ||
+            record.operator_name.has_value()) {
+          break;
+        }
+        const auto& typed = *record.parameter_typed_value_v1;
+        const bool null_value = typed.value_state == "null";
+        const bool materialized_value = typed.value_state == "value";
+        if ((!null_value && !materialized_value) ||
+            typed.descriptor_generation == 0 ||
+            typed.descriptor_uuid != type.descriptor_uuid ||
+            (null_value && !typed.canonical_value_bytes.empty()) ||
+            (materialized_value &&
+             typed.canonical_value_bytes.size() != 8)) {
+          break;
+        }
+        std::uint64_t parameter_payload = declared_extent;
+        std::uint64_t typed_metadata_bytes = 0;
+        bounded = CheckedAdd(
+                      parameter_payload,
+                      static_cast<std::uint64_t>(
+                          typed.canonical_value_bytes.size()),
+                      &parameter_payload) &&
+                  CheckedAdd(
+                      static_cast<std::uint64_t>(typed.descriptor_uuid.size()),
+                      static_cast<std::uint64_t>(typed.value_state.size()),
+                      &typed_metadata_bytes) &&
+                  CheckedAdd(typed_metadata_bytes, 2,
+                             &typed_metadata_bytes) &&
+                  CheckedAdd(parameter_payload, typed_metadata_bytes,
+                             &parameter_payload) &&
+                  finish_leaf(parameter_payload);
         break;
+      }
     }
-    visiting.erase(expression_id);
     if (!bounded) {
       if (result.detail.empty()) {
         result.detail =
@@ -8088,14 +9760,66 @@ LiveJoinPredicateScratchBound BoundLiveJoinPredicateScratchBytes(
       }
       return false;
     }
-    memo.emplace(expression_id, computed);
     *bound = computed;
     return true;
   };
 
   EvaluationBound root_bound;
-  if (!bound_expression(root_expression_id, &root_bound)) return result;
+  if (!bound_expression(bound_expression, root_expression_id, &root_bound,
+                        1)) {
+    return result;
+  }
   result.maximum_payload_bytes = root_bound.peak_scratch_bytes;
+  std::uint64_t structural_bytes =
+      sizeof(CanonicalRelationalExpressionRuntime) +
+      8 * sizeof(void*);
+  std::uint64_t entry_bytes = 0;
+  std::uint64_t reachable_edges = 1;
+  for (const auto& expression : dag.expressions) {
+    if (!CheckedAdd(reachable_edges, expression.child_expression_ids.size(),
+                    &reachable_edges)) {
+      result.detail = "join predicate structural edge bound overflowed";
+      return result;
+    }
+  }
+  const auto add_entries = [&](const std::uint64_t count,
+                               const std::uint64_t bytes_per_entry) {
+    return CheckedMultiply(count, bytes_per_entry, &entry_bytes) &&
+           CheckedAdd(structural_bytes, entry_bytes, &structural_bytes);
+  };
+  // Conservative node-plus-bucket envelopes for the runtime descriptor,
+  // expression, inferred-type, inference-stack, row-binding, reachability,
+  // and pending-work containers. The row values themselves are carried by
+  // pair_payload_bytes above.
+  if (!add_entries(dag.expressions.size(),
+                   sizeof(std::pair<const std::uint32_t,
+                                    const api::RelationalExpressionRecord*>) +
+                       5 * sizeof(void*)) ||
+      !add_entries(dag.descriptors.size(),
+                   sizeof(std::pair<const std::uint32_t,
+                                    const api::RelationalTypeDescriptor*>) +
+                       sizeof(std::pair<const std::uint32_t, std::string>) +
+                       8 * sizeof(void*) + 129) ||
+      !add_entries(dag.expressions.size(),
+                   2 * sizeof(std::uint32_t) + 6 * sizeof(void*)) ||
+      !add_entries(row_binding.row_descriptor_ids.size(),
+                   sizeof(std::uint32_t) + 3 * sizeof(void*)) ||
+      !add_entries((row_binding.row_nullable.size() + 63) / 64,
+                   sizeof(std::uint64_t)) ||
+      !add_entries(row_binding.slots.size(),
+                   sizeof(CanonicalRelationalExpressionRowSlotBinding) +
+                       sizeof(std::pair<const std::uint32_t,
+                                        const api::EngineTypedValue*>) +
+                       sizeof(std::pair<
+                           const std::size_t,
+                           CanonicalRelationalExpressionRowSlotKind>) +
+                       12 * sizeof(void*)) ||
+      !add_entries(reachable_edges,
+                   sizeof(std::uint32_t) + sizeof(void*))) {
+    result.detail = "join predicate structural memory bound overflowed";
+    return result;
+  }
+  result.maximum_structural_bytes = structural_bytes;
   result.ok = true;
   return result;
 }
@@ -8110,7 +9834,16 @@ std::optional<std::size_t> SelectedNodeAggregateMemoryBound(
               std::numeric_limits<std::size_t>::max())) {
     return std::nullopt;
   }
-  return static_cast<std::size_t>(node.memory_bytes_required);
+  const auto callback_limit =
+      node.dispatcher_callback_memory_limit_bytes == 0
+          ? node.memory_bytes_required
+          : std::min(node.memory_bytes_required,
+                     node.dispatcher_callback_memory_limit_bytes);
+  if (callback_limit == 0 ||
+      callback_limit > std::numeric_limits<std::size_t>::max()) {
+    return std::nullopt;
+  }
+  return static_cast<std::size_t>(callback_limit);
 }
 
 constexpr std::uint64_t kCanonicalAggregateKernelBaseMemoryBytes = 1024;
@@ -8416,7 +10149,7 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
         physical_dag, selected_physical_node_id, order_terms,
         ordering_property_uuid, deterministic_tie_evidence_uuid,
         maximum_pair_comparisons, maximum_order_key_batch_bytes,
-        mga_authority, false);
+        mga_authority, false, nullptr, nullptr);
   }
 
   static exec::CanonicalDescriptorSortResult IssueAndExecuteBorrowed(
@@ -8432,7 +10165,9 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       const std::size_t maximum_pair_comparisons,
       const std::uint64_t maximum_order_key_batch_bytes,
       const exec::CanonicalExecutionMgaAuthority& mga_authority,
-      std::uint64_t* actual_order_key_batch_bytes = nullptr) {
+      std::uint64_t* actual_order_key_batch_bytes = nullptr,
+      const exec::DescriptorCancellationProbe cancellation_requested = nullptr,
+      const void* cancellation_context = nullptr) {
     if (actual_order_key_batch_bytes != nullptr) {
       *actual_order_key_batch_bytes = 0;
     }
@@ -8441,7 +10176,7 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
         physical_dag, selected_physical_node_id, order_terms,
         ordering_property_uuid, deterministic_tie_evidence_uuid,
         maximum_pair_comparisons, maximum_order_key_batch_bytes,
-        mga_authority, true);
+        mga_authority, true, cancellation_requested, cancellation_context);
     if (!issued.diagnostic.ok || issued.receipt == nullptr) {
       exec::CanonicalDescriptorSortResult result;
       result.diagnostic = std::move(issued.diagnostic);
@@ -8453,7 +10188,8 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     exec::CanonicalDescriptorSortRequest request;
     request.order_key_receipt = std::move(issued.receipt);
     return exec::ExecuteCanonicalDescriptorSort(
-        request, physical_dag, input_batch);
+        request, physical_dag, input_batch, cancellation_requested,
+        cancellation_context);
   }
 
  private:
@@ -8470,7 +10206,9 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       const std::size_t maximum_pair_comparisons,
       const std::uint64_t maximum_order_key_batch_bytes,
       const exec::CanonicalExecutionMgaAuthority& mga_authority,
-      const bool borrowed_execution_carriers) {
+      const bool borrowed_execution_carriers,
+      const exec::DescriptorCancellationProbe cancellation_requested,
+      const void* cancellation_context) {
     ExpressionSortKeyReceiptIssueResult result;
     const auto refuse = [&](std::string detail) {
       result.diagnostic.ok = false;
@@ -8481,12 +10219,47 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       result.actual_order_key_batch_bytes = 0;
       return result;
     };
+    const auto poll_cancellation = [&](const char* phase) {
+      if (cancellation_requested == nullptr) return false;
+      try {
+        if (!cancellation_requested(cancellation_context)) return false;
+        result.diagnostic.ok = false;
+        result.diagnostic.diagnostic_code =
+            "SB_MODEL_EXECUTION_CANCELLED_V1";
+        result.diagnostic.detail =
+            std::string("expression sort-key cancellation observed ") + phase;
+      } catch (const std::exception& exception) {
+        result.diagnostic.ok = false;
+        result.diagnostic.diagnostic_code =
+            "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+        result.diagnostic.detail =
+            std::string("expression sort-key cancellation probe threw: ") +
+            exception.what();
+      } catch (...) {
+        result.diagnostic.ok = false;
+        result.diagnostic.diagnostic_code =
+            "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+        result.diagnostic.detail =
+            "expression sort-key cancellation probe threw a non-standard exception";
+      }
+      result.receipt.reset();
+      result.actual_order_key_batch_bytes = 0;
+      return true;
+    };
 
+    if (poll_cancellation("before authority validation")) return result;
     const auto before = exec::RevalidateCanonicalExecutionMgaAuthority(
         mga_authority, physical_dag);
     if (!before.ok) {
       result.diagnostic = before;
       return result;
+    }
+    if (!CanonicalUuidText(ordering_property_uuid) ||
+        !CanonicalUuidText(deterministic_tie_evidence_uuid) ||
+        ordering_property_uuid == deterministic_tie_evidence_uuid) {
+      return refuse(
+          "expression ordering property and deterministic tie evidence are "
+          "not independent");
     }
 
     const auto selected_node = std::ranges::find_if(
@@ -8527,7 +10300,8 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       return refuse("expression order-key physical schema is not preserved");
     }
     auto validation = exec::ValidateCanonicalDescriptorBatch(
-        input_batch, input_node->output_descriptor_ids);
+        input_batch, input_node->output_descriptor_ids,
+        cancellation_requested, cancellation_context, nullptr);
     if (!validation.ok) {
       result.diagnostic = std::move(validation);
       return result;
@@ -8537,9 +10311,27 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     std::uint64_t comparison_memory_bytes = 0;
     std::uint64_t row_order_memory_bytes = 0;
     std::uint64_t fixed_memory_bytes = 0;
-    if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
-                                             &input_memory_bytes) ||
-        !CheckedMultiply(input_batch.rows.size(), input_batch.rows.size(),
+    bool input_memory_cancelled = false;
+    bool input_memory_probe_failed = false;
+    if (!RuntimeMaterializedBatchMemoryBytes(
+            input_batch, &input_memory_bytes, cancellation_requested,
+            cancellation_context, &input_memory_cancelled,
+            &input_memory_probe_failed)) {
+      if (input_memory_cancelled || input_memory_probe_failed) {
+        result.diagnostic.ok = false;
+        result.diagnostic.diagnostic_code =
+            input_memory_probe_failed
+                ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                : "SB_MODEL_EXECUTION_CANCELLED_V1";
+        result.diagnostic.detail = input_memory_probe_failed
+            ? "expression sort-key cancellation probe threw while accounting input memory"
+            : "expression sort-key cancellation observed while accounting input memory";
+        return result;
+      }
+      return refuse(
+          "expression order-key input memory accounting overflowed");
+    }
+    if (!CheckedMultiply(input_batch.rows.size(), input_batch.rows.size(),
                          &comparison_memory_bytes) ||
         !CheckedMultiply(input_batch.rows.size(), sizeof(std::size_t),
                          &row_order_memory_bytes) ||
@@ -8581,6 +10373,9 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     expression_ids.reserve(expressions.size());
     result_descriptor_ids.reserve(expressions.size());
     for (const auto& expression : expressions) {
+      if (poll_cancellation("while binding expression identities")) {
+        return result;
+      }
       expression_ids.push_back(expression.expression_id);
       result_descriptor_ids.push_back(
           expression.materialized_column.descriptor_id);
@@ -8605,6 +10400,9 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     }
 
     for (std::size_t ordinal = 0; ordinal < expressions.size(); ++ordinal) {
+      if (poll_cancellation("while validating expression order terms")) {
+        return result;
+      }
       const auto& expression = expressions[ordinal];
       const auto expression_record = std::ranges::find_if(
           relational_dag.expressions, [&](const auto& candidate) {
@@ -8613,6 +10411,9 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       const auto& property_term = property->ordering_terms[ordinal];
       const auto& order_term = order_terms[ordinal];
       const auto key_column = input_batch.columns.size() + ordinal;
+      const auto materialized_type_uuid = ExactEncodedDescriptorField(
+          expression.materialized_column.descriptor.encoded_descriptor,
+          "type_uuid");
       const bool ascending =
           property_term.direction ==
           api::RelationalPropertySortDirection::kAscending;
@@ -8632,7 +10433,19 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
               nulls_first ||
           order_term.column != key_column ||
           order_term.expression_descriptor_id !=
-              expression.materialized_column.descriptor_id) {
+              expression.materialized_column.descriptor_id ||
+          !materialized_type_uuid.has_value() ||
+          !CanonicalUuidText(
+              expression.materialized_column.descriptor.descriptor_uuid
+                  .canonical) ||
+          !CanonicalUuidText(*materialized_type_uuid) ||
+          deterministic_tie_evidence_uuid ==
+              expression.materialized_column.descriptor.descriptor_uuid
+                  .canonical ||
+          deterministic_tie_evidence_uuid == *materialized_type_uuid ||
+          (!property_term.collation_uuid.empty() &&
+           deterministic_tie_evidence_uuid ==
+               property_term.collation_uuid)) {
         return refuse(
             "expression order-key term differs from its typed relational "
             "property");
@@ -8641,18 +10454,49 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
 
     exec::DescriptorBatch order_key_batch;
     std::string materialization_detail;
+    bool materialization_cancelled = false;
+    bool materialization_probe_failed = false;
     if (!MaterializeExpressionSortBatch(
             relational_dag, expressions, input_batch, expression_services,
             &order_key_batch, &materialization_detail,
-            selected_order_key_batch_bytes)) {
+            selected_order_key_batch_bytes, cancellation_requested,
+            cancellation_context, &materialization_cancelled,
+            &materialization_probe_failed)) {
+      if (materialization_cancelled || materialization_probe_failed) {
+        result.diagnostic.ok = false;
+        result.diagnostic.diagnostic_code =
+            materialization_probe_failed
+                ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                : "SB_MODEL_EXECUTION_CANCELLED_V1";
+        result.diagnostic.detail = std::move(materialization_detail);
+        return result;
+      }
       return refuse("expression order-key materialization: " +
                     materialization_detail);
     }
     std::uint64_t actual_order_key_batch_bytes = 1;
     std::uint64_t pair_comparisons = 0;
-    if (!AddBatchMemoryBytes(order_key_batch,
-                             &actual_order_key_batch_bytes) ||
-        actual_order_key_batch_bytes > selected_order_key_batch_bytes ||
+    bool key_memory_cancelled = false;
+    bool key_memory_probe_failed = false;
+    if (!AddBatchMemoryBytes(
+            order_key_batch, &actual_order_key_batch_bytes,
+            cancellation_requested, cancellation_context,
+            &key_memory_cancelled, &key_memory_probe_failed)) {
+      if (key_memory_cancelled || key_memory_probe_failed) {
+        result.diagnostic.ok = false;
+        result.diagnostic.diagnostic_code =
+            key_memory_probe_failed
+                ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                : "SB_MODEL_EXECUTION_CANCELLED_V1";
+        result.diagnostic.detail = key_memory_probe_failed
+            ? "expression sort-key cancellation probe threw while accounting key memory"
+            : "expression sort-key cancellation observed while accounting key memory";
+        return result;
+      }
+      return refuse(
+          "expression order-key payload memory accounting overflowed");
+    }
+    if (actual_order_key_batch_bytes > selected_order_key_batch_bytes ||
         !CheckedMultiply(input_batch.rows.size(), input_batch.rows.size(),
                          &pair_comparisons) ||
         pair_comparisons > maximum_pair_comparisons) {
@@ -8667,6 +10511,7 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       result.diagnostic = after;
       return result;
     }
+    if (poll_cancellation("before receipt publication")) return result;
 
     try {
       auto receipt =
@@ -8696,6 +10541,7 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
     } catch (const std::bad_alloc&) {
       return refuse("expression order-key receipt allocation failed");
     }
+    if (poll_cancellation("after receipt publication")) return result;
     result.actual_order_key_batch_bytes = actual_order_key_batch_bytes;
     result.diagnostic = {};
     return result;
@@ -9132,6 +10978,7 @@ bool BindPreparedRecursiveCteCardinality(
   prepared->maximum_term_output_row_count =
       static_cast<std::size_t>(maximum_term_output_rows);
   prepared->maximum_result_row_count = result_row_bound;
+  prepared->maximum_value_comparison_count = 1;
   prepared->rows_examined = static_cast<std::size_t>(rows_examined);
   return true;
 }
@@ -9550,6 +11397,567 @@ bool BuildOperatorLocalPhysicalDag(
     exec::TypedPhysicalNodeDag* operator_dag,
     std::string* detail);
 
+template <typename ExecutionReceipt>
+bool CanonicalOperatorExecutionReceiptMatches(
+    const ExecutionReceipt& receipt,
+    const exec::TypedPhysicalNodeDag& execution_dag,
+    const exec::PhysicalNodeRecord& node,
+    const exec::PhysicalMgaStatementContext& expected_mga_context) {
+  return receipt.selected_plan_uuid == execution_dag.selected_plan_uuid &&
+         receipt.executed_physical_node_id == node.physical_node_id &&
+         receipt.causal_counter_id == node.causal_counter_id &&
+         exec::PhysicalMgaStatementContextEqual(
+             receipt.mga_statement_context, expected_mga_context);
+}
+
+bool CanonicalSetOperationExecutionReceiptMatches(
+    const exec::CanonicalSetOperationAllRequest& request,
+    const exec::PhysicalNodeRecord& node,
+    const exec::CanonicalSetOperationAllResult& result) {
+  const auto& left_batch = request.borrowed_left_batch != nullptr
+                               ? *request.borrowed_left_batch
+                               : request.left_batch;
+  const auto& right_batch = request.borrowed_right_batch != nullptr
+                                ? *request.borrowed_right_batch
+                                : request.right_batch;
+  if (!CanonicalOperatorExecutionReceiptMatches(
+          result, request.physical_dag, node,
+          request.mga_authority.statement_context) ||
+      result.left_input_row_count != left_batch.rows.size() ||
+      result.right_input_row_count != right_batch.rows.size() ||
+      left_batch.rows.size() >
+          std::numeric_limits<std::size_t>::max() -
+              right_batch.rows.size() ||
+      result.equality_comparison_count >
+          request.maximum_equality_comparison_count ||
+      result.output_batch.rows.size() >
+          request.maximum_output_row_count) {
+    return false;
+  }
+  const auto input_row_count =
+      left_batch.rows.size() + right_batch.rows.size();
+  switch (request.operation) {
+    case exec::CanonicalSetOperationKind::kUnion:
+      return request.quantifier ==
+                     exec::CanonicalSetOperationQuantifier::kAll
+                 ? result.output_batch.rows.size() == input_row_count
+                 : (request.quantifier ==
+                        exec::CanonicalSetOperationQuantifier::kDistinct &&
+                    result.output_batch.rows.size() <= input_row_count);
+    case exec::CanonicalSetOperationKind::kIntersect:
+      return result.output_batch.rows.size() <=
+             std::min(left_batch.rows.size(), right_batch.rows.size());
+    case exec::CanonicalSetOperationKind::kExcept:
+      return result.output_batch.rows.size() <= left_batch.rows.size();
+  }
+  return false;
+}
+
+bool CanonicalQueryEngineDescriptorExactlyEqual(
+    const api::EngineDescriptor& left,
+    const api::EngineDescriptor& right) {
+  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
+         left.descriptor_kind == right.descriptor_kind &&
+         left.canonical_type_name == right.canonical_type_name &&
+         left.encoded_descriptor == right.encoded_descriptor;
+}
+
+bool CanonicalQueryTypedValuePayloadExactlyEqual(
+    const api::EngineTypedValue& left,
+    const api::EngineTypedValue& right) {
+  return left.encoded_value == right.encoded_value &&
+         left.binary_value == right.binary_value &&
+         left.is_null == right.is_null && left.state == right.state;
+}
+
+bool CanonicalQueryDescriptorTuplePayloadExactlyEqual(
+    const exec::DescriptorTuple& left,
+    const exec::DescriptorTuple& right) {
+  if (left.values.size() != right.values.size()) return false;
+  for (std::size_t index = 0; index < left.values.size(); ++index) {
+    if (!CanonicalQueryTypedValuePayloadExactlyEqual(
+            left.values[index], right.values[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool CanonicalQueryDescriptorBatchesExactlyEqual(
+    const exec::DescriptorBatch& left,
+    const exec::DescriptorBatch& right) {
+  if (left.columns.size() != right.columns.size() ||
+      left.rows.size() != right.rows.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.columns.size(); ++index) {
+    const auto& left_column = left.columns[index];
+    const auto& right_column = right.columns[index];
+    if (left_column.stable_name != right_column.stable_name ||
+        left_column.nullable != right_column.nullable ||
+        left_column.descriptor_id != right_column.descriptor_id ||
+        !CanonicalQueryEngineDescriptorExactlyEqual(
+            left_column.descriptor, right_column.descriptor)) {
+      return false;
+    }
+  }
+  for (std::size_t row_index = 0; row_index < left.rows.size(); ++row_index) {
+    const auto& left_values = left.rows[row_index].values;
+    const auto& right_values = right.rows[row_index].values;
+    if (left_values.size() != right_values.size()) return false;
+    for (std::size_t value_index = 0; value_index < left_values.size();
+         ++value_index) {
+      if (!CanonicalQueryEngineDescriptorExactlyEqual(
+              left_values[value_index].descriptor,
+              right_values[value_index].descriptor) ||
+          !CanonicalQueryTypedValuePayloadExactlyEqual(
+              left_values[value_index], right_values[value_index])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool EvaluateCanonicalQuantifiedSubqueryTruth(
+    const exec::CanonicalQuantifiedSubqueryRequest& request,
+    const exec::DescriptorBatch& input_batch,
+    api::EngineSqlTruthValue* expected_truth) {
+  if (expected_truth == nullptr || input_batch.columns.size() != 1 ||
+      request.maximum_comparison_count < input_batch.rows.size()) {
+    return false;
+  }
+  const bool any = request.quantifier ==
+                   exec::CanonicalQuantifiedSubqueryQuantifier::kAny;
+  const bool all = request.quantifier ==
+                   exec::CanonicalQuantifiedSubqueryQuantifier::kAll;
+  if (!any && !all) return false;
+  auto operation = api::EngineCanonicalExpressionOperation::equal;
+  switch (request.comparison_operator) {
+    case api::EngineComparisonPredicateOperator::equal:
+      break;
+    case api::EngineComparisonPredicateOperator::not_equal:
+      operation = api::EngineCanonicalExpressionOperation::not_equal;
+      break;
+    case api::EngineComparisonPredicateOperator::less_than:
+      operation = api::EngineCanonicalExpressionOperation::less_than;
+      break;
+    case api::EngineComparisonPredicateOperator::less_than_or_equal:
+      operation = api::EngineCanonicalExpressionOperation::less_than_or_equal;
+      break;
+    case api::EngineComparisonPredicateOperator::greater_than:
+      operation = api::EngineCanonicalExpressionOperation::greater_than;
+      break;
+    case api::EngineComparisonPredicateOperator::greater_than_or_equal:
+      operation =
+          api::EngineCanonicalExpressionOperation::greater_than_or_equal;
+      break;
+    default:
+      return false;
+  }
+  if ((request.comparison_authority_engine_owned &&
+       request.precomputed_comparisons.size() != input_batch.rows.size()) ||
+      (!request.comparison_authority_engine_owned &&
+       !request.precomputed_comparisons.empty())) {
+    return false;
+  }
+  auto truth = any ? api::EngineSqlTruthValue::false_value
+                   : api::EngineSqlTruthValue::true_value;
+  for (std::size_t row_index = 0; row_index < input_batch.rows.size();
+       ++row_index) {
+    const auto& row = input_batch.rows[row_index];
+    if (row.values.size() != 1) return false;
+    api::EngineCanonicalExpressionEvaluationRequest expression_request;
+    expression_request.consumer =
+        api::EngineCanonicalExpressionConsumer::subquery;
+    expression_request.operation = operation;
+    expression_request.left_value = request.left_value;
+    expression_request.right_value = row.values.front();
+    expression_request.result_descriptor =
+        request.result_column.descriptor;
+    if (request.comparison_authority_engine_owned) {
+      const auto& comparison =
+          request.precomputed_comparisons[row_index];
+      const bool null_comparison = request.left_value.isSqlNull() ||
+                                   row.values.front().isSqlNull();
+      if (comparison.has_value() == null_comparison ||
+          (comparison.has_value() &&
+           (*comparison < -1 || *comparison > 1))) {
+        return false;
+      }
+      expression_request.precomputed_comparison = comparison;
+    }
+    api::EngineCanonicalExpressionEvaluationResult expression_result;
+    std::string detail;
+    if (!api::QowEvaluateCanonicalTypedExpressionV1(
+            expression_request, &expression_result, &detail)) {
+      return false;
+    }
+    if (any) {
+      if (expression_result.truth ==
+          api::EngineSqlTruthValue::true_value) {
+        truth = api::EngineSqlTruthValue::true_value;
+      } else if (expression_result.truth ==
+                     api::EngineSqlTruthValue::unknown &&
+                 truth == api::EngineSqlTruthValue::false_value) {
+        truth = api::EngineSqlTruthValue::unknown;
+      }
+    } else {
+      if (expression_result.truth ==
+          api::EngineSqlTruthValue::false_value) {
+        truth = api::EngineSqlTruthValue::false_value;
+      } else if (expression_result.truth ==
+                     api::EngineSqlTruthValue::unknown &&
+                 truth == api::EngineSqlTruthValue::true_value) {
+        truth = api::EngineSqlTruthValue::unknown;
+      }
+    }
+  }
+  *expected_truth = truth;
+  return true;
+}
+
+bool CanonicalPivotCausalStructureExactlyMatches(
+    const exec::CanonicalPivotRequest& request,
+    const exec::CanonicalPivotResult& result) {
+  std::vector<std::size_t> representative_rows;
+  std::size_t matched_input_row_count = 0;
+  std::size_t key_comparison_count = 0;
+  try {
+    representative_rows.reserve(request.input_batch.rows.size());
+    const auto terms_equal = [&](const exec::DescriptorTuple& left,
+                                 const exec::DescriptorTuple& right,
+                                 const auto& terms,
+                                 bool* equal) {
+      if (equal == nullptr) return false;
+      *equal = true;
+      for (const auto& term : terms) {
+        if (term.column >= left.values.size() ||
+            term.column >= right.values.size() ||
+            key_comparison_count ==
+                request.maximum_key_comparison_count) {
+          return false;
+        }
+        ++key_comparison_count;
+        const auto compared = exec::CompareCanonicalDescriptorOrderValues(
+            left.values[term.column], right.values[term.column], term);
+        if (!compared.diagnostic.ok) return false;
+        if (compared.comparison != 0) {
+          *equal = false;
+          return true;
+        }
+      }
+      return true;
+    };
+    for (std::size_t row = 0; row < request.input_batch.rows.size(); ++row) {
+      bool found_group = false;
+      for (const auto representative : representative_rows) {
+        bool equal = false;
+        if (!terms_equal(request.input_batch.rows[row],
+                         request.input_batch.rows[representative],
+                         request.group_key_terms, &equal)) {
+          return false;
+        }
+        if (equal) {
+          found_group = true;
+          break;
+        }
+      }
+      if (!found_group) representative_rows.push_back(row);
+
+      std::optional<std::size_t> matched_item;
+      for (std::size_t item = 0; item < request.in_items.size(); ++item) {
+        if (request.in_items[item].values.size() !=
+            request.for_key_terms.size()) {
+          return false;
+        }
+        bool matches = true;
+        for (std::size_t key = 0;
+             key < request.for_key_terms.size(); ++key) {
+          const auto& term = request.for_key_terms[key];
+          if (term.column >= request.input_batch.rows[row].values.size()) {
+            return false;
+          }
+          const auto& value =
+              request.input_batch.rows[row].values[term.column];
+          if (request.null_policy ==
+                  exec::CanonicalPivotNullPolicy::kExclude &&
+              value.state == api::EngineValueState::sql_null) {
+            matches = false;
+            break;
+          }
+          if (key_comparison_count ==
+              request.maximum_key_comparison_count) {
+            return false;
+          }
+          ++key_comparison_count;
+          const auto compared = exec::CompareCanonicalDescriptorOrderValues(
+              value, request.in_items[item].values[key], term);
+          if (!compared.diagnostic.ok) return false;
+          if (compared.comparison != 0) {
+            matches = false;
+            break;
+          }
+        }
+        if (!matches) continue;
+        if (matched_item.has_value()) return false;
+        matched_item = item;
+      }
+      if (matched_item.has_value()) ++matched_input_row_count;
+    }
+  } catch (const std::bad_alloc&) {
+    return false;
+  } catch (const std::length_error&) {
+    return false;
+  }
+  if (representative_rows.size() != result.output_batch.rows.size() ||
+      representative_rows.size() != result.group_count ||
+      matched_input_row_count != result.matched_input_row_count ||
+      key_comparison_count != result.key_comparison_count) {
+    return false;
+  }
+  for (std::size_t group = 0; group < representative_rows.size(); ++group) {
+    const auto& source =
+        request.input_batch.rows[representative_rows[group]];
+    const auto& output = result.output_batch.rows[group];
+    if (output.values.size() != request.result_columns.size()) return false;
+    for (std::size_t key = 0;
+         key < request.group_key_terms.size(); ++key) {
+      const auto source_column = request.group_key_terms[key].column;
+      if (source_column >= source.values.size() ||
+          !CanonicalQueryEngineDescriptorExactlyEqual(
+              output.values[key].descriptor,
+              request.result_columns[key].descriptor) ||
+          !CanonicalQueryTypedValuePayloadExactlyEqual(
+              output.values[key], source.values[source_column])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool CanonicalPivotExecutionReceiptMatches(
+    const exec::CanonicalPivotRequest& request,
+    const exec::PhysicalNodeRecord& node,
+    const exec::CanonicalPivotResult& result) {
+  if (!CanonicalOperatorExecutionReceiptMatches(
+          result, request.physical_dag, node,
+          request.mga_authority.statement_context) ||
+      node.memory_bytes_required == 0 ||
+      node.memory_bytes_required >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max()) ||
+      result.input_row_count != request.input_batch.rows.size() ||
+      result.group_count != result.output_batch.rows.size() ||
+      result.group_count > request.maximum_output_row_count ||
+      result.group_count > result.input_row_count ||
+      result.in_item_count != request.in_items.size() ||
+      result.aggregate_count != request.aggregates.size() ||
+      result.matched_input_row_count > result.input_row_count ||
+      result.key_comparison_count >
+          request.maximum_key_comparison_count ||
+      result.aggregate_transition_count >
+          request.maximum_total_aggregate_transition_count ||
+      (request.maximum_combined_final_output_bytes != 0 &&
+       result.combined_final_output_bytes >
+           request.maximum_combined_final_output_bytes) ||
+      result.output_batch.rows.size() >
+          request.maximum_output_row_count ||
+      result.output_batch.rows.size() != result.group_count) {
+    return false;
+  }
+  if (result.matched_input_row_count != 0 &&
+      result.aggregate_count >
+          std::numeric_limits<std::size_t>::max() /
+              result.matched_input_row_count) {
+    return false;
+  }
+  if (result.aggregate_transition_count >
+      result.matched_input_row_count * result.aggregate_count) {
+    return false;
+  }
+  if (result.output_batch.rows.size() != 0 &&
+      request.result_columns.size() >
+          std::numeric_limits<std::size_t>::max() /
+              result.output_batch.rows.size()) {
+    return false;
+  }
+  const auto output_cell_count =
+      result.output_batch.rows.size() * request.result_columns.size();
+  if (output_cell_count > request.maximum_output_cell_count) return false;
+  std::size_t maximum_finalization_workspace_bytes = 0;
+  for (const auto& binding : request.aggregates) {
+    const auto bound =
+        binding.aggregate_template.maximum_finalization_workspace_bytes == 0
+            ? node.memory_bytes_required
+            : std::min<std::uint64_t>(
+                  binding.aggregate_template
+                      .maximum_finalization_workspace_bytes,
+                  node.memory_bytes_required);
+    maximum_finalization_workspace_bytes = std::max<std::size_t>(
+        maximum_finalization_workspace_bytes,
+        static_cast<std::size_t>(bound));
+  }
+  if (result.peak_finalization_workspace_bytes >
+      maximum_finalization_workspace_bytes) {
+    return false;
+  }
+  const auto output_validation = exec::ValidateCanonicalDescriptorBatch(
+      result.output_batch, node.output_descriptor_ids);
+  return output_validation.ok &&
+         CanonicalPivotCausalStructureExactlyMatches(request, result);
+}
+
+bool CanonicalUnpivotOutputExactlyMatches(
+    const exec::CanonicalUnpivotRequest& request,
+    const exec::DescriptorBatch& output_batch) {
+  const auto value_column_count = request.in_items.empty()
+                                      ? 0
+                                      : request.in_items.front()
+                                            .source_columns.size();
+  const auto expected_width =
+      request.group_columns.size() + 1 + value_column_count;
+  if (value_column_count == 0 ||
+      request.result_columns.size() != expected_width) {
+    return false;
+  }
+  std::size_t output_row = 0;
+  for (const auto& input_row : request.input_batch.rows) {
+    for (const auto& item : request.in_items) {
+      if (item.source_columns.size() != value_column_count) return false;
+      const bool all_null = std::ranges::all_of(
+          item.source_columns, [&](const auto column) {
+            return column < input_row.values.size() &&
+                   input_row.values[column].state ==
+                       api::EngineValueState::sql_null;
+          });
+      if (request.null_policy == exec::CanonicalPivotNullPolicy::kExclude &&
+          all_null) {
+        continue;
+      }
+      if (output_row >= output_batch.rows.size() ||
+          output_batch.rows[output_row].values.size() != expected_width) {
+        return false;
+      }
+      const auto& actual = output_batch.rows[output_row];
+      for (std::size_t group = 0;
+           group < request.group_columns.size(); ++group) {
+        if (request.group_columns[group] >= input_row.values.size()) {
+          return false;
+        }
+        exec::DescriptorRuntimeDiagnostic diagnostic;
+        const auto expected = exec::CastDescriptorValue(
+            input_row.values[request.group_columns[group]],
+            request.result_columns[group].descriptor, &diagnostic);
+        if (!diagnostic.ok ||
+            !CanonicalQueryEngineDescriptorExactlyEqual(
+                expected.descriptor, actual.values[group].descriptor) ||
+            !CanonicalQueryTypedValuePayloadExactlyEqual(
+                expected, actual.values[group])) {
+          return false;
+        }
+      }
+      exec::DescriptorRuntimeDiagnostic label_diagnostic;
+      const auto label_column = request.group_columns.size();
+      const auto expected_label = exec::CastDescriptorValue(
+          item.pivot_value,
+          request.result_columns[label_column].descriptor,
+          &label_diagnostic);
+      if (!label_diagnostic.ok ||
+          !CanonicalQueryEngineDescriptorExactlyEqual(
+              expected_label.descriptor,
+              actual.values[label_column].descriptor) ||
+          !CanonicalQueryTypedValuePayloadExactlyEqual(
+              expected_label, actual.values[label_column])) {
+        return false;
+      }
+      for (std::size_t value = 0; value < value_column_count; ++value) {
+        if (item.source_columns[value] >= input_row.values.size()) {
+          return false;
+        }
+        const auto result_column = label_column + 1 + value;
+        exec::DescriptorRuntimeDiagnostic diagnostic;
+        const auto expected = exec::CastDescriptorValue(
+            input_row.values[item.source_columns[value]],
+            request.result_columns[result_column].descriptor,
+            &diagnostic);
+        if (!diagnostic.ok ||
+            !CanonicalQueryEngineDescriptorExactlyEqual(
+                expected.descriptor,
+                actual.values[result_column].descriptor) ||
+            !CanonicalQueryTypedValuePayloadExactlyEqual(
+                expected, actual.values[result_column])) {
+          return false;
+        }
+      }
+      ++output_row;
+    }
+  }
+  return output_row == output_batch.rows.size();
+}
+
+bool CanonicalUnpivotExecutionReceiptMatches(
+    const exec::CanonicalUnpivotRequest& request,
+    const exec::PhysicalNodeRecord& node,
+    const exec::CanonicalUnpivotResult& result) {
+  if (!CanonicalOperatorExecutionReceiptMatches(
+          result, request.physical_dag, node,
+          request.mga_authority.statement_context) ||
+      result.input_row_count != request.input_batch.rows.size() ||
+      result.in_item_count != request.in_items.size() ||
+      result.emitted_row_count != result.output_batch.rows.size() ||
+      result.emitted_row_count > request.maximum_output_row_count) {
+    return false;
+  }
+  if (result.input_row_count != 0 &&
+      result.in_item_count >
+          std::numeric_limits<std::size_t>::max() /
+              result.input_row_count) {
+    return false;
+  }
+  const auto candidate_row_count =
+      result.input_row_count * result.in_item_count;
+  std::size_t expected_null_excluded_row_count = 0;
+  if (request.null_policy == exec::CanonicalPivotNullPolicy::kExclude) {
+    for (const auto& input_row : request.input_batch.rows) {
+      for (const auto& item : request.in_items) {
+        if (std::ranges::all_of(
+                item.source_columns, [&](const auto column) {
+                  return column < input_row.values.size() &&
+                         input_row.values[column].state ==
+                             api::EngineValueState::sql_null;
+                })) {
+          ++expected_null_excluded_row_count;
+        }
+      }
+    }
+  }
+  if (result.emitted_row_count > candidate_row_count ||
+      result.null_excluded_row_count >
+          candidate_row_count - result.emitted_row_count ||
+      result.emitted_row_count + result.null_excluded_row_count !=
+          candidate_row_count ||
+      result.null_excluded_row_count !=
+          expected_null_excluded_row_count) {
+    return false;
+  }
+  if (result.output_batch.rows.size() != 0 &&
+      request.result_columns.size() >
+          std::numeric_limits<std::size_t>::max() /
+              result.output_batch.rows.size()) {
+    return false;
+  }
+  const auto output_cell_count =
+      result.output_batch.rows.size() * request.result_columns.size();
+  if (output_cell_count > request.maximum_output_cell_count) return false;
+  const auto output_validation = exec::ValidateCanonicalDescriptorBatch(
+      result.output_batch, node.output_descriptor_ids);
+  return output_validation.ok &&
+         CanonicalUnpivotOutputExactlyMatches(request,
+                                              result.output_batch);
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
     const PreparedProjectRoot& prepared_root,
     std::string implementation_id,
@@ -9716,6 +12124,15 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
           step.diagnostic = std::move(project_result.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                project_result, *execution_dag, node,
+                project_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-PROJECT-EXECUTION-V1";
+          step.diagnostic.detail = "PROJECT execution receipt changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
@@ -9812,6 +12229,15 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
           step.diagnostic = std::move(filter_result.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                filter_result, *execution_dag, node,
+                mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-FILTER-EXECUTION-V1";
+          step.diagnostic.detail = "FILTER execution receipt changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
@@ -9897,6 +12323,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
             project_request, *execution_dag, input_batch, projected_columns);
         if (!project_result.diagnostic.ok) {
           step.diagnostic = std::move(project_result.diagnostic);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                project_result, *execution_dag, node,
+                project_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-EXECUTION-V1";
+          step.diagnostic.detail =
+              "object-backed PROJECT execution receipt changed";
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -9999,6 +12435,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
           step.diagnostic = std::move(filtered.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                filtered, *execution_dag, node,
+                mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1";
+          step.diagnostic.detail =
+              "object-backed FILTER execution receipt changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
@@ -10082,6 +12528,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
           step.diagnostic = std::move(window.diagnostic);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                window, *execution_dag, node,
+                request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1";
+          step.diagnostic.detail =
+              "ROW_NUMBER execution receipt changed";
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -10183,6 +12639,15 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
           step.diagnostic = std::move(window.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                window, *execution_dag, node,
+                request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1";
+          step.diagnostic.detail = "NTILE execution receipt changed";
+          return step;
+        }
         const auto decoded_bucket_count =
             exec::DecodeInt64Value(bucket_count_operand);
         if (!decoded_bucket_count.ok() || decoded_bucket_count.value <= 0 ||
@@ -10231,7 +12696,7 @@ exec::CanonicalPhysicalExecutorRegistration
 MakeLiveAggregateWindowRegistration(
     exec::ExecutorColumnDescriptor result_column,
     exec::CanonicalDescriptorOrderTerm order_term,
-    const std::size_t value_column,
+    std::optional<std::size_t> value_column,
     exec::CanonicalAggregateDescriptor aggregate_descriptor,
     std::string window_frame_descriptor_uuid,
     std::string order_term_binding_evidence_uuid,
@@ -10288,7 +12753,7 @@ MakeLiveAggregateWindowRegistration(
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-INPUT";
           step.diagnostic.detail =
-              "int64 aggregate window did not receive its bounded sorted input batch";
+              "aggregate window did not receive its bounded sorted input batch";
           return step;
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
@@ -10304,7 +12769,7 @@ MakeLiveAggregateWindowRegistration(
             step.diagnostic.diagnostic_code =
                 "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-INPUT";
             step.diagnostic.detail =
-                "int64 aggregate window execution view is unresolved";
+                "aggregate window execution view is unresolved";
             return step;
           }
           execution_dag = &*scoped_execution_dag;
@@ -10334,6 +12799,16 @@ MakeLiveAggregateWindowRegistration(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
           step.diagnostic = std::move(window.diagnostic);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                window, *execution_dag, node,
+                request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-PHYSICAL";
+          step.diagnostic.detail =
+              "aggregate window execution receipt changed";
           return step;
         }
         std::uint64_t input_memory_bytes = 0;
@@ -10367,7 +12842,7 @@ MakeLiveAggregateWindowRegistration(
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code = "QOW-DIAG-OPT-017-REFUSAL-V1";
           step.diagnostic.detail =
-              "int64 aggregate window runtime work or memory observation exceeded its grant";
+              "aggregate window runtime work or memory observation exceeded its grant";
           return step;
         }
         step.authority.engine_mga_snapshot_bound = true;
@@ -10497,6 +12972,16 @@ MakeLiveNavigationWindowRegistration(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
           step.diagnostic = std::move(window.diagnostic);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                window, *execution_dag, node,
+                request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1";
+          step.diagnostic.detail = std::string(profile.display_name) +
+                                   " execution receipt changed";
           return step;
         }
         std::uint64_t input_memory_bytes = 0;
@@ -10636,6 +13121,16 @@ exec::CanonicalPhysicalExecutorRegistration MakeLivePeerRankingRegistration(
           step.diagnostic = std::move(window.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                window, *execution_dag, node,
+                request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-007-WINDOW-PHYSICAL-ROUTE-V1";
+          step.diagnostic.detail = std::string(profile.display_name) +
+                                   " execution receipt changed";
+          return step;
+        }
         std::uint64_t input_memory_bytes = 0;
         std::uint64_t output_memory_bytes = 0;
         std::uint64_t peak_memory_bytes = 0;
@@ -10677,6 +13172,94 @@ exec::CanonicalPhysicalExecutorRegistration MakeLivePeerRankingRegistration(
   return registration;
 }
 
+struct LiveJoinRuntimeNodeConfiguration {
+  std::uint32_t relational_node_id{0};
+  exec::CanonicalAcceptedJoinKind join_kind{
+      exec::CanonicalAcceptedJoinKind::kCross};
+  std::string operation_name;
+  std::uint32_t predicate_expression_id{0};
+  CanonicalRelationalExpressionRowBinding predicate_binding;
+};
+
+std::optional<std::uint64_t> BoundOperatorLocalPhysicalDagCopyMemoryBytes(
+    const exec::TypedPhysicalNodeDag& dag) {
+  std::uint64_t bytes = sizeof(exec::TypedPhysicalNodeDag);
+  const auto add = [&](const std::uint64_t value) {
+    return CheckedAdd(bytes, value, &bytes);
+  };
+  const auto add_array = [&](const std::size_t count,
+                             const std::size_t element_size) {
+    if (count != 0 &&
+        element_size > std::numeric_limits<std::uint64_t>::max() / count) {
+      return false;
+    }
+    return add(static_cast<std::uint64_t>(count * element_size));
+  };
+  const auto add_string = [&](const std::string& value) {
+    return value.size() != std::numeric_limits<std::uint64_t>::max() &&
+           add(static_cast<std::uint64_t>(value.size()) + 1);
+  };
+  const auto add_context = [&](const exec::PhysicalMgaStatementContext& value) {
+    return add_string(value.statement_uuid) &&
+           add_string(value.owning_transaction_uuid) &&
+           add_string(value.statement_snapshot_uuid) &&
+           add_string(value.statement_metadata_snapshot_uuid) &&
+           add_array(value.active_excluded_local_transaction_ids.size(),
+                     sizeof(std::uint64_t)) &&
+           add_array(value.in_doubt_excluded_local_transaction_ids.size(),
+                     sizeof(std::uint64_t)) &&
+           add_string(value.snapshot_kind) &&
+           add_string(value.statement_timestamp);
+  };
+  const auto add_string_vector = [&](const std::vector<std::string>& values) {
+    if (!add_array(values.size(), sizeof(std::string))) return false;
+    return std::ranges::all_of(values, add_string);
+  };
+  if (!add_string(dag.selected_plan_uuid) ||
+      !add_context(dag.mga_statement_context) ||
+      !add_array(dag.admission_evidence.size(),
+                 sizeof(exec::PhysicalAdmissionEvidence)) ||
+      !add_array(dag.nodes.size(), sizeof(exec::PhysicalNodeRecord)) ||
+      !add_string(dag.bound_sblr_tree_uuid) ||
+      !add_string(dag.catalog_epoch_uuid) ||
+      !add_string(dag.security_context_uuid) ||
+      !add_string(dag.capability_snapshot_uuid) ||
+      !add_string(dag.resource_snapshot_uuid) ||
+      !add_string(dag.statistics_snapshot_uuid) ||
+      !add_string(dag.route_snapshot_uuid) ||
+      !add_string(dag.selected_plan_signature) ||
+      // Temporary reachability vectors used before the bounded DAG copy.
+      !add_array(dag.nodes.size(), sizeof(std::uint8_t)) ||
+      !add_array(dag.nodes.size(), sizeof(std::size_t))) {
+    return std::nullopt;
+  }
+  for (const auto& evidence : dag.admission_evidence) {
+    if (!add_string(evidence.evidence_uuid)) return std::nullopt;
+  }
+  for (const auto& node : dag.nodes) {
+    if (!add_string(node.implementation_id) ||
+        !add_array(node.input_physical_node_ids.size(),
+                   sizeof(std::uint64_t)) ||
+        !add_array(node.output_descriptor_ids.size(),
+                   sizeof(std::uint32_t)) ||
+        !add_string(node.selected_alternative_uuid) ||
+        !add_string(node.executor_capability_uuid) ||
+        !add_string(node.cost_vector_uuid) ||
+        !add_string_vector(node.required_property_uuids) ||
+        !add_string_vector(node.delivered_property_uuids) ||
+        !add_context(node.mga_statement_context) ||
+        !add_string(node.logical_semantic_variant_id) ||
+        !add_string(node.transformation_uuid) ||
+        !add_string(node.transformation_rule_id) ||
+        !add_string_vector(node.enforced_property_uuids) ||
+        !add_string(node.retained_cost.cost_vector_uuid) ||
+        !add_string(node.retained_cost.calibration_profile_uuid)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
     std::string implementation_id,
     std::string capability_uuid,
@@ -10691,7 +13274,81 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
     CanonicalRelationalExpressionRowBinding runtime_predicate_binding = {},
     api::TypedRelationalDag runtime_relational_dag = {},
     CanonicalRelationalExpressionRuntimeServices
-        runtime_expression_services = {}) {
+        runtime_expression_services = {},
+    std::vector<LiveJoinRuntimeNodeConfiguration>
+        runtime_node_configurations = {},
+    std::optional<exec::CanonicalExecutionMgaAuthority>
+        runtime_mga_authority = std::nullopt,
+    const api::TypedRelationalDag* borrowed_runtime_relational_dag = nullptr,
+    const api::EngineRequestContext* borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_runtime_mga_authority =
+        nullptr) {
+  std::shared_ptr<const api::TypedRelationalDag> owned_runtime_relational_dag;
+  const api::TypedRelationalDag* active_runtime_relational_dag =
+      borrowed_runtime_relational_dag;
+  if (runtime_bounded_inputs && active_runtime_relational_dag == nullptr) {
+    owned_runtime_relational_dag =
+        std::make_shared<const api::TypedRelationalDag>(
+            std::move(runtime_relational_dag));
+    active_runtime_relational_dag = owned_runtime_relational_dag.get();
+  }
+  std::uint64_t registration_retained_bytes =
+      sizeof(std::vector<api::EngineSqlTruthValue>) +
+      sizeof(std::string) + sizeof(api::EngineRequestContext) +
+      sizeof(CanonicalRelationalExpressionRowBinding) +
+      sizeof(CanonicalRelationalExpressionRuntimeServices) +
+      sizeof(std::shared_ptr<const api::TypedRelationalDag>) +
+      sizeof(std::vector<LiveJoinRuntimeNodeConfiguration>) +
+      sizeof(std::optional<exec::CanonicalExecutionMgaAuthority>) +
+      7 * sizeof(void*);
+  const auto account_registration_array = [&](const std::size_t count,
+                                               const std::size_t width) {
+    std::uint64_t bytes = 0;
+    return (count == 0 ||
+            (width <= std::numeric_limits<std::uint64_t>::max() / count &&
+             (bytes = static_cast<std::uint64_t>(count * width), true))) &&
+           CheckedAdd(registration_retained_bytes, bytes,
+                      &registration_retained_bytes);
+  };
+  const auto account_registration_string = [&](const std::string& value) {
+    return value.capacity() != std::numeric_limits<std::size_t>::max() &&
+           CheckedAdd(registration_retained_bytes,
+                      static_cast<std::uint64_t>(value.capacity()) + 1,
+                      &registration_retained_bytes);
+  };
+  bool registration_memory_bounded =
+      borrowed_runtime_relational_dag != nullptr &&
+      account_registration_array(predicate_truth_values.capacity(),
+                                 sizeof(api::EngineSqlTruthValue)) &&
+      account_registration_string(operation_name) &&
+      account_registration_array(
+          runtime_predicate_binding.row_descriptor_ids.capacity(),
+          sizeof(std::uint32_t)) &&
+      account_registration_array(
+          (runtime_predicate_binding.row_nullable.capacity() + 63) / 64,
+          sizeof(std::uint64_t)) &&
+      account_registration_array(runtime_predicate_binding.slots.capacity(),
+                                 sizeof(CanonicalRelationalExpressionRowSlotBinding)) &&
+      account_registration_array(runtime_node_configurations.capacity(),
+                                 sizeof(LiveJoinRuntimeNodeConfiguration));
+  for (const auto& configuration : runtime_node_configurations) {
+    registration_memory_bounded =
+        registration_memory_bounded &&
+        account_registration_string(configuration.operation_name) &&
+        account_registration_array(
+            configuration.predicate_binding.row_descriptor_ids.capacity(),
+            sizeof(std::uint32_t)) &&
+        account_registration_array(
+            (configuration.predicate_binding.row_nullable.capacity() + 63) /
+                64,
+            sizeof(std::uint64_t)) &&
+        account_registration_array(configuration.predicate_binding.slots.capacity(),
+                                   sizeof(CanonicalRelationalExpressionRowSlotBinding));
+  }
+  if (borrowed_mga_context == nullptr) {
+    registration_memory_bounded = false;
+  }
+  if (!registration_memory_bounded) registration_retained_bytes = 0;
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kJoin;
   registration.implementation_id = std::move(implementation_id);
@@ -10699,25 +13356,87 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.honors_dispatcher_memory_limit_v1 = true;
+  registration.retained_live_memory_bytes_v1 = registration_retained_bytes;
   registration.execute =
       [predicate_truth_values = std::move(predicate_truth_values), pair_count,
        output_row_bound, join_kind, operation_name = std::move(operation_name),
        mga_context = std::move(mga_context), runtime_bounded_inputs,
        runtime_predicate_expression_id,
        runtime_predicate_binding = std::move(runtime_predicate_binding),
-       runtime_relational_dag = std::move(runtime_relational_dag),
-       runtime_expression_services =
-           std::move(runtime_expression_services)](
+       runtime_expression_services = std::move(runtime_expression_services),
+       owned_runtime_relational_dag =
+           std::move(owned_runtime_relational_dag),
+       active_runtime_relational_dag,
+       runtime_node_configurations =
+           std::move(runtime_node_configurations),
+       runtime_mga_authority = std::move(runtime_mga_authority),
+       borrowed_mga_context, borrowed_runtime_mga_authority](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
-        step.selected_plan_uuid = dag.selected_plan_uuid;
-        step.mga_statement_context = dag.mga_statement_context;
+        const auto selected_node_memory_bound =
+            SelectedNodeAggregateMemoryBound(dag, node);
+        const auto operator_dag_copy_memory_bound =
+            BoundOperatorLocalPhysicalDagCopyMemoryBytes(dag);
+        if (!selected_node_memory_bound.has_value() ||
+            !operator_dag_copy_memory_bound.has_value() ||
+            *operator_dag_copy_memory_bound >
+                *selected_node_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+          step.diagnostic.detail =
+              "live join operator-local DAG exceeds the callback memory allowance";
+          return step;
+        }
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
-        step.output_descriptor_ids = node.output_descriptor_ids;
-        step.authority.engine_mga_snapshot_bound = true;
+        const LiveJoinRuntimeNodeConfiguration* runtime_node_configuration =
+            nullptr;
+        for (const auto& candidate : runtime_node_configurations) {
+          if (candidate.relational_node_id != node.relational_node_id) {
+            continue;
+          }
+          if (runtime_node_configuration != nullptr) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
+            step.diagnostic.detail =
+                "live join executor has duplicate logical-node configuration";
+            return step;
+          }
+          runtime_node_configuration = &candidate;
+        }
+        if (!runtime_node_configurations.empty() &&
+            runtime_node_configuration == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
+          step.diagnostic.detail =
+              "live join executor has no logical-node configuration";
+          return step;
+        }
+        const auto active_join_kind =
+            runtime_node_configuration == nullptr
+                ? join_kind
+                : runtime_node_configuration->join_kind;
+        const auto& active_operation_name =
+            runtime_node_configuration == nullptr
+                ? operation_name
+                : runtime_node_configuration->operation_name;
+        const auto active_predicate_expression_id =
+            runtime_node_configuration == nullptr
+                ? runtime_predicate_expression_id
+                : runtime_node_configuration->predicate_expression_id;
+        const auto& active_predicate_binding =
+            runtime_node_configuration == nullptr
+                ? runtime_predicate_binding
+                : runtime_node_configuration->predicate_binding;
+        const auto& active_mga_context =
+            borrowed_mga_context == nullptr ? mga_context
+                                            : *borrowed_mga_context;
         if (inputs.size() != 2 || node.input_physical_node_ids.size() != 2 ||
             node.input_physical_node_ids[0] ==
                 node.input_physical_node_ids[1] ||
@@ -10730,7 +13449,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
-          step.diagnostic.detail = operation_name +
+          step.diagnostic.detail = active_operation_name +
               " executor did not receive two typed input batches";
           return step;
         }
@@ -10744,7 +13463,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
           step.diagnostic.detail =
-              operation_name + " pair cardinality overflowed";
+              active_operation_name + " pair cardinality overflowed";
           return step;
         }
         const auto actual_pair_count =
@@ -10757,7 +13476,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
-          step.diagnostic.detail = operation_name +
+          step.diagnostic.detail = active_operation_name +
               " input cardinality differs or overflows its selected cost";
           return step;
         }
@@ -10780,14 +13499,15 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-JOIN-CANCELLATION-POLICY-V1";
-          step.diagnostic.detail = operation_name +
+          step.diagnostic.detail = active_operation_name +
               " requires one exact cancellation policy evidence row";
           return step;
         }
-        const auto cancellation_requested =
-            mga_context.query_cancellation_requested
-                ? mga_context.query_cancellation_requested
-                : std::function<bool()>([] { return false; });
+        static const std::function<bool()> kNeverCancel = [] { return false; };
+        const auto& cancellation_requested =
+            active_mga_context.query_cancellation_requested
+                ? active_mga_context.query_cancellation_requested
+                : kNeverCancel;
         const auto poll_cancellation = [&](const char* phase) {
           try {
             if (!cancellation_requested()) return false;
@@ -10820,66 +13540,42 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
             return true;
           }
         };
-        if (poll_cancellation("before binding input batches")) return step;
         exec::CanonicalJoinKindRequest join_request;
         auto& key_request = join_request.residual_request.key_request;
-        key_request.physical_dag = dag;
-        if (node.physical_node_id != dag.root_physical_node_id) {
-          // ExecuteCanonicalJoinKind deliberately validates a join-root DAG.
-          // Give it the selected join and its exact two inputs as an
-          // operator-local view; the outer dispatcher retains and validates
-          // the immutable full DAG for FILTER/PROJECT execution and result
-          // publication.
-          const auto left_input_id = node.input_physical_node_ids[0];
-          const auto right_input_id = node.input_physical_node_ids[1];
-          std::erase_if(key_request.physical_dag.nodes, [&](const auto& item) {
-            return item.physical_node_id != node.physical_node_id &&
-                   item.physical_node_id != left_input_id &&
-                   item.physical_node_id != right_input_id;
-          });
-          key_request.physical_dag.root_physical_node_id =
-              node.physical_node_id;
-        }
-        if (poll_cancellation("after binding operator-local join DAG")) {
-          return step;
-        }
-        key_request.selected_physical_node_id = node.physical_node_id;
-        key_request.borrowed_left_batch = &left_batch;
-        key_request.borrowed_right_batch = &right_batch;
-        key_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(
-                mga_context, key_request.physical_dag);
-        if (poll_cancellation("before predicate evaluation")) return step;
         if (runtime_bounded_inputs &&
-            join_kind != exec::CanonicalAcceptedJoinKind::kCross &&
-            runtime_predicate_expression_id == 0) {
+            active_join_kind != exec::CanonicalAcceptedJoinKind::kCross &&
+            active_predicate_expression_id == 0) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-JOIN-PREDICATE-V1";
           step.diagnostic.detail =
-              operation_name + " runtime predicate identity is absent";
+              active_operation_name + " runtime predicate identity is absent";
           return step;
         }
-        const auto selected_node_memory_bound =
-            SelectedNodeAggregateMemoryBound(dag, node);
-        const auto truth_value_count = runtime_bounded_inputs
-                                           ? actual_pair_count
-                                           : predicate_truth_values.size();
-        std::uint64_t truth_value_bytes = 0;
+        std::uint64_t join_retained_state_bytes = 0;
         std::uint64_t preflight_retained_bytes = 2;
+        std::uint64_t left_input_payload_bytes = 0;
+        std::uint64_t right_input_payload_bytes = 0;
+        std::uint64_t left_input_live_bytes = 0;
+        std::uint64_t right_input_live_bytes = 0;
         const auto account_batch_payload =
-            [&](const exec::DescriptorBatch& batch, const char* phase) {
+            [&](const exec::DescriptorBatch& batch, const char* phase,
+                std::uint64_t* batch_payload_bytes) {
+              (void)phase;
+              if (batch_payload_bytes == nullptr) return false;
+              *batch_payload_bytes = 0;
               for (std::size_t row = 0; row < batch.rows.size(); ++row) {
                 for (std::size_t column = 0;
                      column < batch.rows[row].values.size(); ++column) {
-                  if (poll_cancellation(phase)) return false;
                   const auto& value = batch.rows[row].values[column];
-                  if (!CheckedAdd(preflight_retained_bytes,
-                                  value.encoded_value.size(),
-                                  &preflight_retained_bytes) ||
-                      !CheckedAdd(preflight_retained_bytes,
-                                  value.binary_value.size(),
-                                  &preflight_retained_bytes)) {
+                  if (value.encoded_value.capacity() ==
+                          std::numeric_limits<std::size_t>::max() ||
+                      !CheckedAdd(*batch_payload_bytes,
+                                  value.encoded_value.capacity() + 1,
+                                  batch_payload_bytes) ||
+                      !CheckedAdd(*batch_payload_bytes,
+                                  value.binary_value.capacity(),
+                                  batch_payload_bytes)) {
                     return false;
                   }
                 }
@@ -10892,16 +13588,28 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
               *largest = 0;
               for (std::size_t row = 0; row < batch.rows.size(); ++row) {
                 std::uint64_t row_bytes = 0;
+                if (!CheckedMultiply(batch.rows[row].values.capacity(),
+                                     sizeof(api::EngineTypedValue),
+                                     &row_bytes)) {
+                  return false;
+                }
+                const auto add_row_string = [&](const std::string& value) {
+                  return value.capacity() !=
+                             std::numeric_limits<std::size_t>::max() &&
+                         CheckedAdd(row_bytes, value.capacity() + 1,
+                                    &row_bytes);
+                };
                 for (std::size_t column = 0;
                      column < batch.rows[row].values.size(); ++column) {
-                  if (poll_cancellation(
-                          "while accounting predicate row scratch")) {
-                    return false;
-                  }
                   const auto& value = batch.rows[row].values[column];
-                  if (!CheckedAdd(row_bytes, value.encoded_value.size(),
-                                  &row_bytes) ||
-                      !CheckedAdd(row_bytes, value.binary_value.size(),
+                  if (!add_row_string(
+                          value.descriptor.descriptor_uuid.canonical) ||
+                      !add_row_string(value.descriptor.descriptor_kind) ||
+                      !add_row_string(
+                          value.descriptor.canonical_type_name) ||
+                      !add_row_string(value.descriptor.encoded_descriptor) ||
+                      !add_row_string(value.encoded_value) ||
+                      !CheckedAdd(row_bytes, value.binary_value.capacity(),
                                   &row_bytes)) {
                     return false;
                   }
@@ -10912,28 +13620,242 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
             };
         std::uint64_t left_row_scratch = 0;
         std::uint64_t right_row_scratch = 0;
+        std::uint64_t callback_carrier_bytes =
+            3 * sizeof(std::vector<std::uint32_t>) +
+            sizeof(std::vector<bool>);
+        std::uint64_t callback_carrier_array_bytes = 0;
+        const auto add_callback_carrier_array =
+            [&](const std::size_t count, const std::size_t element_size) {
+              return CheckedMultiply(count, element_size,
+                                     &callback_carrier_array_bytes) &&
+                     CheckedAdd(callback_carrier_bytes,
+                                callback_carrier_array_bytes,
+                                &callback_carrier_bytes);
+            };
+        const auto add_callback_carrier_string =
+            [&](const std::string& value) {
+              return value.capacity() !=
+                         std::numeric_limits<std::size_t>::max() &&
+                     CheckedAdd(callback_carrier_bytes,
+                                value.capacity() + 1,
+                                &callback_carrier_bytes);
+            };
+        const auto add_callback_mga_context =
+            [&](const exec::PhysicalMgaStatementContext& context) {
+              return add_callback_carrier_string(context.statement_uuid) &&
+                     add_callback_carrier_string(
+                         context.owning_transaction_uuid) &&
+                     add_callback_carrier_string(
+                         context.statement_snapshot_uuid) &&
+                     add_callback_carrier_string(
+                         context.statement_metadata_snapshot_uuid) &&
+                     add_callback_carrier_array(
+                         context.active_excluded_local_transaction_ids.size(),
+                         sizeof(std::uint64_t)) &&
+                     add_callback_carrier_array(
+                         context.in_doubt_excluded_local_transaction_ids.size(),
+                         sizeof(std::uint64_t)) &&
+                     add_callback_carrier_string(context.snapshot_kind) &&
+                     add_callback_carrier_string(context.statement_timestamp);
+            };
+        const auto callback_output_width = node.output_descriptor_ids.size();
+        const bool callback_carriers_bounded =
+            add_callback_carrier_array(callback_output_width,
+                                       3 * sizeof(std::uint32_t)) &&
+            // Conservative unpacked ceiling for the derived-nullability bits.
+            add_callback_carrier_array(callback_output_width,
+                                       sizeof(std::uint8_t)) &&
+            add_callback_carrier_string(dag.selected_plan_uuid) &&
+            add_callback_carrier_string(dag.selected_plan_uuid) &&
+            // The callback step and the join result temporarily own separate
+            // statement-context copies before the result is moved into step.
+            add_callback_mga_context(dag.mga_statement_context) &&
+            add_callback_mga_context(dag.mga_statement_context);
         bool preflight_ok =
             selected_node_memory_bound.has_value() &&
-            CheckedMultiply(truth_value_count,
-                            sizeof(api::EngineSqlTruthValue),
-                            &truth_value_bytes) &&
+            callback_carriers_bounded &&
+            CheckedAdd(preflight_retained_bytes, callback_carrier_bytes,
+                       &preflight_retained_bytes) &&
+            CheckedAdd(preflight_retained_bytes,
+                       *operator_dag_copy_memory_bound,
+                       &preflight_retained_bytes) &&
+            BoundDescriptorBatchLiveMemoryBytes(
+                left_batch, &left_input_live_bytes) &&
+            BoundDescriptorBatchLiveMemoryBytes(
+                right_batch, &right_input_live_bytes) &&
+            CheckedAdd(preflight_retained_bytes, left_input_live_bytes,
+                       &preflight_retained_bytes) &&
+            CheckedAdd(preflight_retained_bytes, right_input_live_bytes,
+                       &preflight_retained_bytes) &&
+            exec::BoundCanonicalJoinRetainedStateBytes(
+                left_batch.rows.size(), right_batch.rows.size(),
+                &join_retained_state_bytes) &&
             account_batch_payload(
-                left_batch, "while accounting left join input payload") &&
+                left_batch, "while accounting left join input payload",
+                &left_input_payload_bytes) &&
             account_batch_payload(
-                right_batch, "while accounting right join input payload") &&
-            CheckedAdd(preflight_retained_bytes, truth_value_bytes,
-                       &preflight_retained_bytes);
+                right_batch, "while accounting right join input payload",
+                &right_input_payload_bytes);
+        std::uint64_t maximum_output_payload_bytes = 1;
+        std::uint64_t maximum_output_structure_bytes =
+            sizeof(exec::DescriptorBatch);
+        std::uint64_t repeated_left_payload_bytes = 0;
+        std::uint64_t repeated_right_payload_bytes = 0;
+        if (preflight_ok &&
+            active_join_kind != exec::CanonicalAcceptedJoinKind::kLeftSemi &&
+            active_join_kind != exec::CanonicalAcceptedJoinKind::kLeftAnti) {
+          preflight_ok =
+              CheckedMultiply(left_input_payload_bytes,
+                              right_batch.rows.size(),
+                              &repeated_left_payload_bytes) &&
+              CheckedMultiply(right_input_payload_bytes,
+                              left_batch.rows.size(),
+                              &repeated_right_payload_bytes) &&
+              CheckedAdd(maximum_output_payload_bytes,
+                         repeated_left_payload_bytes,
+                         &maximum_output_payload_bytes) &&
+              CheckedAdd(maximum_output_payload_bytes,
+                         repeated_right_payload_bytes,
+                         &maximum_output_payload_bytes);
+          if (preflight_ok &&
+              (active_join_kind ==
+                   exec::CanonicalAcceptedJoinKind::kLeftOuter ||
+               active_join_kind ==
+                   exec::CanonicalAcceptedJoinKind::kFullOuter)) {
+            preflight_ok = CheckedAdd(maximum_output_payload_bytes,
+                                      left_input_payload_bytes,
+                                      &maximum_output_payload_bytes);
+          }
+          if (preflight_ok &&
+              (active_join_kind ==
+                   exec::CanonicalAcceptedJoinKind::kRightOuter ||
+               active_join_kind ==
+                   exec::CanonicalAcceptedJoinKind::kFullOuter)) {
+            preflight_ok = CheckedAdd(maximum_output_payload_bytes,
+                                      right_input_payload_bytes,
+                                      &maximum_output_payload_bytes);
+          }
+        } else if (preflight_ok) {
+          preflight_ok = CheckedAdd(maximum_output_payload_bytes,
+                                    left_input_payload_bytes,
+                                    &maximum_output_payload_bytes);
+        }
+        if (preflight_ok) {
+          const bool left_only_output =
+              active_join_kind ==
+                  exec::CanonicalAcceptedJoinKind::kLeftSemi ||
+              active_join_kind ==
+                  exec::CanonicalAcceptedJoinKind::kLeftAnti;
+          std::uint64_t maximum_output_rows = actual_pair_count;
+          const auto add_output_rows = [&](const std::size_t rows) {
+            return CheckedAdd(maximum_output_rows,
+                              static_cast<std::uint64_t>(rows),
+                              &maximum_output_rows);
+          };
+          if (left_only_output) {
+            maximum_output_rows = left_batch.rows.size();
+          } else if (active_join_kind ==
+                         exec::CanonicalAcceptedJoinKind::kLeftOuter) {
+            preflight_ok = add_output_rows(left_batch.rows.size());
+          } else if (active_join_kind ==
+                         exec::CanonicalAcceptedJoinKind::kRightOuter) {
+            preflight_ok = add_output_rows(right_batch.rows.size());
+          } else if (active_join_kind ==
+                         exec::CanonicalAcceptedJoinKind::kFullOuter) {
+            preflight_ok = add_output_rows(left_batch.rows.size()) &&
+                           add_output_rows(right_batch.rows.size());
+          }
+          maximum_output_rows = std::min<std::uint64_t>(
+              maximum_output_rows, output_row_bound);
+          const std::size_t output_width =
+              left_batch.columns.size() +
+              (left_only_output ? 0 : right_batch.columns.size());
+          std::uint64_t allocation_bytes = 0;
+          const auto add_structure_array = [&](const std::uint64_t count,
+                                               const std::size_t size) {
+            return CheckedMultiply(count, size, &allocation_bytes) &&
+                   CheckedAdd(maximum_output_structure_bytes,
+                              allocation_bytes,
+                              &maximum_output_structure_bytes);
+          };
+          const auto add_structure_string = [&](const std::string& value) {
+            return value.capacity() !=
+                       std::numeric_limits<std::uint64_t>::max() &&
+                   CheckedAdd(maximum_output_structure_bytes,
+                              static_cast<std::uint64_t>(value.capacity()) + 1,
+                              &maximum_output_structure_bytes);
+          };
+          const auto add_structure_descriptor =
+              [&](const api::EngineDescriptor& descriptor,
+                  const std::uint64_t copies) {
+                std::uint64_t descriptor_bytes = 0;
+                const auto account_string = [&](const std::string& value) {
+                  return value.capacity() !=
+                             std::numeric_limits<std::uint64_t>::max() &&
+                         CheckedAdd(
+                             descriptor_bytes,
+                             static_cast<std::uint64_t>(value.capacity()) + 1,
+                             &descriptor_bytes);
+                };
+                return account_string(descriptor.descriptor_uuid.canonical) &&
+                       account_string(descriptor.descriptor_kind) &&
+                       account_string(descriptor.canonical_type_name) &&
+                       account_string(descriptor.encoded_descriptor) &&
+                       CheckedAdd(descriptor_bytes, 32,
+                                  &descriptor_bytes) &&
+                       CheckedMultiply(descriptor_bytes, copies,
+                                       &allocation_bytes) &&
+                       CheckedAdd(maximum_output_structure_bytes,
+                                  allocation_bytes,
+                                  &maximum_output_structure_bytes);
+              };
+          std::uint64_t maximum_output_cells = 0;
+          preflight_ok =
+              preflight_ok &&
+              CheckedMultiply(maximum_output_rows, output_width,
+                              &maximum_output_cells) &&
+              add_structure_array(output_width,
+                                  sizeof(exec::ExecutorColumnDescriptor)) &&
+              add_structure_array(maximum_output_rows,
+                                  sizeof(exec::DescriptorTuple)) &&
+              add_structure_array(maximum_output_cells,
+                                  sizeof(api::EngineTypedValue));
+          const auto account_output_columns = [&](const auto& columns) {
+            for (const auto& column : columns) {
+              if (!add_structure_string(column.stable_name) ||
+                  !add_structure_descriptor(
+                      column.descriptor, maximum_output_rows + 1)) {
+                return false;
+              }
+            }
+            return true;
+          };
+          preflight_ok = preflight_ok &&
+                         account_output_columns(left_batch.columns) &&
+                         (left_only_output ||
+                          account_output_columns(right_batch.columns));
+        }
+        std::uint64_t maximum_phase_work_bytes =
+            join_retained_state_bytes;
+        std::uint64_t truth_value_bytes = 0;
+        if (preflight_ok && runtime_bounded_inputs) {
+          std::uint64_t join_phase_bytes = 0;
+          preflight_ok =
+              CheckedMultiply(actual_pair_count,
+                              sizeof(api::EngineSqlTruthValue),
+                              &truth_value_bytes) &&
+              CheckedAdd(truth_value_bytes, join_retained_state_bytes,
+                         &join_phase_bytes);
+          if (preflight_ok) {
+            maximum_phase_work_bytes = std::max(
+                maximum_phase_work_bytes, join_phase_bytes);
+          }
+        }
         if (preflight_ok && runtime_bounded_inputs &&
-            join_kind != exec::CanonicalAcceptedJoinKind::kCross) {
+            active_join_kind != exec::CanonicalAcceptedJoinKind::kCross) {
           preflight_ok = largest_row_payload(left_batch, &left_row_scratch) &&
                          largest_row_payload(right_batch,
-                                             &right_row_scratch) &&
-                         CheckedAdd(preflight_retained_bytes,
-                                    left_row_scratch,
-                                    &preflight_retained_bytes) &&
-                         CheckedAdd(preflight_retained_bytes,
-                                    right_row_scratch,
-                                    &preflight_retained_bytes);
+                                             &right_row_scratch);
           if (preflight_ok) {
             std::uint64_t pair_payload_bytes = 0;
             if (!CheckedAdd(left_row_scratch, right_row_scratch,
@@ -10942,28 +13864,44 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
             } else {
               const auto predicate_scratch =
                   BoundLiveJoinPredicateScratchBytes(
-                      runtime_relational_dag,
-                      runtime_predicate_expression_id,
+                      *active_runtime_relational_dag,
+                      active_predicate_expression_id,
+                      active_predicate_binding,
                       pair_payload_bytes,
-                      [&] {
-                        return poll_cancellation(
-                            "while bounding predicate evaluation scratch");
-                      });
-              if (predicate_scratch.cancelled) return step;
+                      [] { return false; });
               if (!predicate_scratch.ok) {
                 step.diagnostic.ok = false;
                 step.diagnostic.diagnostic_code =
                     "SBLR.PLAN_TREE.RESOURCE_LIMIT";
-                step.diagnostic.detail = operation_name + ":" +
+                step.diagnostic.detail = active_operation_name + ":" +
                                          predicate_scratch.detail;
                 return step;
               }
-              preflight_ok = CheckedAdd(
-                  preflight_retained_bytes,
-                  predicate_scratch.maximum_payload_bytes,
-                  &preflight_retained_bytes);
+              std::uint64_t predicate_phase_bytes = 0;
+              preflight_ok =
+                  CheckedAdd(truth_value_bytes,
+                             predicate_scratch.maximum_payload_bytes,
+                             &predicate_phase_bytes) &&
+                  CheckedAdd(predicate_phase_bytes,
+                             predicate_scratch.maximum_structural_bytes,
+                             &predicate_phase_bytes);
+              if (preflight_ok) {
+                maximum_phase_work_bytes = std::max(
+                    maximum_phase_work_bytes, predicate_phase_bytes);
+              }
             }
           }
+        }
+        if (preflight_ok) {
+          preflight_ok = CheckedAdd(preflight_retained_bytes,
+                                    maximum_phase_work_bytes,
+                                    &preflight_retained_bytes) &&
+                         CheckedAdd(preflight_retained_bytes,
+                                    maximum_output_payload_bytes,
+                                    &preflight_retained_bytes) &&
+                         CheckedAdd(preflight_retained_bytes,
+                                    maximum_output_structure_bytes,
+                                    &preflight_retained_bytes);
         }
         if (!preflight_ok ||
             preflight_retained_bytes > *selected_node_memory_bound) {
@@ -10971,59 +13909,102 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "SBLR.PLAN_TREE.RESOURCE_LIMIT";
-          step.diagnostic.detail = operation_name +
+          step.diagnostic.detail = active_operation_name +
               " retained inputs, truth, or predicate scratch exceed the "
               "selected-node memory grant";
           return step;
         }
+        // Only now may the callback allocate receipt carriers. The complete
+        // coexistence proof above includes both retained input batches, the
+        // operator-local DAG, these carriers, output storage, and the largest
+        // sequential predicate/join work phase.
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (poll_cancellation("before binding input batches")) return step;
+        std::string operator_dag_detail;
+        if (!BuildOperatorLocalPhysicalDag(
+                dag, node.physical_node_id, &key_request.physical_dag,
+                &operator_dag_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
+          step.diagnostic.detail =
+              active_operation_name + " " + operator_dag_detail;
+          return step;
+        }
+        if (poll_cancellation("after binding operator-local join DAG")) {
+          return step;
+        }
+        const auto bounded_operator_node = std::ranges::find_if(
+            key_request.physical_dag.nodes, [&](const auto& candidate) {
+              return candidate.physical_node_id == node.physical_node_id;
+            });
+        if (bounded_operator_node == key_request.physical_dag.nodes.end()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
+          step.diagnostic.detail = active_operation_name +
+                                   " operator-local root is absent";
+          return step;
+        }
+        bounded_operator_node->memory_bytes_required =
+            *selected_node_memory_bound;
+        bounded_operator_node->retained_cost.memory_bytes_required =
+            *selected_node_memory_bound;
+        key_request.selected_physical_node_id = node.physical_node_id;
+        key_request.borrowed_left_batch = &left_batch;
+        key_request.borrowed_right_batch = &right_batch;
+        key_request.dispatcher_mga_boundary_active = true;
+        if (borrowed_runtime_mga_authority != nullptr) {
+          key_request.borrowed_mga_authority =
+              borrowed_runtime_mga_authority;
+        } else if (runtime_mga_authority.has_value()) {
+          key_request.borrowed_mga_authority = &*runtime_mga_authority;
+        } else {
+          key_request.mga_authority =
+              BuildCanonicalExecutionMgaAuthority(
+                  active_mga_context, key_request.physical_dag);
+        }
+        const auto& active_mga_authority =
+            key_request.borrowed_mga_authority == nullptr
+                ? key_request.mga_authority
+                : *key_request.borrowed_mga_authority;
         std::vector<api::EngineSqlTruthValue> runtime_truth_values;
         const std::vector<api::EngineSqlTruthValue>* bound_truth_values =
             &predicate_truth_values;
         if (runtime_bounded_inputs) {
           runtime_truth_values.reserve(actual_pair_count);
           bound_truth_values = &runtime_truth_values;
-          if (join_kind == exec::CanonicalAcceptedJoinKind::kCross) {
+          if (active_join_kind == exec::CanonicalAcceptedJoinKind::kCross) {
             for (std::size_t pair = 0; pair < actual_pair_count; ++pair) {
               if (poll_cancellation("while binding CROSS truth")) return step;
               runtime_truth_values.push_back(
                   api::EngineSqlTruthValue::true_value);
             }
           } else {
-            CanonicalRelationalExpressionRuntime expression_runtime(
-                runtime_relational_dag, runtime_expression_services);
-            std::vector<api::EngineTypedValue> pair_values;
-            pair_values.reserve(left_batch.columns.size() +
-                                right_batch.columns.size());
+            CanonicalRelationalExpressionRuntime runtime_expression(
+                *active_runtime_relational_dag,
+                runtime_expression_services);
             for (const auto& left : left_batch.rows) {
               for (const auto& right : right_batch.rows) {
                 if (poll_cancellation("while evaluating ON truth")) return step;
-                pair_values.clear();
-                for (const auto& value : left.values) {
-                  if (poll_cancellation(
-                          "while copying left predicate values")) {
-                    return step;
-                  }
-                  pair_values.push_back(value);
-                }
-                for (const auto& value : right.values) {
-                  if (poll_cancellation(
-                          "while copying right predicate values")) {
-                    return step;
-                  }
-                  pair_values.push_back(value);
-                }
+                const CanonicalRelationalExpressionRowView pair_values{
+                    left.values, right.values};
                 api::EngineSqlTruthValue truth =
                     api::EngineSqlTruthValue::unknown;
                 std::string detail;
-                if (!expression_runtime.EvaluatePredicateForConsumer(
-                        runtime_predicate_expression_id,
-                        runtime_predicate_binding, pair_values,
+                if (!runtime_expression.EvaluatePredicateForConsumer(
+                        active_predicate_expression_id,
+                        active_predicate_binding, pair_values,
                         api::EngineCanonicalExpressionConsumer::join, &truth,
                         &detail)) {
                   step.diagnostic.ok = false;
                   step.diagnostic.diagnostic_code =
                       "QOW-DIAG-RELATIONAL-LIVE-JOIN-PREDICATE-V1";
-                  step.diagnostic.detail = operation_name + ":" + detail;
+                  step.diagnostic.detail =
+                      active_operation_name + ":" + detail;
                   return step;
                 }
                 runtime_truth_values.push_back(truth);
@@ -11036,11 +14017,12 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
             std::max<std::size_t>(1, runtime_bounded_inputs
                                          ? actual_pair_count
                                          : pair_count);
-        join_request.join_kind = join_kind;
+        join_request.join_kind = active_join_kind;
         join_request.bound_pair_truth_profile = true;
         join_request.maximum_output_rows =
             std::max<std::size_t>(1, output_row_bound);
-        join_request.cancellation_requested = cancellation_requested;
+        join_request.borrowed_cancellation_requested =
+            &cancellation_requested;
         if (poll_cancellation("before canonical join execution")) return step;
         auto join_result =
             exec::ExecuteCanonicalJoinKind(join_request);
@@ -11060,6 +14042,20 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
             step.diagnostic.diagnostic_code =
                 "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
           }
+          return step;
+        }
+        if (join_result.selected_plan_uuid !=
+                key_request.physical_dag.selected_plan_uuid ||
+            join_result.executed_physical_node_id != node.physical_node_id ||
+            join_result.causal_counter_id != node.causal_counter_id ||
+            !exec::PhysicalMgaStatementContextEqual(
+                join_result.mga_statement_context,
+                active_mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-EXECUTION-V1";
+          step.diagnostic.detail = active_operation_name +
+                                   " execution receipt changed";
           return step;
         }
         if (poll_cancellation("after canonical join execution")) return step;
@@ -11301,9 +14297,10 @@ WithMultilegResultDescriptorRebindingV1(
           } else if (column.descriptor.descriptor_uuid.canonical !=
                          allocation.descriptor_uuid ||
                      allocation.type_uuid.empty() ||
-                     column.descriptor.encoded_descriptor.find(
-                         "type_uuid=" + allocation.type_uuid) ==
-                         std::string::npos ||
+                     Rcp079DescriptorField(
+                         column.descriptor.encoded_descriptor,
+                         "type_uuid") !=
+                         std::optional<std::string>(allocation.type_uuid) ||
                      column.nullable != allocation.demand.nullable) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
@@ -11716,15 +14713,64 @@ MakeLiveCorrelatedSubqueryRegistration(
           }
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                correlated, dag, node,
+                correlated_request.mga_authority.statement_context) ||
+            correlated.scope_execution_count != prepared.outer_row_count ||
+            correlated.scopes.size() !=
+                correlated.scope_execution_count ||
+            correlated.comparison_count > prepared.pair_count ||
+            correlated.result_row_count > prepared.output_row_bound ||
+            !correlated.transient_state_cleanup_proven ||
+            correlated.cancellation_observed) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-013-CORRELATED-REFUSAL-V1";
+          step.diagnostic.detail =
+              "correlated subquery execution receipt changed";
+          return step;
+        }
+        if (poll_cancellation("before result flattening preflight")) {
+          return step;
+        }
+        std::size_t flattened_row_count = 0;
+        for (std::size_t scope_index = 0;
+             scope_index < correlated.scopes.size(); ++scope_index) {
+          if (poll_cancellation("while preflighting a result scope")) {
+            return step;
+          }
+          const auto& scope = correlated.scopes[scope_index];
+          if (scope.outer_row_index != scope_index ||
+              flattened_row_count > correlated.result_row_count ||
+              scope.output_batch.rows.size() >
+                  correlated.result_row_count - flattened_row_count) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-013-CORRELATED-REFUSAL-V1";
+            step.diagnostic.detail =
+                "correlated subquery scope preflight changed";
+            return step;
+          }
+          flattened_row_count += scope.output_batch.rows.size();
+        }
+        if (flattened_row_count != correlated.result_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-013-CORRELATED-REFUSAL-V1";
+          step.diagnostic.detail =
+              "correlated subquery result cardinality changed";
+          return step;
+        }
         exec::DescriptorBatch output;
         output.columns =
             inputs[1].materialized_output_batch->columns;
-        output.rows.reserve(correlated.result_row_count);
-        if (poll_cancellation("before result flattening")) return step;
-        for (auto& scope : correlated.scopes) {
+        output.rows.reserve(flattened_row_count);
+        for (std::size_t scope_index = 0;
+             scope_index < correlated.scopes.size(); ++scope_index) {
           if (poll_cancellation("while flattening a result scope")) {
             return step;
           }
+          auto& scope = correlated.scopes[scope_index];
           for (auto& row : scope.output_batch.rows) {
             if (poll_cancellation("while flattening a result row")) {
               return step;
@@ -12066,6 +15112,26 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
           }
           return step;
         }
+        if (lateral.form != lateral_request.form ||
+            lateral.correlated_plan_uuid !=
+                lateral_request.correlated_request.physical_dag
+                    .selected_plan_uuid ||
+            lateral.selected_plan_uuid !=
+                lateral_request.physical_dag.selected_plan_uuid ||
+            lateral.executed_physical_node_id != node.physical_node_id ||
+            lateral.causal_counter_id != node.causal_counter_id ||
+            !exec::PhysicalMgaStatementContextEqual(
+                lateral.mga_statement_context,
+                lateral_request.mga_authority.statement_context) ||
+            lateral.output_row_count != lateral.output_batch.rows.size() ||
+            !lateral.transient_state_cleanup_proven) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-EXECUTION-V1";
+          step.diagnostic.detail =
+              "LATERAL/APPLY execution receipt changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = outer_row_count + inner_row_count;
         step.rows_examined = actual_pair_count;
@@ -12196,6 +15262,15 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
           step.diagnostic = std::move(set_result.diagnostic);
           return step;
         }
+        if (!CanonicalSetOperationExecutionReceiptMatches(
+                set_request, node, set_result)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SET-EXECUTION-V1";
+          step.diagnostic.detail =
+              "set-operation execution receipt is inconsistent";
+          return step;
+        }
         std::uint64_t current_memory_bytes = 0;
         std::uint64_t peak_memory_bytes = 0;
         std::string memory_detail;
@@ -12298,6 +15373,30 @@ MakeLiveQueryDistinctRegistration(
           step.diagnostic = std::move(distinct_result.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                distinct_result, *execution_dag, node,
+                distinct_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-010-DISTINCT-REFUSAL-V1";
+          step.diagnostic.detail =
+              "query DISTINCT execution receipt changed";
+          return step;
+        }
+        if (distinct_result.output_batch.rows.size() >
+                input_batch.rows.size() ||
+            distinct_result.eliminated_duplicate_row_count !=
+                input_batch.rows.size() -
+                    distinct_result.output_batch.rows.size() ||
+            distinct_result.value_comparison_count >
+                maximum_value_comparisons) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-QRY-010-DISTINCT-REFUSAL-V1";
+          step.diagnostic.detail =
+              "query DISTINCT execution counters changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
@@ -12323,6 +15422,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 = true;
   registration.execute =
       [result_column = std::move(result_column), maximum_input_row_count,
        mga_context = std::move(mga_context)](
@@ -12379,12 +15479,50 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
           step.diagnostic = std::move(aggregate_result.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                aggregate_result, *execution_dag, node,
+                aggregate_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-EXECUTION-V1";
+          step.diagnostic.detail =
+              "COUNT(*) execution receipt changed";
+          return step;
+        }
+        std::uint64_t input_memory_bytes = 0;
+        std::uint64_t output_memory_bytes = 0;
+        std::uint64_t expected_peak_memory_bytes = 0;
+        if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
+                                                 &input_memory_bytes) ||
+            !RuntimeMaterializedBatchMemoryBytes(
+                aggregate_result.output_batch, &output_memory_bytes) ||
+            !CheckedAdd(input_memory_bytes, sizeof(std::int64_t),
+                        &expected_peak_memory_bytes) ||
+            !CheckedAdd(expected_peak_memory_bytes, output_memory_bytes,
+                        &expected_peak_memory_bytes) ||
+            aggregate_result.input_payload_bytes != input_memory_bytes ||
+            aggregate_result.state_bytes != sizeof(std::int64_t) ||
+            aggregate_result.output_payload_bytes != output_memory_bytes ||
+            aggregate_result.current_memory_bytes != output_memory_bytes ||
+            aggregate_result.current_memory_bytes >
+                aggregate_result.peak_memory_bytes ||
+            aggregate_result.peak_memory_bytes !=
+                expected_peak_memory_bytes ||
+            aggregate_result.peak_memory_bytes > node.memory_bytes_required) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "COUNT(*) runtime phase memory receipt is inconsistent";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = step.input_row_count;
         step.output_row_count = aggregate_result.output_batch.rows.size();
         step.materialized_output_batch =
             std::move(aggregate_result.output_batch);
+        PublishRuntimeMemoryObservation(
+            &step, output_memory_bytes, aggregate_result.peak_memory_bytes);
         step.mga_statement_context =
             aggregate_request.mga_authority.statement_context;
         return step;
@@ -12406,6 +15544,7 @@ MakeLiveAggregateRegistryRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 = true;
   registration.execute =
       [prepared = std::move(prepared), maximum_input_row_count,
        maximum_filter_truth_memory_bytes,
@@ -12436,6 +15575,17 @@ MakeLiveAggregateRegistryRegistration(
         }
         const auto& input_batch =
             *inputs.front().materialized_output_batch;
+        std::string value_binding_detail;
+        if (!RevalidatePreparedAggregateValueBindings(
+                prepared.value_columns, prepared.value_descriptor_ids,
+                prepared.exact_value_binding_receipts, input_batch,
+                &value_binding_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail = std::move(value_binding_detail);
+          return step;
+        }
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
         if (node.physical_node_id != dag.root_physical_node_id) {
@@ -12498,6 +15648,32 @@ MakeLiveAggregateRegistryRegistration(
           }
           filter_truth_values = std::move(materialized_filter);
         }
+        const auto admitted_row_count =
+            filter_truth_values.has_value()
+                ? static_cast<std::size_t>(std::ranges::count(
+                      *filter_truth_values,
+                      api::EngineSqlTruthValue::true_value))
+                : input_batch.rows.size();
+        std::uint64_t maximum_order_comparison_count = 0;
+        if ((admitted_row_count > 1 &&
+             !CheckedMultiply(admitted_row_count,
+                              admitted_row_count - 1,
+                              &maximum_order_comparison_count)) ||
+            (maximum_order_comparison_count /= 2,
+             !CheckedMultiply(maximum_order_comparison_count,
+                              prepared.aggregate_order_terms.size(),
+                              &maximum_order_comparison_count)) ||
+            *aggregate_memory_bound >
+                std::numeric_limits<std::size_t>::max() ||
+            maximum_order_comparison_count >
+                std::numeric_limits<std::size_t>::max()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "aggregate runtime resource ceilings overflowed";
+          return step;
+        }
         exec::CanonicalAggregateRuntimeRequest aggregate_request;
         aggregate_request.selected_physical_node_id = node.physical_node_id;
         aggregate_request.descriptor = prepared.aggregate_descriptor;
@@ -12539,10 +15715,22 @@ MakeLiveAggregateRegistryRegistration(
             prepared.listagg_with_count;
         aggregate_request.forced_strategy =
             exec::CanonicalAggregateExecutionStrategy::serial;
+        aggregate_request.maximum_transition_count =
+            std::max<std::size_t>(1, input_batch.rows.size());
+        aggregate_request.maximum_distinct_value_count =
+            std::max<std::size_t>(1, admitted_row_count);
+        aggregate_request.maximum_aggregate_order_term_count =
+            std::max<std::size_t>(
+                1, prepared.aggregate_order_terms.size());
+        aggregate_request.maximum_order_comparison_count =
+            static_cast<std::size_t>(std::max<std::uint64_t>(
+                1, maximum_order_comparison_count));
+        aggregate_request.maximum_state_bytes =
+            static_cast<std::size_t>(*aggregate_memory_bound);
         aggregate_request.maximum_final_output_bytes =
-            *aggregate_memory_bound;
+            static_cast<std::size_t>(*aggregate_memory_bound);
         aggregate_request.maximum_finalization_workspace_bytes =
-            *aggregate_memory_bound;
+            static_cast<std::size_t>(*aggregate_memory_bound);
         aggregate_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, *execution_dag);
@@ -12562,6 +15750,36 @@ MakeLiveAggregateRegistryRegistration(
           step.diagnostic = std::move(aggregate_result.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                aggregate_result, *execution_dag, node,
+                aggregate_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-EXECUTION-V1";
+          step.diagnostic.detail =
+              "aggregate registry execution receipt changed";
+          return step;
+        }
+        std::uint64_t output_memory_bytes = 0;
+        if (!RuntimeMaterializedBatchMemoryBytes(
+                aggregate_result.output_batch, &output_memory_bytes) ||
+            aggregate_result.executed_strategy !=
+                exec::CanonicalAggregateExecutionStrategy::serial ||
+            aggregate_result.input_payload_bytes != input_memory_bytes ||
+            aggregate_result.fixed_retained_memory_bytes !=
+                retained_filter_truth_bytes ||
+            aggregate_result.current_memory_bytes != output_memory_bytes ||
+            aggregate_result.current_memory_bytes >
+                aggregate_result.peak_memory_bytes ||
+            aggregate_result.peak_memory_bytes >
+                *aggregate_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "aggregate runtime phase memory receipt is inconsistent";
+          return step;
+        }
         step.authority = aggregate_result.authority;
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
@@ -12569,6 +15787,9 @@ MakeLiveAggregateRegistryRegistration(
         step.output_row_count = aggregate_result.output_batch.rows.size();
         step.materialized_output_batch =
             std::move(aggregate_result.output_batch);
+        PublishRuntimeMemoryObservation(
+            &step, output_memory_bytes,
+            aggregate_result.peak_memory_bytes);
         step.mga_statement_context =
             aggregate_request.mga_authority.statement_context;
         return step;
@@ -12590,6 +15811,7 @@ MakeLiveGroupedCountSumRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 = true;
   registration.execute =
       [prepared = std::move(prepared), maximum_input_row_count,
        maximum_output_row_count, mga_context = std::move(mga_context)](
@@ -12619,6 +15841,15 @@ MakeLiveGroupedCountSumRegistration(
         }
         const auto& input_batch =
             *inputs.front().materialized_output_batch;
+        std::string key_binding_detail;
+        if (!RevalidatePreparedGroupedKeyBindings(
+                prepared, input_batch, &key_binding_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail = std::move(key_binding_detail);
+          return step;
+        }
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
         std::optional<exec::TypedPhysicalNodeDag> scoped_execution_dag;
         if (node.physical_node_id != dag.root_physical_node_id ||
@@ -12728,6 +15959,8 @@ MakeLiveGroupedCountSumRegistration(
         first.group_key_terms = prepared.key_terms;
         first.group_result_columns = prepared.key_result_columns;
         first.grouping_sets = prepared.grouping_sets;
+        first.maximum_grouping_key_comparison_count =
+            prepared.maximum_grouping_key_comparison_count;
         first.maximum_group_count = maximum_output_row_count;
         first.maximum_output_rows = maximum_output_row_count;
         first.maximum_combined_final_output_bytes =
@@ -12735,12 +15968,47 @@ MakeLiveGroupedCountSumRegistration(
         auto sum = make_aggregate(prepared.sum);
         sum.mga_authority = first.aggregate_request.mga_authority;
         grouped_request.additional_aggregates = {std::move(sum)};
+        grouped_request.maximum_combined_grouping_key_comparison_count =
+            prepared.maximum_combined_grouping_key_comparison_count;
         grouped_request.maximum_combined_final_output_bytes =
             *aggregate_memory_bound;
         auto grouped = exec::ExecuteCanonicalGroupedAggregateSetRuntime(
             grouped_request, *execution_dag, input_batch);
         if (!grouped.diagnostic.ok) {
           step.diagnostic = std::move(grouped.diagnostic);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                grouped, *execution_dag, node,
+                first.aggregate_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-EXECUTION-V1";
+          step.diagnostic.detail =
+              "grouped COUNT/SUM execution receipt changed";
+          return step;
+        }
+        std::uint64_t input_memory_bytes = 0;
+        std::uint64_t unprojected_output_memory_bytes = 0;
+        std::uint64_t peak_memory_bytes = grouped.peak_memory_bytes;
+        if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
+                                                 &input_memory_bytes) ||
+            !RuntimeMaterializedBatchMemoryBytes(
+                grouped.output_batch,
+                &unprojected_output_memory_bytes) ||
+            grouped.input_payload_bytes != input_memory_bytes ||
+            grouped.fixed_retained_memory_bytes != input_memory_bytes ||
+            grouped.output_payload_bytes !=
+                unprojected_output_memory_bytes ||
+            grouped.current_memory_bytes !=
+                unprojected_output_memory_bytes ||
+            grouped.current_memory_bytes > grouped.peak_memory_bytes ||
+            grouped.peak_memory_bytes > *aggregate_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "grouped aggregate-set runtime memory receipt is inconsistent";
           return step;
         }
         if (!grouped.group_identity_proven ||
@@ -12755,44 +16023,95 @@ MakeLiveGroupedCountSumRegistration(
               "composed grouped COUNT/SUM shared state is unproven";
           return step;
         }
-        std::vector<bool> grouping_sets_observed(
-            prepared.grouping_sets.size(), false);
-        for (const auto& group : grouped.groups) {
-          if (group.grouping_set_ordinal >= prepared.grouping_sets.size() ||
-              group.grouping_indicators.size() !=
-                  prepared.key_terms.size()) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-            step.diagnostic.detail =
-                "composed grouped runtime returned invalid metadata";
-            return step;
-          }
-          grouping_sets_observed[group.grouping_set_ordinal] = true;
-          const auto expected =
-              exec::ComputeCanonicalAggregateGroupingMetadata(
-                  prepared.key_terms.size(),
-                  prepared.grouping_sets[group.grouping_set_ordinal]);
-          if (!expected.diagnostic.ok ||
-              group.grouping_indicators != expected.grouping_indicators ||
-              group.grouping_id != expected.grouping_id) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-            step.diagnostic.detail =
-                "composed grouping metadata identity drifted";
-            return step;
-          }
-        }
-        if (std::ranges::find(grouping_sets_observed, false) !=
-            grouping_sets_observed.end()) {
+        std::uint64_t observed_set_memory_bytes = 0;
+        std::uint64_t expected_indicator_memory_bytes = 0;
+        std::uint64_t validation_phase_memory_bytes = 0;
+        if (!LogicalBitVectorPayloadBytes(prepared.grouping_sets.size(),
+                                          &observed_set_memory_bytes) ||
+            !LogicalBitVectorPayloadBytes(prepared.key_terms.size(),
+                                          &expected_indicator_memory_bytes) ||
+            !CheckedAdd(grouped.fixed_retained_memory_bytes,
+                        unprojected_output_memory_bytes,
+                        &validation_phase_memory_bytes) ||
+            !CheckedAdd(validation_phase_memory_bytes,
+                        observed_set_memory_bytes,
+                        &validation_phase_memory_bytes) ||
+            !CheckedAdd(validation_phase_memory_bytes,
+                        expected_indicator_memory_bytes,
+                        &validation_phase_memory_bytes) ||
+            validation_phase_memory_bytes > *aggregate_memory_bound) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
           step.diagnostic.detail =
-              "composed grouped runtime omitted a grouping set";
+              "grouped aggregate validation memory exceeded its grant";
           return step;
         }
+        peak_memory_bytes =
+            std::max(peak_memory_bytes, validation_phase_memory_bytes);
+        {
+          std::vector<bool> grouping_sets_observed(
+              prepared.grouping_sets.size(), false);
+          for (const auto& group : grouped.groups) {
+            if (group.grouping_set_ordinal >=
+                    prepared.grouping_sets.size() ||
+                group.grouping_indicators.size() !=
+                    prepared.key_terms.size()) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "composed grouped runtime returned invalid metadata";
+              return step;
+            }
+            grouping_sets_observed[group.grouping_set_ordinal] = true;
+            const auto expected =
+                exec::ComputeCanonicalAggregateGroupingMetadata(
+                    prepared.key_terms.size(),
+                    prepared.grouping_sets[group.grouping_set_ordinal]);
+            if (!expected.diagnostic.ok ||
+                group.grouping_indicators !=
+                    expected.grouping_indicators ||
+                group.grouping_id != expected.grouping_id) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "composed grouping metadata identity drifted";
+              return step;
+            }
+          }
+          std::size_t empty_grouping_set_count = 0;
+          for (std::size_t set_ordinal = 0;
+               set_ordinal < prepared.grouping_sets.size(); ++set_ordinal) {
+            const bool empty_grouping_set =
+                prepared.grouping_sets[set_ordinal]
+                    .key_term_ordinals.empty();
+            const bool expected_observed =
+                !input_batch.rows.empty() || empty_grouping_set;
+            if (empty_grouping_set) ++empty_grouping_set_count;
+            if (grouping_sets_observed[set_ordinal] !=
+                expected_observed) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "composed grouped runtime grouping-set cardinality drifted";
+              return step;
+            }
+          }
+          if (input_batch.rows.empty() &&
+              grouped.groups.size() != empty_grouping_set_count) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+            step.diagnostic.detail =
+                "composed empty-input grouping-set cardinality drifted";
+            return step;
+          }
+        }
+        std::uint64_t expected_output_memory_bytes =
+            unprojected_output_memory_bytes;
         if (!prepared.grouping_projection_columns.empty()) {
           if (prepared.grouping_projection_columns.size() !=
                   prepared.key_terms.size() + 1 ||
@@ -12805,6 +16124,41 @@ MakeLiveGroupedCountSumRegistration(
                 "composed grouping projection result shape drifted";
             return step;
           }
+          for (const auto& metadata : grouped.groups) {
+            if (metadata.grouping_id >
+                    static_cast<std::uint64_t>(
+                        std::numeric_limits<std::int64_t>::max()) ||
+                !CheckedAdd(expected_output_memory_bytes,
+                            prepared.key_terms.size(),
+                            &expected_output_memory_bytes) ||
+                !CheckedAdd(
+                    expected_output_memory_bytes,
+                    CanonicalUnsignedDecimalWidth(metadata.grouping_id),
+                    &expected_output_memory_bytes)) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "composed GROUPING projection payload is invalid";
+              return step;
+            }
+          }
+          std::uint64_t prospective_projection_phase_memory_bytes = 0;
+          if (!CheckedAdd(grouped.fixed_retained_memory_bytes,
+                          expected_output_memory_bytes,
+                          &prospective_projection_phase_memory_bytes) ||
+              prospective_projection_phase_memory_bytes >
+                  *aggregate_memory_bound) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-OPT-017-REFUSAL-V1";
+            step.diagnostic.detail =
+                "grouped aggregate projection exceeded its memory grant";
+            return step;
+          }
+          peak_memory_bytes = std::max(
+              peak_memory_bytes,
+              prospective_projection_phase_memory_bytes);
           grouped.output_batch.columns.insert(
               grouped.output_batch.columns.end(),
               prepared.grouping_projection_columns.begin(),
@@ -12824,16 +16178,6 @@ MakeLiveGroupedCountSumRegistration(
               indicator.state = api::EngineValueState::value;
               output_row.values.push_back(std::move(indicator));
             }
-            if (metadata.grouping_id >
-                static_cast<std::uint64_t>(
-                    std::numeric_limits<std::int64_t>::max())) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-              step.diagnostic.detail =
-                  "composed GROUPING_ID exceeds int64";
-              return step;
-            }
             api::EngineTypedValue grouping_id;
             grouping_id.descriptor =
                 prepared.grouping_projection_columns.back().descriptor;
@@ -12849,17 +16193,107 @@ MakeLiveGroupedCountSumRegistration(
             return step;
           }
         }
+        std::uint64_t output_memory_bytes = 0;
+        std::uint64_t projection_phase_memory_bytes = 0;
+        if (!RuntimeMaterializedBatchMemoryBytes(
+                grouped.output_batch, &output_memory_bytes) ||
+            output_memory_bytes != expected_output_memory_bytes ||
+            !CheckedAdd(grouped.fixed_retained_memory_bytes,
+                        output_memory_bytes,
+                        &projection_phase_memory_bytes)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "grouped aggregate projection memory receipt overflowed";
+          return step;
+        }
+        peak_memory_bytes =
+            std::max(peak_memory_bytes, projection_phase_memory_bytes);
+        if (output_memory_bytes > peak_memory_bytes ||
+            peak_memory_bytes > *aggregate_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "grouped aggregate projection exceeded its memory grant";
+          return step;
+        }
         step.authority = grouped.authority;
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = step.input_row_count;
         step.output_row_count = grouped.output_batch.rows.size();
         step.materialized_output_batch = std::move(grouped.output_batch);
+        PublishRuntimeMemoryObservation(
+            &step, output_memory_bytes, peak_memory_bytes);
         step.mga_statement_context =
             std::move(grouped.mga_statement_context);
         return step;
       };
   return registration;
+}
+
+bool InvokeLiveSortCancellationProbe(const void* context) {
+  if (context == nullptr) return false;
+  return (*static_cast<const std::function<bool()>*>(context))();
+}
+
+enum class LiveCancellationProbeState : std::uint8_t {
+  kRunning = 0,
+  kCancelled,
+  kProbeFailed,
+};
+
+bool PollLiveCancellationProbe(
+    const std::function<bool()>& cancellation_requested,
+    LiveCancellationProbeState* state) noexcept {
+  if (state == nullptr) return true;
+  if (*state != LiveCancellationProbeState::kRunning) return true;
+  try {
+    if (!cancellation_requested || !cancellation_requested()) return false;
+    *state = LiveCancellationProbeState::kCancelled;
+  } catch (...) {
+    *state = LiveCancellationProbeState::kProbeFailed;
+  }
+  return true;
+}
+
+const exec::PhysicalAdmissionEvidence* FindLiveCancellationPolicy(
+    const exec::TypedPhysicalNodeDag& dag) {
+  const exec::PhysicalAdmissionEvidence* policy = nullptr;
+  for (const auto& evidence : dag.admission_evidence) {
+    if (evidence.stage != exec::PhysicalAdmissionStage::kPolicyCapability) {
+      continue;
+    }
+    if (policy != nullptr || evidence.evidence_uuid.empty()) return nullptr;
+    policy = &evidence;
+  }
+  return policy;
+}
+
+void BindLiveCancellationFailure(
+    exec::DescriptorRuntimeDiagnostic diagnostic,
+    const exec::PhysicalAdmissionEvidence* cancellation_policy,
+    exec::CanonicalPhysicalDispatchStepResult* step) {
+  if (step == nullptr) return;
+  step->diagnostic = std::move(diagnostic);
+  if (step->diagnostic.diagnostic_code ==
+      "SB_MODEL_EXECUTION_CANCELLED_V1") {
+    step->diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1";
+    step->cancellation_observed = true;
+    step->transient_state_cleanup_proven = true;
+    step->cancellation_evidence_uuid =
+        cancellation_policy == nullptr
+            ? std::string{}
+            : cancellation_policy->evidence_uuid;
+  } else if (step->diagnostic.diagnostic_code ==
+             "SB_MODEL_COORDINATOR_LEG_FAILED_V1") {
+    step->diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+    step->transient_state_cleanup_proven = true;
+  }
 }
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
@@ -12892,6 +16326,24 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
+        const auto* cancellation_policy =
+            FindLiveCancellationPolicy(dag);
+        const void* cancellation_context =
+            mga_context.query_cancellation_requested
+                ? &mga_context.query_cancellation_requested
+                : nullptr;
+        const exec::DescriptorCancellationProbe cancellation_probe =
+            cancellation_context == nullptr
+                ? nullptr
+                : &InvokeLiveSortCancellationProbe;
+        if (cancellation_policy == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SORT-CANCELLATION-POLICY-V1";
+          step.diagnostic.detail =
+              "SORT requires one exact cancellation policy evidence row";
+          return step;
+        }
         if (inputs.size() != 1 ||
             node.input_physical_node_ids.size() != 1 ||
             inputs.front().physical_node_id !=
@@ -12930,9 +16382,22 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         auto sort_result = exec::ExecuteCanonicalDescriptorSort(
             sort_request, *execution_dag, input_batch, order_terms,
-            deterministic_tie_evidence_uuid);
+            deterministic_tie_evidence_uuid, cancellation_probe,
+            cancellation_context);
         if (!sort_result.diagnostic.ok) {
-          step.diagnostic = std::move(sort_result.diagnostic);
+          BindLiveCancellationFailure(std::move(sort_result.diagnostic),
+                                      cancellation_policy, &step);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                sort_result, *execution_dag, node,
+                sort_request.mga_authority.statement_context) ||
+            sort_result.output_batch.rows.size() !=
+                input_batch.rows.size()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SORT-EXECUTION-V1";
+          step.diagnostic.detail = "SORT execution receipt changed";
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -12977,6 +16442,24 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
+        const auto* cancellation_policy =
+            FindLiveCancellationPolicy(dag);
+        const void* cancellation_context =
+            mga_context.query_cancellation_requested
+                ? &mga_context.query_cancellation_requested
+                : nullptr;
+        const exec::DescriptorCancellationProbe cancellation_probe =
+            cancellation_context == nullptr
+                ? nullptr
+                : &InvokeLiveSortCancellationProbe;
+        if (cancellation_policy == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-CANCELLATION-POLICY-V1";
+          step.diagnostic.detail =
+              "object-backed SORT requires one exact cancellation policy evidence row";
+          return step;
+        }
         if (inputs.size() != 1 ||
             node.input_physical_node_ids.size() != 1 ||
             inputs.front().physical_node_id !=
@@ -13017,9 +16500,22 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
         auto sorted = exec::ExecuteCanonicalDescriptorSort(
             sort_request, *execution_dag, input_batch, order_terms,
-            deterministic_tie_evidence_uuid);
+            deterministic_tie_evidence_uuid, cancellation_probe,
+            cancellation_context);
         if (!sorted.diagnostic.ok) {
-          step.diagnostic = std::move(sorted.diagnostic);
+          BindLiveCancellationFailure(std::move(sorted.diagnostic),
+                                      cancellation_policy, &step);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                sorted, *execution_dag, node,
+                sort_request.mga_authority.statement_context) ||
+            sorted.output_batch.rows.size() != input_batch.rows.size()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-EXECUTION-V1";
+          step.diagnostic.detail =
+              "object-backed SORT execution receipt changed";
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -13078,6 +16574,24 @@ MakeLiveExpressionSortRegistration(
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
+        const auto* cancellation_policy =
+            FindLiveCancellationPolicy(dag);
+        const void* cancellation_context =
+            mga_context.query_cancellation_requested
+                ? &mga_context.query_cancellation_requested
+                : nullptr;
+        const exec::DescriptorCancellationProbe cancellation_probe =
+            cancellation_context == nullptr
+                ? nullptr
+                : &InvokeLiveSortCancellationProbe;
+        if (cancellation_policy == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SORT-CANCELLATION-POLICY-V1";
+          step.diagnostic.detail =
+              "expression SORT requires one exact cancellation policy evidence row";
+          return step;
+        }
         if (!prepared_expression_ordering || inputs.size() != 1 ||
             node.input_physical_node_ids.size() != 1 ||
             inputs.front().physical_node_id !=
@@ -13094,10 +16608,12 @@ MakeLiveExpressionSortRegistration(
           return step;
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
-        const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
-            input_batch, inputs.front().output_descriptor_ids);
+        auto input_validation = exec::ValidateCanonicalDescriptorBatch(
+            input_batch, inputs.front().output_descriptor_ids,
+            cancellation_probe, cancellation_context, nullptr);
         if (!input_validation.ok) {
-          step.diagnostic = input_validation;
+          BindLiveCancellationFailure(std::move(input_validation),
+                                      cancellation_policy, &step);
           return step;
         }
         const exec::TypedPhysicalNodeDag* execution_dag = &dag;
@@ -13127,16 +16643,30 @@ MakeLiveExpressionSortRegistration(
                 order_terms, ordering_property_uuid,
                 deterministic_tie_evidence_uuid, maximum_pair_comparisons,
                 execution_dag->memory_budget_bytes, mga_authority,
-                &actual_order_key_batch_bytes);
+                &actual_order_key_batch_bytes, cancellation_probe,
+                cancellation_context);
         if (!sorted.diagnostic.ok) {
-          step.diagnostic = std::move(sorted.diagnostic);
+          BindLiveCancellationFailure(std::move(sorted.diagnostic),
+                                      cancellation_policy, &step);
           return step;
         }
-        const auto output_validation =
-            exec::ValidateCanonicalDescriptorBatch(
-                sorted.output_batch, node.output_descriptor_ids);
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                sorted, *execution_dag, node,
+                mga_authority.statement_context) ||
+            sorted.output_batch.rows.size() != input_batch.rows.size()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SORT-EXECUTION-V1";
+          step.diagnostic.detail =
+              "expression SORT execution receipt changed";
+          return step;
+        }
+        auto output_validation = exec::ValidateCanonicalDescriptorBatch(
+            sorted.output_batch, node.output_descriptor_ids,
+            cancellation_probe, cancellation_context, nullptr);
         if (!output_validation.ok) {
-          step.diagnostic = output_validation;
+          BindLiveCancellationFailure(std::move(output_validation),
+                                      cancellation_policy, &step);
           return step;
         }
         std::uint64_t input_memory_bytes = 0;
@@ -13144,11 +16674,41 @@ MakeLiveExpressionSortRegistration(
         std::uint64_t comparison_memory_bytes = 0;
         std::uint64_t row_order_memory_bytes = 0;
         std::uint64_t peak_memory_bytes = 0;
-        if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
-                                                 &input_memory_bytes) ||
-            !RuntimeMaterializedBatchMemoryBytes(sorted.output_batch,
-                                                 &current_memory_bytes) ||
-            !CheckedMultiply(input_batch.rows.size(),
+        bool memory_cancelled = false;
+        bool memory_probe_failed = false;
+        const auto account_batch_memory =
+            [&](const exec::DescriptorBatch& batch,
+                std::uint64_t* memory_bytes) {
+              return RuntimeMaterializedBatchMemoryBytes(
+                  batch, memory_bytes, cancellation_probe,
+                  cancellation_context, &memory_cancelled,
+                  &memory_probe_failed);
+            };
+        if (!account_batch_memory(input_batch, &input_memory_bytes) ||
+            !account_batch_memory(sorted.output_batch,
+                                  &current_memory_bytes)) {
+          if (memory_cancelled || memory_probe_failed) {
+            exec::DescriptorRuntimeDiagnostic diagnostic;
+            diagnostic.ok = false;
+            diagnostic.diagnostic_code =
+                memory_probe_failed
+                    ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                    : "SB_MODEL_EXECUTION_CANCELLED_V1";
+            diagnostic.detail = memory_probe_failed
+                ? "expression SORT cancellation probe threw while accounting runtime memory"
+                : "expression SORT cancellation observed while accounting runtime memory";
+            BindLiveCancellationFailure(std::move(diagnostic),
+                                        cancellation_policy, &step);
+            return step;
+          }
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "expression SORT runtime memory observation overflowed";
+          return step;
+        }
+        if (!CheckedMultiply(input_batch.rows.size(),
                              input_batch.rows.size(),
                              &comparison_memory_bytes) ||
             !CheckedMultiply(input_batch.rows.size(), sizeof(std::size_t),
@@ -13194,23 +16754,44 @@ bool BuildOperatorLocalPhysicalDag(
     }
     return false;
   }
-  std::unordered_set<std::uint64_t> retained;
-  std::vector<std::uint64_t> pending{root_physical_node_id};
+  std::vector<std::uint8_t> retained(dag.nodes.size(), 0);
+  std::vector<std::size_t> pending;
+  pending.reserve(dag.nodes.size());
+  const auto root = std::ranges::find_if(
+      dag.nodes, [&](const auto& candidate) {
+        return candidate.physical_node_id == root_physical_node_id;
+      });
+  if (root == dag.nodes.end()) {
+    *operator_dag = {};
+    *detail = "operator-local physical DAG root is unresolved";
+    return false;
+  }
+  const auto root_index =
+      static_cast<std::size_t>(std::distance(dag.nodes.begin(), root));
+  retained[root_index] = 1;
+  pending.push_back(root_index);
+  std::size_t retained_count = 1;
   while (!pending.empty()) {
-    const auto physical_node_id = pending.back();
+    const auto node_index = pending.back();
     pending.pop_back();
-    if (!retained.insert(physical_node_id).second) continue;
-    const auto found = std::ranges::find_if(
-        dag.nodes, [&](const auto& candidate) {
-          return candidate.physical_node_id == physical_node_id;
-        });
-    if (found == dag.nodes.end()) {
-      *operator_dag = {};
-      *detail = "operator-local physical DAG input is unresolved";
-      return false;
+    for (const auto input_id :
+         dag.nodes[node_index].input_physical_node_ids) {
+      const auto found = std::ranges::find_if(
+          dag.nodes, [&](const auto& candidate) {
+            return candidate.physical_node_id == input_id;
+          });
+      if (found == dag.nodes.end()) {
+        *operator_dag = {};
+        *detail = "operator-local physical DAG input is unresolved";
+        return false;
+      }
+      const auto input_index = static_cast<std::size_t>(
+          std::distance(dag.nodes.begin(), found));
+      if (retained[input_index] != 0) continue;
+      retained[input_index] = 1;
+      ++retained_count;
+      pending.push_back(input_index);
     }
-    pending.insert(pending.end(), found->input_physical_node_ids.begin(),
-                   found->input_physical_node_ids.end());
   }
   exec::TypedPhysicalNodeDag local;
   local.abi_version = dag.abi_version;
@@ -13220,13 +16801,13 @@ bool BuildOperatorLocalPhysicalDag(
   local.statement_snapshot_id = dag.statement_snapshot_id;
   local.mga_statement_context = dag.mga_statement_context;
   local.admission_evidence = dag.admission_evidence;
-  local.nodes.reserve(retained.size());
-  for (const auto& candidate : dag.nodes) {
-    if (retained.contains(candidate.physical_node_id)) {
-      local.nodes.push_back(candidate);
+  local.nodes.reserve(retained_count);
+  for (std::size_t index = 0; index < dag.nodes.size(); ++index) {
+    if (retained[index] != 0) {
+      local.nodes.push_back(dag.nodes[index]);
     }
   }
-  if (local.nodes.size() != retained.size()) {
+  if (local.nodes.size() != retained_count) {
     *operator_dag = {};
     *detail = "operator-local physical DAG node identity is not unique";
     return false;
@@ -13328,6 +16909,37 @@ MakeLiveTableSubqueryRegistration(
           step.diagnostic = std::move(materialized.diagnostic);
           return step;
         }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                materialized, dag, node,
+                subquery_request.mga_authority.statement_context) ||
+            materialized.materialized_row_count != input_batch.rows.size() ||
+            materialized.output_batch.rows.size() !=
+                materialized.materialized_row_count ||
+            materialized.materialized_row_count >
+                subquery_request.maximum_materialized_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+          step.diagnostic.detail =
+              "table subquery execution receipt changed";
+          return step;
+        }
+        if (!CanonicalQueryDescriptorBatchesExactlyEqual(
+                materialized.output_batch, input_batch)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+          step.diagnostic.detail =
+              "table subquery materialized values changed";
+          return step;
+        }
+        const auto output_validation =
+            exec::ValidateCanonicalDescriptorBatch(
+                materialized.output_batch, node.output_descriptor_ids);
+        if (!output_validation.ok) {
+          step.diagnostic = output_validation;
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
@@ -13392,7 +17004,6 @@ MakeLiveCardinalitySubqueryRegistration(
                 mga_context, dag);
 
         exec::DescriptorBatch output;
-        exec::DescriptorRuntimeDiagnostic diagnostic;
         exec::PhysicalMgaStatementContext result_mga;
         if (prepared.kind == LiveCardinalitySubqueryKind::kScalar) {
           exec::CanonicalScalarSubqueryRequest scalar_request;
@@ -13402,7 +17013,43 @@ MakeLiveCardinalitySubqueryRegistration(
           scalar_request.result_column = prepared.result_columns.front();
           auto scalar = exec::ExecuteCanonicalScalarSubquery(
               scalar_request, dag, node.physical_node_id, input_batch);
-          diagnostic = std::move(scalar.diagnostic);
+          if (!scalar.diagnostic.ok) {
+            step.diagnostic = std::move(scalar.diagnostic);
+            return step;
+          }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  scalar, dag, node,
+                  scalar_request.table_request.mga_authority
+                      .statement_context) ||
+              scalar.source_row_count != input_batch.rows.size() ||
+              scalar.source_row_count > 1 ||
+              scalar.output_batch.rows.size() != 1) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "scalar subquery execution receipt changed";
+            return step;
+          }
+          const auto output_validation =
+              exec::ValidateCanonicalDescriptorBatch(
+                  scalar.output_batch, node.output_descriptor_ids);
+          const bool scalar_value_preserved =
+              scalar.source_row_count == 0
+                  ? std::ranges::all_of(
+                        scalar.output_batch.rows.front().values,
+                        [](const auto& value) { return value.isSqlNull(); })
+                  : CanonicalQueryDescriptorTuplePayloadExactlyEqual(
+                        scalar.output_batch.rows.front(),
+                        input_batch.rows.front());
+          if (!output_validation.ok || !scalar_value_preserved) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "scalar subquery result value changed";
+            return step;
+          }
           output = std::move(scalar.output_batch);
           result_mga = std::move(scalar.mga_statement_context);
         } else {
@@ -13415,13 +17062,45 @@ MakeLiveCardinalitySubqueryRegistration(
           }
           auto row = exec::ExecuteCanonicalRowSubquery(
               row_request, dag, node.physical_node_id, input_batch);
-          diagnostic = std::move(row.diagnostic);
+          if (!row.diagnostic.ok) {
+            step.diagnostic = std::move(row.diagnostic);
+            return step;
+          }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  row, dag, node,
+                  row_request.table_request.mga_authority
+                      .statement_context) ||
+              row.source_row_count != input_batch.rows.size() ||
+              row.source_row_count > 1 ||
+              row.output_batch.rows.size() != 1) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "row subquery execution receipt changed";
+            return step;
+          }
+          const auto output_validation =
+              exec::ValidateCanonicalDescriptorBatch(
+                  row.output_batch, node.output_descriptor_ids);
+          const bool row_value_preserved =
+              row.source_row_count == 0
+                  ? std::ranges::all_of(
+                        row.output_batch.rows.front().values,
+                        [](const auto& value) { return value.isSqlNull(); })
+                  : CanonicalQueryDescriptorTuplePayloadExactlyEqual(
+                        row.output_batch.rows.front(),
+                        input_batch.rows.front());
+          if (!output_validation.ok || !row_value_preserved) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "row subquery result value changed";
+            return step;
+          }
           output = std::move(row.output_batch);
           result_mga = std::move(row.mga_statement_context);
-        }
-        if (!diagnostic.ok) {
-          step.diagnostic = std::move(diagnostic);
-          return step;
         }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
@@ -13521,18 +17200,16 @@ MakeLivePredicateSubqueryRegistration(
             table_input->output_descriptor_ids;
 
         exec::CanonicalTableSubqueryRequest table_request;
-        table_request.physical_dag = std::move(operator_dag);
         table_request.selected_physical_node_id = node.physical_node_id;
-        table_request.input_batch =
-            *inputs.front().materialized_output_batch;
         table_request.maximum_materialized_row_count =
             std::max<std::size_t>(1, maximum_input_row_count);
         table_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
-                mga_context, table_request.physical_dag);
+                mga_context, operator_dag);
 
+        const auto& input_batch =
+            *inputs.front().materialized_output_batch;
         exec::DescriptorBatch output;
-        exec::DescriptorRuntimeDiagnostic diagnostic;
         exec::PhysicalMgaStatementContext result_mga;
         std::size_t comparison_count = 0;
         if (prepared.kind == LivePredicateSubqueryKind::kExists) {
@@ -13541,9 +17218,51 @@ MakeLivePredicateSubqueryRegistration(
           exists_request.exists_expression_descriptor_id =
               prepared.result_column.descriptor_id;
           exists_request.result_column = prepared.result_column;
-          auto exists =
-              exec::ExecuteCanonicalExistsSubquery(exists_request);
-          diagnostic = std::move(exists.diagnostic);
+          auto exists = exec::ExecuteCanonicalExistsSubquery(
+              exists_request, operator_dag, node.physical_node_id,
+              input_batch);
+          if (!exists.diagnostic.ok) {
+            step.diagnostic = std::move(exists.diagnostic);
+            return step;
+          }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  exists, operator_dag, node,
+                  exists_request.table_request.mga_authority
+                      .statement_context) ||
+              exists.source_row_count != input_batch.rows.size() ||
+              exists.output_batch.rows.size() != 1 ||
+              exists.exists != !input_batch.rows.empty()) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "EXISTS subquery execution receipt changed";
+            return step;
+          }
+          const auto output_validation =
+              exec::ValidateCanonicalDescriptorBatch(
+                  exists.output_batch, node.output_descriptor_ids);
+          api::EngineSqlTruthValue output_truth =
+              api::EngineSqlTruthValue::unspecified;
+          std::string output_truth_detail;
+          const bool output_truth_bound =
+              output_validation.ok &&
+              exists.output_batch.rows.front().values.size() == 1 &&
+              api::QowCanonicalTruthFromTypedValueV1(
+                  exists.output_batch.rows.front().values.front(),
+                  &output_truth, &output_truth_detail);
+          if (!output_truth_bound ||
+              output_truth !=
+                  (exists.exists
+                       ? api::EngineSqlTruthValue::true_value
+                       : api::EngineSqlTruthValue::false_value)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "EXISTS subquery result truth changed";
+            return step;
+          }
           output = std::move(exists.output_batch);
           result_mga = std::move(exists.mga_statement_context);
         } else {
@@ -13591,20 +17310,77 @@ MakeLivePredicateSubqueryRegistration(
           quantified_request.result_column = prepared.result_column;
           quantified_request.maximum_comparison_count =
               std::max<std::size_t>(1, maximum_input_row_count);
-          auto quantified =
-              exec::ExecuteCanonicalQuantifiedSubquery(quantified_request);
-          diagnostic = std::move(quantified.diagnostic);
+          auto quantified = exec::ExecuteCanonicalQuantifiedSubquery(
+              quantified_request, operator_dag, node.physical_node_id,
+              input_batch);
+          if (!quantified.diagnostic.ok) {
+            step.diagnostic = std::move(quantified.diagnostic);
+            return step;
+          }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  quantified, operator_dag, node,
+                  quantified_request.table_request.mga_authority
+                      .statement_context) ||
+              quantified.comparison_count != input_batch.rows.size() ||
+              quantified.comparison_count >
+                  quantified_request.maximum_comparison_count ||
+              quantified.truth_value ==
+                  api::EngineSqlTruthValue::unspecified ||
+              quantified.output_batch.rows.size() != 1) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "quantified subquery execution receipt changed";
+            return step;
+          }
+          api::EngineSqlTruthValue expected_truth =
+              api::EngineSqlTruthValue::unspecified;
+          if (!EvaluateCanonicalQuantifiedSubqueryTruth(
+                  quantified_request, input_batch, &expected_truth) ||
+              quantified.truth_value != expected_truth) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "quantified subquery causal truth changed";
+            return step;
+          }
+          const auto output_validation =
+              exec::ValidateCanonicalDescriptorBatch(
+                  quantified.output_batch, node.output_descriptor_ids);
+          api::EngineSqlTruthValue output_truth =
+              api::EngineSqlTruthValue::unspecified;
+          std::string output_truth_detail;
+          const bool output_truth_bound =
+              output_validation.ok &&
+              quantified.output_batch.rows.front().values.size() == 1 &&
+              api::QowCanonicalTruthFromTypedValueV1(
+                  quantified.output_batch.rows.front().values.front(),
+                  &output_truth, &output_truth_detail);
+          if (!output_truth_bound || output_truth != expected_truth) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+            step.diagnostic.detail =
+                "quantified subquery result truth changed";
+            return step;
+          }
           output = std::move(quantified.output_batch);
           result_mga = std::move(quantified.mga_statement_context);
           comparison_count = quantified.comparison_count;
         }
-        if (!diagnostic.ok) {
-          step.diagnostic = std::move(diagnostic);
+        if (input_batch.rows.size() >
+            std::numeric_limits<std::size_t>::max() - comparison_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-EXECUTION-V1";
+          step.diagnostic.detail =
+              "predicate subquery observation count overflowed";
           return step;
         }
         step.result_handle_id = node.physical_node_id;
-        step.input_row_count =
-            inputs.front().materialized_output_batch->rows.size();
+        step.input_row_count = input_batch.rows.size();
         step.rows_examined = step.input_row_count + comparison_count;
         step.output_row_count = output.rows.size();
         step.materialized_output_batch = std::move(output);
@@ -13842,6 +17618,19 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
         }
         if (!limited.diagnostic.ok) {
           step.diagnostic = std::move(limited.diagnostic);
+          return step;
+        }
+        if (limited.selected_plan_uuid != execution_dag->selected_plan_uuid ||
+            limited.executed_physical_node_id != node.physical_node_id ||
+            limited.causal_counter_id != node.causal_counter_id ||
+            !exec::PhysicalMgaStatementContextEqual(
+                limited.mga_statement_context,
+                execution_dag->mga_statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-LIMIT-EXECUTION-V1";
+          step.diagnostic.detail =
+              "LIMIT/FETCH execution receipt changed";
           return step;
         }
         step.result_handle_id = node.physical_node_id;
@@ -14199,6 +17988,9 @@ MakeLiveRecursiveCteRegistration(
                   1, prepared.maximum_term_output_row_count);
           recursive.maximum_result_row_count =
               std::max<std::size_t>(1, prepared.maximum_result_row_count);
+          recursive.maximum_value_comparison_count =
+              std::max<std::size_t>(
+                  1, prepared.maximum_value_comparison_count);
           recursive.enforce_payload_memory_grant = true;
           recursive.memory_state = recursive_memory_state;
           recursive.retained_input_payload_bytes =
@@ -14243,6 +18035,19 @@ MakeLiveRecursiveCteRegistration(
           auto result =
               exec::ExecuteCanonicalRecursiveCteSearchCycle(
                   recursive, *execution_dag, node.physical_node_id);
+          if (result.diagnostic.ok &&
+              (!CanonicalOperatorExecutionReceiptMatches(
+                   result, *execution_dag, node,
+                   recursive.mga_authority.statement_context) ||
+               !result.converged || !result.working_state_cleaned ||
+               result.cancellation_observed)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-014-SEARCH-CYCLE-REFUSAL-V1";
+            step.diagnostic.detail =
+                "recursive CTE SEARCH/CYCLE execution receipt changed";
+            return step;
+          }
           diagnostic = std::move(result.diagnostic);
           output = std::move(result.output_batch);
           result_mga = std::move(result.mga_statement_context);
@@ -14265,6 +18070,9 @@ MakeLiveRecursiveCteRegistration(
         } else {
           exec::CanonicalRecursiveCteUnionRequest recursive;
           recursive.union_mode = prepared.profile.union_mode;
+          recursive.maximum_value_comparison_count =
+              std::max<std::size_t>(
+                  1, prepared.maximum_value_comparison_count);
           auto& working = recursive.working_request;
           working.selected_physical_node_id = node.physical_node_id;
           working.anchor_batch = *inputs[0].materialized_output_batch;
@@ -14321,6 +18129,24 @@ MakeLiveRecursiveCteRegistration(
           auto result =
               exec::ExecuteCanonicalRecursiveCteUnion(
                   recursive, *execution_dag, node.physical_node_id);
+          if (result.working_result.diagnostic.ok &&
+              (!CanonicalOperatorExecutionReceiptMatches(
+                   result.working_result, *execution_dag, node,
+                   working.mga_authority.statement_context) ||
+               !exec::PhysicalMgaStatementContextEqual(
+                   result.mga_statement_context,
+                   working.mga_authority.statement_context) ||
+               !result.working_result.converged ||
+               !result.working_result.working_state_cleaned ||
+               result.working_result.cancellation_observed ||
+               result.union_mode != recursive.union_mode)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-QRY-014-UNION-REFUSAL-V1";
+            step.diagnostic.detail =
+                "recursive CTE UNION execution receipt changed";
+            return step;
+          }
           diagnostic = std::move(result.working_result.diagnostic);
           output = std::move(result.working_result.output_batch);
           result_mga = std::move(result.mga_statement_context);
@@ -14505,10 +18331,40 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       return result;
     }
     reverse_chain.push_back(&*current);
+    const auto current_window_invocation = std::ranges::find_if(
+        request.relational_dag.window_invocations, [&](const auto& invocation) {
+          return invocation.relation_node_id == current->logical_node_id;
+        });
+    const bool single_current_window_invocation =
+        current_window_invocation !=
+            request.relational_dag.window_invocations.end() &&
+        std::ranges::count_if(
+            request.relational_dag.window_invocations,
+            [&](const auto& invocation) {
+              return invocation.relation_node_id == current->logical_node_id;
+            }) == 1;
+    const auto* current_window_aggregate_row =
+        single_current_window_invocation
+            ? exec::LookupCanonicalAggregateByUuidV1(
+                  current_window_invocation->function_uuid)
+            : nullptr;
+    const bool current_count_star_window =
+        current->node_kind ==
+            plan::CanonicalLogicalRelationalNodeKind::kWindow &&
+        current->semantic_variant_id == "window.aggregate-bridge.v1" &&
+        current_window_aggregate_row != nullptr &&
+        current_window_aggregate_row->function ==
+            exec::CanonicalAggregateFunction::count &&
+        current_window_aggregate_row->builtin_id ==
+            current_window_invocation->builtin_id &&
+        current_window_aggregate_row->abi_version ==
+            current_window_invocation->function_abi_version &&
+        current_window_invocation->argument_expression_ids.empty();
     if (current->node_kind ==
         plan::CanonicalLogicalRelationalNodeKind::kValues) {
       if (current->semantic_variant_id != "values.literal-table.v1" ||
-          !current->input_logical_node_ids.empty()) {
+          !current->input_logical_node_ids.empty() ||
+          !current->required_object_uuids.empty()) {
         return result;
       }
       break;
@@ -14562,6 +18418,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           current->input_logical_node_ids[0] ==
               current->input_logical_node_ids[1] ||
           current->bound_expression_ids.size() != expected_expression_count ||
+          !current->required_object_uuids.empty() ||
           !current->required_property_uuids.empty() ||
           !current->delivered_property_uuids.empty()) {
         return result;
@@ -14640,6 +18497,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             current->input_logical_node_ids[0] ==
                 current->input_logical_node_ids[1] ||
             current->bound_expression_ids.size() != 1 ||
+            !current->required_object_uuids.empty() ||
             !current->required_property_uuids.empty() ||
             !current->delivered_property_uuids.empty()) {
           return result;
@@ -14875,7 +18733,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                       "window.aggregate-bridge.v1")
                      ? (current->semantic_variant_id == "window.nth-value.v1"
                             ? 4U
-                            : 3U)
+                            : (current_count_star_window ? 2U : 3U))
                      : 2U) ||
             current->required_property_uuids.size() != 1 ||
             current->delivered_property_uuids.size() != 2) {
@@ -14904,6 +18762,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       case plan::CanonicalLogicalRelationalNodeKind::kCte:
         if (current->semantic_variant_id != "cte.bound.v1" ||
             !current->bound_expression_ids.empty() ||
+            !current->required_object_uuids.empty() ||
             !current->required_property_uuids.empty() ||
             !current->delivered_property_uuids.empty()) {
           return result;
@@ -15445,6 +19304,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     std::size_t maximum_working = working.rows.size();
     std::size_t maximum_term_output = 0;
     std::uint64_t recursive_work = 0;
+    std::uint64_t recursive_value_comparison_count =
+        anchor.batch.rows.size();
     std::vector<exec::CanonicalResultColumnBinding>
         recursive_generated_bindings;
     exec::ExecutorColumnDescriptor search_sequence_column;
@@ -15484,7 +19345,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       if (!CheckedAdd(recursive_work, working.rows.size(),
                       &recursive_work) ||
           !CheckedAdd(recursive_work, generated.rows.size(),
-                      &recursive_work)) {
+                      &recursive_work) ||
+          !CheckedAdd(recursive_value_comparison_count,
+                      generated.rows.size(),
+                      &recursive_value_comparison_count)) {
         return refuse(
             "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
             "recursive CTE work overflowed");
@@ -15552,6 +19416,33 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       }
     }
     if (recursive_cte_profile.search_cycle) {
+      std::uint64_t adjacent = 0;
+      std::uint64_t triangular = 0;
+      if (!CheckedAdd(upper_bound, 1, &adjacent) ||
+          ((upper_bound & 1U) == 0
+               ? !CheckedMultiply(upper_bound / 2, adjacent, &triangular)
+               : !CheckedMultiply(upper_bound, adjacent / 2, &triangular)) ||
+          !CheckedAdd(triangular, 2,
+                      &recursive_value_comparison_count)) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+            "recursive SEARCH/CYCLE comparison work overflowed");
+      }
+    } else if (recursive_cte_profile.union_mode !=
+               exec::CanonicalRecursiveCteUnionMode::kDistinct) {
+      recursive_value_comparison_count = 1;
+    }
+    if (recursive_value_comparison_count == 0 ||
+        recursive_value_comparison_count >
+            std::numeric_limits<std::size_t>::max() ||
+        !CheckedAdd(recursive_work, recursive_value_comparison_count,
+                    &recursive_work) ||
+        recursive_work > std::numeric_limits<std::size_t>::max()) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+          "recursive CTE comparison work exceeds its native bound");
+    }
+    if (recursive_cte_profile.search_cycle) {
       const auto core_manifest =
           dt::LoadCurrentCoreDatatypeCatalogManifest();
       if (!core_manifest.ok()) {
@@ -15560,15 +19451,45 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                       "unavailable");
       }
       const auto generated_type_uuid = [&](const std::string_view stable_name) {
-        const auto found = std::ranges::find_if(
-            core_manifest.manifest.descriptor_rows, [&](const auto& row) {
-              return row.stable_name == stable_name;
-            });
-        return found == core_manifest.manifest.descriptor_rows.end()
-                   ? std::string{}
-                   : scratchbird::core::uuid::UuidToString(
-                         found->descriptor_uuid.value);
+        std::string type_uuid;
+        for (const auto& row : core_manifest.manifest.descriptor_rows) {
+          if (row.stable_name != stable_name) continue;
+          if (!type_uuid.empty()) return std::string{};
+          type_uuid = scratchbird::core::uuid::UuidToString(
+              row.descriptor_uuid.value);
+        }
+        return type_uuid;
       };
+      const auto int64_type_uuid = generated_type_uuid("int64");
+      const auto boolean_type_uuid = generated_type_uuid("boolean");
+      std::unordered_set<std::uint32_t> anchor_descriptor_ids;
+      std::unordered_set<std::uint32_t> generated_descriptor_ids;
+      std::unordered_set<std::string_view> anchor_descriptor_uuids;
+      std::unordered_set<std::string_view> generated_descriptor_uuids;
+      std::unordered_set<std::string_view> generated_type_uuids;
+      if (!CanonicalUuidText(int64_type_uuid) ||
+          !CanonicalUuidText(boolean_type_uuid)) {
+        return refuse(std::string(kPayloadDiagnostic),
+                      "recursive SEARCH/CYCLE core type identity is not exact");
+      }
+      generated_type_uuids.insert(int64_type_uuid);
+      generated_type_uuids.insert(boolean_type_uuid);
+      for (const auto& anchor_column : anchor.batch.columns) {
+        const auto descriptor = std::ranges::find_if(
+            request.relational_dag.descriptors, [&](const auto& candidate) {
+              return candidate.descriptor_id == anchor_column.descriptor_id;
+            });
+        if (descriptor == request.relational_dag.descriptors.end() ||
+            !CanonicalUuidText(descriptor->descriptor_uuid) ||
+            !CanonicalUuidText(descriptor->type_uuid)) {
+          return refuse(
+              std::string(kPayloadDiagnostic),
+              "recursive SEARCH/CYCLE anchor identity is not exact");
+        }
+        anchor_descriptor_ids.insert(descriptor->descriptor_id);
+        anchor_descriptor_uuids.insert(descriptor->descriptor_uuid);
+        generated_type_uuids.insert(descriptor->type_uuid);
+      }
       const auto make_generated_column =
           [&](const std::uint32_t descriptor_id,
               const std::string_view type_name,
@@ -15585,6 +19506,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             if (descriptor == request.relational_dag.descriptors.end() ||
                 type_uuid.empty() ||
                 descriptor->type_uuid != type_uuid ||
+                !CanonicalUuidText(descriptor->descriptor_uuid) ||
+                anchor_descriptor_ids.contains(descriptor_id) ||
+                !generated_descriptor_ids.insert(descriptor_id).second ||
+                anchor_descriptor_uuids.contains(
+                    descriptor->descriptor_uuid) ||
+                generated_type_uuids.contains(descriptor->descriptor_uuid) ||
+                !generated_descriptor_uuids
+                     .insert(descriptor->descriptor_uuid)
+                     .second ||
                 descriptor->nullability !=
                     api::RelationalNullability::kNonNull ||
                 descriptor->collation_uuid.has_value() ||
@@ -15621,12 +19551,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       if (anchor_width != 1 || anchor.result_bindings.size() != 1 ||
           !make_generated_column(
               reverse_chain.front()->output_descriptor_ids[anchor_width],
-              "int64", generated_type_uuid("int64"), "search_sequence",
+              "int64", int64_type_uuid, "search_sequence",
               static_cast<std::uint32_t>(anchor_width),
               &search_sequence_column, &sequence_binding) ||
           !make_generated_column(
               reverse_chain.front()->output_descriptor_ids[anchor_width + 1],
-              "boolean", generated_type_uuid("boolean"), "cycle_mark",
+              "boolean", boolean_type_uuid, "cycle_mark",
               static_cast<std::uint32_t>(anchor_width + 1),
               &cycle_mark_column, &cycle_binding)) {
         return refuse(std::string(kPayloadDiagnostic), recursion_detail);
@@ -15717,6 +19647,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         std::max<std::size_t>(1, maximum_term_output);
     prepared.maximum_result_row_count =
         std::max<std::size_t>(1, accumulated.rows.size());
+    prepared.maximum_value_comparison_count =
+        static_cast<std::size_t>(recursive_value_comparison_count);
     prepared.rows_examined = static_cast<std::size_t>(recursive_work);
     if (!BindPreparedRecursiveCtePeakMemory(
             &prepared,
@@ -16204,15 +20136,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     std::uint64_t left_memory = 1;
     std::uint64_t right_memory = 1;
     std::uint64_t join_memory = 1;
-    std::uint64_t truth_memory = 0;
+    std::uint64_t join_state_memory = 0;
     if (!AddBatchMemoryBytes(join_left_values->batch, &left_memory) ||
         !AddBatchMemoryBytes(join_right_values->batch, &right_memory) ||
         !AddBatchMemoryBytes(state.batch, &join_memory) ||
-        !CheckedMultiply(join_pair_count,
-                         sizeof(api::EngineSqlTruthValue), &truth_memory) ||
+        !exec::BoundCanonicalJoinRetainedStateBytes(
+            left_count, right_count, &join_state_memory) ||
         !CheckedAdd(join_memory, left_memory, &join_memory) ||
         !CheckedAdd(join_memory, right_memory, &join_memory) ||
-        !CheckedAdd(join_memory, truth_memory, &join_memory) ||
+        !CheckedAdd(join_memory, join_state_memory, &join_memory) ||
         join_memory >
             request.optimizer_request.resource.memory_budget_bytes) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
@@ -16237,7 +20169,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          exec::PhysicalNodeKind::kJoin,
          "canonical." + join_implementation_id, join_output_row_bound,
          join_memory, 2, 2});
-    profiles.back().runtime_accounted_auxiliary_memory_bytes = truth_memory;
+    profiles.back().runtime_accounted_auxiliary_memory_bytes =
+        join_state_memory;
     if (!CheckedAdd(left_count, right_count, &total_work) ||
         !CheckedAdd(total_work, join_pair_count, &total_work) ||
         total_work >
@@ -16391,6 +20324,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     std::string transformation_rule;
     exec::PhysicalNodeKind physical_kind = exec::PhysicalNodeKind::kValues;
     std::uint64_t auxiliary_memory = 0;
+    std::uint64_t registry_aggregate_distinct_peak_memory = 0;
     std::vector<std::string> required_property_uuids;
     std::vector<std::string> delivered_property_uuids;
     std::vector<plan::CanonicalLogicalPropertyKind> property_kinds;
@@ -16550,40 +20484,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         break;
       }
       case plan::CanonicalLogicalRelationalNodeKind::kAggregate: {
-        const auto materialize_filter_truth_values =
-            [&](const PreparedGlobalAggregateRoot& prepared,
-                std::optional<std::vector<api::EngineSqlTruthValue>>*
-                    filter_truth_values,
-                std::uint64_t* filter_truth_memory_bytes,
-                std::string* detail) {
-              if (filter_truth_values == nullptr ||
-                  filter_truth_memory_bytes == nullptr || detail == nullptr) {
-                return false;
-              }
-              filter_truth_values->reset();
-              *filter_truth_memory_bytes = 0;
-              if (!prepared.filter_column.has_value()) return true;
-              const auto memory_budget =
-                  request.optimizer_request.resource.memory_budget_bytes;
-              if (input_memory > memory_budget) {
-                *detail =
-                    "composition aggregate FILTER input exceeds its "
-                    "admitted memory bound";
-                return false;
-              }
-              std::vector<api::EngineSqlTruthValue> materialized_filter;
-              if (!MaterializeAggregateFilterTruthValues(
-                      input_batch, *prepared.filter_column,
-                      prepared.filter_descriptor_id,
-                      memory_budget - input_memory, &materialized_filter,
-                      filter_truth_memory_bytes, detail)) {
-                return false;
-              }
-              *filter_truth_values = std::move(materialized_filter);
-              return true;
-            };
         if (node.semantic_variant_id ==
             "aggregate.global-count-star.v1") {
+          if (input_row_count >
+              static_cast<std::size_t>(
+                  std::numeric_limits<std::int64_t>::max())) {
+            return refuse("QOW-DIAG-QRY-007-AGGREGATE-OVERFLOW-V1",
+                          "COUNT(*) exceeds int64 result width");
+          }
           auto prepared = PrepareGlobalAggregateRoot(
               request.relational_dag, node, input_node, state,
               exec::CanonicalAggregateFunction::count, true, false, false);
@@ -16626,8 +20534,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               "canonical.aggregate.composed-global-count-star.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory =
-              std::numeric_limits<std::int64_t>::digits10 + 2;
+          auxiliary_memory = sizeof(std::int64_t);
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -16641,20 +20548,23 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!prepared.ok || prepared.value_columns.size() != 1) {
             return refuse(std::string(kPayloadDiagnostic), prepared.detail);
           }
-          std::optional<std::vector<api::EngineSqlTruthValue>>
-              filter_truth_values;
-          std::uint64_t filter_truth_memory_bytes = 0;
-          std::string filter_detail;
-          if (!materialize_filter_truth_values(
-                  prepared, &filter_truth_values,
-                  &filter_truth_memory_bytes, &filter_detail)) {
+          PlanningAggregateModifierState modifiers;
+          std::string modifier_detail;
+          if (!InitializePlanningAggregateModifierState(
+                  input_batch, prepared, input_memory,
+                  request.optimizer_request.resource.memory_budget_bytes,
+                  &modifiers, &modifier_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
-                          std::move(filter_detail));
+                          "composition COUNT modifiers: " + modifier_detail);
           }
-          std::uint64_t aggregate_work = input_row_count;
+          std::uint64_t aggregate_work = modifiers.admitted_row_count;
           if (prepared.distinct &&
-              !CheckedMultiply(input_row_count, input_row_count,
-                               &aggregate_work)) {
+              (!CheckedAdd(aggregate_work,
+                           modifiers.distinct_generation_bound,
+                           &aggregate_work) ||
+               !CheckedAdd(aggregate_work,
+                           modifiers.distinct_comparison_bound,
+                           &aggregate_work))) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                 "composition COUNT(DISTINCT) work bound overflowed");
@@ -16665,55 +20575,50 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 "composition COUNT(expression) work exceeds the admitted "
                 "bound");
           }
-          if (input_memory >
-              request.optimizer_request.resource.memory_budget_bytes) {
-            return refuse(
-                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                "composition COUNT input exceeds the admitted memory bound");
-          }
-          const auto distinct_memory_bound =
-              request.optimizer_request.resource.memory_budget_bytes -
-              input_memory - filter_truth_memory_bytes;
-          PlanningAggregateDistinctState distinct_state;
-          std::string distinct_detail;
-          if (!InitializePlanningAggregateDistinctState(
-                  request.context, input_batch, prepared,
-                  distinct_memory_bound, &distinct_state,
-                  &distinct_detail)) {
-            return refuse(std::string(kPayloadDiagnostic),
-                          "composition COUNT(DISTINCT): " + distinct_detail);
-          }
           std::size_t count_value = 0;
           const auto value_column = prepared.value_columns.front();
-          for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
-            if (filter_truth_values.has_value() &&
-                (*filter_truth_values)[row] !=
-                    api::EngineSqlTruthValue::true_value) {
-              continue;
+          {
+            PlanningAggregateDistinctState distinct_state;
+            if (!InitializePlanningAggregateDistinctState(
+                    request.context, input_batch, prepared,
+                    modifiers.distinct_memory_bound, &distinct_state,
+                    &modifier_detail, modifiers.admitted_row_count)) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition COUNT(DISTINCT): " +
+                                modifier_detail);
             }
-            const auto& value = input_batch.rows[row].values[value_column];
-            if (prepared.distinct) {
-              bool distinct_admitted = false;
-              const std::array<const api::EngineTypedValue*, 2> values = {
-                  &value, nullptr};
-              if (!AdmitPlanningAggregateDistinctTuple(
-                      values, 1,
-                      input_row_count,
-                      aggregate_work, distinct_memory_bound, &distinct_state,
-                      &distinct_admitted, &distinct_detail)) {
-                return refuse(std::string(kPayloadDiagnostic),
-                              "composition COUNT(DISTINCT): " +
-                                  distinct_detail);
-              }
-              if (!distinct_admitted) {
+            for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+              if (modifiers.filter_truth_values.has_value() &&
+                  (*modifiers.filter_truth_values)[row] !=
+                      api::EngineSqlTruthValue::true_value) {
                 continue;
               }
+              const auto& value = input_batch.rows[row].values[value_column];
+              if (prepared.distinct) {
+                bool distinct_admitted = false;
+                const std::array<const api::EngineTypedValue*, 2> values = {
+                    &value, nullptr};
+                if (!AdmitPlanningAggregateDistinctTuple(
+                        values, 1, modifiers.distinct_generation_bound,
+                        modifiers.distinct_comparison_bound,
+                        modifiers.distinct_memory_bound, &distinct_state,
+                        &distinct_admitted, &modifier_detail)) {
+                  return refuse(std::string(kPayloadDiagnostic),
+                                "composition COUNT(DISTINCT): " +
+                                    modifier_detail);
+                }
+                if (!distinct_admitted) {
+                  continue;
+                }
+              }
+              if (value.state == api::EngineValueState::sql_null ||
+                  value.is_null) {
+                continue;
+              }
+              ++count_value;
             }
-            if (value.state == api::EngineValueState::sql_null ||
-                value.is_null) {
-              continue;
-            }
-            ++count_value;
+            registry_aggregate_distinct_peak_memory =
+                distinct_state.peak_memory_bytes;
           }
           exec::DescriptorBatch output;
           output.columns.push_back(prepared.result_column);
@@ -16745,17 +20650,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               "canonical.aggregate.composed-global-count-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = filter_truth_memory_bytes;
-          if (prepared_registry_aggregate->distinct &&
-              !CheckedAdd(auxiliary_memory,
-                          distinct_state.peak_memory_bytes,
+          if (!CheckedAdd(modifiers.filter_truth_memory_bytes,
+                          modifiers.transition_memory_bytes,
                           &auxiliary_memory)) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition COUNT FILTER/DISTINCT memory overflowed");
+                "composition COUNT modifier memory overflowed");
           }
           registry_aggregate_filter_truth_memory_bytes =
-              filter_truth_memory_bytes;
+              modifiers.filter_truth_memory_bytes;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -16779,103 +20682,102 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!prepared.ok || prepared.value_columns.size() != 1) {
             return refuse(std::string(kPayloadDiagnostic), prepared.detail);
           }
-          std::optional<std::vector<api::EngineSqlTruthValue>>
-              filter_truth_values;
-          std::uint64_t filter_truth_memory_bytes = 0;
-          std::string filter_detail;
-          if (!materialize_filter_truth_values(
-                  prepared, &filter_truth_values,
-                  &filter_truth_memory_bytes, &filter_detail)) {
+          PlanningAggregateModifierState modifiers;
+          std::string modifier_detail;
+          if (!InitializePlanningAggregateModifierState(
+                  input_batch, prepared, input_memory,
+                  request.optimizer_request.resource.memory_budget_bytes,
+                  &modifiers, &modifier_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
-                          std::move(filter_detail));
+                          "composition statistical modifiers: " +
+                              modifier_detail);
           }
-          std::uint64_t aggregate_work = input_row_count;
+          std::uint64_t aggregate_work = modifiers.admitted_row_count;
           if (prepared.distinct &&
-              !CheckedMultiply(input_row_count, input_row_count,
-                               &aggregate_work)) {
+              (!CheckedAdd(aggregate_work,
+                           modifiers.distinct_generation_bound,
+                           &aggregate_work) ||
+               !CheckedAdd(aggregate_work,
+                           modifiers.distinct_comparison_bound,
+                           &aggregate_work))) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                 "composition statistical DISTINCT work bound overflowed");
-          }
-          if (input_memory >
-              request.optimizer_request.resource.memory_budget_bytes) {
-            return refuse(
-                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                "composition statistical input exceeds its memory bound");
-          }
-          PlanningAggregateDistinctState distinct_state;
-          std::string distinct_detail;
-          if (!InitializePlanningAggregateDistinctState(
-                  request.context, input_batch, prepared,
-                  request.optimizer_request.resource.memory_budget_bytes -
-                      input_memory - filter_truth_memory_bytes,
-                  &distinct_state, &distinct_detail)) {
-            return refuse(std::string(kPayloadDiagnostic),
-                          "composition statistical DISTINCT: " +
-                              distinct_detail);
           }
           std::uint64_t non_null_count = 0;
           long double numeric_mean = 0.0L;
           long double numeric_m2 = 0.0L;
           const auto value_column = prepared.value_columns.front();
-          for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
-            if (filter_truth_values.has_value() &&
-                (*filter_truth_values)[row] !=
-                    api::EngineSqlTruthValue::true_value) {
-              continue;
-            }
-            const auto& value = input_batch.rows[row].values[value_column];
-            if (prepared.distinct) {
-              bool distinct_admitted = false;
-              const std::array<const api::EngineTypedValue*, 2> values = {
-                  &value, nullptr};
-              if (!AdmitPlanningAggregateDistinctTuple(
-                      values, 1,
-                      input_row_count,
-                      aggregate_work,
-                      request.optimizer_request.resource.memory_budget_bytes -
-                          input_memory - filter_truth_memory_bytes,
-                      &distinct_state, &distinct_admitted, &distinct_detail)) {
-                return refuse(std::string(kPayloadDiagnostic),
-                              "composition statistical DISTINCT: " +
-                                  distinct_detail);
-              }
-              if (!distinct_admitted) continue;
-            }
-            if (value.state == api::EngineValueState::sql_null ||
-                value.is_null) {
-              continue;
-            }
-            if (value.descriptor.canonical_type_name != "int64") {
-              return refuse(
-                  std::string(kPayloadDiagnostic),
-                  "composition statistical input is not canonical int64");
-            }
-            std::int64_t decoded = 0;
-            const auto [end, error] = std::from_chars(
-                value.encoded_value.data(),
-                value.encoded_value.data() + value.encoded_value.size(),
-                decoded);
-            if (error != std::errc{} ||
-                end != value.encoded_value.data() +
-                           value.encoded_value.size() ||
-                non_null_count == std::numeric_limits<std::uint64_t>::max()) {
-              return refuse(
-                  std::string(kPayloadDiagnostic),
-                  "composition statistical input or count is invalid");
-            }
-            ++non_null_count;
-            const auto numeric = static_cast<long double>(decoded);
-            const auto count = static_cast<long double>(non_null_count);
-            const auto delta = numeric - numeric_mean;
-            numeric_mean += delta / count;
-            const auto delta2 = numeric - numeric_mean;
-            numeric_m2 += delta * delta2;
-            if (!std::isfinite(static_cast<double>(numeric_mean)) ||
-                !std::isfinite(static_cast<double>(numeric_m2))) {
+          {
+            PlanningAggregateDistinctState distinct_state;
+            if (!InitializePlanningAggregateDistinctState(
+                    request.context, input_batch, prepared,
+                    modifiers.distinct_memory_bound, &distinct_state,
+                    &modifier_detail, modifiers.admitted_row_count)) {
               return refuse(std::string(kPayloadDiagnostic),
-                            "composition statistical state overflowed");
+                            "composition statistical DISTINCT: " +
+                                modifier_detail);
             }
+            for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+              if (modifiers.filter_truth_values.has_value() &&
+                  (*modifiers.filter_truth_values)[row] !=
+                      api::EngineSqlTruthValue::true_value) {
+                continue;
+              }
+              const auto& value = input_batch.rows[row].values[value_column];
+              if (prepared.distinct) {
+                bool distinct_admitted = false;
+                const std::array<const api::EngineTypedValue*, 2> values = {
+                    &value, nullptr};
+                if (!AdmitPlanningAggregateDistinctTuple(
+                        values, 1, modifiers.distinct_generation_bound,
+                        modifiers.distinct_comparison_bound,
+                        modifiers.distinct_memory_bound, &distinct_state,
+                        &distinct_admitted, &modifier_detail)) {
+                  return refuse(std::string(kPayloadDiagnostic),
+                                "composition statistical DISTINCT: " +
+                                    modifier_detail);
+                }
+                if (!distinct_admitted) continue;
+              }
+              if (value.state == api::EngineValueState::sql_null ||
+                  value.is_null) {
+                continue;
+              }
+              if (value.descriptor.canonical_type_name != "int64") {
+                return refuse(
+                    std::string(kPayloadDiagnostic),
+                    "composition statistical input is not canonical int64");
+              }
+              std::int64_t decoded = 0;
+              const auto [end, error] = std::from_chars(
+                  value.encoded_value.data(),
+                  value.encoded_value.data() + value.encoded_value.size(),
+                  decoded);
+              if (error != std::errc{} ||
+                  end != value.encoded_value.data() +
+                             value.encoded_value.size() ||
+                  non_null_count ==
+                      std::numeric_limits<std::uint64_t>::max()) {
+                return refuse(
+                    std::string(kPayloadDiagnostic),
+                    "composition statistical input or count is invalid");
+              }
+              ++non_null_count;
+              const auto numeric = static_cast<long double>(decoded);
+              const auto count = static_cast<long double>(non_null_count);
+              const auto delta = numeric - numeric_mean;
+              numeric_mean += delta / count;
+              const auto delta2 = numeric - numeric_mean;
+              numeric_m2 += delta * delta2;
+              if (!std::isfinite(static_cast<double>(numeric_mean)) ||
+                  !std::isfinite(static_cast<double>(numeric_m2))) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition statistical state overflowed");
+              }
+            }
+            registry_aggregate_distinct_peak_memory =
+                distinct_state.peak_memory_bytes;
           }
           if (!add_work(aggregate_work)) {
             return refuse(
@@ -16936,17 +20838,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               global_aggregate_profile.transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = filter_truth_memory_bytes;
-          if (prepared_registry_aggregate->distinct &&
-              !CheckedAdd(auxiliary_memory,
-                          distinct_state.peak_memory_bytes,
+          if (!CheckedAdd(modifiers.filter_truth_memory_bytes,
+                          modifiers.transition_memory_bytes,
                           &auxiliary_memory)) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition statistical FILTER/DISTINCT memory overflowed");
+                "composition statistical modifier memory overflowed");
           }
           registry_aggregate_filter_truth_memory_bytes =
-              filter_truth_memory_bytes;
+              modifiers.filter_truth_memory_bytes;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -16960,92 +20860,92 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!prepared.ok || prepared.value_columns.size() != 1) {
             return refuse(std::string(kPayloadDiagnostic), prepared.detail);
           }
-          std::optional<std::vector<api::EngineSqlTruthValue>>
-              filter_truth_values;
-          std::uint64_t filter_truth_memory_bytes = 0;
-          std::string filter_detail;
-          if (!materialize_filter_truth_values(
-                  prepared, &filter_truth_values,
-                  &filter_truth_memory_bytes, &filter_detail)) {
+          PlanningAggregateModifierState modifiers;
+          std::string modifier_detail;
+          if (!InitializePlanningAggregateModifierState(
+                  input_batch, prepared, input_memory,
+                  request.optimizer_request.resource.memory_budget_bytes,
+                  &modifiers, &modifier_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
-                          std::move(filter_detail));
+                          "composition AVG modifiers: " + modifier_detail);
           }
-          std::uint64_t aggregate_work = input_row_count;
+          std::uint64_t aggregate_work = modifiers.admitted_row_count;
           if (prepared.distinct &&
-              !CheckedMultiply(input_row_count, input_row_count,
-                               &aggregate_work)) {
+              (!CheckedAdd(aggregate_work,
+                           modifiers.distinct_generation_bound,
+                           &aggregate_work) ||
+               !CheckedAdd(aggregate_work,
+                           modifiers.distinct_comparison_bound,
+                           &aggregate_work))) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                 "composition AVG(DISTINCT) work bound overflowed");
           }
-          if (input_memory >
-              request.optimizer_request.resource.memory_budget_bytes) {
-            return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                          "composition AVG input exceeds its memory bound");
-          }
-          PlanningAggregateDistinctState distinct_state;
-          std::string distinct_detail;
-          if (!InitializePlanningAggregateDistinctState(
-                  request.context, input_batch, prepared,
-                  request.optimizer_request.resource.memory_budget_bytes -
-                      input_memory - filter_truth_memory_bytes,
-                  &distinct_state, &distinct_detail)) {
-            return refuse(std::string(kPayloadDiagnostic),
-                          "composition AVG(DISTINCT): " + distinct_detail);
-          }
           long double real_sum = 0.0L;
           std::uint64_t non_null_count = 0;
           const auto value_column = prepared.value_columns.front();
-          for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
-            if (filter_truth_values.has_value() &&
-                (*filter_truth_values)[row] !=
-                    api::EngineSqlTruthValue::true_value) {
-              continue;
+          {
+            PlanningAggregateDistinctState distinct_state;
+            if (!InitializePlanningAggregateDistinctState(
+                    request.context, input_batch, prepared,
+                    modifiers.distinct_memory_bound, &distinct_state,
+                    &modifier_detail, modifiers.admitted_row_count)) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition AVG(DISTINCT): " +
+                                modifier_detail);
             }
-            const auto& value = input_batch.rows[row].values[value_column];
-            if (prepared.distinct) {
-              bool distinct_admitted = false;
-              const std::array<const api::EngineTypedValue*, 2> values = {
-                  &value, nullptr};
-              if (!AdmitPlanningAggregateDistinctTuple(
-                      values, 1,
-                      input_row_count,
-                      aggregate_work,
-                      request.optimizer_request.resource.memory_budget_bytes -
-                          input_memory - filter_truth_memory_bytes,
-                      &distinct_state, &distinct_admitted, &distinct_detail)) {
-                return refuse(std::string(kPayloadDiagnostic),
-                              "composition AVG(DISTINCT): " +
-                                  distinct_detail);
+            for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+              if (modifiers.filter_truth_values.has_value() &&
+                  (*modifiers.filter_truth_values)[row] !=
+                      api::EngineSqlTruthValue::true_value) {
+                continue;
               }
-              if (!distinct_admitted) continue;
+              const auto& value = input_batch.rows[row].values[value_column];
+              if (prepared.distinct) {
+                bool distinct_admitted = false;
+                const std::array<const api::EngineTypedValue*, 2> values = {
+                    &value, nullptr};
+                if (!AdmitPlanningAggregateDistinctTuple(
+                        values, 1, modifiers.distinct_generation_bound,
+                        modifiers.distinct_comparison_bound,
+                        modifiers.distinct_memory_bound, &distinct_state,
+                        &distinct_admitted, &modifier_detail)) {
+                  return refuse(std::string(kPayloadDiagnostic),
+                                "composition AVG(DISTINCT): " +
+                                    modifier_detail);
+                }
+                if (!distinct_admitted) continue;
+              }
+              if (value.state == api::EngineValueState::sql_null ||
+                  value.is_null) {
+                continue;
+              }
+              if (value.descriptor.canonical_type_name != "int64") {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition AVG input is not canonical int64");
+              }
+              std::int64_t decoded = 0;
+              const auto [end, error] = std::from_chars(
+                  value.encoded_value.data(),
+                  value.encoded_value.data() + value.encoded_value.size(),
+                  decoded);
+              if (error != std::errc{} ||
+                  end != value.encoded_value.data() +
+                             value.encoded_value.size()) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition AVG input is not exact int64");
+              }
+              real_sum += static_cast<long double>(decoded);
+              if (!std::isfinite(static_cast<double>(real_sum)) ||
+                  non_null_count ==
+                      std::numeric_limits<std::uint64_t>::max()) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition AVG state overflowed");
+              }
+              ++non_null_count;
             }
-            if (value.state == api::EngineValueState::sql_null ||
-                value.is_null) {
-              continue;
-            }
-            if (value.descriptor.canonical_type_name != "int64") {
-              return refuse(std::string(kPayloadDiagnostic),
-                            "composition AVG input is not canonical int64");
-            }
-            std::int64_t decoded = 0;
-            const auto [end, error] = std::from_chars(
-                value.encoded_value.data(),
-                value.encoded_value.data() + value.encoded_value.size(),
-                decoded);
-            if (error != std::errc{} ||
-                end != value.encoded_value.data() +
-                           value.encoded_value.size()) {
-              return refuse(std::string(kPayloadDiagnostic),
-                            "composition AVG input is not exact int64");
-            }
-            real_sum += static_cast<long double>(decoded);
-            if (!std::isfinite(static_cast<double>(real_sum)) ||
-                non_null_count == std::numeric_limits<std::uint64_t>::max()) {
-              return refuse(std::string(kPayloadDiagnostic),
-                            "composition AVG state overflowed");
-            }
-            ++non_null_count;
+            registry_aggregate_distinct_peak_memory =
+                distinct_state.peak_memory_bytes;
           }
           if (!add_work(aggregate_work)) {
             return refuse(
@@ -17094,17 +20994,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               "canonical.aggregate.composed-global-avg-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = filter_truth_memory_bytes;
-          if (prepared_registry_aggregate->distinct &&
-              !CheckedAdd(auxiliary_memory,
-                          distinct_state.peak_memory_bytes,
+          if (!CheckedAdd(modifiers.filter_truth_memory_bytes,
+                          modifiers.transition_memory_bytes,
                           &auxiliary_memory)) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition AVG FILTER/DISTINCT memory overflowed");
+                "composition AVG modifier memory overflowed");
           }
           registry_aggregate_filter_truth_memory_bytes =
-              filter_truth_memory_bytes;
+              modifiers.filter_truth_memory_bytes;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -17118,93 +21016,90 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!prepared.ok || prepared.value_columns.size() != 1) {
             return refuse(std::string(kPayloadDiagnostic), prepared.detail);
           }
-          std::optional<std::vector<api::EngineSqlTruthValue>>
-              filter_truth_values;
-          std::uint64_t filter_truth_memory_bytes = 0;
-          std::string filter_detail;
-          if (!materialize_filter_truth_values(
-                  prepared, &filter_truth_values,
-                  &filter_truth_memory_bytes, &filter_detail)) {
+          PlanningAggregateModifierState modifiers;
+          std::string modifier_detail;
+          if (!InitializePlanningAggregateModifierState(
+                  input_batch, prepared, input_memory,
+                  request.optimizer_request.resource.memory_budget_bytes,
+                  &modifiers, &modifier_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
-                          std::move(filter_detail));
+                          "composition SUM modifiers: " + modifier_detail);
           }
-          std::uint64_t aggregate_work = input_row_count;
+          std::uint64_t aggregate_work = modifiers.admitted_row_count;
           if (prepared.distinct &&
-              !CheckedMultiply(input_row_count, input_row_count,
-                               &aggregate_work)) {
+              (!CheckedAdd(aggregate_work,
+                           modifiers.distinct_generation_bound,
+                           &aggregate_work) ||
+               !CheckedAdd(aggregate_work,
+                           modifiers.distinct_comparison_bound,
+                           &aggregate_work))) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                 "composition SUM(DISTINCT) work bound overflowed");
           }
-          if (input_memory >
-              request.optimizer_request.resource.memory_budget_bytes) {
-            return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                          "composition SUM input exceeds its memory bound");
-          }
-          PlanningAggregateDistinctState distinct_state;
-          std::string distinct_detail;
-          if (!InitializePlanningAggregateDistinctState(
-                  request.context, input_batch, prepared,
-                  request.optimizer_request.resource.memory_budget_bytes -
-                      input_memory - filter_truth_memory_bytes,
-                  &distinct_state, &distinct_detail)) {
-            return refuse(std::string(kPayloadDiagnostic),
-                          "composition SUM(DISTINCT): " + distinct_detail);
-          }
           std::int64_t sum_value = 0;
           bool has_value = false;
           const auto value_column = prepared.value_columns.front();
-          for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
-            if (filter_truth_values.has_value() &&
-                (*filter_truth_values)[row] !=
-                    api::EngineSqlTruthValue::true_value) {
-              continue;
+          {
+            PlanningAggregateDistinctState distinct_state;
+            if (!InitializePlanningAggregateDistinctState(
+                    request.context, input_batch, prepared,
+                    modifiers.distinct_memory_bound, &distinct_state,
+                    &modifier_detail, modifiers.admitted_row_count)) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition SUM(DISTINCT): " +
+                                modifier_detail);
             }
-            const auto& value = input_batch.rows[row].values[value_column];
-            if (prepared.distinct) {
-              bool distinct_admitted = false;
-              const std::array<const api::EngineTypedValue*, 2> values = {
-                  &value, nullptr};
-              if (!AdmitPlanningAggregateDistinctTuple(
-                      values, 1,
-                      input_row_count,
-                      aggregate_work,
-                      request.optimizer_request.resource.memory_budget_bytes -
-                          input_memory - filter_truth_memory_bytes,
-                      &distinct_state, &distinct_admitted, &distinct_detail)) {
-                return refuse(std::string(kPayloadDiagnostic),
-                              "composition SUM(DISTINCT): " +
-                                  distinct_detail);
+            for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+              if (modifiers.filter_truth_values.has_value() &&
+                  (*modifiers.filter_truth_values)[row] !=
+                      api::EngineSqlTruthValue::true_value) {
+                continue;
               }
-              if (!distinct_admitted) continue;
+              const auto& value = input_batch.rows[row].values[value_column];
+              if (prepared.distinct) {
+                bool distinct_admitted = false;
+                const std::array<const api::EngineTypedValue*, 2> values = {
+                    &value, nullptr};
+                if (!AdmitPlanningAggregateDistinctTuple(
+                        values, 1, modifiers.distinct_generation_bound,
+                        modifiers.distinct_comparison_bound,
+                        modifiers.distinct_memory_bound, &distinct_state,
+                        &distinct_admitted, &modifier_detail)) {
+                  return refuse(std::string(kPayloadDiagnostic),
+                                "composition SUM(DISTINCT): " +
+                                    modifier_detail);
+                }
+                if (!distinct_admitted) continue;
+              }
+              if (value.state == api::EngineValueState::sql_null ||
+                  value.is_null) {
+                continue;
+              }
+              if (!exec::IsCanonicalBoundedSignedIntegerDescriptor(
+                      value.descriptor)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition SUM input is not canonical "
+                              "bounded-signed");
+              }
+              const auto decoded = exec::DecodeInt64Value(value);
+              if (!decoded.ok() ||
+                  (decoded.value > 0 &&
+                   sum_value >
+                       std::numeric_limits<std::int64_t>::max() -
+                           decoded.value) ||
+                  (decoded.value < 0 &&
+                   sum_value <
+                       std::numeric_limits<std::int64_t>::min() -
+                           decoded.value)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition SUM input or result overflowed");
+              }
+              sum_value += decoded.value;
+              has_value = true;
             }
-            if (value.state == api::EngineValueState::sql_null ||
-                value.is_null) {
-              continue;
-            }
-            if (value.descriptor.canonical_type_name != "int64") {
-              return refuse(std::string(kPayloadDiagnostic),
-                            "composition SUM input is not canonical int64");
-            }
-            std::int64_t decoded = 0;
-            const auto [end, error] = std::from_chars(
-                value.encoded_value.data(),
-                value.encoded_value.data() + value.encoded_value.size(),
-                decoded);
-            if (error != std::errc{} ||
-                end != value.encoded_value.data() +
-                           value.encoded_value.size() ||
-                (decoded > 0 &&
-                 sum_value >
-                     std::numeric_limits<std::int64_t>::max() - decoded) ||
-                (decoded < 0 &&
-                 sum_value <
-                     std::numeric_limits<std::int64_t>::min() - decoded)) {
-              return refuse(std::string(kPayloadDiagnostic),
-                            "composition SUM input or result overflowed");
-            }
-            sum_value += decoded;
-            has_value = true;
+            registry_aggregate_distinct_peak_memory =
+                distinct_state.peak_memory_bytes;
           }
           if (!add_work(aggregate_work)) {
             return refuse(
@@ -17242,17 +21137,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               "canonical.aggregate.composed-global-sum-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = filter_truth_memory_bytes;
-          if (prepared_registry_aggregate->distinct &&
-              !CheckedAdd(auxiliary_memory,
-                          distinct_state.peak_memory_bytes,
+          if (!CheckedAdd(modifiers.filter_truth_memory_bytes,
+                          modifiers.transition_memory_bytes,
                           &auxiliary_memory)) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition SUM FILTER/DISTINCT memory overflowed");
+                "composition SUM modifier memory overflowed");
           }
           registry_aggregate_filter_truth_memory_bytes =
-              filter_truth_memory_bytes;
+              modifiers.filter_truth_memory_bytes;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -17271,15 +21164,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               prepared.value_descriptor_ids.size() != 1) {
             return refuse(std::string(kPayloadDiagnostic), prepared.detail);
           }
-          std::optional<std::vector<api::EngineSqlTruthValue>>
-              filter_truth_values;
-          std::uint64_t filter_truth_memory_bytes = 0;
-          std::string filter_detail;
-          if (!materialize_filter_truth_values(
-                  prepared, &filter_truth_values,
-                  &filter_truth_memory_bytes, &filter_detail)) {
+          PlanningAggregateModifierState modifiers;
+          std::string modifier_detail;
+          if (!InitializePlanningAggregateModifierState(
+                  input_batch, prepared, input_memory,
+                  request.optimizer_request.resource.memory_budget_bytes,
+                  &modifiers, &modifier_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
-                          std::move(filter_detail));
+                          "composition extremum modifiers: " +
+                              modifier_detail);
           }
           const auto value_column = prepared.value_columns.front();
           exec::CanonicalDescriptorOrderTerm comparison_term;
@@ -17294,81 +21187,80 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                           "composition extremum comparison: " +
                               order_validation.detail);
           }
-          std::uint64_t aggregate_work = input_row_count;
+          std::uint64_t aggregate_work = modifiers.admitted_row_count;
           if (prepared.distinct &&
-              !CheckedMultiply(input_row_count, input_row_count,
-                               &aggregate_work)) {
+              (!CheckedAdd(aggregate_work,
+                           modifiers.distinct_generation_bound,
+                           &aggregate_work) ||
+               !CheckedAdd(aggregate_work,
+                           modifiers.distinct_comparison_bound,
+                           &aggregate_work))) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                 "composition extremum DISTINCT work bound overflowed");
           }
-          if (input_memory >
-              request.optimizer_request.resource.memory_budget_bytes) {
-            return refuse(
-                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                "composition extremum input exceeds its memory bound");
-          }
-          PlanningAggregateDistinctState distinct_state;
-          std::string distinct_detail;
-          if (!InitializePlanningAggregateDistinctState(
-                  request.context, input_batch, prepared,
-                  request.optimizer_request.resource.memory_budget_bytes -
-                      input_memory - filter_truth_memory_bytes,
-                  &distinct_state, &distinct_detail)) {
-            return refuse(std::string(kPayloadDiagnostic),
-                          "composition extremum DISTINCT: " +
-                              distinct_detail);
-          }
           std::optional<api::EngineTypedValue> extremum;
-          for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
-            if (filter_truth_values.has_value() &&
-                (*filter_truth_values)[row] !=
-                    api::EngineSqlTruthValue::true_value) {
-              continue;
+          {
+            PlanningAggregateDistinctState distinct_state;
+            if (!InitializePlanningAggregateDistinctState(
+                    request.context, input_batch, prepared,
+                    modifiers.distinct_memory_bound, &distinct_state,
+                    &modifier_detail, modifiers.admitted_row_count)) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition extremum DISTINCT: " +
+                                modifier_detail);
             }
-            const auto& value = input_batch.rows[row].values[value_column];
-            if (prepared.distinct) {
-              bool distinct_admitted = false;
-              const std::array<const api::EngineTypedValue*, 2> values = {
-                  &value, nullptr};
-              if (!AdmitPlanningAggregateDistinctTuple(
-                      values, 1,
-                      input_row_count,
-                      aggregate_work,
-                      request.optimizer_request.resource.memory_budget_bytes -
-                          input_memory - filter_truth_memory_bytes,
-                      &distinct_state, &distinct_admitted, &distinct_detail)) {
-                return refuse(std::string(kPayloadDiagnostic),
-                              "composition extremum DISTINCT: " +
-                                  distinct_detail);
+            for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+              if (modifiers.filter_truth_values.has_value() &&
+                  (*modifiers.filter_truth_values)[row] !=
+                      api::EngineSqlTruthValue::true_value) {
+                continue;
               }
-              if (!distinct_admitted) continue;
+              const auto& value = input_batch.rows[row].values[value_column];
+              if (prepared.distinct) {
+                bool distinct_admitted = false;
+                const std::array<const api::EngineTypedValue*, 2> values = {
+                    &value, nullptr};
+                if (!AdmitPlanningAggregateDistinctTuple(
+                        values, 1, modifiers.distinct_generation_bound,
+                        modifiers.distinct_comparison_bound,
+                        modifiers.distinct_memory_bound, &distinct_state,
+                        &distinct_admitted, &modifier_detail)) {
+                  return refuse(std::string(kPayloadDiagnostic),
+                                "composition extremum DISTINCT: " +
+                                    modifier_detail);
+                }
+                if (!distinct_admitted) continue;
+              }
+              if (value.state == api::EngineValueState::sql_null ||
+                  value.is_null) {
+                continue;
+              }
+              if (!exec::IsCanonicalBoundedSignedIntegerDescriptor(
+                      value.descriptor)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition extremum input is not canonical "
+                              "bounded-signed");
+              }
+              if (!extremum.has_value()) {
+                extremum = value;
+                continue;
+              }
+              const auto compared =
+                  exec::CompareCanonicalDescriptorOrderValues(
+                      value, *extremum, comparison_term);
+              if (!compared.diagnostic.ok) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition extremum comparison: " +
+                                  compared.diagnostic.detail);
+              }
+              if ((minimum && compared.comparison < 0) ||
+                  (!minimum && compared.comparison > 0)) {
+                extremum = value;
+              }
             }
-            if (value.state == api::EngineValueState::sql_null ||
-                value.is_null) {
-              continue;
-            }
-            if (value.descriptor.canonical_type_name != "int64") {
-              return refuse(std::string(kPayloadDiagnostic),
-                            "composition extremum input is not canonical "
-                            "int64");
-            }
-            if (!extremum.has_value()) {
-              extremum = value;
-              continue;
-            }
-            const auto compared =
-                exec::CompareCanonicalDescriptorOrderValues(
-                    value, *extremum, comparison_term);
-            if (!compared.diagnostic.ok) {
-              return refuse(std::string(kPayloadDiagnostic),
-                            "composition extremum comparison: " +
-                                compared.diagnostic.detail);
-            }
-            if ((minimum && compared.comparison < 0) ||
-                (!minimum && compared.comparison > 0)) {
-              extremum = value;
-            }
+            registry_aggregate_distinct_peak_memory =
+                distinct_state.peak_memory_bytes;
           }
           if (!add_work(aggregate_work)) {
             return refuse(
@@ -17411,17 +21303,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   ? "canonical.aggregate.composed-global-min-expression.v1"
                   : "canonical.aggregate.composed-global-max-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = filter_truth_memory_bytes;
-          if (prepared_registry_aggregate->distinct &&
-              !CheckedAdd(auxiliary_memory,
-                          distinct_state.peak_memory_bytes,
+          if (!CheckedAdd(modifiers.filter_truth_memory_bytes,
+                          modifiers.transition_memory_bytes,
                           &auxiliary_memory)) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition extremum FILTER/DISTINCT memory overflowed");
+                "composition extremum modifier memory overflowed");
           }
           registry_aggregate_filter_truth_memory_bytes =
-              filter_truth_memory_bytes;
+              modifiers.filter_truth_memory_bytes;
           break;
         }
         if (global_aggregate_profile.matched &&
@@ -17439,94 +21329,92 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!prepared.ok || prepared.value_columns.size() != 1) {
             return refuse(std::string(kPayloadDiagnostic), prepared.detail);
           }
-          std::optional<std::vector<api::EngineSqlTruthValue>>
-              filter_truth_values;
-          std::uint64_t filter_truth_memory_bytes = 0;
-          std::string filter_detail;
-          if (!materialize_filter_truth_values(
-                  prepared, &filter_truth_values,
-                  &filter_truth_memory_bytes, &filter_detail)) {
+          PlanningAggregateModifierState modifiers;
+          std::string modifier_detail;
+          if (!InitializePlanningAggregateModifierState(
+                  input_batch, prepared, input_memory,
+                  request.optimizer_request.resource.memory_budget_bytes,
+                  &modifiers, &modifier_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
-                          std::move(filter_detail));
+                          "composition boolean aggregate modifiers: " +
+                              modifier_detail);
           }
-          std::uint64_t aggregate_work = input_row_count;
+          std::uint64_t aggregate_work = modifiers.admitted_row_count;
           if (prepared.distinct &&
-              !CheckedMultiply(input_row_count, input_row_count,
-                               &aggregate_work)) {
+              (!CheckedAdd(aggregate_work,
+                           modifiers.distinct_generation_bound,
+                           &aggregate_work) ||
+               !CheckedAdd(aggregate_work,
+                           modifiers.distinct_comparison_bound,
+                           &aggregate_work))) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                 "composition boolean aggregate DISTINCT work bound overflowed");
-          }
-          if (input_memory >
-              request.optimizer_request.resource.memory_budget_bytes) {
-            return refuse(
-                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                "composition boolean aggregate input exceeds its memory bound");
-          }
-          PlanningAggregateDistinctState distinct_state;
-          std::string distinct_detail;
-          if (!InitializePlanningAggregateDistinctState(
-                  request.context, input_batch, prepared,
-                  request.optimizer_request.resource.memory_budget_bytes -
-                      input_memory - filter_truth_memory_bytes,
-                  &distinct_state, &distinct_detail)) {
-            return refuse(std::string(kPayloadDiagnostic),
-                          "composition boolean aggregate DISTINCT: " +
-                              distinct_detail);
           }
           bool saw_value = false;
           bool saw_true = false;
           bool saw_false = false;
           const auto value_column = prepared.value_columns.front();
-          for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
-            if (filter_truth_values.has_value() &&
-                (*filter_truth_values)[row] !=
-                    api::EngineSqlTruthValue::true_value) {
-              continue;
-            }
-            const auto& value = input_batch.rows[row].values[value_column];
-            if (prepared.distinct) {
-              bool distinct_admitted = false;
-              const std::array<const api::EngineTypedValue*, 2> values = {
-                  &value, nullptr};
-              if (!AdmitPlanningAggregateDistinctTuple(
-                      values, 1,
-                      input_row_count,
-                      aggregate_work,
-                      request.optimizer_request.resource.memory_budget_bytes -
-                          input_memory - filter_truth_memory_bytes,
-                      &distinct_state, &distinct_admitted, &distinct_detail)) {
-                return refuse(std::string(kPayloadDiagnostic),
-                              "composition boolean aggregate DISTINCT: " +
-                                  distinct_detail);
-              }
-              if (!distinct_admitted) continue;
-            }
-            if (value.state == api::EngineValueState::sql_null ||
-                value.is_null) {
-              continue;
-            }
-            if (value.descriptor.canonical_type_name != "boolean") {
+          {
+            PlanningAggregateDistinctState distinct_state;
+            if (!InitializePlanningAggregateDistinctState(
+                    request.context, input_batch, prepared,
+                    modifiers.distinct_memory_bound, &distinct_state,
+                    &modifier_detail, modifiers.admitted_row_count)) {
               return refuse(std::string(kPayloadDiagnostic),
-                            "composition boolean aggregate input is not "
-                            "canonical boolean");
+                            "composition boolean aggregate DISTINCT: " +
+                                modifier_detail);
             }
-            api::EngineSqlTruthValue truth =
-                api::EngineSqlTruthValue::unspecified;
-            std::string truth_detail;
-            if (!api::QowCanonicalTruthFromTypedValueV1(
-                    value, &truth, &truth_detail) ||
-                (truth != api::EngineSqlTruthValue::true_value &&
-                 truth != api::EngineSqlTruthValue::false_value)) {
-              return refuse(
-                  std::string(kPayloadDiagnostic),
-                  "composition boolean aggregate input: " + truth_detail);
+            for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+              if (modifiers.filter_truth_values.has_value() &&
+                  (*modifiers.filter_truth_values)[row] !=
+                      api::EngineSqlTruthValue::true_value) {
+                continue;
+              }
+              const auto& value = input_batch.rows[row].values[value_column];
+              if (prepared.distinct) {
+                bool distinct_admitted = false;
+                const std::array<const api::EngineTypedValue*, 2> values = {
+                    &value, nullptr};
+                if (!AdmitPlanningAggregateDistinctTuple(
+                        values, 1, modifiers.distinct_generation_bound,
+                        modifiers.distinct_comparison_bound,
+                        modifiers.distinct_memory_bound, &distinct_state,
+                        &distinct_admitted, &modifier_detail)) {
+                  return refuse(std::string(kPayloadDiagnostic),
+                                "composition boolean aggregate DISTINCT: " +
+                                    modifier_detail);
+                }
+                if (!distinct_admitted) continue;
+              }
+              if (value.state == api::EngineValueState::sql_null ||
+                  value.is_null) {
+                continue;
+              }
+              if (value.descriptor.canonical_type_name != "boolean") {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition boolean aggregate input is not "
+                              "canonical boolean");
+              }
+              api::EngineSqlTruthValue truth =
+                  api::EngineSqlTruthValue::unspecified;
+              std::string truth_detail;
+              if (!api::QowCanonicalTruthFromTypedValueV1(
+                      value, &truth, &truth_detail) ||
+                  (truth != api::EngineSqlTruthValue::true_value &&
+                   truth != api::EngineSqlTruthValue::false_value)) {
+                return refuse(
+                    std::string(kPayloadDiagnostic),
+                    "composition boolean aggregate input: " + truth_detail);
+              }
+              saw_value = true;
+              saw_true = saw_true ||
+                         truth == api::EngineSqlTruthValue::true_value;
+              saw_false = saw_false ||
+                          truth == api::EngineSqlTruthValue::false_value;
             }
-            saw_value = true;
-            saw_true = saw_true ||
-                       truth == api::EngineSqlTruthValue::true_value;
-            saw_false = saw_false ||
-                        truth == api::EngineSqlTruthValue::false_value;
+            registry_aggregate_distinct_peak_memory =
+                distinct_state.peak_memory_bytes;
           }
           if (!add_work(aggregate_work)) {
             return refuse(
@@ -17580,17 +21468,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 "canonical.aggregate.composed-global-every-expression.v1";
           }
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = filter_truth_memory_bytes;
-          if (prepared_registry_aggregate->distinct &&
-              !CheckedAdd(auxiliary_memory,
-                          distinct_state.peak_memory_bytes,
+          if (!CheckedAdd(modifiers.filter_truth_memory_bytes,
+                          modifiers.transition_memory_bytes,
                           &auxiliary_memory)) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition boolean FILTER/DISTINCT memory overflowed");
+                "composition boolean aggregate modifier memory overflowed");
           }
           registry_aggregate_filter_truth_memory_bytes =
-              filter_truth_memory_bytes;
+              modifiers.filter_truth_memory_bytes;
           break;
         }
         if (pair_aggregate_profile.matched) {
@@ -17602,44 +21488,27 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!prepared.ok || prepared.value_columns.size() != 2) {
             return refuse(std::string(kPayloadDiagnostic), prepared.detail);
           }
-          std::optional<std::vector<api::EngineSqlTruthValue>>
-              filter_truth_values;
-          std::uint64_t filter_truth_memory_bytes = 0;
-          std::string filter_detail;
-          if (!materialize_filter_truth_values(
-                  prepared, &filter_truth_values,
-                  &filter_truth_memory_bytes, &filter_detail)) {
+          PlanningAggregateModifierState modifiers;
+          std::string modifier_detail;
+          if (!InitializePlanningAggregateModifierState(
+                  input_batch, prepared, input_memory,
+                  request.optimizer_request.resource.memory_budget_bytes,
+                  &modifiers, &modifier_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
-                          std::move(filter_detail));
+                          "composition pair statistical modifiers: " +
+                              modifier_detail);
           }
-          std::uint64_t aggregate_work = input_row_count;
-          std::uint64_t distinct_generation_bound = input_row_count;
-          if ((prepared.distinct &&
-               (!CheckedMultiply(input_row_count, input_row_count,
-                                 &aggregate_work) ||
-                !CheckedMultiply(input_row_count,
-                                 prepared.value_columns.size(),
-                                 &distinct_generation_bound)))) {
+          std::uint64_t aggregate_work = modifiers.admitted_row_count;
+          if (prepared.distinct &&
+              (!CheckedAdd(aggregate_work,
+                           modifiers.distinct_generation_bound,
+                           &aggregate_work) ||
+               !CheckedAdd(aggregate_work,
+                           modifiers.distinct_comparison_bound,
+                           &aggregate_work))) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                 "composition pair statistical DISTINCT work bound overflowed");
-          }
-          if (input_memory >
-              request.optimizer_request.resource.memory_budget_bytes) {
-            return refuse(
-                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                "composition pair statistical input exceeds its memory bound");
-          }
-          PlanningAggregateDistinctState distinct_state;
-          std::string distinct_detail;
-          if (!InitializePlanningAggregateDistinctState(
-                  request.context, input_batch, prepared,
-                  request.optimizer_request.resource.memory_budget_bytes -
-                      input_memory - filter_truth_memory_bytes,
-                  &distinct_state, &distinct_detail)) {
-            return refuse(std::string(kPayloadDiagnostic),
-                          "composition pair statistical DISTINCT: " +
-                              distinct_detail);
           }
           std::uint64_t non_null_count = 0;
           long double mean_x = 0.0L;
@@ -17649,9 +21518,19 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           long double comoment = 0.0L;
           const auto y_column = prepared.value_columns[0];
           const auto x_column = prepared.value_columns[1];
+          {
+          PlanningAggregateDistinctState distinct_state;
+          if (!InitializePlanningAggregateDistinctState(
+                  request.context, input_batch, prepared,
+                  modifiers.distinct_memory_bound, &distinct_state,
+                  &modifier_detail, modifiers.admitted_row_count)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          "composition pair statistical DISTINCT: " +
+                              modifier_detail);
+          }
           for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
-            if (filter_truth_values.has_value() &&
-                (*filter_truth_values)[row] !=
+            if (modifiers.filter_truth_values.has_value() &&
+                (*modifiers.filter_truth_values)[row] !=
                     api::EngineSqlTruthValue::true_value) {
               continue;
             }
@@ -17662,13 +21541,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               const std::array<const api::EngineTypedValue*, 2> values = {
                   &y_value, &x_value};
               if (!AdmitPlanningAggregateDistinctTuple(
-                      values, 2, distinct_generation_bound, aggregate_work,
-                      request.optimizer_request.resource.memory_budget_bytes -
-                          input_memory - filter_truth_memory_bytes,
-                      &distinct_state, &distinct_admitted, &distinct_detail)) {
+                      values, 2, modifiers.distinct_generation_bound,
+                      modifiers.distinct_comparison_bound,
+                      modifiers.distinct_memory_bound, &distinct_state,
+                      &distinct_admitted, &modifier_detail)) {
                 return refuse(std::string(kPayloadDiagnostic),
                               "composition pair statistical DISTINCT: " +
-                                  distinct_detail);
+                                  modifier_detail);
               }
               if (!distinct_admitted) continue;
             }
@@ -17726,6 +21605,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   std::string(kPayloadDiagnostic),
                   "composition pair statistical state overflowed");
             }
+          }
+          registry_aggregate_distinct_peak_memory =
+              distinct_state.peak_memory_bytes;
           }
           if (!add_work(aggregate_work)) {
             return refuse(
@@ -17852,18 +21734,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               pair_aggregate_profile.transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = filter_truth_memory_bytes;
-          if (prepared_registry_aggregate->distinct &&
-              !CheckedAdd(auxiliary_memory,
-                          distinct_state.peak_memory_bytes,
+          if (!CheckedAdd(modifiers.filter_truth_memory_bytes,
+                          modifiers.transition_memory_bytes,
                           &auxiliary_memory)) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition pair statistical FILTER/DISTINCT memory "
-                "overflowed");
+                "composition pair statistical modifier memory overflowed");
           }
           registry_aggregate_filter_truth_memory_bytes =
-              filter_truth_memory_bytes;
+              modifiers.filter_truth_memory_bytes;
           break;
         }
         if (string_aggregate_profile.matched ||
@@ -17921,27 +21800,41 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           if (!prepared.ok) {
             return refuse(std::string(kPayloadDiagnostic), prepared.detail);
           }
-          std::optional<std::vector<api::EngineSqlTruthValue>>
-              filter_truth_values;
-          std::uint64_t filter_truth_memory_bytes = 0;
-          std::string filter_detail;
-          if (!materialize_filter_truth_values(
-                  prepared, &filter_truth_values,
-                  &filter_truth_memory_bytes, &filter_detail)) {
+          PlanningAggregateModifierState modifiers;
+          std::string modifier_detail;
+          if (!InitializePlanningAggregateModifierState(
+                  input_batch, prepared, input_memory,
+                  request.optimizer_request.resource.memory_budget_bytes,
+                  &modifiers, &modifier_detail)) {
             return refuse(std::string(kPayloadDiagnostic),
-                          std::move(filter_detail));
+                          "composition complex aggregate modifiers: " +
+                              modifier_detail);
           }
-          std::uint64_t aggregate_work = input_row_count;
+          std::uint64_t aggregate_work = modifiers.admitted_row_count;
+          if (prepared.distinct &&
+              (!CheckedAdd(aggregate_work,
+                           modifiers.distinct_generation_bound,
+                           &aggregate_work) ||
+               !CheckedAdd(aggregate_work,
+                           modifiers.distinct_comparison_bound,
+                           &aggregate_work))) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition complex aggregate DISTINCT work overflowed");
+          }
           if (comparison_sensitive || prepared.distinct ||
               !prepared.aggregate_order_terms.empty()) {
             std::uint64_t comparison_work = 0;
-            if (!CheckedMultiply(input_row_count, input_row_count,
-                                 &comparison_work) ||
+            if ((modifiers.admitted_row_count > 1 &&
+                 !CheckedMultiply(modifiers.admitted_row_count,
+                                  modifiers.admitted_row_count - 1,
+                                  &comparison_work)) ||
+                (comparison_work /= 2,
                 !CheckedMultiply(
                     comparison_work,
                     std::max<std::size_t>(1,
                         prepared.value_columns.size()),
-                    &comparison_work) ||
+                    &comparison_work)) ||
                 !CheckedAdd(aggregate_work, comparison_work,
                             &aggregate_work)) {
               return refuse(
@@ -17953,7 +21846,44 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                 "composition complex aggregate work exceeds the admitted "
-                "bound");
+                  "bound");
+          }
+          if (prepared.distinct) {
+            PlanningAggregateDistinctState distinct_state;
+            if (!InitializePlanningAggregateDistinctState(
+                    request.context, input_batch, prepared,
+                    modifiers.distinct_memory_bound, &distinct_state,
+                    &modifier_detail, modifiers.admitted_row_count)) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition complex aggregate DISTINCT: " +
+                                modifier_detail);
+            }
+            for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+              if (modifiers.filter_truth_values.has_value() &&
+                  (*modifiers.filter_truth_values)[row] !=
+                      api::EngineSqlTruthValue::true_value) {
+                continue;
+              }
+              std::array<const api::EngineTypedValue*, 2> values{};
+              for (std::size_t value = 0;
+                   value < prepared.value_columns.size(); ++value) {
+                values[value] = &input_batch.rows[row].values[
+                    prepared.value_columns[value]];
+              }
+              bool admitted = false;
+              if (!AdmitPlanningAggregateDistinctTuple(
+                      values, prepared.value_columns.size(),
+                      modifiers.distinct_generation_bound,
+                      modifiers.distinct_comparison_bound,
+                      modifiers.distinct_memory_bound, &distinct_state,
+                      &admitted, &modifier_detail)) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "composition complex aggregate DISTINCT: " +
+                                  modifier_detail);
+              }
+            }
+            registry_aggregate_distinct_peak_memory =
+                distinct_state.peak_memory_bytes;
           }
           exec::DescriptorBatch output;
           output.columns.push_back(prepared.result_column);
@@ -18005,14 +21935,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           capability_uuid = registry_aggregate_capability_uuid;
           transformation_rule = transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          if (!CheckedAdd(aggregate_work, filter_truth_memory_bytes,
+          if (!CheckedAdd(modifiers.filter_truth_memory_bytes,
+                          modifiers.transition_memory_bytes,
                           &auxiliary_memory)) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                "composition complex aggregate FILTER memory overflowed");
+                "composition complex aggregate modifier memory overflowed");
           }
           registry_aggregate_filter_truth_memory_bytes =
-              filter_truth_memory_bytes;
+              modifiers.filter_truth_memory_bytes;
           planning_values_exact = false;
           break;
         }
@@ -18035,6 +21966,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               prepared.grouping_projection_columns.size() !=
                   expected_projection_count) {
             return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+          }
+          if (!BindPreparedGroupedComparisonCeilings(
+                  &prepared, input_row_count)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition grouped aggregate comparison bound overflowed");
           }
           struct GroupPlanningState {
             std::size_t grouping_set_ordinal{0};
@@ -18155,38 +22092,26 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   amount.is_null) {
                 continue;
               }
-              if (amount.descriptor.canonical_type_name != "int64") {
+              if (!exec::IsCanonicalBoundedSignedIntegerDescriptor(
+                      amount.descriptor)) {
                 return refuse(std::string(kPayloadDiagnostic),
-                              "composed grouped SUM input is not int64");
+                              "composed grouped SUM input is not "
+                              "bounded-signed");
               }
-              std::int64_t decoded = 0;
-              const auto [end, error] = std::from_chars(
-                  amount.encoded_value.data(),
-                  amount.encoded_value.data() +
-                      amount.encoded_value.size(),
-                  decoded);
-              if (error != std::errc{} ||
-                  end != amount.encoded_value.data() +
-                             amount.encoded_value.size()) {
+              const auto decoded = exec::DecodeInt64Value(amount);
+              if (!decoded.ok()) {
                 return refuse(std::string(kPayloadDiagnostic),
                               "composed grouped SUM input is invalid");
               }
-              group->sum += static_cast<__int128>(decoded);
+              group->sum += static_cast<__int128>(decoded.value);
               group->has_sum = true;
             }
           }
-          std::uint64_t input_pairs = 0;
-          std::uint64_t comparison_work = 0;
+          const auto comparison_work = static_cast<std::uint64_t>(
+              prepared.maximum_combined_grouping_key_comparison_count);
           std::uint64_t transition_work = 0;
           std::uint64_t aggregate_work = 0;
-          if (!CheckedMultiply(input_row_count, input_row_count,
-                               &input_pairs) ||
-              !CheckedMultiply(input_pairs, prepared.key_terms.size(),
-                               &comparison_work) ||
-              !CheckedMultiply(comparison_work,
-                               prepared.grouping_sets.size(),
-                               &comparison_work) ||
-              !CheckedMultiply(input_row_count,
+          if (!CheckedMultiply(input_row_count,
                                prepared.grouping_sets.size(),
                                &transition_work) ||
               !CheckedAdd(comparison_work, transition_work,
@@ -18302,7 +22227,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           transformation_rule =
               grouped_aggregate_profile.transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
-          auxiliary_memory = aggregate_work;
+          auxiliary_memory = 0;
           break;
         }
         auto prepared = PrepareQueryDistinctRoot(
@@ -18522,9 +22447,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             cume_dist_window;
         const bool real_ranking_window =
             percent_rank_window || cume_dist_window;
-        const auto ranking_profile =
+        auto ranking_profile =
             aggregate_window
-                ? GlobalAggregateInt64WindowProfileV1(
+                ? GlobalAggregateWindowProfileV1(
                       request.relational_dag, node.logical_node_id)
                 : value_window
                 ? (first_value_window
@@ -18548,6 +22473,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         const bool aggregate_count_window =
             aggregate_window &&
             ranking_profile.builtin_id == "sb.aggregate.count";
+        const bool aggregate_boolean_window =
+            aggregate_window &&
+            (ranking_profile.builtin_id == "sb.aggregate.bool_and" ||
+             ranking_profile.builtin_id == "sb.aggregate.bool_or" ||
+             ranking_profile.builtin_id == "sb.aggregate.every");
+        const bool aggregate_bounded_signed_window =
+            aggregate_window && !aggregate_count_window &&
+            !aggregate_boolean_window;
         const std::string_view ranking_name = ranking_profile.display_name;
         const auto typed_consumer = std::ranges::find_if(
             request.relational_dag.nodes, [&](const auto& candidate) {
@@ -18570,6 +22503,37 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                         "composition " + std::string(ranking_name) +
                             " core datatype catalog is unavailable");
         }
+        const auto order_type = std::ranges::find_if(
+            core_manifest.manifest.descriptor_rows,
+            [](const auto& row) { return row.stable_name == "int64"; });
+        const auto boolean_type = std::ranges::find_if(
+            core_manifest.manifest.descriptor_rows,
+            [](const auto& row) { return row.stable_name == "boolean"; });
+        const auto int8_type = std::ranges::find_if(
+            core_manifest.manifest.descriptor_rows,
+            [](const auto& row) { return row.stable_name == "int8"; });
+        const auto int16_type = std::ranges::find_if(
+            core_manifest.manifest.descriptor_rows,
+            [](const auto& row) { return row.stable_name == "int16"; });
+        const auto int32_type = std::ranges::find_if(
+            core_manifest.manifest.descriptor_rows,
+            [](const auto& row) { return row.stable_name == "int32"; });
+        const auto order_type_uuid =
+            order_type == core_manifest.manifest.descriptor_rows.end()
+                ? std::string{}
+                : scratchbird::core::uuid::UuidToString(
+                      order_type->descriptor_uuid.value);
+        const auto boolean_type_uuid =
+            boolean_type == core_manifest.manifest.descriptor_rows.end()
+                ? std::string{}
+                : scratchbird::core::uuid::UuidToString(
+                      boolean_type->descriptor_uuid.value);
+        if (!aggregate_window &&
+            DirectValueWindowUsesExactTypeV1(
+                request.relational_dag, node.logical_node_id,
+                ranking_profile.builtin_id, boolean_type_uuid)) {
+          ranking_profile.result_type_name = "boolean";
+        }
         const auto result_type = std::ranges::find_if(
             core_manifest.manifest.descriptor_rows, [&](const auto& row) {
               return row.stable_name == ranking_profile.result_type_name;
@@ -18579,11 +22543,26 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 ? std::string{}
                 : scratchbird::core::uuid::UuidToString(
                       result_type->descriptor_uuid.value);
+        const std::array<std::string, 4> bounded_signed_type_uuids = {
+            int8_type == core_manifest.manifest.descriptor_rows.end()
+                ? std::string{}
+                : scratchbird::core::uuid::UuidToString(
+                      int8_type->descriptor_uuid.value),
+            int16_type == core_manifest.manifest.descriptor_rows.end()
+                ? std::string{}
+                : scratchbird::core::uuid::UuidToString(
+                      int16_type->descriptor_uuid.value),
+            int32_type == core_manifest.manifest.descriptor_rows.end()
+                ? std::string{}
+                : scratchbird::core::uuid::UuidToString(
+                      int32_type->descriptor_uuid.value),
+            order_type_uuid};
         const auto ranking = PrepareGlobalRankingWindowBinding(
             request.relational_dag,
             request.optimizer_request.logical_properties, *typed_consumer,
             node, input_node, *prepared_sort, input_batch.columns.size(),
-            input_bindings.size(), result_type_uuid, "composition",
+            input_bindings.size(), result_type_uuid, order_type_uuid,
+            boolean_type_uuid, bounded_signed_type_uuids, "composition",
             ranking_profile);
         if (!ranking.ok) {
           return refuse(ranking.diagnostic_id, ranking.detail);
@@ -18593,7 +22572,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           return refuse(std::string(kPayloadDiagnostic),
                         "composition NTILE bucket operand is unresolved");
         }
-        if (value_window &&
+        if (value_window && !ranking.aggregate_count_star &&
             !ranking.navigation_value_column.has_value()) {
           return refuse(std::string(kPayloadDiagnostic),
                         "composition " + std::string(ranking_name) +
@@ -18611,6 +22590,175 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                             " exceeds its supported partition cardinality");
         }
         const auto* output_descriptor = ranking.result_descriptor;
+        if (aggregate_window) {
+          const auto order_column = prepared_sort->order_terms.front().column;
+          const auto order_relational_descriptor = std::ranges::find_if(
+              request.relational_dag.descriptors, [&](const auto& candidate) {
+                return order_column < input_node.output_descriptor_ids.size() &&
+                       candidate.descriptor_id ==
+                           input_node.output_descriptor_ids[order_column];
+              });
+          if (order_column >= input_batch.columns.size() ||
+              order_relational_descriptor ==
+                  request.relational_dag.descriptors.end() ||
+              !ExactCanonicalBoundedSignedWindowOrderV1(
+                  *order_relational_descriptor,
+                  input_batch.columns[order_column].descriptor,
+                  input_batch.columns[order_column].nullable,
+                  bounded_signed_type_uuids,
+                  ranking_profile.function_uuid,
+                  output_descriptor->descriptor_uuid,
+                  result_type_uuid,
+                  prepared_sort->ordering_property_uuid,
+                  ranking.window_property_uuid,
+                  ranking.window_frame_descriptor_uuid) ||
+              (!ranking.aggregate_count_star &&
+               (*ranking.navigation_value_column >=
+                    input_batch.columns.size() ||
+                (order_column != *ranking.navigation_value_column &&
+                 input_batch.columns[order_column]
+                         .descriptor.descriptor_uuid.canonical ==
+                     input_batch.columns[*ranking.navigation_value_column]
+                         .descriptor.descriptor_uuid.canonical)))) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "composition " + std::string(ranking_name) +
+                    " order key is not one exact core bounded-signed "
+                    "column");
+          }
+        }
+        if (aggregate_count_window && !ranking.aggregate_count_star) {
+          const auto source_column = *ranking.navigation_value_column;
+          const auto order_column = prepared_sort->order_terms.front().column;
+          const auto source_relational_descriptor = std::ranges::find_if(
+              request.relational_dag.descriptors, [&](const auto& candidate) {
+                return source_column < input_node.output_descriptor_ids.size() &&
+                       candidate.descriptor_id ==
+                           input_node.output_descriptor_ids[source_column];
+              });
+          const auto order_relational_descriptor = std::ranges::find_if(
+              request.relational_dag.descriptors, [&](const auto& candidate) {
+                return order_column < input_node.output_descriptor_ids.size() &&
+                       candidate.descriptor_id ==
+                           input_node.output_descriptor_ids[order_column];
+              });
+          if (source_column >= input_batch.columns.size() ||
+              order_column >= input_batch.columns.size() ||
+              source_relational_descriptor ==
+                  request.relational_dag.descriptors.end() ||
+              order_relational_descriptor ==
+                  request.relational_dag.descriptors.end() ||
+              !ExactCanonicalScalarWindowOperandV1(
+                  *source_relational_descriptor,
+                  input_batch.columns[source_column].descriptor,
+                  input_batch.columns[source_column].nullable,
+                  ranking_profile.function_uuid,
+                  output_descriptor->descriptor_uuid, result_type_uuid,
+                  input_batch.columns[order_column]
+                      .descriptor.descriptor_uuid.canonical,
+                  order_relational_descriptor->type_uuid,
+                  source_column == order_column,
+                  prepared_sort->ordering_property_uuid,
+                  ranking.window_property_uuid,
+                  ranking.window_frame_descriptor_uuid)) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "composition COUNT source descriptor is not exact");
+          }
+        }
+        if (value_window && !aggregate_window) {
+          const auto source_column = *ranking.navigation_value_column;
+          const auto order_column = prepared_sort->order_terms.front().column;
+          const auto source_relational_descriptor = std::ranges::find_if(
+              request.relational_dag.descriptors, [&](const auto& candidate) {
+                return source_column < input_node.output_descriptor_ids.size() &&
+                       candidate.descriptor_id ==
+                           input_node.output_descriptor_ids[source_column];
+              });
+          const auto order_relational_descriptor = std::ranges::find_if(
+              request.relational_dag.descriptors, [&](const auto& candidate) {
+                return order_column < input_node.output_descriptor_ids.size() &&
+                       candidate.descriptor_id ==
+                           input_node.output_descriptor_ids[order_column];
+              });
+          if (source_column >= input_batch.columns.size() ||
+              order_column >= input_batch.columns.size() ||
+              source_relational_descriptor ==
+                  request.relational_dag.descriptors.end() ||
+              order_relational_descriptor ==
+                  request.relational_dag.descriptors.end() ||
+              !ExactCanonicalScalarWindowOperandV1(
+                  *source_relational_descriptor,
+                  input_batch.columns[source_column].descriptor,
+                  input_batch.columns[source_column].nullable,
+                  ranking_profile.function_uuid,
+                  output_descriptor->descriptor_uuid, result_type_uuid,
+                  input_batch.columns[order_column]
+                      .descriptor.descriptor_uuid.canonical,
+                  order_relational_descriptor->type_uuid,
+                  source_column == order_column,
+                  prepared_sort->ordering_property_uuid,
+                  ranking.window_property_uuid,
+                  ranking.window_frame_descriptor_uuid) ||
+              !ExactCanonicalScalarWindowOperandV1(
+                  *order_relational_descriptor,
+                  input_batch.columns[order_column].descriptor,
+                  input_batch.columns[order_column].nullable,
+                  ranking_profile.function_uuid,
+                  output_descriptor->descriptor_uuid, result_type_uuid,
+                  input_batch.columns[source_column]
+                      .descriptor.descriptor_uuid.canonical,
+                  source_relational_descriptor->type_uuid,
+                  source_column == order_column,
+                  prepared_sort->ordering_property_uuid,
+                  ranking.window_property_uuid,
+                  ranking.window_frame_descriptor_uuid)) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "composition " + std::string(ranking_name) +
+                    " source/order descriptors are not exact");
+          }
+        }
+        if (aggregate_boolean_window || aggregate_bounded_signed_window) {
+          const auto source_column = *ranking.navigation_value_column;
+          const auto source_relational_descriptor = std::ranges::find_if(
+              request.relational_dag.descriptors, [&](const auto& candidate) {
+                return source_column < input_node.output_descriptor_ids.size() &&
+                       candidate.descriptor_id ==
+                           input_node.output_descriptor_ids[source_column];
+              });
+          if (source_column >= input_batch.columns.size() ||
+              source_relational_descriptor ==
+                  request.relational_dag.descriptors.end() ||
+              (aggregate_boolean_window
+                   ? !ExactCanonicalBooleanWindowSourceV1(
+                         *source_relational_descriptor,
+                         input_batch.columns[source_column].descriptor,
+                         input_batch.columns[source_column].nullable,
+                         boolean_type_uuid, ranking_profile.function_uuid,
+                         output_descriptor->descriptor_uuid,
+                         prepared_sort->ordering_property_uuid,
+                         ranking.window_property_uuid,
+                         ranking.window_frame_descriptor_uuid)
+                   : !ExactCanonicalBoundedSignedWindowSourceV1(
+                         *source_relational_descriptor,
+                         input_batch.columns[source_column].descriptor,
+                         input_batch.columns[source_column].nullable,
+                         bounded_signed_type_uuids,
+                         ranking_profile.function_uuid,
+                         output_descriptor->descriptor_uuid,
+                         prepared_sort->ordering_property_uuid,
+                         ranking.window_property_uuid,
+                         ranking.window_frame_descriptor_uuid))) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "composition " + std::string(ranking_name) +
+                    " source is not one exact core " +
+                    (aggregate_boolean_window ? "boolean"
+                                              : "bounded-signed") +
+                    " column");
+          }
+        }
         api::EngineDescriptor descriptor;
         std::uint64_t navigation_value_payload_memory = 0;
         std::uint64_t maximum_value_payload_memory = 0;
@@ -18634,7 +22782,34 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           }
           nth_position = static_cast<std::uint64_t>(decoded.value);
         }
-        if (value_window) {
+        if (ranking.aggregate_count_star) {
+          if (!CheckedMultiply(20, input_row_count,
+                               &result_value_payload_memory)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition COUNT(*) repeated result payload overflowed");
+          }
+          std::uint64_t retained_input_and_output_memory = 0;
+          if (!CheckedAdd(input_memory, input_memory,
+                          &retained_input_and_output_memory) ||
+              !CheckedAdd(retained_input_and_output_memory,
+                          result_value_payload_memory,
+                          &retained_input_and_output_memory) ||
+              retained_input_and_output_memory >
+                  request.optimizer_request.resource.memory_budget_bytes) {
+            return refuse(
+                "QOW-DIAG-OPT-017-REFUSAL-V1",
+                "composition COUNT(*) result materialization exceeds its "
+                "memory budget");
+          }
+          descriptor.descriptor_uuid.canonical =
+              output_descriptor->descriptor_uuid;
+          descriptor.descriptor_kind = "scalar";
+          descriptor.canonical_type_name = "int64";
+          descriptor.encoded_descriptor =
+              "type_uuid=" + output_descriptor->type_uuid +
+              ";nullability=non_null";
+        } else if (value_window) {
           for (const auto& row : input_batch.rows) {
             const auto& value =
                 row.values[*ranking.navigation_value_column];
@@ -18655,8 +22830,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                          value_payload_memory);
           }
           if (aggregate_window) {
-            constexpr std::uint64_t kMaximumInt64TextBytes = 20;
-            if (!CheckedMultiply(kMaximumInt64TextBytes, input_row_count,
+            const std::uint64_t maximum_aggregate_text_bytes =
+                ranking_profile.result_type_name == "boolean" ? 5 : 20;
+            if (!CheckedMultiply(maximum_aggregate_text_bytes, input_row_count,
                                  &result_value_payload_memory)) {
               return refuse(
                   "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -18689,7 +22865,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 "composition " + std::string(ranking_name) +
                     " result materialization exceeds its memory budget");
           }
-          if (!aggregate_count_window) {
+          if (aggregate_bounded_signed_window) {
+            descriptor.descriptor_uuid.canonical =
+                output_descriptor->descriptor_uuid;
+            descriptor.descriptor_kind = "scalar";
+            descriptor.canonical_type_name = "int64";
+            descriptor.encoded_descriptor =
+                "type_uuid=" + output_descriptor->type_uuid +
+                ";nullability=nullable";
+          } else if (!aggregate_count_window) {
             descriptor = input_batch
                              .columns[*ranking.navigation_value_column]
                              .descriptor;
@@ -18701,7 +22885,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                         .descriptor,
                     input_batch.columns[*ranking.navigation_value_column]
                         .nullable,
-                    descriptor, true)) {
+                    descriptor, true) ||
+                (aggregate_boolean_window &&
+                 descriptor.encoded_descriptor !=
+                     "type_uuid=" + boolean_type_uuid +
+                         ";nullability=nullable")) {
               return refuse(std::string(kPayloadDiagnostic),
                             "composition " + std::string(ranking_name) +
                                 " nullable result descriptor does not "
@@ -19095,11 +23283,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           prepared_aggregate_window_order_term =
               prepared_sort->order_terms.front();
           prepared_aggregate_window_value_column =
-              *ranking.navigation_value_column;
+              ranking.navigation_value_column;
           prepared_aggregate_window_descriptor = {
               aggregate_row->abi_version, aggregate_row->function,
               aggregate_row->builtin_id, aggregate_row->function_uuid,
-              false};
+              ranking.aggregate_count_star};
           prepared_aggregate_window_frame_descriptor_uuid =
               ranking.window_frame_descriptor_uuid;
           planning_values_exact = false;
@@ -19511,9 +23699,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               predicate_profile.transformation_id;
           const bool exists =
               prepared.kind == LivePredicateSubqueryKind::kExists;
+          const auto canonical_boolean_type_uuid =
+              ExactCanonicalCoreDatatypeUuidV1("boolean");
           if (prepared.result_column.descriptor.canonical_type_name !=
                   "boolean" ||
-              prepared.result_column.nullable == exists) {
+              prepared.result_column.nullable == exists ||
+              canonical_boolean_type_uuid.empty() ||
+              !CanonicalDescriptorFieldEqualsV1(
+                  prepared.result_column.descriptor, "type_uuid",
+                  std::string_view(canonical_boolean_type_uuid)) ||
+              prepared.result_column.descriptor.descriptor_uuid.canonical ==
+                  canonical_boolean_type_uuid) {
             return refuse(
                 std::string(kPayloadDiagnostic),
                 exists
@@ -19618,6 +23814,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             prepared.comparison_operator =
                 predicate_profile.comparison_operator;
             prepared.quantifier = predicate_profile.quantifier;
+            std::uint64_t left_operand_memory = 0;
+            if (!RuntimeTypedValueMemoryBytes(
+                    prepared.left_value, &left_operand_memory) ||
+                !CheckedAdd(auxiliary_memory, left_operand_memory,
+                            &auxiliary_memory)) {
+              return refuse(
+                  "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "quantified left operand receipt size overflowed");
+            }
             prepared.comparison_authority_required =
                 CanonicalRelationalComparisonAuthorityRequiredV1(
                     prepared.left_value.descriptor,
@@ -19777,6 +23982,28 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         exec::DescriptorBatch output;
         output.columns = input_batch.columns;
         auto result_bindings = state.result_bindings;
+        std::unordered_set<std::string> cardinality_result_identity_domain;
+        if (!CanonicalUuidText(subquery_capability_uuid)) {
+          return refuse(
+              std::string(kPayloadDiagnostic),
+              "cardinality subquery capability identity is unresolved");
+        }
+        cardinality_result_identity_domain.insert(subquery_capability_uuid);
+        for (const auto& source_column : input_batch.columns) {
+          const auto source_type_uuid = ExactEncodedDescriptorField(
+              source_column.descriptor.encoded_descriptor, "type_uuid");
+          if (!CanonicalUuidText(
+                  source_column.descriptor.descriptor_uuid.canonical) ||
+              !source_type_uuid.has_value() ||
+              !CanonicalUuidText(*source_type_uuid)) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "cardinality subquery source identity domain is unresolved");
+          }
+          cardinality_result_identity_domain.insert(
+              source_column.descriptor.descriptor_uuid.canonical);
+          cardinality_result_identity_domain.insert(*source_type_uuid);
+        }
         for (std::size_t column = 0; column < output.columns.size(); ++column) {
           if (!output.columns[column].nullable) {
             output.columns[column].nullable = true;
@@ -19787,12 +24014,32 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   "cardinality subquery result lacks a nullable descriptor carrier");
             }
           }
+          const auto result_descriptor_uuid = DerivedCanonicalUuid(
+              identity_scope,
+              "composition.subquery.cardinality.result." +
+                  std::to_string(node.logical_node_id) + "." +
+                  node.semantic_variant_id + "." + std::to_string(column) +
+                  "." +
+                  input_batch.columns[column]
+                      .descriptor.descriptor_uuid.canonical);
+          if (!CanonicalUuidText(result_descriptor_uuid) ||
+              !cardinality_result_identity_domain
+                   .insert(result_descriptor_uuid)
+                   .second) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "cardinality subquery result descriptor identity collides with its bound role domain");
+          }
+          output.columns[column].descriptor.descriptor_uuid.canonical =
+              result_descriptor_uuid;
           if (result_bindings[column].visible) {
             if (!result_bindings[column].published_descriptor.has_value()) {
               return refuse(
                   std::string(kPayloadDiagnostic),
                   "cardinality subquery visible result binding is unresolved");
             }
+            result_bindings[column].published_descriptor->descriptor_uuid =
+                result_descriptor_uuid;
             result_bindings[column].published_descriptor->nullability =
                 exec::CanonicalResultNullability::kNullable;
           }
@@ -19947,8 +24194,21 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     const bool query_distinct =
         physical_kind == exec::PhysicalNodeKind::kAggregate &&
         implementation_id == "aggregate.query-distinct.typed.v1";
+    const bool count_star_aggregate =
+        implementation_id == "aggregate.count-star.v1";
+    const bool grouped_registry_aggregate =
+        implementation_id == "aggregate.registry-grouping-sets.v1";
+    const bool exact_registry_aggregate =
+        implementation_id == "aggregate.registry-core.v1" &&
+        planning_values_exact;
+    const bool dynamic_registry_aggregate =
+        implementation_id == "aggregate.registry-core.v1" &&
+        !planning_values_exact;
     if (physical_kind == exec::PhysicalNodeKind::kAggregate &&
-        !query_distinct &&
+        !query_distinct && !count_star_aggregate &&
+        !grouped_registry_aggregate &&
+        !exact_registry_aggregate &&
+        !dynamic_registry_aggregate &&
         (!CheckedMultiply(
              input_row_count,
              sizeof(std::size_t), &aggregate_workspace_memory) ||
@@ -19958,21 +24218,45 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                     "composition aggregate workspace size overflowed");
     }
-    if (!AddBatchMemoryBytes(state.batch, &output_memory) ||
-        !CheckedAdd(input_memory, output_memory, &operator_memory) ||
-        !CheckedAdd(operator_memory, auxiliary_memory, &operator_memory) ||
-        (physical_kind == exec::PhysicalNodeKind::kAggregate &&
-         !query_distinct &&
-         !CheckedAdd(operator_memory,
-                     aggregate_workspace_memory,
-                     &operator_memory)) ||
-        operator_memory >
-            request.optimizer_request.resource.memory_budget_bytes) {
+    if (!AddBatchMemoryBytes(state.batch, &output_memory)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "composition output memory overflowed");
+    }
+    if (dynamic_registry_aggregate || grouped_registry_aggregate) {
+      operator_memory =
+          request.optimizer_request.resource.memory_budget_bytes;
+    } else if (exact_registry_aggregate) {
+      std::uint64_t aggregate_output_phase_memory = 0;
+      if (!CheckedAdd(output_memory,
+                      kCanonicalAggregateKernelBaseMemoryBytes,
+                      &aggregate_output_phase_memory) ||
+          !CheckedAdd(input_memory, auxiliary_memory, &operator_memory) ||
+          !CheckedAdd(operator_memory,
+                      std::max(registry_aggregate_distinct_peak_memory,
+                               aggregate_output_phase_memory),
+                      &operator_memory)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                      "composition registry aggregate memory overflowed");
+      }
+    } else if (!CheckedAdd(input_memory, output_memory, &operator_memory) ||
+               !CheckedAdd(operator_memory, auxiliary_memory,
+                           &operator_memory) ||
+               (physical_kind == exec::PhysicalNodeKind::kAggregate &&
+                !query_distinct &&
+                !CheckedAdd(operator_memory,
+                            aggregate_workspace_memory,
+                            &operator_memory))) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "composition node memory overflowed");
+    }
+    if (operator_memory >
+        request.optimizer_request.resource.memory_budget_bytes) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                     "composition node exceeds the admitted memory budget");
     }
     std::uint64_t runtime_accounted_auxiliary_memory = auxiliary_memory;
     if (implementation_id == "aggregate.registry-core.v1" &&
+        !exact_registry_aggregate && !dynamic_registry_aggregate &&
         !CheckedAdd(runtime_accounted_auxiliary_memory,
                     aggregate_workspace_memory,
                     &runtime_accounted_auxiliary_memory)) {
@@ -19980,9 +24264,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
           "composition aggregate runtime auxiliary receipt overflowed");
     }
-    const bool dynamic_table_subquery =
-        physical_kind == exec::PhysicalNodeKind::kSubquery &&
-        implementation_id == "subquery.table.materialize.typed.v1";
+    const bool dynamic_subquery =
+        physical_kind == exec::PhysicalNodeKind::kSubquery;
+    const bool subquery_retains_intermediate_table =
+        dynamic_subquery &&
+        implementation_id != "subquery.table.materialize.typed.v1";
     const bool dynamic_nonrecursive_cte =
         physical_kind == exec::PhysicalNodeKind::kCte;
     if ((physical_kind == exec::PhysicalNodeKind::kFilter ||
@@ -19990,17 +24276,27 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          physical_kind == exec::PhysicalNodeKind::kSort ||
          physical_kind == exec::PhysicalNodeKind::kWindow ||
          physical_kind == exec::PhysicalNodeKind::kLimit ||
-         dynamic_table_subquery || dynamic_nonrecursive_cte ||
-         query_distinct) &&
+         dynamic_subquery || dynamic_nonrecursive_cte ||
+         query_distinct || count_star_aggregate) &&
         !planning_values_exact) {
       // The preceding complex aggregate owns its live result values.  The
       // planning batch is only a schema/cardinality placeholder, so bind the
-      // dynamic FILTER, PROJECT, DISTINCT, SORT, WINDOW, LIMIT,
-      // TABLE-subquery, or nonrecursive CTE to the full selected budget and
-      // let its
+      // dynamic FILTER, PROJECT, DISTINCT, COUNT(*), SORT, WINDOW, LIMIT,
+      // SUBQUERY, or nonrecursive CTE to the full selected budget and let its
       // issuer/executor charge exact callback payloads and auxiliary state.
       operator_memory =
           request.optimizer_request.resource.memory_budget_bytes;
+    }
+    if (!planning_values_exact && subquery_retains_intermediate_table) {
+      if (runtime_accounted_auxiliary_memory < input_memory) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+            "dynamic subquery auxiliary receipt is incomplete");
+      }
+      // The planning input is only a placeholder. Carry fixed state here;
+      // the runtime receipt reconstructs the exact intermediate-table bytes
+      // from the first dispatch input.
+      runtime_accounted_auxiliary_memory -= input_memory;
     }
     profiles.push_back(
         {node.logical_node_id, implementation_id, capability_uuid,
@@ -20011,10 +24307,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     profiles.back().runtime_accounted_auxiliary_memory_bytes =
         runtime_accounted_auxiliary_memory;
     profiles.back().runtime_peak_from_callback_batches =
-        !planning_values_exact;
+        grouped_registry_aggregate || !planning_values_exact;
     profiles.back().runtime_auxiliary_from_first_input_batch =
-        dynamic_nonrecursive_cte &&
-        implementation_id == "cte.bound.materialize.typed.v1";
+        (!planning_values_exact && subquery_retains_intermediate_table) ||
+        (dynamic_nonrecursive_cte &&
+         implementation_id == "cte.bound.materialize.typed.v1");
   }
 
   if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
@@ -20221,13 +24518,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             request.context));
   }
   if (prepared_aggregate_window.has_value() &&
-      prepared_aggregate_window_order_term.has_value() &&
-      prepared_aggregate_window_value_column.has_value()) {
+      prepared_aggregate_window_order_term.has_value()) {
     execution_request.available_executors.push_back(
         MakeLiveAggregateWindowRegistration(
             *prepared_aggregate_window,
             *prepared_aggregate_window_order_term,
-            *prepared_aggregate_window_value_column,
+            prepared_aggregate_window_value_column,
             prepared_aggregate_window_descriptor,
             prepared_aggregate_window_frame_descriptor_uuid,
             aggregate_window_order_term_binding_evidence_uuid,
@@ -20446,18 +24742,27 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
   const auto set_output_row_bound =
       left.batch.rows.size() + right.batch.rows.size();
   std::uint64_t set_comparison_bound = 0;
-  if (!CheckedMultiply(set_output_row_bound, set_output_row_bound,
-                       &set_comparison_bound)) {
+  std::uint64_t set_collation_comparison_count = 0;
+  if (!BoundSetOperationEqualityComparisons(
+          prepared_root, set_profile, set_output_row_bound,
+          &set_comparison_bound, &set_collation_comparison_count) ||
+      set_comparison_bound > std::numeric_limits<std::size_t>::max()) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live set-operation comparison bound overflowed");
   }
   const bool concatenation_only =
       set_profile.operation == exec::CanonicalSetOperationKind::kUnion &&
       set_profile.quantifier == exec::CanonicalSetOperationQuantifier::kAll;
-  const auto set_work =
-      concatenation_only
-          ? static_cast<std::uint64_t>(set_output_row_bound)
-          : set_comparison_bound;
+  std::uint64_t set_base_work = set_output_row_bound;
+  std::uint64_t set_work = 0;
+  if ((!concatenation_only &&
+       !CheckedMultiply(set_output_row_bound, set_output_row_bound,
+                        &set_base_work)) ||
+      !CheckedAdd(set_base_work, set_collation_comparison_count,
+                  &set_work)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live set-operation work bound overflowed");
+  }
   if (set_work >
       request.optimizer_request.resource.maximum_candidate_count) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
@@ -20616,6 +24921,15 @@ ExecuteCanonicalObjectFreeSetOperationQuery(
                 : exec::ExecuteCanonicalSetOperationDistinct(set_request);
         if (!set_result.diagnostic.ok) {
           step.diagnostic = std::move(set_result.diagnostic);
+          return step;
+        }
+        if (!CanonicalSetOperationExecutionReceiptMatches(
+                set_request, node, set_result)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SET-EXECUTION-V1";
+          step.diagnostic.detail =
+              "set-operation execution receipt is inconsistent";
           return step;
         }
         std::uint64_t current_memory_bytes = 0;
@@ -20858,12 +25172,16 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
       }
       std::uint64_t output_bound = 0;
       std::uint64_t comparison_bound = 0;
+      std::uint64_t collation_comparison_count = 0;
       const auto left_bound =
           row_bounds.at(node->input_logical_node_ids[0]);
       const auto right_bound =
           row_bounds.at(node->input_logical_node_ids[1]);
       if (!CheckedAdd(left_bound, right_bound, &output_bound) ||
-          !CheckedMultiply(output_bound, output_bound, &comparison_bound)) {
+          !BoundSetOperationEqualityComparisons(
+              prepared, set_profiles.at(node_id), output_bound,
+              &comparison_bound, &collation_comparison_count) ||
+          comparison_bound > std::numeric_limits<std::size_t>::max()) {
         return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                       "nested set-operation row/comparison bound overflowed");
       }
@@ -20872,9 +25190,14 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
               exec::CanonicalSetOperationKind::kUnion &&
           set_profiles.at(node_id).quantifier ==
               exec::CanonicalSetOperationQuantifier::kAll;
-      const auto node_work =
-          concatenation_only ? output_bound : comparison_bound;
-      if (!CheckedAdd(total_set_work, node_work, &total_set_work)) {
+      std::uint64_t node_base_work = output_bound;
+      std::uint64_t node_work = 0;
+      if ((!concatenation_only &&
+           !CheckedMultiply(output_bound, output_bound,
+                            &node_base_work)) ||
+          !CheckedAdd(node_base_work, collation_comparison_count,
+                      &node_work) ||
+          !CheckedAdd(total_set_work, node_work, &total_set_work)) {
         return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                       "nested set-operation work bound overflowed");
       }
@@ -21115,6 +25438,15 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
             step.diagnostic = std::move(set_result.diagnostic);
             return step;
           }
+          if (!CanonicalSetOperationExecutionReceiptMatches(
+                  set_request, node, set_result)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SET-EXECUTION-V1";
+            step.diagnostic.detail =
+                "set-operation execution receipt is inconsistent";
+            return step;
+          }
           std::uint64_t current_memory_bytes = 0;
           std::uint64_t peak_memory_bytes = 0;
           std::string memory_detail;
@@ -21345,14 +25677,14 @@ ExecuteCanonicalObjectFreeJoinQuery(
                   "live " + operation_name + " input size overflowed");
   }
   std::uint64_t total_memory = 0;
-  std::uint64_t predicate_memory = 0;
+  std::uint64_t join_retained_state_memory = 0;
   if (!CheckedAdd(left_memory, right_memory, &total_memory) ||
-      !CheckedMultiply(pair_count, sizeof(api::EngineSqlTruthValue),
-                       &predicate_memory) ||
-      !CheckedAdd(total_memory, predicate_memory, &total_memory)) {
+      !exec::BoundCanonicalJoinRetainedStateBytes(
+          left_count, right_count, &join_retained_state_memory) ||
+      !CheckedAdd(total_memory, join_retained_state_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live " + operation_name +
-                      " predicate state size overflowed");
+                      " retained join state size overflowed");
   }
   if (total_memory >
       request.optimizer_request.resource.memory_budget_bytes) {
@@ -21457,8 +25789,11 @@ ExecuteCanonicalObjectFreeJoinQuery(
       break;
   }
 
-  if (output_row_bound != 0) {
-    std::uint64_t output_memory = output_row_bound;
+  {
+    // RuntimeMaterializedBatchMemoryBytes assigns every materialized batch one
+    // logical base byte, including an empty result; rows themselves add only
+    // their encoded and binary value payloads.
+    std::uint64_t output_memory = 1;
     const auto add_tuple_memory = [&](const exec::DescriptorTuple& tuple) {
       for (const auto& value : tuple.values) {
         if (!CheckedAdd(output_memory, value.encoded_value.size(),
@@ -21580,7 +25915,7 @@ ExecuteCanonicalObjectFreeJoinQuery(
   }
   if (!CompleteLiveRuntimeMemoryReceipts(
           &profiles,
-          {{root->logical_node_id, predicate_memory}})) {
+          {{root->logical_node_id, join_retained_state_memory}})) {
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "join runtime memory receipts are incomplete");
   }
@@ -22022,8 +26357,8 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
       !AddBatchMemoryBytes(filtered_input.batch, &filtered_memory) ||
       !AddBatchMemoryBytes(prepared_project.expression_output_batch,
                            &projected_memory) ||
-      !CheckedMultiply(pair_count, sizeof(api::EngineSqlTruthValue),
-                       &join_state_memory) ||
+      !exec::BoundCanonicalJoinRetainedStateBytes(
+          left_count, right_count, &join_state_memory) ||
       !CheckedMultiply(joined_row_count, sizeof(api::EngineSqlTruthValue),
                        &filter_state_memory) ||
       !CheckedAdd(left_memory, right_memory, &join_memory) ||
@@ -24959,58 +29294,30 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   }
 
   const auto input_row_count = input.batch.rows.size();
+  if (!BindPreparedGroupedComparisonCeilings(
+          &prepared_root, input_row_count) ||
+      prepared_root.maximum_combined_grouping_key_comparison_count >
+          request.optimizer_request.resource.maximum_candidate_count) {
+    return refuse(
+        "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+        "live grouped COUNT/SUM comparison work exceeds the admitted bound");
+  }
   std::uint64_t input_memory = 1;
   std::uint64_t output_row_bound = 0;
-  std::uint64_t per_group_memory = 0;
-  std::uint64_t output_memory = 0;
-  std::uint64_t projection_memory = 0;
-  std::uint64_t aggregate_workspace_memory = 0;
-  std::uint64_t total_memory = 0;
-  constexpr std::uint64_t kGroupedStateOverhead =
-      kCanonicalAggregateKernelBaseMemoryBytes;
-  constexpr std::uint64_t kGroupingProjectionBytes = 64;
+  const auto total_memory =
+      request.optimizer_request.resource.memory_budget_bytes;
   if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
       !CheckedMultiply(
           std::max<std::uint64_t>(1, input_row_count),
           static_cast<std::uint64_t>(prepared_root.grouping_sets.size()),
           &output_row_bound) ||
-      !CheckedMultiply(output_row_bound,
-                       kGroupedStateOverhead, &per_group_memory) ||
-      !CheckedMultiply(
-          input_memory,
-          static_cast<std::uint64_t>(prepared_root.grouping_sets.size()),
-          &output_memory) ||
-      !CheckedMultiply(
-          output_row_bound,
-          static_cast<std::uint64_t>(grouping_projection_count) *
-              kGroupingProjectionBytes,
-          &projection_memory) ||
-      !CheckedMultiply(input_row_count, sizeof(std::size_t),
-                       &aggregate_workspace_memory) ||
-      !CheckedAdd(input_memory, per_group_memory, &total_memory) ||
-      !CheckedAdd(total_memory, output_memory, &total_memory) ||
-      !CheckedAdd(total_memory, projection_memory, &total_memory) ||
-      !CheckedAdd(total_memory, aggregate_workspace_memory, &total_memory) ||
       output_row_bound > std::numeric_limits<std::size_t>::max()) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live grouped COUNT/SUM memory size overflowed");
   }
   const auto maximum_output_rows =
       static_cast<std::size_t>(output_row_bound);
-  std::uint64_t filter_truth_memory = 0;
-  std::uint64_t filter_memory = total_memory;
-  if ((has_having &&
-       (!CheckedMultiply(output_row_bound,
-                         sizeof(api::EngineSqlTruthValue),
-                         &filter_truth_memory) ||
-        !CheckedAdd(total_memory, filter_truth_memory, &filter_memory))) ||
-      total_memory >
-          request.optimizer_request.resource.memory_budget_bytes ||
-      filter_memory >
-      request.optimizer_request.resource.memory_budget_bytes) {
-    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                  "live grouped COUNT/SUM exceeds the admitted memory budget");
-  }
+  const auto filter_memory = total_memory;
 
   const auto identity_scope =
       graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
@@ -25031,6 +29338,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
        plan::CanonicalLogicalRelationalNodeKind::kAggregate,
        exec::PhysicalNodeKind::kAggregate, profile.transformation_id,
        output_row_bound, total_memory, 1, 1}};
+  profiles.back().runtime_peak_from_callback_batches = true;
   if (has_having) {
     profiles.push_back(
         {root->logical_node_id, "filter.3vl.row.v1", filter_capability_uuid,
@@ -25074,13 +29382,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
          request.optimizer_request.resource.memory_budget_bytes, 1, 1});
     profiles.back().runtime_peak_from_callback_batches = true;
   }
-  std::vector<std::pair<std::uint32_t, std::uint64_t>> runtime_auxiliary;
-  runtime_auxiliary.emplace_back(aggregate_root->logical_node_id,
-                                 per_group_memory);
-  runtime_auxiliary.emplace_back(aggregate_root->logical_node_id,
-                                 projection_memory);
-  if (!CompleteLiveRuntimeMemoryReceipts(&profiles,
-                                         runtime_auxiliary)) {
+  if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "grouped aggregate runtime memory receipts are incomplete");
   }
@@ -25112,6 +29414,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   aggregate_registration.executor_capability_abi_version = 1;
   aggregate_registration.engine_owned = true;
   aggregate_registration.accepts_optimizer_publication_v2 = true;
+  aggregate_registration.publishes_runtime_observation_v1 = true;
   aggregate_registration.execute =
       [prepared_root, input_row_count, maximum_output_rows, has_having,
        mga_context = request.context](
@@ -25144,6 +29447,15 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
               "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
           step.diagnostic.detail =
               "grouped COUNT/SUM cardinality differs from selected cost";
+          return step;
+        }
+        std::string key_binding_detail;
+        if (!RevalidatePreparedGroupedKeyBindings(
+                prepared_root, input_batch, &key_binding_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail = std::move(key_binding_detail);
           return step;
         }
 
@@ -25240,6 +29552,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         first.group_key_terms = prepared_root.key_terms;
         first.group_result_columns = prepared_root.key_result_columns;
         first.grouping_sets = prepared_root.grouping_sets;
+        first.maximum_grouping_key_comparison_count =
+            prepared_root.maximum_grouping_key_comparison_count;
         first.maximum_group_count = maximum_output_rows;
         first.maximum_output_rows = maximum_output_rows;
         first.maximum_combined_final_output_bytes =
@@ -25250,6 +29564,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         // carries the same statement authority without shadow carriers.
         additional_sum.mga_authority = first.aggregate_request.mga_authority;
         grouped_request.additional_aggregates = {std::move(additional_sum)};
+        grouped_request.maximum_combined_grouping_key_comparison_count =
+            prepared_root.maximum_combined_grouping_key_comparison_count;
         grouped_request.maximum_combined_final_output_bytes =
             *aggregate_memory_bound;
 
@@ -25258,6 +29574,42 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
                 grouped_request, *grouped_runtime_dag, input_batch);
         if (!aggregate_result.diagnostic.ok) {
           step.diagnostic = std::move(aggregate_result.diagnostic);
+          return step;
+        }
+        if (!CanonicalOperatorExecutionReceiptMatches(
+                aggregate_result, *grouped_runtime_dag, node,
+                first.aggregate_request.mga_authority.statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-EXECUTION-V1";
+          step.diagnostic.detail =
+              "object-free grouped COUNT/SUM execution receipt changed";
+          return step;
+        }
+        std::uint64_t input_memory_bytes = 0;
+        std::uint64_t unprojected_output_memory_bytes = 0;
+        std::uint64_t peak_memory_bytes =
+            aggregate_result.peak_memory_bytes;
+        if (!RuntimeMaterializedBatchMemoryBytes(input_batch,
+                                                 &input_memory_bytes) ||
+            !RuntimeMaterializedBatchMemoryBytes(
+                aggregate_result.output_batch,
+                &unprojected_output_memory_bytes) ||
+            aggregate_result.input_payload_bytes != input_memory_bytes ||
+            aggregate_result.fixed_retained_memory_bytes !=
+                input_memory_bytes ||
+            aggregate_result.output_payload_bytes !=
+                unprojected_output_memory_bytes ||
+            aggregate_result.current_memory_bytes !=
+                unprojected_output_memory_bytes ||
+            aggregate_result.current_memory_bytes >
+                aggregate_result.peak_memory_bytes ||
+            aggregate_result.peak_memory_bytes > *aggregate_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "grouped aggregate-set runtime memory receipt is inconsistent";
           return step;
         }
         if (!aggregate_result.group_identity_proven ||
@@ -25274,47 +29626,100 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
               "grouped COUNT/SUM runtime did not prove shared group identity";
           return step;
         }
-        std::vector<bool> grouping_sets_observed(
-            prepared_root.grouping_sets.size(), false);
-        for (const auto& group : aggregate_result.groups) {
-          if (group.grouping_set_ordinal >=
-                  prepared_root.grouping_sets.size() ||
-              group.grouping_indicators.size() !=
-                  prepared_root.key_terms.size()) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-            step.diagnostic.detail =
-                "grouped COUNT/SUM runtime returned invalid grouping metadata";
-            return step;
-          }
-          grouping_sets_observed[group.grouping_set_ordinal] = true;
-          const auto& grouping_set = prepared_root.grouping_sets[
-              group.grouping_set_ordinal];
-          const auto expected_metadata =
-              exec::ComputeCanonicalAggregateGroupingMetadata(
-                  prepared_root.key_terms.size(), grouping_set);
-          if (!expected_metadata.diagnostic.ok ||
-              group.grouping_indicators !=
-                  expected_metadata.grouping_indicators ||
-              group.grouping_id != expected_metadata.grouping_id) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-            step.diagnostic.detail =
-                "grouped COUNT/SUM grouping metadata identity drifted";
-            return step;
-          }
-        }
-        if (std::ranges::find(grouping_sets_observed, false) !=
-            grouping_sets_observed.end()) {
+        std::uint64_t observed_set_memory_bytes = 0;
+        std::uint64_t expected_indicator_memory_bytes = 0;
+        std::uint64_t validation_phase_memory_bytes = 0;
+        if (!LogicalBitVectorPayloadBytes(
+                prepared_root.grouping_sets.size(),
+                &observed_set_memory_bytes) ||
+            !LogicalBitVectorPayloadBytes(
+                prepared_root.key_terms.size(),
+                &expected_indicator_memory_bytes) ||
+            !CheckedAdd(aggregate_result.fixed_retained_memory_bytes,
+                        unprojected_output_memory_bytes,
+                        &validation_phase_memory_bytes) ||
+            !CheckedAdd(validation_phase_memory_bytes,
+                        observed_set_memory_bytes,
+                        &validation_phase_memory_bytes) ||
+            !CheckedAdd(validation_phase_memory_bytes,
+                        expected_indicator_memory_bytes,
+                        &validation_phase_memory_bytes) ||
+            validation_phase_memory_bytes > *aggregate_memory_bound) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
           step.diagnostic.detail =
-              "grouped COUNT/SUM runtime omitted a grouping-set identity";
+              "grouped aggregate validation memory exceeded its grant";
           return step;
         }
+        peak_memory_bytes =
+            std::max(peak_memory_bytes, validation_phase_memory_bytes);
+        {
+          std::vector<bool> grouping_sets_observed(
+              prepared_root.grouping_sets.size(), false);
+          for (const auto& group : aggregate_result.groups) {
+            if (group.grouping_set_ordinal >=
+                    prepared_root.grouping_sets.size() ||
+                group.grouping_indicators.size() !=
+                    prepared_root.key_terms.size()) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "grouped COUNT/SUM runtime returned invalid grouping metadata";
+              return step;
+            }
+            grouping_sets_observed[group.grouping_set_ordinal] = true;
+            const auto& grouping_set = prepared_root.grouping_sets[
+                group.grouping_set_ordinal];
+            const auto expected_metadata =
+                exec::ComputeCanonicalAggregateGroupingMetadata(
+                    prepared_root.key_terms.size(), grouping_set);
+            if (!expected_metadata.diagnostic.ok ||
+                group.grouping_indicators !=
+                    expected_metadata.grouping_indicators ||
+                group.grouping_id != expected_metadata.grouping_id) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "grouped COUNT/SUM grouping metadata identity drifted";
+              return step;
+            }
+          }
+          std::size_t empty_grouping_set_count = 0;
+          for (std::size_t set_ordinal = 0;
+               set_ordinal < prepared_root.grouping_sets.size();
+               ++set_ordinal) {
+            const bool empty_grouping_set =
+                prepared_root.grouping_sets[set_ordinal]
+                    .key_term_ordinals.empty();
+            const bool expected_observed =
+                !input_batch.rows.empty() || empty_grouping_set;
+            if (empty_grouping_set) ++empty_grouping_set_count;
+            if (grouping_sets_observed[set_ordinal] !=
+                expected_observed) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "grouped COUNT/SUM grouping-set cardinality drifted";
+              return step;
+            }
+          }
+          if (input_batch.rows.empty() &&
+              aggregate_result.groups.size() !=
+                  empty_grouping_set_count) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+            step.diagnostic.detail =
+                "empty-input grouped COUNT/SUM cardinality drifted";
+            return step;
+          }
+        }
+        std::uint64_t expected_output_memory_bytes =
+            unprojected_output_memory_bytes;
         if (!prepared_root.grouping_projection_columns.empty()) {
           if (prepared_root.grouping_projection_columns.size() !=
                   prepared_root.key_terms.size() + 1 ||
@@ -25327,6 +29732,41 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
                 "grouping projection result descriptor shape drifted";
             return step;
           }
+          for (const auto& metadata : aggregate_result.groups) {
+            if (metadata.grouping_id >
+                    static_cast<std::uint64_t>(
+                        std::numeric_limits<std::int64_t>::max()) ||
+                !CheckedAdd(expected_output_memory_bytes,
+                            prepared_root.key_terms.size(),
+                            &expected_output_memory_bytes) ||
+                !CheckedAdd(
+                    expected_output_memory_bytes,
+                    CanonicalUnsignedDecimalWidth(metadata.grouping_id),
+                    &expected_output_memory_bytes)) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "GROUPING projection payload is invalid";
+              return step;
+            }
+          }
+          std::uint64_t prospective_projection_phase_memory_bytes = 0;
+          if (!CheckedAdd(aggregate_result.fixed_retained_memory_bytes,
+                          expected_output_memory_bytes,
+                          &prospective_projection_phase_memory_bytes) ||
+              prospective_projection_phase_memory_bytes >
+                  *aggregate_memory_bound) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-OPT-017-REFUSAL-V1";
+            step.diagnostic.detail =
+                "grouped aggregate projection exceeded its memory grant";
+            return step;
+          }
+          peak_memory_bytes = std::max(
+              peak_memory_bytes,
+              prospective_projection_phase_memory_bytes);
           aggregate_result.output_batch.columns.insert(
               aggregate_result.output_batch.columns.end(),
               prepared_root.grouping_projection_columns.begin(),
@@ -25348,16 +29788,6 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
               indicator.state = api::EngineValueState::value;
               output_row.values.push_back(std::move(indicator));
             }
-            if (metadata.grouping_id >
-                static_cast<std::uint64_t>(
-                    std::numeric_limits<std::int64_t>::max())) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
-              step.diagnostic.detail =
-                  "GROUPING_ID exceeds the bound int64 result domain";
-              return step;
-            }
             api::EngineTypedValue grouping_id;
             grouping_id.descriptor =
                 prepared_root.grouping_projection_columns.back().descriptor;
@@ -25374,6 +29804,32 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
             return step;
           }
         }
+        std::uint64_t output_memory_bytes = 0;
+        std::uint64_t projection_phase_memory_bytes = 0;
+        if (!RuntimeMaterializedBatchMemoryBytes(
+                aggregate_result.output_batch, &output_memory_bytes) ||
+            output_memory_bytes != expected_output_memory_bytes ||
+            !CheckedAdd(aggregate_result.fixed_retained_memory_bytes,
+                        output_memory_bytes,
+                        &projection_phase_memory_bytes)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "grouped aggregate projection memory receipt overflowed";
+          return step;
+        }
+        peak_memory_bytes =
+            std::max(peak_memory_bytes, projection_phase_memory_bytes);
+        if (output_memory_bytes > peak_memory_bytes ||
+            peak_memory_bytes > *aggregate_memory_bound) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-OPT-017-REFUSAL-V1";
+          step.diagnostic.detail =
+              "grouped aggregate projection exceeded its memory grant";
+          return step;
+        }
         step.authority = aggregate_result.authority;
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
@@ -25381,6 +29837,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         step.output_row_count = aggregate_result.output_batch.rows.size();
         step.materialized_output_batch =
             std::move(aggregate_result.output_batch);
+        PublishRuntimeMemoryObservation(
+            &step, output_memory_bytes, peak_memory_bytes);
         step.mga_statement_context =
             std::move(aggregate_result.mga_statement_context);
         return step;
@@ -25459,6 +29917,16 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
                   maximum_output_rows, mga_authority);
           if (!filter_result.diagnostic.ok) {
             step.diagnostic = std::move(filter_result.diagnostic);
+            return step;
+          }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  filter_result, dag, node,
+                  mga_authority.statement_context)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-FILTER-EXECUTION-V1";
+            step.diagnostic.detail =
+                "HAVING FILTER execution receipt changed";
             return step;
           }
           step.result_handle_id = node.physical_node_id;
@@ -26071,6 +30539,14 @@ ExecuteCanonicalObjectFreePivotQuery(
           step.diagnostic = std::move(pivot.diagnostic);
           return step;
         }
+        if (!CanonicalPivotExecutionReceiptMatches(
+                pivot_request, node, pivot)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-PIVOT-EXECUTION-V1";
+          step.diagnostic.detail = "PIVOT execution receipt changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_row_count;
         step.rows_examined = input_row_count;
@@ -26635,6 +31111,14 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
           step.diagnostic = std::move(unpivot.diagnostic);
           return step;
         }
+        if (!CanonicalUnpivotExecutionReceiptMatches(
+                unpivot_request, node, unpivot)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-EXECUTION-V1";
+          step.diagnostic.detail = "UNPIVOT execution receipt changed";
+          return step;
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_row_count;
         step.rows_examined = input_row_count;
@@ -26910,6 +31394,13 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
 
   const auto input_row_count = input.batch.rows.size();
+  if (count_star &&
+      input_row_count >
+          static_cast<std::size_t>(
+              std::numeric_limits<std::int64_t>::max())) {
+    return refuse("QOW-DIAG-QRY-007-AGGREGATE-OVERFLOW-V1",
+                  "COUNT(*) exceeds int64 result width");
+  }
   std::uint64_t input_memory = 1;
   std::uint64_t total_memory = 0;
   // Signed text width plus the mandatory runtime batch base byte.
@@ -26933,12 +31424,26 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       aggregate_function ==
           exec::CanonicalAggregateFunction::approx_percentile_disc;
   std::uint64_t aggregate_result_memory =
-      (avg_expression || statistical_expression || pair_real_result ||
-       ordered_set_real_result || approximate_real_result)
-          ? kRealAggregateResultMemory
-          : ((bool_and_expression || bool_or_expression || every_expression)
-                 ? kBooleanAggregateResultMemory
-                 : kIntegerAggregateResultMemory);
+      count_star
+          ? 1
+          : ((avg_expression || statistical_expression || pair_real_result ||
+              ordered_set_real_result || approximate_real_result)
+                 ? kRealAggregateResultMemory
+                 : ((bool_and_expression || bool_or_expression ||
+                     every_expression)
+                        ? kBooleanAggregateResultMemory
+                        : kIntegerAggregateResultMemory));
+  if (count_star) {
+    auto remaining_count = input_row_count;
+    do {
+      if (!CheckedAdd(aggregate_result_memory, 1,
+                      &aggregate_result_memory)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                      "live COUNT(*) result size overflowed");
+      }
+      remaining_count /= 10;
+    } while (remaining_count != 0);
+  }
   if (!AddBatchMemoryBytes(input.batch, &input_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live global aggregate input size overflowed");
@@ -26968,36 +31473,122 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
     }
   }
   std::uint64_t filter_truth_memory_bytes = 0;
-  if (prepared_root.filter_column.has_value()) {
-    if (input_memory >
-        request.optimizer_request.resource.memory_budget_bytes) {
-      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                    "live aggregate FILTER input exceeds its memory bound");
+  std::size_t admitted_input_row_count = input_row_count;
+  std::uint64_t aggregate_workspace_memory = 0;
+  std::uint64_t distinct_peak_memory_bytes = 0;
+  {
+    std::optional<std::vector<api::EngineSqlTruthValue>>
+        planning_filter_truth_values;
+    if (prepared_root.filter_column.has_value()) {
+      if (input_memory >
+          request.optimizer_request.resource.memory_budget_bytes) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                      "live aggregate FILTER input exceeds its memory bound");
+      }
+      std::vector<api::EngineSqlTruthValue> materialized_filter_truth_values;
+      std::string filter_detail;
+      if (!MaterializeAggregateFilterTruthValues(
+              input.batch, *prepared_root.filter_column,
+              prepared_root.filter_descriptor_id,
+              request.optimizer_request.resource.memory_budget_bytes -
+                  input_memory,
+              &materialized_filter_truth_values, &filter_truth_memory_bytes,
+              &filter_detail)) {
+        return refuse(
+            "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
+            std::move(filter_detail));
+      }
+      planning_filter_truth_values =
+          std::move(materialized_filter_truth_values);
     }
-    std::vector<api::EngineSqlTruthValue> planning_filter_truth_values;
-    std::string filter_detail;
-    if (!MaterializeAggregateFilterTruthValues(
-            input.batch, *prepared_root.filter_column,
-            prepared_root.filter_descriptor_id,
+    admitted_input_row_count =
+        planning_filter_truth_values.has_value()
+            ? static_cast<std::size_t>(std::ranges::count(
+                  *planning_filter_truth_values,
+                  api::EngineSqlTruthValue::true_value))
+            : input_row_count;
+    std::vector<std::size_t> planning_transition_ordinals;
+    if (!count_star) {
+      try {
+        planning_transition_ordinals.reserve(admitted_input_row_count);
+      } catch (const std::bad_alloc&) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+            "live aggregate transition workspace allocation was refused");
+      } catch (const std::length_error&) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+            "live aggregate transition workspace capacity overflowed");
+      }
+    }
+    if (!CheckedMultiply(planning_transition_ordinals.capacity(),
+                         sizeof(std::size_t),
+                         &aggregate_workspace_memory) ||
+        input_memory >
+            request.optimizer_request.resource.memory_budget_bytes ||
+        filter_truth_memory_bytes >
             request.optimizer_request.resource.memory_budget_bytes -
-                input_memory,
-            &planning_filter_truth_values, &filter_truth_memory_bytes,
-            &filter_detail)) {
+                input_memory ||
+        aggregate_workspace_memory >
+            request.optimizer_request.resource.memory_budget_bytes -
+                input_memory - filter_truth_memory_bytes) {
       return refuse(
-          "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
-          std::move(filter_detail));
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+          "live aggregate transition workspace exceeds its memory bound");
     }
-  }
-  if (prepared_root.distinct) {
-    std::uint64_t distinct_row_overhead = 0;
-    if (!CheckedMultiply(static_cast<std::uint64_t>(input_row_count), 64U,
-                         &distinct_row_overhead) ||
-        !CheckedAdd(aggregate_result_memory, input_memory,
-                    &aggregate_result_memory) ||
-        !CheckedAdd(aggregate_result_memory, distinct_row_overhead,
-                    &aggregate_result_memory)) {
-      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                    "live aggregate DISTINCT state size overflowed");
+    if (prepared_root.distinct) {
+      std::uint64_t distinct_generation_bound = 0;
+      std::uint64_t distinct_comparison_bound = 0;
+      if (!CheckedMultiply(admitted_input_row_count,
+                           prepared_root.value_columns.size(),
+                           &distinct_generation_bound) ||
+          (admitted_input_row_count > 1 &&
+           (!CheckedMultiply(admitted_input_row_count,
+                             admitted_input_row_count - 1,
+                             &distinct_comparison_bound)))) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+            "live aggregate DISTINCT work or memory bound overflowed");
+      }
+      distinct_comparison_bound /= 2;
+      const auto distinct_memory_bound =
+          request.optimizer_request.resource.memory_budget_bytes -
+          input_memory - filter_truth_memory_bytes -
+          aggregate_workspace_memory;
+      PlanningAggregateDistinctState distinct_state;
+      std::string distinct_detail;
+      if (!InitializePlanningAggregateDistinctState(
+              request.context, input.batch, prepared_root,
+              distinct_memory_bound, &distinct_state, &distinct_detail,
+              admitted_input_row_count)) {
+        return refuse(
+            "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
+            "live aggregate DISTINCT: " + distinct_detail);
+      }
+      for (std::size_t row = 0; row < input.batch.rows.size(); ++row) {
+        if (planning_filter_truth_values.has_value() &&
+            (*planning_filter_truth_values)[row] !=
+                api::EngineSqlTruthValue::true_value) {
+          continue;
+        }
+        std::array<const api::EngineTypedValue*, 2> values{};
+        for (std::size_t value = 0;
+             value < prepared_root.value_columns.size(); ++value) {
+          values[value] = &input.batch.rows[row].values[
+              prepared_root.value_columns[value]];
+        }
+        bool admitted = false;
+        if (!AdmitPlanningAggregateDistinctTuple(
+                values, prepared_root.value_columns.size(),
+                distinct_generation_bound, distinct_comparison_bound,
+                distinct_memory_bound, &distinct_state, &admitted,
+                &distinct_detail)) {
+          return refuse(
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
+              "live aggregate DISTINCT: " + distinct_detail);
+        }
+      }
+      distinct_peak_memory_bytes = distinct_state.peak_memory_bytes;
     }
   }
   if (ordered_collection_expression) {
@@ -27056,23 +31647,19 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
                     "live approximate aggregate result size overflowed");
     }
   }
-  if (!CheckedAdd(aggregate_result_memory, filter_truth_memory_bytes,
-                  &aggregate_result_memory)) {
+  if (!CheckedAdd(
+          aggregate_result_memory,
+          count_star ? sizeof(std::int64_t)
+                     : kCanonicalAggregateKernelBaseMemoryBytes,
+          &aggregate_result_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "live aggregate FILTER state size overflowed");
+                  "live aggregate result or state size overflowed");
   }
-  std::uint64_t aggregate_workspace_memory = 0;
-  if (!CheckedMultiply(input_row_count, sizeof(std::size_t),
-                       &aggregate_workspace_memory) ||
-      !CheckedAdd(aggregate_result_memory, aggregate_workspace_memory,
-                  &aggregate_result_memory)) {
-    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "live aggregate transition workspace size overflowed");
-  }
-  if (!CheckedAdd(aggregate_result_memory,
-                  kCanonicalAggregateKernelBaseMemoryBytes,
-                  &aggregate_result_memory) ||
-      !CheckedAdd(input_memory, aggregate_result_memory, &total_memory)) {
+  const auto aggregate_phase_memory =
+      std::max(aggregate_result_memory, distinct_peak_memory_bytes);
+  if (!CheckedAdd(input_memory, filter_truth_memory_bytes, &total_memory) ||
+      !CheckedAdd(total_memory, aggregate_workspace_memory, &total_memory) ||
+      !CheckedAdd(total_memory, aggregate_phase_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live global aggregate input or result size overflowed");
   }
@@ -27177,6 +31764,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   aggregate_registration.executor_capability_abi_version = 1;
   aggregate_registration.engine_owned = true;
   aggregate_registration.accepts_optimizer_publication_v2 = true;
+  aggregate_registration.publishes_runtime_observation_v1 = true;
   aggregate_registration.execute =
       [aggregate_descriptor = prepared_root.aggregate_descriptor,
        result_column = prepared_root.result_column,
@@ -27184,6 +31772,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
        distinct = prepared_root.distinct,
        value_columns = prepared_root.value_columns,
        value_descriptor_ids = prepared_root.value_descriptor_ids,
+       exact_value_binding_receipts =
+           prepared_root.exact_value_binding_receipts,
        direct_arguments = prepared_root.direct_arguments,
        filter_column = prepared_root.filter_column,
        filter_descriptor_id = prepared_root.filter_descriptor_id,
@@ -27225,6 +31815,17 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
               "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
           step.diagnostic.detail =
               "global aggregate input cardinality differs from its selected cost";
+          return step;
+        }
+        std::string value_binding_detail;
+        if (!RevalidatePreparedAggregateValueBindings(
+                value_columns, value_descriptor_ids,
+                exact_value_binding_receipts, input_batch,
+                &value_binding_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail = std::move(value_binding_detail);
           return step;
         }
         const auto aggregate_memory_bound =
@@ -27285,6 +31886,41 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
             step.diagnostic = std::move(aggregate_result.diagnostic);
             return step;
           }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  aggregate_result, dag, node,
+                  aggregate_request.mga_authority.statement_context)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-EXECUTION-V1";
+            step.diagnostic.detail =
+                "global COUNT(*) execution receipt changed";
+            return step;
+          }
+          std::uint64_t output_memory_bytes = 0;
+          std::uint64_t expected_peak_memory_bytes = 0;
+          if (!RuntimeMaterializedBatchMemoryBytes(
+                  aggregate_result.output_batch, &output_memory_bytes) ||
+              !CheckedAdd(input_memory_bytes, sizeof(std::int64_t),
+                          &expected_peak_memory_bytes) ||
+              !CheckedAdd(expected_peak_memory_bytes, output_memory_bytes,
+                          &expected_peak_memory_bytes) ||
+              aggregate_result.input_payload_bytes != input_memory_bytes ||
+              aggregate_result.state_bytes != sizeof(std::int64_t) ||
+              aggregate_result.output_payload_bytes != output_memory_bytes ||
+              aggregate_result.current_memory_bytes != output_memory_bytes ||
+              aggregate_result.current_memory_bytes >
+                  aggregate_result.peak_memory_bytes ||
+              aggregate_result.peak_memory_bytes !=
+                  expected_peak_memory_bytes ||
+              aggregate_result.peak_memory_bytes > *aggregate_memory_bound) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code = "QOW-DIAG-OPT-017-REFUSAL-V1";
+            step.diagnostic.detail =
+                "global COUNT(*) runtime phase memory receipt is inconsistent";
+            return step;
+          }
+          PublishRuntimeMemoryObservation(
+              &step, output_memory_bytes, aggregate_result.peak_memory_bytes);
           output_batch = std::move(aggregate_result.output_batch);
         } else {
           exec::CanonicalAggregateRuntimeRequest aggregate_request;
@@ -27346,7 +31982,37 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
             step.diagnostic = std::move(aggregate_result.diagnostic);
             return step;
           }
+          if (!CanonicalOperatorExecutionReceiptMatches(
+                  aggregate_result, dag, node,
+                  aggregate_request.mga_authority.statement_context)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-EXECUTION-V1";
+            step.diagnostic.detail =
+                "global aggregate execution receipt changed";
+            return step;
+          }
+          std::uint64_t output_memory_bytes = 0;
+          if (!RuntimeMaterializedBatchMemoryBytes(
+                  aggregate_result.output_batch, &output_memory_bytes) ||
+              aggregate_result.executed_strategy !=
+                  exec::CanonicalAggregateExecutionStrategy::serial ||
+              aggregate_result.input_payload_bytes != input_memory_bytes ||
+              aggregate_result.fixed_retained_memory_bytes !=
+                  retained_filter_truth_bytes ||
+              aggregate_result.current_memory_bytes != output_memory_bytes ||
+              aggregate_result.current_memory_bytes >
+                  aggregate_result.peak_memory_bytes ||
+              aggregate_result.peak_memory_bytes > *aggregate_memory_bound) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code = "QOW-DIAG-OPT-017-REFUSAL-V1";
+            step.diagnostic.detail =
+                "global aggregate runtime phase memory receipt is inconsistent";
+            return step;
+          }
           step.authority = aggregate_result.authority;
+          PublishRuntimeMemoryObservation(
+              &step, output_memory_bytes, aggregate_result.peak_memory_bytes);
           output_batch = std::move(aggregate_result.output_batch);
         }
         step.result_handle_id = node.physical_node_id;
@@ -28768,56 +33434,71 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   CanonicalObjectFreeValuesExecutionResult result;
   const auto& dag = input.relational_dag;
   std::vector<const api::RelationalDagNode*> scans;
-  const api::RelationalDagNode* join = nullptr;
+  std::vector<const api::RelationalDagNode*> joins;
   for (const auto& node : dag.nodes) {
     if (node.node_kind == api::RelationalDagNodeKind::kScan) {
       scans.push_back(&node);
-    } else if (node.node_kind == api::RelationalDagNodeKind::kJoin &&
-               join == nullptr) {
-      join = &node;
+    } else if (node.node_kind == api::RelationalDagNodeKind::kJoin) {
+      joins.push_back(&node);
     }
   }
+  const auto root_join = std::ranges::find_if(joins, [&](const auto* node) {
+    return node->node_id == dag.root_node_id;
+  });
+  const api::RelationalDagNode* join =
+      root_join == joins.end() ? nullptr : *root_join;
+  const auto bind_join_identity =
+      [](const api::RelationalDagNode& node,
+         exec::CanonicalAcceptedJoinKind* kind, std::string* component,
+         std::string* operation) {
+        if (kind == nullptr || component == nullptr || operation == nullptr) {
+          return false;
+        }
+        *kind = exec::CanonicalAcceptedJoinKind::kCross;
+        component->clear();
+        operation->clear();
+        if (node.semantic_variant_id == "join.cross.v1") {
+          *component = "cross";
+          *operation = "CROSS JOIN";
+        } else if (node.semantic_variant_id == "join.inner.v1") {
+          *kind = exec::CanonicalAcceptedJoinKind::kInner;
+          *component = "inner";
+          *operation = "INNER JOIN";
+        } else if (node.semantic_variant_id == "join.left-outer.v1") {
+          *kind = exec::CanonicalAcceptedJoinKind::kLeftOuter;
+          *component = "left-outer";
+          *operation = "LEFT OUTER JOIN";
+        } else if (node.semantic_variant_id == "join.right-outer.v1") {
+          *kind = exec::CanonicalAcceptedJoinKind::kRightOuter;
+          *component = "right-outer";
+          *operation = "RIGHT OUTER JOIN";
+        } else if (node.semantic_variant_id == "join.full-outer.v1") {
+          *kind = exec::CanonicalAcceptedJoinKind::kFullOuter;
+          *component = "full-outer";
+          *operation = "FULL OUTER JOIN";
+        } else if (node.semantic_variant_id == "join.left-semi.v1") {
+          *kind = exec::CanonicalAcceptedJoinKind::kLeftSemi;
+          *component = "left-semi";
+          *operation = "LEFT SEMI JOIN";
+        } else if (node.semantic_variant_id == "join.left-anti.v1") {
+          *kind = exec::CanonicalAcceptedJoinKind::kLeftAnti;
+          *component = "left-anti";
+          *operation = "LEFT ANTI JOIN";
+        }
+        return !component->empty();
+      };
   auto join_kind = exec::CanonicalAcceptedJoinKind::kCross;
   std::string join_component;
   std::string join_operation;
-  if (join != nullptr) {
-    if (join->semantic_variant_id == "join.cross.v1") {
-      join_component = "cross";
-      join_operation = "CROSS JOIN";
-    } else if (join->semantic_variant_id == "join.inner.v1") {
-      join_kind = exec::CanonicalAcceptedJoinKind::kInner;
-      join_component = "inner";
-      join_operation = "INNER JOIN";
-    } else if (join->semantic_variant_id == "join.left-outer.v1") {
-      join_kind = exec::CanonicalAcceptedJoinKind::kLeftOuter;
-      join_component = "left-outer";
-      join_operation = "LEFT OUTER JOIN";
-    } else if (join->semantic_variant_id == "join.right-outer.v1") {
-      join_kind = exec::CanonicalAcceptedJoinKind::kRightOuter;
-      join_component = "right-outer";
-      join_operation = "RIGHT OUTER JOIN";
-    } else if (join->semantic_variant_id == "join.full-outer.v1") {
-      join_kind = exec::CanonicalAcceptedJoinKind::kFullOuter;
-      join_component = "full-outer";
-      join_operation = "FULL OUTER JOIN";
-    } else if (join->semantic_variant_id == "join.left-semi.v1") {
-      join_kind = exec::CanonicalAcceptedJoinKind::kLeftSemi;
-      join_component = "left-semi";
-      join_operation = "LEFT SEMI JOIN";
-    } else if (join->semantic_variant_id == "join.left-anti.v1") {
-      join_kind = exec::CanonicalAcceptedJoinKind::kLeftAnti;
-      join_component = "left-anti";
-      join_operation = "LEFT ANTI JOIN";
-    }
-  }
-  const bool accepted_join = !join_component.empty();
+  const bool accepted_join =
+      join != nullptr && bind_join_identity(
+                             *join, &join_kind, &join_component,
+                             &join_operation);
   const bool predicate_join =
       accepted_join && join_kind != exec::CanonicalAcceptedJoinKind::kCross;
-  if (dag.wire_version != 2 || scans.size() != 2 || join == nullptr ||
-      dag.nodes.size() != 3 || dag.root_node_id != join->node_id ||
-      !accepted_join ||
-      join->input_node_ids !=
-          std::vector<std::uint32_t>{scans[0]->node_id, scans[1]->node_id} ||
+  if (dag.wire_version != 2 || scans.size() < 2 || scans.size() > 9 ||
+      joins.size() != scans.size() - 1 || join == nullptr ||
+      dag.nodes.size() != scans.size() + joins.size() || !accepted_join ||
       join->bound_expression_ids.size() !=
           static_cast<std::size_t>(predicate_join)) {
     return result;
@@ -28841,6 +33522,169 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                                 std::move(detail));
     return result;
   };
+
+  struct BoundHeapJoinNode {
+    const api::RelationalDagNode* node{nullptr};
+    exec::CanonicalAcceptedJoinKind kind{
+        exec::CanonicalAcceptedJoinKind::kCross};
+    std::string component;
+    std::string operation;
+    std::string implementation_id;
+    std::string capability_uuid;
+    CanonicalRelationalExpressionRowBinding predicate_row_binding;
+  };
+  std::unordered_map<std::uint32_t, const api::RelationalDagNode*> nodes_by_id;
+  for (const auto& node : dag.nodes) {
+    if (node.node_id == 0 || !nodes_by_id.emplace(node.node_id, &node).second) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                    "object-backed join tree has a missing or duplicate node identity");
+    }
+  }
+  std::unordered_set<std::uint32_t> visiting_join_nodes;
+  std::unordered_set<std::uint32_t> completed_join_nodes;
+  std::unordered_map<std::uint32_t, std::vector<bool>> nullable_by_node;
+  std::vector<BoundHeapJoinNode> bound_joins;
+  std::function<bool(std::uint32_t, std::string*)> bind_tree =
+      [&](const std::uint32_t node_id, std::string* detail) {
+        const auto found = nodes_by_id.find(node_id);
+        if (found == nodes_by_id.end()) {
+          if (detail != nullptr) *detail = "join input node is absent";
+          return false;
+        }
+        const auto& node = *found->second;
+        if (node.node_kind == api::RelationalDagNodeKind::kScan) {
+          if (!completed_join_nodes.insert(node_id).second ||
+              node.semantic_variant_id != "relation.source.v1" ||
+              !node.input_node_ids.empty() ||
+              node.required_object_uuids.size() != 1 ||
+              node.output_descriptor_ids.empty() ||
+              node.bound_expression_ids.size() !=
+                  node.output_descriptor_ids.size() ||
+              !node.required_property_uuids.empty() ||
+              !node.delivered_property_uuids.empty() ||
+              !node.values_row_ids.empty()) {
+            if (detail != nullptr) {
+              *detail = "join leaf is not one exact object-backed relation scan";
+            }
+            return false;
+          }
+          auto& nullable = nullable_by_node[node_id];
+          nullable.reserve(node.output_descriptor_ids.size());
+          for (const auto descriptor_id : node.output_descriptor_ids) {
+            const auto descriptor = std::ranges::find_if(
+                dag.descriptors, [&](const auto& candidate) {
+                  return candidate.descriptor_id == descriptor_id;
+                });
+            if (descriptor == dag.descriptors.end()) {
+              if (detail != nullptr) {
+                *detail = "join leaf output descriptor is unresolved";
+              }
+              return false;
+            }
+            nullable.push_back(
+                descriptor->nullability == api::RelationalNullability::kNullable);
+          }
+          return true;
+        }
+        if (node.node_kind != api::RelationalDagNodeKind::kJoin ||
+            node.input_node_ids.size() != 2 ||
+            node.input_node_ids[0] == node.input_node_ids[1] ||
+            !node.required_object_uuids.empty() ||
+            !node.required_property_uuids.empty() ||
+            !node.delivered_property_uuids.empty() ||
+            !node.values_row_ids.empty() ||
+            completed_join_nodes.contains(node_id) ||
+            !visiting_join_nodes.insert(node_id).second) {
+          if (detail != nullptr) {
+            *detail = "join tree is cyclic, shared, or has an invalid binary node";
+          }
+          return false;
+        }
+        BoundHeapJoinNode bound;
+        bound.node = &node;
+        if (!bind_join_identity(node, &bound.kind, &bound.component,
+                                &bound.operation)) {
+          if (detail != nullptr) *detail = "join kind is outside the accepted set";
+          return false;
+        }
+        const bool predicate =
+            bound.kind != exec::CanonicalAcceptedJoinKind::kCross;
+        if (node.bound_expression_ids.size() !=
+            static_cast<std::size_t>(predicate)) {
+          if (detail != nullptr) {
+            *detail = "join predicate cardinality does not match its join kind";
+          }
+          return false;
+        }
+        if (!bind_tree(node.input_node_ids[0], detail) ||
+            !bind_tree(node.input_node_ids[1], detail)) {
+          return false;
+        }
+        const auto* left = nodes_by_id.at(node.input_node_ids[0]);
+        const auto* right = nodes_by_id.at(node.input_node_ids[1]);
+        std::vector<std::uint32_t> predicate_descriptors =
+            left->output_descriptor_ids;
+        predicate_descriptors.insert(predicate_descriptors.end(),
+                                     right->output_descriptor_ids.begin(),
+                                     right->output_descriptor_ids.end());
+        const bool left_only =
+            bound.kind == exec::CanonicalAcceptedJoinKind::kLeftSemi ||
+            bound.kind == exec::CanonicalAcceptedJoinKind::kLeftAnti;
+        const auto expected_descriptors =
+            left_only ? left->output_descriptor_ids : predicate_descriptors;
+        if (node.output_descriptor_ids != expected_descriptors) {
+          if (detail != nullptr) {
+            *detail = "join output descriptors do not preserve exact input lineage";
+          }
+          return false;
+        }
+        if (predicate) {
+          auto predicate_nullable = nullable_by_node.at(left->node_id);
+          const auto& right_nullable = nullable_by_node.at(right->node_id);
+          predicate_nullable.insert(predicate_nullable.end(),
+                                    right_nullable.begin(),
+                                    right_nullable.end());
+          if (!PrepareInputRowBinding(
+                  dag, node.bound_expression_ids.front(),
+                  predicate_descriptors, &bound.predicate_row_binding,
+                  detail)) {
+            if (detail != nullptr && detail->empty()) {
+              *detail = "join predicate binding is not exact";
+            }
+            return false;
+          }
+          bound.predicate_row_binding.row_nullable =
+              std::move(predicate_nullable);
+        }
+        auto output_nullable = nullable_by_node.at(left->node_id);
+        if (!left_only) {
+          auto right_nullable = nullable_by_node.at(right->node_id);
+          if (bound.kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
+              bound.kind == exec::CanonicalAcceptedJoinKind::kFullOuter) {
+            std::ranges::fill(output_nullable, true);
+          }
+          if (bound.kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
+              bound.kind == exec::CanonicalAcceptedJoinKind::kFullOuter) {
+            std::ranges::fill(right_nullable, true);
+          }
+          output_nullable.insert(output_nullable.end(), right_nullable.begin(),
+                                 right_nullable.end());
+        }
+        nullable_by_node.emplace(node_id, std::move(output_nullable));
+        bound_joins.push_back(std::move(bound));
+        visiting_join_nodes.erase(node_id);
+        completed_join_nodes.insert(node_id);
+        return true;
+      };
+  std::string join_tree_detail;
+  if (!bind_tree(join->node_id, &join_tree_detail) ||
+      completed_join_nodes.size() != dag.nodes.size() ||
+      bound_joins.size() != joins.size()) {
+    return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TREE-V1",
+                  join_tree_detail.empty()
+                      ? "object-backed join tree is disconnected"
+                      : join_tree_detail);
+  }
 
   const auto admission = api::BuildCanonicalCurrentHeapOptimizerAdmission(
       {input.context, input.relational_dag});
@@ -28870,27 +33714,28 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   const auto identity_scope =
       graph.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
   const auto scan_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "heap-cross-scan.capability");
-  const auto join_capability_uuid =
-      DerivedCanonicalUuid(identity_scope,
-                           "heap-" + join_component + ".capability");
-  CanonicalRelationalExpressionRowBinding predicate_row_binding;
-  std::string predicate_detail;
-  if (predicate_join) {
-    std::vector<std::uint32_t> predicate_descriptors =
-        scans[0]->output_descriptor_ids;
-    predicate_descriptors.insert(predicate_descriptors.end(),
-                                 scans[1]->output_descriptor_ids.begin(),
-                                 scans[1]->output_descriptor_ids.end());
-    if (!PrepareInputRowBinding(
-            dag, join->bound_expression_ids.front(), predicate_descriptors,
-            &predicate_row_binding, &predicate_detail)) {
-      return refuse(
-          "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-PREDICATE-V1",
-          predicate_detail.empty()
-              ? "object-backed JOIN predicate binding is not exact"
-              : predicate_detail);
+      DerivedCanonicalUuid(identity_scope, "heap-join-tree-scan.capability");
+  for (auto& bound : bound_joins) {
+    bound.implementation_id =
+        "join." + bound.component + ".3vl.nested.v1";
+    bound.capability_uuid = DerivedCanonicalUuid(
+        identity_scope, "heap-" + bound.component + ".capability");
+    if (bound.capability_uuid.empty()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TREE-V1",
+                    "object-backed join capability identity is unavailable");
     }
+  }
+  const auto join_memory_grant =
+      input.context.optimizer_memory_budget_bytes;
+  if (join_memory_grant == 0 ||
+      join_memory_grant >
+          planning_request.optimizer_request.resource.memory_budget_bytes ||
+      join_memory_grant >
+          std::numeric_limits<std::size_t>::max()) {
+    return refuse(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "object-backed heap JOIN memory grant is absent or outside the "
+        "optimizer admission domain");
   }
   std::vector<LivePhysicalNodeProfile> profiles;
   for (const auto* scan : scans) {
@@ -28903,7 +33748,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     profile.physical_node_kind = exec::PhysicalNodeKind::kScan;
     profile.transformation_rule_id = "canonical.heap.scan.v1";
     profile.estimated_rows = 1;
-    profile.memory_bytes_required = 1024;
+    profile.memory_bytes_required = join_memory_grant;
     profile.minimum_input_count = 0;
     profile.maximum_input_count = 0;
     profile.page_read_sequential_units = 1;
@@ -28912,29 +33757,29 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     profile.mga_visibility_capable = true;
     profiles.push_back(std::move(profile));
   }
-  profiles.push_back(
-      {join->node_id,
-       "join." + join_component + ".3vl.nested.v1",
-       join_capability_uuid,
-       plan::CanonicalLogicalRelationalNodeKind::kJoin,
-       exec::PhysicalNodeKind::kJoin,
-       "canonical.heap.join." + join_component + ".v1",
-       1, 2048, 2, 2});
-  profiles.back().runtime_peak_from_callback_batches = true;
+  for (const auto& bound : bound_joins) {
+    profiles.push_back(
+        {bound.node->node_id, bound.implementation_id, bound.capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kJoin,
+         exec::PhysicalNodeKind::kJoin,
+         "canonical.heap.join." + bound.component + ".v1", 1,
+         join_memory_grant, 2, 2});
+    profiles.back().runtime_peak_from_callback_batches = true;
+  }
   if (!CompleteLiveRuntimeMemoryReceipts(&profiles)) {
     return refuse("QOW-DIAG-OPT-017-REFUSAL-V1",
                   "heap JOIN runtime memory receipts are incomplete");
   }
   const auto physical = PlanAndPublishLivePhysicalDag(
-      planning_request, profiles, "heap-cross-join.selected-plan",
-      "object-backed heap CROSS JOIN");
+      planning_request, profiles, "heap-join-tree.selected-plan",
+      "object-backed heap join tree");
   if (!physical.ok) {
     return refuse(
         physical.diagnostic_id.empty()
             ? "QOW-DIAG-PACKET7-OBJECT-HEAP-CROSS-JOIN-PLANNING-V1"
             : physical.diagnostic_id,
         physical.detail.empty()
-            ? "object-backed heap CROSS JOIN physical DAG was not published"
+            ? "object-backed heap join tree physical DAG was not published"
             : physical.detail);
   }
   result.optimizer_selected = true;
@@ -28953,33 +33798,49 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       bounded_size(input.context.optimizer_memory_budget_bytes);
   const auto maximum_output_rows =
       bounded_size(input.context.optimizer_maximum_candidate_count);
-  const auto maximum_output_columns = join->output_descriptor_ids.size();
+  const auto widest_node = std::ranges::max_element(
+      dag.nodes, {}, [](const auto& node) {
+        return node.output_descriptor_ids.size();
+      });
+  const auto maximum_output_columns =
+      widest_node == dag.nodes.end() ? 0 : widest_node->output_descriptor_ids.size();
+  std::uint64_t maximum_pair_count_u64 = 0;
   if (maximum_scanned_row_versions == 0 || maximum_decoded_bytes == 0 ||
       maximum_output_rows == 0 || maximum_output_columns == 0 ||
       maximum_output_rows >
-          std::numeric_limits<std::size_t>::max() / maximum_output_columns) {
+          std::numeric_limits<std::size_t>::max() / maximum_output_columns ||
+      !CheckedMultiply(maximum_output_rows, maximum_output_rows,
+                       &maximum_pair_count_u64) ||
+      maximum_pair_count_u64 >
+          std::numeric_limits<std::size_t>::max()) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                   "object-backed heap CROSS JOIN bounds are absent or overflow");
   }
+  const auto maximum_pair_count =
+      static_cast<std::size_t>(maximum_pair_count_u64);
 
   exec::CanonicalHeapPhysicalDagDispatchRequest heap_request;
   heap_request.context = &input.context;
   heap_request.relational_dag = &input.relational_dag;
-  heap_request.physical_dag = physical.physical_dag;
+  heap_request.borrowed_physical_dag = &physical.physical_dag;
   heap_request.maximum_scanned_row_versions = maximum_scanned_row_versions;
   heap_request.maximum_decoded_bytes = maximum_decoded_bytes;
   heap_request.maximum_output_rows = maximum_output_rows;
   heap_request.maximum_output_columns = maximum_output_columns;
   heap_request.maximum_output_cells =
       maximum_output_rows * maximum_output_columns;
-  heap_request.cancellation_requested =
+  static const std::function<bool()> kNeverCancelHeapJoin = [] {
+    return false;
+  };
+  heap_request.borrowed_cancellation_requested =
       input.context.query_cancellation_requested
-          ? input.context.query_cancellation_requested
-          : std::function<bool()>([] { return false; });
+          ? &input.context.query_cancellation_requested
+          : &kNeverCancelHeapJoin;
   auto heap_registration =
       exec::BuildCanonicalHeapPhysicalRegistration(heap_request);
   if (!heap_registration.diagnostic.ok ||
-      !heap_registration.registration.has_value()) {
+      !heap_registration.registration.has_value() ||
+      heap_registration.mga_authority == nullptr) {
     return refuse(
         heap_registration.diagnostic.diagnostic_code.empty()
             ? "QOW-DIAG-PACKET7-OBJECT-HEAP-CROSS-JOIN-REGISTRATION-V1"
@@ -29001,47 +33862,130 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-CROSS-JOIN-BINDING-V1",
                   "object-backed CROSS JOIN result bindings are incomplete");
   }
+  std::unordered_set<std::uint32_t> root_output_ids;
+  for (std::size_t ordinal = 0; ordinal < ordered_outputs.size(); ++ordinal) {
+    const auto& output = *ordered_outputs[ordinal];
+    if (!output.visible || output.ordinal != ordinal || output.output_id == 0 ||
+        !root_output_ids.insert(output.output_id).second ||
+        output.descriptor_id != join->output_descriptor_ids[ordinal]) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-CROSS-JOIN-BINDING-V1",
+                    "object-backed join result lineage is not exact");
+    }
+  }
 
   api::CanonicalOptimizerSelectedExecutionRequest selected;
-  selected.selected_physical_dag = physical.physical_dag;
+  selected.borrowed_selected_physical_dag = &physical.physical_dag;
+  selected.borrowed_mga_authority =
+      heap_registration.mga_authority.get();
   selected.pre_access_statistics_snapshot_uuid =
       physical.physical_dag.statistics_snapshot_uuid;
-  selected.mga_authority = heap_registration.mga_authority;
   selected.available_executors.push_back(
       std::move(*heap_registration.registration));
-  CanonicalRelationalExpressionRuntimeServices predicate_services;
-  predicate_services.comparison_evaluator =
-      [context = input.context](const api::EngineTypedValue& left,
-                                const api::EngineTypedValue& right,
-                                int* comparison,
-                                std::string* diagnostic_id,
-                                std::string* refusal_detail) {
-        return CompareCanonicalQueryScalarsV1(
-            context, left, right, comparison, diagnostic_id, refusal_detail);
-      };
-  selected.available_executors.push_back(MakeLiveJoinRegistration(
-      "join." + join_component + ".3vl.nested.v1",
-      join_capability_uuid, {},
-      maximum_output_rows, maximum_output_rows,
-      join_kind, "object-backed heap " + join_operation,
-      input.context, true,
-      predicate_join ? join->bound_expression_ids.front() : 0,
-      std::move(predicate_row_binding), input.relational_dag,
-      std::move(predicate_services)));
+  struct HeapJoinRegistrationGroup {
+    std::string implementation_id;
+    std::string capability_uuid;
+    std::vector<LiveJoinRuntimeNodeConfiguration> node_configurations;
+  };
+  std::vector<HeapJoinRegistrationGroup> join_registration_groups;
+  for (auto& bound : bound_joins) {
+    auto group = std::ranges::find_if(
+        join_registration_groups, [&](const auto& candidate) {
+          return candidate.implementation_id == bound.implementation_id;
+        });
+    if (group == join_registration_groups.end()) {
+      join_registration_groups.push_back(
+          {bound.implementation_id, bound.capability_uuid, {}});
+      group = std::prev(join_registration_groups.end());
+    } else if (group->capability_uuid != bound.capability_uuid) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TREE-V1",
+                    "join implementation capability identity changed");
+    }
+    LiveJoinRuntimeNodeConfiguration configuration;
+    configuration.relational_node_id = bound.node->node_id;
+    configuration.join_kind = bound.kind;
+    configuration.operation_name =
+        "object-backed heap " + bound.operation;
+    if (bound.kind != exec::CanonicalAcceptedJoinKind::kCross) {
+      configuration.predicate_expression_id =
+          bound.node->bound_expression_ids.front();
+      configuration.predicate_binding =
+          std::move(bound.predicate_row_binding);
+    }
+    group->node_configurations.push_back(std::move(configuration));
+  }
+  for (auto& group : join_registration_groups) {
+    if (group.node_configurations.empty()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-TREE-V1",
+                    "join implementation configuration is absent");
+    }
+    CanonicalRelationalExpressionRuntimeServices predicate_services;
+    predicate_services.comparison_evaluator =
+        [context = &input.context](const api::EngineTypedValue& left,
+                                   const api::EngineTypedValue& right,
+                                   int* comparison,
+                                   std::string* diagnostic_id,
+                                   std::string* refusal_detail) {
+          return CompareCanonicalQueryScalarsV1(
+              *context, left, right, comparison, diagnostic_id,
+              refusal_detail);
+        };
+    selected.available_executors.push_back(MakeLiveJoinRegistration(
+        group.implementation_id, group.capability_uuid, {},
+        maximum_pair_count, maximum_output_rows,
+        group.node_configurations.front().join_kind,
+        group.node_configurations.front().operation_name, {}, true,
+        0, {}, {}, std::move(predicate_services),
+        std::move(group.node_configurations), std::nullopt,
+        &input.relational_dag, &input.context,
+        selected.borrowed_mga_authority));
+  }
+  std::uint64_t executor_registration_live_bytes =
+      sizeof(selected.available_executors);
+  std::uint64_t executor_registration_slots_bytes = 0;
+  if (!CheckedMultiply(selected.available_executors.capacity(),
+                       sizeof(exec::CanonicalPhysicalExecutorRegistration),
+                       &executor_registration_slots_bytes) ||
+      !CheckedAdd(executor_registration_live_bytes,
+                  executor_registration_slots_bytes,
+                  &executor_registration_live_bytes)) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "executor registration registry memory overflows");
+  }
+  for (const auto& registration : selected.available_executors) {
+    if (registration.retained_live_memory_bytes_v1 == 0 ||
+        registration.implementation_id.capacity() ==
+            std::numeric_limits<std::size_t>::max() ||
+        registration.executor_capability_uuid.capacity() ==
+            std::numeric_limits<std::size_t>::max() ||
+        !CheckedAdd(executor_registration_live_bytes,
+                    registration.implementation_id.capacity() + 1,
+                    &executor_registration_live_bytes) ||
+        !CheckedAdd(executor_registration_live_bytes,
+                    registration.executor_capability_uuid.capacity() + 1,
+                    &executor_registration_live_bytes) ||
+        !CheckedAdd(executor_registration_live_bytes,
+                    registration.retained_live_memory_bytes_v1,
+                    &executor_registration_live_bytes)) {
+      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                    "executor registration retained-memory receipt is incomplete");
+    }
+  }
+  selected.executor_registration_live_memory_bytes =
+      executor_registration_live_bytes;
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
       input.context.statement_uuid.canonical;
   selected.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + input.context.current_monotonic_ns,
-          "heap-cross-join.execution-attempt");
+          "heap-join-tree.execution-attempt");
   selected.result_publication_request.transaction_effect_evidence_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" +
               std::to_string(input.context.local_transaction_id) + ":" +
               std::to_string(
                   input.context.snapshot_visible_through_local_transaction_id),
-          "heap-cross-join.transaction-effect-unchanged");
+          "heap-join-tree.transaction-effect-unchanged");
   selected.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.invocation_mode =
@@ -29061,14 +34005,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     published.name_utf8 = output.output_name_utf8;
     published.descriptor_uuid = descriptor->descriptor_uuid;
     published.type_uuid = descriptor->type_uuid;
-    const auto left_width = scans[0]->output_descriptor_ids.size();
-    const bool null_extended_output =
-        ((join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
-          join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) &&
-         ordinal < left_width) ||
-        ((join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
-          join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) &&
-         ordinal >= left_width);
+    const auto& root_nullability = nullable_by_node.at(join->node_id);
+    const bool null_extended_output = root_nullability[ordinal];
     published.nullability =
         null_extended_output ||
                 descriptor->nullability ==
@@ -29109,6 +34047,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
 #endif
 
 #if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+struct Rcp079ColumnarSourceRuntimeMemoryReceiptV1 {
+  bool complete{false};
+  std::uint64_t provider_logical_memory_bytes{0};
+  std::uint64_t peak_live_memory_bytes{0};
+  std::uint64_t memory_grant_bytes{0};
+};
+
 struct Rcp079CapturedModelLegV1 {
   bool captured{false};
   std::uint32_t logical_node_id{0};
@@ -29123,7 +34068,23 @@ struct Rcp079CapturedModelLegV1 {
       plan::CanonicalLogicalRelationalNodeKind::kRelationSource};
   exec::PhysicalNodeKind physical_node_kind{exec::PhysicalNodeKind::kScan};
   exec::ModelFamilyExecutionRequestV1 execution_request;
+  std::vector<exec::ExecutorColumnDescriptor> exact_output_columns;
+  std::shared_ptr<Rcp079ColumnarSourceRuntimeMemoryReceiptV1>
+      columnar_runtime_memory_receipt;
+  std::shared_ptr<std::atomic_bool> cancellation_probe_failed;
 };
+
+bool Rcp079ExactExecutorColumnV1(
+    const exec::ExecutorColumnDescriptor& actual,
+    const exec::ExecutorColumnDescriptor& expected);
+
+std::optional<std::uint64_t> Rcp079ModelProviderBatchLogicalMemoryBytesV1(
+    const exec::ModelProviderBatchV1& batch);
+
+std::optional<std::uint64_t>
+Rcp079ProjectedModelSourceOutputLogicalMemoryBytesV1(
+    const exec::ModelSourceInputDescriptorV1& input,
+    const exec::ModelProviderBatchV1& provider);
 
 void CaptureRcp079ModelLegV1(
     Rcp079CapturedModelLegV1* capture, const std::uint32_t logical_node_id,
@@ -29163,6 +34124,10 @@ MakeRcp079CapturedModelLegRegistration(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 =
+      std::ranges::all_of(captured_legs, [](const auto& leg) {
+        return leg.columnar_runtime_memory_receipt != nullptr;
+      });
   registration.execute =
       [captured_legs](const exec::TypedPhysicalNodeDag& selected_dag,
                  const exec::PhysicalNodeRecord& selected_node,
@@ -29182,6 +34147,11 @@ MakeRcp079CapturedModelLegRegistration(
             });
         if (!inputs.empty() || captured == captured_legs.end() ||
             !captured->captured ||
+            selected_node.memory_bytes_required == 0 ||
+            selected_node.memory_bytes_required >
+                selected_dag.memory_budget_bytes ||
+            selected_node.memory_bytes_required !=
+                captured->execution_request.input.maximum_memory_bytes ||
             selected_node.implementation_id != captured->implementation_id ||
             selected_node.executor_capability_uuid !=
                 captured->capability_uuid ||
@@ -29230,6 +34200,41 @@ MakeRcp079CapturedModelLegRegistration(
             };
         const auto executed = exec::ExecuteModelFamilySourceV1(request);
         step.data_access_observed = executed.data_access_observed;
+        if (captured->cancellation_probe_failed != nullptr &&
+            captured->cancellation_probe_failed->load(
+                std::memory_order_relaxed)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+          step.diagnostic.detail =
+              "model-family cancellation probe failed";
+          return step;
+        }
+        if (executed.diagnostic_id == "SB_MODEL_EXECUTION_CANCELLED_V1") {
+          const exec::PhysicalAdmissionEvidence* cancellation_policy = nullptr;
+          for (const auto& evidence : selected_dag.admission_evidence) {
+            if (evidence.stage !=
+                exec::PhysicalAdmissionStage::kPolicyCapability) {
+              continue;
+            }
+            if (cancellation_policy != nullptr) {
+              cancellation_policy = nullptr;
+              break;
+            }
+            cancellation_policy = &evidence;
+          }
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = executed.diagnostic_id;
+          step.diagnostic.detail = executed.detail;
+          step.cancellation_observed = true;
+          step.transient_state_cleanup_proven =
+              executed.cleanup_complete && executed.cleanup_count == 1;
+          step.cancellation_evidence_uuid =
+              cancellation_policy == nullptr
+                  ? std::string{}
+                  : cancellation_policy->evidence_uuid;
+          return step;
+        }
         if (!executed.accepted || !executed.root_published ||
             !executed.cleanup_complete || executed.cleanup_count != 1 ||
             !executed.output.exact_exchange_validated) {
@@ -29240,6 +34245,43 @@ MakeRcp079CapturedModelLegRegistration(
                   : executed.diagnostic_id;
           step.diagnostic.detail = executed.detail;
           return step;
+        }
+        if (!captured->exact_output_columns.empty() &&
+            (executed.output.batch.columns.size() !=
+                 captured->exact_output_columns.size() ||
+             !std::ranges::equal(
+                 executed.output.batch.columns,
+                 captured->exact_output_columns,
+                 [](const auto& actual, const auto& expected) {
+                   return Rcp079ExactExecutorColumnV1(actual, expected);
+                 }))) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1";
+          step.diagnostic.detail =
+              "captured model-family output descriptor changed";
+          return step;
+        }
+        if (captured->columnar_runtime_memory_receipt != nullptr) {
+          std::uint64_t current_memory_bytes = 0;
+          const auto& memory = *captured->columnar_runtime_memory_receipt;
+          if (!memory.complete ||
+              memory.provider_logical_memory_bytes == 0 ||
+              memory.memory_grant_bytes !=
+                  selected_node.memory_bytes_required ||
+              memory.peak_live_memory_bytes > memory.memory_grant_bytes ||
+              !RuntimeMaterializedBatchMemoryBytes(executed.output.batch,
+                                                   &current_memory_bytes) ||
+              current_memory_bytes > memory.peak_live_memory_bytes) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+            step.diagnostic.detail =
+                "captured columnar runtime memory receipt is incomplete";
+            return step;
+          }
+          PublishRuntimeMemoryObservation(
+              &step, current_memory_bytes, memory.peak_live_memory_bytes);
         }
         step.result_handle_id = selected_node.physical_node_id;
         step.output_row_count = executed.output.batch.rows.size();
@@ -29299,23 +34341,47 @@ exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(
               "captured model-family ASOF inputs changed";
           return step;
         }
+        const auto* cancellation_policy =
+            FindLiveCancellationPolicy(selected_dag);
+        if (cancellation_policy == nullptr) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-ASOF-CANCELLATION-POLICY-V1";
+          step.diagnostic.detail =
+              "captured model-family ASOF requires one exact cancellation "
+              "policy evidence row";
+          return step;
+        }
         const auto cancellation_requested =
             execution_context.query_cancellation_requested
                 ? execution_context.query_cancellation_requested
                 : std::function<bool()>([] { return false; });
+        auto cancellation_state = LiveCancellationProbeState::kRunning;
+        const std::function<bool()> guarded_cancellation_requested =
+            [&]() noexcept {
+          return PollLiveCancellationProbe(cancellation_requested,
+                                           &cancellation_state);
+        };
         const auto cancelled = [&]() {
-          try {
-            return cancellation_requested();
-          } catch (...) {
-            return true;
-          }
+          return guarded_cancellation_requested();
+        };
+        const auto bind_cancellation = [&](const char* detail) {
+          exec::DescriptorRuntimeDiagnostic diagnostic;
+          diagnostic.ok = false;
+          diagnostic.diagnostic_code =
+              cancellation_state == LiveCancellationProbeState::kProbeFailed
+                  ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                  : "SB_MODEL_EXECUTION_CANCELLED_V1";
+          diagnostic.detail =
+              cancellation_state == LiveCancellationProbeState::kProbeFailed
+                  ? "captured model-family ASOF cancellation probe failed"
+                  : detail;
+          BindLiveCancellationFailure(std::move(diagnostic),
+                                      cancellation_policy, &step);
         };
         if (cancelled()) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "SB_MODEL_EXECUTION_CANCELLED_V1";
-          step.diagnostic.detail =
-              "captured model-family ASOF was cancelled before binding";
+          bind_cancellation(
+              "captured model-family ASOF was cancelled before binding");
           return step;
         }
         exec::CanonicalTimeSeriesAsofJoinRequestV1 request;
@@ -29373,17 +34439,37 @@ exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(
                          &request.left_keys) ||
             !append_keys(request.right_batch, request.right_binding, true,
                          &request.right_keys)) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code = cancelled()
-              ? "SB_MODEL_EXECUTION_CANCELLED_V1"
-              : "SB_MODEL_TIME_SERIES_IDENTITY_INVALID_V1";
-          step.diagnostic.detail =
-              "captured model-family ASOF keys are not canonical";
+          if (cancellation_state != LiveCancellationProbeState::kRunning) {
+            bind_cancellation(
+                "captured model-family ASOF was cancelled during key "
+                "construction");
+          } else {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_TIME_SERIES_IDENTITY_INVALID_V1";
+            step.diagnostic.detail =
+                "captured model-family ASOF keys are not canonical";
+          }
           return step;
         }
         auto executed = exec::ExecuteCanonicalTimeSeriesAsofJoinV1(request);
         if (!executed.diagnostic.ok) {
-          step.diagnostic = std::move(executed.diagnostic);
+          BindLiveCancellationFailure(std::move(executed.diagnostic),
+                                      cancellation_policy, &step);
+          return step;
+        }
+        if (executed.selected_plan_uuid != selected_dag.selected_plan_uuid ||
+            executed.executed_physical_node_id !=
+                selected_node.physical_node_id ||
+            executed.causal_counter_id != selected_node.causal_counter_id ||
+            !exec::PhysicalMgaStatementContextEqual(
+                executed.mga_statement_context,
+                selected_dag.mga_statement_context)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1";
+          step.diagnostic.detail =
+              "captured model-family ASOF execution receipt changed";
           return step;
         }
         step.result_handle_id = selected_node.physical_node_id;
@@ -29690,6 +34776,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   "time-series downstream composition is disconnected");
   }
   std::ranges::reverse(consumer_chain);
+  const bool standalone_time_series_source =
+      consumer_chain.empty() && set_root == nullptr &&
+      recursive_root == nullptr && mixed_join == nullptr &&
+      asof_join == nullptr;
   result.optimizer_admitted = true;
   const auto expression_named = [&](const std::string_view name) {
     return std::ranges::find_if(dag.expressions, [&](const auto& expression) {
@@ -29954,11 +35044,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                                      : std::string_view("real64"))
             : bucket_operation ? std::string_view("timestamp_tz")
                                : kRawTypes[ordinal];
+    const auto expected_timezone =
+        expected_type == "timestamp_tz"
+            ? std::optional<std::string>("UTC")
+            : std::optional<std::string>{};
     if (descriptor == dag.descriptors.end() || !outputs[ordinal]->visible ||
         outputs[ordinal]->ordinal != ordinal ||
         outputs[ordinal]->output_name_utf8 != expected_name ||
         outputs[ordinal]->descriptor_id != source->output_descriptor_ids[ordinal] ||
-        descriptor->nullability != api::RelationalNullability::kNonNull) {
+        descriptor->nullability != api::RelationalNullability::kNonNull ||
+        descriptor->collation_uuid.has_value() ||
+        descriptor->timezone_profile_id != expected_timezone ||
+        descriptor->width.has_value() || descriptor->precision.has_value() ||
+        descriptor->scale.has_value()) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "time-series public output descriptor was substituted");
     }
@@ -30009,21 +35107,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                       : loaded_relation.diagnostic.detail);
   }
   const auto& persisted = loaded_relation.descriptor;
-  static constexpr std::array<std::string_view, 4> kStorageNames{
-      "metric_uuid", "point_timestamp", "tags", "value"};
-  static constexpr std::array<std::string_view, 4> kStorageTypes{
-      "uuid", "timestamp_tz", "text", "real64"};
-  bool exact_storage = persisted.columns.size() == kStorageNames.size();
-  for (std::size_t ordinal = 0;
-       exact_storage && ordinal < persisted.columns.size(); ++ordinal) {
-    exact_storage = persisted.columns[ordinal].ordinal == ordinal &&
-                    persisted.columns[ordinal].canonical_name_key ==
-                        kStorageNames[ordinal] &&
-                    persisted.columns[ordinal].value_descriptor
-                            .canonical_type_name == kStorageTypes[ordinal] &&
-                    !persisted.columns[ordinal].nullable;
-  }
-  if (!exact_storage || persisted.relation_uuid.canonical != object_uuid ||
+  if (persisted.relation_uuid.canonical != object_uuid ||
       persisted.database_uuid.canonical != input.context.database_uuid.canonical ||
       persisted.schema_uuid.canonical.empty() ||
       persisted.relation_kind != "table" ||
@@ -30033,20 +35117,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent time-series descriptor is invalid");
   }
-  const auto core_manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-  if (!core_manifest.ok()) {
+  if (!api::ExactTimeSeriesStorageDescriptorV1(persisted)) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                  "current core datatype catalog is unavailable");
+                  "persistent time-series descriptor type binding is not exact");
   }
   const auto core_type_uuid = [&](const std::string_view stable_name) {
-    const auto found = std::ranges::find_if(
-        core_manifest.manifest.descriptor_rows, [&](const auto& row) {
-          return row.stable_name == stable_name;
-        });
-    return found == core_manifest.manifest.descriptor_rows.end()
-               ? std::string{}
-               : scratchbird::core::uuid::UuidToString(
-                     found->descriptor_uuid.value);
+    return ExactCanonicalCoreDatatypeUuidV1(stable_name);
   };
   const auto alias_expression = expression_for(range->child_expression_ids[0]);
   const auto exact_range_descriptor = [&](const auto descriptor) {
@@ -30256,7 +35332,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         descriptor != dag.descriptors.end() &&
         descriptor->descriptor_uuid == expected_public_descriptor_uuids[ordinal] &&
         descriptor->type_uuid ==
-            core_type_uuid(expected_public_core_types[ordinal]);
+            core_type_uuid(expected_public_core_types[ordinal]) &&
+        !descriptor->collation_uuid.has_value() &&
+        descriptor->timezone_profile_id ==
+            (expected_public_core_types[ordinal] == "timestamp"
+                 ? std::optional<std::string>("UTC")
+                 : std::optional<std::string>{}) &&
+        !descriptor->width.has_value() && !descriptor->precision.has_value() &&
+        !descriptor->scale.has_value();
   }
   if (!exact_public_cohort) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
@@ -30732,8 +35815,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   }
   provider_request.maximum_scanned_row_versions =
       static_cast<std::size_t>(scanned_row_bound);
+  const auto selected_source_memory_grant =
+      planned.selected_candidate.cost.memory_bytes_required;
+  if (selected_source_memory_grant == 0 ||
+      selected_source_memory_grant > planning.memory_budget_bytes) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "time-series selected source memory grant is invalid");
+  }
   provider_request.maximum_decoded_bytes =
-      std::max<std::uint64_t>(1, planning.memory_budget_bytes / 2);
+      selected_source_memory_grant;
   provider_request.maximum_output_rows =
       static_cast<std::size_t>(output_row_bound);
   provider_request.maximum_groups =
@@ -30741,13 +35831,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   provider_request.maximum_tag_bytes =
       std::max<std::uint64_t>(1, planning.memory_budget_bytes / 4);
   provider_request.maximum_result_bytes =
-      std::max<std::uint64_t>(1, planning.memory_budget_bytes / 2);
-  provider_request.maximum_memory_bytes =
-      std::max<std::uint64_t>(1, planning.memory_budget_bytes);
+      selected_source_memory_grant;
+  provider_request.maximum_memory_bytes = selected_source_memory_grant;
+  const auto time_series_cancellation_probe_failed =
+      std::make_shared<std::atomic_bool>(false);
+  const auto raw_time_series_cancellation =
+      input.context.query_cancellation_requested;
+  const std::function<bool()> time_series_cancellation_requested =
+      [raw_time_series_cancellation,
+       time_series_cancellation_probe_failed]() noexcept {
+        if (!raw_time_series_cancellation) return false;
+        try {
+          return raw_time_series_cancellation();
+        } catch (...) {
+          time_series_cancellation_probe_failed->store(
+              true, std::memory_order_relaxed);
+          return true;
+        }
+      };
   provider_request.cancellation_requested =
-      input.context.query_cancellation_requested
-          ? input.context.query_cancellation_requested
-          : std::function<bool()>([] { return false; });
+      time_series_cancellation_requested;
 
   exec::ModelSourceInputDescriptorV1 source_input;
   source_input.family_id = "time_series";
@@ -30793,7 +35896,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   }
   source_input.maximum_cells =
       static_cast<std::size_t>(source_maximum_cells);
-  source_input.maximum_memory_bytes = planning.memory_budget_bytes;
+  source_input.maximum_memory_bytes = selected_source_memory_grant;
   const auto append_rollup_evidence =
       [&](api::EngineApiResult* api_result) {
         if (api_result == nullptr || rollup_candidate == nullptr) return;
@@ -30863,8 +35966,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   std::uint64_t composition_limit_count = 0;
   std::uint64_t composition_limit_offset = 0;
   bool composition_fetch_first_rows_only = false;
-  if (!consumer_chain.empty() || mixed_join != nullptr ||
-      asof_join != nullptr) {
+  // Standalone and composed time-series forms share one canonical optimizer
+  // and execution spine. Keep this scope so the preparation-only state does
+  // not escape into the provider callback below.
+  {
     plan::CanonicalMgaStatementContext current_logical_mga;
     current_logical_mga.statement_uuid = mga.statement_uuid;
     current_logical_mga.statement_timestamp = mga.statement_timestamp;
@@ -31284,6 +36389,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                         "time-series aggregate is not exact global COUNT(*)");
         }
+        const auto count_descriptor = descriptor_for(
+            consumer->output_descriptor_ids.empty()
+                ? 0
+                : consumer->output_descriptor_ids.front());
+        const auto int64_type_uuid = type_uuid_for("int64");
+        if (consumer->output_descriptor_ids.size() != 1 ||
+            count_descriptor == dag.descriptors.end() ||
+            int64_type_uuid.empty() ||
+            count_descriptor->type_uuid != int64_type_uuid ||
+            count_descriptor->nullability !=
+                api::RelationalNullability::kNonNull ||
+            count_descriptor->collation_uuid.has_value() ||
+            count_descriptor->timezone_profile_id.has_value() ||
+            count_descriptor->width.has_value() ||
+            count_descriptor->precision.has_value() ||
+            count_descriptor->scale.has_value()) {
+          return refuse(
+              "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+              "time-series COUNT(*) result descriptor is not canonical int64");
+        }
         auto prepared = PrepareGlobalAggregateRoot(
             dag, *logical_consumer, *previous_logical, composition_state,
             aggregate_profile.function, true, false, false);
@@ -31306,10 +36431,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       } else if (consumer->node_kind == api::RelationalDagNodeKind::kCte) {
         if (consumer->semantic_variant_id != "cte.bound.v1" ||
             !consumer->bound_expression_ids.empty() ||
+            !consumer->required_object_uuids.empty() ||
+            !consumer->required_property_uuids.empty() ||
+            !consumer->delivered_property_uuids.empty() ||
             consumer->output_descriptor_ids !=
-                previous_logical->output_descriptor_ids) {
-          return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
-                        "time-series CTE is not schema preserving");
+                previous_logical->output_descriptor_ids ||
+            logical_consumer->output_descriptor_ids !=
+                previous_logical->output_descriptor_ids ||
+            composition_state.batch.columns.size() !=
+                consumer->output_descriptor_ids.size()) {
+          return refuse(
+              "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+              "time-series nonrecursive CTE is not an exact "
+              "schema-preserving bound CTE");
+        }
+        const auto validated = exec::ValidateCanonicalDescriptorBatch(
+            composition_state.batch, consumer->output_descriptor_ids);
+        if (!validated.ok) {
+          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "time-series nonrecursive CTE input: " +
+                            validated.detail);
         }
         composition_nonrecursive_cte = true;
         composition_cte_implementation_id =
@@ -31432,9 +36573,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                       "time-series UNION ALL: " + prepared.detail);
       }
       std::uint64_t comparison_bound = 0;
-      if (!CheckedMultiply(kTimeSeriesCompositionRowBound,
-                           kTimeSeriesCompositionRowBound,
-                           &comparison_bound) ||
+      std::uint64_t collation_comparison_count = 0;
+      if (!BoundSetOperationEqualityComparisons(
+              prepared, time_series_set_profile,
+              kTimeSeriesCompositionRowBound, &comparison_bound,
+              &collation_comparison_count) ||
           comparison_bound > std::numeric_limits<std::size_t>::max()) {
         return refuse(
             "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -31693,7 +36836,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       heap_profile.transformation_rule_id =
           "canonical.time-series.mixed-join.heap-scan.v1";
       heap_profile.estimated_rows = 1;
-      heap_profile.memory_bytes_required = 1024;
+      heap_profile.memory_bytes_required =
+          input.context.optimizer_memory_budget_bytes;
       heap_profile.page_read_sequential_units = 1;
       heap_profile.mga_visibility_checks_expected = 1;
       heap_profile.storage_read_capable = true;
@@ -31713,7 +36857,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           "canonical.time-series.mixed-join." +
           composition_mixed_join_component + ".v1";
       join_profile.estimated_rows = kTimeSeriesCompositionRowBound;
-      join_profile.memory_bytes_required = 1;
+      join_profile.memory_bytes_required = planning.memory_budget_bytes;
       join_profile.minimum_input_count = 2;
       join_profile.maximum_input_count = 2;
       join_profile.runtime_peak_from_callback_batches = true;
@@ -31977,7 +37121,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       heap_profile.transformation_rule_id =
           "canonical.time-series.asof-join.heap-scan.v1";
       heap_profile.estimated_rows = 1;
-      heap_profile.memory_bytes_required = 1024;
+      heap_profile.memory_bytes_required =
+          input.context.optimizer_memory_budget_bytes;
       heap_profile.page_read_sequential_units = 1;
       heap_profile.mga_visibility_checks_expected = 1;
       heap_profile.storage_read_capable = true;
@@ -32004,7 +37149,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       join_profile.transformation_rule_id =
           exec::CanonicalTimeSeriesAsofTransformationReceiptV1(receipt);
       join_profile.estimated_rows = composition_asof_maximum_output_rows;
-      join_profile.memory_bytes_required = 1;
+      join_profile.memory_bytes_required = planning.memory_budget_bytes;
       join_profile.minimum_input_count = 2;
       join_profile.maximum_input_count = 2;
       join_profile.runtime_peak_from_callback_batches = true;
@@ -32087,7 +37232,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             dag.root_node_id ||
         physical_source == composition_physical->physical_dag.nodes.end() ||
         physical_source->implementation_id !=
-            "physical_time_series_range_scan_v1") {
+            "physical_time_series_range_scan_v1" ||
+        physical_source->memory_bytes_required !=
+            selected_source_memory_grant) {
       return refuse("QOW-DIAG-OPTIMIZER-PHYSICAL-PUBLICATION-V1",
                     "time-series combined physical root or source changed");
     }
@@ -32145,15 +37292,91 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       DerivedCanonicalUuid(identity_scope, "time-series.property");
   const auto security_receipt_uuid =
       DerivedCanonicalUuid(identity_scope, "time-series.security-receipt");
+  const auto time_series_runtime_memory_receipt =
+      std::make_shared<Rcp079ColumnarSourceRuntimeMemoryReceiptV1>();
   execution_request.execute_provider =
-      [provider_request, source_input, public_columns, property_uuid,
-       security_receipt_uuid,
-       aggregate, bucket_operation,
-       bucket_interval_ns](const exec::ModelSourceInputDescriptorV1&) mutable {
+      [provider_request, public_columns, property_uuid,
+       security_receipt_uuid, aggregate, bucket_operation,
+       bucket_interval_ns, time_series_cancellation_requested,
+       time_series_cancellation_probe_failed,
+       time_series_runtime_memory_receipt](
+          const exec::ModelSourceInputDescriptorV1& runtime_input) mutable {
         exec::ModelProviderExecutionResultV1 provider;
-        const auto read = api::EngineBoundTimeSeriesReadV1(provider_request);
+        const auto fail = [&](std::string diagnostic, std::string detail) {
+          provider.diagnostic_id = std::move(diagnostic);
+          provider.detail = std::move(detail);
+          return provider;
+        };
+        const auto cancellation_diagnostic = [&] {
+          return time_series_cancellation_probe_failed->load(
+                     std::memory_order_relaxed)
+                     ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                     : "SB_MODEL_EXECUTION_CANCELLED_V1";
+        };
+        *time_series_runtime_memory_receipt = {};
+        try {
+        if (runtime_input.family_id != "time_series" ||
+            runtime_input.object_uuid != provider_request.object_uuid ||
+            runtime_input.descriptor_generation !=
+                provider_request.expected_descriptor_generation ||
+            runtime_input.maximum_rows == 0 ||
+            runtime_input.maximum_cells == 0 || public_columns.empty() ||
+            runtime_input.maximum_memory_bytes == 0 ||
+            runtime_input.maximum_rows > provider_request.maximum_output_rows ||
+            runtime_input.maximum_memory_bytes >
+                provider_request.maximum_memory_bytes) {
+          return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "time-series runtime provider grant is invalid");
+        }
+        const auto runtime_row_bound = std::min<std::uint64_t>(
+            runtime_input.maximum_rows,
+            runtime_input.maximum_cells / public_columns.size());
+        if (runtime_row_bound == 0) {
+          return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "time-series runtime provider cell grant is invalid");
+        }
+        auto runtime_provider_request = provider_request;
+        runtime_provider_request.selected_alternative_uuid =
+            runtime_input.selected_alternative_uuid;
+        runtime_provider_request.capability_uuid =
+            runtime_input.capability_uuid;
+        runtime_provider_request.provider_uuid = runtime_input.provider_uuid;
+        runtime_provider_request.provider_generation =
+            runtime_input.provider_generation;
+        runtime_provider_request.exact_fallback_selected =
+            runtime_input.exact_fallback_selected;
+        // The physical row/cell grant bounds rows published by this leg.  It
+        // must not narrow the separately planned scan-version bound: MGA may
+        // need to inspect historical, invisible, or tombstoned versions to
+        // produce a much smaller visible result.
+        runtime_provider_request.maximum_decoded_bytes =
+            runtime_input.maximum_memory_bytes;
+        runtime_provider_request.maximum_output_rows =
+            runtime_row_bound;
+        runtime_provider_request.maximum_groups = std::min(
+            runtime_provider_request.maximum_groups,
+            runtime_row_bound);
+        runtime_provider_request.maximum_tag_bytes = std::min(
+            runtime_provider_request.maximum_tag_bytes,
+            runtime_input.maximum_memory_bytes);
+        runtime_provider_request.maximum_result_bytes =
+            runtime_input.maximum_memory_bytes;
+        runtime_provider_request.maximum_memory_bytes =
+            runtime_input.maximum_memory_bytes;
+        if (time_series_cancellation_requested()) {
+          return fail(cancellation_diagnostic(),
+                      "time-series execution was cancelled before provider access");
+        }
+        const auto read =
+            api::EngineBoundTimeSeriesReadV1(runtime_provider_request);
         provider.data_access_observed = read.data_access_observed;
         provider.rows_examined = read.scanned_row_version_count;
+        if (time_series_cancellation_probe_failed->load(
+                std::memory_order_relaxed) ||
+            read.cancellation_probe_failed) {
+          return fail("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+                      "time-series cancellation probe failed");
+        }
         if (!read.ok) {
           provider.diagnostic_id = read.diagnostics.empty()
                                        ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
@@ -32163,18 +37386,66 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                                 : read.diagnostics.front().detail;
           return provider;
         }
-        if (read.selected_alternative_uuid !=
-                source_input.selected_alternative_uuid ||
-            read.capability_uuid != source_input.capability_uuid ||
-            read.provider_uuid != source_input.provider_uuid ||
-            read.provider_generation != source_input.provider_generation ||
-            read.descriptor_generation != source_input.descriptor_generation ||
+        const bool exact_fallback = runtime_input.exact_fallback_selected;
+        const auto expected_access_path =
+            exact_fallback ? "TIME_SERIES_BUCKET_STORE_SCAN_EXACT_V1"
+                           : "time_series.local.v1";
+        const auto expected_ordering =
+            runtime_input.operation_id == "TIME_SERIES_DOWNSAMPLE"
+                ? "series_metric_tags_bucket_start_ascending_v1"
+                : "series_metric_timestamp_tags_row_ascending_v1";
+        const auto selected_output_count =
+            read.rows.size() + read.downsample_rows.size();
+        if (!read.data_access_observed || !read.diagnostics.empty() ||
+            !read.unsupported_features.empty() ||
+            read.cancellation_observed ||
+            read.memory_grant_bytes != runtime_input.maximum_memory_bytes ||
+            !read.memory_receipt_complete ||
+            read.current_live_memory_bytes > read.peak_live_memory_bytes ||
+            read.peak_live_memory_bytes > read.memory_grant_bytes ||
+            read.selected_access_path_id != expected_access_path ||
+            read.preferred_access_invocation_count !=
+                static_cast<std::uint64_t>(!exact_fallback) ||
+            read.exact_fallback_access_invocation_count !=
+                static_cast<std::uint64_t>(exact_fallback) ||
+            read.exact_fallback_observed != exact_fallback ||
+            read.rollup_observed ||
+            !read.rollup_equivalence_recheck_complete ||
+            !read.residual_recheck_complete ||
+            !read.base_row_mga_recheck_complete ||
+            !read.security_recheck_complete ||
+            read.scanned_row_version_count >
+                runtime_provider_request.maximum_scanned_row_versions ||
+            (runtime_input.operation_id != "TIME_SERIES_DOWNSAMPLE" &&
+             read.selected_visible_row_count >
+                 runtime_provider_request.maximum_output_rows) ||
+            selected_output_count >
+                runtime_provider_request.maximum_output_rows ||
+            read.result_byte_count >
+                runtime_provider_request.maximum_result_bytes ||
+            read.ordering_id != expected_ordering ||
+            read.descriptor_uuid !=
+                runtime_provider_request.expected_descriptor_uuid ||
+            read.selected_alternative_uuid !=
+                runtime_input.selected_alternative_uuid ||
+            read.capability_uuid != runtime_input.capability_uuid ||
+            read.provider_uuid != runtime_input.provider_uuid ||
+            read.provider_generation != runtime_input.provider_generation ||
+            read.descriptor_generation != runtime_input.descriptor_generation ||
             read.exact_fallback_observed !=
-                source_input.exact_fallback_selected) {
-          provider.diagnostic_id = "SB_MODEL_TYPED_EXCHANGE_INVALID_V1";
-          provider.detail =
-              "time-series provider selection or generation changed";
-          return provider;
+                runtime_input.exact_fallback_selected ||
+            (runtime_input.operation_id == "TIME_SERIES_DOWNSAMPLE"
+                 ? (!read.rows.empty() ||
+                    (read.selected_visible_row_count != 0 &&
+                     read.downsample_rows.empty()) ||
+                    (!read.downsample_rows.empty() &&
+                     read.downsample_rows.size() >
+                         read.selected_visible_row_count))
+                 : (!read.downsample_rows.empty() ||
+                    read.rows.size() !=
+                        read.selected_visible_row_count))) {
+          return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                      "time-series provider execution receipt changed");
         }
         const auto real_text = [](const double value) {
           if (value == 0.0) return std::string("0");
@@ -32192,7 +37463,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           return bytes <= std::numeric_limits<std::uint64_t>::max() -
                               bridge_bytes &&
                  (bridge_bytes += bytes) <=
-                     source_input.maximum_memory_bytes;
+                     runtime_input.maximum_memory_bytes;
         };
         const auto account_string = [&](const std::string_view value) {
           return value.size() != std::numeric_limits<std::size_t>::max() &&
@@ -32206,8 +37477,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                      account_string(descriptor.encoded_descriptor);
             };
         const bool bridge_initial_ok =
-            account_bridge(sizeof(read)) &&
-            account_bridge(read.result_byte_count) &&
+            account_bridge(read.current_live_memory_bytes) &&
             account_bridge(sizeof(exec::ModelProviderBatchV1));
         const std::size_t provider_row_count =
             read.rows.size() + read.downsample_rows.size();
@@ -32231,11 +37501,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                             sizeof(api::EngineTypedValue), &vector_bytes) &&
             account_bridge(vector_bytes);
         for (const auto& column : public_columns) {
+          if (time_series_cancellation_requested()) {
+            return fail(cancellation_diagnostic(),
+                        "time-series provider descriptor preflight was cancelled");
+          }
           bridge_preflight_ok =
               bridge_preflight_ok && account_string(column.stable_name) &&
               account_descriptor(column.descriptor);
         }
         for (const auto& row : read.rows) {
+          if (time_series_cancellation_requested()) {
+            return fail(cancellation_diagnostic(),
+                        "time-series provider raw-row preflight was cancelled");
+          }
           bridge_preflight_ok =
               bridge_preflight_ok && account_string(row.row_uuid) &&
               account_string(row.series_uuid) &&
@@ -32251,6 +37529,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           }
         }
         for (const auto& row : read.downsample_rows) {
+          if (time_series_cancellation_requested()) {
+            return fail(
+                cancellation_diagnostic(),
+                "time-series provider aggregate-row preflight was cancelled");
+          }
           bridge_preflight_ok =
               bridge_preflight_ok && account_string(row.series_uuid) &&
               account_string(row.metric_uuid) &&
@@ -32265,10 +37548,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           }
         }
         bridge_preflight_ok =
-            bridge_preflight_ok && account_string(source_input.provider_uuid) &&
-            account_string(source_input.selected_alternative_uuid) &&
-            account_string(source_input.capability_uuid) &&
-            account_string(source_input.result_handle_uuid) &&
+            bridge_preflight_ok && account_string(runtime_input.provider_uuid) &&
+            account_string(runtime_input.selected_alternative_uuid) &&
+            account_string(runtime_input.capability_uuid) &&
+            account_string(runtime_input.result_handle_uuid) &&
             account_string(property_uuid) &&
             account_string(security_receipt_uuid);
         if (!bridge_preflight_ok) {
@@ -32278,29 +37561,29 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           return provider;
         }
         auto& batch = provider.provider_batch;
-        batch.provider_uuid = source_input.provider_uuid;
-        batch.provider_generation = source_input.provider_generation;
+        batch.provider_uuid = runtime_input.provider_uuid;
+        batch.provider_generation = runtime_input.provider_generation;
         batch.selected_alternative_uuid =
-            source_input.selected_alternative_uuid;
-        batch.capability_uuid = source_input.capability_uuid;
+            runtime_input.selected_alternative_uuid;
+        batch.capability_uuid = runtime_input.capability_uuid;
         batch.exact_fallback_selected =
-            source_input.exact_fallback_selected;
-        batch.result_handle_uuid = source_input.result_handle_uuid;
-        batch.causal_counter_id = source_input.causal_counter_id;
-        batch.output_descriptor_ids = source_input.output_descriptor_ids;
+            runtime_input.exact_fallback_selected;
+        batch.result_handle_uuid = runtime_input.result_handle_uuid;
+        batch.causal_counter_id = runtime_input.causal_counter_id;
+        batch.output_descriptor_ids = runtime_input.output_descriptor_ids;
         batch.batch.columns.reserve(public_columns.size());
         batch.batch.columns.insert(batch.batch.columns.end(),
                                    public_columns.begin(),
                                    public_columns.end());
         batch.batch.rows.reserve(provider_row_count);
         batch.ordered_row_identities.reserve(provider_row_count);
-        batch.mga_statement_context = source_input.mga_statement_context;
+        batch.mga_statement_context = runtime_input.mga_statement_context;
         batch.security_receipt_uuid = security_receipt_uuid;
         batch.properties.property_uuid = property_uuid;
         batch.properties.ordering_id = read.ordering_id;
         batch.properties.partitioning_id = "single_local_partition";
         batch.properties.uniqueness_id =
-            source_input.operation_id != "TIME_SERIES_DOWNSAMPLE"
+            runtime_input.operation_id != "TIME_SERIES_DOWNSAMPLE"
                 ? "row_uuid"
                 : "series_metric_tags_bucket_v1";
         batch.properties.exact = true;
@@ -32327,6 +37610,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           batch.batch.rows.push_back(std::move(tuple));
         };
         for (const auto& row : read.rows) {
+          if (time_series_cancellation_requested()) {
+            return fail(cancellation_diagnostic(),
+                        "time-series provider raw-row publication was cancelled");
+          }
           api::EngineApiI64 projected_bucket_start_ns = 0;
           std::string raw_payload;
           if (bucket_operation) {
@@ -32369,6 +37656,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           batch.ordered_row_identities.push_back(std::move(identity));
         }
         for (const auto& row : read.downsample_rows) {
+          if (time_series_cancellation_requested()) {
+            return fail(
+                cancellation_diagnostic(),
+                "time-series provider aggregate publication was cancelled");
+          }
           const auto sample_count = std::to_string(row.sample_count);
           const auto aggregate_value =
               aggregate == api::EngineBoundTimeSeriesAggregateV1::kCount
@@ -32417,8 +37709,97 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           identity.time_series_aggregate_value = aggregate_value;
           batch.ordered_row_identities.push_back(std::move(identity));
         }
+        if (time_series_cancellation_requested()) {
+          return fail(cancellation_diagnostic(),
+                      "time-series provider publication was cancelled");
+        }
+        const auto provider_memory =
+            Rcp079ModelProviderBatchLogicalMemoryBytesV1(batch);
+        const auto output_memory =
+            Rcp079ProjectedModelSourceOutputLogicalMemoryBytesV1(
+                runtime_input, batch);
+        std::uint64_t uniqueness_memory =
+            3 * sizeof(std::unordered_set<std::string>);
+        std::uint64_t maximum_tag_temporary = 0;
+        constexpr std::uint64_t kSetNodeOverhead =
+            sizeof(std::string) + 4 * sizeof(void*) + 64;
+        bool exchange_memory_complete = true;
+        for (const auto& identity : batch.ordered_row_identities) {
+          if (time_series_cancellation_requested()) {
+            return fail(
+                cancellation_diagnostic(),
+                "time-series exchange memory receipt was cancelled");
+          }
+          if (runtime_input.operation_id != "TIME_SERIES_DOWNSAMPLE") {
+            std::uint64_t node_memory = kSetNodeOverhead;
+            exchange_memory_complete =
+                exchange_memory_complete &&
+                CheckedAdd(node_memory, identity.row_uuid.size(),
+                           &node_memory) &&
+                CheckedAdd(uniqueness_memory, node_memory,
+                           &uniqueness_memory);
+          }
+          std::uint64_t tag_temporary = 3 * sizeof(std::string);
+          std::uint64_t repeated_tag_bytes = 0;
+          exchange_memory_complete =
+              exchange_memory_complete &&
+              CheckedAdd(static_cast<std::uint64_t>(identity.tags.size()), 1,
+                         &repeated_tag_bytes) &&
+              CheckedMultiply(repeated_tag_bytes, std::uint64_t{3},
+                              &repeated_tag_bytes) &&
+              CheckedAdd(tag_temporary, repeated_tag_bytes,
+                         &tag_temporary);
+          maximum_tag_temporary =
+              std::max(maximum_tag_temporary, tag_temporary);
+        }
+        std::uint64_t provider_construction_peak = 0;
+        std::uint64_t exchange_validation_peak = 0;
+        std::uint64_t exchange_output_peak = 0;
+        if (!provider_memory.has_value() || !output_memory.has_value() ||
+            !exchange_memory_complete ||
+            !CheckedAdd(read.current_live_memory_bytes, *provider_memory,
+                        &provider_construction_peak) ||
+            !CheckedAdd(*provider_memory, uniqueness_memory,
+                        &exchange_validation_peak) ||
+            !CheckedAdd(exchange_validation_peak, maximum_tag_temporary,
+                        &exchange_validation_peak) ||
+            !CheckedAdd(*provider_memory, *output_memory,
+                        &exchange_output_peak)) {
+          return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "time-series live-memory receipt overflowed");
+        }
+        time_series_runtime_memory_receipt->provider_logical_memory_bytes =
+            *provider_memory;
+        time_series_runtime_memory_receipt->peak_live_memory_bytes =
+            std::max({read.peak_live_memory_bytes,
+                      provider_construction_peak,
+                      exchange_validation_peak, exchange_output_peak});
+        time_series_runtime_memory_receipt->memory_grant_bytes =
+            runtime_input.maximum_memory_bytes;
+        time_series_runtime_memory_receipt->complete =
+            time_series_runtime_memory_receipt->peak_live_memory_bytes <=
+            time_series_runtime_memory_receipt->memory_grant_bytes;
+        if (!time_series_runtime_memory_receipt->complete) {
+          return fail(
+              "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+              "time-series provider/exchange peak exceeded the selected grant");
+        }
         provider.ok = true;
         return provider;
+        } catch (const std::bad_alloc&) {
+          return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "time-series provider allocation was refused");
+        } catch (const std::length_error&) {
+          return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "time-series provider allocation length was refused");
+        } catch (const std::exception& exception) {
+          return fail("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+                      std::string("time-series provider threw: ") +
+                          exception.what());
+        } catch (...) {
+          return fail("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+                      "time-series provider threw a non-standard exception");
+        }
       };
   CaptureRcp079ModelLegV1(
       leg_capture, source->node_id, "time_series",
@@ -32431,8 +37812,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       downsample_operation ? exec::PhysicalNodeKind::kAggregate
                            : exec::PhysicalNodeKind::kScan,
       execution_request);
+  if (leg_capture != nullptr) {
+    leg_capture->exact_output_columns = public_columns;
+    leg_capture->columnar_runtime_memory_receipt =
+        time_series_runtime_memory_receipt;
+    leg_capture->cancellation_probe_failed =
+        time_series_cancellation_probe_failed;
+  }
   if (leg_capture != nullptr) return result;
-  if (composition_physical.has_value()) {
+  {
     struct TimeSeriesSourceExecutionReceipt {
       bool execution_started{false};
       bool data_access_observed{false};
@@ -32452,9 +37840,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     source_registration.executor_capability_abi_version = 1;
     source_registration.engine_owned = true;
     source_registration.accepts_optimizer_publication_v2 = true;
+    source_registration.publishes_runtime_observation_v1 = true;
     source_registration.execute =
         [execution_request, source_execution_receipt,
-         persisted_descriptor_uuid = persisted.descriptor_uuid.canonical](
+         persisted_descriptor_uuid = persisted.descriptor_uuid.canonical,
+         public_columns, property_uuid, security_receipt_uuid,
+         time_series_runtime_memory_receipt,
+         time_series_cancellation_probe_failed,
+         standalone_time_series_source,
+         maximum_scanned_row_versions =
+             provider_request.maximum_scanned_row_versions](
             const exec::TypedPhysicalNodeDag& selected_dag,
             const exec::PhysicalNodeRecord& selected_node,
             const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -32466,7 +37861,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
           step.mga_statement_context = selected_dag.mga_statement_context;
           step.authority.engine_mga_snapshot_bound = true;
           step.data_access_observation_known = true;
+          try {
           if (!inputs.empty() || selected_dag.abi_version != 2 ||
+              selected_node.memory_bytes_required == 0 ||
+              selected_node.memory_bytes_required >
+                  selected_dag.memory_budget_bytes ||
+              selected_node.memory_bytes_required !=
+                  execution_request.input.maximum_memory_bytes ||
               selected_node.implementation_id !=
                   "physical_time_series_range_scan_v1" ||
               selected_node.selected_alternative_uuid !=
@@ -32499,50 +37900,163 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
               executed.cleanup_complete;
           source_execution_receipt->cleanup_count = executed.cleanup_count;
           step.data_access_observed = executed.data_access_observed;
-          if (!executed.accepted || !executed.root_published ||
-              !executed.cleanup_complete || executed.cleanup_count != 1 ||
-              !executed.output.exact_exchange_validated ||
-              executed.output.family_id != execution_request.input.family_id ||
-              executed.output.operation_id !=
-                  execution_request.input.operation_id ||
-              executed.output.object_uuid !=
-                  execution_request.input.object_uuid ||
-              executed.output.physical_node_id !=
-                  selected_node.physical_node_id ||
-              executed.output.selected_alternative_uuid !=
-                  selected_node.selected_alternative_uuid ||
-              executed.output.capability_uuid !=
-                  selected_node.executor_capability_uuid ||
-              executed.output.provider_uuid !=
-                  execution_request.input.provider_uuid ||
-              executed.output.provider_generation !=
-                  execution_request.input.provider_generation ||
-              executed.output.result_handle_uuid !=
-                  execution_request.input.result_handle_uuid ||
-              executed.output.causal_counter_id !=
-                  selected_node.causal_counter_id ||
-              executed.output.output_descriptor_ids !=
-                  selected_node.output_descriptor_ids) {
+          if (time_series_cancellation_probe_failed->load(
+                  std::memory_order_relaxed)) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
-                executed.diagnostic_id.empty()
+                "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+            step.diagnostic.detail =
+                "time-series cancellation probe failed";
+            return step;
+          }
+          if (executed.diagnostic_id == "SB_MODEL_EXECUTION_CANCELLED_V1") {
+            const exec::PhysicalAdmissionEvidence* cancellation_policy =
+                nullptr;
+            for (const auto& evidence : selected_dag.admission_evidence) {
+              if (evidence.stage !=
+                  exec::PhysicalAdmissionStage::kPolicyCapability) {
+                continue;
+              }
+              if (cancellation_policy != nullptr) {
+                cancellation_policy = nullptr;
+                break;
+              }
+              cancellation_policy = &evidence;
+            }
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code = executed.diagnostic_id;
+            step.diagnostic.detail = executed.detail;
+            step.cancellation_observed = true;
+            step.transient_state_cleanup_proven =
+                executed.cleanup_complete && executed.cleanup_count == 1;
+            step.cancellation_evidence_uuid =
+                cancellation_policy == nullptr
+                    ? std::string{}
+                    : cancellation_policy->evidence_uuid;
+            return step;
+          }
+          const auto& output = executed.output;
+          const auto& expected = execution_request.input;
+          const auto expected_ordering =
+              expected.operation_id == "TIME_SERIES_DOWNSAMPLE"
+                  ? "series_metric_tags_bucket_start_ascending_v1"
+                  : "series_metric_timestamp_tags_row_ascending_v1";
+          const auto expected_uniqueness =
+              expected.operation_id == "TIME_SERIES_DOWNSAMPLE"
+                  ? "series_metric_tags_bucket_v1"
+                  : "row_uuid";
+          const bool execution_completed =
+              executed.accepted && executed.execution_started &&
+              executed.provider_entered && executed.data_access_observed &&
+              executed.root_published && executed.cleanup_complete &&
+              executed.cleanup_count == 1 &&
+              executed.rows_examined <= maximum_scanned_row_versions;
+          const bool exact_output_received =
+              output.abi_version == 1 &&
+              output.output_descriptor_id ==
+                  "SB_MODEL_SOURCE_OUTPUT_DESCRIPTOR_V1" &&
+              output.exact_exchange_validated &&
+              output.family_id == expected.family_id &&
+              output.operation_ids == expected.operation_ids &&
+              output.operation_id == expected.operation_id &&
+              output.object_uuid == expected.object_uuid &&
+              output.physical_node_id == selected_node.physical_node_id &&
+              output.selected_alternative_uuid ==
+                  selected_node.selected_alternative_uuid &&
+              output.capability_uuid ==
+                  selected_node.executor_capability_uuid &&
+              output.provider_uuid == expected.provider_uuid &&
+              output.provider_generation == expected.provider_generation &&
+              output.result_handle_uuid == expected.result_handle_uuid &&
+              output.causal_counter_id == selected_node.causal_counter_id &&
+              output.output_descriptor_ids ==
+                  selected_node.output_descriptor_ids &&
+              output.exact_fallback_selected ==
+                  expected.exact_fallback_selected &&
+              exec::PhysicalMgaStatementContextEqual(
+                  output.mga_statement_context,
+                  expected.mga_statement_context) &&
+              output.security_receipt_uuid == security_receipt_uuid &&
+              output.multimodel_common_statement_context ==
+                  expected.multimodel_common_statement_context &&
+              output.multimodel_composition_receipt_uuid ==
+                  expected.multimodel_composition_receipt_uuid &&
+              output.multimodel_lexical_source_ordinal ==
+                  expected.multimodel_lexical_source_ordinal &&
+              output.multimodel_composition_arity ==
+                  expected.multimodel_composition_arity &&
+              output.properties.abi_version == 1 &&
+              output.properties.property_descriptor_id ==
+                  "SB_MODEL_PROPERTY_DESCRIPTOR_V1" &&
+              output.properties.property_uuid == property_uuid &&
+              output.properties.ordering_id == expected_ordering &&
+              output.properties.partitioning_id ==
+                  "single_local_partition" &&
+              output.properties.uniqueness_id == expected_uniqueness &&
+              output.properties.exact &&
+              output.properties.residual_recheck_complete &&
+              output.properties.base_row_mga_recheck_complete &&
+              output.properties.security_recheck_complete &&
+              output.ordered_row_identities.size() ==
+                  output.batch.rows.size() &&
+              output.batch.rows.size() <= expected.maximum_rows &&
+              output.batch.columns.size() == public_columns.size() &&
+              std::ranges::equal(
+                  output.batch.columns, public_columns,
+                  [](const auto& actual, const auto& expected_column) {
+                    return Rcp079ExactExecutorColumnV1(actual,
+                                                       expected_column);
+                  });
+          if (!execution_completed || !exact_output_received) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                execution_completed
+                    ? "SB_MODEL_TYPED_EXCHANGE_INVALID_V1"
+                    : executed.diagnostic_id.empty()
                     ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
                     : executed.diagnostic_id;
             step.diagnostic.detail =
-                executed.detail.empty()
+                execution_completed
+                    ? "time-series source output receipt changed"
+                    : executed.detail.empty()
                     ? "time-series source execution did not complete"
                     : executed.detail;
             return step;
           }
-          for (auto& column : executed.output.batch.columns) {
-            if (column.descriptor.canonical_type_name == "timestamp_tz") {
-              column.descriptor.canonical_type_name = "timestamp";
-            }
+          std::uint64_t current_memory_bytes = 0;
+          if (!time_series_runtime_memory_receipt->complete ||
+              time_series_runtime_memory_receipt
+                      ->provider_logical_memory_bytes == 0 ||
+              time_series_runtime_memory_receipt->memory_grant_bytes !=
+                  selected_node.memory_bytes_required ||
+              time_series_runtime_memory_receipt->peak_live_memory_bytes >
+                  time_series_runtime_memory_receipt->memory_grant_bytes ||
+              !RuntimeMaterializedBatchMemoryBytes(
+                  executed.output.batch, &current_memory_bytes) ||
+              current_memory_bytes >
+                  time_series_runtime_memory_receipt
+                      ->peak_live_memory_bytes) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+            step.diagnostic.detail =
+                "time-series runtime memory receipt is incomplete";
+            return step;
           }
-          for (auto& row : executed.output.batch.rows) {
-            for (auto& value : row.values) {
-              if (value.descriptor.canonical_type_name == "timestamp_tz") {
-                value.descriptor.canonical_type_name = "timestamp";
+          PublishRuntimeMemoryObservation(
+              &step, current_memory_bytes,
+              time_series_runtime_memory_receipt->peak_live_memory_bytes);
+          if (!standalone_time_series_source) {
+            for (auto& column : executed.output.batch.columns) {
+              if (column.descriptor.canonical_type_name == "timestamp_tz") {
+                column.descriptor.canonical_type_name = "timestamp";
+              }
+            }
+            for (auto& row : executed.output.batch.rows) {
+              for (auto& value : row.values) {
+                if (value.descriptor.canonical_type_name == "timestamp_tz") {
+                  value.descriptor.canonical_type_name = "timestamp";
+                }
               }
             }
           }
@@ -32554,6 +38068,36 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
               execution_request.input.descriptor_generation;
           step.materialized_output_batch = std::move(executed.output.batch);
           return step;
+          } catch (const std::bad_alloc&) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+            step.diagnostic.detail =
+                "time-series selected source allocation was refused";
+            return step;
+          } catch (const std::length_error&) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+            step.diagnostic.detail =
+                "time-series selected source allocation length was refused";
+            return step;
+          } catch (const std::exception& exception) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+            step.diagnostic.detail =
+                std::string("time-series selected source threw: ") +
+                exception.what();
+            return step;
+          } catch (...) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+            step.diagnostic.detail =
+                "time-series selected source threw a non-standard exception";
+            return step;
+          }
         };
 
     std::size_t maximum_columns = public_columns.size();
@@ -32726,7 +38270,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         source_input.maximum_rows;
     selected.runtime_limits.maximum_total_materialized_cells =
         static_cast<std::size_t>(maximum_cells);
-    selected.cancellation_requested = provider_request.cancellation_requested;
+    selected.cancellation_requested =
+        raw_time_series_cancellation
+            ? raw_time_series_cancellation
+            : std::function<bool()>([] { return false; });
     selected.available_executors.push_back(std::move(source_registration));
     if (composition_set.has_value()) {
       std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
@@ -32810,23 +38357,49 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   "selected time-series ASOF input identity changed";
               return step;
             }
+            const auto* cancellation_policy =
+                FindLiveCancellationPolicy(selected_dag);
+            if (cancellation_policy == nullptr) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-ASOF-CANCELLATION-POLICY-V1";
+              step.diagnostic.detail =
+                  "time-series ASOF bridge requires one exact cancellation "
+                  "policy evidence row";
+              return step;
+            }
             const auto cancellation_requested =
                 execution_context.query_cancellation_requested
                     ? execution_context.query_cancellation_requested
                     : std::function<bool()>([] { return false; });
+            auto cancellation_state = LiveCancellationProbeState::kRunning;
+            const std::function<bool()> guarded_cancellation_requested =
+                [&]() noexcept {
+              return PollLiveCancellationProbe(cancellation_requested,
+                                               &cancellation_state);
+            };
             const auto cancelled = [&]() {
-              try {
-                return cancellation_requested();
-              } catch (...) {
-                return true;
-              }
+              return guarded_cancellation_requested();
+            };
+            const auto bind_cancellation = [&](const char* detail) {
+              exec::DescriptorRuntimeDiagnostic diagnostic;
+              diagnostic.ok = false;
+              diagnostic.diagnostic_code =
+                  cancellation_state ==
+                          LiveCancellationProbeState::kProbeFailed
+                      ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                      : "SB_MODEL_EXECUTION_CANCELLED_V1";
+              diagnostic.detail =
+                  cancellation_state ==
+                          LiveCancellationProbeState::kProbeFailed
+                      ? "time-series ASOF bridge cancellation probe failed"
+                      : detail;
+              BindLiveCancellationFailure(std::move(diagnostic),
+                                          cancellation_policy, &step);
             };
             if (cancelled()) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "SB_MODEL_EXECUTION_CANCELLED_V1";
-              step.diagnostic.detail =
-                  "time-series ASOF bridge was cancelled before preflight";
+              bind_cancellation(
+                  "time-series ASOF bridge was cancelled before preflight");
               return step;
             }
             std::uint64_t bridge_peak_bytes =
@@ -33142,14 +38715,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                 account_binding_keys(right_input_batch, right_binding, true) &&
                 account_output_peak();
             if (!bridge_preflight_ok) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  preflight_cancelled ? "SB_MODEL_EXECUTION_CANCELLED_V1"
-                                      : "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
-              step.diagnostic.detail =
-                  preflight_cancelled
-                      ? "time-series ASOF bridge was cancelled during preflight"
-                      : "time-series ASOF combined input/copy/key/result peak exceeded the selected memory bound";
+              if (preflight_cancelled) {
+                bind_cancellation(
+                    "time-series ASOF bridge was cancelled during preflight");
+              } else {
+                step.diagnostic.ok = false;
+                step.diagnostic.diagnostic_code =
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+                step.diagnostic.detail =
+                    "time-series ASOF combined input/copy/key/result peak "
+                    "exceeded the selected memory bound";
+              }
               return step;
             }
             exec::CanonicalTimeSeriesAsofJoinRequestV1 request;
@@ -33223,45 +38799,45 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                 !append_keys(request.right_batch, request.right_binding, true,
                              &request.right_keys,
                              &request.right_tie_break_row_uuids)) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "SB_MODEL_TIME_SERIES_IDENTITY_INVALID_V1";
-              step.diagnostic.detail =
-                  preflight_cancelled
-                      ? "time-series ASOF bridge was cancelled during key construction"
-                      : "selected time-series ASOF bound key could not be decoded";
               if (preflight_cancelled) {
+                bind_cancellation(
+                    "time-series ASOF bridge was cancelled during key "
+                    "construction");
+              } else {
+                step.diagnostic.ok = false;
                 step.diagnostic.diagnostic_code =
-                    "SB_MODEL_EXECUTION_CANCELLED_V1";
+                    "SB_MODEL_TIME_SERIES_IDENTITY_INVALID_V1";
+                step.diagnostic.detail =
+                    "selected time-series ASOF bound key could not be "
+                    "decoded";
               }
               return step;
             }
             if (cancelled()) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "SB_MODEL_EXECUTION_CANCELLED_V1";
-              step.diagnostic.detail =
-                  "time-series ASOF bridge was cancelled before execution";
+              bind_cancellation(
+                  "time-series ASOF bridge was cancelled before execution");
               return step;
             }
             auto executed =
                 exec::ExecuteCanonicalTimeSeriesAsofJoinV1(request);
-            if (!executed.diagnostic.ok ||
-                executed.selected_plan_uuid != selected_dag.selected_plan_uuid ||
+            if (!executed.diagnostic.ok) {
+              BindLiveCancellationFailure(std::move(executed.diagnostic),
+                                          cancellation_policy, &step);
+              return step;
+            }
+            if (executed.selected_plan_uuid !=
+                    selected_dag.selected_plan_uuid ||
                 executed.executed_physical_node_id !=
                     selected_node.physical_node_id ||
                 executed.causal_counter_id != selected_node.causal_counter_id ||
                 !exec::PhysicalMgaStatementContextEqual(
                     executed.mga_statement_context,
                     selected_dag.mga_statement_context)) {
-              step.diagnostic = std::move(executed.diagnostic);
-              if (step.diagnostic.ok) {
-                step.diagnostic.ok = false;
-                step.diagnostic.diagnostic_code =
-                    "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1";
-                step.diagnostic.detail =
-                    "time-series ASOF execution receipt changed";
-              }
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1";
+              step.diagnostic.detail =
+                  "time-series ASOF execution receipt changed";
               return step;
             }
             step.result_handle_id = selected_node.physical_node_id;
@@ -33398,35 +38974,43 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             composition_physical->physical_dag.selected_plan_uuid ||
         execution.result_publication.envelope.column_descriptors.size() !=
             composition_state.result_bindings.size()) {
-      refuse(execution.issues.empty()
-                 ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
-                 : execution.issues.front().diagnostic_id,
-             execution.issues.empty()
-                 ? "time-series combined physical execution did not complete"
-                 : execution.issues.front().field_id);
+      const bool cancellation_observed =
+          execution.cancellation_observed ||
+          execution.dispatch.diagnostic.diagnostic_code ==
+              "SB_MODEL_EXECUTION_CANCELLED_V1" ||
+          (!execution.issues.empty() &&
+           execution.issues.front().diagnostic_id ==
+               "SB_MODEL_EXECUTION_CANCELLED_V1");
+      const std::string cancellation_detail =
+          !execution.dispatch.diagnostic.detail.empty()
+              ? execution.dispatch.diagnostic.detail
+              : !execution.issues.empty()
+                    ? execution.issues.front().field_id
+                    : "time-series combined execution cancellation detail "
+                      "was absent";
+      refuse(cancellation_observed
+                 ? "SB_MODEL_EXECUTION_CANCELLED_V1"
+                 : execution.issues.empty()
+                       ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                       : execution.issues.front().diagnostic_id,
+             cancellation_observed
+                 ? cancellation_detail
+                 : execution.issues.empty()
+                       ? "time-series combined physical execution did not "
+                         "complete"
+                       : execution.issues.front().field_id);
       if (source_execution_receipt->execution_started) {
         replace_source_receipt(
             true, source_execution_receipt->data_access_observed,
             source_execution_receipt->cleanup_count,
             source_execution_receipt->cleanup_complete);
       }
-      if (execution.cancellation_observed ||
-          execution.dispatch.diagnostic.diagnostic_code ==
-              "SB_MODEL_EXECUTION_CANCELLED_V1" ||
-          (!execution.issues.empty() &&
-           execution.issues.front().diagnostic_id ==
-               "SB_MODEL_EXECUTION_CANCELLED_V1")) {
-        const auto& cancellation_detail =
-            !execution.dispatch.diagnostic.detail.empty()
-                ? execution.dispatch.diagnostic.detail
-                : !execution.issues.empty()
-                      ? execution.issues.front().field_id
-                      : std::string(
-                            "time-series combined execution cancellation detail was absent");
+      if (cancellation_observed) {
         result.api_result.evidence.push_back(
             {"canonical.time_series_cancellation_checkpoint",
              cancellation_detail});
       }
+      append_rollup_evidence(&result.api_result);
       return result;
     }
     result.physical_dag_executed = true;
@@ -33443,6 +39027,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     result.api_result.evidence.push_back(
         {"canonical.model_route",
          "SBSQL_TIME_SERIES_SOURCE_TO_CANONICAL_RELATIONAL_ROOT_V1"});
+    result.api_result.evidence.push_back(
+        {"canonical.model_search_family", "time_series.local.v1"});
+    result.api_result.evidence.push_back(
+        {"canonical.time_series_operation", source_input.operation_id});
     result.api_result.evidence.push_back(
         {"canonical.time_series_composition_root",
          std::to_string(dag.root_node_id)});
@@ -33466,85 +39054,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     append_rollup_evidence(&result.api_result);
     return result;
   }
-  const auto executed = exec::ExecuteModelFamilySourceV1(execution_request);
-  if (!executed.accepted || !executed.root_published ||
-      !executed.cleanup_complete || executed.cleanup_count != 1 ||
-      !executed.output.exact_exchange_validated) {
-    refuse(executed.diagnostic_id.empty()
-               ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
-               : executed.diagnostic_id,
-           executed.detail.empty()
-               ? "time-series selected physical execution failed"
-               : executed.detail);
-    if (executed.execution_started) {
-      replace_source_receipt(true, executed.data_access_observed,
-                             executed.cleanup_count,
-                             executed.cleanup_complete);
-    }
-    if (executed.diagnostic_id == "SB_MODEL_EXECUTION_CANCELLED_V1") {
-      result.api_result.evidence.push_back(
-          {"canonical.time_series_cancellation_checkpoint",
-           executed.detail});
-    }
-    append_rollup_evidence(&result.api_result);
-    return result;
-  }
-  result.physical_dag_executed = true;
-  result.runtime_actuals_attached = true;
-  result.canonical_result_published = true;
-  result.canonical_result_column_count = public_columns.size();
-  result.canonical_result_row_count = executed.output.batch.rows.size();
-  result.api_result.ok = true;
-  result.api_result.operation_id = "query.execute";
-  result.api_result.result_shape.result_kind = "rows";
-  result.api_result.local_transaction_id = input.context.local_transaction_id;
-  result.api_result.transaction_uuid = input.context.transaction_uuid;
-  result.api_result.embedded_trust_mode_observed =
-      input.context.trust_mode == api::EngineTrustMode::embedded_in_process;
-  for (const auto& column : public_columns) {
-    result.api_result.result_shape.columns.push_back(column.descriptor);
-  }
-  std::ostringstream canonical;
-  for (const auto& row : executed.output.batch.rows) {
-    api::EngineRowValue api_row;
-    for (std::size_t ordinal = 0; ordinal < row.values.size(); ++ordinal) {
-      api_row.fields.emplace_back(public_columns[ordinal].stable_name,
-                                  row.values[ordinal]);
-      if (ordinal != 0) canonical << '\t';
-      canonical << row.values[ordinal].encoded_value;
-    }
-    canonical << '\n';
-    result.api_result.result_shape.rows.push_back(std::move(api_row));
-  }
-  result.canonical_result_bytes = canonical.str();
-  result.api_result.evidence.push_back(
-      {"canonical.selected_plan", result.selected_plan_uuid});
-  result.api_result.evidence.push_back(
-      {"canonical.model_route",
-       "SBSQL_TIME_SERIES_SOURCE_TO_SBLR_MODEL_SOURCE_TO_RANGE_BUCKET_DOWNSAMPLE_TO_TYPED_BATCH_V1"});
-  result.api_result.evidence.push_back(
-      {"canonical.model_search_family", "time_series.local.v1"});
-  result.api_result.evidence.push_back(
-      {"canonical.time_series_operation", planning.operation_id});
-  result.api_result.evidence.push_back(
-      {"canonical.time_series_cleanup_count",
-       std::to_string(executed.cleanup_count)});
-  result.api_result.evidence.push_back(
-      {"canonical.time_series_provider_route",
-       source_input.exact_fallback_selected
-           ? "TIME_SERIES_BUCKET_STORE_SCAN_EXACT_V1"
-           : "TIME_SERIES_PREFERRED_PROVIDER_V1"});
-  result.api_result.evidence.push_back(
-      {"canonical.time_series_provider_generation",
-       std::to_string(source_input.provider_generation)});
-  result.api_result.evidence.push_back(
-      {"canonical.time_series_root_causal_counter",
-       std::to_string(executed.output.causal_counter_id)});
-  replace_source_receipt(executed.execution_started,
-                         executed.data_access_observed,
-                         executed.cleanup_count, executed.cleanup_complete);
-  append_rollup_evidence(&result.api_result);
-  return result;
 }
 
 // QOW-SOURCE-RCP-077-VECTOR-CANONICAL-QUERY-ROUTE-V1
@@ -33752,6 +39261,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   std::vector<exec::ExecutorColumnDescriptor> public_columns;
   std::vector<api::EngineDescriptor> output_descriptors;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
+  const auto uuid_type_uuid = ExactCanonicalCoreDatatypeUuidV1("uuid");
+  const auto real64_type_uuid = ExactCanonicalCoreDatatypeUuidV1("real64");
+  if (uuid_type_uuid.empty() || real64_type_uuid.empty()) {
+    return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                  "vector public core type registry is unavailable");
+  }
   for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
     const auto descriptor = descriptor_for(outputs[ordinal]->descriptor_id);
     if (!outputs[ordinal]->visible || outputs[ordinal]->ordinal != ordinal ||
@@ -33764,9 +39279,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
         !CanonicalUuidText(descriptor->type_uuid) ||
         !public_descriptor_uuids.insert(descriptor->descriptor_uuid).second ||
         descriptor->collation_uuid.has_value() ||
-        descriptor->timezone_profile_id.has_value()) {
+        descriptor->timezone_profile_id.has_value() ||
+        descriptor->width.has_value() || descriptor->precision.has_value() ||
+        descriptor->scale.has_value()) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "vector public output binding was substituted");
+    }
+    const auto& expected_type_uuid =
+        ordinal == 0 ? uuid_type_uuid : real64_type_uuid;
+    if (descriptor->type_uuid != expected_type_uuid) {
+      return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                    "vector public type identity was substituted");
     }
     api::EngineDescriptor engine_descriptor;
     engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
@@ -33837,53 +39360,55 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
           input.context.database_uuid.canonical ||
       persisted_relation.relation_kind != "table" ||
       persisted_relation.storage_profile != "local_mga_rowstore_v1" ||
-      persisted_relation.descriptor_generation == 0 ||
-      persisted_relation.columns.size() != 2 ||
-      persisted_relation.columns[0].ordinal != 0 ||
-      persisted_relation.columns[0].canonical_name_key != "embedding" ||
-      persisted_relation.columns[0].nullable ||
-      persisted_relation.columns[0].value_descriptor.canonical_type_name !=
-          "dense_vector" ||
-      persisted_relation.columns[1].ordinal != 1 ||
-      persisted_relation.columns[1].canonical_name_key != "metadata" ||
-      persisted_relation.columns[1].nullable ||
-      persisted_relation.columns[1].value_descriptor.canonical_type_name !=
-          "text") {
+      persisted_relation.descriptor_generation == 0) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent vector relation descriptor is invalid");
+  }
+  if (!api::ExactBoundVectorStorageDescriptorV1(persisted_relation,
+                                                 object_uuid)) {
+    return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                  "persistent vector relation type binding is not exact");
   }
   const auto query_descriptor = descriptor_for(query->result_descriptor_id);
   const auto metric_descriptor = descriptor_for(metric->result_descriptor_id);
   const auto top_k_descriptor = descriptor_for(top_k->result_descriptor_id);
   const auto stored_embedding_type =
-      persisted_relation.columns[0].value_descriptor.encoded_descriptor;
+      ExactCanonicalCoreDatatypeUuidV1("dense_vector");
   const auto stored_metadata_type =
-      persisted_relation.columns[1].value_descriptor.encoded_descriptor;
-  const auto descriptor_type_uuid = [](const std::string_view encoded) {
-    constexpr std::string_view prefix = "type_uuid=";
-    const auto begin = encoded.find(prefix);
-    if (begin == std::string_view::npos) return std::string{};
-    const auto value_begin = begin + prefix.size();
-    const auto end = encoded.find(';', value_begin);
-    return std::string(encoded.substr(
-        value_begin, end == std::string_view::npos
-                         ? encoded.size() - value_begin
-                         : end - value_begin));
-  };
+      ExactCanonicalCoreDatatypeUuidV1("character");
+  const auto top_k_type = ExactCanonicalCoreDatatypeUuidV1("uint64");
   if (query_descriptor == dag.descriptors.end() ||
       metric_descriptor == dag.descriptors.end() ||
       top_k_descriptor == dag.descriptors.end() ||
       query_descriptor->descriptor_uuid !=
           persisted_relation.columns[0].value_descriptor.descriptor_uuid
               .canonical ||
-      query_descriptor->type_uuid != descriptor_type_uuid(stored_embedding_type) ||
-      metric_descriptor->type_uuid != descriptor_type_uuid(stored_metadata_type) ||
+      stored_embedding_type.empty() || stored_metadata_type.empty() ||
+      top_k_type.empty() ||
+      query_descriptor->type_uuid != stored_embedding_type ||
+      metric_descriptor->type_uuid != stored_metadata_type ||
+      top_k_descriptor->type_uuid != top_k_type ||
       query_descriptor->nullability !=
           api::RelationalNullability::kNonNull ||
+      query_descriptor->width != std::optional<std::uint32_t>(3) ||
+      query_descriptor->collation_uuid.has_value() ||
+      query_descriptor->timezone_profile_id.has_value() ||
+      query_descriptor->precision.has_value() ||
+      query_descriptor->scale.has_value() ||
       metric_descriptor->nullability !=
           api::RelationalNullability::kNonNull ||
+      metric_descriptor->collation_uuid.has_value() ||
+      metric_descriptor->timezone_profile_id.has_value() ||
+      metric_descriptor->width.has_value() ||
+      metric_descriptor->precision.has_value() ||
+      metric_descriptor->scale.has_value() ||
       top_k_descriptor->nullability !=
-          api::RelationalNullability::kNonNull) {
+          api::RelationalNullability::kNonNull ||
+      top_k_descriptor->collation_uuid.has_value() ||
+      top_k_descriptor->timezone_profile_id.has_value() ||
+      top_k_descriptor->width.has_value() ||
+      top_k_descriptor->precision.has_value() ||
+      top_k_descriptor->scale.has_value()) {
     return refuse("SB_MODEL_VECTOR_VALUE_REFUSED_V1",
                   "vector operation descriptor cohort differs from storage");
   }
@@ -33896,9 +39421,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
         value_descriptor->descriptor_uuid !=
             persisted_relation.columns[1].value_descriptor.descriptor_uuid
                 .canonical ||
-        value_descriptor->type_uuid != descriptor_type_uuid(stored_metadata_type) ||
+        value_descriptor->type_uuid != stored_metadata_type ||
         value_descriptor->nullability !=
-            api::RelationalNullability::kNonNull) {
+            api::RelationalNullability::kNonNull ||
+        value_descriptor->collation_uuid.has_value() ||
+        value_descriptor->timezone_profile_id.has_value() ||
+        value_descriptor->width.has_value() ||
+        value_descriptor->precision.has_value() ||
+        value_descriptor->scale.has_value()) {
       return refuse("SB_MODEL_VECTOR_FILTER_REFUSED_V1",
                     "vector metadata filter descriptor differs from storage");
     }
@@ -34231,6 +39761,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   api::EngineBoundVectorReadRequestV1 vector_request;
   vector_request.context = input.context;
   vector_request.collection_uuid = object_uuid;
+  vector_request.expected_descriptor_uuid =
+      persisted_relation.descriptor_uuid.canonical;
+  vector_request.expected_descriptor_generation =
+      persisted_relation.descriptor_generation;
   vector_request.selected_alternative_uuid = alternative_uuid;
   vector_request.selected_provider_uuid = provider_uuid;
   vector_request.selected_capability_uuid = capability_uuid;
@@ -35016,6 +40550,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
   std::vector<exec::ExecutorColumnDescriptor> public_columns;
   std::vector<api::EngineDescriptor> output_descriptors;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
+  const auto uuid_type_uuid = ExactCanonicalCoreDatatypeUuidV1("uuid");
+  const auto uint64_type_uuid = ExactCanonicalCoreDatatypeUuidV1("uint64");
+  const auto real64_type_uuid = ExactCanonicalCoreDatatypeUuidV1("real64");
+  if (uuid_type_uuid.empty() || uint64_type_uuid.empty() ||
+      real64_type_uuid.empty()) {
+    return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                  "search public core type registry is unavailable");
+  }
   for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
     const auto descriptor = descriptor_for(outputs[ordinal]->descriptor_id);
     if (!outputs[ordinal]->visible || outputs[ordinal]->ordinal != ordinal ||
@@ -35031,6 +40573,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
         descriptor->timezone_profile_id.has_value()) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "search public output binding was substituted");
+    }
+    const auto& expected_type_uuid =
+        ordinal < 2 ? uuid_type_uuid
+                    : ordinal == 3 ? real64_type_uuid : uint64_type_uuid;
+    if (descriptor->type_uuid != expected_type_uuid) {
+      return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                    "search public type identity was substituted");
     }
     api::EngineDescriptor engine_descriptor;
     engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
@@ -35118,20 +40667,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
           input.context.database_uuid.canonical ||
       persisted_relation.relation_kind != "table" ||
       persisted_relation.storage_profile != "local_mga_rowstore_v1" ||
-      persisted_relation.descriptor_generation == 0 ||
-      persisted_relation.columns.size() != 2 ||
-      persisted_relation.columns[0].ordinal != 0 ||
-      persisted_relation.columns[0].canonical_name_key != "body" ||
-      persisted_relation.columns[0].nullable ||
-      persisted_relation.columns[0].value_descriptor.canonical_type_name !=
-          "text" ||
-      persisted_relation.columns[1].ordinal != 1 ||
-      persisted_relation.columns[1].canonical_name_key != "category" ||
-      persisted_relation.columns[1].nullable ||
-      persisted_relation.columns[1].value_descriptor.canonical_type_name !=
-          "text") {
+      persisted_relation.descriptor_generation == 0) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent search relation descriptor is invalid");
+  }
+  if (!api::ExactBoundSearchStorageDescriptorV1(persisted_relation,
+                                                 object_uuid)) {
+    return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                  "persistent search relation type binding is not exact");
   }
   const auto query_descriptor =
       descriptor_for(query_text->result_descriptor_id);
@@ -35144,31 +40687,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       descriptor_for(outputs[1]->descriptor_id);
   const auto generation_output_descriptor =
       descriptor_for(outputs[2]->descriptor_id);
-  const auto stored_body_type =
-      persisted_relation.columns[0].value_descriptor.encoded_descriptor;
-  const auto stored_category_type =
-      persisted_relation.columns[1].value_descriptor.encoded_descriptor;
-  const auto descriptor_type_uuid = [](const std::string_view encoded) {
-    constexpr std::string_view prefix = "type_uuid=";
-    const auto begin = encoded.find(prefix);
-    if (begin == std::string_view::npos) return std::string{};
-    const auto value_begin = begin + prefix.size();
-    const auto end = encoded.find(';', value_begin);
-    return std::string(encoded.substr(
-        value_begin, end == std::string_view::npos
-                         ? encoded.size() - value_begin
-                         : end - value_begin));
-  };
+  const auto stored_text_type =
+      ExactCanonicalCoreDatatypeUuidV1("character");
   if (query_descriptor == dag.descriptors.end() ||
       analyzer_descriptor == dag.descriptors.end() ||
       analyzer_generation_descriptor == dag.descriptors.end() ||
       top_k_descriptor == dag.descriptors.end() ||
       analyzer_output_descriptor == dag.descriptors.end() ||
       generation_output_descriptor == dag.descriptors.end() ||
+      stored_text_type.empty() ||
       query_descriptor->descriptor_uuid !=
           persisted_relation.columns[0].value_descriptor.descriptor_uuid
               .canonical ||
-      query_descriptor->type_uuid != descriptor_type_uuid(stored_body_type) ||
+      query_descriptor->type_uuid != stored_text_type ||
       analyzer_descriptor->type_uuid != analyzer_output_descriptor->type_uuid ||
       analyzer_generation_descriptor->type_uuid !=
           generation_output_descriptor->type_uuid ||
@@ -35208,8 +40739,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       category_descriptor->descriptor_uuid !=
           persisted_relation.columns[1].value_descriptor.descriptor_uuid
               .canonical ||
-      category_descriptor->type_uuid !=
-          descriptor_type_uuid(stored_category_type) ||
+      category_descriptor->type_uuid != stored_text_type ||
       category_descriptor->nullability !=
           api::RelationalNullability::kNonNull) {
     return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
@@ -35224,7 +40754,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
         value_descriptor->descriptor_uuid !=
             persisted_relation.columns[1].value_descriptor.descriptor_uuid
                 .canonical ||
-        value_descriptor->type_uuid != descriptor_type_uuid(stored_category_type) ||
+        value_descriptor->type_uuid != stored_text_type ||
         value_descriptor->nullability !=
             api::RelationalNullability::kNonNull) {
       return refuse("SB_MODEL_SEARCH_FILTER_REFUSED_V1",
@@ -35799,6 +41329,22 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
                             ? "search grouped COUNT/SUM profile is not exact"
                             : prepared.detail);
         }
+        const auto grouped_per_row_bytes = std::max<std::uint64_t>(
+            1, sizeof(api::EngineBoundSearchRowV1) +
+                   5 * sizeof(api::EngineTypedValue));
+        const auto grouped_input_row_bound = std::min<std::uint64_t>(
+            {65'536, input.context.optimizer_maximum_candidate_count,
+             (planning.memory_budget_bytes / 2) /
+                 grouped_per_row_bytes});
+        if (!BindPreparedGroupedComparisonCeilings(
+                &prepared, grouped_input_row_bound) ||
+            prepared.maximum_combined_grouping_key_comparison_count >
+                input.context.optimizer_maximum_candidate_count) {
+          return refuse(
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+              "search grouped COUNT/SUM comparison work exceeds the "
+              "admitted bound");
+        }
         composition_state.batch.columns = prepared.key_result_columns;
         composition_state.batch.columns.push_back(
             prepared.count.result_column);
@@ -35819,6 +41365,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
             grouped_profile.transformation_id;
         consumer_profile.estimated_rows =
             grouped_aggregate_output_row_bound;
+        consumer_profile.memory_bytes_required =
+            planning.memory_budget_bytes;
         profiles.push_back(std::move(consumer_profile));
         previous_logical = logical_consumer;
         continue;
@@ -35831,6 +41379,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
           aggregate_profile.distinct || aggregate_profile.has_filter) {
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                       "search aggregate is not exact global COUNT(*)");
+      }
+      const auto count_descriptor = descriptor_for(
+          consumer->output_descriptor_ids.empty()
+              ? 0
+              : consumer->output_descriptor_ids.front());
+      const auto int64_type_uuid = type_uuid_for("int64");
+      if (consumer->output_descriptor_ids.size() != 1 ||
+          count_descriptor == dag.descriptors.end() ||
+          int64_type_uuid.empty() ||
+          count_descriptor->type_uuid != int64_type_uuid ||
+          count_descriptor->nullability !=
+              api::RelationalNullability::kNonNull ||
+          count_descriptor->collation_uuid.has_value() ||
+          count_descriptor->timezone_profile_id.has_value() ||
+          count_descriptor->width.has_value() ||
+          count_descriptor->precision.has_value() ||
+          count_descriptor->scale.has_value()) {
+        return refuse(
+            "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+            "search COUNT(*) result descriptor is not canonical int64");
       }
       auto prepared = PrepareGlobalAggregateRoot(
           dag, *logical_consumer, *previous_logical, composition_state,
@@ -35855,10 +41423,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kCte) {
       if (consumer->semantic_variant_id != "cte.bound.v1" ||
           !consumer->bound_expression_ids.empty() ||
+          !consumer->required_object_uuids.empty() ||
+          !consumer->required_property_uuids.empty() ||
+          !consumer->delivered_property_uuids.empty() ||
           consumer->output_descriptor_ids !=
-              previous_logical->output_descriptor_ids) {
-        return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
-                      "search nonrecursive CTE is not schema preserving");
+              previous_logical->output_descriptor_ids ||
+          logical_consumer->output_descriptor_ids !=
+              previous_logical->output_descriptor_ids ||
+          composition_state.batch.columns.size() !=
+              consumer->output_descriptor_ids.size()) {
+        return refuse(
+            "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+            "search nonrecursive CTE is not an exact schema-preserving "
+            "bound CTE");
+      }
+      const auto validated = exec::ValidateCanonicalDescriptorBatch(
+          composition_state.batch, consumer->output_descriptor_ids);
+      if (!validated.ok) {
+        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                      "search nonrecursive CTE input: " +
+                          validated.detail);
       }
       prepared_nonrecursive_cte = true;
       cte_implementation_id = consumer->shareable
@@ -35975,9 +41559,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
                     "search UNION ALL: " + prepared.detail);
     }
     std::uint64_t comparison_bound = 0;
-    if (!CheckedMultiply(kSearchCompositionRowBound,
-                         kSearchCompositionRowBound,
-                         &comparison_bound) ||
+    std::uint64_t collation_comparison_count = 0;
+    if (!BoundSetOperationEqualityComparisons(
+            prepared, search_set_profile, kSearchCompositionRowBound,
+            &comparison_bound, &collation_comparison_count) ||
         comparison_bound > std::numeric_limits<std::size_t>::max()) {
       return refuse(
           "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -36166,7 +41751,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     heap_profile.transformation_rule_id =
         "canonical.search.mixed-join.heap-scan.v1";
     heap_profile.estimated_rows = 1;
-    heap_profile.memory_bytes_required = 1024;
+    heap_profile.memory_bytes_required =
+        input.context.optimizer_memory_budget_bytes;
     heap_profile.page_read_sequential_units = 1;
     heap_profile.mga_visibility_checks_expected = 1;
     heap_profile.storage_read_capable = true;
@@ -36182,7 +41768,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     join_profile.transformation_rule_id =
         "canonical.search.mixed-join.inner.v1";
     join_profile.estimated_rows = 65536;
-    join_profile.memory_bytes_required = 1;
+    join_profile.memory_bytes_required = planning.memory_budget_bytes;
     join_profile.minimum_input_count = 2;
     join_profile.maximum_input_count = 2;
     join_profile.runtime_peak_from_callback_batches = true;
@@ -36285,6 +41871,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
   api::EngineBoundSearchReadRequestV1 search_request;
   search_request.context = input.context;
   search_request.collection_uuid = object_uuid;
+  search_request.expected_descriptor_uuid =
+      persisted_relation.descriptor_uuid.canonical;
+  search_request.expected_descriptor_generation =
+      persisted_relation.descriptor_generation;
   search_request.selected_alternative_uuid = alternative_uuid;
   search_request.selected_provider_uuid = provider_uuid;
   search_request.selected_capability_uuid = capability_uuid;
@@ -37337,13 +42927,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       persisted_relation.relation_kind != "table" ||
       persisted_relation.storage_profile != "local_mga_rowstore_v1" ||
       persisted_relation.descriptor_uuid.canonical.empty() ||
-      persisted_relation.descriptor_generation == 0 ||
-      persisted_relation.columns.size() != 3 ||
-      persisted_relation.columns[0].canonical_name_key != "key" ||
-      persisted_relation.columns[1].canonical_name_key != "value" ||
-      persisted_relation.columns[2].canonical_name_key != "expires_at") {
+      persisted_relation.descriptor_generation == 0) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent key/value relation descriptor is invalid");
+  }
+  if (!api::ExactKeyValueStorageDescriptorV1(persisted_relation)) {
+    return refuse("SB_MODEL_KEY_VALUE_VALUE_TYPE_REFUSED_V1",
+                  "key/value storage descriptor is not exact before data access");
   }
   const auto row_descriptor = descriptor_for(outputs[0]->descriptor_id);
   const auto key_descriptor = descriptor_for(outputs[1]->descriptor_id);
@@ -37367,6 +42957,21 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
           api::RelationalNullability::kNonNull) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "key/value public descriptor cohort differs from storage");
+  }
+  const auto row_type_uuid = ExactCanonicalCoreDatatypeUuidV1("uuid");
+  const auto text_type_uuid = ExactCanonicalCoreDatatypeUuidV1("character");
+  if (row_type_uuid.empty() || text_type_uuid.empty() ||
+      !CanonicalDescriptorFieldEqualsV1(
+          persisted_relation.columns[0].value_descriptor, "type_uuid",
+          std::string_view(text_type_uuid)) ||
+      !CanonicalDescriptorFieldEqualsV1(
+          persisted_relation.columns[1].value_descriptor, "type_uuid",
+          std::string_view(text_type_uuid)) ||
+      row_descriptor->type_uuid != row_type_uuid ||
+      key_descriptor->type_uuid != text_type_uuid ||
+      value_descriptor->type_uuid != text_type_uuid) {
+    return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                  "key/value public type identity differs from storage");
   }
 
   const auto identity_scope =
@@ -37988,6 +43593,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                       "key/value aggregate is not exact global COUNT(*)");
       }
+      const auto count_descriptor = descriptor_for(
+          consumer->output_descriptor_ids.empty()
+              ? 0
+              : consumer->output_descriptor_ids.front());
+      const auto int64_type_uuid = type_uuid_for("int64");
+      if (consumer->output_descriptor_ids.size() != 1 ||
+          count_descriptor == dag.descriptors.end() ||
+          int64_type_uuid.empty() ||
+          count_descriptor->type_uuid != int64_type_uuid ||
+          count_descriptor->nullability !=
+              api::RelationalNullability::kNonNull ||
+          count_descriptor->collation_uuid.has_value() ||
+          count_descriptor->timezone_profile_id.has_value() ||
+          count_descriptor->width.has_value() ||
+          count_descriptor->precision.has_value() ||
+          count_descriptor->scale.has_value()) {
+        return refuse(
+            "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+            "key/value COUNT(*) result descriptor is not canonical int64");
+      }
       auto prepared = PrepareGlobalAggregateRoot(
           dag, *logical_consumer, *previous_logical, composition_state,
           aggregate_profile.function, true, false, false);
@@ -38011,10 +43636,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
     } else if (consumer->node_kind == api::RelationalDagNodeKind::kCte) {
       if (consumer->semantic_variant_id != "cte.bound.v1" ||
           !consumer->bound_expression_ids.empty() ||
+          !consumer->required_object_uuids.empty() ||
+          !consumer->required_property_uuids.empty() ||
+          !consumer->delivered_property_uuids.empty() ||
           consumer->output_descriptor_ids !=
-              previous_logical->output_descriptor_ids) {
-        return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
-                      "key/value nonrecursive CTE is not schema preserving");
+              previous_logical->output_descriptor_ids ||
+          logical_consumer->output_descriptor_ids !=
+              previous_logical->output_descriptor_ids ||
+          composition_state.batch.columns.size() !=
+              consumer->output_descriptor_ids.size()) {
+        return refuse(
+            "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+            "key/value nonrecursive CTE is not an exact schema-preserving "
+            "bound CTE");
+      }
+      const auto validated = exec::ValidateCanonicalDescriptorBatch(
+          composition_state.batch, consumer->output_descriptor_ids);
+      if (!validated.ok) {
+        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                      "key/value nonrecursive CTE input: " +
+                          validated.detail);
       }
       prepared_nonrecursive_cte = true;
       cte_implementation_id =
@@ -38132,9 +43773,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
                     "key/value UNION ALL: " + prepared.detail);
     }
     std::uint64_t comparison_bound = 0;
-    if (!CheckedMultiply(kKeyValueCompositionRowBound,
-                         kKeyValueCompositionRowBound,
-                         &comparison_bound) ||
+    std::uint64_t collation_comparison_count = 0;
+    if (!BoundSetOperationEqualityComparisons(
+            prepared, key_value_set_profile, kKeyValueCompositionRowBound,
+            &comparison_bound, &collation_comparison_count) ||
         comparison_bound > std::numeric_limits<std::size_t>::max()) {
       return refuse(
           "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -38358,7 +44000,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
     heap_profile.transformation_rule_id =
         "canonical.key-value.mixed-join.heap-scan.v1";
     heap_profile.estimated_rows = 1;
-    heap_profile.memory_bytes_required = 1024;
+    heap_profile.memory_bytes_required =
+        input.context.optimizer_memory_budget_bytes;
     heap_profile.page_read_sequential_units = 1;
     heap_profile.mga_visibility_checks_expected = 1;
     heap_profile.storage_read_capable = true;
@@ -38375,7 +44018,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
     join_profile.transformation_rule_id =
         "canonical.key-value.mixed-join." + mixed_join_component + ".v1";
     join_profile.estimated_rows = 65536;
-    join_profile.memory_bytes_required = 1;
+    join_profile.memory_bytes_required = planning.memory_budget_bytes;
     join_profile.minimum_input_count = 2;
     join_profile.maximum_input_count = 2;
     join_profile.runtime_peak_from_callback_batches = true;
@@ -40253,6 +45896,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           row_number_descriptor->type_uuid != int64_type_uuid ||
           row_number_descriptor->nullability !=
               api::RelationalNullability::kNonNull ||
+          row_number_descriptor->collation_uuid.has_value() ||
+          row_number_descriptor->timezone_profile_id.has_value() ||
+          row_number_descriptor->width.has_value() ||
+          row_number_descriptor->precision.has_value() ||
+          row_number_descriptor->scale.has_value() ||
           consumer->output_descriptor_ids.size() !=
               previous_logical->output_descriptor_ids.size() + 1 ||
           !std::equal(previous_logical->output_descriptor_ids.begin(),
@@ -40296,6 +45944,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           window_property->window_frame_descriptor_uuid.empty()) {
         return refuse("QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1",
                       "graph ROW_NUMBER property binding is not exact");
+      }
+      if (row_number_descriptor->descriptor_uuid ==
+              row_number_descriptor->type_uuid ||
+          row_number_descriptor->descriptor_uuid == kRowNumberFunctionUuid ||
+          row_number_descriptor->descriptor_uuid ==
+              prepared_sort->ordering_property_uuid ||
+          row_number_descriptor->descriptor_uuid == *window_property_uuid ||
+          row_number_descriptor->descriptor_uuid ==
+              window_property->window_frame_descriptor_uuid) {
+        return refuse(
+            "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+            "graph ROW_NUMBER result descriptor identity is not independent");
       }
       api::EngineDescriptor row_number_runtime;
       row_number_runtime.descriptor_uuid.canonical =
@@ -40538,9 +46198,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
                     "graph UNION ALL: " + prepared.detail);
     }
     std::uint64_t comparison_bound = 0;
-    if (!CheckedMultiply(kGraphCompositionRowBound,
-                         kGraphCompositionRowBound,
-                         &comparison_bound) ||
+    std::uint64_t collation_comparison_count = 0;
+    if (!BoundSetOperationEqualityComparisons(
+            prepared, graph_set_profile, kGraphCompositionRowBound,
+            &comparison_bound, &collation_comparison_count) ||
         comparison_bound > std::numeric_limits<std::size_t>::max()) {
       return refuse(
           "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -42906,6 +48567,21 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                 "QOW-DIAG-WINDOW-PROPERTY-CARRIAGE-V1",
                 "DOCUMENT_UNNEST ROW_NUMBER property binding is not exact");
           }
+          if (row_number_descriptor->descriptor_uuid ==
+                  row_number_descriptor->type_uuid ||
+              row_number_descriptor->descriptor_uuid ==
+                  kRowNumberFunctionUuid ||
+              row_number_descriptor->descriptor_uuid ==
+                  prepared_sort->ordering_property_uuid ||
+              row_number_descriptor->descriptor_uuid ==
+                  *window_property_uuid ||
+              row_number_descriptor->descriptor_uuid ==
+                  window_property->window_frame_descriptor_uuid) {
+            return refuse(
+                "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                "DOCUMENT_UNNEST ROW_NUMBER result descriptor identity is "
+                "not independent");
+          }
           exec::ExecutorColumnDescriptor row_number_column{
               window_outputs.back()->output_name_utf8,
               build_descriptor(*row_number_descriptor, "int64"), false,
@@ -43243,7 +48919,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
                       "DOCUMENT_UNNEST UNION ALL: " + prepared.detail);
       }
       std::uint64_t comparison_bound = 0;
-      if (!CheckedMultiply(bounded_rows, bounded_rows, &comparison_bound) ||
+      std::uint64_t collation_comparison_count = 0;
+      if (!BoundSetOperationEqualityComparisons(
+              prepared, document_set_profile, bounded_rows,
+              &comparison_bound, &collation_comparison_count) ||
           comparison_bound > std::numeric_limits<std::size_t>::max()) {
         return refuse(
             "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -44601,20 +50280,59 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
       }
       const auto runtime_descriptor =
           build_descriptor(*descriptor, type_name->second);
-      if (!api::QowCanonicalDescriptorIdentityV1(runtime_descriptor) ||
-          dependency_by_descriptor.contains(descriptor->descriptor_id)) {
+      if (!api::QowCanonicalDescriptorIdentityV1(runtime_descriptor)) {
         return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                       "document path output descriptor is ambiguous");
       }
+      const auto path = unquote(*path_expression->literal_or_parameter_ref);
+      const auto matching_column_count = std::ranges::count_if(
+          persisted_relation.columns, [&](const auto& column) {
+            return column.canonical_name_key == path;
+          });
+      const auto persisted_column = std::ranges::find_if(
+          persisted_relation.columns, [&](const auto& column) {
+            return column.canonical_name_key == path;
+          });
+      if (matching_column_count > 1 ||
+          (matching_column_count == 1 &&
+           !exact_persisted_binding(*persisted_column, *descriptor)) ||
+          (matching_column_count == 0 &&
+           descriptor->nullability !=
+               api::RelationalNullability::kNullable)) {
+        return refuse(
+            "SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+            "document path is not an exact persisted or nullable-missing binding");
+      }
       prepared.direct_document_path = true;
-      prepared.direct_dependency_ordinal = dependencies.size();
-      dependency_by_descriptor.emplace(descriptor->descriptor_id,
-                                       dependencies.size());
-      dependencies.push_back(
-          {{}, unquote(*path_expression->literal_or_parameter_ref),
-           descriptor->descriptor_id, runtime_descriptor,
-           descriptor->nullability ==
-               api::RelationalNullability::kNullable});
+      const auto existing_dependency =
+          dependency_by_descriptor.find(descriptor->descriptor_id);
+      if (existing_dependency != dependency_by_descriptor.end()) {
+        const auto& existing = dependencies[existing_dependency->second];
+        if (existing.path != path ||
+            existing.column_uuid !=
+                (persisted_column == persisted_relation.columns.end()
+                     ? std::string{}
+                     : persisted_column->column_uuid.canonical) ||
+            existing.descriptor.descriptor_uuid.canonical !=
+                runtime_descriptor.descriptor_uuid.canonical ||
+            existing.descriptor.encoded_descriptor !=
+                runtime_descriptor.encoded_descriptor) {
+          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "document path descriptor identity is ambiguous");
+        }
+        prepared.direct_dependency_ordinal = existing_dependency->second;
+      } else {
+        prepared.direct_dependency_ordinal = dependencies.size();
+        dependency_by_descriptor.emplace(descriptor->descriptor_id,
+                                         dependencies.size());
+        dependencies.push_back(
+            {persisted_column == persisted_relation.columns.end()
+                 ? std::string{}
+                 : persisted_column->column_uuid.canonical,
+             path, descriptor->descriptor_id, runtime_descriptor,
+             descriptor->nullability ==
+                 api::RelationalNullability::kNullable});
+      }
       prepared.column =
           {output.output_name_utf8, runtime_descriptor,
            descriptor->nullability ==
@@ -44720,16 +50438,55 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
 
   api::EngineDocumentFindRequest document_request;
   document_request.context = input.context;
+  const auto document_cancellation_probe_failed =
+      std::make_shared<std::atomic_bool>(false);
+  const auto raw_document_cancellation =
+      input.context.query_cancellation_requested;
+  const std::function<bool()> document_cancellation_requested =
+      [raw_document_cancellation,
+       document_cancellation_probe_failed]() noexcept {
+        if (!raw_document_cancellation) return false;
+        try {
+          return raw_document_cancellation();
+        } catch (...) {
+          document_cancellation_probe_failed->store(
+              true, std::memory_order_relaxed);
+          // The provider reads the companion flag and reports coordinator
+          // failure.  If the first exception occurs at a later coordinator
+          // checkpoint, returning true still prevents result publication.
+          return true;
+        }
+      };
+  document_request.context.query_cancellation_requested =
+      document_cancellation_requested;
+  document_request.cancellation_probe_failed =
+      [document_cancellation_probe_failed]() noexcept {
+        return document_cancellation_probe_failed->load(
+            std::memory_order_relaxed);
+      };
   document_request.target_object.uuid.canonical = planning.object_uuid;
+  document_request.expected_descriptor_uuid =
+      persisted_relation.descriptor_uuid.canonical;
+  document_request.expected_descriptor_generation =
+      persisted_relation.descriptor_generation;
   document_request.exact_collection_fallback = true;
+  document_request.typed_rows_only = true;
+  const auto document_decode_memory = planning.memory_budget_bytes / 2;
+  const auto document_result_memory =
+      planning.memory_budget_bytes - document_decode_memory;
   const auto bounded_document_memory = static_cast<std::size_t>(
-      std::min<std::uint64_t>(planning.memory_budget_bytes,
+      std::min<std::uint64_t>(document_result_memory,
                               std::numeric_limits<std::size_t>::max()));
-  if (bounded_document_memory < sizeof(api::EngineDocumentTypedPathValue)) {
+  if (document_decode_memory == 0 ||
+      bounded_document_memory < sizeof(api::EngineDocumentTypedPathValue) ||
+      input.context.optimizer_maximum_search_steps == 0) {
     return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                   "document provider memory budget is too small");
   }
-  document_request.maximum_memory_bytes = planning.memory_budget_bytes;
+  document_request.maximum_memory_bytes = document_result_memory;
+  document_request.maximum_scanned_row_versions =
+      input.context.optimizer_maximum_search_steps;
+  document_request.maximum_decoded_bytes = document_decode_memory;
   document_request.maximum_cells =
       bounded_document_memory / sizeof(api::EngineDocumentTypedPathValue);
   document_request.maximum_rows = std::min<std::size_t>(
@@ -44742,6 +50499,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   }
   for (const auto& dependency : dependencies) {
     document_request.projected_paths.push_back(dependency.path);
+    document_request.projected_column_uuids.push_back(
+        dependency.column_uuid);
     document_request.projected_path_nullable.push_back(dependency.nullable);
     document_request.descriptors.push_back(dependency.descriptor);
   }
@@ -44903,9 +50662,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
   execution_request.capability.base_row_mga_recheck_supported = true;
   execution_request.capability.security_recheck_supported = true;
   execution_request.cancellation_requested =
-      input.context.query_cancellation_requested
-          ? input.context.query_cancellation_requested
-          : std::function<bool()>([] { return false; });
+      document_cancellation_requested;
   execution_request.cleanup_provider = [] {};
   execution_request.exact_fallback_selected = true;
   execution_request.security_admitted = planning.security_admitted;
@@ -44958,8 +50715,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
           return provider;
         }
         const auto found = api::EngineDocumentFind(document_request);
-        provider.data_access_observed = true;
-        provider.rows_examined = found.dml_summary.visible_rows_scanned;
+        provider.data_access_observed = found.data_access_observed;
+        provider.rows_examined = found.scanned_row_versions;
         if (!found.ok) {
           provider.diagnostic_id =
               found.diagnostics.empty()
@@ -45052,7 +50809,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
           for (const auto& output : projection_outputs) {
             if (output.direct_document_path || output.direct_identifier) {
               output_row.values.push_back(
-                  dependency_row.values[output.direct_dependency_ordinal]);
+                  evaluation_values[output.direct_dependency_ordinal]);
               continue;
             }
             api::EngineTypedValue value;
@@ -45314,27 +51071,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(
       {"canonical.document_row_identity_count",
        std::to_string(execution.result_publication.row_stream.rows.size())});
   return result;
-}
-
-std::optional<std::string> Rcp079DescriptorField(
-    const std::string_view encoded, const std::string_view key) {
-  const std::string prefix = std::string(key) + "=";
-  std::optional<std::string> value;
-  std::size_t offset = 0;
-  while (offset <= encoded.size()) {
-    const auto separator = encoded.find(';', offset);
-    const auto end = separator == std::string_view::npos
-                         ? encoded.size()
-                         : separator;
-    const auto field = encoded.substr(offset, end - offset);
-    if (field.starts_with(prefix)) {
-      if (value.has_value()) return std::nullopt;
-      value = std::string(field.substr(prefix.size()));
-    }
-    if (separator == std::string_view::npos) break;
-    offset = separator + 1;
-  }
-  return value;
 }
 
 std::string Rcp079CanonicalReal64(const double value) {
@@ -46801,6 +52537,34 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
       return expression.expression_id == expression_id;
     });
   };
+  std::array<std::string, 5> exact_derived_type_uuids;
+  if (std::ranges::any_of(families, [](const std::string_view family) {
+        return family == "key_value" || family == "time_series" ||
+               family == "vector" || family == "search";
+      })) {
+    exact_derived_type_uuids = {
+        ExactCanonicalCoreDatatypeUuidV1("uuid"),
+        ExactCanonicalCoreDatatypeUuidV1("character"),
+        ExactCanonicalCoreDatatypeUuidV1("timestamp"),
+        ExactCanonicalCoreDatatypeUuidV1("real64"),
+        ExactCanonicalCoreDatatypeUuidV1("uint64")};
+    if (std::ranges::any_of(exact_derived_type_uuids,
+                            [](const auto& uuid) { return uuid.empty(); })) {
+      return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                    "bounded derived source core type registry is unavailable");
+    }
+  }
+  const auto exact_derived_type_uuid =
+      [&](const std::string_view canonical_type_name) -> std::string_view {
+    if (canonical_type_name == "uuid") return exact_derived_type_uuids[0];
+    if (canonical_type_name == "text") return exact_derived_type_uuids[1];
+    if (canonical_type_name == "timestamp_tz") {
+      return exact_derived_type_uuids[2];
+    }
+    if (canonical_type_name == "real64") return exact_derived_type_uuids[3];
+    if (canonical_type_name == "uint64") return exact_derived_type_uuids[4];
+    return {};
+  };
   std::unordered_set<std::string> object_uuids;
   std::vector<Rcp080BoundedSourceV1> prepared_sources;
   prepared_sources.reserve(sources.size());
@@ -46938,6 +52702,13 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
                    expression->bound_name_uuid != search_analyzer_uuid) {
           return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                         "bounded search analyzer public binding diverged");
+        }
+        const auto exact_type_uuid =
+            exact_derived_type_uuid(derived_types[ordinal]);
+        if (exact_type_uuid.empty() ||
+            descriptor->type_uuid != exact_type_uuid) {
+          return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                        "bounded derived source type UUID was substituted");
         }
         api::EngineDescriptor engine_descriptor;
         engine_descriptor.descriptor_uuid.canonical =
@@ -48404,6 +54175,14 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
              std::string::npos) {
     condition_form = "NATURAL";
   }
+  if (condition_form == "USING" || condition_form == "NATURAL") {
+    return refuse(
+        condition_form == "USING"
+            ? "SB_MODEL_JOIN_USING_BINDING_REFUSED_V1"
+            : "SB_MODEL_JOIN_NATURAL_BINDING_REFUSED_V1",
+        "captured model-family USING/NATURAL join lacks binder-owned named "
+        "bindings and a coalescing projection");
+  }
   const auto left_family = Rcp079ModelFamilyForSource(dag, *sources[0]);
   const auto right_family = Rcp079ModelFamilyForSource(dag, *sources[1]);
   opt::ModelFamilyJoinAdmissionRequestV1 pair_request;
@@ -48478,6 +54257,36 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
                   "captured model-family pair DAG is incomplete");
   }
 
+  std::vector<std::string> authorized_object_uuids;
+  authorized_object_uuids.reserve(sources.size());
+  for (const auto* source : sources) {
+    if (source->required_object_uuids.size() != 1 ||
+        !CanonicalUuidText(source->required_object_uuids.front())) {
+      return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                    "captured model-family object closure is not exact");
+    }
+    if (std::ranges::find(authorized_object_uuids,
+                          source->required_object_uuids.front()) ==
+        authorized_object_uuids.end()) {
+      authorized_object_uuids.push_back(source->required_object_uuids.front());
+    }
+  }
+  const auto complete_object_closure_authorized = [&] {
+    return std::ranges::all_of(
+        authorized_object_uuids, [&](const auto& object_uuid) {
+          const auto authorization = api::EvaluateMaterializedAuthorization(
+              input.context, input.context.authorization_context, "SELECT",
+              object_uuid);
+          return authorization.authorized && !authorization.denied &&
+                 !authorization.policy_recheck_required &&
+                 authorization.diagnostics.empty();
+        });
+  };
+  if (!complete_object_closure_authorized()) {
+    return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                  "captured model-family SELECT closure was refused");
+  }
+
   const auto descriptor_preflight =
       Rcp079PreflightMultilegResultDescriptorsV1(
           input, sources, join_kind, left_only);
@@ -48525,6 +54334,42 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
                               ? "model-family source adapter was not captured"
                               : attempted.api_result.diagnostics.front().detail;
       return refuse(diagnostic, detail);
+    }
+  }
+  const bool exact_columnar_pair =
+      std::ranges::all_of(captured, [](const auto& leg) {
+        return leg.family_id == "columnar" &&
+               !leg.exact_output_columns.empty() &&
+               leg.exact_output_columns.size() ==
+                   leg.execution_request.input.output_descriptor_ids.size();
+      });
+  std::vector<exec::ExecutorColumnDescriptor> exact_join_columns;
+  if (exact_columnar_pair) {
+    exact_join_columns = captured[0].exact_output_columns;
+    if (!left_only) {
+      exact_join_columns.insert(exact_join_columns.end(),
+                                captured[1].exact_output_columns.begin(),
+                                captured[1].exact_output_columns.end());
+    }
+    const auto left_width = captured[0].exact_output_columns.size();
+    for (std::size_t ordinal = 0; ordinal < exact_join_columns.size();
+         ++ordinal) {
+      const bool null_extended =
+          (ordinal < left_width &&
+           (join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
+            join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter)) ||
+          (ordinal >= left_width &&
+           (join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
+            join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter));
+      if (null_extended) {
+        exact_join_columns[ordinal].nullable = true;
+        if (!exec::DeriveCanonicalNullableDescriptorEncoding(
+                &exact_join_columns[ordinal].descriptor)) {
+          return refuse(
+              "SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+              "columnar outer result lacks an exact nullable carrier");
+        }
+      }
     }
   }
   const auto model_leg = std::ranges::find_if(captured, [](const auto& leg) {
@@ -48679,12 +54524,17 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
   std::uint64_t maximum_cells = 0;
   std::uint64_t maximum_total_rows = 0;
   std::uint64_t maximum_total_cells = 0;
+  std::uint64_t input_columns = 0;
+  std::uint64_t source_cells = 0;
   if (maximum_rows == 0 || maximum_columns == 0 ||
+      !CheckedAdd(sources[0]->output_descriptor_ids.size(),
+                  sources[1]->output_descriptor_ids.size(), &input_columns) ||
       !CheckedMultiply(maximum_rows, maximum_rows, &maximum_pairs) ||
       maximum_pairs > std::numeric_limits<std::size_t>::max() ||
       !CheckedMultiply(maximum_rows, maximum_columns, &maximum_cells) ||
+      !CheckedMultiply(maximum_rows, input_columns, &source_cells) ||
       !CheckedMultiply(maximum_rows, 3, &maximum_total_rows) ||
-      !CheckedMultiply(maximum_cells, 3, &maximum_total_cells) ||
+      !CheckedAdd(source_cells, maximum_cells, &maximum_total_cells) ||
       maximum_cells > std::numeric_limits<std::size_t>::max() ||
       maximum_total_rows > std::numeric_limits<std::size_t>::max() ||
       maximum_total_cells > std::numeric_limits<std::size_t>::max()) {
@@ -48820,6 +54670,15 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
   }
   std::vector<LivePhysicalNodeProfile> profiles;
   for (const auto& leg : captured) {
+    const auto source_memory_grant =
+        leg.family_id == "relational"
+            ? input.context.optimizer_memory_budget_bytes
+            : leg.execution_request.input.maximum_memory_bytes;
+    if (source_memory_grant == 0 ||
+        source_memory_grant > input.context.optimizer_memory_budget_bytes) {
+      return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "captured model-family source memory grant is invalid");
+    }
     LivePhysicalNodeProfile profile;
     profile.logical_node_id = leg.logical_node_id;
     profile.implementation_id = leg.implementation_id;
@@ -48828,8 +54687,7 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
     profile.physical_node_kind = leg.physical_node_kind;
     profile.transformation_rule_id = leg.transformation_rule_id;
     profile.estimated_rows = 1;
-    profile.memory_bytes_required = std::max<std::uint64_t>(
-        4096, input.context.optimizer_memory_budget_bytes / 8);
+    profile.memory_bytes_required = source_memory_grant;
     profile.page_read_sequential_units = 1;
     profile.mga_visibility_checks_expected = 1;
     profile.storage_read_capable = true;
@@ -48875,8 +54733,8 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
             : "canonical.model-family.join." + join_component + ".v1";
   }
   join_profile.estimated_rows = asof_join ? maximum_rows : 1;
-  join_profile.memory_bytes_required = std::max<std::uint64_t>(
-      4096, input.context.optimizer_memory_budget_bytes / 4);
+  join_profile.memory_bytes_required =
+      input.context.optimizer_memory_budget_bytes;
   join_profile.minimum_input_count = 2;
   join_profile.maximum_input_count = 2;
   join_profile.runtime_peak_from_callback_batches = true;
@@ -49104,6 +54962,35 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
         predicate_join ? join->bound_expression_ids.front() : 0,
         std::move(predicate_binding), dag, std::move(predicate_services));
   }
+  if (exact_columnar_pair) {
+    auto execute_join = std::move(join_registration.execute);
+    join_registration.execute =
+        [execute_join = std::move(execute_join), exact_join_columns](
+            const exec::TypedPhysicalNodeDag& selected_dag,
+            const exec::PhysicalNodeRecord& selected_node,
+            const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs)
+            mutable {
+          auto step = execute_join(selected_dag, selected_node, inputs);
+          if (!step.diagnostic.ok) return step;
+          if (!step.materialized_output_batch.has_value() ||
+              step.materialized_output_batch->columns.size() !=
+                  exact_join_columns.size() ||
+              !std::ranges::equal(
+                  step.materialized_output_batch->columns,
+                  exact_join_columns,
+                  [](const auto& actual, const auto& expected) {
+                    return Rcp079ExactExecutorColumnV1(actual, expected);
+                  })) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1";
+            step.diagnostic.detail =
+                "columnar join result descriptor carrier changed";
+            step.materialized_output_batch.reset();
+          }
+          return step;
+        };
+  }
   selected.available_executors.push_back(
       WithMultilegResultDescriptorRebindingV1(
           std::move(join_registration),
@@ -49146,12 +55033,43 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
     });
   };
   const auto left_width = sources[0]->output_descriptor_ids.size();
+  std::vector<const api::RelationalOutputRecord*> exact_source_outputs;
+  if (exact_columnar_pair) {
+    for (std::size_t source_ordinal = 0; source_ordinal < sources.size();
+         ++source_ordinal) {
+      if (left_only && source_ordinal != 0) break;
+      std::vector<const api::RelationalOutputRecord*> outputs;
+      for (const auto& output : dag.outputs) {
+        if (output.relation_node_id == sources[source_ordinal]->node_id) {
+          outputs.push_back(&output);
+        }
+      }
+      std::ranges::sort(outputs, {}, &api::RelationalOutputRecord::ordinal);
+      exact_source_outputs.insert(exact_source_outputs.end(), outputs.begin(),
+                                  outputs.end());
+    }
+    if (exact_source_outputs.size() != root_outputs.size() ||
+        exact_join_columns.size() != root_outputs.size()) {
+      return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                    "columnar join source output closure changed");
+    }
+  }
   for (std::size_t ordinal = 0; ordinal < root_outputs.size(); ++ordinal) {
     const auto descriptor = descriptor_for(root_outputs[ordinal]->descriptor_id);
     if (descriptor == dag.descriptors.end() ||
-        root_outputs[ordinal]->ordinal != ordinal) {
+        root_outputs[ordinal]->ordinal != ordinal ||
+        !root_outputs[ordinal]->visible ||
+        root_outputs[ordinal]->descriptor_id !=
+            join->output_descriptor_ids[ordinal] ||
+        (exact_columnar_pair &&
+         (root_outputs[ordinal]->expression_id !=
+              exact_source_outputs[ordinal]->expression_id ||
+          root_outputs[ordinal]->output_name_utf8 !=
+              exact_source_outputs[ordinal]->output_name_utf8 ||
+          root_outputs[ordinal]->descriptor_id !=
+              exact_source_outputs[ordinal]->descriptor_id))) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                    "captured model-family root descriptor is unresolved");
+                    "captured model-family root descriptor is not source-exact");
     }
     const bool null_extended =
         ((join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
@@ -49165,13 +55083,27 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
     published.name_utf8 = root_outputs[ordinal]->output_name_utf8;
     const auto& allocation =
         descriptor_preflight.publication_allocations[ordinal];
+    const auto exact_type_uuid =
+        exact_columnar_pair
+            ? Rcp079DescriptorField(
+                  exact_join_columns[ordinal].descriptor.encoded_descriptor,
+                  "type_uuid")
+            : std::optional<std::string>{};
     if (allocation.demand.nullable !=
             (null_extended ||
              descriptor->nullability ==
                  api::RelationalNullability::kNullable) ||
         (!allocation.demand.derived &&
          (allocation.descriptor_uuid != descriptor->descriptor_uuid ||
-          allocation.type_uuid != descriptor->type_uuid))) {
+          allocation.type_uuid != descriptor->type_uuid)) ||
+        (exact_columnar_pair &&
+         (!exact_type_uuid.has_value() ||
+          allocation.descriptor_uuid !=
+              exact_join_columns[ordinal]
+                  .descriptor.descriptor_uuid.canonical ||
+          allocation.type_uuid != *exact_type_uuid ||
+          allocation.demand.nullable !=
+              exact_join_columns[ordinal].nullable))) {
       return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                     "captured model-family publication allocation changed");
     }
@@ -49187,6 +55119,10 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
     selected.result_publication_request.column_bindings.push_back(
         {ordinal, true, std::move(published)});
   }
+  if (!complete_object_closure_authorized()) {
+    return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                  "captured model-family SELECT closure changed before execution");
+  }
   const auto execution = ExecuteSelectedWithMgaGuard(
       input.context, selected, physical.ordinary_runtime_memory_receipts);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
@@ -49195,12 +55131,25 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
       !execution.runtime_actuals.accepted ||
       execution.dispatch.executed_steps.size() != 3 ||
       !execution.issues.empty()) {
-    return refuse(execution.issues.empty()
-                      ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
-                      : execution.issues.front().diagnostic_id,
-                  execution.issues.empty()
-                      ? "captured model-family execution did not complete"
-                      : execution.issues.front().field_id);
+    const bool cancellation_observed =
+        execution.cancellation_observed ||
+        execution.dispatch.diagnostic.diagnostic_code ==
+            "SB_MODEL_EXECUTION_CANCELLED_V1" ||
+        (!execution.issues.empty() &&
+         execution.issues.front().diagnostic_id ==
+             "SB_MODEL_EXECUTION_CANCELLED_V1");
+    return refuse(
+        cancellation_observed
+            ? "SB_MODEL_EXECUTION_CANCELLED_V1"
+            : execution.issues.empty()
+                  ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                  : execution.issues.front().diagnostic_id,
+        cancellation_observed &&
+                !execution.dispatch.diagnostic.detail.empty()
+            ? execution.dispatch.diagnostic.detail
+            : execution.issues.empty()
+                  ? "captured model-family execution did not complete"
+                  : execution.issues.front().field_id);
   }
   result.physical_dag_executed = true;
   result.runtime_actuals_attached = true;
@@ -49240,6 +55189,7 @@ struct Rcp079ColumnarJoinSourceV1 {
   api::MgaRelationStorageDescriptor persisted;
   std::vector<exec::ExecutorColumnDescriptor> columns;
   std::vector<std::uint32_t> output_descriptor_ids;
+  std::vector<std::uint32_t> output_expression_ids;
   std::string implementation_id{"physical_columnar_zone_scan_v1"};
   std::string capability_uuid;
   std::string provider_uuid;
@@ -49247,6 +55197,1134 @@ struct Rcp079ColumnarJoinSourceV1 {
   std::string property_uuid;
   std::string security_receipt_uuid;
 };
+
+std::optional<std::map<std::string_view, std::string_view>>
+Rcp079ExactDescriptorFieldsV1(const api::EngineDescriptor& descriptor) {
+  std::map<std::string_view, std::string_view> fields;
+  const auto encoded = std::string_view(descriptor.encoded_descriptor);
+  std::size_t offset = 0;
+  while (offset <= encoded.size()) {
+    const auto separator = encoded.find(';', offset);
+    const auto field = encoded.substr(
+        offset, separator == std::string_view::npos
+                    ? std::string_view::npos
+                    : separator - offset);
+    const auto equal = field.find('=');
+    if (field.empty() || equal == std::string_view::npos || equal == 0 ||
+        equal + 1 == field.size() ||
+        !fields.emplace(field.substr(0, equal), field.substr(equal + 1))
+             .second) {
+      return std::nullopt;
+    }
+    if (separator == std::string_view::npos) break;
+    offset = separator + 1;
+  }
+  return fields;
+}
+
+bool Rcp079ExactColumnarJoinStorageSnapshotV1(
+    const api::MgaRelationStorageDescriptor& actual,
+    const api::MgaRelationStorageDescriptor& expected) {
+  if (actual.descriptor_uuid.canonical !=
+          expected.descriptor_uuid.canonical ||
+      actual.database_uuid.canonical != expected.database_uuid.canonical ||
+      actual.schema_uuid.canonical != expected.schema_uuid.canonical ||
+      actual.relation_uuid.canonical != expected.relation_uuid.canonical ||
+      actual.primary_filespace_uuid.canonical !=
+          expected.primary_filespace_uuid.canonical ||
+      actual.relation_kind != expected.relation_kind ||
+      actual.storage_profile != expected.storage_profile ||
+      actual.descriptor_generation != expected.descriptor_generation ||
+      actual.page_size != expected.page_size ||
+      actual.root_page_number != expected.root_page_number ||
+      actual.allocation_root_page_number !=
+          expected.allocation_root_page_number ||
+      actual.row_identity_rule != expected.row_identity_rule ||
+      actual.version_identity_rule != expected.version_identity_rule ||
+      actual.mutation_rule != expected.mutation_rule ||
+      actual.visibility_rule != expected.visibility_rule ||
+      actual.cleanup_rule != expected.cleanup_rule ||
+      actual.recovery_rule != expected.recovery_rule ||
+      actual.descriptor_status != expected.descriptor_status ||
+      actual.required_evidence_kinds != expected.required_evidence_kinds ||
+      actual.columns.size() != expected.columns.size() ||
+      actual.indexes.size() != expected.indexes.size()) {
+    return false;
+  }
+  for (std::size_t ordinal = 0; ordinal < actual.columns.size(); ++ordinal) {
+    const auto& left = actual.columns[ordinal];
+    const auto& right = expected.columns[ordinal];
+    if (left.column_uuid.canonical != right.column_uuid.canonical ||
+        left.ordinal != right.ordinal ||
+        left.canonical_name_key != right.canonical_name_key ||
+        left.value_descriptor.descriptor_uuid.canonical !=
+            right.value_descriptor.descriptor_uuid.canonical ||
+        left.value_descriptor.descriptor_kind !=
+            right.value_descriptor.descriptor_kind ||
+        left.value_descriptor.canonical_type_name !=
+            right.value_descriptor.canonical_type_name ||
+        left.value_descriptor.encoded_descriptor !=
+            right.value_descriptor.encoded_descriptor ||
+        left.nullable != right.nullable || left.generated != right.generated ||
+        left.identity_column != right.identity_column ||
+        left.storage_class != right.storage_class ||
+        left.charset_uuid != right.charset_uuid ||
+        left.collation_uuid != right.collation_uuid ||
+        left.character_length != right.character_length ||
+        left.max_inline_bytes != right.max_inline_bytes ||
+        left.overflow_policy != right.overflow_policy) {
+      return false;
+    }
+  }
+  for (std::size_t ordinal = 0; ordinal < actual.indexes.size(); ++ordinal) {
+    const auto& left = actual.indexes[ordinal];
+    const auto& right = expected.indexes[ordinal];
+    if (left.index_uuid.canonical != right.index_uuid.canonical ||
+        left.family != right.family || left.profile != right.profile ||
+        left.unique != right.unique ||
+        left.approximate != right.approximate ||
+        left.key_envelopes != right.key_envelopes ||
+        left.include_columns != right.include_columns ||
+        left.predicate_kind != right.predicate_kind ||
+        left.predicate_column != right.predicate_column ||
+        left.predicate_value != right.predicate_value ||
+        left.residency_policy != right.residency_policy) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool Rcp079ExactPersistedColumnDescriptorV1(
+    const api::MgaRelationColumnStorageDescriptor& persisted) {
+  const auto fields =
+      Rcp079ExactDescriptorFieldsV1(persisted.value_descriptor);
+  if (!fields.has_value() || persisted.canonical_name_key.empty() ||
+      !CanonicalUuidText(persisted.column_uuid.canonical) ||
+      !api::QowCanonicalDescriptorIdentityV1(persisted.value_descriptor) ||
+      persisted.value_descriptor.descriptor_kind !=
+          "canonical_type_descriptor" ||
+      !CanonicalUuidText(
+          persisted.value_descriptor.descriptor_uuid.canonical) ||
+      persisted.storage_class != "inline_row_value" ||
+      persisted.max_inline_bytes != 4096 ||
+      persisted.overflow_policy != "mga_large_value_locator") {
+    return false;
+  }
+  const auto field = [&](const std::string_view name)
+      -> std::optional<std::string_view> {
+    const auto found = fields->find(name);
+    return found == fields->end()
+               ? std::optional<std::string_view>{}
+               : std::optional<std::string_view>{found->second};
+  };
+  const auto type_uuid = field("type_uuid");
+  std::optional<std::string_view> encoded_type_name;
+  for (const auto alias :
+       {std::string_view("type"), std::string_view("canonical"),
+        std::string_view("canonical_type"),
+        std::string_view("descriptor")}) {
+    const auto candidate = field(alias);
+    if (!candidate.has_value()) continue;
+    if (encoded_type_name.has_value() &&
+        *encoded_type_name != *candidate) {
+      return false;
+    }
+    if (!encoded_type_name.has_value()) encoded_type_name = candidate;
+  }
+  static const auto datatype_manifest =
+      dt::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto canonical_type_id = dt::CanonicalTypeIdFromStableName(
+      persisted.value_descriptor.canonical_type_name);
+  const auto canonical_type =
+      datatype_manifest.ok()
+          ? dt::LookupDatatypeCatalogRow(datatype_manifest.manifest,
+                                         canonical_type_id)
+          : dt::DatatypeCatalogManifestResult{};
+  if (!type_uuid.has_value() ||
+      !CanonicalUuidText(std::string(*type_uuid)) ||
+      canonical_type_id == dt::CanonicalTypeId::unknown ||
+      !canonical_type.ok() ||
+      canonical_type.manifest.descriptor_rows.size() != 1 ||
+      !canonical_type.manifest.descriptor_rows.front()
+           .descriptor_uuid.valid() ||
+      scratchbird::core::uuid::UuidToString(
+          canonical_type.manifest.descriptor_rows.front()
+              .descriptor_uuid.value) != *type_uuid ||
+      persisted.value_descriptor.descriptor_uuid.canonical == *type_uuid ||
+      !encoded_type_name.has_value() ||
+      *encoded_type_name !=
+          persisted.value_descriptor.canonical_type_name) {
+    return false;
+  }
+
+  const auto canonical_nullability = field("nullability");
+  const auto storage_nullability = field("nullable");
+  if (canonical_nullability.has_value() == storage_nullability.has_value()) {
+    return false;
+  }
+  std::optional<bool> nullable;
+  if (canonical_nullability == std::optional<std::string_view>{"nullable"}) {
+    nullable = true;
+  } else if (canonical_nullability ==
+             std::optional<std::string_view>{"non_null"}) {
+    nullable = false;
+  } else if (storage_nullability ==
+                 std::optional<std::string_view>{"true"} ||
+             storage_nullability == std::optional<std::string_view>{"1"}) {
+    nullable = true;
+  } else if (storage_nullability ==
+                 std::optional<std::string_view>{"false"} ||
+             storage_nullability == std::optional<std::string_view>{"0"}) {
+    nullable = false;
+  } else {
+    return false;
+  }
+  if (*nullable != persisted.nullable) return false;
+
+  const auto exact_optional_bool = [&](const std::string_view name,
+                                       const bool expected) {
+    const auto encoded = field(name);
+    if (!encoded.has_value()) return !expected;
+    const auto actual =
+        *encoded == "true" || *encoded == "1"
+            ? std::optional<bool>{true}
+            : (*encoded == "false" || *encoded == "0")
+                  ? std::optional<bool>{false}
+                  : std::optional<bool>{};
+    return actual.has_value() && *actual == expected;
+  };
+  if (!exact_optional_bool("generated", persisted.generated) ||
+      !exact_optional_bool("identity", persisted.identity_column)) {
+    return false;
+  }
+
+  const auto encoded_collation = field("collation_uuid");
+  const auto encoded_charset = field("charset_uuid");
+  if (encoded_collation.has_value() !=
+          !persisted.collation_uuid.empty() ||
+      (encoded_collation.has_value() &&
+       *encoded_collation != persisted.collation_uuid) ||
+      (encoded_collation.has_value() &&
+       !CanonicalUuidText(std::string(*encoded_collation))) ||
+      encoded_charset.has_value() != !persisted.charset_uuid.empty() ||
+      (encoded_charset.has_value() &&
+       *encoded_charset != persisted.charset_uuid) ||
+      (encoded_charset.has_value() &&
+       !CanonicalUuidText(std::string(*encoded_charset)))) {
+    return false;
+  }
+
+  const auto parse_u32 = [&](const std::string_view name,
+                             std::optional<std::uint32_t>* value) {
+    value->reset();
+    const auto encoded = field(name);
+    if (!encoded.has_value()) return true;
+    if (encoded->empty() ||
+        (encoded->size() > 1 && encoded->front() == '0')) {
+      return false;
+    }
+    std::uint32_t parsed = 0;
+    const auto converted = std::from_chars(
+        encoded->data(), encoded->data() + encoded->size(), parsed);
+    if (converted.ec != std::errc{} ||
+        converted.ptr != encoded->data() + encoded->size()) {
+      return false;
+    }
+    *value = parsed;
+    return true;
+  };
+  std::optional<std::uint32_t> width;
+  std::optional<std::uint32_t> character_length;
+  std::optional<std::uint32_t> precision;
+  std::optional<std::uint32_t> scale;
+  if (!parse_u32("width", &width) ||
+      !parse_u32("character_length", &character_length) ||
+      !parse_u32("precision", &precision) ||
+      !parse_u32("scale", &scale) ||
+      character_length.has_value() !=
+          (persisted.character_length != 0) ||
+      (character_length.has_value() &&
+       *character_length != persisted.character_length) ||
+      (character_length.has_value() && width.has_value() &&
+       *character_length != *width)) {
+    return false;
+  }
+  const auto timezone = field("timezone_profile_id");
+  return !timezone.has_value() || !timezone->empty();
+}
+
+bool Rcp079ExactColumnarJoinColumnBindingV1(
+    const api::RelationalTypeDescriptor& relational,
+    const api::MgaRelationColumnStorageDescriptor& persisted) {
+  const auto fields =
+      Rcp079ExactDescriptorFieldsV1(persisted.value_descriptor);
+  if (!fields.has_value() ||
+      !Rcp079ExactPersistedColumnDescriptorV1(persisted)) {
+    return false;
+  }
+  const auto field = [&](const std::string_view name)
+      -> std::optional<std::string_view> {
+    const auto found = fields->find(name);
+    return found == fields->end()
+               ? std::optional<std::string_view>{}
+               : std::optional<std::string_view>{found->second};
+  };
+  const auto type_uuid = field("type_uuid");
+  static const auto datatype_manifest =
+      dt::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto canonical_type_id = dt::CanonicalTypeIdFromStableName(
+      persisted.value_descriptor.canonical_type_name);
+  const auto canonical_type =
+      datatype_manifest.ok()
+          ? dt::LookupDatatypeCatalogRow(datatype_manifest.manifest,
+                                         canonical_type_id)
+          : dt::DatatypeCatalogManifestResult{};
+  const auto canonical_type_uuid =
+      canonical_type.ok() &&
+              canonical_type.manifest.descriptor_rows.size() == 1 &&
+              canonical_type.manifest.descriptor_rows.front()
+                  .descriptor_uuid.valid()
+          ? scratchbird::core::uuid::UuidToString(
+                canonical_type.manifest.descriptor_rows.front()
+                    .descriptor_uuid.value)
+          : std::string{};
+  if (!type_uuid.has_value() ||
+      !CanonicalUuidText(std::string(*type_uuid)) ||
+      canonical_type_id == dt::CanonicalTypeId::unknown ||
+      canonical_type_uuid != *type_uuid ||
+      relational.descriptor_uuid !=
+          persisted.value_descriptor.descriptor_uuid.canonical ||
+      relational.type_uuid != *type_uuid ||
+      relational.descriptor_uuid == relational.type_uuid) {
+    return false;
+  }
+  const auto canonical_nullability = field("nullability");
+  const auto storage_nullability = field("nullable");
+  if (canonical_nullability.has_value() == storage_nullability.has_value()) {
+    return false;
+  }
+  std::optional<bool> nullable;
+  if (canonical_nullability == std::optional<std::string_view>{"nullable"}) {
+    nullable = true;
+  } else if (canonical_nullability ==
+             std::optional<std::string_view>{"non_null"}) {
+    nullable = false;
+  } else if (storage_nullability ==
+                 std::optional<std::string_view>{"true"} ||
+             storage_nullability == std::optional<std::string_view>{"1"}) {
+    nullable = true;
+  } else if (storage_nullability ==
+                 std::optional<std::string_view>{"false"} ||
+             storage_nullability == std::optional<std::string_view>{"0"}) {
+    nullable = false;
+  } else {
+    return false;
+  }
+  if (*nullable != persisted.nullable ||
+      relational.nullability !=
+          (persisted.nullable ? api::RelationalNullability::kNullable
+                              : api::RelationalNullability::kNonNull)) {
+    return false;
+  }
+  const auto encoded_collation = field("collation_uuid");
+  const auto persisted_collation =
+      persisted.collation_uuid.empty()
+          ? encoded_collation
+          : std::optional<std::string_view>{persisted.collation_uuid};
+  if ((!persisted.collation_uuid.empty() &&
+       encoded_collation != persisted_collation) ||
+      (persisted_collation.has_value() &&
+       !CanonicalUuidText(std::string(*persisted_collation))) ||
+      relational.collation_uuid !=
+          (persisted_collation.has_value()
+               ? std::optional<std::string>{*persisted_collation}
+               : std::optional<std::string>{})) {
+    return false;
+  }
+  const auto encoded_charset = field("charset_uuid");
+  if ((!persisted.charset_uuid.empty() &&
+       encoded_charset !=
+           std::optional<std::string_view>{persisted.charset_uuid}) ||
+      (encoded_charset.has_value() &&
+       !CanonicalUuidText(std::string(*encoded_charset)))) {
+    return false;
+  }
+  const auto parse_u32 = [&](const std::string_view name,
+                             std::optional<std::uint32_t>* value) {
+    value->reset();
+    const auto encoded = field(name);
+    if (!encoded.has_value() || encoded->empty()) return !encoded.has_value();
+    if (encoded->size() > 1 && encoded->front() == '0') return false;
+    std::uint32_t parsed = 0;
+    const auto converted = std::from_chars(
+        encoded->data(), encoded->data() + encoded->size(), parsed);
+    if (converted.ec != std::errc{} ||
+        converted.ptr != encoded->data() + encoded->size()) {
+      return false;
+    }
+    *value = parsed;
+    return true;
+  };
+  std::optional<std::uint32_t> width;
+  std::optional<std::uint32_t> precision;
+  std::optional<std::uint32_t> scale;
+  if (!parse_u32("width", &width) ||
+      !parse_u32("precision", &precision) ||
+      !parse_u32("scale", &scale)) {
+    return false;
+  }
+  if (persisted.character_length != 0) {
+    if (width.has_value() && *width != persisted.character_length) {
+      return false;
+    }
+    width = persisted.character_length;
+  }
+  const auto timezone = field("timezone_profile_id");
+  return relational.timezone_profile_id ==
+             (timezone.has_value()
+                  ? std::optional<std::string>{*timezone}
+                  : std::optional<std::string>{}) &&
+         relational.width == width && relational.precision == precision &&
+         relational.scale == scale;
+}
+
+bool Rcp079ExactExecutorColumnV1(
+    const exec::ExecutorColumnDescriptor& actual,
+    const exec::ExecutorColumnDescriptor& expected) {
+  return actual.stable_name == expected.stable_name &&
+         actual.nullable == expected.nullable &&
+         actual.descriptor_id == expected.descriptor_id &&
+         actual.descriptor.descriptor_uuid.canonical ==
+             expected.descriptor.descriptor_uuid.canonical &&
+         actual.descriptor.descriptor_kind ==
+             expected.descriptor.descriptor_kind &&
+         actual.descriptor.canonical_type_name ==
+             expected.descriptor.canonical_type_name &&
+         actual.descriptor.encoded_descriptor ==
+             expected.descriptor.encoded_descriptor;
+}
+
+std::optional<std::uint64_t> Rcp079VisibleRowsMemoryBytesV1(
+    const std::vector<api::CrudRowVersionRecord>& rows) {
+  std::uint64_t bytes = 0;
+  if (!CheckedMultiply(rows.capacity(), sizeof(api::CrudRowVersionRecord),
+                       &bytes)) {
+    return std::nullopt;
+  }
+  const auto account_string = [&](const std::string& value) {
+    return CheckedAdd(bytes, value.capacity(), &bytes) &&
+           CheckedAdd(bytes, 1, &bytes);
+  };
+  for (const auto& row : rows) {
+    std::uint64_t values_bytes = 0;
+    if (!account_string(row.table_uuid) || !account_string(row.row_uuid) ||
+        !account_string(row.version_uuid) ||
+        !account_string(row.temporary_session_uuid) ||
+        !account_string(row.previous_version_uuid) ||
+        !CheckedMultiply(
+            row.values.capacity(),
+            sizeof(std::pair<std::string, std::string>), &values_bytes) ||
+        !CheckedAdd(bytes, values_bytes, &bytes)) {
+      return std::nullopt;
+    }
+    for (const auto& [name, value] : row.values) {
+      if (!account_string(name) || !account_string(value)) {
+        return std::nullopt;
+      }
+    }
+  }
+  return bytes;
+}
+
+bool Rcp079AccountLogicalStringV1(const std::string_view value,
+                                  std::uint64_t* bytes) {
+  return bytes != nullptr && CheckedAdd(*bytes, value.size(), bytes) &&
+         CheckedAdd(*bytes, 1, bytes);
+}
+
+bool Rcp079AccountLogicalArrayV1(const std::size_t count,
+                                 const std::size_t element_bytes,
+                                 std::uint64_t* bytes) {
+  std::uint64_t allocation = 0;
+  return bytes != nullptr &&
+         CheckedMultiply(count, element_bytes, &allocation) &&
+         CheckedAdd(*bytes, allocation, bytes);
+}
+
+bool Rcp079AccountLogicalMgaV1(
+    const exec::PhysicalMgaStatementContext& context,
+    std::uint64_t* bytes) {
+  return Rcp079AccountLogicalStringV1(context.statement_uuid, bytes) &&
+         Rcp079AccountLogicalStringV1(context.owning_transaction_uuid,
+                                      bytes) &&
+         Rcp079AccountLogicalStringV1(context.statement_snapshot_uuid,
+                                      bytes) &&
+         Rcp079AccountLogicalStringV1(
+             context.statement_metadata_snapshot_uuid, bytes) &&
+         Rcp079AccountLogicalArrayV1(
+             context.active_excluded_local_transaction_ids.size(),
+             sizeof(std::uint64_t), bytes) &&
+         Rcp079AccountLogicalArrayV1(
+             context.in_doubt_excluded_local_transaction_ids.size(),
+             sizeof(std::uint64_t), bytes) &&
+         Rcp079AccountLogicalStringV1(context.snapshot_kind, bytes) &&
+         Rcp079AccountLogicalStringV1(context.statement_timestamp, bytes);
+}
+
+std::optional<std::uint64_t> Rcp079DescriptorBatchLogicalMemoryBytesV1(
+    const exec::DescriptorBatch& batch,
+    const bool include_inline_object = true) {
+  std::uint64_t bytes = include_inline_object ? sizeof(batch) : 0;
+  if (!Rcp079AccountLogicalArrayV1(
+          batch.columns.size(), sizeof(exec::ExecutorColumnDescriptor),
+          &bytes) ||
+      !Rcp079AccountLogicalArrayV1(
+          batch.rows.size(), sizeof(exec::DescriptorTuple), &bytes)) {
+    return std::nullopt;
+  }
+  const auto account_descriptor = [&](const api::EngineDescriptor& descriptor) {
+    return Rcp079AccountLogicalStringV1(
+               descriptor.descriptor_uuid.canonical, &bytes) &&
+           Rcp079AccountLogicalStringV1(descriptor.descriptor_kind, &bytes) &&
+           Rcp079AccountLogicalStringV1(descriptor.canonical_type_name,
+                                        &bytes) &&
+           Rcp079AccountLogicalStringV1(descriptor.encoded_descriptor,
+                                        &bytes);
+  };
+  for (const auto& column : batch.columns) {
+    if (!Rcp079AccountLogicalStringV1(column.stable_name, &bytes) ||
+        !account_descriptor(column.descriptor)) {
+      return std::nullopt;
+    }
+  }
+  for (const auto& row : batch.rows) {
+    if (!Rcp079AccountLogicalArrayV1(
+            row.values.size(), sizeof(api::EngineTypedValue), &bytes)) {
+      return std::nullopt;
+    }
+    for (const auto& value : row.values) {
+      if (!account_descriptor(value.descriptor) ||
+          !Rcp079AccountLogicalStringV1(value.encoded_value, &bytes) ||
+          !Rcp079AccountLogicalArrayV1(value.binary_value.size(),
+                                       sizeof(std::uint8_t), &bytes)) {
+        return std::nullopt;
+      }
+    }
+  }
+  return bytes;
+}
+
+bool Rcp079AccountModelRowIdentityLogicalMemoryV1(
+    const exec::ModelProviderRowIdentityV1& identity,
+    std::uint64_t* bytes) {
+  if (!Rcp079AccountLogicalArrayV1(1, sizeof(identity), bytes)) return false;
+  const std::array<std::string_view, 17> strings{
+      identity.document_uuid,
+      identity.row_uuid,
+      identity.vertex_uuid,
+      identity.edge_uuid,
+      identity.path_uuid,
+      identity.key,
+      identity.series_uuid,
+      identity.metric_uuid,
+      identity.tags,
+      identity.time_series_payload_kind,
+      identity.time_series_raw_value,
+      identity.time_series_sample_count,
+      identity.time_series_aggregate_value,
+      identity.vector_distance,
+      identity.vector_score,
+      identity.search_analyzer_uuid,
+      identity.search_score};
+  return std::ranges::all_of(strings, [&](const auto value) {
+    return Rcp079AccountLogicalStringV1(value, bytes);
+  });
+}
+
+bool Rcp079AccountModelPropertyLogicalMemoryV1(
+    const exec::ModelPropertyDescriptorV1& property,
+    std::uint64_t* bytes,
+    const bool include_inline_object = true) {
+  return (!include_inline_object ||
+          Rcp079AccountLogicalArrayV1(1, sizeof(property), bytes)) &&
+         Rcp079AccountLogicalStringV1(property.property_descriptor_id,
+                                      bytes) &&
+         Rcp079AccountLogicalStringV1(property.property_uuid, bytes) &&
+         Rcp079AccountLogicalStringV1(property.ordering_id, bytes) &&
+         Rcp079AccountLogicalStringV1(property.partitioning_id, bytes) &&
+         Rcp079AccountLogicalStringV1(property.uniqueness_id, bytes);
+}
+
+std::optional<std::uint64_t> Rcp079ModelProviderBatchLogicalMemoryBytesV1(
+    const exec::ModelProviderBatchV1& batch) {
+  std::uint64_t bytes = sizeof(batch);
+  const auto descriptor_batch =
+      Rcp079DescriptorBatchLogicalMemoryBytesV1(batch.batch, false);
+  if (!descriptor_batch.has_value() ||
+      !CheckedAdd(bytes, *descriptor_batch, &bytes) ||
+      !Rcp079AccountLogicalStringV1(batch.provider_uuid, &bytes) ||
+      !Rcp079AccountLogicalStringV1(batch.selected_alternative_uuid, &bytes) ||
+      !Rcp079AccountLogicalStringV1(batch.capability_uuid, &bytes) ||
+      !Rcp079AccountLogicalStringV1(batch.result_handle_uuid, &bytes) ||
+      !Rcp079AccountLogicalArrayV1(batch.output_descriptor_ids.size(),
+                                   sizeof(std::uint32_t), &bytes) ||
+      !Rcp079AccountLogicalStringV1(batch.security_receipt_uuid, &bytes) ||
+      !Rcp079AccountLogicalStringV1(
+          batch.multimodel_composition_receipt_uuid, &bytes) ||
+      !Rcp079AccountModelPropertyLogicalMemoryV1(
+          batch.properties, &bytes, false) ||
+      !Rcp079AccountLogicalMgaV1(batch.mga_statement_context, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& identity : batch.ordered_row_identities) {
+    if (!Rcp079AccountModelRowIdentityLogicalMemoryV1(identity, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t>
+Rcp079ProjectedModelSourceOutputLogicalMemoryBytesV1(
+    const exec::ModelSourceInputDescriptorV1& input,
+    const exec::ModelProviderBatchV1& provider) {
+  std::uint64_t bytes = sizeof(exec::ModelSourceOutputDescriptorV1);
+  const auto descriptor_batch =
+      Rcp079DescriptorBatchLogicalMemoryBytesV1(provider.batch, false);
+  if (!descriptor_batch.has_value() ||
+      !CheckedAdd(bytes, *descriptor_batch, &bytes)) {
+    return std::nullopt;
+  }
+  const std::array<std::string_view, 11> strings{
+      "SB_MODEL_SOURCE_OUTPUT_DESCRIPTOR_V1",
+      input.family_id,
+      input.operation_id,
+      input.object_uuid,
+      input.spatial_geometry_descriptor_uuid,
+      input.spatial_geometry_type_uuid,
+      input.spatial_crs_uuid,
+      input.selected_alternative_uuid,
+      input.capability_uuid,
+      input.provider_uuid,
+      input.result_handle_uuid};
+  if (!std::ranges::all_of(strings, [&](const auto value) {
+        return Rcp079AccountLogicalStringV1(value, &bytes);
+      }) ||
+      !Rcp079AccountLogicalArrayV1(input.operation_ids.size(),
+                                   sizeof(std::string), &bytes) ||
+      !Rcp079AccountLogicalArrayV1(input.output_descriptor_ids.size(),
+                                   sizeof(std::uint32_t), &bytes) ||
+      !Rcp079AccountLogicalStringV1(provider.security_receipt_uuid, &bytes) ||
+      !Rcp079AccountLogicalStringV1(
+          provider.multimodel_composition_receipt_uuid, &bytes) ||
+      !Rcp079AccountModelPropertyLogicalMemoryV1(
+          provider.properties, &bytes, false) ||
+      !Rcp079AccountLogicalMgaV1(input.mga_statement_context, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& operation : input.operation_ids) {
+    if (!Rcp079AccountLogicalStringV1(operation, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  for (const auto& identity : provider.ordered_row_identities) {
+    if (!Rcp079AccountModelRowIdentityLogicalMemoryV1(identity, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t> Rcp079ColumnarUniquenessLogicalMemoryBytesV1(
+    const std::vector<exec::ModelProviderRowIdentityV1>& identities) {
+  std::uint64_t bytes = 3 * sizeof(std::unordered_set<std::string>);
+  constexpr std::uint64_t kSetNodeOverhead =
+      sizeof(std::string) + 4 * sizeof(void*) + 64;
+  for (const auto& identity : identities) {
+    std::uint64_t node = kSetNodeOverhead;
+    if (!CheckedAdd(node, identity.row_uuid.size(), &node) ||
+        !CheckedAdd(bytes, node, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t>
+Rcp079ColumnarRequestNonBatchLogicalMemoryBytesV2(
+    const api::nosql::ColumnarExecutionRequestV2& request) {
+  std::uint64_t bytes = sizeof(request);
+  if (!Rcp079AccountLogicalStringV1(request.profile_id, &bytes) ||
+      !Rcp079AccountLogicalStringV1(request.operation_id, &bytes) ||
+      !Rcp079AccountLogicalStringV1(request.relation_uuid, &bytes) ||
+      !Rcp079AccountLogicalArrayV1(request.operation_ids.size(),
+                                   sizeof(std::string), &bytes) ||
+      !Rcp079AccountLogicalArrayV1(request.row_uuids.size(),
+                                   sizeof(std::string), &bytes) ||
+      !Rcp079AccountLogicalArrayV1(request.projected_columns.size(),
+                                   sizeof(std::size_t), &bytes) ||
+      !Rcp079AccountLogicalArrayV1(request.filter_truth_values.size(),
+                                   sizeof(api::EngineSqlTruthValue), &bytes) ||
+      !Rcp079AccountLogicalArrayV1(
+          request.zone_proof.candidate_row_ordinals.size(),
+          sizeof(std::size_t), &bytes) ||
+      !Rcp079AccountLogicalMgaV1(request.statement_context, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(request.current_statement_context, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& operation : request.operation_ids) {
+    if (!Rcp079AccountLogicalStringV1(operation, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  for (const auto& row_uuid : request.row_uuids) {
+    if (!Rcp079AccountLogicalStringV1(row_uuid, &bytes)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t>
+Rcp079ColumnarLogicalMaterializationAdditionalBytesV1(
+    const api::MgaRelationStorageDescriptor& persisted,
+    const std::size_t row_count,
+    const api::TypedRelationalDag& dag,
+    const exec::ModelSourceInputDescriptorV1& source_input,
+    const std::string& property_uuid,
+    const std::string& security_receipt_uuid,
+    const bool has_filter) {
+  std::uint64_t bytes = sizeof(exec::DescriptorBatch);
+  std::uint64_t allocation = 0;
+  const auto add_array = [&](const std::uint64_t count,
+                             const std::uint64_t element_bytes) {
+    return CheckedMultiply(count, element_bytes, &allocation) &&
+           CheckedAdd(bytes, allocation, &bytes);
+  };
+  const auto add_string = [&](const std::string& value) {
+    return CheckedAdd(bytes, value.capacity(), &bytes) &&
+           CheckedAdd(bytes, 1, &bytes);
+  };
+  if (!add_array(persisted.columns.size(),
+                 sizeof(exec::ExecutorColumnDescriptor)) ||
+      !add_array(persisted.columns.size(), sizeof(std::uint32_t)) ||
+      !add_array(row_count, sizeof(exec::DescriptorTuple)) ||
+      !add_array(row_count, sizeof(std::string)) ||
+      !add_array(row_count, sizeof(api::EngineSqlTruthValue)) ||
+      !add_array(persisted.columns.size(), sizeof(std::size_t)) ||
+      !add_array(1, sizeof(api::nosql::ColumnarExecutionRequestV2)) ||
+      !add_array(source_input.operation_ids.size(), sizeof(std::string)) ||
+      !add_array(source_input.output_descriptor_ids.size(),
+                 sizeof(std::uint32_t)) ||
+      !add_array(row_count, sizeof(exec::ModelProviderRowIdentityV1))) {
+    return std::nullopt;
+  }
+  if (!add_string(source_input.operation_id) ||
+      !add_string(source_input.object_uuid) ||
+      !add_string(source_input.provider_uuid) ||
+      !add_string(source_input.selected_alternative_uuid) ||
+      !add_string(source_input.capability_uuid) ||
+      !add_string(source_input.result_handle_uuid) ||
+      !add_string(source_input.security_context_uuid) ||
+      !add_string(source_input.policy_snapshot_uuid) ||
+      !add_string(source_input.resource_contract_uuid) ||
+      !add_string(property_uuid) ||
+      !add_string(security_receipt_uuid) ||
+      !Rcp079AccountLogicalStringV1(
+          "SB_MODEL_PROPERTY_DESCRIPTOR_V1", &bytes) ||
+      !Rcp079AccountLogicalStringV1("fixture_order", &bytes) ||
+      !Rcp079AccountLogicalStringV1("single_local_partition", &bytes) ||
+      !Rcp079AccountLogicalStringV1("row_uuid", &bytes) ||
+      !Rcp079AccountLogicalStringV1(
+          api::nosql::kColumnarLogicalReconstructionV2, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& operation : source_input.operation_ids) {
+    if (!add_string(operation)) return std::nullopt;
+  }
+  std::uint64_t per_cell_descriptor_bytes = 0;
+  for (const auto& column : persisted.columns) {
+    if (!add_string(column.canonical_name_key) ||
+        !add_string(column.value_descriptor.descriptor_uuid.canonical) ||
+        !add_string(column.value_descriptor.descriptor_kind) ||
+        !add_string(column.value_descriptor.canonical_type_name) ||
+        !add_string(column.value_descriptor.encoded_descriptor)) {
+      return std::nullopt;
+    }
+    const auto account_per_cell = [&](const std::string& value) {
+      return CheckedAdd(per_cell_descriptor_bytes, value.capacity(),
+                        &per_cell_descriptor_bytes) &&
+             CheckedAdd(per_cell_descriptor_bytes, 1,
+                        &per_cell_descriptor_bytes);
+    };
+    if (!account_per_cell(
+            column.value_descriptor.descriptor_uuid.canonical) ||
+        !account_per_cell(column.value_descriptor.descriptor_kind) ||
+        !account_per_cell(column.value_descriptor.canonical_type_name) ||
+        !account_per_cell(column.value_descriptor.encoded_descriptor)) {
+      return std::nullopt;
+    }
+  }
+  std::uint64_t cells = 0;
+  std::uint64_t cell_objects = 0;
+  std::uint64_t cell_descriptors = 0;
+  if (!CheckedMultiply(row_count, persisted.columns.size(), &cells) ||
+      !CheckedMultiply(cells, sizeof(api::EngineTypedValue),
+                       &cell_objects) ||
+      !CheckedMultiply(row_count, per_cell_descriptor_bytes,
+                       &cell_descriptors) ||
+      !CheckedAdd(bytes, cell_objects, &bytes) ||
+      !CheckedAdd(bytes, cell_descriptors, &bytes)) {
+    return std::nullopt;
+  }
+  if (has_filter) {
+    std::uint64_t edge_count = 0;
+    for (const auto& expression : dag.expressions) {
+      if (!CheckedAdd(edge_count, expression.child_expression_ids.size(),
+                      &edge_count)) {
+        return std::nullopt;
+      }
+    }
+    constexpr std::uint64_t kNodeLinks = 6 * sizeof(void*);
+    const auto expression_count = dag.expressions.size();
+    std::uint64_t bucket_pointer_count = 0;
+    std::uint64_t expression_bucket_pointer_count = 0;
+    std::uint64_t pending_count = 0;
+    if (!CheckedMultiply(persisted.columns.size(), 2,
+                         &bucket_pointer_count) ||
+        !CheckedMultiply(expression_count, 4,
+                         &expression_bucket_pointer_count) ||
+        !CheckedAdd(bucket_pointer_count,
+                    expression_bucket_pointer_count,
+                    &bucket_pointer_count) ||
+        !CheckedAdd(edge_count, 1, &pending_count)) {
+      return std::nullopt;
+    }
+    if (!add_array(persisted.columns.size(),
+                   sizeof(std::pair<const std::uint32_t, std::size_t>) +
+                       kNodeLinks) ||
+        !add_array(expression_count,
+                   sizeof(std::pair<
+                       const std::uint32_t,
+                       const api::RelationalExpressionRecord*>) + kNodeLinks) ||
+        !add_array(expression_count, sizeof(std::uint32_t) + kNodeLinks) ||
+        !add_array(bucket_pointer_count, sizeof(void*)) ||
+        !add_array(pending_count, sizeof(std::uint32_t)) ||
+        !add_array(persisted.columns.size(), sizeof(std::uint32_t)) ||
+        !add_array(expression_count,
+                   sizeof(CanonicalRelationalExpressionRowSlotBinding)) ||
+        !add_array(1, sizeof(CanonicalRelationalExpressionRowBinding)) ||
+        !add_array(1, sizeof(CanonicalRelationalExpressionRuntime))) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t>
+Rcp079SpatialSourceMaterializationAdditionalBytesV1(
+    const std::vector<api::CrudRowVersionRecord>& rows,
+    const api::TypedRelationalDag& dag,
+    const exec::ModelSourceInputDescriptorV1& source_input,
+    const bool has_match,
+    const bool has_nearest,
+    const std::string_view match_predicate) {
+  std::uint64_t bytes = sizeof(api::nosql::SpatialExecutionRequestV2);
+  const auto add_array = [&](const std::uint64_t count,
+                             const std::uint64_t element_bytes) {
+    std::uint64_t allocation = 0;
+    return CheckedMultiply(count, element_bytes, &allocation) &&
+           CheckedAdd(bytes, allocation, &bytes);
+  };
+  const auto add_string = [&](const std::string_view value) {
+    return CheckedAdd(bytes, value.size(), &bytes) &&
+           CheckedAdd(bytes, 1, &bytes);
+  };
+  const auto operation_phase_bytes =
+      [&](const std::string_view operation,
+          const std::string_view predicate,
+          const bool query_point) -> std::optional<std::uint64_t> {
+    std::uint64_t phase = 0;
+    const auto add_phase_string = [&](const std::string_view value) {
+      return CheckedAdd(phase, value.size(), &phase) &&
+             CheckedAdd(phase, 1, &phase);
+    };
+    if (!add_phase_string(operation) ||
+        (!predicate.empty() && !add_phase_string(predicate)) ||
+        (query_point &&
+         (!add_phase_string(source_input.spatial_crs_uuid) ||
+          !CheckedAdd(phase, 24, &phase)))) {
+      return std::nullopt;
+    }
+    return phase;
+  };
+  std::optional<std::uint64_t> maximum_operation_phase;
+  const auto include_operation_phase =
+      [&](const std::optional<std::uint64_t> candidate) {
+    if (!candidate.has_value()) return false;
+    maximum_operation_phase =
+        maximum_operation_phase.has_value()
+            ? std::max(*maximum_operation_phase, *candidate)
+            : *candidate;
+    return true;
+  };
+  if ((!has_match && !has_nearest &&
+       !include_operation_phase(operation_phase_bytes(
+           "SPATIAL_SOURCE", {}, false))) ||
+      (has_match &&
+       !include_operation_phase(operation_phase_bytes(
+           "SPATIAL_MATCH", match_predicate, true))) ||
+      (has_nearest &&
+       !include_operation_phase(operation_phase_bytes(
+           "SPATIAL_NEAREST", {}, true))) ||
+      !maximum_operation_phase.has_value()) {
+    return std::nullopt;
+  }
+  if (!add_array(rows.size(), sizeof(api::nosql::SpatialSourceRowV1)) ||
+      !add_string(api::nosql::kSpatialNativeCartesianPoint2dV1) ||
+      !add_string(source_input.object_uuid) ||
+      !add_string(source_input.spatial_geometry_descriptor_uuid) ||
+      !add_string(source_input.spatial_geometry_type_uuid) ||
+      !add_string(source_input.spatial_crs_uuid) ||
+      !CheckedAdd(bytes, *maximum_operation_phase, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes) ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes)) {
+    return std::nullopt;
+  }
+  if (has_match || has_nearest) {
+    constexpr std::uint64_t kNodeLinks = 6 * sizeof(void*);
+    std::uint64_t bucket_pointer_count = 0;
+    std::uint64_t expression_bucket_pointer_count = 0;
+    if (!CheckedMultiply(dag.descriptors.size(), 4,
+                         &bucket_pointer_count) ||
+        !CheckedMultiply(dag.expressions.size(), 4,
+                         &expression_bucket_pointer_count) ||
+        !CheckedAdd(bucket_pointer_count,
+                    expression_bucket_pointer_count,
+                    &bucket_pointer_count) ||
+        !add_array(
+            dag.descriptors.size(),
+            sizeof(std::pair<
+                const std::uint32_t,
+                const api::RelationalTypeDescriptor*>) + kNodeLinks) ||
+        !add_array(
+            dag.expressions.size(),
+            sizeof(std::pair<
+                const std::uint32_t,
+                const api::RelationalExpressionRecord*>) + kNodeLinks) ||
+        !add_array(dag.descriptors.size(),
+                   sizeof(std::pair<const std::uint32_t, std::string>) +
+                       kNodeLinks) ||
+        !add_array(dag.expressions.size(),
+                   sizeof(std::uint32_t) + kNodeLinks) ||
+        !add_array(bucket_pointer_count, sizeof(void*)) ||
+        !add_array(1, sizeof(CanonicalRelationalExpressionRuntime)) ||
+        !add_array(1, sizeof(api::EngineTypedValue)) ||
+        !add_array(1, sizeof(std::string))) {
+      return std::nullopt;
+    }
+    for (const auto& descriptor : dag.descriptors) {
+      if (!add_string("geometry")) return std::nullopt;
+      std::uint64_t encoded_descriptor_bytes =
+          std::string_view("type_uuid=").size() + descriptor.type_uuid.size() +
+          std::string_view(";nullability=").size();
+      const std::string_view nullability =
+          descriptor.nullability == api::RelationalNullability::kNonNull
+              ? std::string_view("non_null")
+              : (descriptor.nullability ==
+                         api::RelationalNullability::kNullable
+                     ? std::string_view("nullable")
+                     : std::string_view("unknown"));
+      if (!CheckedAdd(encoded_descriptor_bytes, nullability.size(),
+                      &encoded_descriptor_bytes)) {
+        return std::nullopt;
+      }
+      const auto add_optional_descriptor_string =
+          [&](const std::string_view label,
+              const std::optional<std::string>& value) {
+        return !value.has_value() ||
+               (CheckedAdd(encoded_descriptor_bytes, label.size(),
+                           &encoded_descriptor_bytes) &&
+                CheckedAdd(encoded_descriptor_bytes, value->size(),
+                           &encoded_descriptor_bytes));
+      };
+      const auto decimal_digits = [](std::uint32_t value) {
+        std::uint64_t digits = 1;
+        while (value >= 10) {
+          value /= 10;
+          ++digits;
+        }
+        return digits;
+      };
+      const auto add_optional_descriptor_number =
+          [&](const std::string_view label,
+              const std::optional<std::uint32_t> value) {
+        return !value.has_value() ||
+               (CheckedAdd(encoded_descriptor_bytes, label.size(),
+                           &encoded_descriptor_bytes) &&
+                CheckedAdd(encoded_descriptor_bytes,
+                           decimal_digits(*value),
+                           &encoded_descriptor_bytes));
+      };
+      if (!add_optional_descriptor_string(
+              ";collation_uuid=", descriptor.collation_uuid) ||
+          !add_optional_descriptor_string(
+              ";timezone_profile_id=", descriptor.timezone_profile_id) ||
+          !add_optional_descriptor_number(";width=", descriptor.width) ||
+          !add_optional_descriptor_number(";precision=",
+                                          descriptor.precision) ||
+          !add_optional_descriptor_number(";scale=", descriptor.scale) ||
+          !add_string(descriptor.descriptor_uuid) ||
+          !add_string("scalar") || !add_string("geometry") ||
+          !CheckedAdd(bytes, encoded_descriptor_bytes, &bytes) ||
+          !CheckedAdd(bytes, 1, &bytes)) {
+        return std::nullopt;
+      }
+    }
+  }
+  for (const auto& row : rows) {
+    const std::string* point = nullptr;
+    const std::string* crs = nullptr;
+    for (const auto& [name, value] : row.values) {
+      if (name == "spatial_value") point = &value;
+      if (name == "crs_uuid") crs = &value;
+    }
+    if (point == nullptr || crs == nullptr ||
+        !add_string(row.row_uuid) ||
+        !CheckedAdd(bytes, point->size(), &bytes) || !add_string(*crs) ||
+        !add_string(api::nosql::kSpatialNativeCartesianPoint2dV1)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t> Rcp079SpatialResultRowsLogicalMemoryBytesV1(
+    const std::vector<api::nosql::SpatialResultRowV1>& rows) {
+  std::uint64_t bytes = 0;
+  if (!CheckedMultiply(rows.capacity(),
+                       sizeof(api::nosql::SpatialResultRowV1), &bytes)) {
+    return std::nullopt;
+  }
+  const auto add_string = [&](const std::string& value) {
+    return CheckedAdd(bytes, value.capacity(), &bytes) &&
+           CheckedAdd(bytes, 1, &bytes);
+  };
+  for (const auto& row : rows) {
+    if (!add_string(row.row_uuid) ||
+        !CheckedAdd(bytes, row.encoded_point.capacity(), &bytes) ||
+        !add_string(row.crs_uuid)) {
+      return std::nullopt;
+    }
+  }
+  return bytes;
+}
+
+std::optional<std::uint64_t> Rcp079SpatialProviderBuildAdditionalBytesV1(
+    const std::vector<api::nosql::SpatialResultRowV1>& rows,
+    const std::vector<exec::ExecutorColumnDescriptor>& public_columns,
+    const exec::ModelSourceInputDescriptorV1& source_input,
+    const std::string& property_uuid,
+    const std::string& security_receipt_uuid,
+    const bool has_match,
+    const bool has_nearest) {
+  std::uint64_t bytes = sizeof(exec::ModelProviderBatchV1);
+  const auto add_array = [&](const std::uint64_t count,
+                             const std::uint64_t element_bytes) {
+    std::uint64_t allocation = 0;
+    return CheckedMultiply(count, element_bytes, &allocation) &&
+           CheckedAdd(bytes, allocation, &bytes);
+  };
+  const auto add_string = [&](const std::string_view value) {
+    return CheckedAdd(bytes, value.size(), &bytes) &&
+           CheckedAdd(bytes, 1, &bytes);
+  };
+  std::uint64_t cells = 0;
+  if (!CheckedMultiply(rows.size(), public_columns.size(), &cells) ||
+      !add_array(public_columns.size(),
+                 sizeof(exec::ExecutorColumnDescriptor)) ||
+      !add_array(rows.size(), sizeof(exec::DescriptorTuple)) ||
+      !add_array(cells, sizeof(api::EngineTypedValue)) ||
+      !add_array(rows.size(), sizeof(exec::ModelProviderRowIdentityV1)) ||
+      !add_array(source_input.output_descriptor_ids.size(),
+                 sizeof(std::uint32_t)) ||
+      !add_string(source_input.provider_uuid) ||
+      !add_string(source_input.selected_alternative_uuid) ||
+      !add_string(source_input.capability_uuid) ||
+      !add_string(source_input.result_handle_uuid) ||
+      !add_string(property_uuid) || !add_string(security_receipt_uuid) ||
+      !add_string("SB_MODEL_PROPERTY_DESCRIPTOR_V1") ||
+      !add_string(has_nearest
+                      ? "spatial_distance_row_uuid_ascending_v1"
+                      : "fixture_order") ||
+      !add_string("single_local_partition") || !add_string("row_uuid") ||
+      !Rcp079AccountLogicalMgaV1(source_input.mga_statement_context, &bytes)) {
+    return std::nullopt;
+  }
+  std::uint64_t per_cell_descriptor_bytes = 0;
+  for (const auto& column : public_columns) {
+    if (!add_string(column.stable_name) ||
+        !add_string(column.descriptor.descriptor_uuid.canonical) ||
+        !add_string(column.descriptor.descriptor_kind) ||
+        !add_string(column.descriptor.canonical_type_name) ||
+        !add_string(column.descriptor.encoded_descriptor)) {
+      return std::nullopt;
+    }
+    const auto add_cell_descriptor_string = [&](const std::string& value) {
+      return CheckedAdd(per_cell_descriptor_bytes, value.capacity(),
+                        &per_cell_descriptor_bytes) &&
+             CheckedAdd(per_cell_descriptor_bytes, 1,
+                        &per_cell_descriptor_bytes);
+    };
+    if (!add_cell_descriptor_string(
+            column.descriptor.descriptor_uuid.canonical) ||
+        !add_cell_descriptor_string(column.descriptor.descriptor_kind) ||
+        !add_cell_descriptor_string(column.descriptor.canonical_type_name) ||
+        !add_cell_descriptor_string(column.descriptor.encoded_descriptor)) {
+      return std::nullopt;
+    }
+  }
+  std::uint64_t cell_descriptor_bytes = 0;
+  if (!CheckedMultiply(rows.size(), per_cell_descriptor_bytes,
+                       &cell_descriptor_bytes) ||
+      !CheckedAdd(bytes, cell_descriptor_bytes, &bytes)) {
+    return std::nullopt;
+  }
+  for (const auto& row : rows) {
+    if (!add_string(row.row_uuid)) {
+      return std::nullopt;
+    }
+    if (has_match && !add_string("true")) {
+      return std::nullopt;
+    }
+    if (has_nearest) {
+      std::array<char, 64> distance_buffer{};
+      std::size_t distance_size = 1;
+      if (row.distance == 0.0) {
+        distance_buffer[0] = '0';
+      } else {
+        const auto distance = std::to_chars(
+            distance_buffer.data(),
+            distance_buffer.data() + distance_buffer.size(), row.distance,
+            std::chars_format::general,
+            std::numeric_limits<double>::max_digits10);
+        if (distance.ec != std::errc{}) return std::nullopt;
+        distance_size = static_cast<std::size_t>(
+            distance.ptr - distance_buffer.data());
+      }
+      if (!add_string(std::string_view(distance_buffer.data(),
+                                       distance_size))) {
+        return std::nullopt;
+      }
+    }
+  }
+  return bytes;
+}
 
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalColumnarFamilyJoinQuery(
@@ -49351,6 +56429,14 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
              std::string::npos) {
     condition_form = "NATURAL";
   }
+  if (condition_form == "USING" || condition_form == "NATURAL") {
+    return refuse(
+        condition_form == "USING"
+            ? "SB_MODEL_JOIN_USING_BINDING_REFUSED_V1"
+            : "SB_MODEL_JOIN_NATURAL_BINDING_REFUSED_V1",
+        "columnar USING/NATURAL join lacks binder-owned named bindings and "
+        "a coalescing projection");
+  }
   const bool predicate_join = join_form != "CROSS";
   const bool left_only = join_form == "SEMI" || join_form == "ANTI";
   std::vector<std::uint32_t> expected_join_descriptors =
@@ -49406,6 +56492,9 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   std::vector<Rcp079ColumnarJoinSourceV1> prepared_sources;
   prepared_sources.reserve(2);
   std::vector<std::string> object_uuids;
+  std::unordered_set<std::string> column_uuids;
+  std::unordered_set<std::string> descriptor_uuids;
+  std::unordered_set<std::string> type_uuids;
   for (const auto* source : sources) {
     if (!source->input_node_ids.empty() ||
         source->required_object_uuids.size() != 1 ||
@@ -49437,9 +56526,15 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
     if (prepared.persisted.relation_uuid.canonical != prepared.object_uuid ||
         prepared.persisted.database_uuid.canonical !=
             input.context.database_uuid.canonical ||
+        !CanonicalUuidText(prepared.persisted.schema_uuid.canonical) ||
+        !CanonicalUuidText(
+            prepared.persisted.descriptor_uuid.canonical) ||
         prepared.persisted.relation_kind != "table" ||
         prepared.persisted.storage_profile != "local_mga_rowstore_v1" ||
         prepared.persisted.descriptor_generation == 0 ||
+        (prepared.persisted.descriptor_status != "production_descriptor" &&
+         prepared.persisted.descriptor_status !=
+             "metadata_bridge_vetted_descriptor") ||
         prepared.persisted.columns.size() !=
             source->output_descriptor_ids.size()) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
@@ -49465,22 +56560,36 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
           outputs[ordinal]->ordinal != ordinal || !outputs[ordinal]->visible ||
           outputs[ordinal]->descriptor_id !=
               source->output_descriptor_ids[ordinal] ||
+          expression->expression_kind !=
+              api::RelationalExpressionKind::kIdentifier ||
+          expression->result_descriptor_id != descriptor->descriptor_id ||
           expression->bound_name_uuid !=
               std::optional<std::string>(column.column_uuid.canonical) ||
           outputs[ordinal]->output_name_utf8 != column.canonical_name_key ||
-          descriptor->descriptor_uuid !=
-              column.value_descriptor.descriptor_uuid.canonical ||
-          descriptor->nullability !=
-              (column.nullable ? api::RelationalNullability::kNullable
-                               : api::RelationalNullability::kNonNull)) {
+          column.ordinal != ordinal ||
+          !column_uuids.insert(column.column_uuid.canonical).second ||
+          !descriptor_uuids.insert(descriptor->descriptor_uuid).second ||
+          !Rcp079ExactColumnarJoinColumnBindingV1(*descriptor, column)) {
         return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                       "columnar source binding was substituted");
       }
+      type_uuids.insert(descriptor->type_uuid);
       auto engine_descriptor = column.value_descriptor;
       engine_descriptor.descriptor_kind = "scalar";
       prepared.columns.push_back(
           {column.canonical_name_key, std::move(engine_descriptor),
            column.nullable, descriptor->descriptor_id});
+      prepared.output_expression_ids.push_back(
+          outputs[ordinal]->expression_id);
+    }
+    if (source->bound_expression_ids.size() != outputs.size() + 1 ||
+        std::ranges::any_of(prepared.output_expression_ids,
+                            [&](const auto expression_id) {
+          return std::ranges::count(source->bound_expression_ids,
+                                    expression_id) != 1;
+        })) {
+      return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                    "columnar source expression binding is incomplete");
     }
     prepared.output_descriptor_ids = source->output_descriptor_ids;
     const auto suffix = std::to_string(source->node_id);
@@ -49499,6 +56608,12 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   if (object_uuids[0] == object_uuids[1]) {
     return refuse("SB_MODEL_JOIN_SEMANTIC_PRECONDITION_REFUSED_V1",
                   "columnar composition requires distinct bound legs");
+  }
+  if (std::ranges::any_of(descriptor_uuids, [&](const auto& descriptor_uuid) {
+        return type_uuids.contains(descriptor_uuid);
+      })) {
+    return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                  "columnar descriptor and type identity domains overlap");
   }
 
   api::CanonicalRelationalPlanningScope planning_scope;
@@ -49731,11 +56846,19 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   source_registration.executor_capability_abi_version = 1;
   source_registration.engine_owned = true;
   source_registration.accepts_optimizer_publication_v2 = true;
+  source_registration.publishes_runtime_observation_v1 = true;
   const auto context = input.context;
   const auto cancellation_requested =
       input.context.query_cancellation_requested
           ? input.context.query_cancellation_requested
           : std::function<bool()>([] { return false; });
+  std::vector<exec::ExecutorColumnDescriptor> expected_join_columns;
+  expected_join_columns.reserve(join->output_descriptor_ids.size());
+  for (const auto& source : prepared_sources) {
+    expected_join_columns.insert(expected_join_columns.end(),
+                                 source.columns.begin(), source.columns.end());
+  }
+  const auto left_width = prepared_sources[0].columns.size();
   source_registration.execute =
       [prepared_sources, context, cancellation_requested, mga,
        maximum_rows](const exec::TypedPhysicalNodeDag& selected_dag,
@@ -49755,6 +56878,9 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
               return candidate.logical_node_id == selected_node.relational_node_id;
             });
         if (!inputs.empty() || source == prepared_sources.end() ||
+            selected_node.memory_bytes_required == 0 ||
+            selected_node.memory_bytes_required >
+                selected_dag.memory_budget_bytes ||
             selected_node.implementation_id != source->implementation_id ||
             selected_node.executor_capability_uuid != source->capability_uuid ||
             selected_node.output_descriptor_ids !=
@@ -49798,9 +56924,22 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
             context.authorization_context.policy_epoch;
         source_input.resource_generation = context.resource_epoch;
         source_input.maximum_rows = maximum_rows;
-        source_input.maximum_cells = maximum_rows * source->columns.size();
+        std::uint64_t source_maximum_cells = 0;
+        if (!CheckedMultiply(maximum_rows, source->columns.size(),
+                             &source_maximum_cells) ||
+            source_maximum_cells >
+                std::numeric_limits<std::size_t>::max()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+          step.diagnostic.detail =
+              "columnar composition source cell bound overflowed";
+          return step;
+        }
+        source_input.maximum_cells =
+            static_cast<std::size_t>(source_maximum_cells);
         source_input.maximum_memory_bytes =
-            context.optimizer_memory_budget_bytes / 4;
+            selected_node.memory_bytes_required;
         source_input.exact_fallback_selected = true;
         request.capability.capability_uuid = source->capability_uuid;
         request.capability.family_id = "columnar";
@@ -49830,8 +56969,11 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
             source->persisted.descriptor_generation;
         request.current_mga_statement_context = mga;
         const auto source_copy = *source;
+        Rcp079ColumnarSourceRuntimeMemoryReceiptV1
+            source_runtime_memory_receipt;
         request.execute_provider =
-            [context, source_copy, cancellation_requested](
+            [context, source_copy, cancellation_requested,
+             &source_runtime_memory_receipt](
                 const exec::ModelSourceInputDescriptorV1& source_input) {
               exec::ModelProviderExecutionResultV1 provider;
               const auto fail = [&](std::string diagnostic,
@@ -49840,6 +56982,10 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                 provider.detail = std::move(detail);
                 return provider;
               };
+              if (cancellation_requested()) {
+                return fail("SB_MODEL_EXECUTION_CANCELLED_V1",
+                            "columnar composition was cancelled before source revalidation");
+              }
               const auto authorization = api::EvaluateMaterializedAuthorization(
                   context, context.authorization_context, "SELECT",
                   source_input.object_uuid);
@@ -49849,6 +56995,18 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                 return fail("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
                             "columnar composition authorization changed");
               }
+              const auto preflight = api::LoadMgaRelationStorageDescriptor(
+                  context, source_input.object_uuid);
+              if (!preflight.ok ||
+                  !Rcp079ExactColumnarJoinStorageSnapshotV1(
+                      preflight.descriptor, source_copy.persisted)) {
+                return fail("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                            "columnar composition descriptor changed before MGA access");
+              }
+              if (cancellation_requested()) {
+                return fail("SB_MODEL_EXECUTION_CANCELLED_V1",
+                            "columnar composition was cancelled before MGA access");
+              }
               api::MgaVisibleHeapRelationReadRequest read_request;
               read_request.relation_uuid = source_input.object_uuid;
               read_request.maximum_scanned_row_versions =
@@ -49857,25 +57015,89 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                   source_input.maximum_memory_bytes / 2;
               read_request.maximum_output_rows = source_input.maximum_rows;
               read_request.cancellation_requested = cancellation_requested;
+              if (read_request.maximum_scanned_row_versions == 0 ||
+                  read_request.maximum_decoded_bytes == 0 ||
+                  read_request.maximum_output_rows == 0) {
+                return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                            "columnar composition MGA read bound is zero");
+              }
               const auto read =
                   api::ReadVisibleMgaHeapRelation(context, read_request);
-              provider.data_access_observed = true;
+              provider.data_access_observed =
+                  read.ok || read.scanned_row_version_count != 0 ||
+                  read.decoded_byte_count != 0;
               provider.rows_examined = read.scanned_row_version_count;
               if (!read.ok) {
                 return fail(read.diagnostic.code, read.diagnostic.detail);
               }
-              if (read.descriptor.descriptor_uuid.canonical !=
-                      source_copy.persisted.descriptor_uuid.canonical ||
-                  read.descriptor.descriptor_generation !=
-                      source_input.descriptor_generation) {
+              if (!Rcp079ExactColumnarJoinStorageSnapshotV1(
+                      read.descriptor, preflight.descriptor) ||
+                  !Rcp079ExactColumnarJoinStorageSnapshotV1(
+                      read.descriptor, source_copy.persisted) ||
+                  read.current_relation_base_generation == 0) {
                 return fail("SB_MODEL_CATALOG_GENERATION_STALE_V1",
                             "columnar composition descriptor changed");
+              }
+              if (cancellation_requested()) {
+                return fail("SB_MODEL_EXECUTION_CANCELLED_V1",
+                            "columnar composition was cancelled after MGA access");
+              }
+              const auto retained_visible_row_memory =
+                  Rcp079VisibleRowsMemoryBytesV1(read.visible_rows);
+              const api::TypedRelationalDag source_only_dag;
+              const auto materialization_memory =
+                  Rcp079ColumnarLogicalMaterializationAdditionalBytesV1(
+                      source_copy.persisted, read.visible_rows.size(),
+                      source_only_dag, source_input,
+                      source_copy.property_uuid,
+                      source_copy.security_receipt_uuid, false);
+              std::uint64_t retained_and_materialized = 0;
+              std::uint64_t projected_live_memory = 0;
+              if (!retained_visible_row_memory.has_value() ||
+                  *retained_visible_row_memory >=
+                      source_input.maximum_memory_bytes ||
+                  !materialization_memory.has_value() ||
+                  !CheckedAdd(*retained_visible_row_memory,
+                              *materialization_memory,
+                              &retained_and_materialized) ||
+                  !CheckedMultiply(retained_and_materialized, 2,
+                                   &projected_live_memory) ||
+                  projected_live_memory >
+                      source_input.maximum_memory_bytes) {
+                return fail(
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "columnar source materialization exceeds the selected-node grant");
+              }
+              const auto post_authorization =
+                  api::EvaluateMaterializedAuthorization(
+                      context, context.authorization_context, "SELECT",
+                      source_input.object_uuid);
+              if (!post_authorization.authorized ||
+                  post_authorization.denied ||
+                  post_authorization.policy_recheck_required ||
+                  !post_authorization.diagnostics.empty()) {
+                return fail("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
+                            "columnar composition authorization changed after MGA access");
               }
               exec::DescriptorBatch logical_rows;
               logical_rows.columns = source_copy.columns;
               std::vector<std::string> row_uuids;
+              logical_rows.rows.reserve(read.visible_rows.size());
+              row_uuids.reserve(read.visible_rows.size());
               for (const auto& row : read.visible_rows) {
+                if (cancellation_requested()) {
+                  return fail("SB_MODEL_EXECUTION_CANCELLED_V1",
+                              "columnar composition row reconstruction was cancelled");
+                }
+                if (row.table_uuid != source_input.object_uuid ||
+                    !CanonicalUuidText(row.row_uuid) ||
+                    !CanonicalUuidText(row.version_uuid) ||
+                    row.values.size() != source_copy.persisted.columns.size()) {
+                  return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                              "columnar row identity or width is invalid");
+                }
                 exec::DescriptorTuple tuple;
+                tuple.values.reserve(source_copy.persisted.columns.size());
                 for (std::size_t ordinal = 0;
                      ordinal < source_copy.persisted.columns.size();
                      ++ordinal) {
@@ -49895,6 +57117,10 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                     return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                                 "columnar row omits a field");
                   }
+                  if (*encoded == "<NULL>" && !column.nullable) {
+                    return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                                "columnar row nulls a non-null field");
+                  }
                   api::EngineTypedValue value;
                   value.descriptor = source_copy.columns[ordinal].descriptor;
                   if (*encoded == "<NULL>") {
@@ -49908,7 +57134,11 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                 logical_rows.rows.push_back(std::move(tuple));
                 row_uuids.push_back(row.row_uuid);
               }
-              api::nosql::ColumnarExecutionRequestV1 columnar_request;
+              if (cancellation_requested()) {
+                return fail("SB_MODEL_EXECUTION_CANCELLED_V1",
+                            "columnar composition was cancelled before reconstruction");
+              }
+              api::nosql::ColumnarExecutionRequestV2 columnar_request;
               columnar_request.operation_ids = {"COLUMNAR_SOURCE"};
               columnar_request.operation_id = "COLUMNAR_SOURCE";
               columnar_request.relation_uuid = source_input.object_uuid;
@@ -49925,15 +57155,152 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
               columnar_request.summary_generation =
                   source_input.provider_generation;
               columnar_request.maximum_rows = source_input.maximum_rows;
+              columnar_request.maximum_input_cells =
+                  source_input.maximum_cells;
               columnar_request.maximum_cells = source_input.maximum_cells;
+              columnar_request.maximum_memory_bytes =
+                  source_input.maximum_memory_bytes -
+                  *retained_visible_row_memory;
+              columnar_request.cancellation_requested = [](const void* context) {
+                return (*static_cast<const std::function<bool()>*>(context))();
+              };
+              columnar_request.cancellation_context = &cancellation_requested;
               columnar_request.security_admitted = true;
               columnar_request.exact_reconstruction_fallback_available = true;
+              const auto pre_api_batch_memory =
+                  Rcp079DescriptorBatchLogicalMemoryBytesV1(
+                      columnar_request.logical_rows);
+              const auto pre_api_request_memory =
+                  Rcp079ColumnarRequestNonBatchLogicalMemoryBytesV2(
+                      columnar_request);
+              std::uint64_t pre_api_peak_memory = 0;
+              if (!pre_api_batch_memory.has_value() ||
+                  !pre_api_request_memory.has_value() ||
+                  !CheckedAdd(*retained_visible_row_memory,
+                              *pre_api_batch_memory,
+                              &pre_api_peak_memory) ||
+                  !CheckedAdd(pre_api_peak_memory,
+                              *pre_api_request_memory,
+                              &pre_api_peak_memory) ||
+                  pre_api_peak_memory >
+                      source_input.maximum_memory_bytes) {
+                return fail(
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "columnar source request exceeded the selected-node grant");
+              }
               auto reconstructed =
-                  api::nosql::ExecuteColumnarLogicalV1(columnar_request);
+                  api::nosql::ExecuteColumnarLogicalV2(
+                      std::move(columnar_request));
               if (!reconstructed.accepted ||
                   !reconstructed.root_publishable) {
-                return fail(reconstructed.diagnostic_id,
-                            reconstructed.detail);
+                return fail(reconstructed.diagnostic_id.empty()
+                                ? "SB_MODEL_TYPED_EXCHANGE_INVALID_V1"
+                                : reconstructed.diagnostic_id,
+                            reconstructed.detail.empty()
+                                ? "columnar source reconstruction did not publish"
+                                : reconstructed.detail);
+              }
+              if (!reconstructed.exact_fallback_selected ||
+                  !reconstructed.exact_reconstruction_complete ||
+                  !reconstructed.predicate_recheck_complete ||
+                  !reconstructed.mga_recheck_complete ||
+                  reconstructed.cancellation_observed ||
+                  reconstructed.cancellation_probe_failed ||
+                  !reconstructed.memory_receipt_complete ||
+                  reconstructed.current_live_memory_bytes >
+                      reconstructed.peak_live_memory_bytes ||
+                  reconstructed.peak_live_memory_bytes >
+                      reconstructed.memory_grant_bytes ||
+                  reconstructed.memory_grant_bytes !=
+                      source_input.maximum_memory_bytes -
+                          *retained_visible_row_memory ||
+                  reconstructed.physical_operator_id !=
+                      "COLUMNAR_ROW_RECONSTRUCTION_SCAN_V1" ||
+                  !reconstructed.fallback_reason_id.empty() ||
+                  reconstructed.diagnostic_id != "SB_EXECUTOR_OK" ||
+                  !reconstructed.detail.empty() ||
+                  reconstructed.row_uuids.size() !=
+                      read.visible_rows.size() ||
+                  reconstructed.batch.rows.size() !=
+                      read.visible_rows.size() ||
+                  reconstructed.batch.rows.size() >
+                      source_input.maximum_rows ||
+                  reconstructed.batch.columns.size() !=
+                      source_copy.columns.size() ||
+                  !std::ranges::equal(
+                      reconstructed.batch.columns, source_copy.columns,
+                      [](const auto& actual, const auto& expected) {
+                        return Rcp079ExactExecutorColumnV1(actual,
+                                                          expected);
+                      })) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "columnar source reconstruction receipt changed");
+              }
+              std::uint64_t combined_peak_memory = 0;
+              if (!CheckedAdd(*retained_visible_row_memory,
+                              reconstructed.peak_live_memory_bytes,
+                              &combined_peak_memory) ||
+                  combined_peak_memory >
+                      source_input.maximum_memory_bytes) {
+                return fail(
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "columnar source retained rows and reconstruction peak exceed the selected-node grant");
+              }
+              if (reconstructed.batch.rows.size() != 0 &&
+                  reconstructed.batch.columns.size() >
+                      source_input.maximum_cells /
+                          reconstructed.batch.rows.size()) {
+                return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                            "columnar source reconstruction cell receipt exceeded its bound");
+              }
+              for (std::size_t row = 0;
+                   row < read.visible_rows.size(); ++row) {
+                const auto& source_row = read.visible_rows[row];
+                const auto& actual_row = reconstructed.batch.rows[row];
+                if (reconstructed.row_uuids[row] != source_row.row_uuid ||
+                    actual_row.values.size() !=
+                        source_copy.persisted.columns.size()) {
+                  return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                              "columnar source row identity or width changed");
+                }
+                for (std::size_t ordinal = 0;
+                     ordinal < source_copy.persisted.columns.size();
+                     ++ordinal) {
+                  const auto& persisted_column =
+                      source_copy.persisted.columns[ordinal];
+                  const std::string* expected_encoded = nullptr;
+                  for (const auto& [name, value] : source_row.values) {
+                    if (name == persisted_column.canonical_name_key) {
+                      if (expected_encoded != nullptr) {
+                        return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                                    "columnar source row repeats a field during receipt replay");
+                      }
+                      expected_encoded = &value;
+                    }
+                  }
+                  if (expected_encoded == nullptr) {
+                    return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                                "columnar source row omitted a field during receipt replay");
+                  }
+                  const auto& actual = actual_row.values[ordinal];
+                  const bool expected_null = *expected_encoded == "<NULL>";
+                  if (!CanonicalQueryEngineDescriptorExactlyEqual(
+                          actual.descriptor,
+                          source_copy.columns[ordinal].descriptor) ||
+                      (expected_null
+                           ? (actual.state !=
+                                  api::EngineValueState::sql_null ||
+                              !actual.is_null ||
+                              !actual.encoded_value.empty() ||
+                              !actual.binary_value.empty())
+                           : (actual.state != api::EngineValueState::value ||
+                              actual.is_null ||
+                              actual.encoded_value != *expected_encoded ||
+                              !actual.binary_value.empty()))) {
+                    return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                                "columnar source reconstructed value changed");
+                  }
+                }
               }
               auto& batch = provider.provider_batch;
               batch.provider_uuid = source_input.provider_uuid;
@@ -49964,6 +57331,42 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                 identity.row_uuid = std::move(row_uuid);
                 batch.ordered_row_identities.push_back(std::move(identity));
               }
+              const auto provider_memory =
+                  Rcp079ModelProviderBatchLogicalMemoryBytesV1(batch);
+              const auto output_memory =
+                  Rcp079ProjectedModelSourceOutputLogicalMemoryBytesV1(
+                      source_input, batch);
+              const auto uniqueness_memory =
+                  Rcp079ColumnarUniquenessLogicalMemoryBytesV1(
+                      batch.ordered_row_identities);
+              std::uint64_t output_copy_peak = 0;
+              std::uint64_t uniqueness_peak = 0;
+              if (!provider_memory.has_value() ||
+                  !output_memory.has_value() ||
+                  !uniqueness_memory.has_value() ||
+                  !CheckedAdd(*provider_memory, *output_memory,
+                              &output_copy_peak) ||
+                  !CheckedAdd(*provider_memory, *uniqueness_memory,
+                              &uniqueness_peak)) {
+                return fail(
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "columnar source provider/exchange memory receipt overflowed");
+              }
+              source_runtime_memory_receipt.provider_logical_memory_bytes =
+                  *provider_memory;
+              source_runtime_memory_receipt.peak_live_memory_bytes =
+                  std::max({pre_api_peak_memory, combined_peak_memory,
+                            output_copy_peak, uniqueness_peak});
+              source_runtime_memory_receipt.memory_grant_bytes =
+                  source_input.maximum_memory_bytes;
+              source_runtime_memory_receipt.complete =
+                  source_runtime_memory_receipt.peak_live_memory_bytes <=
+                  source_runtime_memory_receipt.memory_grant_bytes;
+              if (!source_runtime_memory_receipt.complete) {
+                return fail(
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "columnar source provider/exchange peak exceeded the selected-node grant");
+              }
               provider.ok = true;
               return provider;
             };
@@ -49980,6 +57383,26 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
           step.diagnostic.detail = executed.detail;
           return step;
         }
+        std::uint64_t current_memory_bytes = 0;
+        if (!source_runtime_memory_receipt.complete ||
+            source_runtime_memory_receipt.memory_grant_bytes !=
+                selected_node.memory_bytes_required ||
+            source_runtime_memory_receipt.peak_live_memory_bytes >
+                source_runtime_memory_receipt.memory_grant_bytes ||
+            !RuntimeMaterializedBatchMemoryBytes(
+                executed.output.batch, &current_memory_bytes) ||
+            current_memory_bytes >
+                source_runtime_memory_receipt.peak_live_memory_bytes) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+          step.diagnostic.detail =
+              "columnar source runtime memory receipt changed";
+          return step;
+        }
+        PublishRuntimeMemoryObservation(
+            &step, current_memory_bytes,
+            source_runtime_memory_receipt.peak_live_memory_bytes);
         step.result_handle_id = selected_node.physical_node_id;
         step.output_row_count = executed.output.batch.rows.size();
         step.rows_examined = executed.rows_examined;
@@ -50019,12 +57442,40 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
         return CompareCanonicalQueryScalarsV1(
             context, left, right, comparison, diagnostic_id, refusal_detail);
       };
-  selected.available_executors.push_back(MakeLiveJoinRegistration(
+  auto join_registration = MakeLiveJoinRegistration(
       "join." + join_component + ".3vl.nested.v1", join_capability_uuid, {},
       static_cast<std::size_t>(maximum_pairs_u64), maximum_rows, join_kind,
       "columnar model-family join", input.context, true,
       predicate_join ? join->bound_expression_ids.front() : 0,
-      std::move(predicate_binding), dag, std::move(predicate_services)));
+      std::move(predicate_binding), dag, std::move(predicate_services));
+  auto execute_join = std::move(join_registration.execute);
+  join_registration.execute =
+      [execute_join = std::move(execute_join), expected_join_columns](
+          const exec::TypedPhysicalNodeDag& selected_dag,
+          const exec::PhysicalNodeRecord& selected_node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs)
+          mutable {
+        auto step = execute_join(selected_dag, selected_node, inputs);
+        if (!step.diagnostic.ok) return step;
+        if (!step.materialized_output_batch.has_value() ||
+            step.materialized_output_batch->columns.size() !=
+                expected_join_columns.size() ||
+            !std::ranges::equal(
+                step.materialized_output_batch->columns,
+                expected_join_columns,
+                [](const auto& actual, const auto& expected) {
+                  return Rcp079ExactExecutorColumnV1(actual, expected);
+                })) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_TYPED_EXCHANGE_INVALID_V1";
+          step.diagnostic.detail =
+              "columnar join output descriptor differs from its exact source binding";
+          step.materialized_output_batch.reset();
+        }
+        return step;
+      };
+  selected.available_executors.push_back(std::move(join_registration));
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
       input.context.statement_uuid.canonical;
@@ -50049,33 +57500,47 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
     if (output.relation_node_id == join->node_id) root_outputs.push_back(&output);
   }
   std::ranges::sort(root_outputs, {}, &api::RelationalOutputRecord::ordinal);
-  if (root_outputs.size() != join->output_descriptor_ids.size()) {
+  if (root_outputs.size() != join->output_descriptor_ids.size() ||
+      root_outputs.size() != expected_join_columns.size()) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "columnar join root bindings are incomplete");
   }
-  const auto left_width = sources[0]->output_descriptor_ids.size();
   for (std::size_t ordinal = 0; ordinal < root_outputs.size(); ++ordinal) {
     const auto descriptor = descriptor_for(root_outputs[ordinal]->descriptor_id);
+    const auto source_index = ordinal < left_width ? 0U : 1U;
+    const auto source_ordinal =
+        source_index == 0 ? ordinal : ordinal - left_width;
+    const auto& exact_source = prepared_sources[source_index];
+    const auto& base_column = exact_source.columns[source_ordinal];
+    const auto& persisted_column =
+        exact_source.persisted.columns[source_ordinal];
+    const auto& expected_column = expected_join_columns[ordinal];
     if (descriptor == dag.descriptors.end() ||
-        root_outputs[ordinal]->ordinal != ordinal) {
+        root_outputs[ordinal]->ordinal != ordinal ||
+        !root_outputs[ordinal]->visible ||
+        root_outputs[ordinal]->descriptor_id !=
+            join->output_descriptor_ids[ordinal] ||
+        root_outputs[ordinal]->expression_id !=
+            exact_source.output_expression_ids[source_ordinal] ||
+        root_outputs[ordinal]->output_name_utf8 != base_column.stable_name ||
+        descriptor->descriptor_id != base_column.descriptor_id ||
+        descriptor->descriptor_uuid !=
+            base_column.descriptor.descriptor_uuid.canonical ||
+        !Rcp079ExactColumnarJoinColumnBindingV1(*descriptor,
+                                                persisted_column) ||
+        expected_column.descriptor_id != descriptor->descriptor_id ||
+        expected_column.descriptor.descriptor_uuid.canonical !=
+            descriptor->descriptor_uuid) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                    "columnar join root descriptor is unresolved");
+                    "columnar join root descriptor is not source-exact");
     }
-    const bool null_extended =
-        ((join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
-          join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) &&
-         ordinal < left_width) ||
-        ((join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
-          join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) &&
-         ordinal >= left_width);
     exec::CanonicalResultColumnDescriptor published;
     published.ordinal = static_cast<std::uint32_t>(ordinal);
     published.name_utf8 = root_outputs[ordinal]->output_name_utf8;
     published.descriptor_uuid = descriptor->descriptor_uuid;
     published.type_uuid = descriptor->type_uuid;
     published.nullability =
-        null_extended ||
-                descriptor->nullability == api::RelationalNullability::kNullable
+        expected_column.nullable
             ? exec::CanonicalResultNullability::kNullable
             : exec::CanonicalResultNullability::kNonNull;
     published.collation_uuid = descriptor->collation_uuid;
@@ -50240,6 +57705,21 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   }
 
   const auto object_uuid = source->required_object_uuids.front();
+  if (columnar) {
+    const auto columnar_source = operation_expression("COLUMNAR_SOURCE");
+    if (columnar_source == dag.expressions.end() ||
+        columnar_source->expression_kind !=
+            api::RelationalExpressionKind::kFunctionCall ||
+        columnar_source->function_uuid.has_value() ||
+        !columnar_source->child_expression_ids.empty() ||
+        columnar_source->bound_name_uuid !=
+            std::optional<std::string>(object_uuid) ||
+        columnar_source->literal_kind.has_value() ||
+        columnar_source->literal_or_parameter_ref.has_value()) {
+      return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                    "COLUMNAR_SOURCE object binding is not exact");
+    }
+  }
   const auto authorization = api::EvaluateMaterializedAuthorization(
       input.context, input.context.authorization_context, "SELECT", object_uuid);
   if (!authorization.authorized || authorization.denied ||
@@ -50262,14 +57742,96 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   if (persisted.relation_uuid.canonical != object_uuid ||
       persisted.database_uuid.canonical !=
           input.context.database_uuid.canonical ||
-      persisted.schema_uuid.canonical.empty() ||
+      !CanonicalUuidText(persisted.schema_uuid.canonical) ||
       persisted.relation_kind != "table" ||
       persisted.storage_profile != "local_mga_rowstore_v1" ||
-      persisted.descriptor_uuid.canonical.empty() ||
+      persisted.row_identity_rule != "engine_uuid_v7_only" ||
+      persisted.version_identity_rule != "engine_uuid_v7_only" ||
+      persisted.mutation_rule != "copy_on_write" ||
+      persisted.visibility_rule !=
+          "local_inventory_snapshot_visibility" ||
+      persisted.cleanup_rule != "authoritative_local_horizon" ||
+      persisted.recovery_rule !=
+          "dirty_manifest_classification_no_wal" ||
+      persisted.required_evidence_kinds !=
+          std::vector<std::string>{"relation_descriptor", "row_version",
+                                   "transaction_inventory",
+                                   "dirty_manifest"} ||
+      !CanonicalUuidText(persisted.descriptor_uuid.canonical) ||
       persisted.descriptor_generation == 0 || persisted.columns.empty() ||
+      (persisted.descriptor_status != "production_descriptor" &&
+       persisted.descriptor_status !=
+           "metadata_bridge_vetted_descriptor") ||
       persisted.columns.size() > 256) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent spatial/columnar relation descriptor is invalid");
+  }
+  static constexpr std::array<std::string_view, 5> kSpatialNames{
+      "row_uuid", "spatial_value", "crs_uuid", "predicate_truth", "distance"};
+  static constexpr std::array<std::string_view, 5> kSpatialTypes{
+      "uuid", "geometry", "uuid", "boolean", "real64"};
+  std::array<std::string, 5> spatial_type_uuids;
+  if (spatial) {
+    for (std::size_t ordinal = 0; ordinal < kSpatialTypes.size(); ++ordinal) {
+      spatial_type_uuids[ordinal] =
+          ExactCanonicalCoreDatatypeUuidV1(kSpatialTypes[ordinal]);
+    }
+    if (std::ranges::any_of(spatial_type_uuids,
+                            [](const auto& uuid) { return uuid.empty(); })) {
+      return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                    "spatial core datatype registry is unavailable");
+    }
+  }
+  if (columnar) {
+    std::unordered_set<std::string> column_uuids;
+    std::unordered_set<std::string> column_names;
+    std::unordered_set<std::string> descriptor_uuids;
+    for (std::size_t ordinal = 0; ordinal < persisted.columns.size();
+         ++ordinal) {
+      const auto& column = persisted.columns[ordinal];
+      if (column.ordinal != ordinal || column.canonical_name_key.empty() ||
+          !CanonicalUuidText(column.column_uuid.canonical) ||
+          !column_uuids.insert(column.column_uuid.canonical).second ||
+          !column_names.insert(column.canonical_name_key).second ||
+          !api::QowCanonicalDescriptorIdentityV1(column.value_descriptor) ||
+          column.value_descriptor.descriptor_kind !=
+              "canonical_type_descriptor" ||
+          !Rcp079ExactPersistedColumnDescriptorV1(column) ||
+          !descriptor_uuids
+               .insert(column.value_descriptor.descriptor_uuid.canonical)
+               .second ||
+          !Rcp079ExactDescriptorFieldsV1(column.value_descriptor)
+               .has_value()) {
+        return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                      "columnar persisted descriptor identity is not exact");
+      }
+    }
+    for (const auto& expression : dag.expressions) {
+      if (expression.expression_kind !=
+              api::RelationalExpressionKind::kIdentifier ||
+          !expression.bound_name_uuid.has_value()) {
+        continue;
+      }
+      const auto persisted_column = std::ranges::find_if(
+          persisted.columns, [&](const auto& column) {
+            return column.column_uuid.canonical ==
+                   *expression.bound_name_uuid;
+          });
+      if (persisted_column == persisted.columns.end()) {
+        return refuse(
+            "SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+            "columnar identifier is not bound to a persisted column");
+      }
+      const auto relational_descriptor =
+          descriptor_for(expression.result_descriptor_id);
+      if (relational_descriptor == dag.descriptors.end() ||
+          !Rcp079ExactColumnarJoinColumnBindingV1(
+              *relational_descriptor, *persisted_column)) {
+        return refuse(
+            "SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+            "columnar referenced identifier differs from persisted type authority");
+      }
+    }
   }
   if (spatial &&
       (persisted.columns.size() != 3 ||
@@ -50285,6 +57847,27 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
     return refuse("SB_MODEL_SPATIAL_PROFILE_UNSUPPORTED_V1",
                   "persistent spatial relation is not the exact point cohort");
   }
+  if (spatial) {
+    for (std::size_t ordinal = 0; ordinal < persisted.columns.size(); ++ordinal) {
+      const auto& column = persisted.columns[ordinal];
+      if (column.ordinal != ordinal ||
+          !CanonicalUuidText(column.column_uuid.canonical) ||
+          column.value_descriptor.descriptor_kind !=
+              "canonical_type_descriptor" ||
+          !api::QowCanonicalDescriptorIdentityV1(column.value_descriptor) ||
+          !CanonicalDescriptorFieldEqualsV1(
+              column.value_descriptor, "type_uuid",
+              std::string_view(spatial_type_uuids[ordinal])) ||
+          !column.collation_uuid.empty() ||
+          !CanonicalDescriptorFieldEqualsV1(column.value_descriptor,
+                                            "collation_uuid", std::nullopt) ||
+          !CanonicalDescriptorFieldEqualsV1(
+              column.value_descriptor, "timezone_profile_id", std::nullopt)) {
+        return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                      "spatial persisted type identity is not exact");
+      }
+    }
+  }
 
   std::vector<const api::RelationalOutputRecord*> outputs;
   for (const auto& output : dag.outputs) {
@@ -50299,10 +57882,6 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
   public_columns.reserve(outputs.size());
   result_bindings.reserve(outputs.size());
-  static constexpr std::array<std::string_view, 5> kSpatialNames{
-      "row_uuid", "spatial_value", "crs_uuid", "predicate_truth", "distance"};
-  static constexpr std::array<std::string_view, 5> kSpatialTypes{
-      "uuid", "geometry", "uuid", "boolean", "real64"};
   for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
     const auto descriptor = descriptor_for(outputs[ordinal]->descriptor_id);
     const auto output_expression = expression_for(outputs[ordinal]->expression_id);
@@ -50310,6 +57889,9 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
         output_expression == dag.expressions.end() ||
         !outputs[ordinal]->visible || outputs[ordinal]->ordinal != ordinal ||
         outputs[ordinal]->descriptor_id != source->output_descriptor_ids[ordinal] ||
+        output_expression->expression_kind !=
+            api::RelationalExpressionKind::kIdentifier ||
+        output_expression->result_descriptor_id != descriptor->descriptor_id ||
         descriptor->nullability == api::RelationalNullability::kUnknown) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "spatial/columnar output binding was substituted");
@@ -50324,17 +57906,34 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       if (found != persisted.columns.end()) persisted_column = &*found;
     }
     api::EngineDescriptor engine_descriptor;
-    if (persisted_column != nullptr && !spatial) {
+    if (spatial && ordinal < persisted.columns.size()) {
+      const auto& column = persisted.columns[ordinal];
+      if (output_expression->bound_name_uuid !=
+              std::optional<std::string>(column.column_uuid.canonical) ||
+          outputs[ordinal]->output_name_utf8 != column.canonical_name_key ||
+          descriptor->descriptor_uuid !=
+              column.value_descriptor.descriptor_uuid.canonical ||
+          descriptor->type_uuid != spatial_type_uuids[ordinal] ||
+          descriptor->nullability != api::RelationalNullability::kNonNull ||
+          descriptor->collation_uuid.has_value() ||
+          descriptor->timezone_profile_id.has_value()) {
+        return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                      "spatial base output differs from persisted type authority");
+      }
+      engine_descriptor = column.value_descriptor;
+      engine_descriptor.descriptor_kind = "scalar";
+    } else if (persisted_column != nullptr && !spatial) {
       if (outputs[ordinal]->output_name_utf8 !=
               persisted_column->canonical_name_key ||
-          descriptor->descriptor_uuid !=
-              persisted_column->value_descriptor.descriptor_uuid.canonical ||
-          descriptor->nullability !=
-              (persisted_column->nullable
-                   ? api::RelationalNullability::kNullable
-                   : api::RelationalNullability::kNonNull)) {
-        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                      "persisted output descriptor differs from binding");
+          std::ranges::count_if(
+              persisted.columns, [&](const auto& candidate) {
+                return candidate.column_uuid.canonical ==
+                       persisted_column->column_uuid.canonical;
+              }) != 1 ||
+          !Rcp079ExactColumnarJoinColumnBindingV1(*descriptor,
+                                                  *persisted_column)) {
+        return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                      "columnar output differs from persisted type authority");
       }
       engine_descriptor = persisted_column->value_descriptor;
       engine_descriptor.descriptor_kind = "scalar";
@@ -50347,9 +57946,12 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                                      : std::string_view{};
       if (!spatial || expected_name.empty() ||
           outputs[ordinal]->output_name_utf8 != expected_name ||
-          descriptor->nullability != api::RelationalNullability::kNonNull) {
-        return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                      "derived spatial output descriptor is invalid");
+          descriptor->type_uuid != spatial_type_uuids[ordinal] ||
+          descriptor->nullability != api::RelationalNullability::kNonNull ||
+          descriptor->collation_uuid.has_value() ||
+          descriptor->timezone_profile_id.has_value()) {
+        return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
+                      "derived spatial output type identity is invalid");
       }
       engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
       engine_descriptor.descriptor_kind = "scalar";
@@ -50508,22 +58110,27 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               : "LOGICAL_COLUMNAR_SOURCE_V1";
   const auto identity_scope =
       dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+  const auto source_identity_scope =
+      identity_scope + ":" + std::to_string(source->node_id) + ":" +
+      object_uuid;
   const auto provider_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".provider");
+      DerivedCanonicalUuid(source_identity_scope, family + ".provider");
   const auto capability_uuid =
       DerivedCanonicalUuid(identity_scope, family + ".capability");
   const auto result_handle_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".result-handle");
+      DerivedCanonicalUuid(source_identity_scope, family + ".result-handle");
   const auto property_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".property");
+      DerivedCanonicalUuid(source_identity_scope, family + ".property");
   const auto security_receipt_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".security-receipt");
+      DerivedCanonicalUuid(source_identity_scope, family + ".security-receipt");
   const auto policy_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".policy-snapshot");
+      DerivedCanonicalUuid(source_identity_scope, family + ".policy-snapshot");
   const auto statistics_snapshot_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".statistics-snapshot");
+      DerivedCanonicalUuid(source_identity_scope,
+                           family + ".statistics-snapshot");
   const auto resource_contract_uuid =
-      DerivedCanonicalUuid(identity_scope, family + ".resource-contract");
+      DerivedCanonicalUuid(source_identity_scope,
+                           family + ".resource-contract");
   const auto suffix = std::to_string(source->node_id) + "." + implementation_id;
   const auto alternative_uuid =
       DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
@@ -50765,15 +58372,27 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   result.physical_node_count = 1;
   result.selected_plan_uuid = physical.physical_dag.selected_plan_uuid;
 
-  const auto provider_memory = planning.memory_budget_bytes / 2;
-  const auto exchange_memory = planning.memory_budget_bytes - provider_memory;
+  if (physical_source.memory_bytes_required == 0 ||
+      physical_source.memory_bytes_required >
+          physical.physical_dag.memory_budget_bytes ||
+      physical_source.memory_bytes_required > planning.memory_budget_bytes) {
+    return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "spatial/columnar selected source grant is invalid");
+  }
+  const auto exchange_memory = physical_source.memory_bytes_required;
+  const auto provider_memory = planning.memory_budget_bytes - exchange_memory;
   const auto maximum_rows = std::min<std::uint64_t>(
       {65'536, input.context.optimizer_maximum_candidate_count,
        std::max<std::uint64_t>(1, provider_memory / 256)});
   std::uint64_t maximum_cells = 0;
+  std::uint64_t maximum_reconstruction_cells = 0;
   if (provider_memory < 4096 || exchange_memory < 4096 || maximum_rows == 0 ||
       !CheckedMultiply(maximum_rows, expected_width, &maximum_cells) ||
-      maximum_cells > std::numeric_limits<std::size_t>::max()) {
+      !CheckedMultiply(maximum_rows, persisted.columns.size(),
+                       &maximum_reconstruction_cells) ||
+      maximum_cells > std::numeric_limits<std::size_t>::max() ||
+      maximum_reconstruction_cells >
+          std::numeric_limits<std::size_t>::max()) {
     return refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                   "spatial/columnar route resource bounds are incomplete");
   }
@@ -50787,7 +58406,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
     source_input.spatial_geometry_descriptor_uuid =
         persisted.columns[1].value_descriptor.descriptor_uuid.canonical;
     source_input.spatial_geometry_type_uuid =
-        descriptor_for(source->output_descriptor_ids[1])->type_uuid;
+        spatial_type_uuids[1];
     source_input.spatial_crs_uuid = spatial_crs_uuid;
     source_input.spatial_crs_generation = spatial_crs_generation;
   }
@@ -50815,10 +58434,23 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   source_input.maximum_memory_bytes = exchange_memory;
   source_input.exact_fallback_selected = true;
 
-  const auto cancellation_requested =
-      input.context.query_cancellation_requested
-          ? input.context.query_cancellation_requested
-          : std::function<bool()>([] { return false; });
+  const auto model_cancellation_probe_failed =
+      std::make_shared<std::atomic_bool>(false);
+  const auto raw_model_cancellation =
+      input.context.query_cancellation_requested;
+  const std::function<bool()> cancellation_requested =
+      [raw_model_cancellation, model_cancellation_probe_failed]() noexcept {
+        if (!raw_model_cancellation) return false;
+        try {
+          return raw_model_cancellation();
+        } catch (...) {
+          model_cancellation_probe_failed->store(
+              true, std::memory_order_relaxed);
+          return true;
+        }
+      };
+  const auto columnar_runtime_memory_receipt =
+      std::make_shared<Rcp079ColumnarSourceRuntimeMemoryReceiptV1>();
   exec::ModelFamilyExecutionRequestV1 execution_request;
   execution_request.input = source_input;
   execution_request.capability.capability_uuid = capability_uuid;
@@ -50834,6 +58466,10 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   execution_request.capability.residual_recheck_supported = true;
   execution_request.capability.base_row_mga_recheck_supported = true;
   execution_request.capability.security_recheck_supported = true;
+  // The no-throw sticky wrapper prevents the generic exchange helper from
+  // laundering a thrown engine probe into an ordinary cancellation.  The
+  // registration checks the sticky failure before emitting cancellation
+  // evidence.
   execution_request.cancellation_requested = cancellation_requested;
   execution_request.cleanup_provider = [] {};
   execution_request.exact_fallback_selected = true;
@@ -50851,13 +58487,28 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   execution_request.execute_provider =
       [context, dag, persisted, source_input, public_columns, property_uuid,
        security_receipt_uuid, has_match, has_nearest, has_filter, has_project,
-       cancellation_requested](const exec::ModelSourceInputDescriptorV1&) mutable {
+       cancellation_requested, maximum_reconstruction_cells,
+       model_cancellation_probe_failed, columnar_runtime_memory_receipt](
+          const exec::ModelSourceInputDescriptorV1&) mutable {
         exec::ModelProviderExecutionResultV1 provider;
         const auto fail = [&](std::string diagnostic, std::string detail) {
           provider.diagnostic_id = std::move(diagnostic);
           provider.detail = std::move(detail);
           return provider;
         };
+        const auto cancellation_diagnostic = [&] {
+          return model_cancellation_probe_failed->load(
+                     std::memory_order_relaxed)
+                     ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                     : "SB_MODEL_EXECUTION_CANCELLED_V1";
+        };
+        if (columnar_runtime_memory_receipt != nullptr) {
+          *columnar_runtime_memory_receipt = {};
+        }
+        if (cancellation_requested()) {
+          return fail(cancellation_diagnostic(),
+                      "model-family execution was cancelled before revalidation");
+        }
         const auto authorization = api::EvaluateMaterializedAuthorization(
             context, context.authorization_context, "SELECT",
             source_input.object_uuid);
@@ -50867,6 +58518,18 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           return fail("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
                       "model-family execution authorization changed");
         }
+        const auto preflight = api::LoadMgaRelationStorageDescriptor(
+            context, source_input.object_uuid);
+        if (!preflight.ok ||
+            !Rcp079ExactColumnarJoinStorageSnapshotV1(
+                preflight.descriptor, persisted)) {
+          return fail("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                      "model-family descriptor changed before MGA access");
+        }
+        if (cancellation_requested()) {
+          return fail(cancellation_diagnostic(),
+                      "model-family execution was cancelled before MGA access");
+        }
         api::MgaVisibleHeapRelationReadRequest read_request;
         read_request.relation_uuid = source_input.object_uuid;
         read_request.maximum_scanned_row_versions =
@@ -50875,24 +58538,53 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             source_input.maximum_memory_bytes / 2;
         read_request.maximum_output_rows = source_input.maximum_rows;
         read_request.cancellation_requested = cancellation_requested;
-        const auto read = api::ReadVisibleMgaHeapRelation(context, read_request);
-        provider.data_access_observed = true;
+        if (read_request.maximum_scanned_row_versions == 0 ||
+            read_request.maximum_decoded_bytes == 0 ||
+            read_request.maximum_output_rows == 0) {
+          return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "model-family MGA read bound is zero");
+        }
+        auto read = api::ReadVisibleMgaHeapRelation(context, read_request);
+        provider.data_access_observed =
+            read.ok || read.scanned_row_version_count != 0 ||
+            read.decoded_byte_count != 0;
         provider.rows_examined = read.scanned_row_version_count;
         if (!read.ok) {
-          return fail(read.diagnostic.code.empty()
-                          ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
-                          : read.diagnostic.code,
+          if (read.cancellation_observed ||
+              model_cancellation_probe_failed->load(
+                  std::memory_order_relaxed)) {
+            return fail(cancellation_diagnostic(),
+                        model_cancellation_probe_failed->load(
+                                std::memory_order_relaxed)
+                            ? "model-family MGA cancellation probe failed"
+                            : "model-family MGA read was cancelled");
+          }
+          return fail(model_cancellation_probe_failed->load(
+                              std::memory_order_relaxed)
+                          ? "SB_MODEL_COORDINATOR_LEG_FAILED_V1"
+                          : (read.diagnostic.code.empty()
+                                 ? "SB_MODEL_MGA_CONTEXT_MISMATCH_V1"
+                                 : read.diagnostic.code),
                       read.diagnostic.detail.empty()
                           ? "current MGA-visible relation read failed"
                           : read.diagnostic.detail);
         }
-        if (read.descriptor.descriptor_uuid.canonical !=
-                persisted.descriptor_uuid.canonical ||
-            read.descriptor.descriptor_generation !=
-                source_input.descriptor_generation ||
+        const auto post_access = api::LoadMgaRelationStorageDescriptor(
+            context, source_input.object_uuid);
+        if (!Rcp079ExactColumnarJoinStorageSnapshotV1(
+                read.descriptor, preflight.descriptor) ||
+            !Rcp079ExactColumnarJoinStorageSnapshotV1(
+                read.descriptor, persisted) ||
+            !post_access.ok ||
+            !Rcp079ExactColumnarJoinStorageSnapshotV1(
+                post_access.descriptor, read.descriptor) ||
             read.current_relation_base_generation == 0) {
           return fail("SB_MODEL_CATALOG_GENERATION_STALE_V1",
                       "model-family descriptor changed during execution");
+        }
+        if (cancellation_requested()) {
+          return fail(cancellation_diagnostic(),
+                      "model-family execution was cancelled after MGA access");
         }
         const auto post_authorization = api::EvaluateMaterializedAuthorization(
             context, context.authorization_context, "SELECT",
@@ -50903,30 +58595,110 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           return fail("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
                       "model-family security recheck failed");
         }
+        for (const auto& row : read.visible_rows) {
+          if (cancellation_requested()) {
+            return fail(cancellation_diagnostic(),
+                        "model-family row validation was cancelled");
+          }
+          if (row.table_uuid != source_input.object_uuid ||
+              !CanonicalUuidText(row.row_uuid) ||
+              !CanonicalUuidText(row.version_uuid) ||
+              row.values.size() != persisted.columns.size()) {
+            return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "model-family row identity or width is invalid");
+          }
+          for (const auto& column : persisted.columns) {
+            const std::string* encoded = nullptr;
+            for (const auto& [name, value] : row.values) {
+              if (name != column.canonical_name_key) continue;
+              if (encoded != nullptr) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "model-family row repeats a field");
+              }
+              encoded = &value;
+            }
+            if (encoded == nullptr ||
+                (*encoded == "<NULL>" && !column.nullable)) {
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "model-family row omits or nulls a required field");
+            }
+          }
+        }
+        const auto visible_row_memory =
+            Rcp079VisibleRowsMemoryBytesV1(read.visible_rows);
+        std::uint64_t spatial_preflight_peak_memory = 0;
+        if (source_input.family_id == "spatial" &&
+            columnar_runtime_memory_receipt != nullptr) {
+          std::string_view match_predicate;
+          if (has_match) {
+            const auto match = std::ranges::find_if(
+                dag.expressions, [](const auto& expression) {
+                  return expression.operator_name == "SPATIAL_MATCH";
+                });
+            if (match != dag.expressions.end() &&
+                match->child_expression_ids.size() > 1) {
+              const auto predicate_id = match->child_expression_ids[1];
+              const auto predicate = std::ranges::find_if(
+                  dag.expressions, [&](const auto& expression) {
+                    return expression.expression_id == predicate_id;
+                  });
+              if (predicate != dag.expressions.end() &&
+                  predicate->literal_or_parameter_ref.has_value()) {
+                match_predicate =
+                    *predicate->literal_or_parameter_ref;
+              }
+            }
+          }
+          const auto materialization_memory =
+              Rcp079SpatialSourceMaterializationAdditionalBytesV1(
+                  read.visible_rows, dag, source_input, has_match,
+                  has_nearest, match_predicate);
+          std::uint64_t retained_and_materialized = 0;
+          if (!visible_row_memory.has_value() ||
+              *visible_row_memory >= source_input.maximum_memory_bytes ||
+              !materialization_memory.has_value() ||
+              !CheckedAdd(*visible_row_memory, *materialization_memory,
+                          &retained_and_materialized) ||
+              retained_and_materialized >
+                  source_input.maximum_memory_bytes) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "spatial source materialization exceeds the source memory grant");
+          }
+          spatial_preflight_peak_memory = retained_and_materialized;
+        }
+        if (source_input.family_id == "columnar" &&
+            (!visible_row_memory.has_value() ||
+             *visible_row_memory >= source_input.maximum_memory_bytes)) {
+          return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "columnar MGA rows exhaust the source memory grant");
+        }
+        if (source_input.family_id == "columnar") {
+          const auto materialization_memory =
+              Rcp079ColumnarLogicalMaterializationAdditionalBytesV1(
+                  persisted, read.visible_rows.size(), dag, source_input,
+                  property_uuid, security_receipt_uuid, has_filter);
+          std::uint64_t projected_live_memory = 0;
+          std::uint64_t retained_and_materialized = 0;
+          // Admission precedes every logical-row allocation.  Two complete
+          // cohorts cover the retained provider image and the simultaneous
+          // engine-owned exchange copy; the helper also includes request,
+          // row-binding, result-identity, property, and four MGA-context
+          // carriers.  The later measured receipt may be smaller, but may
+          // never exceed this grant.
+          if (!materialization_memory.has_value() ||
+              !CheckedAdd(*visible_row_memory, *materialization_memory,
+                          &retained_and_materialized) ||
+              !CheckedMultiply(retained_and_materialized, 2,
+                               &projected_live_memory) ||
+              projected_live_memory > source_input.maximum_memory_bytes) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "columnar logical materialization exceeds the source memory grant");
+          }
+        }
 
         auto& batch = provider.provider_batch;
-        batch.provider_uuid = source_input.provider_uuid;
-        batch.provider_generation = source_input.provider_generation;
-        batch.selected_alternative_uuid =
-            source_input.selected_alternative_uuid;
-        batch.capability_uuid = source_input.capability_uuid;
-        batch.exact_fallback_selected = true;
-        batch.result_handle_uuid = source_input.result_handle_uuid;
-        batch.causal_counter_id = source_input.causal_counter_id;
-        batch.output_descriptor_ids = source_input.output_descriptor_ids;
-        batch.mga_statement_context = source_input.mga_statement_context;
-        batch.security_receipt_uuid = security_receipt_uuid;
-        batch.properties.property_uuid = property_uuid;
-        batch.properties.partitioning_id = "single_local_partition";
-        batch.properties.uniqueness_id = "row_uuid";
-        batch.properties.exact = true;
-        batch.properties.residual_recheck_complete = true;
-        batch.properties.base_row_mga_recheck_complete = true;
-        batch.properties.security_recheck_complete = true;
-        batch.residual_recheck_complete = true;
-        batch.base_row_mga_recheck_complete = true;
-        batch.security_recheck_complete = true;
-
         const auto value_for = [](const api::CrudRowVersionRecord& row,
                                   const std::string_view name)
             -> const std::string* {
@@ -50940,20 +58712,33 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
         };
         if (source_input.family_id == "spatial") {
           std::vector<api::nosql::SpatialSourceRowV1> source_rows;
-          source_rows.reserve(read.visible_rows.size());
-          for (const auto& row : read.visible_rows) {
-            const auto row_uuid = value_for(row, "row_uuid");
-            const auto point = value_for(row, "spatial_value");
-            const auto crs = value_for(row, "crs_uuid");
-            if (row_uuid == nullptr || point == nullptr || crs == nullptr ||
-                *row_uuid != row.row_uuid ||
-                *crs != source_input.spatial_crs_uuid) {
-              return fail("SB_MODEL_SPATIAL_CRS_MISMATCH_V1",
-                          "persistent spatial row identity or CRS changed");
+          try {
+            source_rows.reserve(read.visible_rows.size());
+            for (const auto& row : read.visible_rows) {
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "spatial source-row materialization was cancelled");
+              }
+              const auto row_uuid = value_for(row, "row_uuid");
+              const auto point = value_for(row, "spatial_value");
+              const auto crs = value_for(row, "crs_uuid");
+              if (row_uuid == nullptr || point == nullptr || crs == nullptr ||
+                  *row_uuid != row.row_uuid ||
+                  *crs != source_input.spatial_crs_uuid) {
+                return fail("SB_MODEL_SPATIAL_CRS_MISMATCH_V1",
+                            "persistent spatial row identity or CRS changed");
+              }
+              source_rows.push_back(
+                  {row.row_uuid,
+                   std::vector<std::uint8_t>(point->begin(), point->end()),
+                   *crs});
             }
-            source_rows.push_back(
-                {row.row_uuid,
-                 std::vector<std::uint8_t>(point->begin(), point->end()), *crs});
+          } catch (const std::bad_alloc&) {
+            return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                        "spatial source-row allocation was refused");
+          } catch (const std::length_error&) {
+            return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                        "spatial source-row length was refused");
           }
           const auto expression_for = [&](const std::uint32_t expression_id) {
             return std::ranges::find_if(
@@ -50967,157 +58752,834 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                   return expression.operator_name == name;
                 });
           };
+          bool spatial_evaluation_resource_refused = false;
           const auto evaluate_point = [&](const auto& operation,
                                           const api::EngineCanonicalExpressionConsumer
                                               consumer,
                                           std::vector<std::uint8_t>* bytes) {
-            if (operation == dag.expressions.end() || bytes == nullptr) {
+            try {
+              if (operation == dag.expressions.end() || bytes == nullptr) {
+                return false;
+              }
+              const auto point_ordinal =
+                  operation->operator_name == "SPATIAL_MATCH"
+                      ? std::size_t{2}
+                      : std::size_t{1};
+              const auto point = expression_for(
+                  operation->child_expression_ids[point_ordinal]);
+              if (point == dag.expressions.end()) return false;
+              CanonicalRelationalExpressionRuntime runtime(dag);
+              api::EngineTypedValue value;
+              std::string detail;
+              if (!runtime.EvaluateForConsumer(
+                      point->expression_id, "geometry", consumer, &value,
+                      &detail) || value.isSqlNull() ||
+                  value.binary_value.empty()) {
+                return false;
+              }
+              *bytes = std::move(value.binary_value);
+              return true;
+            } catch (const std::bad_alloc&) {
+              spatial_evaluation_resource_refused = true;
+              return false;
+            } catch (const std::length_error&) {
+              spatial_evaluation_resource_refused = true;
               return false;
             }
-            const auto point_ordinal =
-                operation->operator_name == "SPATIAL_MATCH"
-                    ? std::size_t{2}
-                    : std::size_t{1};
-            const auto point =
-                expression_for(operation->child_expression_ids[point_ordinal]);
-            if (point == dag.expressions.end()) return false;
-            CanonicalRelationalExpressionRuntime runtime(dag);
-            api::EngineTypedValue value;
-            std::string detail;
-            if (!runtime.EvaluateForConsumer(
-                    point->expression_id, "geometry", consumer, &value,
-                    &detail) || value.isSqlNull() ||
-                value.binary_value.empty()) {
-              return false;
-            }
-            *bytes = std::move(value.binary_value);
-            return true;
           };
-          api::nosql::SpatialExecutionRequestV1 spatial_request;
-          spatial_request.object_uuid = source_input.object_uuid;
-          spatial_request.geometry_descriptor_uuid =
-              source_input.spatial_geometry_descriptor_uuid;
-          spatial_request.geometry_type_uuid =
-              source_input.spatial_geometry_type_uuid;
-          spatial_request.crs_uuid = source_input.spatial_crs_uuid;
-          spatial_request.crs_generation = source_input.spatial_crs_generation;
-          spatial_request.source_generation = source_input.descriptor_generation;
-          spatial_request.catalog_generation = source_input.catalog_generation;
-          spatial_request.policy_generation = source_input.policy_generation;
-          spatial_request.security_generation = source_input.security_generation;
-          spatial_request.resource_generation = source_input.resource_generation;
-          spatial_request.route_generation = context.optimizer_route_generation;
-          spatial_request.statement_context = source_input.mga_statement_context;
-          spatial_request.current_statement_context =
-              source_input.mga_statement_context;
-          spatial_request.source_rows = std::move(source_rows);
-          spatial_request.maximum_rows = source_input.maximum_rows;
-          spatial_request.security_admitted = true;
-          spatial_request.exact_scan_fallback_available = true;
+          const auto make_spatial_request =
+              [&](std::vector<api::nosql::SpatialSourceRowV1>&& request_rows,
+                  const std::uint64_t retained_outside_api_bytes)
+              -> std::optional<api::nosql::SpatialExecutionRequestV2> {
+            std::uint64_t retained_bytes = 0;
+            if (!visible_row_memory.has_value() ||
+                !CheckedAdd(*visible_row_memory,
+                            retained_outside_api_bytes, &retained_bytes) ||
+                retained_bytes >= source_input.maximum_memory_bytes) {
+              return std::nullopt;
+            }
+            try {
+              api::nosql::SpatialExecutionRequestV2 request;
+              request.object_uuid = source_input.object_uuid;
+              request.geometry_descriptor_uuid =
+                  source_input.spatial_geometry_descriptor_uuid;
+              request.geometry_type_uuid =
+                  source_input.spatial_geometry_type_uuid;
+              request.crs_uuid = source_input.spatial_crs_uuid;
+              request.crs_generation = source_input.spatial_crs_generation;
+              request.source_generation = source_input.descriptor_generation;
+              request.catalog_generation = source_input.catalog_generation;
+              request.policy_generation = source_input.policy_generation;
+              request.security_generation = source_input.security_generation;
+              request.resource_generation = source_input.resource_generation;
+              request.route_generation = context.optimizer_route_generation;
+              request.statement_context = source_input.mga_statement_context;
+              request.current_statement_context =
+                  source_input.mga_statement_context;
+              request.source_rows = std::move(request_rows);
+              request.maximum_rows = source_input.maximum_rows;
+              request.maximum_memory_bytes =
+                  source_input.maximum_memory_bytes - retained_bytes;
+              request.cancellation_requested = [](const void* context) {
+                return (*static_cast<const std::function<bool()>*>(context))();
+              };
+              request.cancellation_context = &cancellation_requested;
+              request.security_admitted = true;
+              request.exact_scan_fallback_available = true;
+              return request;
+            } catch (const std::bad_alloc&) {
+              return std::nullopt;
+            } catch (const std::length_error&) {
+              return std::nullopt;
+            }
+          };
+          auto current_source_rows = std::move(source_rows);
           std::vector<api::nosql::SpatialResultRowV1> rows;
+          std::optional<api::nosql::SpatialPoint2dV1> match_query_point;
           if (has_match) {
             const auto match = operation_for("SPATIAL_MATCH");
             const auto predicate = expression_for(match->child_expression_ids[1]);
-            spatial_request.operation_id = "SPATIAL_MATCH";
-            spatial_request.predicate_id =
-                predicate == dag.expressions.end() ||
-                        !predicate->literal_or_parameter_ref.has_value()
-                    ? std::string{}
-                    : *predicate->literal_or_parameter_ref;
-            spatial_request.query_crs_uuid = source_input.spatial_crs_uuid;
+            auto match_request = make_spatial_request(
+                std::move(current_source_rows), 0);
+            if (!match_request.has_value()) {
+              return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                          "spatial match byte grant is unavailable");
+            }
+            try {
+              match_request->operation_id = "SPATIAL_MATCH";
+              match_request->predicate_id =
+                  predicate == dag.expressions.end() ||
+                          !predicate->literal_or_parameter_ref.has_value()
+                      ? std::string{}
+                      : *predicate->literal_or_parameter_ref;
+              match_request->query_crs_uuid = source_input.spatial_crs_uuid;
+            } catch (const std::bad_alloc&) {
+              return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                          "spatial match binding allocation was refused");
+            } catch (const std::length_error&) {
+              return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                          "spatial match binding length was refused");
+            }
             if (!evaluate_point(
                     match, api::EngineCanonicalExpressionConsumer::filter,
-                    &spatial_request.encoded_query_point)) {
-              return fail("SB_MODEL_SPATIAL_COORDINATE_INVALID_V1",
+                    &match_request->encoded_query_point)) {
+              return fail(spatial_evaluation_resource_refused
+                              ? "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1"
+                              : "SB_MODEL_SPATIAL_COORDINATE_INVALID_V1",
                           "SPATIAL_MATCH POINT evaluation failed");
             }
-            auto matched =
-                api::nosql::ExecuteSpatialNativeV1(spatial_request);
-            if (!matched.accepted || !matched.root_publishable) {
-              return fail(matched.diagnostic_id, matched.detail);
+            if (match_request->predicate_id != "INTERSECTS" &&
+                match_request->predicate_id != "CONTAINS") {
+              return fail("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                          "SPATIAL_MATCH predicate is not admitted");
             }
-            rows = std::move(matched.rows);
-            if (has_nearest) {
-              source_rows.clear();
-              source_rows.reserve(rows.size());
-              for (auto& row : rows) {
-                source_rows.push_back(
-                    {std::move(row.row_uuid),
-                     std::move(row.encoded_point),
-                     std::move(row.crs_uuid)});
+            std::array<char, 24> retained_match_query_bytes{};
+            const bool match_query_bytes_retained =
+                match_request->encoded_query_point.size() ==
+                retained_match_query_bytes.size();
+            if (match_query_bytes_retained) {
+              std::ranges::transform(
+                  match_request->encoded_query_point,
+                  retained_match_query_bytes.begin(),
+                  [](const std::uint8_t byte) {
+                    return static_cast<char>(byte);
+                  });
+            }
+            const auto match_source_count =
+                match_request->source_rows.size();
+            const auto match_memory_grant =
+                match_request->maximum_memory_bytes;
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial match execution was cancelled before dispatch");
+            }
+            auto matched =
+                api::nosql::ExecuteSpatialNativeV2(
+                    std::move(*match_request));
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial match execution was cancelled after dispatch");
+            }
+            if (!matched.accepted || !matched.root_publishable) {
+              return fail(matched.diagnostic_id.empty()
+                              ? "SB_MODEL_TYPED_EXCHANGE_INVALID_V1"
+                              : matched.diagnostic_id,
+                          matched.detail.empty()
+                              ? "spatial match execution did not publish"
+                              : matched.detail);
+            }
+            if (!match_query_bytes_retained ||
+                !api::nosql::DecodeSpatialPoint2dV1(
+                    std::string_view(retained_match_query_bytes.data(),
+                                     retained_match_query_bytes.size()),
+                    &match_query_point.emplace())) {
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "accepted spatial match query point changed");
+            }
+            if (!matched.exact_fallback_selected ||
+                !matched.candidate_recheck_complete ||
+                !matched.mga_recheck_complete ||
+                matched.cancellation_observed ||
+                matched.cancellation_probe_failed ||
+                !matched.memory_receipt_complete ||
+                matched.current_live_memory_bytes >
+                    matched.peak_live_memory_bytes ||
+                matched.peak_live_memory_bytes >
+                    matched.memory_grant_bytes ||
+                matched.memory_grant_bytes != match_memory_grant ||
+                matched.physical_operator_id !=
+                    "SPATIAL_EXACT_GEOMETRY_SCAN_V1" ||
+                matched.diagnostic_id != "SB_EXECUTOR_OK" ||
+                !matched.detail.empty() ||
+                match_source_count != read.visible_rows.size() ||
+                match_source_count > source_input.maximum_rows ||
+                matched.rows.size() > match_source_count ||
+                matched.rows.size() > source_input.maximum_rows ||
+                (matched.rows.size() != 0 &&
+                 public_columns.size() >
+                     source_input.maximum_cells / matched.rows.size())) {
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "spatial match execution receipt changed");
+            }
+            std::uint64_t match_api_peak = 0;
+            if (!CheckedAdd(*visible_row_memory,
+                            matched.peak_live_memory_bytes,
+                            &match_api_peak) ||
+                match_api_peak > source_input.maximum_memory_bytes) {
+              return fail(
+                  "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "spatial match retained rows and API peak exceed the source memory grant");
+            }
+            columnar_runtime_memory_receipt->peak_live_memory_bytes =
+                std::max(columnar_runtime_memory_receipt
+                             ->peak_live_memory_bytes,
+                         match_api_peak);
+            std::size_t matched_ordinal = 0;
+            for (std::size_t source_ordinal = 0;
+                 source_ordinal < read.visible_rows.size();
+                 ++source_ordinal) {
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "spatial match receipt replay was cancelled");
               }
-              spatial_request.source_rows = std::move(source_rows);
+              const auto& retained_row = read.visible_rows[source_ordinal];
+              const auto* retained_row_uuid =
+                  value_for(retained_row, "row_uuid");
+              const auto* retained_point =
+                  value_for(retained_row, "spatial_value");
+              const auto* retained_crs = value_for(retained_row, "crs_uuid");
+              api::nosql::SpatialPoint2dV1 retained_decoded_point;
+              if (retained_row_uuid == nullptr || retained_point == nullptr ||
+                  retained_crs == nullptr ||
+                  retained_row.row_uuid != *retained_row_uuid ||
+                  *retained_crs != source_input.spatial_crs_uuid ||
+                  !api::nosql::DecodeSpatialPoint2dV1(
+                      std::string_view(*retained_point),
+                      &retained_decoded_point)) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "spatial match source cohort changed");
+              }
+              if (retained_decoded_point.x != match_query_point->x ||
+                  retained_decoded_point.y != match_query_point->y) {
+                continue;
+              }
+              if (matched_ordinal >= matched.rows.size()) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "spatial match result omitted an exact match");
+              }
+              const auto& actual = matched.rows[matched_ordinal++];
+              if (actual.row_uuid != retained_row.row_uuid ||
+                  actual.encoded_point.size() != retained_point->size() ||
+                  !std::ranges::equal(
+                      actual.encoded_point, *retained_point,
+                      [](const std::uint8_t actual_byte,
+                         const char retained_byte) {
+                        return actual_byte ==
+                               static_cast<std::uint8_t>(retained_byte);
+                      }) ||
+                  actual.crs_uuid != *retained_crs ||
+                  actual.crs_uuid != source_input.spatial_crs_uuid ||
+                  !actual.predicate_truth || actual.distance != 0.0 ||
+                  std::signbit(actual.distance)) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "spatial match result changed before publication");
+              }
+            }
+            if (matched_ordinal != matched.rows.size()) {
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "spatial match result added or reordered a row");
+            }
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial match execution was cancelled before handoff");
+            }
+            if (has_nearest) {
+              std::uint64_t handoff_row_bytes = 0;
+              std::uint64_t handoff_profile_bytes = 0;
+              std::uint64_t handoff_peak = 0;
+              if (!CheckedMultiply(matched.rows.size(),
+                                   sizeof(api::nosql::SpatialSourceRowV1),
+                                   &handoff_row_bytes) ||
+                  !CheckedMultiply(
+                      matched.rows.size(),
+                      api::nosql::kSpatialNativeCartesianPoint2dV1.size() + 1,
+                      &handoff_profile_bytes) ||
+                  !CheckedAdd(*visible_row_memory,
+                              matched.current_live_memory_bytes,
+                              &handoff_peak) ||
+                  !CheckedAdd(handoff_peak, handoff_row_bytes,
+                              &handoff_peak) ||
+                  !CheckedAdd(handoff_peak, handoff_profile_bytes,
+                              &handoff_peak) ||
+                  handoff_peak > source_input.maximum_memory_bytes) {
+                return fail(
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "spatial match-to-nearest handoff exceeds the source memory grant");
+              }
+              try {
+                std::vector<api::nosql::SpatialSourceRowV1>{}.swap(
+                    current_source_rows);
+                current_source_rows.reserve(matched.rows.size());
+                for (auto& row : matched.rows) {
+                  if (cancellation_requested()) {
+                    return fail(
+                        cancellation_diagnostic(),
+                        "spatial match-to-nearest handoff was cancelled");
+                  }
+                  current_source_rows.push_back(
+                      {std::move(row.row_uuid),
+                       std::move(row.encoded_point),
+                       std::move(row.crs_uuid)});
+                }
+              } catch (const std::bad_alloc&) {
+                return fail(
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "spatial match-to-nearest handoff allocation was refused");
+              } catch (const std::length_error&) {
+                return fail(
+                    "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                    "spatial match-to-nearest handoff length was refused");
+              }
+              columnar_runtime_memory_receipt->peak_live_memory_bytes =
+                  std::max(columnar_runtime_memory_receipt
+                               ->peak_live_memory_bytes,
+                           handoff_peak);
+            } else {
+              rows = std::move(matched.rows);
             }
           }
           if (has_nearest) {
             const auto nearest = operation_for("SPATIAL_NEAREST");
             const auto top_k = expression_for(nearest->child_expression_ids[3]);
-            spatial_request.operation_id = "SPATIAL_NEAREST";
-            spatial_request.predicate_id.clear();
-            spatial_request.query_crs_uuid = source_input.spatial_crs_uuid;
+            auto nearest_request = make_spatial_request(
+                std::move(current_source_rows), 0);
+            if (!nearest_request.has_value()) {
+              return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                          "spatial nearest byte grant is unavailable");
+            }
+            try {
+              nearest_request->operation_id = "SPATIAL_NEAREST";
+              nearest_request->predicate_id.clear();
+              nearest_request->query_crs_uuid =
+                  source_input.spatial_crs_uuid;
+            } catch (const std::bad_alloc&) {
+              return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                          "spatial nearest binding allocation was refused");
+            } catch (const std::length_error&) {
+              return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                          "spatial nearest binding length was refused");
+            }
             if (!evaluate_point(
                     nearest,
                     api::EngineCanonicalExpressionConsumer::projection,
-                    &spatial_request.encoded_query_point) ||
+                    &nearest_request->encoded_query_point) ||
                 top_k == dag.expressions.end() ||
                 !top_k->literal_or_parameter_ref.has_value()) {
-              return fail("SB_MODEL_SPATIAL_COORDINATE_INVALID_V1",
+              return fail(spatial_evaluation_resource_refused
+                              ? "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1"
+                              : "SB_MODEL_SPATIAL_COORDINATE_INVALID_V1",
                           "SPATIAL_NEAREST binding is incomplete");
             }
             const auto parsed = std::from_chars(
                 top_k->literal_or_parameter_ref->data(),
                 top_k->literal_or_parameter_ref->data() +
                     top_k->literal_or_parameter_ref->size(),
-                spatial_request.top_k);
+                nearest_request->top_k);
             if (parsed.ec != std::errc{} ||
                 parsed.ptr != top_k->literal_or_parameter_ref->data() +
-                                  top_k->literal_or_parameter_ref->size()) {
+                                  top_k->literal_or_parameter_ref->size() ||
+                nearest_request->top_k == 0 ||
+                nearest_request->top_k > 4096) {
               return fail("SB_MODEL_SPATIAL_TOP_K_REFUSED_V1",
                           "SPATIAL_NEAREST top-k is invalid");
             }
+            std::array<char, 24> retained_nearest_query_bytes{};
+            const bool nearest_query_bytes_retained =
+                nearest_request->encoded_query_point.size() ==
+                retained_nearest_query_bytes.size();
+            if (nearest_query_bytes_retained) {
+              std::ranges::transform(
+                  nearest_request->encoded_query_point,
+                  retained_nearest_query_bytes.begin(),
+                  [](const std::uint8_t byte) {
+                    return static_cast<char>(byte);
+                  });
+            }
+            const auto nearest_source_count =
+                nearest_request->source_rows.size();
+            const auto nearest_top_k = nearest_request->top_k;
+            const auto nearest_memory_grant =
+                nearest_request->maximum_memory_bytes;
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial nearest execution was cancelled before dispatch");
+            }
             auto nearest_result =
-                api::nosql::ExecuteSpatialNativeV1(spatial_request);
+                api::nosql::ExecuteSpatialNativeV2(
+                    std::move(*nearest_request));
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial nearest execution was cancelled after dispatch");
+            }
             if (!nearest_result.accepted || !nearest_result.root_publishable) {
-              return fail(nearest_result.diagnostic_id, nearest_result.detail);
+              return fail(nearest_result.diagnostic_id.empty()
+                              ? "SB_MODEL_TYPED_EXCHANGE_INVALID_V1"
+                              : nearest_result.diagnostic_id,
+                          nearest_result.detail.empty()
+                              ? "spatial nearest execution did not publish"
+                              : nearest_result.detail);
+            }
+            api::nosql::SpatialPoint2dV1 nearest_query_point;
+            if (!nearest_query_bytes_retained ||
+                !api::nosql::DecodeSpatialPoint2dV1(
+                    std::string_view(retained_nearest_query_bytes.data(),
+                                     retained_nearest_query_bytes.size()),
+                    &nearest_query_point)) {
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "accepted spatial nearest query point changed");
+            }
+            std::size_t eligible_count = 0;
+            for (const auto& retained_row : read.visible_rows) {
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "spatial nearest eligibility replay was cancelled");
+              }
+              const auto* retained_point =
+                  value_for(retained_row, "spatial_value");
+              api::nosql::SpatialPoint2dV1 source_point;
+              if (retained_point == nullptr ||
+                  !api::nosql::DecodeSpatialPoint2dV1(
+                      std::string_view(*retained_point), &source_point)) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "spatial nearest retained source point changed");
+              }
+              if (match_query_point.has_value() &&
+                  (source_point.x != match_query_point->x ||
+                   source_point.y != match_query_point->y)) {
+                continue;
+              }
+              ++eligible_count;
+            }
+            const auto expected_count = std::min<std::size_t>(
+                eligible_count, nearest_top_k);
+            if (!nearest_result.exact_fallback_selected ||
+                !nearest_result.candidate_recheck_complete ||
+                !nearest_result.mga_recheck_complete ||
+                nearest_result.cancellation_observed ||
+                nearest_result.cancellation_probe_failed ||
+                !nearest_result.memory_receipt_complete ||
+                nearest_result.current_live_memory_bytes >
+                    nearest_result.peak_live_memory_bytes ||
+                nearest_result.peak_live_memory_bytes >
+                    nearest_result.memory_grant_bytes ||
+                nearest_result.memory_grant_bytes !=
+                    nearest_memory_grant ||
+                nearest_result.physical_operator_id !=
+                    "SPATIAL_EXACT_GEOMETRY_SCAN_V1" ||
+                nearest_result.diagnostic_id != "SB_EXECUTOR_OK" ||
+                !nearest_result.detail.empty() ||
+                nearest_source_count != eligible_count ||
+                nearest_source_count > source_input.maximum_rows ||
+                nearest_result.rows.size() != expected_count ||
+                nearest_result.rows.size() > source_input.maximum_rows ||
+                nearest_result.rows.size() > nearest_top_k ||
+                (nearest_result.rows.size() != 0 &&
+                 public_columns.size() >
+                     source_input.maximum_cells /
+                         nearest_result.rows.size())) {
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "spatial nearest execution receipt changed");
+            }
+            std::uint64_t nearest_api_peak = 0;
+            if (!CheckedAdd(*visible_row_memory,
+                            nearest_result.peak_live_memory_bytes,
+                            &nearest_api_peak) ||
+                nearest_api_peak > source_input.maximum_memory_bytes) {
+              return fail(
+                  "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "spatial nearest retained rows and API peak exceed the source memory grant");
+            }
+            struct ExpectedNearestRowV1 {
+              std::size_t visible_ordinal{0};
+              double distance{0.0};
+            };
+            const auto nearest_key_less =
+                [&](const ExpectedNearestRowV1& left,
+                    const ExpectedNearestRowV1& right) {
+                  const auto& left_uuid =
+                      read.visible_rows[left.visible_ordinal].row_uuid;
+                  const auto& right_uuid =
+                      read.visible_rows[right.visible_ordinal].row_uuid;
+                  return left.distance < right.distance ||
+                         (left.distance == right.distance &&
+                          left_uuid < right_uuid);
+                };
+            std::uint64_t expected_nearest_bytes = 0;
+            std::uint64_t nearest_oracle_peak = 0;
+            if (!CheckedMultiply(expected_count,
+                                 sizeof(ExpectedNearestRowV1),
+                                 &expected_nearest_bytes) ||
+                !CheckedAdd(*visible_row_memory,
+                            nearest_result.current_live_memory_bytes,
+                            &nearest_oracle_peak) ||
+                !CheckedAdd(nearest_oracle_peak,
+                            expected_nearest_bytes,
+                            &nearest_oracle_peak) ||
+                nearest_oracle_peak > source_input.maximum_memory_bytes) {
+              return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                          "spatial nearest verification exceeds the source memory grant");
+            }
+            std::unique_ptr<ExpectedNearestRowV1[]> expected_nearest;
+            std::size_t expected_nearest_size = 0;
+            try {
+              if (expected_count != 0) {
+                expected_nearest =
+                    std::make_unique<ExpectedNearestRowV1[]>(expected_count);
+              }
+              for (std::size_t visible_ordinal = 0;
+                   visible_ordinal < read.visible_rows.size();
+                   ++visible_ordinal) {
+                if (cancellation_requested()) {
+                  return fail(
+                      cancellation_diagnostic(),
+                      "spatial nearest oracle construction was cancelled");
+                }
+                api::nosql::SpatialPoint2dV1 source_point;
+                const auto& retained_row =
+                    read.visible_rows[visible_ordinal];
+                const auto* retained_point =
+                    value_for(retained_row, "spatial_value");
+                if (retained_point == nullptr ||
+                    !api::nosql::DecodeSpatialPoint2dV1(
+                        std::string_view(*retained_point), &source_point)) {
+                  return fail("SB_MODEL_SPATIAL_COORDINATE_INVALID_V1",
+                              "spatial nearest source point changed");
+                }
+                if (match_query_point.has_value() &&
+                    (source_point.x != match_query_point->x ||
+                     source_point.y != match_query_point->y)) {
+                  continue;
+                }
+                const auto distance = std::hypot(
+                    source_point.x - nearest_query_point.x,
+                    source_point.y - nearest_query_point.y);
+                if (!std::isfinite(distance) || distance < 0.0) {
+                  return fail("SB_MODEL_SPATIAL_COORDINATE_INVALID_V1",
+                              "spatial nearest oracle distance overflowed");
+                }
+                ExpectedNearestRowV1 candidate{visible_ordinal, distance};
+                if (expected_nearest_size < expected_count) {
+                  expected_nearest[expected_nearest_size++] = candidate;
+                  std::push_heap(expected_nearest.get(),
+                                 expected_nearest.get() +
+                                     expected_nearest_size,
+                                 nearest_key_less);
+                } else if (expected_count != 0 &&
+                           nearest_key_less(candidate,
+                                            expected_nearest[0])) {
+                  std::pop_heap(expected_nearest.get(),
+                                expected_nearest.get() +
+                                    expected_nearest_size,
+                                nearest_key_less);
+                  expected_nearest[expected_nearest_size - 1] = candidate;
+                  std::push_heap(expected_nearest.get(),
+                                 expected_nearest.get() +
+                                     expected_nearest_size,
+                                 nearest_key_less);
+                }
+              }
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "spatial nearest ordering was cancelled");
+              }
+              if (expected_nearest_size != 0) {
+                std::sort_heap(expected_nearest.get(),
+                               expected_nearest.get() +
+                                   expected_nearest_size,
+                               nearest_key_less);
+              }
+              for (std::size_t ordinal = 0;
+                   ordinal < expected_nearest_size; ++ordinal) {
+                if (cancellation_requested()) {
+                  return fail(cancellation_diagnostic(),
+                              "spatial nearest receipt replay was cancelled");
+                }
+                const auto& expected = expected_nearest[ordinal];
+                const auto& retained_row =
+                    read.visible_rows[expected.visible_ordinal];
+                const auto* retained_point =
+                    value_for(retained_row, "spatial_value");
+                const auto* retained_crs =
+                    value_for(retained_row, "crs_uuid");
+                const auto& actual = nearest_result.rows[ordinal];
+                if (retained_point == nullptr || retained_crs == nullptr ||
+                    actual.row_uuid != retained_row.row_uuid ||
+                    actual.encoded_point.size() != retained_point->size() ||
+                    !std::ranges::equal(
+                        actual.encoded_point, *retained_point,
+                        [](const std::uint8_t actual_byte,
+                           const char retained_byte) {
+                          return actual_byte ==
+                                 static_cast<std::uint8_t>(retained_byte);
+                        }) ||
+                    actual.crs_uuid != *retained_crs ||
+                    actual.crs_uuid != source_input.spatial_crs_uuid ||
+                    actual.predicate_truth ||
+                    actual.distance != expected.distance ||
+                    std::signbit(actual.distance) !=
+                        std::signbit(expected.distance)) {
+                  return fail(
+                      "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                      "spatial nearest result changed before publication");
+                }
+              }
+            } catch (const std::bad_alloc&) {
+              return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                          "spatial nearest verification allocation was refused");
+            } catch (const std::length_error&) {
+              return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                          "spatial nearest verification length was refused");
+            }
+            columnar_runtime_memory_receipt->peak_live_memory_bytes =
+                std::max({columnar_runtime_memory_receipt
+                              ->peak_live_memory_bytes,
+                          nearest_api_peak, nearest_oracle_peak});
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial nearest execution was cancelled before handoff");
             }
             rows = std::move(nearest_result.rows);
           } else if (!has_match) {
-            spatial_request.operation_id = "SPATIAL_SOURCE";
-            auto sourced =
-                api::nosql::ExecuteSpatialNativeV1(spatial_request);
-            if (!sourced.accepted || !sourced.root_publishable) {
-              return fail(sourced.diagnostic_id, sourced.detail);
+            auto source_request = make_spatial_request(
+                std::move(current_source_rows), 0);
+            if (!source_request.has_value()) {
+              return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                          "spatial source byte receipt is unavailable");
             }
+            try {
+              source_request->operation_id = "SPATIAL_SOURCE";
+            } catch (const std::bad_alloc&) {
+              return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                          "spatial source binding allocation was refused");
+            } catch (const std::length_error&) {
+              return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                          "spatial source binding length was refused");
+            }
+            const auto source_memory_grant =
+                source_request->maximum_memory_bytes;
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial source execution was cancelled before dispatch");
+            }
+            auto sourced =
+                api::nosql::ExecuteSpatialNativeV2(
+                    std::move(*source_request));
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial source execution was cancelled after dispatch");
+            }
+            if (!sourced.accepted || !sourced.root_publishable) {
+              return fail(sourced.diagnostic_id.empty()
+                              ? "SB_MODEL_TYPED_EXCHANGE_INVALID_V1"
+                              : sourced.diagnostic_id,
+                          sourced.detail.empty()
+                              ? "spatial source execution did not publish"
+                              : sourced.detail);
+            }
+            if (!sourced.exact_fallback_selected ||
+                !sourced.candidate_recheck_complete ||
+                !sourced.mga_recheck_complete ||
+                sourced.cancellation_observed ||
+                sourced.cancellation_probe_failed ||
+                !sourced.memory_receipt_complete ||
+                sourced.current_live_memory_bytes >
+                    sourced.peak_live_memory_bytes ||
+                sourced.peak_live_memory_bytes >
+                    sourced.memory_grant_bytes ||
+                sourced.memory_grant_bytes != source_memory_grant ||
+                sourced.physical_operator_id !=
+                    "SPATIAL_EXACT_GEOMETRY_SCAN_V1" ||
+                sourced.diagnostic_id != "SB_EXECUTOR_OK" ||
+                !sourced.detail.empty() ||
+                sourced.rows.size() != read.visible_rows.size() ||
+                sourced.rows.size() > source_input.maximum_rows ||
+                (sourced.rows.size() != 0 &&
+                 public_columns.size() >
+                     source_input.maximum_cells / sourced.rows.size())) {
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "spatial source execution receipt changed");
+            }
+            std::uint64_t retained_api_peak_memory = 0;
+            if (!CheckedAdd(*visible_row_memory,
+                            sourced.peak_live_memory_bytes,
+                            &retained_api_peak_memory) ||
+                retained_api_peak_memory >
+                    source_input.maximum_memory_bytes) {
+              return fail(
+                  "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "spatial source retained rows and API peak exceed the source memory grant");
+            }
+            for (std::size_t ordinal = 0;
+                 ordinal < read.visible_rows.size(); ++ordinal) {
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "spatial source receipt replay was cancelled");
+              }
+              const auto& retained_row = read.visible_rows[ordinal];
+              const auto* retained_row_uuid =
+                  value_for(retained_row, "row_uuid");
+              const auto* retained_point =
+                  value_for(retained_row, "spatial_value");
+              const auto* retained_crs =
+                  value_for(retained_row, "crs_uuid");
+              const auto& actual = sourced.rows[ordinal];
+              if (retained_row_uuid == nullptr || retained_point == nullptr ||
+                  retained_crs == nullptr ||
+                  actual.row_uuid != retained_row.row_uuid ||
+                  actual.row_uuid != *retained_row_uuid ||
+                  actual.encoded_point.size() != retained_point->size() ||
+                  !std::ranges::equal(
+                      actual.encoded_point, *retained_point,
+                      [](const std::uint8_t actual_byte,
+                         const char retained_byte) {
+                        return actual_byte ==
+                               static_cast<std::uint8_t>(retained_byte);
+                      }) ||
+                  actual.crs_uuid != *retained_crs ||
+                  actual.crs_uuid != source_input.spatial_crs_uuid ||
+                  actual.predicate_truth || actual.distance != 0.0 ||
+                  std::signbit(actual.distance)) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "spatial source result changed before publication");
+              }
+            }
+            const auto provider_build_memory =
+                Rcp079SpatialProviderBuildAdditionalBytesV1(
+                    sourced.rows, public_columns, source_input,
+                    property_uuid, security_receipt_uuid,
+                    has_match, has_nearest);
+            const auto retained_result_rows_memory =
+                Rcp079SpatialResultRowsLogicalMemoryBytesV1(sourced.rows);
+            std::uint64_t provider_build_peak_memory = 0;
+            if (!provider_build_memory.has_value() ||
+                !retained_result_rows_memory.has_value() ||
+                !CheckedAdd(*visible_row_memory,
+                            *retained_result_rows_memory,
+                            &provider_build_peak_memory) ||
+                !CheckedAdd(provider_build_peak_memory,
+                            *provider_build_memory,
+                            &provider_build_peak_memory) ||
+                provider_build_peak_memory >
+                    source_input.maximum_memory_bytes) {
+              return fail(
+                  "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                  "spatial provider materialization exceeds the source memory grant");
+            }
+            columnar_runtime_memory_receipt->peak_live_memory_bytes =
+                std::max({spatial_preflight_peak_memory,
+                          retained_api_peak_memory,
+                          provider_build_peak_memory});
             rows = std::move(sourced.rows);
           }
-          batch.properties.ordering_id =
-              has_nearest ? "spatial_distance_row_uuid_ascending_v1"
-                          : "fixture_order";
-          batch.batch.columns = public_columns;
-          for (auto& row : rows) {
-            exec::DescriptorTuple tuple;
-            for (std::size_t ordinal = 0; ordinal < public_columns.size();
-                 ++ordinal) {
-              api::EngineTypedValue value;
-              value.descriptor = public_columns[ordinal].descriptor;
-              value.setState(api::EngineValueState::value);
-              if (ordinal == 0) value.encoded_value = row.row_uuid;
-              if (ordinal == 1) {
-                value.binary_value = std::move(row.encoded_point);
+          const auto spatial_provider_build_memory =
+              Rcp079SpatialProviderBuildAdditionalBytesV1(
+                  rows, public_columns, source_input, property_uuid,
+                  security_receipt_uuid, has_match, has_nearest);
+          const auto retained_spatial_rows_memory =
+              Rcp079SpatialResultRowsLogicalMemoryBytesV1(rows);
+          std::uint64_t spatial_provider_peak_memory = 0;
+          if (!spatial_provider_build_memory.has_value() ||
+              !retained_spatial_rows_memory.has_value() ||
+              !CheckedAdd(*visible_row_memory,
+                          *retained_spatial_rows_memory,
+                          &spatial_provider_peak_memory) ||
+              !CheckedAdd(spatial_provider_peak_memory,
+                          *spatial_provider_build_memory,
+                          &spatial_provider_peak_memory) ||
+              spatial_provider_peak_memory >
+                  source_input.maximum_memory_bytes) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "spatial provider materialization exceeds the source memory grant");
+          }
+          columnar_runtime_memory_receipt->peak_live_memory_bytes =
+              std::max({columnar_runtime_memory_receipt
+                            ->peak_live_memory_bytes,
+                        spatial_preflight_peak_memory,
+                        spatial_provider_peak_memory});
+          try {
+            batch.properties.ordering_id =
+                has_nearest ? "spatial_distance_row_uuid_ascending_v1"
+                            : "fixture_order";
+            batch.batch.columns = public_columns;
+            batch.batch.rows.reserve(rows.size());
+            batch.ordered_row_identities.reserve(rows.size());
+            for (auto& row : rows) {
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "spatial provider materialization was cancelled");
               }
-              if (ordinal == 2) {
-                value.encoded_value = std::move(row.crs_uuid);
+              exec::DescriptorTuple tuple;
+              tuple.values.reserve(public_columns.size());
+              for (std::size_t ordinal = 0; ordinal < public_columns.size();
+                   ++ordinal) {
+                if (cancellation_requested()) {
+                  return fail(
+                      cancellation_diagnostic(),
+                      "spatial provider value materialization was cancelled");
+                }
+                api::EngineTypedValue value;
+                value.descriptor = public_columns[ordinal].descriptor;
+                value.setState(api::EngineValueState::value);
+                if (ordinal == 0) value.encoded_value = row.row_uuid;
+                if (ordinal == 1) {
+                  value.binary_value = std::move(row.encoded_point);
+                }
+                if (ordinal == 2) {
+                  value.encoded_value = std::move(row.crs_uuid);
+                }
+                if (ordinal == 3 && has_match) value.encoded_value = "true";
+                if ((ordinal == 3 && !has_match && has_nearest) ||
+                    ordinal == 4) {
+                  value.encoded_value = Rcp079CanonicalReal64(row.distance);
+                }
+                tuple.values.push_back(std::move(value));
               }
-              if (ordinal == 3 && has_match) value.encoded_value = "true";
-              if ((ordinal == 3 && !has_match && has_nearest) || ordinal == 4) {
-                value.encoded_value = Rcp079CanonicalReal64(row.distance);
-              }
-              tuple.values.push_back(std::move(value));
+              batch.batch.rows.push_back(std::move(tuple));
+              exec::ModelProviderRowIdentityV1 identity;
+              identity.row_uuid = std::move(row.row_uuid);
+              batch.ordered_row_identities.push_back(std::move(identity));
             }
-            batch.batch.rows.push_back(std::move(tuple));
-            exec::ModelProviderRowIdentityV1 identity;
-            identity.row_uuid = std::move(row.row_uuid);
-            batch.ordered_row_identities.push_back(std::move(identity));
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "spatial provider materialization was cancelled before publication");
+            }
+          } catch (const std::bad_alloc&) {
+            return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                        "spatial provider allocation was refused");
+          } catch (const std::length_error&) {
+            return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                        "spatial provider length was refused");
           }
         } else {
           exec::DescriptorBatch logical_rows;
@@ -51126,6 +59588,10 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           logical_descriptor_ids.reserve(persisted.columns.size());
           std::uint32_t synthetic_descriptor = 0x80000000u;
           for (const auto& column : persisted.columns) {
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "columnar descriptor reconstruction was cancelled");
+            }
             const auto identifier = std::ranges::find_if(
                 dag.expressions, [&](const auto& expression) {
                   return expression.expression_kind ==
@@ -51148,9 +59614,18 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           std::vector<std::string> row_uuids;
           row_uuids.reserve(read.visible_rows.size());
           for (const auto& row : read.visible_rows) {
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "columnar row reconstruction was cancelled");
+            }
             exec::DescriptorTuple tuple;
+            tuple.values.reserve(persisted.columns.size());
             for (std::size_t ordinal = 0; ordinal < persisted.columns.size();
                  ++ordinal) {
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "columnar value reconstruction was cancelled");
+              }
               const auto* encoded = value_for(
                   row, persisted.columns[ordinal].canonical_name_key);
               if (encoded == nullptr) {
@@ -51170,7 +59645,16 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             logical_rows.rows.push_back(std::move(tuple));
             row_uuids.push_back(row.row_uuid);
           }
-          api::nosql::ColumnarExecutionRequestV1 columnar_request;
+          const auto retained_visible_row_memory =
+              Rcp079VisibleRowsMemoryBytesV1(read.visible_rows);
+          if (!retained_visible_row_memory.has_value() ||
+              *retained_visible_row_memory >=
+                  source_input.maximum_memory_bytes) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "columnar retained MGA carriers exhaust the source memory grant");
+          }
+          api::nosql::ColumnarExecutionRequestV2 columnar_request;
           columnar_request.operation_ids = source_input.operation_ids;
           columnar_request.operation_id = source_input.operation_id;
           columnar_request.relation_uuid = source_input.object_uuid;
@@ -51182,9 +59666,19 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           columnar_request.catalog_generation = source_input.catalog_generation;
           columnar_request.summary_generation = source_input.provider_generation;
           columnar_request.maximum_rows = source_input.maximum_rows;
+          columnar_request.maximum_input_cells =
+              static_cast<std::size_t>(maximum_reconstruction_cells);
           columnar_request.maximum_cells = source_input.maximum_cells;
+          columnar_request.maximum_memory_bytes =
+              source_input.maximum_memory_bytes -
+              *retained_visible_row_memory;
+          columnar_request.cancellation_requested = [](const void* context) {
+            return (*static_cast<const std::function<bool()>*>(context))();
+          };
+          columnar_request.cancellation_context = &cancellation_requested;
           columnar_request.security_admitted = true;
           columnar_request.exact_reconstruction_fallback_available = true;
+          std::uint64_t row_binding_peak_structural_bytes = 0;
           if (has_filter) {
             const auto filter = std::ranges::find_if(
                 dag.expressions, [](const auto& expression) {
@@ -51199,11 +59693,16 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             std::string detail;
             if (!PrepareInputRowBinding(
                     dag, filter->child_expression_ids[1],
-                    logical_descriptor_ids, &row_binding, &detail)) {
+                    logical_descriptor_ids, &row_binding, &detail,
+                    &row_binding_peak_structural_bytes)) {
               return fail("SB_MODEL_COLUMNAR_FILTER_INVALID_V1", detail);
             }
             CanonicalRelationalExpressionRuntime runtime(dag);
             for (const auto& row : logical_rows.rows) {
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "columnar filter evaluation was cancelled");
+              }
               api::EngineSqlTruthValue truth =
                   api::EngineSqlTruthValue::unknown;
               if (!runtime.EvaluatePredicateForConsumer(
@@ -51214,6 +59713,26 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               }
               columnar_request.filter_truth_values.push_back(truth);
             }
+          }
+          const auto pre_api_batch_memory =
+              Rcp079DescriptorBatchLogicalMemoryBytesV1(logical_rows);
+          const auto pre_api_request_memory =
+              Rcp079ColumnarRequestNonBatchLogicalMemoryBytesV2(
+                  columnar_request);
+          std::uint64_t pre_api_peak_memory = 0;
+          if (!pre_api_batch_memory.has_value() ||
+              !pre_api_request_memory.has_value() ||
+              !CheckedAdd(*retained_visible_row_memory,
+                          *pre_api_batch_memory, &pre_api_peak_memory) ||
+              !CheckedAdd(pre_api_peak_memory, *pre_api_request_memory,
+                          &pre_api_peak_memory) ||
+              !CheckedAdd(pre_api_peak_memory,
+                          row_binding_peak_structural_bytes,
+                          &pre_api_peak_memory) ||
+              pre_api_peak_memory > source_input.maximum_memory_bytes) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "columnar row binding exceeded the source memory grant");
           }
           columnar_request.logical_rows = std::move(logical_rows);
           if (has_project) {
@@ -51228,6 +59747,10 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
             }
             for (std::size_t index = 1;
                  index < project->child_expression_ids.size(); ++index) {
+              if (cancellation_requested()) {
+                return fail(cancellation_diagnostic(),
+                            "columnar projection binding was cancelled");
+              }
               const auto expression = std::ranges::find_if(
                   dag.expressions, [&](const auto& candidate) {
                     return candidate.expression_id ==
@@ -51252,8 +59775,18 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                       std::distance(persisted.columns.begin(), column)));
             }
           }
+          if (cancellation_requested()) {
+            return fail(cancellation_diagnostic(),
+                        "columnar execution was cancelled before reconstruction");
+          }
           auto reconstructed =
-              api::nosql::ExecuteColumnarLogicalV1(columnar_request);
+              api::nosql::ExecuteColumnarLogicalV2(
+                  std::move(columnar_request));
+          if (model_cancellation_probe_failed->load(
+                  std::memory_order_relaxed)) {
+            return fail("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+                        "columnar cancellation probe failed");
+          }
           if (!reconstructed.accepted || !reconstructed.root_publishable ||
               reconstructed.batch.columns.size() != public_columns.size()) {
             return fail(reconstructed.diagnostic_id.empty()
@@ -51263,23 +59796,206 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                             ? "columnar reconstruction did not publish"
                             : reconstructed.detail);
           }
+          if (!reconstructed.exact_fallback_selected ||
+              !reconstructed.exact_reconstruction_complete ||
+              !reconstructed.predicate_recheck_complete ||
+              !reconstructed.mga_recheck_complete ||
+              reconstructed.cancellation_observed ||
+              reconstructed.cancellation_probe_failed ||
+              !reconstructed.memory_receipt_complete ||
+              reconstructed.current_live_memory_bytes >
+                  reconstructed.peak_live_memory_bytes ||
+              reconstructed.peak_live_memory_bytes >
+                  reconstructed.memory_grant_bytes ||
+              reconstructed.memory_grant_bytes !=
+                  source_input.maximum_memory_bytes -
+                      *retained_visible_row_memory ||
+              reconstructed.physical_operator_id !=
+                  "COLUMNAR_ROW_RECONSTRUCTION_SCAN_V1" ||
+              !reconstructed.fallback_reason_id.empty() ||
+              reconstructed.diagnostic_id != "SB_EXECUTOR_OK" ||
+              !reconstructed.detail.empty() ||
+              !std::ranges::equal(
+                  reconstructed.batch.columns, public_columns,
+                  [](const auto& actual, const auto& expected) {
+                    return Rcp079ExactExecutorColumnV1(actual, expected);
+                  })) {
+            return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "columnar result descriptor carrier changed");
+          }
+          std::uint64_t api_peak_with_retained_rows = 0;
+          if (!CheckedAdd(*retained_visible_row_memory,
+                          reconstructed.peak_live_memory_bytes,
+                          &api_peak_with_retained_rows) ||
+              api_peak_with_retained_rows >
+                  source_input.maximum_memory_bytes) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "columnar reconstruction peak exceeded the source memory grant");
+          }
+          const bool source_only =
+              source_input.operation_ids.size() == 1 &&
+              source_input.operation_ids.front() == "COLUMNAR_SOURCE" &&
+              source_input.operation_id == "COLUMNAR_SOURCE";
+          if (source_only &&
+              (reconstructed.row_uuids.size() !=
+                   read.visible_rows.size() ||
+               reconstructed.batch.rows.size() !=
+                   read.visible_rows.size())) {
+            return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                        "columnar source result cardinality changed");
+          }
+          for (const auto& row : reconstructed.batch.rows) {
+            if (cancellation_requested()) {
+              return fail(cancellation_diagnostic(),
+                          "columnar result validation was cancelled");
+            }
+            if (row.values.size() != public_columns.size()) {
+              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "columnar result row width changed");
+            }
+            for (std::size_t ordinal = 0; ordinal < row.values.size();
+                 ++ordinal) {
+              const auto& value = row.values[ordinal];
+              const exec::ExecutorColumnDescriptor value_column{
+                  public_columns[ordinal].stable_name, value.descriptor,
+                  public_columns[ordinal].nullable,
+                  public_columns[ordinal].descriptor_id};
+              const bool exact_state =
+                  (value.state == api::EngineValueState::value &&
+                   !value.is_null) ||
+                  (value.state == api::EngineValueState::sql_null &&
+                   value.is_null && value.encoded_value.empty() &&
+                   value.binary_value.empty() &&
+                   public_columns[ordinal].nullable);
+              if (!exact_state ||
+                  !Rcp079ExactExecutorColumnV1(
+                      value_column, public_columns[ordinal])) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "columnar result value descriptor changed");
+              }
+            }
+          }
+          if (source_only) {
+            for (std::size_t row = 0; row < read.visible_rows.size(); ++row) {
+              const auto& source_row = read.visible_rows[row];
+              const auto& actual_row = reconstructed.batch.rows[row];
+              if (reconstructed.row_uuids[row] != source_row.row_uuid ||
+                  actual_row.values.size() != persisted.columns.size()) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "columnar source row identity or width changed");
+              }
+              for (std::size_t ordinal = 0;
+                   ordinal < persisted.columns.size(); ++ordinal) {
+                const auto* expected_encoded = value_for(
+                    source_row,
+                    persisted.columns[ordinal].canonical_name_key);
+                if (expected_encoded == nullptr) {
+                  return fail(
+                      "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                      "columnar source row omitted a field during receipt replay");
+                }
+                const auto& actual = actual_row.values[ordinal];
+                const bool expected_null = *expected_encoded == "<NULL>";
+                if (!CanonicalQueryEngineDescriptorExactlyEqual(
+                        actual.descriptor,
+                        public_columns[ordinal].descriptor) ||
+                    (expected_null
+                         ? (actual.state !=
+                                api::EngineValueState::sql_null ||
+                            !actual.is_null ||
+                            !actual.encoded_value.empty() ||
+                            !actual.binary_value.empty())
+                         : (actual.state != api::EngineValueState::value ||
+                            actual.is_null ||
+                            actual.encoded_value != *expected_encoded ||
+                            !actual.binary_value.empty()))) {
+                  return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                              "columnar source reconstructed value changed");
+                }
+              }
+            }
+          }
           batch.properties.ordering_id = "fixture_order";
           batch.batch = std::move(reconstructed.batch);
-          for (std::size_t ordinal = 0;
-               ordinal < batch.batch.columns.size(); ++ordinal) {
-            if (batch.batch.columns[ordinal].stable_name !=
-                    public_columns[ordinal].stable_name ||
-                batch.batch.columns[ordinal].descriptor.descriptor_uuid.canonical !=
-                    public_columns[ordinal].descriptor.descriptor_uuid.canonical) {
-              return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                          "columnar result descriptor order changed");
-            }
-            batch.batch.columns[ordinal] = public_columns[ordinal];
-          }
+          batch.ordered_row_identities.reserve(
+              reconstructed.row_uuids.size());
           for (auto& row_uuid : reconstructed.row_uuids) {
             exec::ModelProviderRowIdentityV1 identity;
             identity.row_uuid = std::move(row_uuid);
             batch.ordered_row_identities.push_back(std::move(identity));
+          }
+          if (columnar_runtime_memory_receipt != nullptr) {
+            columnar_runtime_memory_receipt->peak_live_memory_bytes =
+                std::max(pre_api_peak_memory,
+                         api_peak_with_retained_rows);
+          }
+        }
+        try {
+          batch.provider_uuid = source_input.provider_uuid;
+          batch.provider_generation = source_input.provider_generation;
+          batch.selected_alternative_uuid =
+              source_input.selected_alternative_uuid;
+          batch.capability_uuid = source_input.capability_uuid;
+          batch.exact_fallback_selected = true;
+          batch.result_handle_uuid = source_input.result_handle_uuid;
+          batch.causal_counter_id = source_input.causal_counter_id;
+          batch.output_descriptor_ids = source_input.output_descriptor_ids;
+          batch.mga_statement_context = source_input.mga_statement_context;
+          batch.security_receipt_uuid = security_receipt_uuid;
+          batch.properties.property_uuid = property_uuid;
+          batch.properties.partitioning_id = "single_local_partition";
+          batch.properties.uniqueness_id = "row_uuid";
+          batch.properties.exact = true;
+          batch.properties.residual_recheck_complete = true;
+          batch.properties.base_row_mga_recheck_complete = true;
+          batch.properties.security_recheck_complete = true;
+          batch.residual_recheck_complete = true;
+          batch.base_row_mga_recheck_complete = true;
+          batch.security_recheck_complete = true;
+        } catch (const std::bad_alloc&) {
+          return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "model provider metadata allocation was refused");
+        } catch (const std::length_error&) {
+          return fail("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                      "model provider metadata length was refused");
+        }
+        if (columnar_runtime_memory_receipt != nullptr) {
+          const auto provider_memory =
+              Rcp079ModelProviderBatchLogicalMemoryBytesV1(batch);
+          const auto output_memory =
+              Rcp079ProjectedModelSourceOutputLogicalMemoryBytesV1(
+                  source_input, batch);
+          const auto uniqueness_memory =
+              Rcp079ColumnarUniquenessLogicalMemoryBytesV1(
+                  batch.ordered_row_identities);
+          std::uint64_t output_copy_peak = 0;
+          std::uint64_t uniqueness_peak = 0;
+          if (!provider_memory.has_value() || !output_memory.has_value() ||
+              !uniqueness_memory.has_value() ||
+              !CheckedAdd(*provider_memory, *output_memory,
+                          &output_copy_peak) ||
+              !CheckedAdd(*provider_memory, *uniqueness_memory,
+                          &uniqueness_peak)) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "columnar provider/exchange memory receipt overflowed");
+          }
+          columnar_runtime_memory_receipt->provider_logical_memory_bytes =
+              *provider_memory;
+          columnar_runtime_memory_receipt->peak_live_memory_bytes =
+              std::max({columnar_runtime_memory_receipt
+                            ->peak_live_memory_bytes,
+                        output_copy_peak, uniqueness_peak});
+          columnar_runtime_memory_receipt->memory_grant_bytes =
+              source_input.maximum_memory_bytes;
+          columnar_runtime_memory_receipt->complete =
+              columnar_runtime_memory_receipt->peak_live_memory_bytes <=
+              columnar_runtime_memory_receipt->memory_grant_bytes;
+          if (!columnar_runtime_memory_receipt->complete) {
+            return fail(
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+                "columnar provider/exchange peak exceeded the source memory grant");
           }
         }
         provider.ok = true;
@@ -51294,6 +60010,13 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       persisted.descriptor_generation,
       plan::CanonicalLogicalRelationalNodeKind::kRelationSource,
       exec::PhysicalNodeKind::kScan, execution_request);
+  if (leg_capture != nullptr) {
+    leg_capture->exact_output_columns = public_columns;
+    leg_capture->columnar_runtime_memory_receipt =
+        columnar_runtime_memory_receipt;
+    leg_capture->cancellation_probe_failed =
+        model_cancellation_probe_failed;
+  }
   if (leg_capture != nullptr) return result;
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kScan;
@@ -51302,10 +60025,13 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
+  registration.publishes_runtime_observation_v1 =
+      columnar_runtime_memory_receipt != nullptr;
   registration.execute =
       [execution_request, persisted_descriptor_uuid =
                               persisted.descriptor_uuid.canonical,
-       implementation_id](
+       implementation_id, columnar_runtime_memory_receipt,
+       model_cancellation_probe_failed](
           const exec::TypedPhysicalNodeDag& selected_dag,
           const exec::PhysicalNodeRecord& selected_node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -51318,6 +60044,11 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
         step.authority.engine_mga_snapshot_bound = true;
         step.data_access_observation_known = true;
         if (!inputs.empty() || selected_dag.abi_version != 2 ||
+            selected_node.memory_bytes_required == 0 ||
+            selected_node.memory_bytes_required >
+                selected_dag.memory_budget_bytes ||
+            selected_node.memory_bytes_required !=
+                execution_request.input.maximum_memory_bytes ||
             selected_node.implementation_id != implementation_id ||
             selected_node.selected_alternative_uuid !=
                 execution_request.input.selected_alternative_uuid ||
@@ -51340,6 +60071,15 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
         }
         const auto executed = exec::ExecuteModelFamilySourceV1(execution_request);
         step.data_access_observed = executed.data_access_observed;
+        if (model_cancellation_probe_failed->load(
+                std::memory_order_relaxed)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+          step.diagnostic.detail =
+              "model-family cancellation probe failed";
+          return step;
+        }
         if (!executed.accepted || !executed.root_published ||
             !executed.cleanup_complete || executed.cleanup_count != 1 ||
             !executed.output.exact_exchange_validated ||
@@ -51361,6 +60101,30 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                   ? "spatial/columnar source execution did not complete"
                   : executed.detail;
           return step;
+        }
+        if (columnar_runtime_memory_receipt != nullptr) {
+          std::uint64_t current_memory_bytes = 0;
+          if (!columnar_runtime_memory_receipt->complete ||
+              columnar_runtime_memory_receipt
+                      ->provider_logical_memory_bytes == 0 ||
+              columnar_runtime_memory_receipt->memory_grant_bytes !=
+                  selected_node.memory_bytes_required ||
+              columnar_runtime_memory_receipt->peak_live_memory_bytes >
+                  columnar_runtime_memory_receipt->memory_grant_bytes ||
+              !RuntimeMaterializedBatchMemoryBytes(executed.output.batch,
+                                                   &current_memory_bytes) ||
+              current_memory_bytes >
+                  columnar_runtime_memory_receipt->peak_live_memory_bytes) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1";
+            step.diagnostic.detail =
+                "columnar runtime memory receipt is incomplete";
+            return step;
+          }
+          PublishRuntimeMemoryObservation(
+              &step, current_memory_bytes,
+              columnar_runtime_memory_receipt->peak_live_memory_bytes);
         }
         step.result_handle_id = selected_node.physical_node_id;
         step.output_row_count = executed.output.batch.rows.size();
@@ -51548,7 +60312,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   }
   if (std::ranges::count_if(dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kScan;
-      }) == 2) {
+      }) >= 2) {
     return ExecuteCanonicalCurrentHeapJoin(input);
   }
   const auto scan_node = std::ranges::find_if(
@@ -51575,6 +60339,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kAggregate;
       });
+  const auto cte_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.node_kind == api::RelationalDagNodeKind::kCte;
+      });
   const auto limit_node = std::ranges::find_if(
       dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kLimit;
@@ -51584,8 +60352,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   const bool sort_composition = sort_node != dag.nodes.end();
   const bool window_composition = window_node != dag.nodes.end();
   const bool aggregate_composition = aggregate_node != dag.nodes.end();
+  const bool cte_composition = cte_node != dag.nodes.end();
   const bool limit_composition = limit_node != dag.nodes.end();
-  const auto expected_root =
+  const auto expected_terminal =
       limit_composition
           ? limit_node->node_id
           : (aggregate_composition
@@ -51601,12 +60370,29 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                                       : (scan_node == dag.nodes.end()
                                              ? 0
                                              : scan_node->node_id))))));
+  const auto direct_or_cte_input =
+      [&](const api::RelationalDagNode* consumer,
+          const std::uint32_t producer_node_id) {
+        if (consumer == nullptr) return false;
+        if (consumer->input_node_ids ==
+            std::vector<std::uint32_t>{producer_node_id}) {
+          return true;
+        }
+        return cte_composition &&
+               consumer->input_node_ids ==
+                   std::vector<std::uint32_t>{cte_node->node_id} &&
+               cte_node->input_node_ids ==
+                   std::vector<std::uint32_t>{producer_node_id};
+      };
   const auto expected_project_input =
       window_composition
           ? window_node->node_id
           : (sort_composition
                  ? sort_node->node_id
-                 : (filter_composition ? filter_node->node_id : 0));
+                 : (filter_composition
+                        ? filter_node->node_id
+                        : (scan_node == dag.nodes.end() ? 0
+                                                        : scan_node->node_id)));
   const auto expected_limit_input =
       aggregate_composition
           ? aggregate_node->node_id
@@ -51618,6 +60404,25 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                         ? filter_node->node_id
                         : (scan_node == dag.nodes.end() ? 0
                                                        : scan_node->node_id))));
+  const auto cte_input_node =
+      !cte_composition || cte_node->input_node_ids.size() != 1
+          ? dag.nodes.end()
+          : std::ranges::find_if(dag.nodes, [&](const auto& candidate) {
+              return candidate.node_id == cte_node->input_node_ids.front();
+            });
+  const bool cte_is_root =
+      cte_composition && dag.root_node_id == cte_node->node_id &&
+      cte_node->input_node_ids ==
+          std::vector<std::uint32_t>{expected_terminal};
+  const auto cte_consumer_count =
+      cte_composition
+          ? static_cast<std::size_t>(std::ranges::count_if(
+                dag.nodes, [&](const auto& candidate) {
+                  return candidate.node_id != cte_node->node_id &&
+                         candidate.input_node_ids ==
+                             std::vector<std::uint32_t>{cte_node->node_id};
+                }))
+          : std::size_t{0};
   const bool exact_composition =
       scan_node != dag.nodes.end() &&
       dag.nodes.size() ==
@@ -51626,33 +60431,41 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
               static_cast<std::size_t>(window_composition) +
               static_cast<std::size_t>(project_composition) +
               static_cast<std::size_t>(aggregate_composition) +
+              static_cast<std::size_t>(cte_composition) +
               static_cast<std::size_t>(limit_composition) &&
-      dag.root_node_id == expected_root &&
+      (dag.root_node_id == expected_terminal || cte_is_root) &&
+      (!cte_composition ||
+       (cte_input_node != dag.nodes.end() &&
+        cte_node->semantic_variant_id == "cte.bound.v1" &&
+        cte_node->output_descriptor_ids ==
+            cte_input_node->output_descriptor_ids &&
+        cte_node->bound_expression_ids.empty() &&
+        cte_node->required_object_uuids.empty() &&
+        cte_node->values_row_ids.empty() &&
+        cte_node->required_property_uuids.empty() &&
+        cte_node->delivered_property_uuids.empty() &&
+        (cte_is_root ? cte_consumer_count == 0
+                     : cte_consumer_count == 1))) &&
       (!filter_composition ||
-       filter_node->input_node_ids ==
-           std::vector<std::uint32_t>{scan_node->node_id}) &&
+       direct_or_cte_input(&*filter_node, scan_node->node_id)) &&
       (!project_composition ||
-       project_node->input_node_ids ==
-           std::vector<std::uint32_t>{expected_project_input}) &&
+       direct_or_cte_input(&*project_node, expected_project_input)) &&
       (!sort_composition ||
-       sort_node->input_node_ids ==
-           std::vector<std::uint32_t>{
-               filter_composition ? filter_node->node_id
-                                  : scan_node->node_id}) &&
+       direct_or_cte_input(
+           &*sort_node, filter_composition ? filter_node->node_id
+                                           : scan_node->node_id)) &&
       (!window_composition ||
        (sort_composition &&
         window_node->input_node_ids ==
             std::vector<std::uint32_t>{sort_node->node_id} &&
         !aggregate_composition && !limit_composition)) &&
       (!aggregate_composition ||
-       (aggregate_node->input_node_ids ==
-            std::vector<std::uint32_t>{
-                filter_composition ? filter_node->node_id
-                                   : scan_node->node_id} &&
+       (direct_or_cte_input(
+            &*aggregate_node,
+            filter_composition ? filter_node->node_id : scan_node->node_id) &&
         !project_composition && !sort_composition)) &&
       (!limit_composition ||
-       limit_node->input_node_ids ==
-           std::vector<std::uint32_t>{expected_limit_input});
+       direct_or_cte_input(&*limit_node, expected_limit_input));
   if (dag.wire_version != 2 ||
       !exact_composition ||
       scan_node->semantic_variant_id != "relation.source.v1" ||
@@ -51718,7 +60531,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   scan_profile.physical_node_kind = exec::PhysicalNodeKind::kScan;
   scan_profile.transformation_rule_id = "canonical.heap.scan.v1";
   scan_profile.estimated_rows = 1;
-  scan_profile.memory_bytes_required = 1024;
+  scan_profile.memory_bytes_required =
+      planning_request.optimizer_request.resource.memory_budget_bytes;
   scan_profile.minimum_input_count = 0;
   scan_profile.maximum_input_count = 0;
   scan_profile.page_read_sequential_units = 1;
@@ -51808,15 +60622,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       engine_descriptor.descriptor_kind = "scalar";
       const auto persisted_type_name =
           admission.current_relation_projection_type_names[ordinal];
-      const auto persisted_type_id =
-          dt::CanonicalTypeIdFromStableName(persisted_type_name);
-      const bool bounded_signed =
-          persisted_type_id == dt::CanonicalTypeId::int8 ||
-          persisted_type_id == dt::CanonicalTypeId::int16 ||
-          persisted_type_id == dt::CanonicalTypeId::int32 ||
-          persisted_type_id == dt::CanonicalTypeId::int64;
-      engine_descriptor.canonical_type_name =
-          bounded_signed ? "int64" : persisted_type_name;
+      engine_descriptor.canonical_type_name = persisted_type_name;
       engine_descriptor.encoded_descriptor =
           "type_uuid=" + descriptor->type_uuid + ";nullability=" +
           (descriptor->nullability == api::RelationalNullability::kNullable
@@ -52021,9 +60827,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     const bool peer_ranking_window =
         rank_window || dense_rank_window || percent_rank_window ||
         cume_dist_window;
-    const auto ranking_profile =
+    auto ranking_profile =
         aggregate_window
-            ? GlobalAggregateInt64WindowProfileV1(dag,
+            ? GlobalAggregateWindowProfileV1(dag,
                                                    window_node->node_id)
             : value_window
             ? (first_value_window
@@ -52047,6 +60853,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     const bool aggregate_count_window =
         aggregate_window &&
         ranking_profile.builtin_id == "sb.aggregate.count";
+    const bool aggregate_boolean_window =
+        aggregate_window &&
+        (ranking_profile.builtin_id == "sb.aggregate.bool_and" ||
+         ranking_profile.builtin_id == "sb.aggregate.bool_or" ||
+         ranking_profile.builtin_id == "sb.aggregate.every");
+    const bool aggregate_bounded_signed_window =
+        aggregate_window && !aggregate_count_window &&
+        !aggregate_boolean_window;
     const std::string_view ranking_name = ranking_profile.display_name;
     const auto logical_window = std::ranges::find_if(
         graph.nodes, [&](const auto& candidate) {
@@ -52064,6 +60878,37 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                     "object-backed " + std::string(ranking_name) +
                         " authority is unavailable");
     }
+    const auto order_type = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows,
+        [](const auto& row) { return row.stable_name == "int64"; });
+    const auto boolean_type = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows,
+        [](const auto& row) { return row.stable_name == "boolean"; });
+    const auto int8_type = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows,
+        [](const auto& row) { return row.stable_name == "int8"; });
+    const auto int16_type = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows,
+        [](const auto& row) { return row.stable_name == "int16"; });
+    const auto int32_type = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows,
+        [](const auto& row) { return row.stable_name == "int32"; });
+    const auto order_type_uuid =
+        order_type == core_manifest.manifest.descriptor_rows.end()
+            ? std::string{}
+            : scratchbird::core::uuid::UuidToString(
+                  order_type->descriptor_uuid.value);
+    const auto boolean_type_uuid =
+        boolean_type == core_manifest.manifest.descriptor_rows.end()
+            ? std::string{}
+            : scratchbird::core::uuid::UuidToString(
+                  boolean_type->descriptor_uuid.value);
+    if (!aggregate_window &&
+        DirectValueWindowUsesExactTypeV1(
+            dag, window_node->node_id, ranking_profile.builtin_id,
+            boolean_type_uuid)) {
+      ranking_profile.result_type_name = "boolean";
+    }
     const auto result_type = std::ranges::find_if(
         core_manifest.manifest.descriptor_rows, [&](const auto& row) {
           return row.stable_name == ranking_profile.result_type_name;
@@ -52073,11 +60918,26 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             ? std::string{}
             : scratchbird::core::uuid::UuidToString(
                   result_type->descriptor_uuid.value);
+    const std::array<std::string, 4> bounded_signed_type_uuids = {
+        int8_type == core_manifest.manifest.descriptor_rows.end()
+            ? std::string{}
+            : scratchbird::core::uuid::UuidToString(
+                  int8_type->descriptor_uuid.value),
+        int16_type == core_manifest.manifest.descriptor_rows.end()
+            ? std::string{}
+            : scratchbird::core::uuid::UuidToString(
+                  int16_type->descriptor_uuid.value),
+        int32_type == core_manifest.manifest.descriptor_rows.end()
+            ? std::string{}
+            : scratchbird::core::uuid::UuidToString(
+                  int32_type->descriptor_uuid.value),
+        order_type_uuid};
     const auto ranking = PrepareGlobalRankingWindowBinding(
         dag, admission.request.logical_properties, *window_node,
         *logical_window, *logical_sort, heap_sort_binding,
         sort_node->output_descriptor_ids.size(),
-        sort_node->output_descriptor_ids.size(), result_type_uuid, "heap",
+        sort_node->output_descriptor_ids.size(), result_type_uuid,
+        order_type_uuid, boolean_type_uuid, bounded_signed_type_uuids, "heap",
         ranking_profile, project_composition);
     if (!ranking.ok) {
       return refuse(ranking.diagnostic_id, ranking.detail);
@@ -52086,7 +60946,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
                     "object-backed NTILE bucket operand is unresolved");
     }
-    if (value_window &&
+    if (value_window && !ranking.aggregate_count_star &&
         !ranking.navigation_value_column.has_value()) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
                     "object-backed " + std::string(ranking_name) +
@@ -52099,7 +60959,44 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     }
     const auto* output_descriptor = ranking.result_descriptor;
     api::EngineDescriptor descriptor;
-    if (value_window) {
+    if (aggregate_window) {
+      const auto order_column = heap_descriptor_order_terms.front().column;
+      const auto order_relational_descriptor = std::ranges::find_if(
+          dag.descriptors, [&](const auto& candidate) {
+            return order_column < sort_node->output_descriptor_ids.size() &&
+                   candidate.descriptor_id ==
+                       sort_node->output_descriptor_ids[order_column];
+          });
+      if (order_column >=
+              admission.current_relation_projection_descriptors.size() ||
+          order_relational_descriptor == dag.descriptors.end() ||
+          !ExactCanonicalBoundedSignedWindowOrderV1(
+              *order_relational_descriptor,
+              admission.current_relation_projection_descriptors[order_column],
+              order_relational_descriptor->nullability ==
+                  api::RelationalNullability::kNullable,
+              bounded_signed_type_uuids, ranking_profile.function_uuid,
+              output_descriptor->descriptor_uuid,
+              result_type_uuid,
+              heap_sort_binding.ordering_property_uuid,
+              ranking.window_property_uuid,
+              ranking.window_frame_descriptor_uuid) ||
+          (!ranking.aggregate_count_star &&
+           (*ranking.navigation_value_column >=
+                admission.current_relation_projection_descriptors.size() ||
+            (order_column != *ranking.navigation_value_column &&
+             admission.current_relation_projection_descriptors[order_column]
+                     .descriptor_uuid.canonical ==
+                 admission.current_relation_projection_descriptors
+                     [*ranking.navigation_value_column]
+                         .descriptor_uuid.canonical)))) {
+        return refuse(
+            "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+            "object-backed " + std::string(ranking_name) +
+                " order key is not one exact core bounded-signed column");
+      }
+    }
+    if (value_window && !ranking.aggregate_count_star) {
       if (*ranking.navigation_value_column >=
           admission.current_relation_projection_descriptors.size()) {
         return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
@@ -52115,17 +61012,106 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                    sort_node->output_descriptor_ids
                        [*ranking.navigation_value_column];
           });
-      if (!aggregate_count_window) {
+      if (source_relational_descriptor == dag.descriptors.end()) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+                      "object-backed " + std::string(ranking_name) +
+                          " source relational descriptor is unresolved");
+      }
+      if (aggregate_count_window || !aggregate_window) {
+        const auto order_column = heap_descriptor_order_terms.front().column;
+        const auto order_relational_descriptor = std::ranges::find_if(
+            dag.descriptors, [&](const auto& candidate) {
+              return order_column < sort_node->output_descriptor_ids.size() &&
+                     candidate.descriptor_id ==
+                         sort_node->output_descriptor_ids[order_column];
+            });
+        if (order_column >=
+                admission.current_relation_projection_descriptors.size() ||
+            order_relational_descriptor == dag.descriptors.end() ||
+            !ExactCanonicalScalarWindowOperandV1(
+                *source_relational_descriptor, source_descriptor,
+                source_relational_descriptor->nullability ==
+                    api::RelationalNullability::kNullable,
+                ranking_profile.function_uuid,
+                output_descriptor->descriptor_uuid, result_type_uuid,
+                admission.current_relation_projection_descriptors[order_column]
+                    .descriptor_uuid.canonical,
+                order_relational_descriptor->type_uuid,
+                *ranking.navigation_value_column == order_column,
+                heap_sort_binding.ordering_property_uuid,
+                ranking.window_property_uuid,
+                ranking.window_frame_descriptor_uuid) ||
+            (!aggregate_window &&
+             !ExactCanonicalScalarWindowOperandV1(
+                 *order_relational_descriptor,
+                 admission.current_relation_projection_descriptors
+                     [order_column],
+                 order_relational_descriptor->nullability ==
+                     api::RelationalNullability::kNullable,
+                 ranking_profile.function_uuid,
+                 output_descriptor->descriptor_uuid, result_type_uuid,
+                 source_descriptor.descriptor_uuid.canonical,
+                 source_relational_descriptor->type_uuid,
+                 *ranking.navigation_value_column == order_column,
+                 heap_sort_binding.ordering_property_uuid,
+                 ranking.window_property_uuid,
+                 ranking.window_frame_descriptor_uuid))) {
+          return refuse(
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+              "object-backed " + std::string(ranking_name) +
+                  " source/order descriptors are not exact");
+        }
+      }
+      if ((aggregate_boolean_window || aggregate_bounded_signed_window) &&
+          (aggregate_boolean_window
+               ? !ExactCanonicalBooleanWindowSourceV1(
+                     *source_relational_descriptor, source_descriptor,
+                     source_relational_descriptor->nullability ==
+                         api::RelationalNullability::kNullable,
+                     boolean_type_uuid, ranking_profile.function_uuid,
+                     output_descriptor->descriptor_uuid,
+                     heap_sort_binding.ordering_property_uuid,
+                     ranking.window_property_uuid,
+                     ranking.window_frame_descriptor_uuid)
+               : !ExactCanonicalBoundedSignedWindowSourceV1(
+                     *source_relational_descriptor, source_descriptor,
+                     source_relational_descriptor->nullability ==
+                         api::RelationalNullability::kNullable,
+                     bounded_signed_type_uuids,
+                     ranking_profile.function_uuid,
+                     output_descriptor->descriptor_uuid,
+                     heap_sort_binding.ordering_property_uuid,
+                     ranking.window_property_uuid,
+                     ranking.window_frame_descriptor_uuid))) {
+        return refuse(
+            "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
+            "object-backed " + std::string(ranking_name) +
+                " source is not one exact core " +
+                (aggregate_boolean_window ? "boolean" : "bounded-signed") +
+                " column");
+      }
+      if (aggregate_bounded_signed_window) {
+        descriptor.descriptor_uuid.canonical =
+            output_descriptor->descriptor_uuid;
+        descriptor.descriptor_kind = "scalar";
+        descriptor.canonical_type_name = "int64";
+        descriptor.encoded_descriptor =
+            "type_uuid=" + output_descriptor->type_uuid +
+            ";nullability=nullable";
+      } else if (!aggregate_count_window) {
         descriptor = source_descriptor;
         descriptor.descriptor_uuid.canonical =
             output_descriptor->descriptor_uuid;
-        if (source_relational_descriptor == dag.descriptors.end() ||
-            !exec::DeriveCanonicalNullableDescriptorEncoding(&descriptor) ||
+        if (!exec::DeriveCanonicalNullableDescriptorEncoding(&descriptor) ||
             !exec::CanonicalDerivedDescriptorTypeMatches(
                 source_descriptor,
                 source_relational_descriptor->nullability ==
                     api::RelationalNullability::kNullable,
-                descriptor, true)) {
+                descriptor, true) ||
+            (aggregate_boolean_window &&
+             descriptor.encoded_descriptor !=
+                 "type_uuid=" + boolean_type_uuid +
+                     ";nullability=nullable")) {
           return refuse(
               "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-V1",
               "object-backed " + std::string(ranking_name) +
@@ -52207,10 +61193,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         prepared_heap_aggregate_window_order_term =
             heap_descriptor_order_terms.front();
         prepared_heap_aggregate_window_value_column =
-            *ranking.navigation_value_column;
+            ranking.navigation_value_column;
         prepared_heap_aggregate_window_descriptor = {
             aggregate_row->abi_version, aggregate_row->function,
-            aggregate_row->builtin_id, aggregate_row->function_uuid, false};
+            aggregate_row->builtin_id, aggregate_row->function_uuid,
+            ranking.aggregate_count_star};
         prepared_heap_aggregate_window_frame_descriptor_uuid =
             ranking.window_frame_descriptor_uuid;
         heap_aggregate_window_order_term_binding_evidence_uuid =
@@ -52487,6 +61474,34 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          planning_request.optimizer_request.resource.memory_budget_bytes,
          1, 1});
   }
+  std::string cte_implementation_id;
+  std::string cte_capability_uuid;
+  if (cte_composition) {
+    cte_implementation_id =
+        cte_node->shareable ? "cte.bound.materialize.typed.v1"
+                            : "cte.bound.inline.typed.v1";
+    cte_capability_uuid =
+        DerivedCanonicalUuid(identity_scope, "heap-cte.capability");
+    LivePhysicalNodeProfile cte_profile;
+    cte_profile.logical_node_id = cte_node->node_id;
+    cte_profile.implementation_id = cte_implementation_id;
+    cte_profile.capability_uuid = cte_capability_uuid;
+    cte_profile.logical_node_kind =
+        plan::CanonicalLogicalRelationalNodeKind::kCte;
+    cte_profile.physical_node_kind = exec::PhysicalNodeKind::kCte;
+    cte_profile.transformation_rule_id =
+        cte_node->shareable ? "canonical.cte.composed-materialize.v1"
+                            : "canonical.cte.composed-inline.v1";
+    cte_profile.estimated_rows = 1;
+    cte_profile.memory_bytes_required =
+        planning_request.optimizer_request.resource.memory_budget_bytes;
+    cte_profile.minimum_input_count = 1;
+    cte_profile.maximum_input_count = 1;
+    cte_profile.runtime_peak_from_callback_batches = true;
+    cte_profile.runtime_auxiliary_from_first_input_batch =
+        cte_node->shareable;
+    profiles.push_back(std::move(cte_profile));
+  }
   for (auto& profile : profiles) {
     if (!profile.implementation_id.starts_with("scan.heap")) {
       profile.runtime_peak_from_callback_batches = true;
@@ -52498,7 +61513,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   }
   const auto physical = PlanAndPublishLivePhysicalDag(
       planning_request, profiles,
-      limit_composition
+      cte_is_root
+          ? "heap-cte.selected-plan"
+          : limit_composition
           ? "heap-limit.selected-plan"
           : (aggregate_composition
                  ? "heap-aggregate.selected-plan"
@@ -52511,7 +61528,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                                : (filter_composition
                                       ? "heap-filter.selected-plan"
                                       : "heap-scan.selected-plan"))))),
-      limit_composition
+      cte_is_root
+          ? "object-backed heap nonrecursive CTE composition"
+          : limit_composition
           ? "object-backed heap LIMIT composition"
           : (aggregate_composition
                  ? "object-backed heap global aggregate composition"
@@ -52578,7 +61597,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   }
 
   if (filter_composition || sort_composition || window_composition ||
-      project_composition || aggregate_composition || limit_composition) {
+      project_composition || aggregate_composition || cte_composition ||
+      limit_composition) {
     exec::CanonicalHeapPhysicalDagDispatchRequest heap_request;
     heap_request.context = &input.context;
     heap_request.relational_dag = &input.relational_dag;
@@ -52597,7 +61617,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     auto heap_registration =
         exec::BuildCanonicalHeapPhysicalRegistration(heap_request);
     if (!heap_registration.diagnostic.ok ||
-        !heap_registration.registration.has_value()) {
+        !heap_registration.registration.has_value() ||
+        heap_registration.mga_authority == nullptr) {
       return refuse(
           heap_registration.diagnostic.diagnostic_code.empty()
               ? "QOW-DIAG-PACKET7-OBJECT-HEAP-REGISTRATION-V1"
@@ -52636,9 +61657,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
 
     api::CanonicalOptimizerSelectedExecutionRequest selected;
     selected.selected_physical_dag = physical.physical_dag;
+    selected.borrowed_mga_authority =
+        heap_registration.mga_authority.get();
     selected.pre_access_statistics_snapshot_uuid =
         physical.physical_dag.statistics_snapshot_uuid;
-    selected.mga_authority = heap_registration.mga_authority;
     selected.available_executors.push_back(
         std::move(*heap_registration.registration));
     if (filter_composition) {
@@ -52678,15 +61700,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     }
     if (window_composition) {
       if (prepared_heap_aggregate_window.has_value() &&
-          prepared_heap_aggregate_window_order_term.has_value() &&
-          prepared_heap_aggregate_window_value_column.has_value()) {
+          prepared_heap_aggregate_window_order_term.has_value()) {
         const auto maximum_quadratic_work = std::max<std::size_t>(
             1, bounded_size(maximum_pair_comparisons_u64));
         selected.available_executors.push_back(
             MakeLiveAggregateWindowRegistration(
                 *prepared_heap_aggregate_window,
                 *prepared_heap_aggregate_window_order_term,
-                *prepared_heap_aggregate_window_value_column,
+                prepared_heap_aggregate_window_value_column,
                 prepared_heap_aggregate_window_descriptor,
                 prepared_heap_aggregate_window_frame_descriptor_uuid,
                 heap_aggregate_window_order_term_binding_evidence_uuid,
@@ -52753,6 +61774,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
               projected_columns, project_capability_uuid,
               maximum_output_rows, input.context));
     }
+    if (cte_composition) {
+      selected.available_executors.push_back(
+          MakeLiveNonrecursiveCteRegistration(
+              cte_implementation_id, cte_capability_uuid,
+              maximum_output_rows, input.context));
+    }
     if (limit_composition) {
       selected.available_executors.push_back(
           MakeLiveLimitRegistration(
@@ -52765,7 +61792,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     selected.result_publication_request.execution_attempt_uuid =
         DerivedCanonicalUuid(
             identity_scope + ":" + input.context.current_monotonic_ns,
-            limit_composition
+            cte_is_root
+                ? "heap-cte.execution-attempt"
+                : limit_composition
                 ? "heap-limit.execution-attempt"
                 : (aggregate_composition
                        ? "heap-aggregate.execution-attempt"
@@ -52780,10 +61809,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         DerivedCanonicalUuid(
             identity_scope + ":" +
                 std::to_string(input.context.local_transaction_id) + ":" +
-                std::to_string(
+            std::to_string(
                     input.context
                         .snapshot_visible_through_local_transaction_id),
-            limit_composition
+            cte_is_root
+                ? "heap-cte.transaction-effect-unchanged"
+                : limit_composition
                 ? "heap-limit.transaction-effect-unchanged"
                 : (aggregate_composition
                        ? "heap-aggregate.transaction-effect-unchanged"
@@ -52833,7 +61864,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         !execution.canonical_result_published || !execution.issues.empty()) {
       return refuse(
           execution.issues.empty()
-              ? (limit_composition
+              ? (cte_is_root
+                     ? "QOW-DIAG-PACKET7-OBJECT-HEAP-CTE-EXECUTION-V1"
+                     : (limit_composition
                      ? "QOW-DIAG-PACKET7-OBJECT-HEAP-LIMIT-EXECUTION-V1"
                      : (aggregate_composition
                             ? "QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-EXECUTION-V1"
@@ -52843,10 +61876,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                                    ? "QOW-DIAG-PACKET7-OBJECT-HEAP-WINDOW-EXECUTION-V1"
                                    : (sort_composition
                                           ? "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-EXECUTION-V1"
-                                          : "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1")))))
+                                          : "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1"))))))
               : execution.issues.front().diagnostic_id,
           execution.issues.empty()
-              ? (limit_composition
+              ? (cte_is_root
+                     ? "object-backed heap nonrecursive CTE selected DAG was not completed"
+                     : (limit_composition
                      ? "object-backed heap LIMIT selected DAG was not completed"
                      : (aggregate_composition
                             ? "object-backed heap aggregate selected DAG was not completed"
@@ -52862,7 +61897,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                                           : "object-backed heap ROW_NUMBER selected DAG was not completed")
                                    : (sort_composition
                                           ? "object-backed heap ORDER BY selected DAG was not completed"
-                                          : "object-backed heap WHERE selected DAG was not completed")))))
+                                          : "object-backed heap WHERE selected DAG was not completed"))))))
               : execution.issues.front().field_id);
     }
     result.physical_dag_executed = true;

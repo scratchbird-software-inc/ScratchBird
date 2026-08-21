@@ -15,6 +15,7 @@
 #include <ranges>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -400,18 +401,6 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
            "model-family executor has no bounded resource admission");
     return result;
   }
-  try {
-    if (request.cancellation_requested()) {
-      refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
-             "model-family execution was cancelled before data access");
-      return result;
-    }
-  } catch (...) {
-    refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
-           "model-family cancellation probe failed before data access");
-    return result;
-  }
-
   result.execution_started = true;
   bool cleanup_attempted = false;
   const auto cleanup_once = [&]() noexcept {
@@ -430,6 +419,20 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
     }
     return result.cleanup_complete;
   };
+
+  try {
+    if (request.cancellation_requested()) {
+      refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+             "model-family execution was cancelled before data access");
+      cleanup_once();
+      return result;
+    }
+  } catch (...) {
+    refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+           "model-family cancellation probe failed before data access");
+    cleanup_once();
+    return result;
+  }
 
   if (request.fault_injected) {
     refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
@@ -481,6 +484,11 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
            "model-family exchange allocation was refused");
     cleanup_once();
     return result;
+  } catch (const std::length_error&) {
+    refuse("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
+           "model-family exchange allocation length was refused");
+    cleanup_once();
+    return result;
   } catch (...) {
     refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
            "model-family exchange publication threw");
@@ -513,6 +521,19 @@ ModelFamilyExecutionResultV1 ExecuteModelFamilySourceV1(
     result.root_published = false;
     return result;
   }
+  try {
+    if (request.cancellation_requested()) {
+      result.output = {};
+      refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+             "model-family execution was cancelled during cleanup");
+      return result;
+    }
+  } catch (...) {
+    result.output = {};
+    refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
+           "model-family cancellation probe failed after cleanup");
+    return result;
+  }
   result.accepted = true;
   result.root_published = exchange.root_publishable;
   return result;
@@ -535,11 +556,13 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
       }
     }
   };
+  std::atomic_bool cancellation_probe_failed{false};
   const auto cancelled = [&]() {
     try {
       return !request.cancellation_requested ||
              request.cancellation_requested();
     } catch (...) {
+      cancellation_probe_failed.store(true, std::memory_order_release);
       return true;
     }
   };
@@ -608,6 +631,12 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     return result.cleanup_complete;
   };
   const auto refuse = [&](std::string diagnostic, std::string detail) {
+    if (cancellation_probe_failed.load(std::memory_order_acquire)) {
+      diagnostic = "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+      detail = "model-family composition cancellation probe failed";
+      result.failure_frozen = true;
+      receipt("COORD-020-V1", true);
+    }
     result.accepted = false;
     result.root_published = false;
     result.no_partial_root = true;
@@ -939,13 +968,16 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
         const auto original_probe = execution.cancellation_requested;
         const auto composition_probe = request.cancellation_requested;
         execution.cancellation_requested =
-            [fanout_cancel, original_probe, composition_probe]() {
+            [fanout_cancel, original_probe, composition_probe,
+             &cancellation_probe_failed]() {
               if (fanout_cancel->load(std::memory_order_acquire)) return true;
               try {
                 return !original_probe || original_probe() ||
                        !composition_probe || composition_probe();
               } catch (...) {
-                return true;
+                cancellation_probe_failed.store(true,
+                                                std::memory_order_release);
+                throw;
               }
             };
         ModelFamilyExecutionResultV1 executed;
@@ -1280,13 +1312,15 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
       const auto original_probe = execution.cancellation_requested;
       const auto composition_probe = request.cancellation_requested;
       execution.cancellation_requested =
-          [fanout_cancel, original_probe, composition_probe]() {
+          [fanout_cancel, original_probe, composition_probe,
+           &cancellation_probe_failed]() {
         if (fanout_cancel->load(std::memory_order_acquire)) return true;
         try {
           return !original_probe || original_probe() ||
                  !composition_probe || composition_probe();
         } catch (...) {
-          return true;
+          cancellation_probe_failed.store(true, std::memory_order_release);
+          throw;
         }
       };
       const auto run_execution =
@@ -1885,9 +1919,19 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
 
 CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
     const CanonicalTimeSeriesAsofJoinRequestV1& request) {
+  enum class CancellationProbeState : std::uint8_t {
+    kRunning = 0,
+    kCancelled,
+    kProbeFailed,
+  };
   CanonicalTimeSeriesAsofJoinResultV1 result;
+  auto cancellation_state = CancellationProbeState::kRunning;
   const auto refuse = [&](std::string code, std::string detail,
                           const std::size_t row = 0) {
+    if (cancellation_state == CancellationProbeState::kProbeFailed) {
+      code = "SB_MODEL_COORDINATOR_LEG_FAILED_V1";
+      detail = "ASOF cancellation probe failed";
+    }
     result.diagnostic.ok = false;
     result.diagnostic.diagnostic_code = std::move(code);
     result.diagnostic.detail = std::move(detail);
@@ -1896,12 +1940,21 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
     result.matched_right_ordinals.clear();
     return result;
   };
-  const auto cancelled = [&]() {
+  const std::function<bool()> guarded_cancellation_requested = [&]() noexcept {
+    if (cancellation_state != CancellationProbeState::kRunning) return true;
     try {
-      return request.cancellation_requested && request.cancellation_requested();
+      if (!request.cancellation_requested ||
+          !request.cancellation_requested()) {
+        return false;
+      }
+      cancellation_state = CancellationProbeState::kCancelled;
     } catch (...) {
-      return true;
+      cancellation_state = CancellationProbeState::kProbeFailed;
     }
+    return true;
+  };
+  const auto cancelled = [&]() {
+    return guarded_cancellation_requested();
   };
   if (request.physical_dag.abi_version != 2 ||
       !request.cancellation_requested || request.tolerance_ns < 0 ||
@@ -2182,7 +2235,7 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
               keys[ordinal].canonical_tags ||
           !CanonicalUuid(keys[ordinal].metric_uuid) ||
           !ValidateCanonicalTimeSeriesTagsV1(
-              keys[ordinal].canonical_tags, request.cancellation_requested,
+              keys[ordinal].canonical_tags, guarded_cancellation_requested,
               &tag_cancellation) ||
           tag_cancellation ||
           !ParseCanonicalTimeSeriesTimestampNsV1(
@@ -2207,7 +2260,7 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
                            request.left_keys, request.left_binding, false) ||
       !validate_bound_keys(request.right_batch, *right_node,
                            request.right_keys, request.right_binding, true)) {
-    if (cancelled()) {
+    if (cancellation_state != CancellationProbeState::kRunning) {
       return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
                     "ASOF join was cancelled during bound-key validation");
     }

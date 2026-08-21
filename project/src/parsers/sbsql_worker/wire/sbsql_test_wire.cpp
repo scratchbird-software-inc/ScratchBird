@@ -4216,6 +4216,7 @@ BuildEngineProjectedNativeBindingContext(
             return candidate.canonical_name_key == expression->spelling;
           });
       if (column == projection.columns.end() || column->column_uuid.empty() ||
+          column->canonical_type_name.empty() ||
           !CanonicalUuidBytes(column->type_descriptor_uuid).has_value()) {
         return fail("catalog_window_source_column_unresolved");
       }
@@ -4236,6 +4237,7 @@ BuildEngineProjectedNativeBindingContext(
                                    : BoundNullability::kNonNull;
       descriptor.collation_uuid = descriptor_fields->collation_uuid;
       descriptor.timezone_profile_id = descriptor_fields->timezone_profile_id;
+      descriptor.canonical_type_name = column->canonical_type_name;
       if (column->character_length != 0) {
         descriptor.width_precision_scale.width = column->character_length;
       }
@@ -4358,13 +4360,35 @@ BuildEngineProjectedNativeBindingContext(
         (function_expression->operator_name == "SUM" ||
          function_expression->operator_name == "MIN" ||
          function_expression->operator_name == "MAX" ||
-         function_expression->operator_name == "COUNT");
+         function_expression->operator_name == "COUNT" ||
+         function_expression->operator_name == "COUNT_STAR" ||
+         function_expression->operator_name == "BOOL_AND" ||
+         function_expression->operator_name == "BOOL_OR" ||
+         function_expression->operator_name == "EVERY");
+    const bool aggregate_count_star_window =
+        aggregate_window && function_expression->operator_name == "COUNT_STAR";
     const bool aggregate_count_window =
-        aggregate_window && function_expression->operator_name == "COUNT";
+        aggregate_window &&
+        (function_expression->operator_name == "COUNT" ||
+         aggregate_count_star_window);
+    const bool aggregate_boolean_window =
+        aggregate_window &&
+        (function_expression->operator_name == "BOOL_AND" ||
+         function_expression->operator_name == "BOOL_OR" ||
+         function_expression->operator_name == "EVERY");
+    const bool aggregate_bounded_signed_window =
+        aggregate_window && !aggregate_count_window &&
+        !aggregate_boolean_window;
+    const auto is_bounded_signed_type = [](const std::string_view type_name) {
+      return type_name == "int8" || type_name == "int16" ||
+             type_name == "int32" || type_name == "int64";
+    };
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
         nth_value_window || aggregate_window;
+    const bool value_operand_window =
+        value_window && !aggregate_count_star_window;
     const bool recognized_ranking =
         function_expression != ast.expressions.end() &&
         (rank_window || dense_rank_window || percent_rank_window ||
@@ -4403,7 +4427,15 @@ BuildEngineProjectedNativeBindingContext(
                           ? "sb.aggregate.min"
                           : (function_expression->operator_name == "MAX"
                                  ? "sb.aggregate.max"
-                                 : "sb.aggregate.count")))
+                                 : (aggregate_count_window
+                                        ? "sb.aggregate.count"
+                                        : (function_expression->operator_name ==
+                                                   "BOOL_AND"
+                                               ? "sb.aggregate.bool_and"
+                                               : (function_expression->operator_name ==
+                                                          "BOOL_OR"
+                                                      ? "sb.aggregate.bool_or"
+                                                      : "sb.aggregate.every"))))))
             : (value_window
             ? (first_value_window
                    ? "sb.window.first_value"
@@ -4423,9 +4455,17 @@ BuildEngineProjectedNativeBindingContext(
                           ? "sb.window.dense_rank"
                           : (rank_window ? "sb.window.rank"
                                          : "sb.window.row_number"))))));
+    const auto boolean_aggregate_function_uuid =
+        aggregate_boolean_window
+            ? EngineIssuedAggregateFunctionUuid(
+                  statement_context, function_expression->operator_name)
+            : std::optional<std::string_view>{};
     const std::string_view expected_function_uuid =
         aggregate_window
-            ? (function_expression->operator_name == "SUM"
+            ? (aggregate_boolean_window
+                   ? boolean_aggregate_function_uuid.value_or(
+                         std::string_view{})
+                   : (function_expression->operator_name == "SUM"
                    ? std::string_view(statement_context.sum_function_uuid)
                    : (function_expression->operator_name == "MIN"
                           ? std::string_view(statement_context.min_function_uuid)
@@ -4433,7 +4473,7 @@ BuildEngineProjectedNativeBindingContext(
                                  ? std::string_view(
                                        statement_context.max_function_uuid)
                                  : std::string_view(
-                                       statement_context.count_function_uuid))))
+                                       statement_context.count_function_uuid)))))
             : (value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
@@ -4463,16 +4503,22 @@ BuildEngineProjectedNativeBindingContext(
         [&](const auto& candidate) {
           return candidate.builtin_id == expected_builtin;
         });
-    const auto result_profile = std::ranges::find_if(
+    auto result_profile = std::ranges::find_if(
         statement_context.descriptor_profiles, [&](const auto& candidate) {
           return candidate.profile_kind ==
                      (aggregate_count_window
                           ? 1
+                          : aggregate_boolean_window
+                          ? 6
                           : value_window
                           ? 2
                           : ((percent_rank_window || cume_dist_window) ? 11
                                                                        : 1)) &&
                  candidate.slot == 0;
+        });
+    const auto order_profile = std::ranges::find_if(
+        statement_context.descriptor_profiles, [](const auto& candidate) {
+          return candidate.profile_kind == 1 && candidate.slot == 0;
         });
     const NativeExpressionAstNode* ntile_operand = nullptr;
     if (ntile_window && function_expression->child_expression_ids.size() == 1) {
@@ -4485,8 +4531,9 @@ BuildEngineProjectedNativeBindingContext(
     }
     const NativeExpressionAstNode* lag_operand = nullptr;
     std::optional<std::size_t> lag_operand_source_ordinal;
-    if (value_window && function_expression->child_expression_ids.size() ==
-                            (nth_value_window ? 2U : 1U)) {
+    if (value_operand_window &&
+        function_expression->child_expression_ids.size() ==
+            (nth_value_window ? 2U : 1U)) {
       const auto operand = std::ranges::find_if(
           ast.expressions, [&](const auto& candidate) {
             return candidate.expression_id ==
@@ -4502,6 +4549,21 @@ BuildEngineProjectedNativeBindingContext(
                             source_operand));
         }
       }
+    }
+    const bool navigation_value_window =
+        navigation_window || first_value_window || last_value_window ||
+        nth_value_window;
+    const bool boolean_navigation_value =
+        navigation_value_window &&
+        lag_operand_source_ordinal.has_value() &&
+        *lag_operand_source_ordinal < context.descriptors.size() &&
+        context.descriptors[*lag_operand_source_ordinal]
+                .canonical_type_name == "boolean";
+    if (boolean_navigation_value) {
+      result_profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [](const auto& candidate) {
+            return candidate.profile_kind == 6 && candidate.slot == 0;
+          });
     }
     const NativeExpressionAstNode* nth_position_operand = nullptr;
     if (nth_value_window &&
@@ -4542,6 +4604,17 @@ BuildEngineProjectedNativeBindingContext(
             : (ntile_operand != nullptr
                    ? std::vector<std::uint32_t>{ntile_operand->expression_id}
                    : std::vector<std::uint32_t>{}));
+    std::optional<std::size_t> order_operand_source_ordinal;
+    if (strict_ordered_window && ast.window_definitions.size() == 1 &&
+        ast.window_definitions.front().ordering_terms.size() == 1) {
+      const auto order_source = std::ranges::find(
+          source_relation->output_expression_ids,
+          ast.window_definitions.front().ordering_terms.front().expression_id);
+      if (order_source != source_relation->output_expression_ids.end()) {
+        order_operand_source_ordinal = static_cast<std::size_t>(std::distance(
+            source_relation->output_expression_ids.begin(), order_source));
+      }
+    }
     const bool function_profile_invalid =
         aggregate_window
             ? (aggregate_function_profile ==
@@ -4570,6 +4643,10 @@ BuildEngineProjectedNativeBindingContext(
         result_profile == statement_context.descriptor_profiles.end() ||
         result_profile->nullable !=
             (value_window && !aggregate_count_window) ||
+        ((aggregate_boolean_window || boolean_navigation_value) &&
+         (!result_profile->collation_uuid.empty() ||
+          result_profile->width != 0 || result_profile->precision != 0 ||
+          result_profile->scale != 0)) ||
         !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
         !CanonicalUuidBytes(result_profile->type_uuid).has_value() ||
         result_profile->descriptor_uuid == expected_function_uuid ||
@@ -4602,12 +4679,20 @@ BuildEngineProjectedNativeBindingContext(
           ntile_operand_profile->descriptor_uuid ==
               result_profile->descriptor_uuid ||
           ntile_operand_profile->descriptor_uuid == expected_function_uuid ||
-          ntile_operand_profile->type_uuid != result_profile->type_uuid ||
+          order_profile == statement_context.descriptor_profiles.end() ||
+          ntile_operand_profile->type_uuid != order_profile->type_uuid ||
+          !order_operand_source_ordinal.has_value() ||
+          *order_operand_source_ordinal >= context.descriptors.size() ||
+          ntile_operand_profile->descriptor_uuid ==
+              context.descriptors[*order_operand_source_ordinal]
+                  .descriptor_uuid ||
+          ntile_operand_profile->descriptor_uuid ==
+              order_profile->descriptor_uuid ||
           (nth_value_window && lag_operand_source_ordinal.has_value() &&
            ntile_operand_profile->descriptor_uuid ==
                context.descriptors[*lag_operand_source_ordinal]
                    .descriptor_uuid))) ||
-        (value_window &&
+        (value_operand_window &&
          (lag_operand == nullptr ||
           !lag_operand_source_ordinal.has_value() ||
           *lag_operand_source_ordinal >= context.expressions.size() ||
@@ -4624,9 +4709,44 @@ BuildEngineProjectedNativeBindingContext(
               result_profile->descriptor_uuid ||
           context.descriptors[*lag_operand_source_ordinal].descriptor_uuid ==
               expected_function_uuid ||
-          context.descriptors[*lag_operand_source_ordinal].type_uuid !=
-              result_profile->type_uuid ||
-          (aggregate_count_window &&
+          !CanonicalUuidBytes(
+               context.descriptors[*lag_operand_source_ordinal].descriptor_uuid)
+               .has_value() ||
+          !CanonicalUuidBytes(
+               context.descriptors[*lag_operand_source_ordinal].type_uuid)
+               .has_value() ||
+          (!aggregate_count_window &&
+           !aggregate_bounded_signed_window &&
+           context.descriptors[*lag_operand_source_ordinal].type_uuid !=
+               result_profile->type_uuid) ||
+          (!aggregate_window &&
+           context.descriptors[*lag_operand_source_ordinal]
+                   .canonical_type_name !=
+               (boolean_navigation_value ? "boolean" : "int64")) ||
+          (!aggregate_window &&
+           (context.descriptors[*lag_operand_source_ordinal]
+                .collation_uuid.has_value() ||
+            context.descriptors[*lag_operand_source_ordinal]
+                .timezone_profile_id.has_value() ||
+            context.descriptors[*lag_operand_source_ordinal]
+                .width_precision_scale.width.has_value() ||
+            context.descriptors[*lag_operand_source_ordinal]
+                .width_precision_scale.precision.has_value() ||
+            context.descriptors[*lag_operand_source_ordinal]
+                .width_precision_scale.scale.has_value() ||
+            !context.descriptors[*lag_operand_source_ordinal]
+                 .element_profile.empty())) ||
+          (aggregate_bounded_signed_window &&
+           !is_bounded_signed_type(
+               context.descriptors[*lag_operand_source_ordinal]
+                   .canonical_type_name)) ||
+          (aggregate_window &&
+           !aggregate_count_window &&
+           !aggregate_bounded_signed_window &&
+           context.descriptors[*lag_operand_source_ordinal]
+                   .canonical_type_name !=
+               (aggregate_boolean_window ? "boolean" : "int64")) ||
+          (aggregate_window && !aggregate_count_window &&
            (context.descriptors[*lag_operand_source_ordinal]
                 .collation_uuid.has_value() ||
             context.descriptors[*lag_operand_source_ordinal]
@@ -4658,7 +4778,14 @@ BuildEngineProjectedNativeBindingContext(
               : static_cast<std::size_t>(std::distance(
                     source_relation->output_expression_ids.begin(),
                     order_source));
-      if (has_qualify || ast.window_definitions.size() != 1 ||
+      if (order_profile == statement_context.descriptor_profiles.end() ||
+          order_profile->nullable || order_profile->profile_kind != 1 ||
+          order_profile->slot != 0 ||
+          !CanonicalUuidBytes(order_profile->descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(order_profile->type_uuid).has_value() ||
+          !order_profile->collation_uuid.empty() || order_profile->width != 0 ||
+          order_profile->precision != 0 || order_profile->scale != 0 ||
+          has_qualify || ast.window_definitions.size() != 1 ||
           definition.name.has_value() || definition.base_name.has_value() ||
           !definition.partition_expression_ids.empty() ||
           definition.ordering_terms.size() != 1 ||
@@ -4671,12 +4798,24 @@ BuildEngineProjectedNativeBindingContext(
               NativeExpressionAstKind::kIdentifier ||
           (aggregate_window &&
            (order_source_ordinal >= context.descriptors.size() ||
-            context.descriptors[order_source_ordinal].type_uuid !=
-                result_profile->type_uuid ||
+            !CanonicalUuidBytes(
+                 context.descriptors[order_source_ordinal].type_uuid)
+                 .has_value() ||
+            !is_bounded_signed_type(
+                context.descriptors[order_source_ordinal]
+                    .canonical_type_name) ||
             context.descriptors[order_source_ordinal]
                 .collation_uuid.has_value() ||
             context.descriptors[order_source_ordinal]
-                .timezone_profile_id.has_value())) ||
+                .timezone_profile_id.has_value() ||
+            context.descriptors[order_source_ordinal]
+                .width_precision_scale.width.has_value() ||
+            context.descriptors[order_source_ordinal]
+                .width_precision_scale.precision.has_value() ||
+            context.descriptors[order_source_ordinal]
+                .width_precision_scale.scale.has_value() ||
+            !context.descriptors[order_source_ordinal]
+                 .element_profile.empty())) ||
           source_relation->output_expression_ids != [&] {
             std::vector<std::uint32_t> expected;
             if (lag_operand != nullptr) {
@@ -4715,10 +4854,14 @@ BuildEngineProjectedNativeBindingContext(
     if (ntile_window || nth_value_window) {
       const auto operand_binding_id =
           static_cast<std::uint32_t>(context.descriptors.size() + 1);
-      context.descriptors.push_back(
-          {operand_binding_id, ntile_operand_profile->descriptor_uuid,
-           ntile_operand_profile->type_uuid, BoundNullability::kNonNull,
-           std::nullopt, std::nullopt, {}});
+      NativeDescriptorBindingInput operand_descriptor;
+      operand_descriptor.descriptor_id = operand_binding_id;
+      operand_descriptor.descriptor_uuid =
+          ntile_operand_profile->descriptor_uuid;
+      operand_descriptor.type_uuid = ntile_operand_profile->type_uuid;
+      operand_descriptor.nullability = BoundNullability::kNonNull;
+      operand_descriptor.canonical_type_name = "int64";
+      context.descriptors.push_back(std::move(operand_descriptor));
       context.expressions.push_back(
           {operand_binding_id, operand_binding_id, std::nullopt, std::nullopt,
            bounded_numeric_operand->structural_literal_occurrence_id,
@@ -4735,7 +4878,9 @@ BuildEngineProjectedNativeBindingContext(
         value_window && !aggregate_count_window
             ? BoundNullability::kNullable
             : BoundNullability::kNonNull;
-    if (value_window && !aggregate_count_window) {
+    if (aggregate_count_window || aggregate_bounded_signed_window) {
+      function_descriptor.canonical_type_name = "int64";
+    } else if (value_operand_window) {
       const auto& source_descriptor =
           context.descriptors[*lag_operand_source_ordinal];
       function_descriptor.type_uuid = source_descriptor.type_uuid;
@@ -4744,6 +4889,9 @@ BuildEngineProjectedNativeBindingContext(
           source_descriptor.timezone_profile_id;
       function_descriptor.width_precision_scale =
           source_descriptor.width_precision_scale;
+      function_descriptor.canonical_type_name =
+          source_descriptor.canonical_type_name;
+      function_descriptor.element_profile = source_descriptor.element_profile;
     }
     context.descriptors.push_back(std::move(function_descriptor));
     const auto function_abi_version =
@@ -4778,7 +4926,15 @@ BuildEngineProjectedNativeBindingContext(
                                             : (function_expression->operator_name ==
                                                        "MAX"
                                                    ? "max"
-                                                   : "count")))
+                                                   : (aggregate_count_window
+                                                          ? "count"
+                                                          : (function_expression->operator_name ==
+                                                                     "BOOL_AND"
+                                                                 ? "bool_and"
+                                                                 : (function_expression->operator_name ==
+                                                                            "BOOL_OR"
+                                                                        ? "bool_or"
+                                                                        : "every"))))))
                    : (value_window
                    ? std::string(first_value_window
                                      ? "first_value"

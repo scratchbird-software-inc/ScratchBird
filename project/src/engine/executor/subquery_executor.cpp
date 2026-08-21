@@ -15,13 +15,34 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include "datatype_catalog_manifest.hpp"
+#include "uuid.hpp"
+
+#include <algorithm>
+#include <cctype>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::executor {
 namespace {
+
+bool IsCanonicalUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-' ||
+      value == "00000000-0000-0000-0000-000000000000") {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const auto ch = static_cast<unsigned char>(value[index]);
+    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+  }
+  return true;
+}
 
 DescriptorRuntimeDiagnostic TableSubqueryRefusal(std::string detail) {
   DescriptorRuntimeDiagnostic diagnostic;
@@ -37,6 +58,43 @@ bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
   return batch.columns.empty() &&
          batch.columns.capacity() == empty.columns.capacity() &&
          batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
+}
+
+std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
+  static const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  return count == 1 && found != manifest.manifest.descriptor_rows.end() &&
+                 found->descriptor_uuid.valid()
+             ? scratchbird::core::uuid::UuidToString(
+                   found->descriptor_uuid.value)
+             : std::string{};
+}
+
+std::optional<std::string_view> CanonicalDescriptorField(
+    const scratchbird::engine::internal_api::EngineDescriptor& descriptor,
+    const std::string_view key) {
+  const auto prefix = std::string(key) + "=";
+  std::optional<std::string_view> result;
+  std::size_t begin = 0;
+  while (begin <= descriptor.encoded_descriptor.size()) {
+    const auto end = descriptor.encoded_descriptor.find(';', begin);
+    const auto field = std::string_view(descriptor.encoded_descriptor).substr(
+        begin, end == std::string::npos ? std::string::npos : end - begin);
+    if (field.starts_with(prefix)) {
+      if (result.has_value()) return std::nullopt;
+      result = field.substr(prefix.size());
+    }
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return result;
 }
 
 bool CanonicalSubqueryBatchMemoryBytes(const DescriptorBatch& batch,
@@ -169,6 +227,16 @@ bool TableSubqueryImplementationMatches(
                  "subquery.quantified.int64.typed.v1";
   }
   return false;
+}
+
+const PhysicalNodeRecord* FindPhysicalNode(
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t physical_node_id) {
+  const auto found = std::ranges::find_if(
+      execution_dag.nodes, [&](const auto& node) {
+        return node.physical_node_id == physical_node_id;
+      });
+  return found == execution_dag.nodes.end() ? nullptr : &*found;
 }
 
 CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
@@ -309,6 +377,85 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
   result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
+
+bool SubqueryEngineDescriptorExactlyEqual(
+    const scratchbird::engine::internal_api::EngineDescriptor& left,
+    const scratchbird::engine::internal_api::EngineDescriptor& right) {
+  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
+         left.descriptor_kind == right.descriptor_kind &&
+         left.canonical_type_name == right.canonical_type_name &&
+         left.encoded_descriptor == right.encoded_descriptor;
+}
+
+bool SubqueryDescriptorBatchesExactlyEqual(
+    const DescriptorBatch& left,
+    const DescriptorBatch& right) {
+  if (left.columns.size() != right.columns.size() ||
+      left.rows.size() != right.rows.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.columns.size(); ++index) {
+    const auto& left_column = left.columns[index];
+    const auto& right_column = right.columns[index];
+    if (left_column.stable_name != right_column.stable_name ||
+        left_column.nullable != right_column.nullable ||
+        left_column.descriptor_id != right_column.descriptor_id ||
+        !SubqueryEngineDescriptorExactlyEqual(
+            left_column.descriptor, right_column.descriptor)) {
+      return false;
+    }
+  }
+  for (std::size_t row_index = 0; row_index < left.rows.size(); ++row_index) {
+    const auto& left_values = left.rows[row_index].values;
+    const auto& right_values = right.rows[row_index].values;
+    if (left_values.size() != right_values.size()) return false;
+    for (std::size_t value_index = 0; value_index < left_values.size();
+         ++value_index) {
+      const auto& left_value = left_values[value_index];
+      const auto& right_value = right_values[value_index];
+      if (!SubqueryEngineDescriptorExactlyEqual(
+              left_value.descriptor, right_value.descriptor) ||
+          left_value.encoded_value != right_value.encoded_value ||
+          left_value.binary_value != right_value.binary_value ||
+          left_value.is_null != right_value.is_null ||
+          left_value.state != right_value.state) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool CanonicalTableSubqueryResultReceiptMatches(
+    const CanonicalTableSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& execution_input_batch,
+    const CanonicalTableSubqueryResult& result) {
+  const auto* selected_node =
+      FindPhysicalNode(execution_dag, scoped_root_physical_node_id);
+  if (selected_node == nullptr ||
+      request.selected_physical_node_id != scoped_root_physical_node_id ||
+      result.selected_plan_uuid != execution_dag.selected_plan_uuid ||
+      result.executed_physical_node_id != selected_node->physical_node_id ||
+      result.causal_counter_id != selected_node->causal_counter_id ||
+      !PhysicalMgaStatementContextEqual(
+          result.mga_statement_context,
+          request.mga_authority.statement_context) ||
+      result.materialized_row_count != execution_input_batch.rows.size() ||
+      result.output_batch.rows.size() != result.materialized_row_count ||
+      result.materialized_row_count >
+          request.maximum_materialized_row_count) {
+    return false;
+  }
+  if (!SubqueryDescriptorBatchesExactlyEqual(
+          result.output_batch, execution_input_batch)) {
+    return false;
+  }
+  const auto output_validation = ValidateCanonicalDescriptorBatch(
+      result.output_batch, selected_node->output_descriptor_ids);
+  return output_validation.ok;
+}
 }  // namespace
 
 CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
@@ -378,6 +525,11 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubqueryBound(
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
   }
+  if (!CanonicalTableSubqueryResultReceiptMatches(
+          request.table_request, execution_dag,
+          scoped_root_physical_node_id, execution_input_batch, table)) {
+    return refuse("scalar table subquery execution receipt changed");
+  }
   if (!PhysicalMgaStatementContextEqual(
           table.mga_statement_context,
           request.table_request.mga_authority.statement_context)) {
@@ -386,15 +538,35 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubqueryBound(
   if (table.output_batch.columns.size() != 1) {
     return refuse("scalar subquery requires exactly one result column");
   }
+  const auto* selected_node =
+      FindPhysicalNode(execution_dag, scoped_root_physical_node_id);
+  if (selected_node == nullptr ||
+      !IsCanonicalUuid(selected_node->executor_capability_uuid)) {
+    return refuse("scalar subquery capability identity is unresolved");
+  }
 
   const auto& source_column = table.output_batch.columns.front();
   const auto& source_descriptor = source_column.descriptor;
   const auto& result_descriptor = request.result_column.descriptor;
+  const auto source_type_uuid =
+      CanonicalDescriptorField(source_descriptor, "type_uuid");
+  const auto result_type_uuid =
+      CanonicalDescriptorField(result_descriptor, "type_uuid");
   if (request.value_expression_descriptor_id == 0 ||
       request.value_expression_descriptor_id != source_column.descriptor_id ||
       request.result_column.descriptor_id != source_column.descriptor_id ||
       request.result_column.stable_name.empty() ||
       !request.result_column.nullable ||
+      !source_type_uuid.has_value() || !result_type_uuid.has_value() ||
+      !IsCanonicalUuid(*source_type_uuid) ||
+      !IsCanonicalUuid(*result_type_uuid) ||
+      *source_type_uuid != *result_type_uuid ||
+      !IsCanonicalUuid(result_descriptor.descriptor_uuid.canonical) ||
+      result_descriptor.descriptor_uuid.canonical ==
+          source_descriptor.descriptor_uuid.canonical ||
+      result_descriptor.descriptor_uuid.canonical == *source_type_uuid ||
+      result_descriptor.descriptor_uuid.canonical ==
+          selected_node->executor_capability_uuid ||
       !CanonicalDerivedDescriptorTypeMatches(
           source_descriptor, source_column.nullable, result_descriptor,
           true)) {
@@ -482,6 +654,11 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubqueryBound(
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
   }
+  if (!CanonicalTableSubqueryResultReceiptMatches(
+          request.table_request, execution_dag,
+          scoped_root_physical_node_id, execution_input_batch, table)) {
+    return refuse("row table subquery execution receipt changed");
+  }
   if (!PhysicalMgaStatementContextEqual(
           table.mga_statement_context,
           request.table_request.mga_authority.statement_context)) {
@@ -493,6 +670,27 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubqueryBound(
     return refuse("row subquery result width is not completely bound");
   }
 
+  const auto* selected_node =
+      FindPhysicalNode(execution_dag, scoped_root_physical_node_id);
+  if (selected_node == nullptr ||
+      !IsCanonicalUuid(selected_node->executor_capability_uuid)) {
+    return refuse("row subquery capability identity is unresolved");
+  }
+  std::unordered_set<std::string_view> source_identity_domain;
+  source_identity_domain.insert(selected_node->executor_capability_uuid);
+  for (const auto& source : table.output_batch.columns) {
+    const auto source_type_uuid =
+        CanonicalDescriptorField(source.descriptor, "type_uuid");
+    if (!IsCanonicalUuid(source.descriptor.descriptor_uuid.canonical) ||
+        !source_type_uuid.has_value() ||
+        !IsCanonicalUuid(*source_type_uuid)) {
+      return refuse("row subquery source identity domain is unresolved");
+    }
+    source_identity_domain.insert(
+        source.descriptor.descriptor_uuid.canonical);
+    source_identity_domain.insert(*source_type_uuid);
+  }
+  std::unordered_set<std::string_view> result_descriptor_uuids;
   std::vector<std::uint32_t> result_descriptor_ids;
   result_descriptor_ids.reserve(width);
   for (std::size_t column = 0; column < width; ++column) {
@@ -500,11 +698,25 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubqueryBound(
     const auto& bound = request.result_columns[column];
     const auto& source_descriptor = source.descriptor;
     const auto& bound_descriptor = bound.descriptor;
+    const auto source_type_uuid =
+        CanonicalDescriptorField(source_descriptor, "type_uuid");
+    const auto result_type_uuid =
+        CanonicalDescriptorField(bound_descriptor, "type_uuid");
     if (request.row_expression_descriptor_ids[column] == 0 ||
         request.row_expression_descriptor_ids[column] !=
             source.descriptor_id ||
         bound.descriptor_id != source.descriptor_id ||
         bound.stable_name.empty() || !bound.nullable ||
+        !source_type_uuid.has_value() || !result_type_uuid.has_value() ||
+        !IsCanonicalUuid(*source_type_uuid) ||
+        !IsCanonicalUuid(*result_type_uuid) ||
+        *source_type_uuid != *result_type_uuid ||
+        !IsCanonicalUuid(bound_descriptor.descriptor_uuid.canonical) ||
+        source_identity_domain.contains(
+            bound_descriptor.descriptor_uuid.canonical) ||
+        !result_descriptor_uuids
+             .insert(bound_descriptor.descriptor_uuid.canonical)
+             .second ||
         !CanonicalDerivedDescriptorTypeMatches(
             source_descriptor, source.nullable, bound_descriptor, true)) {
       return refuse("row result descriptor is not the bound source field");
@@ -607,8 +819,13 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
 // Evaluate EXISTS only after the complete canonical table-subquery result has
 // validated. The result is always one bound non-NULL boolean row; no input
 // value or parser-level predicate can supply existence authority.
-CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
-    const CanonicalExistsSubqueryRequest& request) {
+namespace {
+CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubqueryBound(
+    const CanonicalExistsSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   using scratchbird::engine::internal_api::EngineTypedValue;
   using scratchbird::engine::internal_api::EngineValueState;
 
@@ -628,26 +845,38 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
   };
 
   auto table = ExecuteCanonicalTableSubqueryBound(
-      request.table_request, request.table_request.physical_dag,
-      request.table_request.physical_dag.root_physical_node_id,
-      TableSubqueryExecutionRoute::exists, false,
-      request.table_request.input_batch, false);
+      request.table_request, execution_dag, scoped_root_physical_node_id,
+      TableSubqueryExecutionRoute::exists, borrowed_execution_carriers,
+      execution_input_batch, borrowed_execution_carriers);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
+  }
+  if (!CanonicalTableSubqueryResultReceiptMatches(
+          request.table_request, execution_dag,
+          scoped_root_physical_node_id, execution_input_batch, table)) {
+    return refuse("EXISTS table subquery execution receipt changed");
   }
   if (!PhysicalMgaStatementContextEqual(
           table.mga_statement_context,
           request.table_request.mga_authority.statement_context)) {
     return refuse("EXISTS table subquery returned a different MGA statement context");
   }
+  const auto result_type_uuid = CanonicalDescriptorField(
+      request.result_column.descriptor, "type_uuid");
+  const auto canonical_boolean_type_uuid =
+      CanonicalCoreDatatypeUuid("boolean");
   if (request.exists_expression_descriptor_id == 0 ||
       request.result_column.descriptor_id !=
           request.exists_expression_descriptor_id ||
       request.result_column.stable_name.empty() ||
       request.result_column.nullable ||
       request.result_column.descriptor.descriptor_kind != "scalar" ||
-      request.result_column.descriptor.canonical_type_name != "boolean") {
+      request.result_column.descriptor.canonical_type_name != "boolean" ||
+      !result_type_uuid.has_value() || canonical_boolean_type_uuid.empty() ||
+      *result_type_uuid != canonical_boolean_type_uuid ||
+      request.result_column.descriptor.descriptor_uuid.canonical ==
+          *result_type_uuid) {
     return refuse("EXISTS result is not a bound non-null boolean");
   }
 
@@ -674,7 +903,7 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.table_request.mga_authority,
-      request.table_request.physical_dag);
+      execution_dag);
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
@@ -690,6 +919,25 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
       request.table_request.mga_authority.statement_context;
   return result;
 }
+}  // namespace
+
+CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
+    const CanonicalExistsSubqueryRequest& request) {
+  return ExecuteCanonicalExistsSubqueryBound(
+      request, request.table_request.physical_dag,
+      request.table_request.physical_dag.root_physical_node_id,
+      request.table_request.input_batch, false);
+}
+
+CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
+    const CanonicalExistsSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalExistsSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id,
+      borrowed_input_batch, true);
+}
 
 // QOW-SOURCE-QRY-013-QUANTIFIED-V1
 // Evaluate one descriptor-compatible canonical scalar comparison against a
@@ -698,8 +946,13 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
 // cannot hide malformed later input. Collated character values remain behind
 // the catalog-bound comparison seam and are refused by the shared expression
 // runtime when no such authority is present.
-CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
-    const CanonicalQuantifiedSubqueryRequest& request) {
+namespace {
+CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubqueryBound(
+    const CanonicalQuantifiedSubqueryRequest& request,
+    const TypedPhysicalNodeDag& execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& execution_input_batch,
+    const bool borrowed_execution_carriers) {
   namespace api = scratchbird::engine::internal_api;
 
   CanonicalQuantifiedSubqueryResult result;
@@ -717,14 +970,34 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     return result;
   };
 
+  // Validate the independently bound left operand before table
+  // materialization so this temporary carrier cannot overlap the retained
+  // table result and escape the predicate-subquery memory receipt.
+  {
+    DescriptorBatch left_batch;
+    left_batch.columns = {request.left_operand_column};
+    left_batch.rows = {{{request.left_value}}};
+    auto left_validation = ValidateCanonicalDescriptorBatch(
+        left_batch, {request.left_operand_column.descriptor_id});
+    if (!left_validation.ok) {
+      return refuse(left_validation.diagnostic_code + ":" +
+                    left_validation.detail);
+    }
+  }
+
   auto table = ExecuteCanonicalTableSubqueryBound(
-      request.table_request, request.table_request.physical_dag,
-      request.table_request.physical_dag.root_physical_node_id,
-      TableSubqueryExecutionRoute::quantified, false,
-      request.table_request.input_batch, false);
+      request.table_request, execution_dag, scoped_root_physical_node_id,
+      TableSubqueryExecutionRoute::quantified,
+      borrowed_execution_carriers, execution_input_batch,
+      borrowed_execution_carriers);
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
+  }
+  if (!CanonicalTableSubqueryResultReceiptMatches(
+          request.table_request, execution_dag,
+          scoped_root_physical_node_id, execution_input_batch, table)) {
+    return refuse("quantified table subquery execution receipt changed");
   }
   if (!PhysicalMgaStatementContextEqual(
           table.mga_statement_context,
@@ -786,24 +1059,22 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     return refuse(
         "quantified comparison authority carrier is not exact");
   }
+  const auto result_type_uuid = CanonicalDescriptorField(
+      request.result_column.descriptor, "type_uuid");
+  const auto canonical_boolean_type_uuid =
+      CanonicalCoreDatatypeUuid("boolean");
   if (request.result_expression_descriptor_id == 0 ||
       request.result_column.descriptor_id !=
           request.result_expression_descriptor_id ||
       request.result_column.stable_name.empty() ||
       !request.result_column.nullable ||
       request.result_column.descriptor.descriptor_kind != "scalar" ||
-      request.result_column.descriptor.canonical_type_name != "boolean") {
+      request.result_column.descriptor.canonical_type_name != "boolean" ||
+      !result_type_uuid.has_value() || canonical_boolean_type_uuid.empty() ||
+      *result_type_uuid != canonical_boolean_type_uuid ||
+      request.result_column.descriptor.descriptor_uuid.canonical ==
+          *result_type_uuid) {
     return refuse("quantified result is not a bound nullable boolean");
-  }
-
-  DescriptorBatch left_batch;
-  left_batch.columns = {request.left_operand_column};
-  left_batch.rows = {{{request.left_value}}};
-  auto left_validation = ValidateCanonicalDescriptorBatch(
-      left_batch, {request.left_operand_column.descriptor_id});
-  if (!left_validation.ok) {
-    return refuse(left_validation.diagnostic_code + ":" +
-                  left_validation.detail);
   }
 
   api::EngineCanonicalExpressionOperation expression_operation =
@@ -826,8 +1097,9 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
         api::EngineCanonicalExpressionOperation::greater_than_or_equal;
   }
 
-  std::vector<api::EngineSqlTruthValue> comparison_truths;
-  comparison_truths.reserve(table.materialized_row_count);
+  auto truth = any ? api::EngineSqlTruthValue::false_value
+                   : api::EngineSqlTruthValue::true_value;
+  std::size_t comparison_count = 0;
   for (std::size_t row_index = 0;
        row_index < table.output_batch.rows.size(); ++row_index) {
     const auto& row = table.output_batch.rows[row_index];
@@ -860,12 +1132,7 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
       return refuse("canonical quantified comparison refused: " +
                     expression_detail);
     }
-    comparison_truths.push_back(expression_result.truth);
-  }
-
-  auto truth = any ? api::EngineSqlTruthValue::false_value
-                   : api::EngineSqlTruthValue::true_value;
-  for (const auto comparison_truth : comparison_truths) {
+    const auto comparison_truth = expression_result.truth;
     if (any) {
       if (comparison_truth == api::EngineSqlTruthValue::true_value) {
         truth = api::EngineSqlTruthValue::true_value;
@@ -881,6 +1148,7 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
         truth = api::EngineSqlTruthValue::unknown;
       }
     }
+    ++comparison_count;
   }
 
   DescriptorBatch output;
@@ -908,7 +1176,7 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
   }
   const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.table_request.mga_authority,
-      request.table_request.physical_dag);
+      execution_dag);
   if (!result_authority.ok)
     return refuse(result_authority.diagnostic_code + ":" +
                   result_authority.detail);
@@ -916,13 +1184,32 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
   result.diagnostic = {};
   result.output_batch = std::move(output);
   result.truth_value = truth;
-  result.comparison_count = comparison_truths.size();
+  result.comparison_count = comparison_count;
   result.selected_plan_uuid = std::move(table.selected_plan_uuid);
   result.executed_physical_node_id = table.executed_physical_node_id;
   result.causal_counter_id = table.causal_counter_id;
   result.mga_statement_context =
       request.table_request.mga_authority.statement_context;
   return result;
+}
+}  // namespace
+
+CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
+    const CanonicalQuantifiedSubqueryRequest& request) {
+  return ExecuteCanonicalQuantifiedSubqueryBound(
+      request, request.table_request.physical_dag,
+      request.table_request.physical_dag.root_physical_node_id,
+      request.table_request.input_batch, false);
+}
+
+CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
+    const CanonicalQuantifiedSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch) {
+  return ExecuteCanonicalQuantifiedSubqueryBound(
+      request, borrowed_execution_dag, scoped_root_physical_node_id,
+      borrowed_input_batch, true);
 }
 
 // QOW-SOURCE-QRY-013-CORRELATED-V1

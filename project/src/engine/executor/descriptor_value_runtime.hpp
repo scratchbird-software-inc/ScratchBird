@@ -898,6 +898,11 @@ struct CanonicalDescriptorCountRequest {
 struct CanonicalDescriptorCountResult {
   DescriptorRuntimeDiagnostic diagnostic;
   DescriptorBatch output_batch;
+  std::size_t input_payload_bytes = 0;
+  std::size_t state_bytes = 0;
+  std::size_t output_payload_bytes = 0;
+  std::size_t current_memory_bytes = 0;
+  std::size_t peak_memory_bytes = 0;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
@@ -1091,7 +1096,14 @@ struct CanonicalCompositeJoinKeyRequest {
   // inputs to avoid duplicating both batches while the node executes.
   const DescriptorBatch* borrowed_left_batch = nullptr;
   const DescriptorBatch* borrowed_right_batch = nullptr;
+  // Set only by the physical-dispatch callback after the generic dispatcher
+  // has completed its inventory-backed entry revalidation. The dispatcher
+  // performs the matching result revalidation after callback return, so the
+  // nested join core must not repeat allocation-bearing snapshot resolution
+  // inside the callback memory domain.
+  bool dispatcher_mga_boundary_active = false;
   CanonicalExecutionMgaAuthority mga_authority;
+  const CanonicalExecutionMgaAuthority* borrowed_mga_authority = nullptr;
 };
 
 struct CanonicalCompositeJoinKeyResult {
@@ -1134,6 +1146,15 @@ enum class CanonicalAcceptedJoinKind : std::uint8_t {
   kLeftAnti,
 };
 
+// Logical retained work state owned by every canonical ordinary join: one
+// truth value and one accepted-pair ordinal for every candidate pair, plus
+// the matched-row state for both inputs. Input and output batch payloads are
+// accounted separately by the caller.
+bool BoundCanonicalJoinRetainedStateBytes(
+    std::size_t left_row_count,
+    std::size_t right_row_count,
+    std::uint64_t* retained_state_bytes);
+
 struct CanonicalJoinKindRequest {
   CanonicalJoinResidualRequest residual_request;
   CanonicalAcceptedJoinKind join_kind =
@@ -1153,6 +1174,7 @@ struct CanonicalJoinKindRequest {
       borrowed_bound_pair_truth_values = nullptr;
   std::size_t maximum_output_rows = 1048576;
   std::function<bool()> cancellation_requested;
+  const std::function<bool()>* borrowed_cancellation_requested = nullptr;
 };
 
 struct CanonicalJoinKindResult {
@@ -1346,6 +1368,10 @@ struct CanonicalHeapRelationAcquisitionRequest {
   const scratchbird::engine::internal_api::TypedRelationalDag*
       relational_dag = nullptr;
   TypedPhysicalNodeDag physical_dag;
+  // Executor callbacks may borrow a registration-owned leaf DAG so dispatch
+  // does not deep-copy the complete selected plan inside the callback memory
+  // domain. Direct callers continue to use physical_dag.
+  const TypedPhysicalNodeDag* borrowed_physical_dag = nullptr;
   std::uint64_t selected_physical_node_id = 0;
   std::size_t maximum_scanned_row_versions = 0;
   std::size_t maximum_decoded_bytes = 0;
@@ -1355,8 +1381,14 @@ struct CanonicalHeapRelationAcquisitionRequest {
   // neither is inferred from the persisted catalog ceiling or the row limit.
   std::size_t maximum_output_columns = 0;
   std::size_t maximum_output_cells = 0;
+  std::uint64_t maximum_live_memory_bytes = 0;
   std::function<bool()> cancellation_requested;
+  // Prepared physical executors borrow registration-owned immutable control
+  // state so callback admission does not hide std::function or MGA-vector
+  // deep copies. Direct callers retain the owned fields above and below.
+  const std::function<bool()>* borrowed_cancellation_requested = nullptr;
   CanonicalExecutionMgaAuthority mga_authority;
+  const CanonicalExecutionMgaAuthority* borrowed_mga_authority = nullptr;
 };
 
 struct CanonicalHeapRelationAcquisitionCounters {
@@ -1391,6 +1423,10 @@ struct CanonicalHeapRelationAcquisitionResult {
   std::uint64_t runtime_operator_wait_ns = 0;
   std::uint64_t runtime_storage_bytes_read = 0;
   std::uint64_t runtime_decoded_bytes = 0;
+  std::uint64_t runtime_current_memory_bytes = 0;
+  std::uint64_t runtime_peak_memory_bytes = 0;
+  std::uint64_t runtime_memory_grant_bytes = 0;
+  bool runtime_memory_receipt_complete = false;
   bool runtime_observation_complete = false;
   CanonicalHeapRelationAcquisitionAuthorityEvidence authority;
   bool data_access_observed = false;
@@ -1449,13 +1485,17 @@ struct CanonicalHeapPhysicalDagDispatchRequest {
   const scratchbird::engine::internal_api::TypedRelationalDag*
       relational_dag = nullptr;
   TypedPhysicalNodeDag physical_dag;
+  const TypedPhysicalNodeDag* borrowed_physical_dag = nullptr;
   std::size_t maximum_scanned_row_versions = 0;
   std::size_t maximum_decoded_bytes = 0;
   std::size_t maximum_output_rows = 0;
   std::size_t maximum_output_columns = 0;
   std::size_t maximum_output_cells = 0;
   std::function<bool()> cancellation_requested;
+  const std::function<bool()>* borrowed_cancellation_requested = nullptr;
   CanonicalExecutionMgaAuthority mga_authority;
+  const CanonicalExecutionMgaAuthority* borrowed_mga_authority = nullptr;
+  std::shared_ptr<const CanonicalExecutionMgaAuthority> shared_mga_authority;
   std::optional<CanonicalHeapTableSampleProfile> table_sample_profile;
 };
 
@@ -1595,12 +1635,16 @@ struct CanonicalPhysicalExecutorRegistration {
   bool engine_owned = false;
   bool accepts_optimizer_publication_v2 = false;
   bool publishes_runtime_observation_v1 = false;
+  bool honors_dispatcher_memory_limit_v1 = false;
+  // Complete registration-owned live memory retained across dispatch, not
+  // including this registration's slot in the caller-owned registry vector.
+  std::uint64_t retained_live_memory_bytes_v1 = 0;
 };
 
 struct CanonicalHeapPhysicalRegistrationResult {
   DescriptorRuntimeDiagnostic diagnostic;
   std::optional<CanonicalPhysicalExecutorRegistration> registration;
-  CanonicalExecutionMgaAuthority mga_authority;
+  std::shared_ptr<const CanonicalExecutionMgaAuthority> mga_authority;
 };
 
 struct CanonicalPhysicalDagRuntimeLimits {
@@ -1621,6 +1665,17 @@ struct CanonicalPhysicalDagDispatchRequest {
   // after every selected node and before root publication.
   std::function<bool()> cancellation_requested;
   std::vector<CanonicalPhysicalExecutorRegistration> available_executors;
+  // Synchronous selected execution may borrow the already-retained immutable
+  // carriers. This avoids duplicating a complete physical DAG, MGA vector, and
+  // executor registry immediately before bounded dispatch.
+  const TypedPhysicalNodeDag* borrowed_physical_dag = nullptr;
+  const CanonicalExecutionMgaAuthority* borrowed_mga_authority = nullptr;
+  const std::vector<CanonicalPhysicalExecutorRegistration>*
+      borrowed_available_executors = nullptr;
+  // Memory retained by executor registrations before dispatch. The
+  // dispatcher subtracts this from every callback allowance together with its
+  // own control carriers and prior node results.
+  std::uint64_t preexisting_live_memory_bytes = 0;
 };
 
 struct CanonicalPhysicalDagDispatchResult {
@@ -2064,9 +2119,17 @@ struct CanonicalAggregateRuntimeResult {
   std::size_t modifier_count = 0;
   std::size_t aggregate_order_term_count = 0;
   std::size_t order_comparison_count = 0;
+  std::size_t input_payload_bytes = 0;
+  std::size_t fixed_retained_memory_bytes = 0;
+  std::size_t transition_workspace_bytes = 0;
+  std::size_t peak_distinct_memory_bytes = 0;
+  std::size_t peak_core_transition_memory_bytes = 0;
   std::size_t state_bytes = 0;
+  std::size_t planned_final_output_bytes = 0;
   std::size_t final_output_bytes = 0;
   std::size_t peak_finalization_workspace_bytes = 0;
+  std::size_t current_memory_bytes = 0;
+  std::size_t peak_memory_bytes = 0;
   // Input-row ordinals that reached the canonical transition pipeline after
   // FILTER, DISTINCT, and aggregate ORDER BY were applied.
   std::vector<std::size_t> transition_row_indices;
@@ -2093,7 +2156,7 @@ struct CanonicalDescriptorAggregateWindowRequest {
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch ordered_input_batch;
   CanonicalDescriptorOrderTerm order_term;
-  std::size_t value_column = 0;
+  std::optional<std::size_t> value_column;
   CanonicalAggregateDescriptor aggregate_descriptor;
   ExecutorColumnDescriptor result_column;
   std::string window_frame_descriptor_uuid;
@@ -2319,6 +2382,13 @@ struct CanonicalGroupedAggregateRuntimeResult {
   std::size_t combined_state_bytes = 0;
   std::size_t combined_final_output_bytes = 0;
   std::size_t peak_finalization_workspace_bytes = 0;
+  std::size_t input_payload_bytes = 0;
+  std::size_t fixed_retained_memory_bytes = 0;
+  std::size_t grouping_membership_bytes = 0;
+  std::size_t working_group_bytes = 0;
+  std::size_t output_payload_bytes = 0;
+  std::size_t current_memory_bytes = 0;
+  std::size_t peak_memory_bytes = 0;
   bool aggregate_state_spill_required = false;
   bool shared_state_authority_used = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
@@ -2373,6 +2443,12 @@ struct CanonicalGroupedAggregateSetRuntimeResult {
   std::size_t combined_state_bytes = 0;
   std::size_t combined_final_output_bytes = 0;
   std::size_t peak_finalization_workspace_bytes = 0;
+  std::size_t input_payload_bytes = 0;
+  std::size_t fixed_retained_memory_bytes = 0;
+  std::size_t retained_execution_payload_bytes = 0;
+  std::size_t output_payload_bytes = 0;
+  std::size_t current_memory_bytes = 0;
+  std::size_t peak_memory_bytes = 0;
   bool group_identity_proven = false;
   bool aggregate_state_spill_required = false;
   bool shared_state_authority_used = false;
@@ -2537,6 +2613,7 @@ struct CanonicalDescriptorDistinctResult {
 
 struct CanonicalDescriptorSortRequest;
 struct CanonicalDescriptorSortResult;
+using DescriptorCancellationProbe = bool (*)(const void* context);
 
 // An expression ORDER BY key batch is executable authority only after the
 // canonical query route has bound the exact payload/key pair to the selected
@@ -2558,6 +2635,12 @@ class CanonicalDescriptorSortKeyReceipt {
       const CanonicalDescriptorSortRequest& request,
       const TypedPhysicalNodeDag& borrowed_execution_dag,
       const DescriptorBatch& borrowed_input_batch);
+  friend CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+      const CanonicalDescriptorSortRequest& request,
+      const TypedPhysicalNodeDag& borrowed_execution_dag,
+      const DescriptorBatch& borrowed_input_batch,
+      DescriptorCancellationProbe cancellation_requested,
+      const void* cancellation_context);
 
   CanonicalDescriptorSortKeyReceipt() = default;
 
@@ -2913,11 +2996,37 @@ bool CanonicalDerivedDescriptorTypeMatches(
 bool DeriveCanonicalNullableDescriptorEncoding(
     scratchbird::engine::internal_api::EngineDescriptor* descriptor);
 DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch);
+DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
+    const DescriptorBatch& batch,
+    DescriptorCancellationProbe cancellation_requested,
+    const void* cancellation_context,
+    bool* cancellation_observed);
+DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
+    const DescriptorBatch& batch,
+    const std::function<bool()>& cancellation_requested,
+    bool* cancellation_observed);
+// Maximum transient heap required by one sequential value-validation call.
+// Batch validation does not retain scratch between cells, so callers combine
+// this bound with the already-materialized batch to prove the live peak.
+std::optional<std::uint64_t> BoundDescriptorBatchValidationScratchMemoryBytes(
+    const DescriptorBatch& batch,
+    const std::function<bool()>& cancellation_requested,
+    bool* cancellation_observed,
+    bool* cancellation_probe_failed);
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     const DescriptorBatch& batch,
     const std::vector<std::uint32_t>& output_descriptor_ids,
     const std::function<bool()>& cancellation_requested = {},
     bool* cancellation_observed = nullptr);
+DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
+    const DescriptorBatch& batch,
+    const std::vector<std::uint32_t>& output_descriptor_ids,
+    DescriptorCancellationProbe cancellation_requested,
+    const void* cancellation_context,
+    bool* cancellation_observed);
+DescriptorRuntimeDiagnostic ValidateCanonicalJoinDescriptorRoleDomains(
+    const DescriptorBatch& left_batch,
+    const DescriptorBatch& right_batch);
 CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
     const CanonicalDescriptorProjectionRequest& request);
 // Borrowed execution carriers are consumed synchronously and are never
@@ -2982,8 +3091,18 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
     const DescriptorBatch& borrowed_input_batch);
 CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
     const CanonicalExistsSubqueryRequest& request);
+CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
+    const CanonicalExistsSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     const CanonicalQuantifiedSubqueryRequest& request);
+CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
+    const CanonicalQuantifiedSubqueryRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    std::uint64_t scoped_root_physical_node_id,
+    const DescriptorBatch& borrowed_input_batch);
 CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     const CanonicalCorrelatedSubqueryRequest& request);
 // The borrowed DAG is consumed synchronously and is never retained. The
@@ -3246,6 +3365,15 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request,
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch);
+// Cancellation-aware borrowed expression-order execution. The callback and
+// context are consumed synchronously and never retained by the receipt or
+// executor.
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    DescriptorCancellationProbe cancellation_requested,
+    const void* cancellation_context);
 // Ordinary input-column ordering may additionally borrow its immutable order
 // terms and deterministic tie receipt. All owned execution and semantic
 // carriers in the request must remain exact-default, and no expression
@@ -3256,6 +3384,16 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const DescriptorBatch& borrowed_input_batch,
     const std::vector<CanonicalDescriptorOrderTerm>& borrowed_order_terms,
     const std::string& borrowed_deterministic_tie_evidence_uuid);
+// Cancellation-aware borrowed ordinary/heap ordering. The callback and
+// context are consumed synchronously and never retained.
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request,
+    const TypedPhysicalNodeDag& borrowed_execution_dag,
+    const DescriptorBatch& borrowed_input_batch,
+    const std::vector<CanonicalDescriptorOrderTerm>& borrowed_order_terms,
+    const std::string& borrowed_deterministic_tie_evidence_uuid,
+    DescriptorCancellationProbe cancellation_requested,
+    const void* cancellation_context);
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
     const CanonicalDescriptorOrderTerm& term,
     const ExecutorColumnDescriptor& column);

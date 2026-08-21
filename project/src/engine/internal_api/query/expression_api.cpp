@@ -2400,17 +2400,26 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
 
 EngineCompareScalarValuesResult EngineCompareScalarValues(
     const EngineCompareScalarValuesRequest& request) {
-  const EngineTypedValue left =
-      RequestInputValue(request, request.left_value);
-  const EngineTypedValue right =
-      RequestSecondValue(request, request.right_value);
+  const auto& context = request.borrowed_context == nullptr
+                            ? request.context
+                            : *request.borrowed_context;
+  EngineTypedValue owned_left;
+  EngineTypedValue owned_right;
+  const auto& left = request.borrowed_left_value == nullptr
+                         ? (owned_left =
+                                RequestInputValue(request, request.left_value))
+                         : *request.borrowed_left_value;
+  const auto& right = request.borrowed_right_value == nullptr
+                          ? (owned_right = RequestSecondValue(
+                                 request, request.right_value))
+                          : *request.borrowed_right_value;
   const std::string left_collation = DescriptorField(
       left.descriptor.encoded_descriptor, "collation_uuid");
   const std::string right_collation = DescriptorField(
       right.descriptor.encoded_descriptor, "collation_uuid");
   auto refuse = [&](std::string detail) {
     return ApiFailure<EngineCompareScalarValuesResult>(
-        request.context,
+        context,
         "query.compare_scalar_values",
         MakeEngineApiDiagnostic(
             "QOW-DIAG-QRY-008-COLLATION-REFUSAL-V1",
@@ -2423,7 +2432,7 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
   EngineUuid collation_uuid;
   collation_uuid.canonical = left_collation;
   const auto resolved = LookupEngineResourceDescriptorByUuid(
-      request.context, collation_uuid, "collation");
+      context, collation_uuid, "collation");
   if (!resolved.ok || !resolved.resource_descriptor.present ||
       resolved.resource_descriptor.resource_uuid.canonical != left_collation) {
     const std::string detail = resolved.diagnostic.code.empty()
@@ -2452,7 +2461,7 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
       return refuse(std::move(refusal_detail));
     }
     auto result = ApiSuccess<EngineCompareScalarValuesResult>(
-        request.context, "query.compare_scalar_values");
+        context, "query.compare_scalar_values");
     result.comparison = 0;
     result.collation_uuid = std::move(collation_uuid);
     result.collation_epoch = resolved.resource_descriptor.family_epoch;
@@ -2474,7 +2483,7 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
     return refuse(std::move(refusal_detail));
   }
   auto result = ApiSuccess<EngineCompareScalarValuesResult>(
-      request.context, "query.compare_scalar_values");
+      context, "query.compare_scalar_values");
   result.comparison = comparison;
   result.collation_uuid = std::move(collation_uuid);
   result.collation_epoch = resolved.resource_descriptor.family_epoch;
@@ -2487,12 +2496,18 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
 
 EngineNormalizeTimezoneScalarResult EngineNormalizeTimezoneScalar(
     const EngineNormalizeTimezoneScalarRequest& request) {
-  const EngineTypedValue input =
-      RequestInputValue(request, request.input_value);
-  const auto resolved = LookupEngineTimezoneSeedAuthority(request.context);
+  const auto& context = request.borrowed_context == nullptr
+                            ? request.context
+                            : *request.borrowed_context;
+  EngineTypedValue owned_input;
+  const auto& input = request.borrowed_input_value == nullptr
+                          ? (owned_input = RequestInputValue(
+                                 request, request.input_value))
+                          : *request.borrowed_input_value;
+  const auto resolved = LookupEngineTimezoneSeedAuthority(context);
   auto refuse = [&](std::string detail) {
     return ApiFailure<EngineNormalizeTimezoneScalarResult>(
-        request.context,
+        context,
         "query.normalize_timezone_scalar",
         MakeEngineApiDiagnostic(
             "QOW-DIAG-QRY-008-TIMEZONE-REFUSAL-V1",
@@ -2546,7 +2561,7 @@ EngineNormalizeTimezoneScalarResult EngineNormalizeTimezoneScalar(
     }
   }
   auto result = ApiSuccess<EngineNormalizeTimezoneScalarResult>(
-      request.context, "query.normalize_timezone_scalar");
+      context, "query.normalize_timezone_scalar");
   result.value = std::move(output);
   result.timezone_identifier = std::move(timezone_identifier);
   result.timezone_offset_minutes = timezone_offset_minutes;
@@ -2570,13 +2585,22 @@ EngineNormalizeTimezoneScalarResult EngineNormalizeTimezoneScalar(
 EngineCompareCanonicalScalarValuesResult EngineCompareCanonicalScalarValues(
     const EngineCompareCanonicalScalarValuesRequest& request) {
   constexpr const char* kOperation = "query.compare_canonical_scalar_values";
-  const EngineTypedValue left =
-      RequestInputValue(request, request.left_value);
-  const EngineTypedValue right =
-      RequestSecondValue(request, request.right_value);
+  const auto& context = request.borrowed_context == nullptr
+                            ? request.context
+                            : *request.borrowed_context;
+  EngineTypedValue owned_left;
+  EngineTypedValue owned_right;
+  const auto& left = request.borrowed_left_value == nullptr
+                         ? (owned_left =
+                                RequestInputValue(request, request.left_value))
+                         : *request.borrowed_left_value;
+  const auto& right = request.borrowed_right_value == nullptr
+                          ? (owned_right = RequestSecondValue(
+                                 request, request.right_value))
+                          : *request.borrowed_right_value;
   const auto refuse = [&](std::string detail) {
     return ApiFailure<EngineCompareCanonicalScalarValuesResult>(
-        request.context, kOperation,
+        context, kOperation,
         MakeEngineApiDiagnostic(
             "QOW-DIAG-QRY-008-COMPARISON-AUTHORITY-REFUSAL-V1",
             "engine.query.typed_scalar_comparison_refused",
@@ -2616,7 +2640,7 @@ EngineCompareCanonicalScalarValuesResult EngineCompareCanonicalScalarValues(
                         : std::move(detail));
     }
     auto result = ApiSuccess<EngineCompareCanonicalScalarValuesResult>(
-        request.context, kOperation);
+        context, kOperation);
     result.evidence.push_back(
         {"sql_truth_value", EngineSqlTruthValueName(truth)});
     return result;
@@ -2624,9 +2648,9 @@ EngineCompareCanonicalScalarValuesResult EngineCompareCanonicalScalarValues(
 
   if (left_type == dt::CanonicalTypeId::character) {
     EngineCompareScalarValuesRequest collated_request;
-    collated_request.context = request.context;
-    collated_request.left_value = left;
-    collated_request.right_value = right;
+    collated_request.borrowed_context = &context;
+    collated_request.borrowed_left_value = &left;
+    collated_request.borrowed_right_value = &right;
     const auto collated = EngineCompareScalarValues(collated_request);
     if (!collated.ok) return propagate_failure(collated);
     if (collated.comparison < -1 || collated.comparison > 1) {
@@ -2634,7 +2658,7 @@ EngineCompareCanonicalScalarValuesResult EngineCompareCanonicalScalarValues(
           "collation authority returned a noncanonical scalar order");
     }
     auto result = ApiSuccess<EngineCompareCanonicalScalarValuesResult>(
-        request.context, kOperation);
+        context, kOperation);
     result.comparison = collated.comparison;
     result.evidence = collated.evidence;
     return result;
@@ -2648,14 +2672,14 @@ EngineCompareCanonicalScalarValuesResult EngineCompareCanonicalScalarValues(
           "profile");
     }
     EngineNormalizeTimezoneScalarRequest left_request;
-    left_request.context = request.context;
-    left_request.input_value = left;
+    left_request.borrowed_context = &context;
+    left_request.borrowed_input_value = &left;
     const auto left_normalized =
         EngineNormalizeTimezoneScalar(left_request);
     if (!left_normalized.ok) return propagate_failure(left_normalized);
     EngineNormalizeTimezoneScalarRequest right_request;
-    right_request.context = request.context;
-    right_request.input_value = right;
+    right_request.borrowed_context = &context;
+    right_request.borrowed_input_value = &right;
     const auto right_normalized =
         EngineNormalizeTimezoneScalar(right_request);
     if (!right_normalized.ok) return propagate_failure(right_normalized);
@@ -2674,7 +2698,7 @@ EngineCompareCanonicalScalarValuesResult EngineCompareCanonicalScalarValues(
         right_normalized.comparable_utc_whole_seconds,
         right_normalized.comparable_fractional_picoseconds);
     auto result = ApiSuccess<EngineCompareCanonicalScalarValuesResult>(
-        request.context, kOperation);
+        context, kOperation);
     result.comparison =
         left_key < right_key ? -1 : (right_key < left_key ? 1 : 0);
     result.evidence.push_back(
@@ -2692,7 +2716,7 @@ EngineCompareCanonicalScalarValuesResult EngineCompareCanonicalScalarValues(
     return refuse("canonical scalar comparator returned a noncanonical order");
   }
   auto result = ApiSuccess<EngineCompareCanonicalScalarValuesResult>(
-      request.context, kOperation);
+      context, kOperation);
   result.comparison = comparison;
   result.evidence.push_back(
       {"comparison_authority", "canonical_noncollated"});

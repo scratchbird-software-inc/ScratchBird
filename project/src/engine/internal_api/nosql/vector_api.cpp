@@ -10,12 +10,14 @@
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "datatype_document.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "nosql/nosql_batch_point_lookup_support.hpp"
 #include "nosql/nosql_provider_generation_store.hpp"
 #include "nosql/nosql_surface_support.hpp"
 #include "security/security_model.hpp"
+#include "uuid.hpp"
 #include "vector_index_generation_publication.hpp"
 
 #include <algorithm>
@@ -24,6 +26,7 @@
 #include <charconv>
 #include <cmath>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
 #include <map>
 #include <optional>
@@ -527,10 +530,60 @@ std::string BoundVectorTypeUuid(const EngineDescriptor& descriptor) {
                                     "type_uuid");
 }
 
-bool ExactBoundVectorStorageDescriptor(
+std::string ExactBoundVectorCoreTypeUuid(const std::string_view stable_name) {
+  static const auto manifest =
+      scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  const auto found = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  return count == 1 && found != manifest.manifest.descriptor_rows.end() &&
+                 found->descriptor_uuid.valid()
+             ? scratchbird::core::uuid::UuidToString(
+                   found->descriptor_uuid.value)
+             : std::string{};
+}
+
+bool ExactBoundVectorDescriptorFields(
+    const EngineDescriptor& descriptor,
+    const std::initializer_list<std::pair<std::string_view, std::string_view>>&
+        expected) {
+  std::map<std::string_view, std::string_view> fields;
+  const auto encoded = std::string_view(descriptor.encoded_descriptor);
+  std::size_t offset = 0;
+  while (offset <= encoded.size()) {
+    const auto end = encoded.find(';', offset);
+    const auto field = encoded.substr(
+        offset, end == std::string_view::npos ? std::string_view::npos
+                                              : end - offset);
+    const auto equal = field.find('=');
+    if (field.empty() || equal == std::string_view::npos || equal == 0 ||
+        equal + 1 == field.size() ||
+        !fields.emplace(field.substr(0, equal), field.substr(equal + 1)).second) {
+      return false;
+    }
+    if (end == std::string_view::npos) break;
+    offset = end + 1;
+  }
+  if (fields.size() != expected.size()) return false;
+  return std::ranges::all_of(expected, [&](const auto& field) {
+    const auto found = fields.find(field.first);
+    return found != fields.end() && found->second == field.second;
+  });
+}
+
+bool ExactBoundVectorStorageDescriptorImpl(
     const MgaRelationStorageDescriptor& descriptor,
     const std::string_view collection_uuid) {
+  const auto vector_type_uuid = ExactBoundVectorCoreTypeUuid("dense_vector");
+  const auto text_type_uuid = ExactBoundVectorCoreTypeUuid("character");
   if (descriptor.relation_uuid.canonical != collection_uuid ||
+      vector_type_uuid.empty() || text_type_uuid.empty() ||
+      !CanonicalBoundVectorUuid(descriptor.database_uuid.canonical) ||
+      !CanonicalBoundVectorUuid(descriptor.schema_uuid.canonical) ||
       descriptor.relation_kind != "table" ||
       descriptor.storage_profile != "local_mga_rowstore_v1" ||
       descriptor.descriptor_generation == 0 ||
@@ -540,26 +593,34 @@ bool ExactBoundVectorStorageDescriptor(
   }
   const auto& embedding = descriptor.columns[0];
   const auto& metadata = descriptor.columns[1];
-  const auto dimension = BoundVectorDescriptorField(
-      embedding.value_descriptor.encoded_descriptor, "dimension");
-  const auto width = BoundVectorDescriptorField(
-      embedding.value_descriptor.encoded_descriptor, "width");
-  auto element = BoundVectorDescriptorField(
-      embedding.value_descriptor.encoded_descriptor, "element");
-  if (element.empty()) {
-    element = BoundVectorDescriptorField(
-        embedding.value_descriptor.encoded_descriptor, "element_profile");
-  }
-  if (element.empty()) {
-    element = BoundVectorDescriptorField(
-        embedding.value_descriptor.encoded_descriptor, "element_type");
-  }
   return embedding.ordinal == 0 &&
          embedding.canonical_name_key == "embedding" && !embedding.nullable &&
+         !embedding.generated && !embedding.identity_column &&
+         embedding.storage_class == "inline_row_value" &&
+         embedding.max_inline_bytes == 4096 &&
+         embedding.overflow_policy == "mga_large_value_locator" &&
+         embedding.charset_uuid.empty() && embedding.collation_uuid.empty() &&
+         embedding.character_length == 0 &&
+         embedding.value_descriptor.descriptor_kind ==
+             "canonical_type_descriptor" &&
          embedding.value_descriptor.canonical_type_name == "dense_vector" &&
-         (dimension == "3" || width == "3") && element == "real32" &&
+         ExactBoundVectorDescriptorFields(
+             embedding.value_descriptor,
+             {{"canonical", "dense_vector"},
+              {"type_uuid", vector_type_uuid},
+              {"nullable", "false"},
+              {"dimension", "3"},
+              {"element_type", "real32"}}) &&
          metadata.ordinal == 1 &&
          metadata.canonical_name_key == "metadata" && !metadata.nullable &&
+         !metadata.generated && !metadata.identity_column &&
+         metadata.storage_class == "inline_row_value" &&
+         metadata.max_inline_bytes == 4096 &&
+         metadata.overflow_policy == "mga_large_value_locator" &&
+         metadata.charset_uuid.empty() && metadata.collation_uuid.empty() &&
+         metadata.character_length == 0 &&
+         metadata.value_descriptor.descriptor_kind ==
+             "canonical_type_descriptor" &&
          metadata.value_descriptor.canonical_type_name == "text" &&
          CanonicalBoundVectorUuid(embedding.column_uuid.canonical) &&
          CanonicalBoundVectorUuid(metadata.column_uuid.canonical) &&
@@ -567,10 +628,14 @@ bool ExactBoundVectorStorageDescriptor(
              embedding.value_descriptor.descriptor_uuid.canonical) &&
          CanonicalBoundVectorUuid(
              metadata.value_descriptor.descriptor_uuid.canonical) &&
-         CanonicalBoundVectorUuid(
-             BoundVectorTypeUuid(embedding.value_descriptor)) &&
-         CanonicalBoundVectorUuid(
-             BoundVectorTypeUuid(metadata.value_descriptor));
+         embedding.column_uuid.canonical != metadata.column_uuid.canonical &&
+         embedding.value_descriptor.descriptor_uuid.canonical !=
+             metadata.value_descriptor.descriptor_uuid.canonical &&
+         ExactBoundVectorDescriptorFields(
+             metadata.value_descriptor,
+             {{"canonical", "text"},
+              {"type_uuid", text_type_uuid},
+              {"nullable", "false"}});
 }
 
 bool ExactBoundVectorOutputDescriptors(
@@ -578,20 +643,17 @@ bool ExactBoundVectorOutputDescriptors(
   if (descriptors.size() != 3) return false;
   static constexpr std::array<std::string_view, 3> kTypes{
       "uuid", "real64", "real64"};
+  std::unordered_set<std::string> descriptor_uuids;
   for (std::size_t index = 0; index < descriptors.size(); ++index) {
     const auto& descriptor = descriptors[index];
+    const auto type_uuid = ExactBoundVectorCoreTypeUuid(kTypes[index]);
     if (!CanonicalBoundVectorUuid(descriptor.descriptor_uuid.canonical) ||
-        descriptor.descriptor_kind.empty() ||
+        !descriptor_uuids.insert(descriptor.descriptor_uuid.canonical).second ||
+        descriptor.descriptor_kind != "scalar" || type_uuid.empty() ||
         descriptor.canonical_type_name != kTypes[index] ||
-        !CanonicalBoundVectorUuid(BoundVectorTypeUuid(descriptor))) {
-      return false;
-    }
-    const auto nullability = BoundVectorDescriptorField(
-        descriptor.encoded_descriptor, "nullability");
-    const auto nullable = BoundVectorDescriptorField(
-        descriptor.encoded_descriptor, "nullable");
-    if (nullability != "non_null" && nullability != "not_null" &&
-        nullable != "false" && nullable != "0") {
+        !ExactBoundVectorDescriptorFields(
+            descriptor,
+            {{"type_uuid", type_uuid}, {"nullability", "non_null"}})) {
       return false;
     }
   }
@@ -859,6 +921,12 @@ bool BoundVectorCarrierDescriptorMatches(
 
 }  // namespace
 
+bool ExactBoundVectorStorageDescriptorV1(
+    const MgaRelationStorageDescriptor& descriptor,
+    const std::string_view collection_uuid) {
+  return ExactBoundVectorStorageDescriptorImpl(descriptor, collection_uuid);
+}
+
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_NOSQL_VECTOR_API_BEHAVIOR
 EngineVectorSearchResult EngineVectorSearch(const EngineVectorSearchRequest& request) {
   constexpr const char* kOperation = "nosql.vector_search";
@@ -927,6 +995,8 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
   const bool ann_operation =
       request.operation == EngineBoundVectorReadOperationV1::kAnnSearch;
   if (!CanonicalBoundVectorUuid(request.collection_uuid) ||
+      !CanonicalBoundVectorUuid(request.expected_descriptor_uuid) ||
+      request.expected_descriptor_generation == 0 ||
       !CanonicalBoundVectorUuid(request.selected_alternative_uuid) ||
       !CanonicalBoundVectorUuid(request.selected_provider_uuid) ||
       !CanonicalBoundVectorUuid(request.selected_capability_uuid) ||
@@ -1019,6 +1089,23 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
                   "current materialized vector SELECT authorization is absent or stale");
   }
 
+  // Catalog/type admission is metadata-only. Bind the exact current relation
+  // before any ANN provider or MGA heap row may be inspected.
+  const auto preflight = LoadMgaRelationStorageDescriptor(
+      request.context, request.collection_uuid);
+  if (!preflight.ok ||
+      preflight.descriptor.database_uuid.canonical !=
+          request.context.database_uuid.canonical ||
+      preflight.descriptor.descriptor_uuid.canonical !=
+          request.expected_descriptor_uuid ||
+      preflight.descriptor.descriptor_generation !=
+          request.expected_descriptor_generation ||
+      !ExactBoundVectorStorageDescriptorV1(preflight.descriptor,
+                                           request.collection_uuid)) {
+    return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
+                  "current vector storage descriptor is outside the exact v1 profile");
+  }
+
   bool ann_carrier_loaded = false;
   // An ordinary exact scan is the requested physical route, not a fallback.
   // This receipt becomes true only when an admitted ANN-with-exact-fallback
@@ -1038,7 +1125,9 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
                       "vector ANN carrier is corrupt, partial, or duplicated");
       }
     } else if (!ValidateVectorAnnCapabilityBindingV1(loaded.metadata) ||
-               !BoundVectorCarrierContextMatches(request, loaded.metadata)) {
+               !BoundVectorCarrierContextMatches(request, loaded.metadata) ||
+               !BoundVectorCarrierDescriptorMatches(loaded.metadata,
+                                                     preflight.descriptor)) {
       return refuse("SB_MODEL_PROVIDER_GENERATION_STALE_V1",
                     "vector ANN carrier identity or statement cohort is stale");
     } else {
@@ -1072,8 +1161,12 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
     return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
                   "current MGA-visible vector base relation is unavailable");
   }
-  if (!ExactBoundVectorStorageDescriptor(read.descriptor,
-                                         request.collection_uuid)) {
+  if (!ExactBoundVectorStorageDescriptorV1(read.descriptor,
+                                           request.collection_uuid) ||
+      read.descriptor.descriptor_uuid.canonical !=
+          preflight.descriptor.descriptor_uuid.canonical ||
+      read.descriptor.descriptor_generation !=
+          preflight.descriptor.descriptor_generation) {
     return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
                   "current vector storage descriptor is outside the exact v1 profile");
   }

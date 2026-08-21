@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <functional>
 #include <optional>
 #include <ranges>
 #include <string_view>
@@ -209,52 +210,36 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   const auto& context = request.context;
   const auto& relational = request.relational_dag;
   std::vector<const RelationalDagNode*> scans;
-  const RelationalDagNode* join = nullptr;
+  std::vector<const RelationalDagNode*> joins;
   for (const auto& node : relational.nodes) {
     if (node.node_kind == RelationalDagNodeKind::kScan) {
       scans.push_back(&node);
-    } else if (node.node_kind == RelationalDagNodeKind::kJoin &&
-               join == nullptr) {
-      join = &node;
+    } else if (node.node_kind == RelationalDagNodeKind::kJoin) {
+      joins.push_back(&node);
     } else {
       return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
-                    "two_heap_scans_one_cross_join");
+                    "bounded_heap_scan_join_tree");
     }
   }
-  const bool accepted_join =
-      join != nullptr &&
-      (join->semantic_variant_id == "join.cross.v1" ||
-       join->semantic_variant_id == "join.inner.v1" ||
-       join->semantic_variant_id == "join.left-outer.v1" ||
-       join->semantic_variant_id == "join.right-outer.v1" ||
-       join->semantic_variant_id == "join.full-outer.v1" ||
-       join->semantic_variant_id == "join.left-semi.v1" ||
-       join->semantic_variant_id == "join.left-anti.v1");
-  const bool predicate_join =
-      accepted_join && join->semantic_variant_id != "join.cross.v1";
-  const bool left_only_join =
-      accepted_join &&
-      (join->semantic_variant_id == "join.left-semi.v1" ||
-       join->semantic_variant_id == "join.left-anti.v1");
-  if (scans.size() != 2 || join == nullptr || relational.nodes.size() != 3 ||
-      relational.root_node_id != join->node_id ||
-      !accepted_join ||
-      join->input_node_ids !=
-          std::vector<std::uint32_t>{scans[0]->node_id, scans[1]->node_id} ||
-      join->bound_expression_ids.size() !=
-          static_cast<std::size_t>(predicate_join) ||
-      !join->required_object_uuids.empty() || !join->values_row_ids.empty() ||
-      !join->required_property_uuids.empty() ||
-      !join->delivered_property_uuids.empty() ||
+  const auto root_join = std::ranges::find_if(joins, [&](const auto* node) {
+    return node->node_id == relational.root_node_id;
+  });
+  if (scans.size() < 2 || scans.size() > 9 ||
+      joins.size() != scans.size() - 1 || root_join == joins.end() ||
+      relational.nodes.size() != scans.size() + joins.size() ||
       !relational.values_rows.empty() || !relational.grouping_sets.empty() ||
       !relational.properties.empty()) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
-                  "two_heap_scans_one_cross_join");
+                  "bounded_heap_scan_join_tree");
   }
-  std::vector<std::uint32_t> expected_join_descriptors;
-  for (std::size_t scan_ordinal = 0; scan_ordinal < scans.size();
-       ++scan_ordinal) {
-    const auto* scan = scans[scan_ordinal];
+  std::unordered_map<std::uint32_t, const RelationalDagNode*> nodes_by_id;
+  for (const auto& node : relational.nodes) {
+    if (node.node_id == 0 || !nodes_by_id.emplace(node.node_id, &node).second) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "unique_join_tree_node_identity");
+    }
+  }
+  for (const auto* scan : scans) {
     if (scan->semantic_variant_id != "relation.source.v1" ||
         !scan->input_node_ids.empty() || scan->shareable ||
         scan->required_object_uuids.size() != 1 ||
@@ -268,17 +253,61 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
       return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
                     "relation_source_leaf");
     }
-    if (!left_only_join || scan_ordinal == 0) {
-      expected_join_descriptors.insert(expected_join_descriptors.end(),
-                                       scan->output_descriptor_ids.begin(),
-                                       scan->output_descriptor_ids.end());
-    }
   }
-  if (scans[0]->required_object_uuids.front() ==
-          scans[1]->required_object_uuids.front() ||
-      join->output_descriptor_ids != expected_join_descriptors) {
+  std::unordered_set<std::uint32_t> visiting;
+  std::unordered_set<std::uint32_t> completed;
+  std::function<bool(std::uint32_t)> validate_tree =
+      [&](const std::uint32_t node_id) {
+        const auto found = nodes_by_id.find(node_id);
+        if (found == nodes_by_id.end()) return false;
+        const auto& node = *found->second;
+        if (node.node_kind == RelationalDagNodeKind::kScan) {
+          return completed.insert(node_id).second;
+        }
+        const bool accepted_join =
+            node.node_kind == RelationalDagNodeKind::kJoin &&
+            (node.semantic_variant_id == "join.cross.v1" ||
+             node.semantic_variant_id == "join.inner.v1" ||
+             node.semantic_variant_id == "join.left-outer.v1" ||
+             node.semantic_variant_id == "join.right-outer.v1" ||
+             node.semantic_variant_id == "join.full-outer.v1" ||
+             node.semantic_variant_id == "join.left-semi.v1" ||
+             node.semantic_variant_id == "join.left-anti.v1");
+        const bool predicate_join =
+            accepted_join && node.semantic_variant_id != "join.cross.v1";
+        const bool left_only_join =
+            accepted_join &&
+            (node.semantic_variant_id == "join.left-semi.v1" ||
+             node.semantic_variant_id == "join.left-anti.v1");
+        if (!accepted_join || node.input_node_ids.size() != 2 ||
+            node.input_node_ids[0] == node.input_node_ids[1] ||
+            node.bound_expression_ids.size() !=
+                static_cast<std::size_t>(predicate_join) ||
+            !node.required_object_uuids.empty() ||
+            !node.values_row_ids.empty() ||
+            !node.required_property_uuids.empty() ||
+            !node.delivered_property_uuids.empty() ||
+            completed.contains(node_id) || !visiting.insert(node_id).second ||
+            !validate_tree(node.input_node_ids[0]) ||
+            !validate_tree(node.input_node_ids[1])) {
+          return false;
+        }
+        const auto* left = nodes_by_id.at(node.input_node_ids[0]);
+        const auto* right = nodes_by_id.at(node.input_node_ids[1]);
+        std::vector<std::uint32_t> expected = left->output_descriptor_ids;
+        if (!left_only_join) {
+          expected.insert(expected.end(), right->output_descriptor_ids.begin(),
+                          right->output_descriptor_ids.end());
+        }
+        if (node.output_descriptor_ids != expected) return false;
+        visiting.erase(node_id);
+        completed.insert(node_id);
+        return true;
+      };
+  if (!validate_tree((*root_join)->node_id) ||
+      completed.size() != relational.nodes.size()) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
-                  "exact_distinct_source_and_join_output_lineage");
+                  "connected_acyclic_join_output_lineage");
   }
 
   CanonicalRelationalPlanningScope planning_scope;
@@ -461,6 +490,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
     }
   }
 
+  std::ranges::sort(relation_uuids);
+  relation_uuids.erase(
+      std::unique(relation_uuids.begin(), relation_uuids.end()),
+      relation_uuids.end());
+
   opt::CanonicalNativeObjectAdmissionContext admission_context;
   admission_context.statement_uuid = context.statement_uuid.canonical;
   admission_context.catalog_snapshot_uuid =
@@ -606,13 +640,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                       std::to_string(issue.node_id));
   }
   if (relational.wire_version != 2 || relational.nodes.empty() ||
-      relational.nodes.size() > 5) {
+      relational.nodes.size() > 17) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
                   "bounded_heap_scan_composition");
   }
   if (std::ranges::count_if(relational.nodes, [](const auto& node) {
         return node.node_kind == RelationalDagNodeKind::kScan;
-      }) == 2) {
+      }) >= 2) {
     return BuildCanonicalCrossJoinHeapAdmission(
         request, canonical_mga, admitted_at_monotonic_ns);
   }
@@ -622,6 +656,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   const RelationalDagNode* sort_node = nullptr;
   const RelationalDagNode* window_node = nullptr;
   const RelationalDagNode* aggregate_node = nullptr;
+  const RelationalDagNode* cte_node = nullptr;
   const RelationalDagNode* limit_node = nullptr;
   for (const auto& candidate : relational.nodes) {
     if (candidate.node_kind == RelationalDagNodeKind::kScan) {
@@ -660,6 +695,12 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                       "one_optional_heap_aggregate");
       }
       aggregate_node = &candidate;
+    } else if (candidate.node_kind == RelationalDagNodeKind::kCte) {
+      if (cte_node != nullptr) {
+        return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
+                      "one_optional_nonrecursive_cte");
+      }
+      cte_node = &candidate;
     } else if (candidate.node_kind == RelationalDagNodeKind::kLimit) {
       if (limit_node != nullptr) {
         return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
@@ -684,17 +725,50 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                                                  : (filter_node != nullptr
                                                         ? filter_node
                                                         : scan_node)))));
+  const auto direct_or_cte_input =
+      [&](const RelationalDagNode* consumer,
+          const std::uint32_t producer_node_id) {
+        if (consumer == nullptr) return false;
+        if (consumer->input_node_ids ==
+            std::vector<std::uint32_t>{producer_node_id}) {
+          return true;
+        }
+        return cte_node != nullptr &&
+               consumer->input_node_ids ==
+                   std::vector<std::uint32_t>{cte_node->node_id} &&
+               cte_node->input_node_ids ==
+                   std::vector<std::uint32_t>{producer_node_id};
+      };
   const auto expected_project_input =
       window_node != nullptr
           ? window_node->node_id
           : (sort_node != nullptr
                  ? sort_node->node_id
-                 : (filter_node == nullptr ? 0 : filter_node->node_id));
+                 : (filter_node != nullptr
+                        ? filter_node->node_id
+                        : (scan_node == nullptr ? 0 : scan_node->node_id)));
   // FILTER and SORT are schema-preserving and intentionally own no output
   // records in this profile.  Project lineage therefore resolves at the
   // Window when present, otherwise at the Scan.
   const auto* project_input_node =
       window_node != nullptr ? window_node : scan_node;
+  const auto* early_window_aggregate_row =
+      window_node != nullptr &&
+              window_node->semantic_variant_id ==
+                  "window.aggregate-bridge.v1" &&
+              relational.window_invocations.size() == 1
+          ? executor::LookupCanonicalAggregateByUuidV1(
+                relational.window_invocations.front().function_uuid)
+          : nullptr;
+  const bool exact_count_star_window_shape =
+      early_window_aggregate_row != nullptr &&
+      early_window_aggregate_row->function ==
+          executor::CanonicalAggregateFunction::count &&
+      early_window_aggregate_row->builtin_id ==
+          relational.window_invocations.front().builtin_id &&
+      early_window_aggregate_row->abi_version ==
+          relational.window_invocations.front().function_abi_version &&
+      relational.window_invocations.front().argument_expression_ids.empty();
   bool exact_project_outputs = project_node == nullptr;
   if (project_node != nullptr && project_input_node != nullptr &&
       project_node->bound_expression_ids.size() ==
@@ -765,23 +839,56 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                  : (filter_node != nullptr
                         ? filter_node->node_id
                         : (scan_node == nullptr ? 0 : scan_node->node_id))));
+  const auto cte_input_node =
+      cte_node == nullptr || cte_node->input_node_ids.size() != 1
+          ? relational.nodes.end()
+          : std::ranges::find_if(relational.nodes, [&](const auto& candidate) {
+              return candidate.node_id == cte_node->input_node_ids.front();
+            });
+  const bool cte_is_root =
+      cte_node != nullptr && terminal_node != nullptr &&
+      relational.root_node_id == cte_node->node_id &&
+      cte_node->input_node_ids ==
+          std::vector<std::uint32_t>{terminal_node->node_id};
+  const auto cte_consumer_count =
+      cte_node == nullptr
+          ? std::size_t{0}
+          : static_cast<std::size_t>(std::ranges::count_if(
+                relational.nodes, [&](const auto& candidate) {
+                  return candidate.node_id != cte_node->node_id &&
+                         candidate.input_node_ids ==
+                             std::vector<std::uint32_t>{cte_node->node_id};
+                }));
   if (scan_node == nullptr ||
-      relational.root_node_id != terminal_node->node_id ||
+      terminal_node == nullptr ||
+      (relational.root_node_id != terminal_node->node_id && !cte_is_root) ||
       relational.nodes.size() !=
           1 + static_cast<std::size_t>(filter_node != nullptr) +
               static_cast<std::size_t>(project_node != nullptr) +
               static_cast<std::size_t>(sort_node != nullptr) +
               static_cast<std::size_t>(window_node != nullptr) +
               static_cast<std::size_t>(aggregate_node != nullptr) +
+              static_cast<std::size_t>(cte_node != nullptr) +
               static_cast<std::size_t>(limit_node != nullptr) ||
+      (cte_node != nullptr &&
+       (cte_input_node == relational.nodes.end() ||
+        cte_node->semantic_variant_id != "cte.bound.v1" ||
+        cte_node->output_descriptor_ids !=
+            cte_input_node->output_descriptor_ids ||
+        !cte_node->bound_expression_ids.empty() ||
+        !cte_node->required_object_uuids.empty() ||
+        !cte_node->values_row_ids.empty() ||
+        !cte_node->required_property_uuids.empty() ||
+        !cte_node->delivered_property_uuids.empty() ||
+        (cte_is_root ? cte_consumer_count != 0
+                     : cte_consumer_count != 1))) ||
       (aggregate_node != nullptr &&
        (project_node != nullptr || sort_node != nullptr)) ||
       (window_node != nullptr &&
        (sort_node == nullptr || aggregate_node != nullptr ||
         limit_node != nullptr)) ||
       (filter_node != nullptr &&
-       (filter_node->input_node_ids !=
-            std::vector<std::uint32_t>{scan_node->node_id} ||
+       (!direct_or_cte_input(filter_node, scan_node->node_id) ||
         filter_node->semantic_variant_id !=
             "filter.catalog-column-numeric-comparison.v1" ||
         filter_node->bound_expression_ids.size() != 1 ||
@@ -792,8 +899,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         !filter_node->required_property_uuids.empty() ||
         !filter_node->delivered_property_uuids.empty())) ||
       (project_node != nullptr &&
-       (project_node->input_node_ids !=
-            std::vector<std::uint32_t>{expected_project_input} ||
+       (!direct_or_cte_input(project_node, expected_project_input) ||
         !exact_project_outputs ||
         project_node->semantic_variant_id !=
             "project.catalog-visible-columns.v1" ||
@@ -816,10 +922,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         !project_node->required_property_uuids.empty() ||
         !project_node->delivered_property_uuids.empty())) ||
       (sort_node != nullptr &&
-       (sort_node->input_node_ids !=
-            std::vector<std::uint32_t>{
-                filter_node != nullptr ? filter_node->node_id
-                                       : scan_node->node_id} ||
+       (!direct_or_cte_input(
+            sort_node, filter_node != nullptr ? filter_node->node_id
+                                               : scan_node->node_id) ||
         sort_node->semantic_variant_id != "sort.required-order.v1" ||
         sort_node->bound_expression_ids.empty() ||
         sort_node->output_descriptor_ids != scan_node->output_descriptor_ids ||
@@ -854,7 +959,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                   "window.aggregate-bridge.v1")
                  ? (window_node->semantic_variant_id == "window.nth-value.v1"
                         ? 4U
-                        : 3U)
+                        : (exact_count_star_window_shape ? 2U : 3U))
                  : 2U) ||
         window_node->output_descriptor_ids.size() !=
             sort_node->output_descriptor_ids.size() + 1 ||
@@ -870,10 +975,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                           sort_node->delivered_property_uuids.front()) ==
             window_node->delivered_property_uuids.end())) ||
       (aggregate_node != nullptr &&
-       (aggregate_node->input_node_ids !=
-            std::vector<std::uint32_t>{
-                filter_node != nullptr ? filter_node->node_id
-                                       : scan_node->node_id} ||
+       (!direct_or_cte_input(
+            aggregate_node, filter_node != nullptr ? filter_node->node_id
+                                                    : scan_node->node_id) ||
         (aggregate_node->semantic_variant_id !=
              "aggregate.global-count-star.v1" &&
          aggregate_node->semantic_variant_id !=
@@ -969,8 +1073,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         !aggregate_node->required_property_uuids.empty() ||
         !aggregate_node->delivered_property_uuids.empty())) ||
       (limit_node != nullptr &&
-       (limit_node->input_node_ids !=
-            std::vector<std::uint32_t>{expected_limit_input} ||
+       (!direct_or_cte_input(limit_node, expected_limit_input) ||
         (limit_node->semantic_variant_id != "limit.bound-count.v1" &&
          limit_node->semantic_variant_id !=
              "limit.bound-count-offset.v1") ||
@@ -1074,7 +1177,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             ? executor::LookupCanonicalAggregateByUuidV1(
                   relational.window_invocations.front().function_uuid)
             : nullptr;
-    const bool exact_int64_unary_aggregate =
+    const bool exact_unary_aggregate =
         aggregate_window_row != nullptr &&
         (aggregate_window_row->function ==
              executor::CanonicalAggregateFunction::sum ||
@@ -1083,17 +1186,51 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          aggregate_window_row->function ==
              executor::CanonicalAggregateFunction::max ||
          aggregate_window_row->function ==
-             executor::CanonicalAggregateFunction::count);
+             executor::CanonicalAggregateFunction::count ||
+         aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::bool_and ||
+         aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::bool_or ||
+         aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::every);
     const bool aggregate_count_window =
         aggregate_window_row != nullptr &&
         aggregate_window_row->function ==
             executor::CanonicalAggregateFunction::count;
+    const bool aggregate_count_star_window =
+        aggregate_count_window && relational.window_invocations.size() == 1 &&
+        relational.window_invocations.front().argument_expression_ids.empty();
+    const bool aggregate_boolean_window =
+        aggregate_window_row != nullptr &&
+        (aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::bool_and ||
+         aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::bool_or ||
+         aggregate_window_row->function ==
+             executor::CanonicalAggregateFunction::every);
+    const bool aggregate_bounded_signed_window =
+        aggregate_window && !aggregate_count_window &&
+        !aggregate_boolean_window;
     const bool navigation_window = lag_window || lead_window;
+    const bool navigation_value_window =
+        navigation_window || first_value_window || last_value_window ||
+        nth_value_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
         nth_value_window || aggregate_window;
+    const bool value_operand_window =
+        value_window && !aggregate_count_star_window;
     const auto canonical_int64_type_uuid =
         value_window ? CanonicalCoreDatatypeUuid("int64") : std::string{};
+    const auto canonical_boolean_type_uuid =
+        (aggregate_boolean_window || navigation_value_window)
+            ? CanonicalCoreDatatypeUuid("boolean")
+            : std::string{};
+    const std::array<std::string, 4> canonical_bounded_signed_type_uuids = {
+        aggregate_window ? CanonicalCoreDatatypeUuid("int8") : std::string{},
+        aggregate_window ? CanonicalCoreDatatypeUuid("int16") : std::string{},
+        aggregate_window ? CanonicalCoreDatatypeUuid("int32") : std::string{},
+        aggregate_window ? canonical_int64_type_uuid : std::string{}};
     const std::string_view expected_builtin_id =
         aggregate_window
             ? (aggregate_window_row == nullptr
@@ -1179,13 +1316,16 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         (nth_value_window
              ? relational.window_invocations.front()
                        .argument_expression_ids.size() == 2
-             : ((ntile_window || value_window)
+             : aggregate_count_star_window
+             ? relational.window_invocations.front()
+                   .argument_expression_ids.empty()
+             : ((ntile_window || value_operand_window)
                     ? relational.window_invocations.front()
                               .argument_expression_ids.size() == 1
                     : relational.window_invocations.front()
                           .argument_expression_ids.empty()));
     const auto ntile_argument =
-        (ntile_window || value_window) && exact_argument_arity
+        (ntile_window || value_operand_window) && exact_argument_arity
             ? std::ranges::find_if(
                   relational.expressions, [&](const auto& expression) {
                     return expression.expression_id ==
@@ -1217,6 +1357,22 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                   relational.descriptors, [&](const auto& descriptor) {
                   return descriptor.descriptor_id ==
                            nth_position_argument->result_descriptor_id;
+                  });
+    const auto nth_order_argument =
+        nth_value_window && sort_node->bound_expression_ids.size() == 1
+            ? std::ranges::find_if(
+                  relational.expressions, [&](const auto& expression) {
+                    return expression.expression_id ==
+                           sort_node->bound_expression_ids.front();
+                  })
+            : relational.expressions.end();
+    const auto nth_order_descriptor =
+        nth_order_argument == relational.expressions.end()
+            ? relational.descriptors.end()
+            : std::ranges::find_if(
+                  relational.descriptors, [&](const auto& descriptor) {
+                    return descriptor.descriptor_id ==
+                           nth_order_argument->result_descriptor_id;
                   });
     const auto aggregate_order_argument =
         aggregate_window && sort_node->bound_expression_ids.size() == 1
@@ -1311,7 +1467,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         relational.window_invocations.front().window_definition_id !=
             relational.window_definitions.front().window_id ||
         (aggregate_window &&
-         (!exact_int64_unary_aggregate ||
+         (!exact_unary_aggregate ||
           !aggregate_window_row->executable ||
           !aggregate_window_row->aggregate_as_window ||
           aggregate_window_row->abi_version != 1)) ||
@@ -1334,6 +1490,12 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         function->result_descriptor_id !=
             relational.window_invocations.front().result_descriptor_id ||
         result_descriptor == relational.descriptors.end() ||
+        (aggregate_window &&
+         (canonical_int64_type_uuid.empty() ||
+          (aggregate_boolean_window && canonical_boolean_type_uuid.empty()) ||
+          result_descriptor->type_uuid !=
+              (aggregate_boolean_window ? canonical_boolean_type_uuid
+                                        : canonical_int64_type_uuid))) ||
         result_descriptor->nullability !=
             (value_window && !aggregate_count_window
                  ? RelationalNullability::kNullable
@@ -1366,7 +1528,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
           ntile_argument_descriptor->width.has_value() ||
           ntile_argument_descriptor->precision.has_value() ||
           ntile_argument_descriptor->scale.has_value())) ||
-        (value_window &&
+        (value_operand_window &&
          (ntile_argument == relational.expressions.end() ||
           ntile_argument->expression_kind !=
               RelationalExpressionKind::kIdentifier ||
@@ -1383,19 +1545,54 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
               result_descriptor->descriptor_uuid ||
           ntile_argument_descriptor->descriptor_uuid ==
               expected_function_uuid ||
-          canonical_int64_type_uuid.empty() ||
-          ntile_argument_descriptor->type_uuid !=
-              canonical_int64_type_uuid ||
-          ntile_argument_descriptor->type_uuid !=
-              result_descriptor->type_uuid ||
-          ntile_argument_descriptor->collation_uuid !=
-              result_descriptor->collation_uuid ||
-          ntile_argument_descriptor->timezone_profile_id !=
-              result_descriptor->timezone_profile_id ||
-          ntile_argument_descriptor->width != result_descriptor->width ||
-          ntile_argument_descriptor->precision !=
-              result_descriptor->precision ||
-          ntile_argument_descriptor->scale != result_descriptor->scale ||
+          (aggregate_window && !aggregate_count_window &&
+           !(aggregate_bounded_signed_window
+                 ? std::ranges::find(canonical_bounded_signed_type_uuids,
+                                     ntile_argument_descriptor->type_uuid) !=
+                       canonical_bounded_signed_type_uuids.end()
+                 : aggregate_boolean_window &&
+                       ntile_argument_descriptor->type_uuid ==
+                           canonical_boolean_type_uuid)) ||
+          (!aggregate_window &&
+           (canonical_int64_type_uuid.empty() ||
+            (ntile_argument_descriptor->type_uuid !=
+                 canonical_int64_type_uuid &&
+             (!navigation_value_window ||
+              canonical_boolean_type_uuid.empty() ||
+              ntile_argument_descriptor->type_uuid !=
+                  canonical_boolean_type_uuid)) ||
+            ntile_argument_descriptor->type_uuid !=
+                result_descriptor->type_uuid ||
+            ntile_argument_descriptor->collation_uuid.has_value() ||
+            ntile_argument_descriptor->timezone_profile_id.has_value() ||
+            ntile_argument_descriptor->width.has_value() ||
+            ntile_argument_descriptor->precision.has_value() ||
+            ntile_argument_descriptor->scale.has_value() ||
+            result_descriptor->collation_uuid.has_value() ||
+            result_descriptor->timezone_profile_id.has_value() ||
+            result_descriptor->width.has_value() ||
+            result_descriptor->precision.has_value() ||
+            result_descriptor->scale.has_value() ||
+            ntile_argument_descriptor->collation_uuid !=
+                result_descriptor->collation_uuid ||
+            ntile_argument_descriptor->timezone_profile_id !=
+                result_descriptor->timezone_profile_id ||
+            ntile_argument_descriptor->width != result_descriptor->width ||
+            ntile_argument_descriptor->precision !=
+                result_descriptor->precision ||
+            ntile_argument_descriptor->scale != result_descriptor->scale)) ||
+          (aggregate_window &&
+           ((!aggregate_count_window &&
+             (ntile_argument_descriptor->collation_uuid.has_value() ||
+              ntile_argument_descriptor->timezone_profile_id.has_value() ||
+              ntile_argument_descriptor->width.has_value() ||
+              ntile_argument_descriptor->precision.has_value() ||
+              ntile_argument_descriptor->scale.has_value())) ||
+            result_descriptor->collation_uuid.has_value() ||
+            result_descriptor->timezone_profile_id.has_value() ||
+            result_descriptor->width.has_value() ||
+            result_descriptor->precision.has_value() ||
+            result_descriptor->scale.has_value())) ||
           std::ranges::find(sort_node->output_descriptor_ids,
                             ntile_argument_descriptor->descriptor_id) ==
               sort_node->output_descriptor_ids.end())) ||
@@ -1411,8 +1608,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
           aggregate_order_argument->operator_name.has_value() ||
           aggregate_order_descriptor == relational.descriptors.end() ||
           canonical_int64_type_uuid.empty() ||
-          aggregate_order_descriptor->type_uuid !=
-              canonical_int64_type_uuid ||
+          std::ranges::find(canonical_bounded_signed_type_uuids,
+                            aggregate_order_descriptor->type_uuid) ==
+              canonical_bounded_signed_type_uuids.end() ||
           aggregate_order_descriptor->collation_uuid.has_value() ||
           aggregate_order_descriptor->timezone_profile_id.has_value() ||
           aggregate_order_descriptor->width.has_value() ||
@@ -1422,7 +1620,27 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                             aggregate_order_descriptor->descriptor_id) ==
               sort_node->output_descriptor_ids.end())) ||
         (nth_value_window &&
-         (nth_position_argument == relational.expressions.end() ||
+         (nth_order_argument == relational.expressions.end() ||
+          nth_order_argument->expression_kind !=
+              RelationalExpressionKind::kIdentifier ||
+          !nth_order_argument->child_expression_ids.empty() ||
+          !nth_order_argument->bound_name_uuid.has_value() ||
+          nth_order_argument->function_uuid.has_value() ||
+          nth_order_argument->literal_kind.has_value() ||
+          nth_order_argument->literal_or_parameter_ref.has_value() ||
+          nth_order_argument->operator_name.has_value() ||
+          nth_order_descriptor == relational.descriptors.end() ||
+          canonical_int64_type_uuid.empty() ||
+          nth_order_descriptor->type_uuid != canonical_int64_type_uuid ||
+          nth_order_descriptor->collation_uuid.has_value() ||
+          nth_order_descriptor->timezone_profile_id.has_value() ||
+          nth_order_descriptor->width.has_value() ||
+          nth_order_descriptor->precision.has_value() ||
+          nth_order_descriptor->scale.has_value() ||
+          std::ranges::find(sort_node->output_descriptor_ids,
+                            nth_order_descriptor->descriptor_id) ==
+              sort_node->output_descriptor_ids.end() ||
+          nth_position_argument == relational.expressions.end() ||
           nth_position_argument->expression_kind !=
               RelationalExpressionKind::kLiteral ||
           !nth_position_argument->child_expression_ids.empty() ||
@@ -1437,14 +1655,16 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
               ntile_argument_descriptor->descriptor_id ||
           nth_position_descriptor->descriptor_id ==
               result_descriptor->descriptor_id ||
+          nth_position_descriptor->descriptor_id ==
+              nth_order_descriptor->descriptor_id ||
           nth_position_descriptor->descriptor_uuid ==
               ntile_argument_descriptor->descriptor_uuid ||
           nth_position_descriptor->descriptor_uuid ==
               result_descriptor->descriptor_uuid ||
+          nth_position_descriptor->descriptor_uuid ==
+              nth_order_descriptor->descriptor_uuid ||
           nth_position_descriptor->descriptor_uuid == expected_function_uuid ||
-          canonical_int64_type_uuid.empty() ||
           nth_position_descriptor->type_uuid != canonical_int64_type_uuid ||
-          nth_position_descriptor->type_uuid != result_descriptor->type_uuid ||
           nth_position_descriptor->nullability !=
               RelationalNullability::kNonNull ||
           nth_position_descriptor->collation_uuid.has_value() ||

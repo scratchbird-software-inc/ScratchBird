@@ -16,6 +16,7 @@
 #include <cctype>
 #include <limits>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -693,6 +694,9 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
       input_node->delivered_property_uuids !=
           std::vector<std::string>{ordering_property_uuid} ||
       !exact_window_property ||
+      selected_node->executor_capability_abi_version != 1 ||
+      !selected_node->engine_capability_validated ||
+      !IsCanonicalUuid(selected_node->executor_capability_uuid) ||
       !IsCanonicalUuid(request.deterministic_order_evidence_uuid) ||
       request.deterministic_order_evidence_uuid == ordering_property_uuid ||
       request.deterministic_order_evidence_uuid == *window_property) {
@@ -703,12 +707,52 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
   std::vector<std::uint32_t> output_descriptor_ids =
       input_node->output_descriptor_ids;
   output_descriptor_ids.push_back(request.row_number_column.descriptor_id);
+  const auto result_type_uuid = CanonicalDescriptorField(
+      request.row_number_column.descriptor, "type_uuid");
+  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
+  constexpr std::string_view kRowNumberFunctionUuid =
+      "019de5fc-2400-7539-bcce-00eef3ae7220";
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
       request.row_number_column.descriptor_id == 0 ||
       request.row_number_column.nullable ||
-      request.row_number_column.descriptor.canonical_type_name != "int64") {
+      request.row_number_column.descriptor.descriptor_kind != "scalar" ||
+      request.row_number_column.descriptor.canonical_type_name != "int64" ||
+      !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          request.row_number_column.descriptor) ||
+      !result_type_uuid.has_value() || canonical_int64_type_uuid.empty() ||
+      *result_type_uuid != canonical_int64_type_uuid ||
+      request.row_number_column.descriptor.encoded_descriptor !=
+          "type_uuid=" + canonical_int64_type_uuid +
+              ";nullability=non_null" ||
+      request.row_number_column.descriptor.descriptor_uuid.canonical ==
+          *result_type_uuid ||
+      request.row_number_column.descriptor.descriptor_uuid.canonical ==
+          ordering_property_uuid ||
+      request.row_number_column.descriptor.descriptor_uuid.canonical ==
+          *window_property ||
+      request.row_number_column.descriptor.descriptor_uuid.canonical ==
+          request.deterministic_order_evidence_uuid) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "ROW_NUMBER output descriptor is not bound int64"));
+  }
+  const std::array<std::string_view, 7> row_number_identity_domain{
+      kRowNumberFunctionUuid,
+      request.row_number_column.descriptor.descriptor_uuid.canonical,
+      *result_type_uuid,
+      ordering_property_uuid,
+      *window_property,
+      selected_node->executor_capability_uuid,
+      request.deterministic_order_evidence_uuid};
+  const std::unordered_set<std::string_view> distinct_row_number_identities(
+      row_number_identity_domain.begin(), row_number_identity_domain.end());
+  if (distinct_row_number_identities.size() !=
+          row_number_identity_domain.size() ||
+      std::ranges::any_of(row_number_identity_domain, [](const auto identity) {
+        return !IsCanonicalUuid(identity);
+      })) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        "ROW_NUMBER result identity domain is not independent"));
   }
   auto input_validation = ValidateCanonicalDescriptorBatch(
       execution_ordered_input_batch, input_node->output_descriptor_ids);
@@ -894,6 +938,7 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
       DecodeInt64Value(request.bucket_count_operand);
   const auto output_type_uuid = CanonicalDescriptorField(
       request.ntile_column.descriptor, "type_uuid");
+  const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
   const auto output_nullability = CanonicalDescriptorField(
       request.ntile_column.descriptor, "nullability");
   const auto operand_type_uuid = CanonicalDescriptorField(
@@ -909,8 +954,13 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
           request.ntile_column.descriptor) ||
       !output_type_uuid.has_value() ||
       !IsCanonicalUuid(*output_type_uuid) ||
+      canonical_int64_type_uuid.empty() ||
+      *output_type_uuid != canonical_int64_type_uuid ||
       !output_nullability.has_value() ||
       *output_nullability != "non_null" ||
+      request.ntile_column.descriptor.encoded_descriptor !=
+          "type_uuid=" + canonical_int64_type_uuid +
+              ";nullability=non_null" ||
       request.ntile_column.descriptor.descriptor_uuid.canonical ==
           *output_type_uuid ||
       request.ntile_column.descriptor.descriptor_uuid.canonical ==
@@ -937,6 +987,9 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
       *operand_type_uuid != *output_type_uuid ||
       !operand_nullability.has_value() ||
       *operand_nullability != "non_null" ||
+      request.bucket_count_operand.descriptor.encoded_descriptor !=
+          "type_uuid=" + canonical_int64_type_uuid +
+              ";nullability=non_null" ||
       request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
           *operand_type_uuid ||
       request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
@@ -955,6 +1008,54 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
     return refuse(Refusal(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
         "NTILE output and positive int64 bucket operand are not exact"));
+  }
+  const std::array<std::string_view, 8> ntile_identity_domain{
+      request.function_uuid,
+      request.ntile_column.descriptor.descriptor_uuid.canonical,
+      *output_type_uuid,
+      request.bucket_count_operand.descriptor.descriptor_uuid.canonical,
+      ordering_property_uuid,
+      *window_property,
+      selected_node->executor_capability_uuid,
+      request.deterministic_order_evidence_uuid};
+  const std::unordered_set<std::string_view> distinct_ntile_identities(
+      ntile_identity_domain.begin(), ntile_identity_domain.end());
+  if (selected_node->executor_capability_uuid !=
+          request.order_term_binding_evidence_uuid ||
+      distinct_ntile_identities.size() != ntile_identity_domain.size() ||
+      std::ranges::any_of(ntile_identity_domain, [](const auto identity) {
+        return !IsCanonicalUuid(identity);
+      })) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        "NTILE result identity domain is not independent"));
+  }
+  const auto& order_descriptor =
+      execution_ordered_input_batch.columns[request.order_term.column]
+          .descriptor;
+  const auto& order_descriptor_uuid =
+      order_descriptor.descriptor_uuid.canonical;
+  const auto order_type_uuid =
+      CanonicalDescriptorField(order_descriptor, "type_uuid");
+  const std::array<std::string_view, 7> forbidden_order_type_roles{
+      request.function_uuid,
+      request.ntile_column.descriptor.descriptor_uuid.canonical,
+      request.bucket_count_operand.descriptor.descriptor_uuid.canonical,
+      ordering_property_uuid,
+      *window_property,
+      selected_node->executor_capability_uuid,
+      request.deterministic_order_evidence_uuid};
+  if (!scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          order_descriptor) ||
+      !IsCanonicalUuid(order_descriptor_uuid) ||
+      !order_type_uuid.has_value() || !IsCanonicalUuid(*order_type_uuid) ||
+      order_descriptor_uuid == *order_type_uuid ||
+      distinct_ntile_identities.contains(order_descriptor_uuid) ||
+      std::ranges::find(forbidden_order_type_roles, *order_type_uuid) !=
+          forbidden_order_type_roles.end()) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        "NTILE order/result identity domains are not independent"));
   }
   const auto order_validation = ValidateCanonicalDescriptorOrderTerm(
       request.order_term,
@@ -1244,7 +1345,37 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
   if (!order_validation.ok) return refuse(order_validation);
   const auto result_type_uuid = CanonicalDescriptorField(
       request.result_column.descriptor, "type_uuid");
+  const auto source_type_uuid = CanonicalDescriptorField(
+      execution_ordered_input_batch.columns[request.value_column].descriptor,
+      "type_uuid");
+  const auto order_type_uuid = CanonicalDescriptorField(
+      execution_ordered_input_batch.columns[request.order_term.column]
+          .descriptor,
+      "type_uuid");
   const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
+  const auto canonical_boolean_type_uuid = CanonicalCoreDatatypeUuid("boolean");
+  const auto has_auxiliary_type_fields = [](const auto& descriptor) {
+    const auto contains_field = [&](const std::string_view key) {
+      const auto prefix = std::string(key) + "=";
+      std::size_t begin = 0;
+      while (begin <= descriptor.encoded_descriptor.size()) {
+        const auto end = descriptor.encoded_descriptor.find(';', begin);
+        const auto field =
+            std::string_view(descriptor.encoded_descriptor)
+                .substr(begin, end == std::string::npos
+                                   ? std::string::npos
+                                   : end - begin);
+        if (field.starts_with(prefix)) return true;
+        if (end == std::string::npos) break;
+        begin = end + 1;
+      }
+      return false;
+    };
+    return contains_field("collation_uuid") ||
+           contains_field("timezone_profile_id") || contains_field("width") ||
+           contains_field("precision") || contains_field("scale") ||
+           contains_field("element_profile");
+  };
   const auto* nth_operand =
       request.nth_value_position_operand.has_value()
           ? &*request.nth_value_position_operand
@@ -1260,7 +1391,7 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
   const auto decoded_nth =
       nth_operand == nullptr ? Int64DecodeResult{}
                              : DecodeInt64Value(*nth_operand);
-  const std::array<std::string_view, 11> independent_identities{
+  std::vector<std::string_view> independent_identities{
       request.function_uuid,
       execution_ordered_input_batch.columns[request.value_column]
           .descriptor.descriptor_uuid.canonical,
@@ -1273,16 +1404,68 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       request.order_term_binding_evidence_uuid,
       request.deterministic_order_evidence_uuid,
       request.frame_property_binding_evidence_uuid};
-  if (!result_type_uuid.has_value() || !IsCanonicalUuid(*result_type_uuid) ||
-      canonical_int64_type_uuid.empty() ||
-      *result_type_uuid != canonical_int64_type_uuid ||
+  if (request.value_column != request.order_term.column) {
+    independent_identities.insert(
+        independent_identities.begin() + 2,
+        execution_ordered_input_batch.columns[request.order_term.column]
+            .descriptor.descriptor_uuid.canonical);
+  }
+  const bool exact_int64_value =
+      source_type_uuid.has_value() && result_type_uuid.has_value() &&
+      *source_type_uuid == canonical_int64_type_uuid &&
+      *result_type_uuid == canonical_int64_type_uuid &&
       execution_ordered_input_batch.columns[request.value_column]
-              .descriptor.canonical_type_name != "int64" ||
-      request.result_column.descriptor.canonical_type_name != "int64") {
+              .descriptor.canonical_type_name == "int64" &&
+      request.result_column.descriptor.canonical_type_name == "int64";
+  const bool exact_boolean_value =
+      source_type_uuid.has_value() && result_type_uuid.has_value() &&
+      !canonical_boolean_type_uuid.empty() &&
+      *source_type_uuid == canonical_boolean_type_uuid &&
+      *result_type_uuid == canonical_boolean_type_uuid &&
+      execution_ordered_input_batch.columns[request.value_column]
+              .descriptor.canonical_type_name == "boolean" &&
+      request.result_column.descriptor.canonical_type_name == "boolean";
+  const bool exact_int64_order =
+      order_type_uuid.has_value() &&
+      *order_type_uuid == canonical_int64_type_uuid &&
+      execution_ordered_input_batch.columns[request.order_term.column]
+              .descriptor.canonical_type_name == "int64";
+  const auto& order_descriptor =
+      execution_ordered_input_batch.columns[request.order_term.column]
+          .descriptor;
+  const auto canonical_order_type_uuid =
+      CanonicalCoreDatatypeUuid(order_descriptor.canonical_type_name);
+  const bool exact_narrow_bounded_signed_order =
+      !nth_value && order_type_uuid.has_value() &&
+      order_descriptor.canonical_type_name != "int64" &&
+      IsCanonicalBoundedSignedIntegerDescriptor(order_descriptor) &&
+      !canonical_order_type_uuid.empty() &&
+      *order_type_uuid == canonical_order_type_uuid;
+  const bool exact_boolean_order =
+      !nth_value && order_type_uuid.has_value() &&
+      !canonical_boolean_type_uuid.empty() &&
+      *order_type_uuid == canonical_boolean_type_uuid &&
+      execution_ordered_input_batch.columns[request.order_term.column]
+              .descriptor.canonical_type_name == "boolean";
+  if (!result_type_uuid.has_value() || !IsCanonicalUuid(*result_type_uuid) ||
+      !source_type_uuid.has_value() || !IsCanonicalUuid(*source_type_uuid) ||
+      !order_type_uuid.has_value() || !IsCanonicalUuid(*order_type_uuid) ||
+      canonical_int64_type_uuid.empty() ||
+      (!exact_int64_value && !exact_boolean_value) ||
+      (!exact_int64_order && !exact_narrow_bounded_signed_order &&
+       !exact_boolean_order) ||
+      has_auxiliary_type_fields(
+          execution_ordered_input_batch.columns[request.value_column]
+              .descriptor) ||
+      has_auxiliary_type_fields(request.result_column.descriptor) ||
+      has_auxiliary_type_fields(
+          execution_ordered_input_batch.columns[request.order_term.column]
+              .descriptor)) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
         std::string(display_name) +
-            " source and result are not exact canonical int64"));
+            " source, result, or order is not exact canonical "
+            "bounded-signed/boolean"));
   }
   const bool exact_nth_operand =
       nth_value && nth_operand != nullptr &&
@@ -1297,13 +1480,15 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
           nth_operand->descriptor) &&
       nth_operand_type_uuid.has_value() &&
       *nth_operand_type_uuid == canonical_int64_type_uuid &&
-      *nth_operand_type_uuid == *result_type_uuid &&
       nth_operand_nullability.has_value() &&
       *nth_operand_nullability == "non_null" &&
       nth_operand->descriptor.descriptor_uuid.canonical !=
           *nth_operand_type_uuid &&
       nth_operand->descriptor.descriptor_uuid.canonical !=
           execution_ordered_input_batch.columns[request.value_column]
+              .descriptor.descriptor_uuid.canonical &&
+      nth_operand->descriptor.descriptor_uuid.canonical !=
+          execution_ordered_input_batch.columns[request.order_term.column]
               .descriptor.descriptor_uuid.canonical &&
       nth_operand->descriptor.descriptor_uuid.canonical !=
           request.result_column.descriptor.descriptor_uuid.canonical &&
@@ -1703,22 +1888,39 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       request.aggregate_descriptor.function,
       request.aggregate_descriptor.builtin_id,
       request.aggregate_descriptor.function_uuid);
-  const bool exact_int64_unary_window =
+  const bool exact_unary_window =
       aggregate_registry_row != nullptr &&
       (aggregate_registry_row->function == CanonicalAggregateFunction::sum ||
        aggregate_registry_row->function == CanonicalAggregateFunction::min ||
        aggregate_registry_row->function == CanonicalAggregateFunction::max ||
-       aggregate_registry_row->function == CanonicalAggregateFunction::count);
+       aggregate_registry_row->function == CanonicalAggregateFunction::count ||
+       aggregate_registry_row->function ==
+           CanonicalAggregateFunction::bool_and ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::bool_or ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::every);
   const bool count_window =
       aggregate_registry_row != nullptr &&
       aggregate_registry_row->function == CanonicalAggregateFunction::count;
-  if (request.aggregate_descriptor.count_star ||
-      !exact_int64_unary_window ||
+  const bool count_star_window =
+      count_window && request.aggregate_descriptor.count_star;
+  const bool boolean_window =
+      aggregate_registry_row != nullptr &&
+      (aggregate_registry_row->function ==
+           CanonicalAggregateFunction::bool_and ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::bool_or ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::every);
+  const bool bounded_signed_window =
+      aggregate_registry_row != nullptr &&
+      (aggregate_registry_row->function == CanonicalAggregateFunction::sum ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::min ||
+       aggregate_registry_row->function == CanonicalAggregateFunction::max);
+  if ((!count_window && request.aggregate_descriptor.count_star) ||
+      !exact_unary_window ||
       !aggregate_registry_row->executable ||
       !aggregate_registry_row->aggregate_as_window) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
-        "aggregate window requires one exact executable int64 unary registry row"));
+        "aggregate window requires one exact executable bounded registry row"));
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;
@@ -1736,7 +1938,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       selected_node->input_physical_node_ids.size() != 1) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-PHYSICAL",
-        "int64 aggregate window requires one exact frame-recompute window node"));
+        "aggregate window requires one exact frame-recompute window node"));
   }
   for (const auto& node : execution_dag.nodes) {
     if (node.physical_node_id ==
@@ -1780,7 +1982,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       !IsCanonicalUuid(request.frame_property_binding_evidence_uuid)) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
-        "int64 aggregate window lacks exact ordering, frame, capability, or property evidence"));
+        "aggregate window lacks exact ordering, frame, capability, or property evidence"));
   }
 
   std::vector<std::uint32_t> expected_output_descriptor_ids =
@@ -1788,13 +1990,56 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
   expected_output_descriptor_ids.push_back(
       request.result_column.descriptor_id);
   const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
+  const auto canonical_boolean_type_uuid =
+      boolean_window ? CanonicalCoreDatatypeUuid("boolean") : std::string{};
+  const bool value_column_in_range =
+      request.value_column.has_value() &&
+      *request.value_column < execution_ordered_input_batch.columns.size();
   const auto source_type_uuid =
-      request.value_column < execution_ordered_input_batch.columns.size()
+      value_column_in_range
           ? CanonicalDescriptorField(
-                execution_ordered_input_batch.columns[request.value_column]
+                execution_ordered_input_batch.columns[*request.value_column]
                     .descriptor,
                 "type_uuid")
           : std::optional<std::string_view>{};
+  const auto source_nullability =
+      value_column_in_range
+          ? CanonicalDescriptorField(
+                execution_ordered_input_batch.columns[*request.value_column]
+                    .descriptor,
+                "nullability")
+          : std::optional<std::string_view>{};
+  const auto source_legacy_nullability =
+      value_column_in_range
+          ? CanonicalDescriptorField(
+                execution_ordered_input_batch.columns[*request.value_column]
+                    .descriptor,
+                "nullable")
+          : std::optional<std::string_view>{};
+  const bool exact_source_nullability =
+      value_column_in_range &&
+      ((source_nullability ==
+            std::optional<std::string_view>(
+                execution_ordered_input_batch
+                        .columns[*request.value_column]
+                        .nullable
+                    ? "nullable"
+                    : "non_null") &&
+        !source_legacy_nullability.has_value()) ||
+       (!source_nullability.has_value() &&
+        source_legacy_nullability ==
+            std::optional<std::string_view>(
+                execution_ordered_input_batch
+                        .columns[*request.value_column]
+                        .nullable
+                    ? "true"
+                    : "false")));
+  const auto canonical_source_type_uuid =
+      value_column_in_range
+          ? CanonicalCoreDatatypeUuid(
+                execution_ordered_input_batch.columns[*request.value_column]
+                    .descriptor.canonical_type_name)
+          : std::string{};
   const auto result_type_uuid = CanonicalDescriptorField(
       request.result_column.descriptor, "type_uuid");
   const auto order_type_uuid =
@@ -1804,47 +2049,166 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
                     .descriptor,
                 "type_uuid")
           : std::optional<std::string_view>{};
-  const bool value_column_in_range =
-      request.value_column < execution_ordered_input_batch.columns.size();
-  const bool exact_value_result_contract =
-      !value_column_in_range || !source_type_uuid.has_value()
-          ? false
-          : count_window
-          ? !request.result_column.nullable &&
-                execution_ordered_input_batch.columns[request.value_column]
-                        .descriptor.canonical_type_name == "int64" &&
-                *source_type_uuid == canonical_int64_type_uuid
-          : request.result_column.nullable &&
-                execution_ordered_input_batch.columns[request.value_column]
-                        .descriptor.canonical_type_name == "int64" &&
-                *source_type_uuid == canonical_int64_type_uuid &&
-                CanonicalDerivedDescriptorTypeMatches(
-                    execution_ordered_input_batch.columns[request.value_column]
-                        .descriptor,
-                    execution_ordered_input_batch.columns[request.value_column]
-                        .nullable,
-                    request.result_column.descriptor, true);
+  const auto* order_descriptor =
+      request.order_term.column < execution_ordered_input_batch.columns.size()
+          ? &execution_ordered_input_batch
+                 .columns[request.order_term.column]
+                 .descriptor
+          : nullptr;
+  const auto canonical_order_type_uuid =
+      order_descriptor == nullptr
+          ? std::string{}
+          : CanonicalCoreDatatypeUuid(
+                order_descriptor->canonical_type_name);
+  const auto has_auxiliary_type_fields = [](const auto& descriptor) {
+    const auto contains_field = [&](const std::string_view key) {
+      const auto prefix = std::string(key) + "=";
+      std::size_t begin = 0;
+      while (begin <= descriptor.encoded_descriptor.size()) {
+        const auto end = descriptor.encoded_descriptor.find(';', begin);
+        const auto field =
+            std::string_view(descriptor.encoded_descriptor)
+                .substr(begin, end == std::string::npos
+                                   ? std::string::npos
+                                   : end - begin);
+        if (field.starts_with(prefix)) return true;
+        if (end == std::string::npos) break;
+        begin = end + 1;
+      }
+      return false;
+    };
+    return contains_field("collation_uuid") ||
+           contains_field("timezone_profile_id") || contains_field("width") ||
+           contains_field("precision") || contains_field("scale") ||
+           contains_field("element_profile");
+  };
+  const bool exact_bounded_signed_order =
+      order_descriptor != nullptr && order_type_uuid.has_value() &&
+      IsCanonicalBoundedSignedIntegerDescriptor(*order_descriptor) &&
+      scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          *order_descriptor) &&
+      !canonical_order_type_uuid.empty() &&
+      *order_type_uuid == canonical_order_type_uuid &&
+      order_descriptor->encoded_descriptor ==
+          "type_uuid=" + canonical_order_type_uuid + ";nullability=" +
+              (execution_ordered_input_batch
+                       .columns[request.order_term.column]
+                       .nullable
+                   ? "nullable"
+                   : "non_null") &&
+      !has_auxiliary_type_fields(*order_descriptor);
+  bool exact_value_result_contract = false;
+  if (count_window) {
+    exact_value_result_contract =
+        (count_star_window ||
+         (value_column_in_range && source_type_uuid.has_value() &&
+          IsCanonicalUuid(*source_type_uuid) &&
+          *source_type_uuid !=
+              "00000000-0000-0000-0000-000000000000" &&
+          exact_source_nullability &&
+          execution_ordered_input_batch.columns[*request.value_column]
+                  .descriptor.descriptor_kind == "scalar" &&
+          !execution_ordered_input_batch.columns[*request.value_column]
+               .descriptor.canonical_type_name.empty() &&
+          scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+              execution_ordered_input_batch.columns[*request.value_column]
+                  .descriptor) &&
+          CanonicalDerivedDescriptorTypeMatches(
+              execution_ordered_input_batch.columns[*request.value_column]
+                  .descriptor,
+              execution_ordered_input_batch.columns[*request.value_column]
+                  .nullable,
+              execution_ordered_input_batch.columns[*request.value_column]
+                  .descriptor,
+              execution_ordered_input_batch.columns[*request.value_column]
+                  .nullable) &&
+          (canonical_source_type_uuid.empty() ||
+           *source_type_uuid == canonical_source_type_uuid))) &&
+        !request.result_column.nullable &&
+        request.result_column.descriptor.encoded_descriptor ==
+            "type_uuid=" + canonical_int64_type_uuid +
+                ";nullability=non_null" &&
+        !has_auxiliary_type_fields(request.result_column.descriptor);
+  } else if (value_column_in_range && source_type_uuid.has_value() &&
+             boolean_window) {
+    exact_value_result_contract =
+        request.result_column.nullable &&
+        execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor.canonical_type_name == "boolean" &&
+        *source_type_uuid == canonical_boolean_type_uuid &&
+        execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor.encoded_descriptor ==
+            "type_uuid=" + canonical_boolean_type_uuid +
+                ";nullability=" +
+                (execution_ordered_input_batch
+                         .columns[*request.value_column]
+                         .nullable
+                     ? "nullable"
+                     : "non_null") &&
+        request.result_column.descriptor.encoded_descriptor ==
+            "type_uuid=" + canonical_boolean_type_uuid +
+                ";nullability=nullable" &&
+        CanonicalDerivedDescriptorTypeMatches(
+            execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor,
+            execution_ordered_input_batch.columns[*request.value_column]
+                .nullable,
+            request.result_column.descriptor, true) &&
+        !has_auxiliary_type_fields(
+            execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor) &&
+        !has_auxiliary_type_fields(request.result_column.descriptor);
+  } else if (value_column_in_range && source_type_uuid.has_value() &&
+             bounded_signed_window) {
+    exact_value_result_contract =
+        request.result_column.nullable &&
+        IsCanonicalBoundedSignedIntegerDescriptor(
+            execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor) &&
+        !canonical_source_type_uuid.empty() &&
+        *source_type_uuid == canonical_source_type_uuid &&
+        execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor.encoded_descriptor ==
+            "type_uuid=" + canonical_source_type_uuid +
+                ";nullability=" +
+                (execution_ordered_input_batch
+                         .columns[*request.value_column]
+                         .nullable
+                     ? "nullable"
+                     : "non_null") &&
+        request.result_column.descriptor.encoded_descriptor ==
+            "type_uuid=" + canonical_int64_type_uuid +
+                ";nullability=nullable" &&
+        !has_auxiliary_type_fields(
+            execution_ordered_input_batch.columns[*request.value_column]
+                .descriptor) &&
+        !has_auxiliary_type_fields(request.result_column.descriptor);
+  }
   if (selected_node->output_descriptor_ids !=
           expected_output_descriptor_ids ||
-      request.value_column >= execution_ordered_input_batch.columns.size() ||
+      (count_star_window ? request.value_column.has_value()
+                         : !value_column_in_range) ||
       request.order_term.column >=
           execution_ordered_input_batch.columns.size() ||
       request.result_column.descriptor_id == 0 ||
       request.result_column.descriptor.descriptor_kind != "scalar" ||
-      request.result_column.descriptor.canonical_type_name != "int64" ||
-      execution_ordered_input_batch.columns[request.order_term.column]
-              .descriptor.canonical_type_name != "int64" ||
-      !source_type_uuid.has_value() || !result_type_uuid.has_value() ||
+      request.result_column.descriptor.canonical_type_name !=
+          (boolean_window ? "boolean" : "int64") ||
+      !exact_bounded_signed_order ||
+      (!count_star_window && !source_type_uuid.has_value()) ||
+      !result_type_uuid.has_value() ||
       !order_type_uuid.has_value() ||
       canonical_int64_type_uuid.empty() ||
-      *result_type_uuid != canonical_int64_type_uuid ||
-      *order_type_uuid != canonical_int64_type_uuid ||
+      (boolean_window && canonical_boolean_type_uuid.empty()) ||
+      *result_type_uuid !=
+          (boolean_window ? canonical_boolean_type_uuid
+                          : canonical_int64_type_uuid) ||
       !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
           request.result_column.descriptor) ||
       !exact_value_result_contract) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-DESCRIPTOR",
-        "int64 aggregate window source/result descriptors are not exact"));
+        "aggregate window source/result descriptors are not exact"));
   }
   const auto input_validation = ValidateCanonicalDescriptorBatch(
       execution_ordered_input_batch, input_node->output_descriptor_ids);
@@ -1854,10 +2218,8 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       execution_ordered_input_batch.columns[request.order_term.column]);
   if (!order_validation.ok) return refuse(order_validation);
 
-  const std::array<std::string_view, 11> independent_identities{
+  std::vector<std::string_view> independent_identities{
       request.aggregate_descriptor.function_uuid,
-      execution_ordered_input_batch.columns[request.value_column]
-          .descriptor.descriptor_uuid.canonical,
       request.result_column.descriptor.descriptor_uuid.canonical,
       *result_type_uuid,
       ordering_property_uuid,
@@ -1867,13 +2229,57 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       request.order_term_binding_evidence_uuid,
       request.deterministic_order_evidence_uuid,
       request.frame_property_binding_evidence_uuid};
+  if (!count_star_window) {
+    independent_identities.insert(
+        independent_identities.begin() + 1,
+        execution_ordered_input_batch.columns[*request.value_column]
+            .descriptor.descriptor_uuid.canonical);
+  }
+  if (!count_star_window && *source_type_uuid != *result_type_uuid) {
+    independent_identities.insert(independent_identities.begin() + 2,
+                                  *source_type_uuid);
+  }
+  const std::array<std::string_view, 9> order_authority_identities = {
+      request.aggregate_descriptor.function_uuid,
+      request.result_column.descriptor.descriptor_uuid.canonical,
+      ordering_property_uuid,
+      *window_property,
+      request.window_frame_descriptor_uuid,
+      request.executor_capability_uuid,
+      request.order_term_binding_evidence_uuid,
+      request.deterministic_order_evidence_uuid,
+      request.frame_property_binding_evidence_uuid};
+  const auto& order_descriptor_uuid =
+      order_descriptor->descriptor_uuid.canonical;
+  const bool order_identity_collision =
+      order_descriptor_uuid == *order_type_uuid ||
+      order_descriptor_uuid == *result_type_uuid ||
+      (!count_star_window && order_descriptor_uuid == *source_type_uuid) ||
+      (!count_star_window &&
+       request.order_term.column != *request.value_column &&
+       order_descriptor_uuid ==
+           execution_ordered_input_batch.columns[*request.value_column]
+               .descriptor.descriptor_uuid.canonical) ||
+      (!count_star_window &&
+       *order_type_uuid ==
+           execution_ordered_input_batch.columns[*request.value_column]
+               .descriptor.descriptor_uuid.canonical) ||
+      std::ranges::any_of(order_authority_identities, [&](const auto identity) {
+        return order_descriptor_uuid == identity ||
+               *order_type_uuid == identity;
+      });
+  if (order_identity_collision) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        "aggregate window order descriptor identities are not independent"));
+  }
   for (std::size_t left = 0; left < independent_identities.size(); ++left) {
     for (std::size_t right = left + 1;
          right < independent_identities.size(); ++right) {
       if (independent_identities[left] == independent_identities[right]) {
         return refuse(Refusal(
             "QOW-DIAG-WINDOW-PROPERTY-BINDING",
-            "int64 aggregate window evidence identities are not independent"));
+            "aggregate window evidence identities are not independent"));
       }
     }
   }
@@ -1890,7 +2296,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       actual_receipt_workspace_bytes != planned_receipt_workspace_bytes) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-PROPERTY-BINDING",
-        "int64 aggregate window order-term binding receipt is not exact"));
+        "aggregate window order-term binding receipt is not exact"));
   }
 
   // Refuse before QOW-401/QOW-402 or the aggregate facade can allocate pair
@@ -1938,7 +2344,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
   std::uint64_t planned_auxiliary_workspace_bytes = 0;
   std::uint64_t planned_peak_memory_bytes = 0;
   std::uint64_t planned_retained_memory_bytes = 0;
-  constexpr std::uint64_t kMaximumInt64TextBytes = 20;
+  const std::uint64_t maximum_result_text_bytes = boolean_window ? 5 : 20;
   constexpr std::uint64_t kFrameGraphCopyCount = 5;
   constexpr std::uint64_t kFrameCarrierMetadataCopyCount = 4;
   constexpr std::uint64_t kRetainedInputCopyCount = 4;
@@ -1950,7 +2356,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
             std::numeric_limits<std::uint64_t>::max()) {
       return refuse(Refusal(
           "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-          "int64 aggregate window order comparison workspace is not bounded"));
+          "aggregate window order comparison workspace is not bounded"));
     }
     maximum_order_key_workspace_bytes = std::max(
         maximum_order_key_workspace_bytes,
@@ -1986,7 +2392,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
           row_count_u64,
           kFrameGraphCopyCount * sizeof(std::vector<std::size_t>),
           &partition_vector_bytes) ||
-      !checked_multiply(row_count_u64, kMaximumInt64TextBytes,
+      !checked_multiply(row_count_u64, maximum_result_text_bytes,
                         &result_value_payload_bytes) ||
       !checked_multiply(input_payload_bytes, kRetainedInputCopyCount,
                         &retained_input_copy_bytes) ||
@@ -2037,7 +2443,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       planned_peak_memory_bytes > selected_node->memory_bytes_required) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-        "int64 aggregate window runtime materialization exceeds its selected node grant"));
+        "aggregate window runtime materialization exceeds its selected node grant"));
   }
 
   CanonicalWindowPartitionOrderRequest partition_request;
@@ -2085,7 +2491,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
           CanonicalWindowFrameExclusion::no_others) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-FRAME",
-        "int64 aggregate window did not resolve the canonical peer-inclusive ordered default frame"));
+        "aggregate window did not resolve the canonical peer-inclusive ordered default frame"));
   }
   std::size_t effective_frame_row_reference_count = 0;
   for (const auto& frame : frames.effective_frames) {
@@ -2093,7 +2499,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
         std::numeric_limits<std::size_t>::max() -
             effective_frame_row_reference_count) {
       return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                            "int64 aggregate window frame reference count overflowed"));
+                            "aggregate window frame reference count overflowed"));
     }
     effective_frame_row_reference_count +=
         frame.effective_row_indices.size();
@@ -2101,7 +2507,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
   if (effective_frame_row_reference_count >
       request.maximum_effective_row_references) {
     return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                          "int64 aggregate window frame reference bound was exceeded"));
+                          "aggregate window frame reference bound was exceeded"));
   }
 
   CanonicalWindowAggregateRequest aggregate_request;
@@ -2123,16 +2529,31 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       aggregate_request.function =
           CanonicalWindowAggregateFunction::int64_count;
       break;
+    case CanonicalAggregateFunction::bool_and:
+      aggregate_request.function =
+          CanonicalWindowAggregateFunction::boolean_and;
+      break;
+    case CanonicalAggregateFunction::bool_or:
+      aggregate_request.function =
+          CanonicalWindowAggregateFunction::boolean_or;
+      break;
+    case CanonicalAggregateFunction::every:
+      aggregate_request.function =
+          CanonicalWindowAggregateFunction::boolean_every;
+      break;
     default:
       return refuse(Refusal(
           "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
-          "aggregate window registry function is outside the int64 unary cohort"));
+          "aggregate window registry function is outside the unary cohort"));
   }
   aggregate_request.function_uuid =
       request.aggregate_descriptor.function_uuid;
-  aggregate_request.value_expression_descriptor_id =
-      execution_ordered_input_batch.columns[request.value_column]
-          .descriptor_id;
+  aggregate_request.count_star = count_star_window;
+  if (!count_star_window) {
+    aggregate_request.value_expression_descriptor_id =
+        execution_ordered_input_batch.columns[*request.value_column]
+            .descriptor_id;
+  }
   aggregate_request.result_column = request.result_column;
   aggregate_request.maximum_output_rows = std::max<std::size_t>(1, row_count);
   aggregate_request.maximum_transition_count =
@@ -2165,7 +2586,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       aggregate.causal_counter_id != selected_node->causal_counter_id) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
-        "int64 aggregate window did not consume its exact frame-recompute payload"));
+        "aggregate window did not consume its exact frame-recompute payload"));
   }
 
   std::uint64_t observed_auxiliary_workspace_bytes =
@@ -2190,7 +2611,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       observed_peak_memory_bytes > selected_node->memory_bytes_required) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-        "int64 aggregate window observed state exceeded its selected node grant"));
+        "aggregate window observed state exceeded its selected node grant"));
   }
 
   result.output_batch =
@@ -2408,7 +2829,8 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
       request.deterministic_order_evidence_uuid ==
           request.order_term_binding_evidence_uuid ||
       request.deterministic_order_evidence_uuid == ordering_property_uuid ||
-      request.deterministic_order_evidence_uuid == *window_property) {
+      request.deterministic_order_evidence_uuid == *window_property ||
+      request.deterministic_order_evidence_uuid == request.function_uuid) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
         std::string(ranking_name) +
@@ -2417,17 +2839,89 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
   std::vector<std::uint32_t> output_descriptor_ids =
       input_node->output_descriptor_ids;
   output_descriptor_ids.push_back(request.ranking_column.descriptor_id);
+  const auto result_type_uuid = CanonicalDescriptorField(
+      request.ranking_column.descriptor, "type_uuid");
+  const auto expected_result_type_uuid =
+      CanonicalCoreDatatypeUuid(expected_result_type);
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
       request.ranking_column.descriptor_id == 0 ||
       request.ranking_column.nullable ||
+      request.ranking_column.descriptor.descriptor_kind != "scalar" ||
       request.ranking_column.descriptor.canonical_type_name !=
           expected_result_type ||
+      !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          request.ranking_column.descriptor) ||
+      !result_type_uuid.has_value() || expected_result_type_uuid.empty() ||
+      *result_type_uuid != expected_result_type_uuid ||
+      request.ranking_column.descriptor.encoded_descriptor !=
+          "type_uuid=" + expected_result_type_uuid +
+              ";nullability=non_null" ||
+      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+          *result_type_uuid ||
+      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+          request.function_uuid ||
+      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+          ordering_property_uuid ||
+      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+          *window_property ||
+      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+          request.order_term_binding_evidence_uuid ||
+      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+          request.deterministic_order_evidence_uuid ||
       request.order_term.column >=
           execution_ordered_input_batch.columns.size()) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
         std::string(ranking_name) +
             " output or order descriptor is not bound"));
+  }
+  const std::array<std::string_view, 7> ranking_identity_domain{
+      request.function_uuid,
+      request.ranking_column.descriptor.descriptor_uuid.canonical,
+      *result_type_uuid,
+      ordering_property_uuid,
+      *window_property,
+      selected_node->executor_capability_uuid,
+      request.deterministic_order_evidence_uuid};
+  const std::unordered_set<std::string_view> distinct_ranking_identities(
+      ranking_identity_domain.begin(), ranking_identity_domain.end());
+  if (selected_node->executor_capability_uuid !=
+          request.order_term_binding_evidence_uuid ||
+      distinct_ranking_identities.size() != ranking_identity_domain.size() ||
+      std::ranges::any_of(ranking_identity_domain, [](const auto identity) {
+        return !IsCanonicalUuid(identity);
+      })) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        std::string(ranking_name) +
+            " result identity domain is not independent"));
+  }
+  const auto& order_descriptor =
+      execution_ordered_input_batch.columns[request.order_term.column]
+          .descriptor;
+  const auto order_type_uuid =
+      CanonicalDescriptorField(order_descriptor, "type_uuid");
+  const auto& order_descriptor_uuid =
+      order_descriptor.descriptor_uuid.canonical;
+  const std::array<std::string_view, 6> forbidden_order_type_roles{
+      request.function_uuid,
+      request.ranking_column.descriptor.descriptor_uuid.canonical,
+      ordering_property_uuid,
+      *window_property,
+      selected_node->executor_capability_uuid,
+      request.deterministic_order_evidence_uuid};
+  if (!scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
+          order_descriptor) ||
+      !IsCanonicalUuid(order_descriptor_uuid) ||
+      !order_type_uuid.has_value() || !IsCanonicalUuid(*order_type_uuid) ||
+      order_descriptor_uuid == *order_type_uuid ||
+      distinct_ranking_identities.contains(order_descriptor_uuid) ||
+      std::ranges::find(forbidden_order_type_roles, *order_type_uuid) !=
+          forbidden_order_type_roles.end()) {
+    return refuse(Refusal(
+        "QOW-DIAG-WINDOW-PROPERTY-BINDING",
+        std::string(ranking_name) +
+            " order/result identity domains are not independent"));
   }
   const auto order_validation = ValidateCanonicalDescriptorOrderTerm(
       request.order_term,

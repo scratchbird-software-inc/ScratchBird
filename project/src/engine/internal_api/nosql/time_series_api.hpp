@@ -20,6 +20,8 @@
 
 namespace scratchbird::engine::internal_api {
 
+struct MgaRelationStorageDescriptor;
+
 inline constexpr const char* kTimeSeriesPhysicalProofMissing =
     "SB_TIME_SERIES_PHYSICAL_PROOF_MISSING";
 inline constexpr const char* kTimeSeriesBucketStoreProofMissing =
@@ -152,6 +154,12 @@ struct EngineBoundTimeSeriesDownsampleRowV1 {
 
 struct EngineBoundTimeSeriesReadResultV1 : EngineApiResult {
   bool data_access_observed{false};
+  bool cancellation_observed{false};
+  bool cancellation_probe_failed{false};
+  bool memory_receipt_complete{false};
+  std::uint64_t current_live_memory_bytes{0};
+  std::uint64_t peak_live_memory_bytes{0};
+  std::uint64_t memory_grant_bytes{0};
   bool exact_fallback_observed{false};
   bool rollup_observed{false};
   bool rollup_equivalence_recheck_complete{false};
@@ -179,6 +187,12 @@ bool EngineExactTimeSeriesBucketStartV1(EngineApiI64 timestamp_ns,
                                         EngineApiI64 interval_ns,
                                         EngineApiI64* bucket_start_ns,
                                         std::string* bucket_start);
+
+// Exact persisted storage-shape admission shared by the canonical query route
+// and the engine-bound provider. This is a read-only catalog check; it performs
+// no MGA row access and owns no snapshot or transaction-finality decisions.
+bool ExactTimeSeriesStorageDescriptorV1(
+    const MgaRelationStorageDescriptor& descriptor);
 
 EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(
     const EngineBoundTimeSeriesReadRequestV1& request);

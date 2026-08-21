@@ -235,6 +235,9 @@ enum class CanonicalWindowAggregateFunction : std::uint8_t {
   int64_min,
   int64_max,
   int64_count,
+  boolean_and,
+  boolean_or,
+  boolean_every,
 };
 
 struct CanonicalWindowAggregateRequest {
@@ -242,6 +245,7 @@ struct CanonicalWindowAggregateRequest {
   CanonicalWindowAggregateFunction function =
       CanonicalWindowAggregateFunction::int64_sum;
   std::string function_uuid;
+  bool count_star = false;
   std::uint32_t value_expression_descriptor_id = 0;
   ExecutorColumnDescriptor result_column;
   std::optional<

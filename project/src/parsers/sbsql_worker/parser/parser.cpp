@@ -2922,7 +2922,9 @@ class NativeRelationalParser final {
   bool LooksLikeBoundedWindowSelect() const {
     if (tokens_.size() < 9 || tokens_[2]->text != "(") return false;
     if (IsWord(*tokens_[1], "SUM") || IsWord(*tokens_[1], "MIN") ||
-        IsWord(*tokens_[1], "MAX") || IsWord(*tokens_[1], "COUNT")) {
+        IsWord(*tokens_[1], "MAX") || IsWord(*tokens_[1], "COUNT") ||
+        IsWord(*tokens_[1], "BOOL_AND") ||
+        IsWord(*tokens_[1], "BOOL_OR") || IsWord(*tokens_[1], "EVERY")) {
       return tokens_.size() > 6 && tokens_[4]->text == ")" &&
              IsWord(*tokens_[5], "OVER") &&
              (tokens_[6]->text == "(" ||
@@ -2950,20 +2952,24 @@ class NativeRelationalParser final {
     // The general ROW_NUMBER surface preserves the complete window
     // specification. RANK, DENSE_RANK, PERCENT_RANK, CUME_DIST, NTILE, LAG,
     // LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE, and the exact aggregate
-    // SUM/MIN/MAX/COUNT(identifier) cohort are admitted
-    // only for the exact global,
-    // one-direct-column
+    // SUM/MIN/MAX/COUNT/BOOL_AND/BOOL_OR/EVERY(identifier) cohort and the exact
+    // COUNT(*) form are admitted only for the exact global, one-direct-column
     // ordering profile executed by the canonical spine. NTILE additionally
     // requires one exact positive signed-int64 literal operand. LAG and LEAD
-    // admit one direct signed-int64 column with only their implicit offset and
-    // implicit NULL default. FIRST_VALUE and LAST_VALUE admit one direct
-    // signed-int64 value column and consume the effective implicit ordered
-    // frame. NTH_VALUE additionally requires one exact positive signed-int64
-    // literal position and normalizes omitted origin/NULL-treatment state to
-    // FROM FIRST RESPECT NULLS in the canonical execution route. Aggregate
-    // SUM/MIN/MAX/COUNT admit one direct signed-int64 value column and the same
-    // exact implicit ordered frame, then bind through the engine-owned aggregate
-    // registry rather than the native window-function registry.
+    // admit one direct exact signed-int64 or boolean column with only their
+    // implicit offset and implicit NULL default. FIRST_VALUE and LAST_VALUE
+    // admit the same exact value cohort and consume the effective implicit
+    // ordered frame. NTH_VALUE admits that same value cohort plus one exact
+    // positive signed-int64 literal position and normalizes omitted
+    // origin/NULL-treatment state to FROM FIRST RESPECT NULLS in the canonical
+    // execution route. Aggregate
+    // Numeric aggregates admit one direct bounded-signed value column; boolean
+    // aggregates admit one direct boolean value column. COUNT(identifier)
+    // admits one direct engine-bound canonical value column of any type, while
+    // COUNT(*) carries no value expression and counts every row in the
+    // effective frame. All use the same exact implicit ordered frame and bind
+    // through the engine-owned aggregate registry rather than the native
+    // window-function registry.
     document_.status = NativeRelationalParseStatus::kRefused;
     if (cst_.messages.has_errors()) {
       document_.messages = cst_.messages;
@@ -2989,7 +2995,10 @@ class NativeRelationalParser final {
     const bool aggregate_window = IsWord(function_token, "SUM") ||
                                   IsWord(function_token, "MIN") ||
                                   IsWord(function_token, "MAX") ||
-                                  IsWord(function_token, "COUNT");
+                                  IsWord(function_token, "COUNT") ||
+                                  IsWord(function_token, "BOOL_AND") ||
+                                  IsWord(function_token, "BOOL_OR") ||
+                                  IsWord(function_token, "EVERY");
     const bool navigation_window = lag_window || lead_window;
     const bool value_window =
         navigation_window || first_value_window || last_value_window ||
@@ -3023,16 +3032,21 @@ class NativeRelationalParser final {
                        function_name + " requires an opening parenthesis")) {
       return FinishRefusal();
     }
+    const bool aggregate_count_star_window =
+        IsWord(function_token, "COUNT") && AtSymbol("*");
     const auto function_expression_id = NextExpressionId();
     NativeExpressionAstNode function;
     function.expression_id = function_expression_id;
     function.expression_kind = NativeExpressionAstKind::kFunctionCall;
-    function.operator_name = function_name;
+    function.operator_name =
+        aggregate_count_star_window ? "COUNT_STAR" : function_name;
     document_.expressions.push_back(std::move(function));
     std::optional<std::uint32_t> ntile_operand_expression_id;
     std::optional<std::uint32_t> navigation_operand_expression_id;
     std::optional<std::uint32_t> nth_position_expression_id;
-    if (ntile_window) {
+    if (aggregate_count_star_window) {
+      Consume();
+    } else if (ntile_window) {
       if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
         Refuse("ntile_operand_required",
                "NTILE requires one positive signed-int64 literal operand");
@@ -3064,6 +3078,16 @@ class NativeRelationalParser final {
       document_.expressions.push_back(std::move(operand));
     } else if (value_window) {
       if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+        const std::string_view operand_requirement =
+            IsWord(function_token, "COUNT")
+                ? " requires one direct canonical column operand"
+                : ((IsWord(function_token, "BOOL_AND") ||
+                    IsWord(function_token, "BOOL_OR") ||
+                    IsWord(function_token, "EVERY"))
+                       ? " requires one direct boolean column operand"
+                       : (aggregate_window
+                              ? " requires one direct bounded-signed column operand"
+                              : " requires one direct signed-int64 or boolean column operand"));
         Refuse(aggregate_window
                    ? "aggregate_window_operand_required"
                    : (first_value_window
@@ -3074,8 +3098,7 @@ class NativeRelationalParser final {
                                  ? "nth_value_operand_required"
                                  : (lag_window ? "lag_operand_required"
                                                : "lead_operand_required")))),
-               function_name +
-                   " requires one direct signed-int64 column operand");
+               function_name + std::string(operand_requirement));
         return FinishRefusal();
       }
       const Token& operand_token = Consume();

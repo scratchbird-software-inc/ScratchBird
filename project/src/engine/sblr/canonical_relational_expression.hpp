@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -48,7 +49,25 @@ struct CanonicalRelationalExpressionRowSlotBinding {
 
 struct CanonicalRelationalExpressionRowBinding {
   std::vector<std::uint32_t> row_descriptor_ids;
+  // Optional effective runtime nullability for lineage-preserving join
+  // outputs. Outer joins retain descriptor IDs while widening nullability;
+  // a later predicate must validate that effective descriptor, not the base
+  // catalog nullability attached to the reused ID.
+  std::vector<bool> row_nullable;
   std::vector<CanonicalRelationalExpressionRowSlotBinding> slots;
+};
+
+// Synchronous non-owning carriage for a materialized row assembled from one
+// or two dispatcher-owned tuple fragments. JOIN uses two fragments so ON
+// evaluation never deep-copies descriptors or value payloads per candidate
+// pair; other consumers use only the first fragment.
+struct CanonicalRelationalExpressionRowView {
+  std::span<const internal_api::EngineTypedValue> first;
+  std::span<const internal_api::EngineTypedValue> second;
+
+  [[nodiscard]] std::size_t size() const {
+    return first.size() + second.size();
+  }
 };
 
 // Upper envelope for one descriptor-exact materialized row slot.  The
@@ -182,6 +201,15 @@ class CanonicalRelationalExpressionRuntime {
       internal_api::EngineTypedValue* value,
       std::string* refusal_detail);
 
+  bool EvaluateForConsumer(
+      std::uint32_t expression_id,
+      std::string_view expected_type,
+      const CanonicalRelationalExpressionRowBinding& row_binding,
+      CanonicalRelationalExpressionRowView row_values,
+      internal_api::EngineCanonicalExpressionConsumer consumer,
+      internal_api::EngineTypedValue* value,
+      std::string* refusal_detail);
+
   // Infers or evaluates one canonical scalar expression against a completely
   // prepared materialized input row. Only the explicit row-slot binding may
   // supply identifier leaves; the ordinary typed runtime retains scalar,
@@ -217,6 +245,14 @@ class CanonicalRelationalExpressionRuntime {
       internal_api::EngineSqlTruthValue* truth,
       std::string* refusal_detail);
 
+  bool EvaluatePredicateForConsumer(
+      std::uint32_t expression_id,
+      const CanonicalRelationalExpressionRowBinding& row_binding,
+      CanonicalRelationalExpressionRowView row_values,
+      internal_api::EngineCanonicalExpressionConsumer consumer,
+      internal_api::EngineSqlTruthValue* truth,
+      std::string* refusal_detail);
+
   // Evaluates one canonical predicate against a materialized engine row.
   // Only explicitly bound row-slot leaves may consume row values; the
   // surrounding literal/operator graph still uses the ordinary canonical
@@ -238,18 +274,19 @@ class CanonicalRelationalExpressionRuntime {
 
  private:
   struct ActiveRowBinding {
-    std::unordered_map<std::uint32_t,
-                       const internal_api::EngineTypedValue*>
-        values_by_expression;
+    const CanonicalRelationalExpressionRowBinding* binding{nullptr};
+    CanonicalRelationalExpressionRowView values;
   };
 
   bool PrepareRowBinding(
       std::uint32_t root_expression_id,
       const CanonicalRelationalExpressionRowBinding& row_binding,
-      const std::vector<internal_api::EngineTypedValue>& row_values,
+      CanonicalRelationalExpressionRowView row_values,
       internal_api::EngineCanonicalExpressionConsumer consumer,
       ActiveRowBinding* prepared,
       std::string* refusal_detail) const;
+  const internal_api::EngineTypedValue* ActiveRowValue(
+      std::uint32_t expression_id) const;
   bool InferTypeInternal(std::uint32_t expression_id,
                          std::optional<std::string_view> expected_type,
                          std::string* canonical_type_name,
