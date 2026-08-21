@@ -15229,6 +15229,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           current->input_logical_node_ids[0] ==
               current->input_logical_node_ids[1] ||
           current->bound_expression_ids.size() != expected_expression_count ||
+          !current->required_object_uuids.empty() ||
           !current->required_property_uuids.empty() ||
           !current->delivered_property_uuids.empty()) {
         return result;
