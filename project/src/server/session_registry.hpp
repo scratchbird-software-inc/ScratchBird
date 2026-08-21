@@ -1080,6 +1080,7 @@ SessionOperationResult HandleCoordinateDdlSetIndexOptimizerEligibility(ServerSes
 SessionOperationResult HandleCoordinateDdlSetTableTypeEnforcement(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDatabaseSerializeLogicalSnapshot(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDatabaseDeserializeLogicalSnapshot(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateDdlCreateMacro(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateTable(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateIndex(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlDropIndex(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
